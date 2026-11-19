@@ -1,9 +1,6 @@
-// Integration tests for the in-thread agent-mode toggle. Thread *type*
-// (design / discussion) is immutable post-creation; on chat threads the
-// composer toolbar carries AgentModeToggle (chat ↔ plan), and on design
-// / discussion threads the slot is empty (the in-pane ThreadModePicker
-// in the workspace strip already surfaces the mode). These tests mount
-// App, select a thread, and exercise the toggle path.
+// Integration tests for the in-thread agent-mode toggle. On chat threads
+// the composer toolbar carries AgentModeToggle (chat ↔ plan). These tests
+// mount App, select a thread, and exercise the toggle path.
 
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';

@@ -122,6 +122,68 @@ func TestStartSessionRefusesAWorkspaceOutsideTheIsolatedRoot(t *testing.T) {
 	}
 }
 
+// A workspace that is gone refuses the start by name, before the transcript
+// is settled under it or a prior session is stopped.
+func TestStartSessionRefusesAWorkspaceThatIsGone(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	t.Cleanup(func() { _ = app.ServiceShutdown() })
+	// Nothing can run if the refusal is removed: the spawn's binary is not
+	// there either.
+	app.providerBinaryOverride = filepath.Join(t.TempDir(), "no-provider")
+
+	gone := filepath.Join(t.TempDir(), "removed-worktree")
+	thread := testThread("thread-workspace-gone")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = gone
+	thread.SessionRef = "11111111-2222-3333-4444-555555555555"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Claude),
+		Token:    "keep-me",
+	})
+
+	err := app.startSessionNow(thread.ID)
+	want := "start session: workspace " + gone + " no longer exists"
+	if err == nil || err.Error() != want {
+		t.Fatalf("startSessionNow() error = %v, want %q", err, want)
+	}
+	existing, ok := app.sessionManager().get(thread.ID)
+	if !ok || existing.Token != "keep-me" {
+		t.Fatalf("refused start disturbed the existing session: %+v (registered=%v)", existing, ok)
+	}
+	if rows := threadErrorRows(t, app.store, thread.ID, ""); len(rows) != 0 {
+		t.Fatalf("refused start wrote error rows %q", rows)
+	}
+}
+
+func TestRequireWorkspaceDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		path, want string
+	}{
+		{"", ""},
+		{dir, ""},
+		{filepath.Join(dir, "gone"), "workspace " + filepath.Join(dir, "gone") + " no longer exists"},
+		{file, "workspace " + file + " is not a directory"},
+	} {
+		got := ""
+		if err := requireWorkspaceDir(tt.path); err != nil {
+			got = err.Error()
+		}
+		if got != tt.want {
+			t.Errorf("requireWorkspaceDir(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
 // Unit tests build an App with no isolation config at all, and every path on
 // the developer's machine must stay reachable there.
 func TestRequireIsolatedWorkspaceIsInertWithoutARoot(t *testing.T) {

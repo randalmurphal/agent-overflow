@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,7 @@ func TestValidateGrantsRefusesUnknownDuplicateAndToolPhases(t *testing.T) {
 		want   string
 	}{
 		{"unknown", func(p *Phase) { p.Grants = []string{"report-back"} }, `unknown grant "report-back"`},
-		{"duplicate", func(p *Phase) { p.Grants = []string{"schedule", "schedule"} }, `grant "schedule" is declared more than once`},
+		{"duplicate", func(p *Phase) { p.Grants = []string{"introspect", "introspect"} }, `grant "introspect" is declared more than once`},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -107,7 +108,7 @@ func TestValidateGrantsRefusesUnknownDuplicateAndToolPhases(t *testing.T) {
 // downgrade a re-entered phase's authority.
 func TestPhaseGrantsSurviveSnapshotRoundTrip(t *testing.T) {
 	resolved := validResolved(t)
-	resolved.Workflow.Phases[0].Grants = []string{string(GrantStartRun), string(GrantUpdateNotes)}
+	resolved.Workflow.Phases[0].Grants = []string{string(GrantStartRun), string(GrantResolve)}
 	encoded, err := json.Marshal(resolved.Workflow)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -117,7 +118,7 @@ func TestPhaseGrantsSurviveSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	got := decoded.Phases[0].Grants
-	if len(got) != 2 || got[0] != string(GrantStartRun) || got[1] != string(GrantUpdateNotes) {
+	if len(got) != 2 || got[0] != string(GrantStartRun) || got[1] != string(GrantResolve) {
 		t.Fatalf("round-tripped grants = %v", got)
 	}
 	if len(decoded.Phases[1].Grants) != 0 {
@@ -126,7 +127,7 @@ func TestPhaseGrantsSurviveSnapshotRoundTrip(t *testing.T) {
 }
 
 func TestGrantNamesIsTheClosedSet(t *testing.T) {
-	want := []string{"introspect", "remote-commands", "resolve", "schedule", "start-run", "update-notes"}
+	want := []string{"introspect", "remote-commands", "resolve", "start-run"}
 	got := GrantNames()
 	if len(got) != len(want) {
 		t.Fatalf("GrantNames() = %v, want %v", got, want)
@@ -140,6 +141,31 @@ func TestGrantNamesIsTheClosedSet(t *testing.T) {
 	// admitting it here would let a workflow declare authority nothing honours.
 	if KnownGrant("report-back") {
 		t.Fatal("report-back is not a v1 grant")
+	}
+}
+
+// The published authoring schema offers exactly the closed set, so an editor
+// never completes a grant validation refuses.
+func TestAuthoringSchemaGrantsAreTheClosedSet(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			Phase struct {
+				Properties struct {
+					Grants struct {
+						Items struct {
+							Enum []string `json:"enum"`
+						} `json:"items"`
+					} `json:"grants"`
+				} `json:"properties"`
+			} `json:"phase"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(AuthoringSchema(), &schema); err != nil {
+		t.Fatalf("parse authoring schema: %v", err)
+	}
+	got := slices.Sorted(slices.Values(schema.Defs.Phase.Properties.Grants.Items.Enum))
+	if want := GrantNames(); !slices.Equal(got, want) {
+		t.Fatalf("authoring schema grants = %v, want %v", got, want)
 	}
 }
 

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -180,13 +179,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if a.hasActiveSession(threadID) {
 		return false, nil
 	}
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("delete empty draft thread %s: load thread: %w", threadID, err)
-	}
 	empty, err := a.store.IsEmptyDraftThread(threadID)
 	if err != nil {
 		return false, err
@@ -207,8 +199,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err := a.closeThreadBrowserPages(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("close browser pages: %w", err))
 	}
-	a.clearThreadSystemPrompt(threadID)
-	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
 	unlockMutation, err := a.threadApplication().LockMutable(context.Background(), threadID)
 	if err != nil {
@@ -233,6 +223,11 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
 		}
 	}
+	// A session started for the draft wrote its memory plan and ran the
+	// hook, which recorded what it showed.
+	if err := a.deleteMemoryFiles(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("cleanup memory files: %w", err))
+	}
 	if len(errs) > 0 {
 		return false, fmt.Errorf("delete empty draft thread %s: %w", threadID, errors.Join(errs...))
 	}
@@ -244,7 +239,7 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if !deleted {
 		return false, nil
 	}
-	// As in DeleteTree: a page a companion action opened after the close
+	// As in DeleteThread: a page a companion action opened after the close
 	// above is left to this one.
 	var closeErr error
 	if err := a.closeThreadBrowserPages(threadID); err != nil {
@@ -257,15 +252,25 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 }
 
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
-	meta, err := usermessage.FromItem(userItem)
+	part, err := a.draftPartWithClonedAttachments(threadID, userItem, updatedAt)
 	if err != nil {
 		return store.ThreadDraft{}, err
+	}
+	return composerdraft.FromParts(threadID, part.Content, part.AttachmentIDs, part.SourceProposedPlan, updatedAt)
+}
+
+// draftPartWithClonedAttachments projects a user item into a draft part for
+// threadID, its attachments copied into that thread.
+func (a *App) draftPartWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (composerdraft.Part, error) {
+	meta, err := usermessage.FromItem(userItem)
+	if err != nil {
+		return composerdraft.Part{}, err
 	}
 	attachmentIDs, err := a.cloneUserMessageAttachmentsForDraft(threadID, userItem.ThreadID, meta.Attachments, updatedAt)
 	if err != nil {
-		return store.ThreadDraft{}, err
+		return composerdraft.Part{}, err
 	}
-	return composerdraft.FromParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
+	return composerdraft.Part{Content: userItem.Summary, AttachmentIDs: attachmentIDs, SourceProposedPlan: meta.SourceProposedPlan}, nil
 }
 
 func (a *App) cloneUserMessageAttachmentsForDraft(

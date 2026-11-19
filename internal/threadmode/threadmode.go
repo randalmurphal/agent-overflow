@@ -23,7 +23,6 @@ const DefaultCreateMode = "chat"
 const (
 	ModeChat           = "chat"
 	ModePlan           = "plan"
-	ModeDiscussion     = "discussion"
 	ModeTerminal       = "terminal"
 	ModeWorkflow       = "workflow"
 	ModeWorkflowStudio = "workflow-studio"
@@ -45,13 +44,13 @@ const (
 )
 
 var legalModes = map[string]struct{}{
-	ModeChat: {}, ModePlan: {}, ModeDiscussion: {},
+	ModeChat: {}, ModePlan: {},
 	ModeTerminal: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
 	ModeScratch: {}, ModeHolder: {},
 }
 
 var sagaOwnedModes = map[string]struct{}{
-	ModeDiscussion: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
+	ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
 }
 
 var hiddenModes = []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage, ModeScratch, ModeHolder}
@@ -65,11 +64,8 @@ var hiddenModeSet = func() map[string]struct{} {
 }()
 
 // ManualSelectionModes is the set the UI / new-thread flow is allowed
-// to set at creation time. "discussion" is intentionally excluded —
-// those threads come through StartDiscussion because they require a
-// deliberation channel and participant child threads. Letting the UI
-// set "discussion" directly would produce orphan threads the discussion
-// runtime never knows about.
+// to set at creation time. Saga-owned modes are excluded: their threads
+// come through the flow that creates their run state.
 var ManualSelectionModes = map[string]struct{}{
 	ModeChat: {},
 	ModePlan: {},
@@ -117,9 +113,8 @@ func HiddenModes() []string {
 
 // ValidateCreate normalises the mode for CreateThread. An empty
 // string is accepted and normalised to DefaultCreateMode so existing
-// callers that don't care about the mode keep working. "discussion"
-// is rejected to keep StartDiscussion as the only path that produces
-// discussion-mode threads.
+// callers that don't care about the mode keep working. Saga-owned modes
+// are rejected so only their own flows produce them.
 func ValidateCreate(mode string) (string, error) {
 	trimmed := strings.TrimSpace(mode)
 	if trimmed == "" {
@@ -132,7 +127,7 @@ func ValidateCreate(mode string) (string, error) {
 }
 
 // ValidateSet validates a mode for UpdateThreadMode. Only chat and
-// plan are accepted; discussion is a saga-owned immutable thread type
+// plan are accepted; workflow modes are saga-owned immutable thread types
 // and scratch is owned by the fork that created it. The frontend's
 // agent-mode toggle (chat ↔ plan) is the only caller that should hit
 // UpdateThreadMode at user-facing scope; internal callsites
@@ -153,7 +148,7 @@ func ValidateSet(mode string) (string, error) {
 // IsPostCreationMode reports whether the given mode is one the UI is
 // allowed to mutate into post-creation. Callers use this to validate
 // that a *current* thread mode is still chat/plan before allowing the
-// UpdateThreadMode flip — discussion threads are immutable.
+// UpdateThreadMode flip — saga-owned threads are immutable.
 func IsPostCreationMode(mode string) bool {
 	_, ok := PostCreationModes[strings.TrimSpace(mode)]
 	return ok

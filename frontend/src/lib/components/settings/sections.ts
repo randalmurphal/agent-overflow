@@ -130,6 +130,20 @@ export const SETTINGS_SECTIONS = [
     description: "The built-in thread tools agents use to read, start and answer this computer's other conversations.",
   },
   {
+    id: 'assistants',
+    label: 'Assistants',
+    group: 'Agents',
+    description:
+      'Named agents that keep their own home, memory, loops and watches across threads, and whether this computer shows and runs them.',
+  },
+  {
+    id: 'agent-profiles',
+    label: 'Agent profiles',
+    group: 'Agents',
+    description:
+      'The agents a thread can open sub-threads with, advice on choosing among them, and how deep sub-threads may go.',
+  },
+  {
     id: 'agent-guide',
     label: 'App guide',
     group: 'Agents',
@@ -137,11 +151,11 @@ export const SETTINGS_SECTIONS = [
       "A short guide appended to each chat session's system prompt: what this app renders and which built-in tools are on. Workflow phases are left as their workflow wrote them.",
   },
   {
-    id: 'discussions',
-    label: 'Discussions',
+    id: 'memory',
+    label: 'Memory',
     group: 'Agents',
     description:
-      'Multi-participant deliberations. Global definitions are available everywhere; project-scoped definitions take precedence for threads inside their project path.',
+      'What Claude and Codex keep across conversations: the memory this app shares between conversations, and each provider\'s own.',
   },
   {
     id: 'projects',
@@ -271,6 +285,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'thread-tools', 'agent-guide', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
+    'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage', 'voice'].includes(section);
 }

@@ -75,7 +75,10 @@ func (r *Router) handleSubagentProgress(evt provider.ProviderEvent) error {
 			return fmt.Errorf("triage: decode subagent progress meta for %s/%s: %w", evt.ThreadID, itemID, err)
 		}
 	}
-	merged := r.mergeLiveSubagentProgress(evt.ThreadID, itemID, tick)
+	merged, applied := r.mergeLiveSubagentProgress(evt.ThreadID, itemID, tick, evt.SessionToken)
+	if !applied {
+		return nil
+	}
 
 	r.emit(eventchan.ProviderSubagentProgress, SubagentProgressEvent{
 		ThreadID:  evt.ThreadID,
@@ -94,12 +97,17 @@ const subagentProgressCap = 4096
 // counter that cannot land yet (a background launch whose completion
 // record is still to be written) waits in the live entry, which is the
 // one place the completion writer reads.
-func (r *Router) mergeLiveSubagentProgress(threadID, itemID string, tick provider.SubagentProgressMeta) provider.SubagentProgressMeta {
+// A tick from a retired session merges nothing: the replacement's live
+// entries are its own.
+func (r *Router) mergeLiveSubagentProgress(threadID, itemID string, tick provider.SubagentProgressMeta, sessionToken string) (provider.SubagentProgressMeta, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return provider.SubagentProgressMeta{}, false
+	}
 	merged := mergeSubagentProgress(r.state(threadID).subagentProgress[itemID], tick)
 	r.putLiveSubagentProgressLocked(threadID, itemID, merged)
-	return merged
+	return merged, true
 }
 
 // putLiveSubagentProgressLocked stores a launch's live entry. Callers
@@ -248,13 +256,13 @@ func (r *Router) PeekSubagentProgress(threadID, itemID string) (provider.Subagen
 // terminal (live tick only) followed by a task_notification
 // (authoritative usage) lands the same final numbers as the reverse
 // order.
-func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.SubagentProgressMeta) error {
+func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.SubagentProgressMeta, sessionToken string) error {
 	if isCodexSpawnAgentLaunch(launch, nil) {
 		return nil
 	}
 	if launch.IsBackground {
 		if final != (provider.SubagentProgressMeta{}) {
-			r.mergeLiveSubagentProgress(launch.ThreadID, launch.ID, final)
+			r.mergeLiveSubagentProgress(launch.ThreadID, launch.ID, final, sessionToken)
 		}
 		completionID := ToolCompletionID(launch.ID)
 		completion, found, err := r.store.GetThreadItemForWrite(launch.ThreadID, completionID)

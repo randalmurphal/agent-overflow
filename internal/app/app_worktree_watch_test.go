@@ -312,7 +312,7 @@ func TestReconcileProjectWorktreesStopsSessionMidTurn(t *testing.T) {
 	if err := f.app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: attached.ID, TurnID: "turn-0", Timestamp: time.Now()}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
-	f.app.triage.RegisterQueueItem(attached.ID, triage.QueuedFlushItem{ID: "queued-behind-turn", Message: "run the tests next", EnqueuedAt: time.Now().UnixMilli()})
+	f.app.triage.RegisterQueueItem(attached.ID, triage.QueuedFlushItem{ID: "queued-behind-turn", Message: "run the tests next", EnqueuedAt: time.Now().UnixMilli(), NoRow: true})
 	liveness := sessionruntime.NewLiveness(time.Now())
 	liveness.ActiveTurns.Store(1)
 	f.app.sessionManager().put(attached.ID, session{Provider: string(provider.Claude), Token: "token-busy", Liveness: liveness})
@@ -427,7 +427,7 @@ func TestAutoReconnectFailureSurfacesOnThread(t *testing.T) {
 	app.stopSessionFn = func(string) error { return nil }
 	app.startSessionFn = func(string) error { return errors.New("chdir /gone: no such file or directory") }
 
-	handler := app.sessionEventHandler(thread.ID, "token-dead", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "token-dead", string(provider.Claude))
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "error", Timestamp: time.Now()})
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
 	waitProviderEvents(t, app, thread.ID)

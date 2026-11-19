@@ -115,15 +115,22 @@ func TestAParkedTrialSettlesTheLastRunsRequestsButActsOnlyAfterItsCommit(t *test
 
 	ActivateUnattendedWork(a, ServiceUpdateOutcome{})
 
-	// The start the wake asks for leaves no session, so the dispatch returns
-	// the wake to the caller's composer, which is where it is read.
+	// The start the wake asks for leaves no session, so the wake stays queued
+	// for the caller's next start, never in its composer.
 	waitUntil(t, 30*time.Second, func() bool {
 		_, err := a.store.GetThread(scratch)
 		row, _, _ := a.store.GetThreadRequest(token)
-		return errors.Is(err, sql.ErrNoRows) && row.DeliveredHow == store.ThreadWakeDraft
+		return errors.Is(err, sql.ErrNoRows) && row.DeliveredHow == store.ThreadWakeQueued
 	})
-	if draft, _, err := a.store.GetThreadDraft(caller); err != nil || !strings.Contains(draft.Content, threadReceiptRestarted) {
-		t.Fatalf("caller composer after the commit = %q, %v; want the wake with the restart as its cause", draft.Content, err)
+	// The wake renders the restart cause (threadtools.CauseRestart) as
+	// the computer that restarted.
+	const restartCause = "was interrupted by a restart of this computer"
+	rows, err := a.store.ListFlushQueueItems(caller)
+	if err != nil || len(rows) != 1 || rows[0].SendID != threadWakeSendID(token) || !strings.Contains(rows[0].Message, restartCause) {
+		t.Fatalf("caller queue after the commit = %+v, %v; want the wake with the restart as its cause", rows, err)
+	}
+	if draft, _, err := a.store.GetThreadDraft(caller); err != nil || strings.Contains(draft.Content, restartCause) {
+		t.Fatalf("caller composer after the commit = %q, %v; want the wake kept out of it", draft.Content, err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		for _, id := range sessionsStarted() {

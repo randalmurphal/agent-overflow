@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // newTestProject inserts a fresh project row and returns it. Threads in
@@ -33,7 +36,7 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-new-fields", "/home/user/project")
 
-	// First create a parent thread so the parent_thread_id FK is valid.
+	// First create a source thread so the forked_from_thread_id FK is valid.
 	parent := makeThread("parent-1", "claude")
 	parent.ProjectID = proj.ID
 	parent.Mode = "chat"
@@ -41,15 +44,7 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 		t.Fatalf("create parent: %v", err)
 	}
 
-	// And a channel so the discussion_id FK is valid.
 	now := time.Now().UnixMilli()
-	if err := s.CreateChannel(Channel{
-		ID: "disc-abc", ThreadID: "parent-1",
-		Type: "deliberation", Status: "open",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
 
 	thr := Thread{
 		ID:                  "thread-new-fields",
@@ -67,8 +62,6 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 		ReasoningEffort:     "xhigh",
 		FastMode:            true,
 		ContextWindow:       200000,
-		DiscussionID:        "disc-abc",
-		ParentThreadID:      "parent-1",
 		ForkedFromThreadID:  "parent-1",
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -104,12 +97,6 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	}
 	if got.ContextWindow != thr.ContextWindow {
 		t.Errorf("ContextWindow: got %d, want %d", got.ContextWindow, thr.ContextWindow)
-	}
-	if got.DiscussionID != thr.DiscussionID {
-		t.Errorf("DiscussionID: got %q, want %q", got.DiscussionID, thr.DiscussionID)
-	}
-	if got.ParentThreadID != thr.ParentThreadID {
-		t.Errorf("ParentThreadID: got %q, want %q", got.ParentThreadID, thr.ParentThreadID)
 	}
 
 	// Verify existing fields still round-trip correctly.
@@ -327,12 +314,6 @@ func TestCreateThreadDefaultValues(t *testing.T) {
 	if got.Branch != "" {
 		t.Errorf("Branch: got %q, want empty string", got.Branch)
 	}
-	if got.DiscussionID != "" {
-		t.Errorf("DiscussionID: got %q, want empty string", got.DiscussionID)
-	}
-	if got.ParentThreadID != "" {
-		t.Errorf("ParentThreadID: got %q, want empty string", got.ParentThreadID)
-	}
 	if got.PendingForkRef != "" {
 		t.Errorf("PendingForkRef: got %q, want empty string", got.PendingForkRef)
 	}
@@ -366,21 +347,11 @@ func TestUpdateThreadNewFields(t *testing.T) {
 		t.Fatalf("create parent: %v", err)
 	}
 
-	// Channel for the discussion_id FK on the upcoming update.
-	if err := s.CreateChannel(Channel{
-		ID: "disc-xyz", ThreadID: "thread-upd-parent",
-		Type: "deliberation", Status: "open",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
 	// Update with new field values.
 	thr.Title = "After Update"
 	thr.WorktreePath = "/home/user/.worktrees/fix-123"
 	thr.Branch = "fix-123"
 	thr.Mode = "plan"
-	thr.DiscussionID = "disc-xyz"
 	thr.ForkedFromThreadID = "thread-upd-parent"
 	thr.UpdatedAt = now + 5000
 
@@ -404,9 +375,6 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	}
 	if got.Mode != "plan" {
 		t.Errorf("Mode: got %q, want %q", got.Mode, "plan")
-	}
-	if got.DiscussionID != "disc-xyz" {
-		t.Errorf("DiscussionID: got %q, want %q", got.DiscussionID, "disc-xyz")
 	}
 	// PendingForkRef / PendingForkResumeAt are deliberately NOT reachable
 	// from here — see TestUpdateThreadPreservesPendingForkPin.
@@ -456,14 +424,12 @@ func TestProviderSwitchClearsPendingForkPin(t *testing.T) {
 		t.Fatalf("SetThreadForkResume(pin): %v", err)
 	}
 
-	// The switch's UPDATE clears the pin itself (the columns are absent from
-	// updateThreadSetSQL, so without the inline clear a committed switch
-	// could strand a pin into the old provider's session files).
-	switched := thr
+	// The switch's UPDATE clears the pin itself, so a committed switch
+	// cannot strand a pin into the old provider's session files.
+	switched := thr.ModelSettings()
 	switched.Provider = "codex"
-	switched.SessionRef = ""
-	if err := s.UpdateThreadIfProviderSwitchAllowed(switched, "claude"); err != nil {
-		t.Fatalf("UpdateThreadIfProviderSwitchAllowed: %v", err)
+	if err := s.UpdateThreadModelSettings(thr.ID, "claude", switched); err != nil {
+		t.Fatalf("UpdateThreadModelSettings: %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
 	if err != nil {
@@ -475,6 +441,114 @@ func TestProviderSwitchClearsPendingForkPin(t *testing.T) {
 	if got.PendingForkRef != "" || got.PendingForkResumeAt != "" {
 		t.Fatalf("pin survived the provider switch: %q@%q, want empty",
 			got.PendingForkRef, got.PendingForkResumeAt)
+	}
+}
+
+// A model settings write from a stale read writes only the model
+// configuration: a rename and an archive made after the read survive it, a
+// provider switch clears the resume wiring, and a switch is refused once
+// the thread has history or when the provider moved since the read.
+func TestUpdateThreadModelSettingsKeepsIdentity(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	thr := makeThread("thread-model-settings", "claude")
+	thr.SessionRef = "claude-session"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTitle(thr.ID, "Renamed meanwhile"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread(thr.ID); err != nil {
+		t.Fatal(err)
+	}
+	settings := stale.ModelSettings()
+	settings.Model, settings.ReasoningEffort, settings.FastMode, settings.ContextWindow = "opus-next", "high", true, 200000
+	if err := s.UpdateThreadModelSettings(thr.ID, stale.Provider, settings); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Renamed meanwhile" || !got.Archived || got.SessionRef != "claude-session" {
+		t.Fatalf("after the settings write = title %q archived %v session %q, want the rename, the archive and the session kept",
+			got.Title, got.Archived, got.SessionRef)
+	}
+	if got.Model != "opus-next" || got.ReasoningEffort != "high" || !got.FastMode || got.ContextWindow != 200000 {
+		t.Fatalf("settings = %+v", got.ModelSettings())
+	}
+
+	switched := got.ModelSettings()
+	switched.Provider, switched.ReasoningEffort = "codex", "medium"
+	if err := s.UpdateThreadModelSettings(thr.ID, "codex", switched); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("a write whose provider moved since its read = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateThreadModelSettings(thr.ID, "claude", switched); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(thr.ID); got.Provider != "codex" || got.SessionRef != "" || got.Title != "Renamed meanwhile" {
+		t.Fatalf("after the switch = provider %q session %q title %q", got.Provider, got.SessionRef, got.Title)
+	}
+	if _, err := s.UpsertItem(Item{ID: "i1", ThreadID: thr.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "hi", CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	back := switched
+	back.Provider, back.ReasoningEffort = "claude", "high"
+	if err := s.UpdateThreadModelSettings(thr.ID, "codex", back); !errors.Is(err, ErrThreadProviderLocked) {
+		t.Fatalf("a switch with history = %v, want ErrThreadProviderLocked", err)
+	}
+}
+
+// The retained whole-row UpdateThread keeps an assistant's invariants: its
+// current thread cannot take another assistant's name or an empty one, or
+// leave its home.
+func TestUpdateThreadKeepsAssistantInvariants(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"ops", "build"} {
+		mustCreateThread(t, s, id)
+	}
+	mustRetitle(t, s, "ops", "Ops")
+	mustRetitle(t, s, "build", "Build")
+	mustCreateAssistant(t, s, "ops", "/h/ops")
+	mustCreateAssistant(t, s, "build", "/h/build")
+	build, err := s.GetThread("build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taken *AssistantNameTakenError
+	dup := build
+	dup.Title = "ops"
+	if err := s.UpdateThread(dup); !errors.As(err, &taken) || taken.ThreadID != "ops" {
+		t.Fatalf("UpdateThread to another assistant's name = %v, want it refused naming the holder", err)
+	}
+	empty := build
+	empty.Title = "  "
+	if err := s.UpdateThread(empty); !errors.Is(err, ErrAssistantNameEmpty) {
+		t.Fatalf("UpdateThread to an empty name = %v", err)
+	}
+	moved := build
+	moved.WorkspacePath = "/elsewhere"
+	if err := s.UpdateThread(moved); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("UpdateThread out of the home = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	inProject := build
+	inProject.ProjectID = defaultTestProjectID
+	if err := s.UpdateThread(inProject); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("UpdateThread into a project = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	if got, _ := s.GetThread("build"); got.Title != "Build" || got.WorkspacePath != "/h/build" || got.ProjectID != "" {
+		t.Fatalf("after the refusals = title %q workspace %q project %q", got.Title, got.WorkspacePath, got.ProjectID)
+	}
+	renamed := build
+	renamed.Title = "Builder"
+	if err := s.UpdateThread(renamed); err != nil {
+		t.Fatalf("UpdateThread to a free name: %v", err)
 	}
 }
 
@@ -669,101 +743,6 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 	// Unset nullable fields should be empty.
 	if got.WorktreePath != "" {
 		t.Errorf("WorktreePath: got %q, want empty", got.WorktreePath)
-	}
-	if got.DiscussionID != "" {
-		t.Errorf("DiscussionID: got %q, want empty", got.DiscussionID)
-	}
-	if got.ParentThreadID != "" {
-		t.Errorf("ParentThreadID: got %q, want empty", got.ParentThreadID)
-	}
-}
-
-func TestListChildThreadsReturnsOnlyDirectChildren(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-children", "/tmp/children")
-
-	parent := makeThread("parent-thread", "claude")
-	parent.ProjectID = proj.ID
-	if err := s.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent): %v", err)
-	}
-
-	childA := makeThread("child-a", "claude")
-	childA.ProjectID = proj.ID
-	childA.ParentThreadID = parent.ID
-	childA.CreatedAt = parent.CreatedAt + 1
-	childA.UpdatedAt = childA.CreatedAt
-	if err := s.CreateThread(childA); err != nil {
-		t.Fatalf("CreateThread(childA): %v", err)
-	}
-
-	childB := makeThread("child-b", "codex")
-	childB.ProjectID = proj.ID
-	childB.ParentThreadID = parent.ID
-	childB.CreatedAt = parent.CreatedAt + 2
-	childB.UpdatedAt = childB.CreatedAt
-	if err := s.CreateThread(childB); err != nil {
-		t.Fatalf("CreateThread(childB): %v", err)
-	}
-
-	other := makeThread("other-thread", "claude")
-	other.ProjectID = proj.ID
-	if err := s.CreateThread(other); err != nil {
-		t.Fatalf("CreateThread(other): %v", err)
-	}
-
-	children, err := s.ListChildThreads(parent.ID)
-	if err != nil {
-		t.Fatalf("ListChildThreads(): %v", err)
-	}
-	if len(children) != 2 {
-		t.Fatalf("len(children) = %d, want 2", len(children))
-	}
-	if children[0].ID != childA.ID || children[1].ID != childB.ID {
-		t.Fatalf("children order/IDs = %q, %q; want %q, %q", children[0].ID, children[1].ID, childA.ID, childB.ID)
-	}
-}
-
-// TestListChildThreadsBreaksCreatedAtTiesByInsertionOrder guards the
-// rowid tiebreak in ListChildThreads' ORDER BY: discussion participant
-// threads are all stamped with one shared created_at millisecond
-// (BuildParticipantPlans), so without `rowid ASC` SQL semantics would
-// let ties come back in any order and destabilize the deliberation
-// roster's round-robin sequence across reads.
-func TestListChildThreadsBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-tiebreak", "/tmp/tiebreak")
-
-	parent := makeThread("tiebreak-parent", "claude")
-	parent.ProjectID = proj.ID
-	if err := s.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent): %v", err)
-	}
-
-	sharedCreatedAt := parent.CreatedAt + 1
-	ids := []string{"tiebreak-child-1", "tiebreak-child-2", "tiebreak-child-3"}
-	for _, id := range ids {
-		child := makeThread(id, "claude")
-		child.ProjectID = proj.ID
-		child.ParentThreadID = parent.ID
-		child.CreatedAt = sharedCreatedAt
-		child.UpdatedAt = sharedCreatedAt
-		if err := s.CreateThread(child); err != nil {
-			t.Fatalf("CreateThread(%s): %v", id, err)
-		}
-	}
-
-	children, err := s.ListChildThreads(parent.ID)
-	if err != nil {
-		t.Fatalf("ListChildThreads(): %v", err)
-	}
-	if len(children) != len(ids) {
-		t.Fatalf("len(children) = %d, want %d", len(children), len(ids))
-	}
-	for i, id := range ids {
-		if children[i].ID != id {
-			t.Fatalf("children[%d].ID = %q, want %q (insertion order under identical created_at)", i, children[i].ID, id)
-		}
 	}
 }
 
@@ -2877,6 +2856,7 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"history_rev":              "the replica-invalidation counter (v55), maintained by the items triggers and bumpHistoryRevTx — a Go-side whole-row write would rewind it",
 	"history_epoch":            "the replica-invalidation epoch (v55), maintained by the same triggers",
 	"history_bulk_load":        "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
+	"placement":                "sidebar placement, owned by SetThreadGroup, SetThreadPlacement, the spawn naming write and a handoff; a whole-row write from a stale struct could undo a move the user just made, and the schema couples it to group_id",
 	"group_id":                 "sidebar group membership (v76), owned by SetThreadGroup — the one writer of the column; a whole-row write from a stale struct could move a thread back into a group the user just left, or resurrect one that was deleted",
 	"live_todo":                "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
 	"created_by_device":        "write-once provenance (v77); the screen that started the thread is a fact about its creation, and a later mutation from anywhere must not restate it",
@@ -2888,8 +2868,15 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"fork_cut_item_index":      "the other half of that cut (v120), same writers",
 	"fork_source_title":        "the divider's source title (v120), recorded at fork creation and when the source is deleted",
 	"newest_turn_error_at":     "the Failed pill's write-time aggregate (v121), maintained by the turn-error triggers",
+	"attention_kind":           "the attention flag its agent raised, owned by SetThreadAttention / ClearThreadAttention",
+	"attention_reason":         "the attention flag its agent raised, owned by SetThreadAttention / ClearThreadAttention",
+	"attention_at":             "the attention flag its agent raised, owned by SetThreadAttention / ClearThreadAttention",
 	"newest_turn_error_turn":   "the same aggregate's newest turn (v121), maintained by the same triggers",
-	"deleting":                 "the pending-delete mark (v122), set by DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete has begun",
+	"spawn_instructions":       "write-once (v155): the role a spawn gave the thread for its whole life, set at creation and copied by fork and transfer",
+	"spawn_level":              "the level a paired computer's spawn or ask carried (v155), written once at creation and zeroed by a transfer's commit; it counts only while the thread is owned or an ask copy (carriedLevelSQL)",
+	"deleting":                 "the committed-delete mark (v122), set by CommitDeleteClaim or DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete went ahead",
+	"delete_claim":             "a delete's claim (v155), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
+	"archived":                 "the archive flag, written only by setThreadArchivedTx, which withdraws the archives a reopen undoes; a stale struct must not archive or reopen a thread around it",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six
@@ -3217,5 +3204,223 @@ func TestMarkThreadReadNowClampsToImportedErrorItem(t *testing.T) {
 	}
 	if after.HasFailedTurn {
 		t.Fatal("HasFailedTurn = true after reading the imported error, want false")
+	}
+}
+
+// TestMarkThreadReadThroughStopsAtTheAnsweringTurn: the read mark an answer
+// gives a spawned thread covers that turn and no later one, never moves the
+// marker backward, and leaves a never-tracked or missing row alone.
+func TestMarkThreadReadThroughStopsAtTheAnsweringTurn(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	thr := makeThread("thread-read-through", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-answer", base, base+1000)
+
+	row, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+1000)
+	if err != nil || !changed {
+		t.Fatalf("MarkThreadReadThrough = changed %v, %v; want a change", changed, err)
+	}
+	if row.LastReadAt == nil || *row.LastReadAt != base+1000 {
+		t.Fatalf("returned LastReadAt = %v, want %d", row.LastReadAt, base+1000)
+	}
+
+	// A later turn the user caused stays unread: the mark covered only the
+	// turn that answered.
+	if err := s.InsertTurn(Turn{TurnID: "turn-later", ThreadID: thr.ID, TurnIndex: 1, StartedAt: base + 2000}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-later", base+3000, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if *got.LastReadAt != base+1000 || *got.LatestTurnCompletedAt != base+3000 {
+		t.Fatalf("LastReadAt %d, LatestTurnCompletedAt %d; want %d and %d", *got.LastReadAt, *got.LatestTurnCompletedAt, base+1000, base+3000)
+	}
+
+	// Never backward, and a repeat is a no-op.
+	for _, at := range []int64{base, base + 1000} {
+		if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, at); err != nil || changed {
+			t.Fatalf("MarkThreadReadThrough(%d) = changed %v, %v; want no change", at, changed, err)
+		}
+	}
+	got, _ = s.GetThread(thr.ID)
+	if *got.LastReadAt != base+1000 {
+		t.Fatalf("LastReadAt = %d after older marks, want %d", *got.LastReadAt, base+1000)
+	}
+
+	// A missing row is no error and no change.
+	if _, changed, err := s.MarkThreadReadThrough(ctx, "thread-gone", base); err != nil || changed {
+		t.Fatalf("missing row = changed %v, %v; want no change, no error", changed, err)
+	}
+
+	// NULL means never tracked, which reads as read: it stays NULL.
+	if _, err := s.db.Exec(`UPDATE threads SET last_read_at = NULL WHERE id = ?`, thr.ID); err != nil {
+		t.Fatalf("clear last_read_at: %v", err)
+	}
+	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+5000); err != nil || changed {
+		t.Fatalf("NULL marker = changed %v, %v; want no change", changed, err)
+	}
+}
+
+// MarkThreadsReadNow stamps every named thread owed a read with the clamp
+// MarkThreadReadNow applies, counts a repeated id once, refuses a thread that
+// is gone or that this computer may not change, refuses a call over the
+// limit, and costs the same statements for fifty threads as for two.
+func TestMarkThreadsReadNowStampsTheBatchInOneTransaction(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ahead := time.Now().UnixMilli() + 60_000
+	create := func(id string) {
+		t.Helper()
+		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+	// A completed turn ahead of the clock: the stamp is its completion.
+	create("ahead")
+	insertCompletedTurn(t, s, "ahead", "turn-ahead", ahead, ahead+1000)
+	// An interrupted newest turn: the stamp covers its start.
+	create("open-turn")
+	if err := s.InsertTurn(Turn{TurnID: "turn-open", ThreadID: "open-turn", TurnIndex: 0, StartedAt: ahead + 5000}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	// Already read through its turn: no change.
+	create("current")
+	insertCompletedTurn(t, s, "current", "turn-current", 100, 200)
+	if _, _, err := s.MarkThreadReadNow(ctx, "current"); err != nil {
+		t.Fatalf("MarkThreadReadNow(current): %v", err)
+	}
+	// A holder is not this computer's to change.
+	create("holder")
+	if _, err := s.db.Exec(`UPDATE threads SET mode = ? WHERE id = ?`, threadmode.ModeHolder, "holder"); err != nil {
+		t.Fatalf("make holder: %v", err)
+	}
+
+	// A fork still being prepared, and a thread mid-move to another
+	// computer, are not this computer's to change either.
+	create("forking")
+	if _, err := s.db.Exec(`UPDATE threads SET fork_preparing = 1 WHERE id = ?`, "forking"); err != nil {
+		t.Fatalf("mark fork preparing: %v", err)
+	}
+	create("moving")
+	seedTransfer(t, s, "moving", "outgoing", "move", "prepared", 0)
+	markerOf := func(id string) sql.NullInt64 {
+		t.Helper()
+		var lastReadAt sql.NullInt64
+		if err := s.db.QueryRow(`SELECT last_read_at FROM threads WHERE id = ?`, id).Scan(&lastReadAt); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		return lastReadAt
+	}
+	refusedBefore := map[string]sql.NullInt64{}
+	for _, id := range []string{"holder", "forking", "moving"} {
+		refusedBefore[id] = markerOf(id)
+	}
+	changed, refused, err := s.MarkThreadsReadNow(ctx, []string{"ahead", "open-turn", "current", "ahead", "holder", "forking", "moving", "gone"})
+	if err != nil {
+		t.Fatalf("MarkThreadsReadNow: %v", err)
+	}
+	if !slices.Equal(refused, []string{"forking", "gone", "holder", "moving"}) {
+		t.Fatalf("refused = %v, want [forking gone holder moving]", refused)
+	}
+	got := map[string]int64{}
+	for _, row := range changed {
+		got[row.ID] = *row.LastReadAt
+	}
+	if len(changed) != 2 || got["ahead"] != ahead+1000 || got["open-turn"] != ahead+5000 {
+		t.Fatalf("changed = %v, want ahead at %d and open-turn at %d", got, ahead+1000, ahead+5000)
+	}
+	for id, before := range refusedBefore {
+		if after := markerOf(id); after != before {
+			t.Fatalf("%s last_read_at moved from %v to %v; a refused thread is not stamped", id, before, after)
+		}
+	}
+	// The batch of one names a refusal as such.
+	if _, _, err := s.MarkThreadReadNow(ctx, "moving"); !errors.Is(err, ErrThreadReadRefused) || !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("MarkThreadReadNow(moving) = %v, want ErrThreadReadRefused wrapping sql.ErrNoRows", err)
+	}
+	// Each changed thread now reads as read through its target.
+	for _, id := range []string{"ahead", "open-turn"} {
+		if again, refused, err := s.MarkThreadsReadNow(ctx, []string{id}); err != nil || len(again) != 0 || len(refused) != 0 {
+			t.Fatalf("second mark of %s = %d changed, refused %v, %v; want nothing", id, len(again), refused, err)
+		}
+	}
+
+	// Over the limit, refused whole with the number.
+	over := make([]string, MarkThreadsReadLimit+1)
+	for i := range over {
+		over[i] = fmt.Sprintf("over-%d", i)
+	}
+	if _, _, err := s.MarkThreadsReadNow(ctx, over); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MarkThreadsReadLimit)) {
+		t.Fatalf("MarkThreadsReadNow over the limit = %v, want a refusal naming %d", err, MarkThreadsReadLimit)
+	}
+
+	// Repeats count once toward the limit.
+	repeated := slices.Repeat([]string{"ahead"}, MarkThreadsReadLimit+1)
+	if _, refused, err := s.MarkThreadsReadNow(ctx, repeated); err != nil || len(refused) != 0 {
+		t.Fatalf("MarkThreadsReadNow of one id repeated past the limit = refused %v, %v; want it counted once", refused, err)
+	}
+
+	// Fifty threads cost what two do.
+	cost := func(n int) [3]uint64 {
+		t.Helper()
+		ids := make([]string, n)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("cost-%d-%d", n, i)
+			create(ids[i])
+			insertCompletedTurn(t, s, ids[i], "turn-"+ids[i], ahead, ahead+1000)
+		}
+		// Every statement the transaction runs goes through the statement
+		// cache, which counts it (sql_rebind_test.go).
+		statements, writes, commits := cachedStmtRuns.Load(), s.WriteCount(), s.CommitCount()
+		changed, refused, err := s.MarkThreadsReadNow(ctx, ids)
+		if err != nil || len(changed) != n || len(refused) != 0 {
+			t.Fatalf("MarkThreadsReadNow(%d) = %d changed, refused %v, %v", n, len(changed), refused, err)
+		}
+		return [3]uint64{uint64(cachedStmtRuns.Load() - statements), s.WriteCount() - writes, s.CommitCount() - commits}
+	}
+	two, fifty := cost(2), cost(50)
+	if want := [3]uint64{3, 1, 1}; two != want || fifty != want {
+		t.Fatalf("(statements, writes, commits) = %v for 2 threads, %v for 50; want %v for both: the stamp, the read back and the refused list", two, fifty, want)
+	}
+}
+
+// The read mark's caller reads the thread, finds it unpinned and writes; a
+// pin that lands between the two must still keep the dot, so the write
+// itself skips a pinned row.
+func TestMarkThreadReadThroughSkipsAThreadPinnedSinceTheCallerRead(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	thr := makeThread("thread-pinned-meanwhile", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-answer", base, base+1000)
+	if _, _, err := s.MarkThreadUnread(thr.ID); err != nil {
+		t.Fatalf("MarkThreadUnread: %v", err)
+	}
+	// The caller's read: unpinned and owed the mark.
+	read, err := s.GetThread(thr.ID)
+	if err != nil || read.PinnedAt != nil || *read.LastReadAt >= base+1000 {
+		t.Fatalf("GetThread = %+v, %v; want an unpinned unread thread", read, err)
+	}
+	// The pin lands, then the caller's write.
+	if _, _, err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+1000); err != nil || changed {
+		t.Fatalf("MarkThreadReadThrough on a pinned thread = changed %v, %v; want no change", changed, err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil || *got.LastReadAt != 0 {
+		t.Fatalf("pinned thread LastReadAt = %v, %v; want it still unread at 0", got.LastReadAt, err)
 	}
 }

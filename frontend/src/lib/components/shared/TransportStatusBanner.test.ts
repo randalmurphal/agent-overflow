@@ -49,6 +49,7 @@ import {
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from '../../transport/homeEndpoint';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
@@ -165,6 +166,94 @@ describe('<TransportStatusBanner>', () => {
     const view = render(TransportStatusBanner);
     await tick();
     expect(view.queryByTestId('transport-status-banner')).toBeNull();
+  });
+
+  // Compact keeps the banner in the layout. A fade-out there held its row
+  // after the sync ended, while the sidebar rows under it were already live,
+  // and the late collapse moved a row out from under a pressed tap.
+  it('drops the compact row the moment the sync ends, and fades the desktop overlay', async () => {
+    for (const compact of [true, false]) {
+      setCompactLayoutForTest(compact);
+      try {
+        h.recovering.set('', true);
+        const view = render(TransportStatusBanner);
+        await tick();
+        expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+        recover('', 'complete');
+        await tick();
+        const banner = view.queryByTestId('transport-status-banner');
+        if (compact) {
+          expect(banner).toBeNull();
+        } else {
+          expect(banner).not.toBeNull();
+          expect(banner!.parentElement!.inert).toBe(true);
+          await vi.advanceTimersByTimeAsync(200);
+          expect(view.queryByTestId('transport-status-banner')).toBeNull();
+        }
+        view.unmount();
+      } finally {
+        setCompactLayoutForTest(false);
+      }
+    }
+  });
+
+  // A tap's click comes after its release and is hit-tested against the
+  // layout as it is then. A row that went between the press and the click
+  // moved the pressed control out from under the tap, so compact keeps the
+  // row's height until the tap completes (utils/tapHold.ts).
+  it('keeps the compact row under a tap pressed as the sync ends, until its click', async () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(30);
+    const surface = document.createElement('div');
+    surface.setAttribute('data-transport-tap-hold', '');
+    const pressed = document.createElement('button');
+    surface.appendChild(pressed);
+    document.body.appendChild(surface);
+    const press = (type: string) =>
+      pressed.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'touch', isPrimary: true }));
+    const endSync = async () => {
+      recover('', 'complete');
+      await tick();
+    };
+    try {
+      for (const compact of [true, false]) {
+        setCompactLayoutForTest(compact);
+        h.recovering.set('', true);
+        const view = render(TransportStatusBanner);
+        await tick();
+        expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+        press('pointerdown');
+        await endSync();
+        press('pointerup');
+        await tick();
+        if (compact) {
+          expect(view.queryByTestId('transport-status-banner')).toBeNull();
+          expect(view.getByTestId('transport-status-held-row').style.height).toBe('30px');
+          pressed.click();
+          await tick();
+        } else {
+          await vi.advanceTimersByTimeAsync(200);
+        }
+        expect(view.queryByTestId('transport-status-held-row')).toBeNull();
+        view.unmount();
+      }
+
+      // Leaving the compact layout during a tap drops the row it held.
+      setCompactLayoutForTest(true);
+      h.recovering.set('', true);
+      const view = render(TransportStatusBanner);
+      await tick();
+      press('pointerdown');
+      await endSync();
+      expect(view.getByTestId('transport-status-held-row')).toBeInTheDocument();
+      setCompactLayoutForTest(false);
+      await tick();
+      expect(view.queryByTestId('transport-status-held-row')).toBeNull();
+      view.unmount();
+    } finally {
+      setCompactLayoutForTest(false);
+      surface.remove();
+      height.mockRestore();
+    }
   });
 
   it('keeps the desktop overlay positioning when disconnected', async () => {

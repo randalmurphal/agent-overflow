@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -83,23 +84,363 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	}
 }
 
-// BeginThreadDelete is a delete's first write: it marks id deleting. A
-// fork of id admitted before it has committed by the time this write gets
-// the writer connection, and one after it reads the mark and is refused,
-// so what the forks read is settled before the delete releases anything
+// BeginThreadDelete marks id deleting, the store's own commit of a delete
+// of a row nothing claimed (DeleteThreadPaced): a fork of id admitted
+// before it has committed by the time this write gets the writer
+// connection, and one after it reads the mark and is refused, so what the
+// forks read is settled before the delete releases anything
 // (ReleasableAttachments). Marking a marked row again is how a repeated
-// delete resumes.
+// delete resumes. A family delete commits its rows itself
+// (CommitDeleteClaim) before it drops any. A missing thread is
+// sql.ErrNoRows.
 func (s *Store) BeginThreadDelete(id string) error {
 	result, err := s.db.Exec(`UPDATE threads SET deleting = 1 WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store: mark thread %s deleting: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id))
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("store: mark thread %s deleting: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("store: delete thread %s: %w", id, sql.ErrNoRows)
+	}
+	return nil
 }
 
-// ListPendingThreadDeletes returns the threads whose delete began and did
-// not finish (DeleteThreadPaced), and the holders no fork reads any more
-// (ListReleasedHolders), for the app to complete at boot.
+// A delete of threads with what lives under them (the app's familyDelete)
+// is one operation with an id, in four phases, each phase's write here:
+//
+//  1. Claim (ClaimDeleteFamily): one transaction reads the family
+//     (ListDeleteFamily) and writes the operation's id into each row's
+//     delete_claim. A claimed row is still listed everywhere, takes what
+//     the app queues for it and starts nothing: a queued message starts
+//     nothing by itself, so the app's queue writes and withdrawals pass a
+//     claim (CheckThreadDeliverable), and every door that starts or moves
+//     something refuses it (CheckThreadNotDeleting,
+//     CheckThreadExecutionAccess): no session start, dispatch of its queue,
+//     send, spawn, fork, handoff, transfer, archive, placement or group
+//     change.
+//  2. Verify, in the app, writes nothing; a refusal releases every claim
+//     in one transaction (ReleaseDeleteClaim).
+//  3. Commit (CommitDeleteClaim): one transaction sets deleting on every
+//     row the operation claimed. From here the rows are gone to every
+//     listing and the delete only moves forward.
+//  4. Destroy, in the app, drops each committed row (DeleteThreadPaced),
+//     the threads under it first.
+//
+// The boot releases the claims no operation committed
+// (ReleaseUndecidedDeleteClaims) and resumes every committed row
+// (ListPendingThreadDeletes).
+
+// ErrThreadDeleting is what a thread a delete claimed or committed refuses:
+// execution (CheckThreadExecutionAccess), a placement or group change, a
+// handoff and an archive.
+var ErrThreadDeleting = errors.New("store: this thread is being deleted")
+
+// ErrThreadDeleteClaimed is ErrThreadDeleting for a thread a delete claimed
+// and has not committed: the delete may still be refused, so a start it
+// turns away that nobody asked for in the moment is "not now", never a
+// failure, and waits for the decision.
+var ErrThreadDeleteClaimed error = deleteClaimedRefusal{}
+
+type deleteClaimedRefusal struct{}
+
+func (deleteClaimedRefusal) Error() string        { return ErrThreadDeleting.Error() }
+func (deleteClaimedRefusal) Is(target error) bool { return target == ErrThreadDeleting }
+
+// ThreadDeleteState is how far a delete has gone with a thread
+// (Thread.Delete).
+type ThreadDeleteState int
+
+const (
+	// ThreadNotDeleting is a thread no delete holds.
+	ThreadNotDeleting ThreadDeleteState = iota
+	// ThreadDeleteClaimed is a thread a delete claimed and has not
+	// committed (threads.delete_claim).
+	ThreadDeleteClaimed
+	// ThreadDeleteCommitted is a thread a delete committed
+	// (threads.deleting): it is gone for good.
+	ThreadDeleteCommitted
+)
+
+// deleteRefusal is the fence's refusal of threadID in state, nil for none.
+func deleteRefusal(threadID string, state ThreadDeleteState) error {
+	switch state {
+	case ThreadDeleteClaimed:
+		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleteClaimed)
+	case ThreadDeleteCommitted:
+		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleting)
+	}
+	return nil
+}
+
+// CheckThreadDeliverable refuses a thread that will never take a message
+// again: one gone to every operation (CheckThreadDeleteAccess: a holder, a
+// thread given to another computer) or one whose delete committed. A claim
+// passes: a claimed thread takes what the app queues for it, which starts
+// nothing until the claim is released.
+func (s *Store) CheckThreadDeliverable(thread Thread) error {
+	if err := s.CheckThreadDeleteAccess(thread); err != nil {
+		return err
+	}
+	if thread.Delete == ThreadDeleteCommitted {
+		return deleteRefusal(thread.ID, thread.Delete)
+	}
+	return nil
+}
+
+// DeleteClaimedError is a delete refused, with nothing changed, because a
+// thread it takes is claimed by another delete still deciding.
+type DeleteClaimedError struct {
+	ThreadID string
+}
+
+func (e *DeleteClaimedError) Error() string {
+	return fmt.Sprintf("thread %s is already being deleted; nothing was deleted, try again once that delete ends", e.ThreadID)
+}
+
+func (e *DeleteClaimedError) Is(target error) bool { return target == ErrThreadDeleting }
+
+// CheckThreadNotDeleting refuses, with ErrThreadDeleting, a thread a delete
+// claimed or committed: the check of a door that starts something. A
+// missing thread passes: each caller has its own answer for one. Read
+// under the thread's action lock it holds until the lock is released,
+// because a claim is written before the delete takes the thread's lock to
+// verify it.
+func (s *Store) CheckThreadNotDeleting(threadID string) error {
+	return checkThreadNotDeleting(s.reader(), threadID)
+}
+
+func checkThreadNotDeleting(q transferQuerier, threadID string) error {
+	var state ThreadDeleteState
+	err := q.QueryRow(`SELECT CASE WHEN deleting = 1 THEN 2 WHEN delete_claim <> '' THEN 1 ELSE 0 END
+		FROM threads WHERE id = ?`, threadID).Scan(&state)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("store: read the delete of thread %s: %w", threadID, err)
+	}
+	return deleteRefusal(threadID, state)
+}
+
+// ThreadDeleteClaim reads how far a delete has gone with threadID: the
+// delete that claimed it (threads.delete_claim), empty for none, and
+// whether a delete committed it (threads.deleting), which a delete that
+// never claimed it may have (BeginThreadDelete). A missing thread is
+// neither.
+func (s *Store) ThreadDeleteClaim(threadID string) (claim string, committed bool, err error) {
+	err = s.reader().QueryRow(`SELECT delete_claim, deleting FROM threads WHERE id = ?`, threadID).Scan(&claim, &committed)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", false, fmt.Errorf("store: read the delete of thread %s: %w", threadID, err)
+	}
+	return claim, committed, nil
+}
+
+// ClaimDeleteFamily claims for the delete op, in one transaction, the
+// threads ids names and what deleting them takes (ListDeleteFamily). It
+// refuses, changing nothing, when one of them is claimed by another delete
+// (*DeleteClaimedError). A thread already committed is left as it is: its
+// delete only goes forward, and this one joins it. A thread op already
+// claimed stays claimed, so a delete reads its family again with the same
+// call, which claims the threads a drained spawn added. It returns the
+// family as claimed.
+func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMember, err error) {
+	return s.claimDeleteFamily(op, ids, nil)
+}
+
+// ClaimLinkedDelete is ClaimDeleteFamily for the delete a paired computer's
+// owner sends for its worker id here through its link: id's own claim holds
+// only while that link owns it (ErrWorkerNotOwned), as a worker's holds
+// only through its owner here, and what id owns here is claimed with it.
+func (s *Store) ClaimLinkedDelete(op, id string, link LinkFence) ([]DeleteMember, error) {
+	return s.claimDeleteFamily(op, []string{id}, &link)
+}
+
+// claimDeleteFamily claims ids' family for op; link, when set, fences the
+// claim of the threads ids names.
+func (s *Store) claimDeleteFamily(op string, ids []string, link *LinkFence) (members []DeleteMember, err error) {
+	if op == "" {
+		return nil, errors.New("store: a delete claim needs its operation's id")
+	}
+	action := "store: claim a delete"
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackAgentWakeTx(tx, action, &err)
+	members, err = deleteFamily(tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, member := range members {
+		if !member.Committed && member.Claim != "" && member.Claim != op {
+			return nil, &DeleteClaimedError{ThreadID: member.ThreadID}
+		}
+	}
+	for i, member := range members {
+		if member.Committed || member.Claim == op {
+			continue
+		}
+		fence := workerFence{}
+		switch {
+		case member.Kind == DeleteWorker:
+			fence.owner = member.Under
+		case member.Kind == DeleteNamed && link != nil:
+			fence.link = link
+		}
+		if err := claimThreadDeleteTx(tx, op, member.ThreadID, fence); err != nil {
+			return nil, err
+		}
+		members[i].Claim = op
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return members, nil
+}
+
+// claimThreadDeleteTx claims id for the delete op. For a worker its owner's
+// delete takes, fence names that owner, or the link of an owner on a paired
+// computer, and the claim holds only while that owner still owns the
+// thread (ErrWorkerNotOwned), so a delete admitted from elsewhere claims a
+// worker only through its owner. A thread committed or claimed by another
+// delete is not claimed (ErrThreadDeleting).
+func claimThreadDeleteTx(tx *sql.Tx, op, id string, fence workerFence) error {
+	query := `UPDATE threads SET delete_claim = ? WHERE id = ? AND deleting = 0 AND delete_claim IN ('', ?)`
+	args := []any{op, id, op}
+	condition, fenceArgs := fence.condition()
+	fenced := condition != ""
+	if fenced {
+		query += ` AND ` + condition
+		args = append(args, fenceArgs...)
+	}
+	result, err := tx.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("store: claim the delete of thread %s: %w", id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("store: claim the delete of thread %s: %w", id, err)
+	} else if n > 0 {
+		return nil
+	}
+	if err := checkThreadNotDeleting(tx, id); err != nil {
+		return err
+	}
+	if fenced {
+		return ErrWorkerNotOwned
+	}
+	return fmt.Errorf("store: claim the delete of thread %s: %w", id, sql.ErrNoRows)
+}
+
+// ReleaseDeleteClaim takes back every claim of the delete op that did not
+// commit, in one transaction: a refused delete changes nothing.
+func (s *Store) ReleaseDeleteClaim(op string) error {
+	if _, err := s.db.Exec(`UPDATE threads SET delete_claim = '' WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0`, op); err != nil {
+		return fmt.Errorf("store: release the claims of delete %s: %w", op, err)
+	}
+	return nil
+}
+
+// DeleteCommit is what CommitDeleteClaim committed.
+type DeleteCommit struct {
+	// Threads are the threads it marked deleting.
+	Threads []string
+	// OwedOps are the owner operations the commit owed the paired
+	// computers its threads spawned on (thread_owner_ops.go).
+	OwedOps []OwnerOp
+}
+
+// CommitDeleteClaim commits every thread the delete op claimed, in one
+// transaction: each is marked deleting, and is gone to every listing from
+// here (owned_threads). In the same transaction it owes each paired
+// computer a committed thread spawned on a delete of that spawn's thread,
+// or a release when the committed thread was given to another computer: the
+// cleanup of a thread moved away deletes none of the workers it left.
+func (s *Store) CommitDeleteClaim(op string) (commit DeleteCommit, err error) {
+	action := fmt.Sprintf("store: commit delete %s", op)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackAgentWakeTx(tx, action, &err)
+	if commit.Threads, err = queryIDs(tx, `UPDATE threads SET deleting = 1
+		 WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0 RETURNING id`, op); err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if commit.OwedOps, err = oweCommittedRemoteOpsTx(tx, commit.Threads); err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return commit, nil
+}
+
+// oweCommittedRemoteOpsTx owes, for the remote spawns of the committed
+// threads, a delete, or a release for a thread given to another computer
+// (lineageThreadSQL), in the commit's transaction.
+func oweCommittedRemoteOpsTx(tx *sql.Tx, committed []string) (owed []OwnerOp, err error) {
+	if len(committed) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(committed)
+	if err != nil {
+		return nil, fmt.Errorf("encode the committed threads: %w", err)
+	}
+	rows, err := tx.Query(`SELECT threads.id, `+lineageThreadSQL("threads")+` FROM json_each(?) AS committed
+		CROSS JOIN threads ON threads.id = committed.value`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+	}
+	defer closeAgentWakeRows(rows, "store: read the committed threads' lineage", &err)
+	var deleted, released []string
+	for rows.Next() {
+		var id string
+		var lineage bool
+		if err := rows.Scan(&id, &lineage); err != nil {
+			return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+		}
+		if lineage {
+			deleted = append(deleted, id)
+		} else {
+			released = append(released, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+	}
+	now := nowMillis()
+	for _, owe := range []struct {
+		op      string
+		callers []string
+	}{{OwnerOpDelete, deleted}, {OwnerOpRelease, released}} {
+		ops, err := oweRemoteOpsTx(tx, owe.callers, owe.op, now)
+		if err != nil {
+			return nil, err
+		}
+		owed = append(owed, ops...)
+	}
+	return owed, nil
+}
+
+// ReleaseUndecidedDeleteClaims takes back, at boot, every claim no delete
+// committed: the process that held it is gone, and nothing of a claimed
+// thread was stopped or removed. It returns how many it released.
+func (s *Store) ReleaseUndecidedDeleteClaims() (int64, error) {
+	result, err := s.db.Exec(`UPDATE threads SET delete_claim = '' WHERE delete_claim <> '' AND deleting = 0`)
+	if err != nil {
+		return 0, fmt.Errorf("store: release undecided delete claims: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// ListPendingThreadDeletes returns the threads whose delete committed and
+// did not finish (CommitDeleteClaim, DeleteThreadPaced), and the holders no
+// fork reads any more (ListReleasedHolders), for the app to complete at
+// boot.
 func (s *Store) ListPendingThreadDeletes() ([]string, error) {
 	ids, err := queryIDs(s.reader(), `SELECT id FROM threads WHERE deleting = 1`)
 	if err != nil {
@@ -173,6 +514,11 @@ func (s *Store) finishThreadDelete(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Retired or deleted, the thread is no assistant's any more.
+	deletedHome, err := deleteAgentRecordTx(tx, id)
+	if err != nil {
+		return false, err
+	}
 	retired, err := retireToHolderTx(tx, id)
 	if err != nil {
 		return false, err
@@ -203,6 +549,7 @@ func (s *Store) finishThreadDelete(id string) (bool, error) {
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("store: commit delete thread %s: %w", id, err)
 	}
+	s.noteAgentRecordDeleted(deletedHome)
 	if reads {
 		s.holdersMayBeReleased()
 	}

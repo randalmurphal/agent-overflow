@@ -9,7 +9,6 @@
 
 import type {
   WorkItem,
-  WorkflowAutomationView,
   WorkflowDefinitionListing,
   WorkflowItemStateEvent,
   WorkflowResolvedReceipt,
@@ -48,18 +47,6 @@ export function workflowAge(timestampMs: number, nowMs = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
-}
-
-/** "in 3h 40m" / "in 45s" — the countdown on an automation row. */
-export function workflowCountdown(timestampMs: number, nowMs = Date.now()): string {
-  const seconds = Math.max(0, Math.round((timestampMs - nowMs) / 1000));
-  if (seconds < 60) return `in ${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `in ${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  if (hours < 24) return remainder > 0 ? `in ${hours}h ${remainder}m` : `in ${hours}h`;
-  return `in ${Math.floor(hours / 24)}d`;
 }
 
 export function formatWorkflowCost(costUsd: number | undefined): string {
@@ -152,7 +139,7 @@ function restedAt(item: WorkItem): number {
  * Project-grouped home content (§3.2). Only root runs are listed — a child
  * run is a node of its parent's tree, never a row of its own. Groups come
  * back ordered by project name; a project with no runs is still returned so
- * the caller can decide whether its definitions/automations justify a group.
+ * the caller can decide whether its definitions justify a group.
  */
 export function groupWorkflowRunsByProject(
   items: readonly WorkItem[],
@@ -199,15 +186,9 @@ export function groupWorkflowRunsByProject(
     left.projectName.localeCompare(right.projectName) || left.projectId.localeCompare(right.projectId));
 }
 
-/** A definition on home with the automations that render under it. */
-export interface WorkflowHomeDefinition {
-  definition: WorkflowDefinitionListing;
-  automations: readonly WorkflowAutomationView[];
-}
-
 /** One project's group as home lists it. */
 export interface WorkflowHomeGroup extends WorkflowProjectGroup {
-  definitions: WorkflowHomeDefinition[];
+  definitions: WorkflowDefinitionListing[];
 }
 
 export interface WorkflowHomeSource {
@@ -215,7 +196,6 @@ export interface WorkflowHomeSource {
   projectNames: ReadonlyMap<string, string>;
   projectFilter: string;
   definitionsOf(projectId: string): readonly WorkflowDefinitionListing[];
-  automationsOf(projectId: string): readonly WorkflowAutomationView[];
 }
 
 /** A run row matches `needle` (utils/findMatch.ts) on what it shows: its
@@ -225,34 +205,27 @@ export function workflowRunMatches(run: WorkItem, projectName: string, needle: s
   return textsMatchNeedle(needle, [run.goal, run.workflowId, workflowRunSignal(run.state, run.reason).label, projectName]);
 }
 
-/** A definition row matches on its name, id, phase chain, its automations'
- * names and its project. */
-export function workflowDefinitionMatches(entry: WorkflowHomeDefinition, projectName: string, needle: string): boolean {
-  const { definition } = entry;
+/** A definition row matches on its name, id, phase chain and its project. */
+export function workflowDefinitionMatches(definition: WorkflowDefinitionListing, projectName: string, needle: string): boolean {
   return textsMatchNeedle(needle, [
     definition.name,
     definition.id,
     workflowChainSummary(definition) || workflowDefinitionMeta(definition),
-    ...entry.automations.map((automation) => automation.name),
     projectName,
   ]);
 }
 
 /**
  * Home's groups (§3.2) after the project filter and the find needle: a
- * project lists while it has runs, definitions or automations; with a
+ * project lists while it has runs or definitions; with a
  * needle, only its matching rows, and only while one matches.
  */
 export function workflowHomeGroups(source: WorkflowHomeSource, needle = ''): WorkflowHomeGroup[] {
   const out: WorkflowHomeGroup[] = [];
   for (const group of groupWorkflowRunsByProject(source.runs, source.projectNames, source.projectFilter)) {
-    const automations = source.automationsOf(group.projectId);
-    const definitions = source.definitionsOf(group.projectId).map((definition) => ({
-      definition,
-      automations: automations.filter((automation) => automation.workflowId === definition.id),
-    }));
+    const definitions = [...source.definitionsOf(group.projectId)];
     if (!needle) {
-      const listed = group.attention.length + group.running.length + group.recent.length + definitions.length + automations.length;
+      const listed = group.attention.length + group.running.length + group.recent.length + definitions.length;
       if (listed > 0) out.push({ ...group, definitions });
       continue;
     }
@@ -262,7 +235,7 @@ export function workflowHomeGroups(source: WorkflowHomeSource, needle = ''): Wor
       attention: group.attention.filter((run) => workflowRunMatches(run, name, needle)),
       running: group.running.filter((run) => workflowRunMatches(run, name, needle)),
       recent: group.recent.filter((run) => workflowRunMatches(run, name, needle)),
-      definitions: definitions.filter((entry) => workflowDefinitionMatches(entry, name, needle)),
+      definitions: definitions.filter((definition) => workflowDefinitionMatches(definition, name, needle)),
     };
     if (workflowHomeRowCount([matched]) > 0) out.push(matched);
   }

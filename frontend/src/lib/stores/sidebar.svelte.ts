@@ -3,7 +3,7 @@
 //
 // Persistence follows the kind of state:
 //   - Provider icons persist locally through frontendStorage.
-//   - View state (collapsed projects, expanded discussions, thread-list
+//   - View state (collapsed projects, collapsed groups, thread-list
 //     limits) persists per client through appStorage
 //     (ui_state table) — two machines looking at the same backend keep
 //     independent view state. appStorage serves module init from its
@@ -43,18 +43,18 @@ export type { ProjectSortMode };
 
 // appStorage (per-client) keys.
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
-const EXPANDED_DISCUSSIONS_KEY = 'sidebar:expandedDiscussions';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
 // ids — the same inversion collapsedProjects uses, for the same reason:
 // a group the user has never touched must show its members. No legacy
 // key: the feature never existed before appStorage.
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
+// The Assistants and Projects sections, each folded whole from its header.
+const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
 // Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
-const LEGACY_EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
 const LEGACY_THREAD_LIST_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
 
@@ -190,10 +190,11 @@ function removeLocalStorageKey(key: string): void {
 }
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
-let expandedDiscussions: Set<string> = $state(
-  stringSetFromStorage(EXPANDED_DISCUSSIONS_KEY, LEGACY_EXPANDED_DISCUSSIONS_KEY),
-);
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
+let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
+// How many rows each list shows: a project's top level by its entry id, a
+// group's members by the group id, and the Assistants section's rows by
+// ASSISTANTS_LIST_KEY.
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -270,17 +271,17 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(collapsed, collapsedProjects)) {
     collapsedProjects = collapsed;
   }
-  const discussions = new Set(
-    parseStringArray(appStorageGet(EXPANDED_DISCUSSIONS_KEY) ?? '[]') ?? [],
-  );
-  if (!setsEqual(discussions, expandedDiscussions)) {
-    expandedDiscussions = discussions;
-  }
   const groups = new Set(
     parseStringArray(appStorageGet(COLLAPSED_GROUPS_KEY) ?? '[]') ?? [],
   );
   if (!setsEqual(groups, collapsedGroups)) {
     collapsedGroups = groups;
+  }
+  const sections = new Set(
+    parseStringArray(appStorageGet(COLLAPSED_SECTIONS_KEY) ?? '[]') ?? [],
+  );
+  if (!setsEqual(sections, collapsedSections)) {
+    collapsedSections = sections;
   }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
@@ -295,43 +296,11 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
 }
 
 /**
- * Discussion-tree expansion state — a flat set of thread ids whose
- * children should be visible. Persisted so reopening the app keeps the
- * user's reading context. Distinct from project expansion because a
- * collapsed project hides its discussions wholesale; this controls
- * which discussion *roots* show their participants when their parent
- * project is open.
- */
-export function isDiscussionExpanded(id: string): boolean {
-  return expandedDiscussions.has(id);
-}
-
-export function getExpandedDiscussions(): ReadonlySet<string> {
-  return expandedDiscussions;
-}
-
-export function toggleDiscussion(id: string): void {
-  const next = new Set(expandedDiscussions);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedDiscussions = next;
-  writeStringSet(EXPANDED_DISCUSSIONS_KEY, next);
-}
-
-/** Persist discussion expansion after pruning this project's leaf rows. */
-export function setExpandedDiscussions(next: ReadonlySet<string>): void {
-  if (setsEqual(next, expandedDiscussions)) return;
-  const copy = new Set(next);
-  expandedDiscussions = copy;
-  writeStringSet(EXPANDED_DISCUSSIONS_KEY, copy);
-}
-
-/**
- * Thread-group collapse state — the inverse of the discussion set above.
- * A group the user has never touched is EXPANDED, so only explicit
- * collapses persist and a newly created group shows its members. Global
- * across projects: a group id is unique, and a per-project map would
- * carry the same information with a project id nobody reads.
+ * Thread-group collapse state. A group the user has never touched is
+ * EXPANDED, so only explicit collapses persist and a newly created group
+ * shows its members. Global across projects: a group id is unique, and a
+ * per-project map would carry the same information with a project id
+ * nobody reads.
  */
 export function isGroupExpanded(id: string): boolean {
   return !collapsedGroups.has(id);
@@ -349,13 +318,49 @@ export function toggleGroup(id: string): void {
   writeStringSet(COLLAPSED_GROUPS_KEY, next);
 }
 
+export type SidebarSectionId = 'assistants' | 'projects';
+
+/** Whether a whole sidebar section is unfolded; unfolded until the user folds it. */
+export function isSidebarSectionExpanded(section: SidebarSectionId): boolean {
+  return !collapsedSections.has(section);
+}
+
 /**
- * Thread-list preview size, keyed by the list's owner: a project id for
- * its top level, a group id for the group's members (both are random
- * entity ids, so they share one map). A list starts at
- * THREAD_PREVIEW_LIMIT; each "Show more" click reveals up to
- * THREAD_REVEAL_INCREMENT hidden rows, and "Show less" drops it back to
- * the default preview.
+ * Whether a section shows its rows: while it is unfolded, and during a
+ * search, which shows its matches in a folded section too. Its header's
+ * chevron and `aria-expanded` follow this.
+ */
+export function isSidebarSectionShown(section: SidebarSectionId, searching: boolean): boolean {
+  return searching || isSidebarSectionExpanded(section);
+}
+
+export function setSidebarSectionExpanded(section: SidebarSectionId, expanded: boolean): void {
+  if (collapsedSections.has(section) === !expanded) return;
+  const next = new Set(collapsedSections);
+  if (expanded) next.delete(section);
+  else next.add(section);
+  collapsedSections = next;
+  writeStringSet(COLLAPSED_SECTIONS_KEY, next);
+}
+
+export function toggleSidebarSection(section: SidebarSectionId): void {
+  setSidebarSectionExpanded(section, !isSidebarSectionExpanded(section));
+}
+
+/**
+ * The key the Assistants section's rows page under in the per-list
+ * preview sizes below. A project's list pages under its entry id, a UUID,
+ * so the two never meet.
+ */
+export const ASSISTANTS_LIST_KEY = 'assistants';
+
+/**
+ * Thread-list preview size, keyed by the list's owner: a project's entry id
+ * for its top level, a group id for the group's members (both random entity
+ * ids, so they share one map), and ASSISTANTS_LIST_KEY for the Assistants
+ * section's rows. A list starts at THREAD_PREVIEW_LIMIT; each "Show more"
+ * click reveals up to THREAD_REVEAL_INCREMENT hidden rows, and "Show less"
+ * drops it back to the default preview.
  */
 export function getThreadListVisibleLimit(id: string): number {
   return threadListVisibleLimits[id] ?? THREAD_PREVIEW_LIMIT;
@@ -393,14 +398,13 @@ function visibleLimitsWith(id: string, limit: number): Record<string, number> {
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
-  expandedDiscussions = new Set();
   collapsedGroups = new Set();
+  collapsedSections = new Set();
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);
   removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
-  removeLocalStorageKey(LEGACY_EXPANDED_DISCUSSIONS_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
   removeLocalStorageKey(LEGACY_THREAD_LIST_LIMITS_KEY);
 }

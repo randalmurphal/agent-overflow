@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // noremoteForbiddenImports are the packages that carry remote access:
@@ -61,6 +63,7 @@ func forbiddenIn(deps []string) []string {
 // payload is checked to link them, so a list that matches nothing cannot
 // pass this test.
 func TestNoremoteBuildsLinkNoRemoteAccessDependencies(t *testing.T) {
+	reporoot.ObserveGoSources(t)
 	// Each go list is its own subprocess, so the four graphs load at once.
 	t.Run("standard payload", func(t *testing.T) {
 		t.Parallel()

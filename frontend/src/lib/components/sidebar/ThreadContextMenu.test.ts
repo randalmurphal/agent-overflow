@@ -3,18 +3,23 @@
 // Copy Thread ID, Delete (when not a child thread).
 
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 import { clearThreadSelection, getSelectedThreadIds, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { replaceAllThreads } from '../../stores/threads.svelte';
+import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
+import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
+import { getPreviousThreads, resetPreviousThreadsForTest } from '../../stores/assistantPastThreads.svelte';
 import { getPane } from '../../stores/panes.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { buildPane } from '../../../test/helpers/chat';
+import { noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   consumePendingGroupRename,
   resetThreadGroupsForTest,
@@ -27,7 +32,7 @@ import {
 } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -68,6 +73,11 @@ function visibleLabels(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('[role="menuitem"]'))
     .map((el) => el.textContent?.trim() ?? '')
     .filter((text) => text.length > 0);
+}
+
+/** The confirmation's Delete button, beside its Cancel. */
+function confirmButton(root: HTMLElement): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
 }
 
 describe('<ThreadContextMenu> single-row menu', () => {
@@ -111,22 +121,11 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(labels).toContain('Delete');
   });
 
-  it('hides Delete for child (discussion) threads — the parent owns the lifecycle', () => {
-    const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1' }));
-    const labels = visibleLabels(baseElement);
-    expect(labels).not.toContain('Delete');
-    // Archive is still offered (a child hides on its own), so the trailing
-    // rule stays for it; a child terminal has neither and no rule.
-    expect(labels).toContain('Archive Thread');
-    expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(1);
-  });
-
-  it('omits Archive Thread and the trailing rule for a child terminal thread', () => {
-    const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1', mode: 'terminal' }));
+  it('omits Archive Thread but keeps Delete for a terminal thread', () => {
+    const { baseElement } = renderMenu(makeThread({ mode: 'terminal' }));
     const labels = visibleLabels(baseElement);
     expect(labels).not.toContain('Archive Thread');
-    expect(labels).not.toContain('Delete');
-    expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(0);
+    expect(labels).toContain('Delete');
   });
 
   it('shows move-to-back and unpin controls for a front-burner thread', () => {
@@ -176,7 +175,7 @@ describe('<ThreadContextMenu> Archive Thread', () => {
 
   it('archives immediately and closes the menu when confirmArchive is off', async () => {
     await primeSettings({ confirmArchive: false });
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const onClose = vi.fn();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
@@ -203,7 +202,7 @@ describe('<ThreadContextMenu> Archive Thread', () => {
 
   it('confirms first when confirmArchive is on, archiving only after confirm', async () => {
     await primeSettings({ confirmArchive: true });
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const { getByRole } = renderMenu(makeThread({ id: 'arch-on' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Archive Thread' }));
     await tick();
@@ -297,7 +296,7 @@ describe('<ThreadContextMenu> without threads:operate', () => {
   });
 
   it('does not run the archive action from an inert row', async () => {
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const { baseElement } = render(ThreadContextMenu, {
       props: {
         thread: makeThread(),
@@ -348,7 +347,8 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   it('deletes immediately, without a confirm dialog, when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deletedId: string | null = null;
-    setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; return {}; });
 
     const { getByRole, queryByRole } = renderMenu(makeThread({ id: 'ctx-off' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
@@ -363,7 +363,8 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   it('confirms first when confirmDelete is on, deleting only after confirm', async () => {
     await primeSettings({ confirmDelete: true });
     let deletedId: string | null = null;
-    setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; return {}; });
 
     const { getByRole } = renderMenu(makeThread({ id: 'ctx-on' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
@@ -379,10 +380,38 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     expect(deletedId).toBe('ctx-on');
   });
 
+  // A computer that refuses deletes nothing there and keeps the selection;
+  // the menu's pane shows a thread the delete removed elsewhere, so the
+  // refusal is a toast, not that pane's error.
+  it('toasts a refused bulk delete and keeps the selection', async () => {
+    await primeSettings({ confirmDelete: false });
+    resetToastsForTest();
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async () => { throw new Error('delete refused'); });
+    const first = makeThread({ id: 'thread-1' });
+    replaceAllThreads([first, makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const pane = await buildPane(first, [], 'pane-bulk-delete');
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const { getByRole } = render(ThreadContextMenu, {
+      props: { thread: first, pane, anchor, open: true, onClose: () => {}, onRename: () => {}, isActive: true },
+    });
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await vi.waitFor(() => expect(getToasts().filter((t) => t.type === 'error').map((t) => t.message))
+      .toEqual(['Delete refused.']));
+    expect(getPane('pane-bulk-delete')?.generalError ?? null).toBeNull();
+    expect(getSelectedThreadIds()).toEqual(new Set(['thread-1', 'thread-2']));
+  });
+
   it('keeps bulk delete always-confirming even when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deleted = false;
-    setBindingMock('DeleteThread', async () => { deleted = true; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async () => { deleted = true; return {}; });
 
     // Two selected threads (one is the right-clicked row) flips the menu
     // into bulk mode. Bulk delete deliberately ignores confirmDelete — a
@@ -397,33 +426,216 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     expect(deleted).toBe(false);
   });
 
-  it('says how many terminals deleting a thread on a worktree closes', async () => {
+  // The confirmation says how many workers go with the thread
+  // (docs/specs/standing-agents.md, "Owned workers").
+  it('counts the workers a delete takes with the thread', async () => {
     await primeSettings({ confirmDelete: true });
-    setBindingMock('GitWorktreeStatus', async () => ({ path: '/tmp/wt', terminals: 3 }));
-
-    const { getByRole, findByText } = renderMenu(makeThread({
-      id: 'ctx-worktree',
-      projectId: 'project-1',
-      workspacePath: '/tmp/wt',
-      worktreePath: '/tmp/wt',
-    }));
-    await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
-
-    await findByText(/This action cannot be undone\. 3 terminals will close\./);
+    for (const [workers, sentence] of [
+      [3, 'Its 3 workers are deleted with it.'],
+      [1, 'Its worker is deleted with it.'],
+    ] as const) {
+      setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers }));
+      const view = renderMenu(makeThread({ id: `owner-${workers}` }));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+      const dialog = () => view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+      await waitFor(() => expect(dialog()?.textContent).toContain(
+        `This will permanently delete this thread and all its messages. This action cannot be undone. ${sentence}`,
+      ));
+      view.unmount();
+    }
   });
 
-  it('counts the terminals of each selected worktree in a bulk delete', async () => {
+  // Workers on other computers are not counted: only that computer knows
+  // which still belong to the thread.
+  it('says workers spawned on other computers are deleted there too, only when it spawned any', async () => {
+    await primeSettings({ confirmDelete: true });
+    for (const [dependents, sentence] of [
+      [{ workers: 0, remoteWorkers: true }, 'Workers it spawned on other computers are deleted there too.'],
+      [{ workers: 2, remoteWorkers: true }, 'Its 2 workers are deleted with it. Workers it spawned on other computers are deleted there too.'],
+    ] as const) {
+      setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, ...dependents }));
+      const view = renderMenu(makeThread({ id: `remote-owner-${dependents.workers}` }));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+      const dialog = () => view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+      await waitFor(() => expect(dialog()?.textContent).toContain(
+        `This will permanently delete this thread and all its messages. This action cannot be undone. ${sentence}`,
+      ));
+      view.unmount();
+    }
+    const counted = setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 1, remoteWorkers: false }));
+    const view = renderMenu(makeThread({ id: 'local-owner' }));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain('Its worker is deleted with it.'));
+    expect(counted).toHaveBeenCalledWith(['local-owner']);
+    expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('other computers');
+    view.unmount();
+  });
+
+  it('says workers the selection spawned on other computers are deleted there too in the bulk delete confirm', async () => {
     await primeSettings({ confirmDelete: false });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, remoteWorkers: true }));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'This will permanently delete 2 threads and all their messages. This action cannot be undone. Workers they spawned on other computers are deleted there too.',
+    ));
+  });
+
+  it('says nothing of workers when the thread has none, or is on a computer older than the read', async () => {
+    await primeSettings({ confirmDelete: true });
+    for (const read of [
+      async () => ({ pastThreads: 0, helpers: 0, workers: 0 }),
+      // v0.0.19 has no GetDeleteDependents: its delete takes no workers.
+      async () => { throw Object.assign(new Error('method not found'), { code: 'method_not_found' }); },
+    ]) {
+      const counted = setBindingMock('GetDeleteDependents', read);
+      const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+      const view = renderMenu(makeThread({ id: 'plain' }));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+      await waitFor(() => expect(counted).toHaveBeenCalledWith(['plain']));
+      await waitFor(() => expect(confirmButton(view.baseElement)?.disabled).toBe(false));
+      const text = view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent;
+      expect(text).not.toContain('worker');
+      expect(text).not.toContain('could not be checked');
+      await fireEvent.click(confirmButton(view.baseElement)!);
+      await waitFor(() => expect(remove).toHaveBeenCalledWith(['plain']));
+      view.unmount();
+    }
+  });
+
+  // Unknown is not none: until the read answers, the delete cannot be
+  // confirmed, whatever it would take on another computer.
+  it('cannot be confirmed before it knows what the delete takes', async () => {
+    await primeSettings({ confirmDelete: true });
+    let answer: (counts: object) => void = () => {};
+    setBindingMock('GetDeleteDependents', () => new Promise((resolve) => { answer = resolve; }));
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    const view = renderMenu(makeThread({ id: 'early' }));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+    await tick();
+    const confirm = confirmButton(view.baseElement)!;
+    expect(confirm.disabled).toBe(true);
+    await fireEvent.click(confirm);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(remove).not.toHaveBeenCalled();
+    answer({ pastThreads: 0, helpers: 0, workers: 0, remoteWorkers: true });
+    await waitFor(() => expect(confirmButton(view.baseElement)?.disabled).toBe(false));
+    expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent)
+      .toContain('Workers it spawned on other computers are deleted there too.');
+    await fireEvent.click(confirmButton(view.baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['early']));
+  });
+
+  it('cannot confirm a bulk delete before it knows what the delete takes, and says when the read failed', async () => {
+    await primeSettings({ confirmDelete: false });
+    let fail: (err: Error) => void = () => {};
+    setBindingMock('GetDeleteDependents', () => new Promise((_resolve, reject) => { fail = reject; }));
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await tick();
+    expect(confirmButton(baseElement)?.disabled).toBe(true);
+    await fireEvent.click(confirmButton(baseElement)!);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(remove).not.toHaveBeenCalled();
+    fail(new Error('database is locked'));
+    await waitFor(() => expect(confirmButton(baseElement)?.disabled).toBe(false));
+    expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'This will permanently delete 2 threads and all their messages. This action cannot be undone. Their sub-threads could not be checked; any they have are deleted too, here and on other computers.',
+    );
+    await fireEvent.click(confirmButton(baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['thread-1', 'thread-2']));
+  });
+
+  it('says the sub-threads could not be checked when the read fails, and can still be confirmed', async () => {
+    await primeSettings({ confirmDelete: true });
+    setBindingMock('GetDeleteDependents', async () => { throw new Error('database is locked'); });
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    const view = renderMenu(makeThread({ id: 'unchecked' }));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'This will permanently delete this thread and all its messages. This action cannot be undone. Its sub-threads could not be checked; any it has are deleted too, here and on other computers.',
+    ));
+    expect(confirmButton(view.baseElement)?.disabled).toBe(false);
+    await fireEvent.click(confirmButton(view.baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['unchecked']));
+  });
+
+  // v0.0.19 has neither GetDeleteDependents nor DeleteThreads: the bulk
+  // confirmation knows at once the delete takes nothing more, and the
+  // threads go one at a time through DeleteThread.
+  it('deletes a selection on a computer on v0.0.19 one thread at a time', async () => {
+    await primeSettings({ confirmDelete: false });
+    answerAsV0019();
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(confirmButton(baseElement)?.disabled).toBe(false));
+    expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('could not be checked');
+    await fireEvent.click(confirmButton(baseElement)!);
+    await waitFor(() => expect(getBindingMock('DeleteThread')!.mock.calls).toEqual([['thread-1'], ['thread-2']]));
+  });
+
+  // The selection is one delete on its computer: a worker under two of the
+  // threads counts once, as the backend reads the set.
+  it('counts the workers of the selected threads as one set in the bulk delete confirm', async () => {
+    await primeSettings({ confirmDelete: false });
+    const counted = setBindingMock('GetDeleteDependents', async (ids: string[]) => ({
+      pastThreads: 0, helpers: 0, workers: ids.length === 2 ? 3 : 0,
+    }));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'Their 3 workers are deleted with them.',
+    ));
+    expect(counted).toHaveBeenCalledWith(['thread-1', 'thread-2']);
+  });
+
+  it('deletes the selection as one delete on its computer', async () => {
+    await primeSettings({ confirmDelete: false });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(confirmButton(baseElement)?.disabled).toBe(false));
+    await fireEvent.click(confirmButton(baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    expect(remove).toHaveBeenCalledWith(['thread-1', 'thread-2']);
+  });
+
+  // The delete keeps the worktrees, so neither confirmation says anything
+  // of them or reads anything about them.
+  it('says nothing of the worktrees of the threads it deletes', async () => {
+    await primeSettings({ confirmDelete: true });
     const first = makeThread({ id: 'thread-1', projectId: 'project-1', workspacePath: '/tmp/wt-a', worktreePath: '/tmp/wt-a' });
     const second = makeThread({ id: 'thread-2', projectId: 'project-1', workspacePath: '/tmp/wt-b', worktreePath: '/tmp/wt-b' });
     replaceAllThreads([first, second]);
-    setBindingMock('GitWorktreeStatus', async (_ws: unknown, path: string) => ({ path, terminals: 1 }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const status = setBindingMock('GitWorktreeStatus', vi.fn(async () => ({ terminals: 3 })));
+
+    const single = renderMenu(first);
+    await fireEvent.click(single.getByRole('menuitem', { name: 'Delete' }));
+    expect((await single.findByText(/This action cannot be undone\./)).textContent).toBe(
+      'This will permanently delete this thread and all its messages. This action cannot be undone.',
+    );
+    single.unmount();
+
     setThreadSelection(['thread-1', 'thread-2']);
-
-    const { getByRole, findByText } = renderMenu(first);
-    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
-
-    await findByText(/This action cannot be undone\. 2 terminals will close\./);
+    const bulk = renderMenu(first);
+    await fireEvent.click(bulk.getByRole('menuitem', { name: 'Delete (2)' }));
+    expect((await bulk.findByText(/This action cannot be undone\./)).textContent).toBe(
+      'This will permanently delete 2 threads and all their messages. This action cannot be undone.',
+    );
+    expect(status).not.toHaveBeenCalled();
   });
 });
 
@@ -589,10 +801,8 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
 
 // ── Thread groups ────────────────────────────────────────────────────────
 //
-// "Move to Group" is a TOP-LEVEL row's item: a discussion tree joins a group
-// as a unit, so offering it on a child would promise a move the backend does
-// not make. In bulk it needs one shared project, because a group belongs to
-// one. And a grouped row shows no pin items at all — the group carries the
+// "Move to Group" in bulk needs one shared project, because a group belongs
+// to one. And a grouped row shows no pin items at all — the group carries the
 // one pin the row is allowed.
 
 describe('<ThreadContextMenu> group items', () => {
@@ -646,16 +856,6 @@ describe('<ThreadContextMenu> group items', () => {
     // Placed after Mark Unread and before the pin items.
     expect(labels.indexOf('Move to Group')).toBe(labels.indexOf('Mark Unread') + 1);
     expect(labels.indexOf('Move to Group')).toBeLessThan(labels.indexOf('Pin Thread'));
-  });
-
-  it('hides both group items on a discussion child row', () => {
-    const { baseElement } = renderMenu(makeThread({
-      projectId: 'project-1',
-      parentThreadId: 'parent',
-    }));
-    const labels = groupMenuLabels(baseElement);
-    expect(labels).not.toContain('Move to Group');
-    expect(labels).not.toContain('Remove from Group');
   });
 
   it('hides both group items on a thread with no project', () => {
@@ -794,39 +994,6 @@ describe('<ThreadContextMenu> group items', () => {
     expect(setGroup).toHaveBeenCalledWith(['a'], '');
   });
 
-  it('leaves discussion children out of a bulk move — they follow their root', async () => {
-    replaceAllThreads([
-      makeThread({ id: 'root', projectId: 'project-1' }),
-      makeThread({ id: 'kid', projectId: 'project-1', parentThreadId: 'root' }),
-    ]);
-    setThreadSelection(['root', 'kid']);
-    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    const { baseElement } = renderMenu(makeThread({ id: 'root', projectId: 'project-1' }));
-    await openSubmenu(baseElement);
-
-    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
-    const zebra = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
-      .find((el) => el.textContent?.includes('Zebra')) as HTMLElement;
-    await fireEvent.click(zebra);
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-
-    expect(setGroup).toHaveBeenCalledWith(['root'], 'g-zebra');
-  });
-
-  it('hides the group items when a bulk selection is nothing but children', () => {
-    replaceAllThreads([
-      makeThread({ id: 'k1', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
-      makeThread({ id: 'k2', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
-    ]);
-    setThreadSelection(['k1', 'k2']);
-    const { baseElement } = renderMenu(
-      makeThread({ id: 'k1', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
-    );
-    const labels = groupMenuLabels(baseElement);
-    expect(labels).not.toContain('Move to Group');
-    expect(labels).not.toContain('Remove from Group');
-  });
-
   it('expands the project before New Group…, so the new row can open its rename', async () => {
     setBindingMock('CreateThreadGroup', async (projectId: string, name: string) => ({
       id: 'g-new',
@@ -866,5 +1033,276 @@ describe('<ThreadContextMenu> group items', () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
     expect(setGroup).toHaveBeenCalledWith(['a', 'b'], 'g-zebra');
+  });
+});
+
+// An assistant's row (docs/specs/standing-agents.md, "Sidebar") adds New
+// Thread, Same Assistant, Projects, Previous Threads and Loops and Watches,
+// and drops the pin and group items. A thread another local thread spawned
+// into a project offers Remove from Sidebar. No thread offers promotion.
+
+describe('<ThreadContextMenu> standing agent', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadSelection();
+    resetSidebarForTest();
+    resetThreadGroupsForTest();
+    resetPreviousThreadsForTest();
+    upsertThreadGroup({ id: 'g-alpha', projectId: 'project-1', name: 'Alpha', createdAt: 0, updatedAt: 0 });
+  });
+
+  function labelsOf(el: HTMLElement): string[] {
+    return visibleLabels(el).map((text) => text.replace(/[▸\s]+$/u, ''));
+  }
+
+  function item(el: HTMLElement, label: string): HTMLElement {
+    const node = Array.from(el.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent?.trim().replace(/[▸\s]+$/u, '') === label);
+    if (!node) throw new Error(`${label} not rendered`);
+    return node as HTMLElement;
+  }
+
+  function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean } = {}) {
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    const pane = createThreadPane();
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const view = render(ThreadContextMenu, {
+      props: {
+        thread, pane, anchor, open: true, onClose: () => {}, onRename: () => {}, isActive: false, ...extra,
+      },
+    });
+    return { ...view, pane };
+  }
+
+  it('replaces the pin and group items on an agent row with the agent items, in order', () => {
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', agentId: 'agent-1', pinnedAt: 1, pinGroup: 0 }),
+      { agentBound: true },
+    );
+    expect(labelsOf(baseElement)).toEqual([
+      'Open in New Pane',
+      'Rename Thread',
+      'New Thread, Same Assistant',
+      'Projects…',
+      'Previous Threads…',
+      'Loops and Watches',
+      'Fork Thread',
+      'Mark Unread',
+      'Copy Path',
+      'Copy Thread ID',
+      'Archive Thread',
+      'Delete',
+    ]);
+  });
+
+  // docs/specs/standing-agents.md ruling 36: a placed worker's row takes it
+  // back out of the sidebar; its group items stay as they are.
+  it.each([
+    ['standalone', { placement: 'standalone' as const }, ['Move to Group', 'Remove from Sidebar'], ['Remove from Group']],
+    ['grouped', { placement: 'grouped' as const, groupId: 'g1' }, ['Move to Group', 'Remove from Group', 'Remove from Sidebar'], []],
+  ])('offers a %s thread a local thread spawned Remove from Sidebar and keeps its pin items', (_, overrides, present, absent) => {
+    const { baseElement } = renderAgentMenu(makeThread({ projectId: 'project-1', spawnedByThreadId: 'spawner', ...overrides }));
+    const labels = labelsOf(baseElement);
+    expect(labels).toContain('Pin Thread');
+    expect(labels).not.toContain('New Thread, Same Assistant');
+    for (const label of present) expect(labels).toContain(label);
+    for (const label of absent) expect(labels).not.toContain(label);
+    for (const label of ['Make Standalone', 'Previous Threads…']) expect(labels).not.toContain(label);
+    expect(labels.some((label) => label.startsWith('Nest Under'))).toBe(false);
+  });
+
+  // A thread a paired computer's thread spawned here is that thread's worker
+  // too; Show in Sidebar gave it its row here.
+  it('offers a thread a thread on another computer spawned Remove from Sidebar', () => {
+    const { baseElement } = renderAgentMenu(makeThread({ projectId: 'project-1', spawnedByComputerId: 'computer-laptop', placement: 'standalone' }));
+    expect(labelsOf(baseElement)).toContain('Remove from Sidebar');
+  });
+
+  it.each([
+    ['a thread nobody spawned', makeThread({ projectId: 'project-1', placement: 'standalone' })],
+    ['a thread outside every project', makeThread({ projectId: '', spawnedByThreadId: 'spawner', placement: 'standalone' })],
+    ['an assistant', makeThread({ projectId: 'project-1', agentId: 'agent-1', spawnedByThreadId: 'creator' })],
+  ])('offers %s no Remove from Sidebar', (_, thread) => {
+    const view = renderAgentMenu(thread, { agentBound: Boolean(thread.agentId) });
+    expect(labelsOf(view.baseElement)).not.toContain('Remove from Sidebar');
+  });
+
+  it('offers no Remove from Sidebar in a bulk menu', () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1', spawnedByThreadId: 'spawner' }),
+      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'spawner' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1', spawnedByThreadId: 'spawner' }));
+    expect(labelsOf(baseElement)).not.toContain('Remove from Sidebar');
+  });
+
+  it('Remove from Sidebar makes the thread owned through the binding, and the row leaves the sidebar unpinned', async () => {
+    replaceAllThreads([
+      makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'spawner', placement: 'grouped', groupId: 'g-alpha', pinnedAt: 5 }),
+    ]);
+    const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => [
+      makeThread({ id: ids[0], projectId: 'project-1', spawnedByThreadId: 'spawner', placement: placement as 'owned' }),
+    ]));
+    const { baseElement } = renderAgentMenu(getThreadById('child')!);
+    await fireEvent.click(item(baseElement, 'Remove from Sidebar'));
+    await waitFor(() => expect(place).toHaveBeenCalledWith(['child'], 'owned'));
+    await waitFor(() => {
+      const row = getThreadById('child');
+      expect(row?.placement).toBe('owned');
+      expect(row?.groupId ?? '').toBe('');
+      expect(row?.pinnedAt ?? null).toBeNull();
+    });
+  });
+
+  it('shows a refused Remove from Sidebar to the user and leaves the row', async () => {
+    replaceAllThreads([makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'spawner', placement: 'standalone' })]);
+    setBindingMock('SetThreadPlacement', async () => {
+      throw new Error('store: the thread was not spawned by a thread on this computer');
+    });
+    const { baseElement } = renderAgentMenu(getThreadById('child')!);
+    await fireEvent.click(item(baseElement, 'Remove from Sidebar'));
+    await waitFor(() => expect(getToasts().some((toast) => toast.type === 'error')).toBe(true));
+    expect(getThreadById('child')?.placement).toBe('standalone');
+  });
+
+  it('Previous Threads… opens the assistant\'s dialog from its computer, held by the pane that asked', async () => {
+    noteThread('thread-1', HOME_BACKEND);
+    setBindingMock('ListAssistantPastThreads', async () => ({ threads: [] }));
+    const { baseElement, pane } = renderAgentMenu(makeThread({ projectId: '', agentId: 'agent-1' }), { agentBound: true });
+    await fireEvent.click(item(baseElement, 'Previous Threads…'));
+    expect(getPreviousThreads()?.opening).toMatchObject({ agentId: 'agent-1', backend: HOME_BACKEND, targetPane: pane });
+  });
+
+  it('New Thread, Same Assistant starts the next thread through the binding', async () => {
+    const next = setBindingMock('StartNextAssistantThread', async () => makeThread({ id: 'thread-2', agentId: 'agent-1' }));
+    const { baseElement } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'New Thread, Same Assistant'));
+    await waitFor(() => expect(next).toHaveBeenCalledWith('thread-1'));
+  });
+
+  it('Projects… opens the assistant\'s Projects dialog', async () => {
+    closeAssistantProjectsDialog();
+    const thread = makeThread({ projectId: '', agentId: 'agent-1' });
+    const { baseElement } = renderAgentMenu(thread);
+    await fireEvent.click(item(baseElement, 'Projects…'));
+    expect(getAssistantProjectsAgentId()).toBe('agent-1');
+    closeAssistantProjectsDialog();
+  });
+
+  it('disables New Thread, Same Assistant and Projects… on a device without threads:autonomy', async () => {
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    try {
+      const { baseElement } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
+      for (const label of ['New Thread, Same Assistant', 'Projects…']) {
+        expect(item(baseElement, label).getAttribute('aria-disabled')).toBe('true');
+        expect(item(baseElement, label).getAttribute('title')).toBe('Not granted to this device');
+      }
+      expect(item(baseElement, 'Rename Thread').getAttribute('aria-disabled')).not.toBe('true');
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
+  it("confirms an assistant's delete with confirmDelete off, naming its home, and deletes only after it", async () => {
+    setBindingMock('GetSettings', async () => ({ confirmDelete: false }));
+    await loadSettings();
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 0 }));
+    const remove = setBindingMock('DeleteThreads', async () => ({}));
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await tick();
+    const dialog = () => baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+    expect(dialog()?.textContent).toContain('Delete Assistant');
+    await waitFor(() => expect(dialog()?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with its 2 past threads and 1 helper, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
+    expect(remove).not.toHaveBeenCalled();
+    // The menu's own Delete item is a button too: the dialog's is the one
+    // that is no menu item.
+    const confirm = Array.from(baseElement.querySelectorAll('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
+    if (!confirm) throw new Error('confirm button not rendered');
+    await fireEvent.click(confirm);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['thread-1']));
+  });
+
+  it("still says an assistant's threads go with it when they could not be counted", async () => {
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetDeleteDependents', async () => {
+      throw new Error('database is locked');
+    });
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with every thread that lives under it, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
+  });
+
+  it("counts an assistant's workers beside its past threads and helpers", async () => {
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 3 }));
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with its 2 past threads, 1 helper and 3 workers, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
+  });
+
+  it("says an assistant's workers on other computers are deleted there too", async () => {
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 1, helpers: 0, workers: 0, remoteWorkers: true }));
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with its 1 past thread, and its home folder /config/agents/agent-1 is removed with everything in it. Workers it spawned on other computers are deleted there too.',
+    ));
+  });
+
+  it("names every selected assistant's home in the bulk delete confirm", async () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1', title: 'Ops', agentId: 'agent-a' }),
+      makeThread({ id: 'b', projectId: 'project-1', title: 'Plain' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-a', threadId: 'a', home: '/config/agents/agent-a' }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    await fireEvent.click(item(baseElement, 'Delete (2)'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, and its home folder /config/agents/agent-a is removed with everything in it.',
+    ));
+  });
+
+  it('hides the group items in bulk when the selection holds an agent, and keeps them for a spawned thread', () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1' }),
+      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'agent-1' }),
+      makeThread({ id: 'c', projectId: 'project-1', agentId: 'agent-c' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const spawned = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    expect(labelsOf(spawned.baseElement)).toContain('Move to Group');
+    spawned.unmount();
+    setThreadSelection(['a', 'c']);
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    const labels = labelsOf(baseElement);
+    expect(labels).toContain('Archive (2)');
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+  });
+
+  it('Loops and Watches opens the thread with its background rail open', async () => {
+    setBindingMock('GetThread', async () => makeThread({ agentId: 'agent-1' }));
+    setBindingMock('GetThreadDisplayState', async () => null);
+    const { baseElement, pane } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Loops and Watches'));
+    // The rail opens once the thread is mounted, after the pane's switch
+    // has read the thread's own rail preferences.
+    await waitFor(() => expect(pane.activityRailBackgroundOpen).toBe(true));
+    expect(pane.threadId).toBe('thread-1');
   });
 });

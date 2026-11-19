@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,7 +128,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		row := broadcasts.expectRow(triage.ThreadActionUnlisted, thread.ID)
@@ -135,7 +137,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		}
 
 		broadcasts.reset()
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread(repeat): %v", err)
 		}
 		broadcasts.expectSilence("re-archiving an archived thread")
@@ -175,7 +177,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 	t.Run("unarchiving a never-sent thread nothing makes real is full", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		broadcasts := captureThreadBroadcasts(t, app)
@@ -193,7 +195,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		if err := app.store.InsertItem(store.Item{ID: thread.ID + "-sent", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "sent"}); err != nil {
 			t.Fatalf("InsertItem: %v", err)
 		}
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		broadcasts := captureThreadBroadcasts(t, app)
@@ -304,6 +306,54 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		broadcasts.expectSilence("re-reading a thread whose marker is already current")
 	})
 
+	t.Run("mark all read", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		first := mustCreateBroadcastThread(t, app)
+		second := mustCreateBroadcastThread(t, app)
+		already := mustCreateBroadcastThread(t, app)
+		for _, thread := range []store.Thread{first, second, already} {
+			mustCompleteBroadcastTurn(t, app, thread.ID)
+		}
+		for _, thread := range []store.Thread{first, second} {
+			if err := app.MarkThreadUnread(thread.ID); err != nil {
+				t.Fatalf("MarkThreadUnread: %v", err)
+			}
+		}
+		if err := app.MarkThreadRead(already.ID); err != nil {
+			t.Fatalf("MarkThreadRead: %v", err)
+		}
+		broadcasts := captureThreadBroadcasts(t, app)
+
+		// A gone thread fails alone; the rest are still marked.
+		rows, err := app.MarkThreadsRead([]string{first.ID, "gone-thread", second.ID, already.ID})
+		if err == nil || !strings.Contains(err.Error(), "gone-thread") {
+			t.Fatalf("MarkThreadsRead error = %v, want one naming the gone thread", err)
+		}
+		changed := []string{first.ID, second.ID}
+		slices.Sort(changed)
+		if len(rows) != 2 || rows[0].ID != changed[0] || rows[1].ID != changed[1] {
+			t.Fatalf("MarkThreadsRead rows = %+v, want the two it changed, in id order", rows)
+		}
+		if len(broadcasts.events) != 2 {
+			t.Fatalf("emitted %d thread:updated events, want one per changed row: %+v", len(broadcasts.events), broadcasts.events)
+		}
+		for i, want := range changed {
+			frame := broadcasts.events[i]
+			if frame.Action != triage.ThreadActionFull || frame.Thread == nil || frame.Thread.ID != want {
+				t.Fatalf("frame %d = %+v, want the full row of %s", i, frame, want)
+			}
+			if frame.Thread.LastReadAt == nil || frame.Thread.LatestTurnCompletedAt == nil || *frame.Thread.LastReadAt < *frame.Thread.LatestTurnCompletedAt {
+				t.Fatalf("frame %d row is still unread: %+v", i, frame.Thread)
+			}
+		}
+
+		broadcasts.reset()
+		if rows, err := app.MarkThreadsRead([]string{first.ID, second.ID}); err != nil || len(rows) != 0 {
+			t.Fatalf("MarkThreadsRead(repeat) = %+v, %v; want nothing changed", rows, err)
+		}
+		broadcasts.expectSilence("marking read threads read")
+	})
+
 	t.Run("reasoning effort", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
@@ -380,21 +430,12 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		broadcasts.expectSilence("re-selecting the model a thread already carries")
 	})
 
-	t.Run("delete announces every dropped row", func(t *testing.T) {
+	t.Run("delete announces the dropped row", func(t *testing.T) {
 		app := newTestAppWithStore(t)
-		parent := mustCreateBroadcastThread(t, app)
-		child := mustCreateBroadcastThread(t, app)
-		stored, err := app.store.GetThread(child.ID)
-		if err != nil {
-			t.Fatalf("GetThread: %v", err)
-		}
-		stored.ParentThreadID = parent.ID
-		if err := app.store.UpdateThread(stored); err != nil {
-			t.Fatalf("UpdateThread: %v", err)
-		}
+		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		if err := app.DeleteThread(parent.ID); err != nil {
+		if err := app.deleteThread(thread.ID); err != nil {
 			t.Fatalf("DeleteThread: %v", err)
 		}
 		announced := map[string]bool{}
@@ -407,14 +448,12 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 			}
 			announced[evt.ID] = true
 		}
-		for _, id := range []string{parent.ID, child.ID} {
-			if !announced[id] {
-				t.Fatalf("no deleted frame for %s; got %+v", id, broadcasts.events)
-			}
+		if !announced[thread.ID] {
+			t.Fatalf("no deleted frame for %s; got %+v", thread.ID, broadcasts.events)
 		}
 
 		broadcasts.reset()
-		if err := app.DeleteThread(parent.ID); err != nil {
+		if err := app.deleteThread(thread.ID); err != nil {
 			t.Fatalf("DeleteThread(repeat): %v", err)
 		}
 		broadcasts.expectSilence("deleting a thread that is already gone")
@@ -610,8 +649,10 @@ func TestImportedLineageUpdatesExistingRowsWithoutRelistingThem(t *testing.T) {
 	parent := mustCreateBroadcastThread(t, app)
 	child := mustCreateBroadcastThread(t, app)
 	child.ForkedFromThreadID = parent.ID
-	child.Archived = true
 	if err := app.store.UpdateThread(child); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := app.store.ArchiveThread(child.ID); err != nil {
 		t.Fatal(err)
 	}
 	broadcasts := captureThreadBroadcasts(t, app)

@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
@@ -22,6 +23,7 @@ import (
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
 
@@ -111,13 +113,18 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread := store.Thread{ID: uuid.NewString(), ProjectID: sourceProject.ID, Title: "Portable history", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), SessionRef: uuid.NewString(), WorkspacePath: sourcePath, CreatedAt: 1, UpdatedAt: 1}
+	thread := store.Thread{ID: uuid.NewString(), ProjectID: sourceProject.ID, Title: "Portable history", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), SessionRef: uuid.NewString(), WorkspacePath: sourcePath, CreatedAt: 1, UpdatedAt: 1,
+		SpawnInstructions: "Review only.", SpawnLevel: 2}
 	if err := source.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.store.InsertItem(store.Item{ID: "message", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "hello native history", Meta: "{}"}); err != nil {
 		t.Fatal(err)
 	}
+	// The work the thread did here: a move carries it, a copy starts at
+	// zero.
+	transferWork(t, source.store, thread.ID, "call-a", 1, 500, 60_000)
+	sourceTally := store.ThreadTally{ToolCalls: 1, Tokens: 500, RuntimeMs: 60_000}
 	projects, err := source.claudeProjectsDir()
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +170,17 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	}
 	if again, err := destination.CreateThreadTransferOffer(ctx, intent, destProject.ID, workspace, "copied-history"); err != nil || again != offer {
 		t.Fatalf("lost offer reply retry: %+v %v", again, err)
+	}
+	if !offer.SpawnInstructions {
+		t.Fatal("the destination's offer does not say it keeps spawn instructions")
+	}
+	// A destination from before spawn instructions would drop them, so the
+	// source refuses it before anything is uploaded.
+	older := offer
+	older.SpawnInstructions = false
+	_, err = source.BindThreadTransferDestination(ctx, thread.ID, older)
+	if _, message, public := errorsx.PublicDetails(err); !public || !strings.Contains(message, "runs an older version that would drop the instructions") {
+		t.Fatalf("binding a destination that predates spawn instructions = %v", err)
 	}
 	frontend, cancel := context.WithCancel(ctx)
 	if _, err := source.BindThreadTransferDestination(frontend, thread.ID, offer); err != nil {
@@ -211,6 +229,12 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if copied.WorkspacePath != workspace || copied.ProjectID != destProject.ID {
 		t.Fatalf("wrong execution target: %+v", copied)
 	}
+	if want := map[string]store.ThreadTally{"copy": {}, "move": sourceTally}[kind]; transferTally(t, destination.store, copied.ID) != want {
+		t.Fatalf("%s's tallies %+v; want %+v", kind, transferTally(t, destination.store, copied.ID), want)
+	}
+	if copied.SpawnInstructions != "Review only." || copied.SpawnLevel != 0 {
+		t.Fatalf("the transferred thread keeps instructions %q and level %d; want the instructions and no level", copied.SpawnInstructions, copied.SpawnLevel)
+	}
 	if err := source.store.CheckThreadExecutionAccess(thread); (err != nil) != (kind == "move") {
 		t.Fatalf("original blocked after copy: %v", err)
 	}
@@ -255,10 +279,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if !fork {
 			// Cleanup removes only the old local cache. A later return can
 			// reconstruct it without reviving the retired native identity.
-			unlock := source.threadLocks().Lock(thread.ID)
-			err := source.deleteThreadTreeLocked(thread.ID)
-			unlock()
-			if err != nil {
+			if err := source.deleteThreadPaced(thread.ID, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := source.store.CheckThreadExecutionAccess(thread); err == nil {
@@ -274,6 +295,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if err := destination.store.InsertItem(store.Item{ID: "second-message", ThreadID: copied.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "continued on B", Meta: "{}", ItemIndex: 1}); err != nil {
 			t.Fatal(err)
 		}
+		transferWork(t, destination.store, copied.ID, "call-b", 2, 30, 10_000)
 		originalID, _ := source.backendIdentity()
 		returnOp := uuid.NewString()
 		back, err := destination.BeginThreadTransfer(ctx, copied.ID, returnOp, originalID, "move", false)
@@ -298,6 +320,9 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if err := source.store.CheckThreadExecutionAccess(returned); err != nil {
 			t.Fatalf("returned conversation blocked: %v", err)
 		}
+		if got, want := transferTally(t, source.store, thread.ID), (store.ThreadTally{ToolCalls: 2, Tokens: 530, RuntimeMs: 70_000}); got != want {
+			t.Fatalf("returned tallies %+v; want %+v, the work done on both computers once", got, want)
+		}
 		if err := destination.store.CheckThreadExecutionAccess(copied); err == nil {
 			t.Fatal("previous owner remained runnable after return")
 		}
@@ -317,6 +342,35 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if strings.Contains(string(encoded), offer.Grant) || strings.Contains(string(encoded), intent.ActivationHash) {
 		t.Fatal("public status leaked authorization material")
 	}
+}
+
+// transferWork records, as the thread's own writers do, one top-level tool
+// call with id call in turn index, its own spend of tokens, and that turn
+// running ms.
+func transferWork(t *testing.T, s *store.Store, threadID, call string, index int, tokens, ms int64) {
+	t.Helper()
+	turnID := threadID + ":" + call
+	if err := s.InsertTurn(store.Turn{TurnID: turnID, ThreadID: threadID, TurnIndex: index, StartedAt: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertItem(store.Item{ID: call, ThreadID: threadID, TurnIndex: index, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "Ran a command", Meta: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendUsageAndReconcile("transfer-"+call, nil, store.OwnSpend{ThreadID: threadID, Tokens: tokens}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnCompleted(turnID, 1_000+ms, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func transferTally(t *testing.T, s *store.Store, threadID string) store.ThreadTally {
+	t.Helper()
+	got, err := s.ThreadTallies([]string{threadID}, time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got[threadID]
 }
 
 // awaitTransferComplete waits for both sides of one transfer to complete.
@@ -376,6 +430,93 @@ func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bo
 	row, _ := a.store.GetThreadTransfer(id)
 	t.Fatalf("timed out awaiting %s: %+v", phase, row)
 	return row
+}
+
+func TestAThreadOutsideEveryProjectTransfersWithoutAWorkspace(t *testing.T) {
+	remotetest.Require(t)
+	source, destination := transferTestBackend(t), transferTestBackend(t)
+	ctx := context.Background()
+	// An assistant's thread runs in its home, which stays on this computer.
+	thread := store.Thread{ID: uuid.NewString(), Title: "Ops", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), WorkspacePath: t.TempDir(), CreatedAt: 1, UpdatedAt: 1}
+	if err := source.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	destinationID, _ := destination.backendIdentity()
+	refused := uuid.NewString()
+	_, err := source.BeginThreadTransfer(ctx, thread.ID, refused, destinationID, "move", true)
+	requireDeclinedTransfer(t, err, "This conversation has no project workspace to include. Transfer it without workspace changes.")
+	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused transfer left a row: %v", err)
+	}
+	if _, err := source.BeginThreadTransfer(ctx, thread.ID, uuid.NewString(), destinationID, "move", false); err != nil {
+		t.Fatalf("a transfer without the workspace: %v", err)
+	}
+}
+
+// requireDeclinedTransfer checks that a begin's refusal reaches the person
+// as message under method_error, the code the transfer dialog reopens its
+// choices on.
+func requireDeclinedTransfer(t *testing.T, err error, message string) {
+	t.Helper()
+	code, text, ok := errorsx.PublicDetails(err)
+	if !ok || code != transport.ErrCodeMethodError || text != message {
+		t.Fatalf("refusal = %v (public %v, code %q, message %q), want method_error %q", err, ok, code, text, message)
+	}
+}
+
+// An assistant stays on this computer, so its current thread does not move:
+// the begin refuses before it cancels the thread's loops, and leaves no
+// transfer. A copy of it, and a move of its past thread or helper, go ahead.
+func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
+	remotetest.Require(t)
+	source, destination := transferTestBackend(t), transferTestBackend(t)
+	ctx := context.Background()
+	home := t.TempDir()
+	thread := func(id, title, helperOf string) {
+		t.Helper()
+		if err := source.store.CreateThread(store.Thread{ID: id, Title: title, Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired),
+			WorkspacePath: home, HelperOfAgentID: helperOf, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	thread("past", "Ops", "")
+	if err := source.store.CreateStandingAgent(store.StandingAgent{ID: "ops", ThreadID: "past", Home: home, CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	thread("current", "Ops", "")
+	if _, err := source.store.HandOffAssistant("past", "current", 2); err != nil {
+		t.Fatal(err)
+	}
+	thread("helper", "Research", "ops")
+	if _, err := source.store.RegisterAgentWake(store.AgentWake{ID: "wake-beat", ThreadID: "current", Kind: store.AgentWakeLoop, Label: "beat",
+		IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	destinationID, _ := destination.backendIdentity()
+
+	refused := uuid.NewString()
+	_, err := source.BeginThreadTransfer(ctx, "current", refused, destinationID, "move", false)
+	if !errors.Is(err, errAssistantStays) {
+		t.Fatalf("moving an assistant's current thread = %v, want %v", err, errAssistantStays)
+	}
+	requireDeclinedTransfer(t, err, "This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.")
+	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused move left a transfer: %v", err)
+	}
+	if _, found, err := source.store.GetStandingAgent("current"); err != nil || !found {
+		t.Fatalf("the record after the refusal = %v %v", found, err)
+	}
+	if wake, found, err := source.store.GetAgentWake("wake-beat"); err != nil || !found || wake.State != store.AgentWakeArmed {
+		t.Fatalf("the loop after the refusal = %+v %v %v, want it armed", wake, found, err)
+	}
+	if _, err := source.BeginThreadTransfer(ctx, "current", uuid.NewString(), destinationID, "copy", false); err != nil {
+		t.Fatalf("copying an assistant's current thread: %v", err)
+	}
+	for _, id := range []string{"past", "helper"} {
+		if _, err := source.BeginThreadTransfer(ctx, id, uuid.NewString(), destinationID, "move", false); err != nil {
+			t.Fatalf("moving the assistant's %s thread: %v", id, err)
+		}
+	}
 }
 
 // TestPointerForkTransferReadsThroughItsDeletedSource: the export of a
@@ -453,7 +594,7 @@ func TestPointerForkTransferReadsThroughItsDeletedSource(t *testing.T) {
 	if len(before) != 601 {
 		t.Fatalf("the fork reads %d rows, want the origin's 600 and its own", len(before))
 	}
-	if err := source.DeleteThread(origin.ID); err != nil {
+	if err := source.deleteThread(origin.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := forkIDs(); !slices.Equal(got, before) {

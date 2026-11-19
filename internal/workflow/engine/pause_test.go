@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -529,4 +530,127 @@ func TestPauseReleasesAHeldStartForAWaitingPhase(t *testing.T) {
 		t.Fatalf("runner starts after the holder finished = %+v, want the paused run left alone", starts)
 	}
 	h.requireNoHeldResources(t)
+}
+
+// A pause names the threads of every member of the tree it reached once the
+// tree is paused: a running member, a member already parked, and a running
+// child beneath a parked root.
+func TestPauseItemMembersNamesEveryMemberThePauseReached(t *testing.T) {
+	h := newCallHarness(t, defaultCallWorkflows(), nil)
+	parent := startCaller(t, h)
+	child := h.callChild(t, parent, "audit", 1)
+	seedThread(t, h.store, "child-thread")
+	if err := h.store.AttachWorkItemPhaseRun(child.ID, "work", 1, "child-thread", "/tmp/child.md"); err != nil {
+		t.Fatal(err)
+	}
+	members := func(step string) {
+		t.Helper()
+		got, err := h.engine.PauseItemMembers(parent)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if !slices.Equal(got, []string{"child-thread"}) {
+			t.Fatalf("%s: members = %q, want the child's thread", step, got)
+		}
+		requireItemState(t, h.store, parent, StateNeedsHuman, ReasonPaused)
+		requireItemState(t, h.store, child.ID, StateNeedsHuman, ReasonPaused)
+	}
+	members("a running tree")
+	members("a tree already paused")
+
+	if err := h.engine.ResumeItem(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonPaused)
+	requireItemState(t, h.store, child.ID, StateRunning, "")
+	members("a running child beneath a parked root")
+}
+
+// threeLevelTree starts caller -> mid -> leaf, mid calling leaf from its one
+// call phase, and returns the three runs. leaf runs one phase: an agent's on
+// leaf-thread, or a tool's when tool is set.
+func threeLevelTree(t *testing.T, tool bool) (h *testHarness, root, mid, leaf string) {
+	t.Helper()
+	leafPhase := agentPhase("work", nil, []def.Route{{To: "done"}})
+	if tool {
+		leafPhase.Driver, leafPhase.Check, leafPhase.Provider, leafPhase.Model = def.DriverTool, "test", "", ""
+	}
+	h = newCallHarness(t, map[string]def.Workflow{
+		"caller": callerWorkflow("mid"),
+		"mid": {ID: "mid", Phases: []def.Phase{callPhaseDef("work", "leaf", nil, 0, []def.Route{{To: "done"}})},
+			Outputs: map[string]def.WorkflowOutput{"verdict": {From: "work.verdict"}}},
+		"leaf": childWorkflow("leaf", leafPhase),
+	}, nil)
+	root = startCaller(t, h)
+	mid = h.callChild(t, root, "audit", 1).ID
+	leaf = h.callChild(t, mid, "work", 1).ID
+	if !tool {
+		seedThread(t, h.store, "leaf-thread")
+		if err := h.store.AttachWorkItemPhaseRun(leaf, "work", 1, "leaf-thread", "/tmp/leaf.md"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireItemState(t, h.store, leaf, StateRunning, "")
+	return h, root, mid, leaf
+}
+
+// A pause crosses a parked member to reach the running run beneath it: with
+// only the grandchild of a paused three-level tree resumed, a pause of the
+// root parks it again, a tool phase's run stopped through the runner and an
+// agent phase's thread named among the members, and the parked middle run
+// keeps the reason it parked under.
+func TestAPauseCrossesAParkedRunToTheRunningOneBeneathIt(t *testing.T) {
+	for name, tool := range map[string]bool{"agent leaf": false, "tool leaf": true} {
+		t.Run(name, func(t *testing.T) {
+			h, root, mid, leaf := threeLevelTree(t, tool)
+			if err := h.engine.PauseItem(root); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{root, mid, leaf} {
+				requireItemState(t, h.store, id, StateNeedsHuman, ReasonPaused)
+			}
+			if err := h.engine.ResumeItem(leaf); err != nil {
+				t.Fatal(err)
+			}
+			requireItemState(t, h.store, leaf, StateRunning, "")
+			// The middle run parked for a reason of its own.
+			if err := h.store.UpdateWorkItemState(mid, string(StateNeedsHuman), string(ReasonInterrupted), 0); err != nil {
+				t.Fatal(err)
+			}
+			stopsBefore := len(h.runner.stopped())
+
+			members, err := h.engine.PauseItemMembers(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireItemState(t, h.store, leaf, StateNeedsHuman, ReasonPaused)
+			requireItemState(t, h.store, mid, StateNeedsHuman, ReasonInterrupted)
+			requireItemState(t, h.store, root, StateNeedsHuman, ReasonPaused)
+			stops := h.runner.stopped()[stopsBefore:]
+			if !slices.ContainsFunc(stops, func(key RunKey) bool { return key.ItemID == leaf }) {
+				t.Fatalf("runner stops = %+v, want the leaf's run stopped", stops)
+			}
+			if !tool && !slices.Contains(members, "leaf-thread") {
+				t.Fatalf("members = %q, want the leaf's thread", members)
+			}
+		})
+	}
+}
+
+// The graceful-quit pause reaches a running run beneath parked ones as well.
+func TestPauseAllActiveReachesARunningRunBeneathParkedOnes(t *testing.T) {
+	h, root, mid, leaf := threeLevelTree(t, true)
+	if err := h.engine.PauseItem(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.ResumeItem(leaf); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, leaf, StateRunning, "")
+	if err := h.engine.PauseAllActive(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{root, mid, leaf} {
+		requireItemState(t, h.store, id, StateNeedsHuman, ReasonPaused)
+	}
 }

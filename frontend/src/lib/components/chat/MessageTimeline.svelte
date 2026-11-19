@@ -460,12 +460,16 @@
     if (atBottom) untrack(() => restore.saveScrollSnapshot());
   });
 
+  // The current virtualizer's latest content-geometry `windowMeasured`. Not
+  // reactive: the quiet passes read it when they run.
+  let windowMeasured = false;
   const paging = createTimelinePaging({
     getPane: () => pane,
     stick,
     getListRef: () => listRef,
     getScrollEl: () => scrollEl,
     getRevealedNodes: () => revealedNodes,
+    isWindowMeasured: () => windowMeasured,
     getRestoredThreadId: () => restore.restoredThreadId,
     beginNavigation: () => restore.beginNavigation(),
     claimNavigation: (token) => restore.claimNavigation(token),
@@ -725,13 +729,18 @@
   // tuple from the new virtualizer through.
   $effect(() => {
     const list = listRef;
+    windowMeasured = false;
     if (!list) return;
     return list.subscribeContentGeometry((sample) => {
       stick.deliverContentGeometry(sample);
+      windowMeasured = sample.windowMeasured;
       // A hidden document invalidates the collapse gate's cached viewport.
       // This existing post-flush geometry delivery is the first trustworthy
       // point after resume; schedule exactly once when it clears the barrier.
-      if (visibilityGeometry.noteGeometrySample()) quietWork.schedule();
+      const resumed = visibilityGeometry.noteGeometrySample();
+      // The viewport fill waits for the window to measure (timelinePaging).
+      const fillDue = windowMeasured && paging.noteWindowMeasured();
+      if (resumed || fillDue) quietWork.schedule();
       // Streaming growth and remeasure shift row offsets without a
       // scroll event; keep the rail's marker + in-view fill honest.
       // rAF-coalesced inside the rail, so bursts cost one recompute
@@ -1019,10 +1028,7 @@
      gestures report through onUserScrollStart/onUserScrollEnd (the
      intent machine's geometric gutter hit test reads offsetWidth −
      clientWidth, which is now always 0 — dead on this surface by
-     design). See the contract notes in OverlayScrollbar.svelte.
-     Layout shape mirrors discussion/ChannelView.svelte
-     (`relative flex h-full flex-col` + `flex-1 min-h-0 overflow-y-auto`)
-     so the two surfaces stay in lockstep. -->
+     design). See the contract notes in OverlayScrollbar.svelte. -->
 <div class="relative flex h-full flex-col">
   <div
     bind:this={scrollEl}

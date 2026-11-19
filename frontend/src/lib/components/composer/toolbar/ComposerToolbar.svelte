@@ -61,6 +61,12 @@
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
     onInterrupt: () => void;
+    /** Set on an assistant's current thread: End Session beside Interrupt. */
+    onEndSession?: () => void;
+    /** Whether the thread has a provider session (End Session's gate). */
+    sessionLive?: boolean;
+    /** This device lacks `threads:operate` there: the session menu is inert. */
+    sessionUngranted?: boolean;
     hideSendButton?: boolean;
     /** The composer's dictation, when this layout puts the mic here (the
      * desktop: an outlined circle immediately left of Send, in its grid). */
@@ -82,14 +88,13 @@
     onSendWithoutPlanComments,
     onSendInNewThread,
     onInterrupt,
+    onEndSession,
+    sessionLive,
+    sessionUngranted,
     hideSendButton = false,
     dictation = null,
   }: Props = $props();
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
-
-  // Discussion has its own composer flow; ordinary threads expose the
-  // chat/plan agent-mode toggle here.
-  let isDiscussionThread = $derived(pane.thread?.mode === 'discussion');
 
   // Rate-limit rings appear once the thread is "locked in" — the
   // user has sent at least one message and the provider/model
@@ -141,7 +146,7 @@
   // `scratch` until Keep restores the one recorded at the fork, and
   // UpdateThreadMode refuses to move it.
   let showModeToggle = $derived(
-    !isDiscussionThread && supportsPlanMode && !isScratchThreadMode(pane.thread?.mode),
+    supportsPlanMode && !isScratchThreadMode(pane.thread?.mode),
   );
   let supportsRuntimeModes = $derived(providerSupports(providerID, 'runtimeModes'));
   let supportsMcp = $derived(providerSupports(providerID, 'mcp'));
@@ -149,8 +154,9 @@
   // placeholder. The pane carries a synthetic thread object in both
   // cases so the pickers can read its mode/provider/etc.; placeholder
   // actions update local state or new-thread defaults without creating
-  // a row.
-  let hasComposableSurface = $derived(pane.canCompose);
+  // a row. An ask's copy (Thread.askCopy) is watched and stopped, never
+  // configured: it shows no pickers, as an agent pane does not.
+  let hasComposableSurface = $derived(pane.canCompose && !pane.thread?.askCopy);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
   let toolbarDensity = $state<ComposerToolbarDensity>('compact');
 
@@ -259,6 +265,9 @@
         {onSendWithoutPlanComments}
         {onSendInNewThread}
         {onInterrupt}
+        {onEndSession}
+        {sessionLive}
+        {sessionUngranted}
       />
     {/if}
   </div>

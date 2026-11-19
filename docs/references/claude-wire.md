@@ -547,6 +547,168 @@ mode to `approval-required` without a restart and posts a warning notice
 naming the model. A later switch to a model whose remembered settings carry
 Auto restores it with a notice of its own.
 
+## SessionStart hooks (verified 2.1.283)
+
+Spike 2026-10-18, claude 2.1.283 in print mode with Agent Overflow's
+stream-json flags; limits read from the same version's bundle. Agent
+Overflow uses a SessionStart and a UserPromptSubmit hook to deliver a
+session's memory ([memory](../specs/memory.md#delivery)).
+
+Hooks in the inline `--settings` JSON (the flag settings layer) merge
+with the user's own and run beside them:
+
+```json
+{"hooks": {"SessionStart": [{"matcher": "startup|compact|clear",
+  "hooks": [{"type": "command", "command": "...", "timeout": 60}]}]}}
+```
+
+- Sources: `startup`, `resume`, `clear`, `compact`, `fork`. A process
+  started with `--resume` runs `resume`, and with `--fork-session` too,
+  `fork` (read from the bundle).
+- Each command runs through `/bin/sh -c` (Node's `spawn` with
+  `shell: true`; Git Bash on Windows), with the hook input JSON on
+  stdin.
+- A fresh process runs its start's hooks before its first
+  `system/init`. A compaction runs its hooks before its
+  `system/compact_boundary`. A process started with `--resume` runs its
+  `resume` or `fork` hooks while it loads the conversation, and awaits
+  them before its first `system/init` (read from the bundle).
+- At a resume or a fork, a hook's context whose text a SessionStart
+  attachment of the loaded transcript already holds is left out of the
+  model's context; its `hook_response` is written all the same (read
+  from the bundle).
+- Each run writes `system/hook_started` (`hook_id`, `hook_name`
+  `SessionStart:<source>`, `hook_event` `SessionStart`, `uuid`,
+  `session_id`) and then `system/hook_response`, which adds `output`
+  (stdout then stderr), `stdout`, `stderr`, `exit_code` and `outcome`
+  (`success` for exit 0, else `error`).
+- Stdout that starts with `{` is read as hook JSON, and
+  `hookSpecificOutput.additionalContext` is the context; other stdout
+  is plain-text context.
+- A context longer than 10,000 characters (JavaScript string length,
+  UTF-16 units) is written to disk and replaced by its first 2,000
+  characters and the file's path (read from the bundle). The limit is
+  each hook's: several handlers of one group each have their own
+  (2.1.325).
+- `disableAllHooks` in the user's settings turns every hook off.
+- An interactive session (claude-tui) writes no `hook_response`. A
+  run's contexts reach the next main model request as one
+  `<system-reminder>` block: `SessionStart hook additional context: `,
+  with no source, then the contexts joined by newlines (2.1.261 to
+  2.1.283, read from the bundle). The transcript keeps every earlier
+  run's block, so a request after a resume carries the start's block too.
+- A print-mode process yields its first `system/init` before it reads
+  any input. A print-mode resume adds its hooks' messages to the loaded
+  conversation in memory, not to the transcript (read from the bundle).
+- Each run also writes `attachment` rows to the session JSONL: a
+  `hook_success` per hook (`hookName` `SessionStart:<source>`) and one
+  `hook_additional_context` holding the contexts. They stay in the
+  transcript, so a resume that runs the hooks adds a second set beside
+  the start's until a compaction rebuilds the context.
+
+UserPromptSubmit hooks take no matcher and run, from the same layers,
+for each prompt the process takes: a stdin message, a queued one
+included, before it reaches the model; a subagent's prompt runs none.
+The input adds `prompt` to `session_id`, `cwd` and `hook_event_name`. A
+run writes `system/hook_started` and `system/hook_response` with
+`hook_event` `UserPromptSubmit`, and its context reaches the model with
+the prompt; claude-tui's request carries it in a
+`UserPromptSubmit hook additional context: ` block. Exit 2 blocks the
+prompt; any other non-zero exit is a failed run that lets it through
+(read from the bundle).
+
+Agent Overflow registers its memory hook in groups of its own, timeout
+60 (`claude.SessionStartHookGroup`, `claude.UserPromptSubmitHookGroup`;
+claude-tui puts the same groups beside its relay), with one handler per
+part of the delivery: SessionStart with the matcher
+`startup|compact|clear`, so a resume runs none, and UserPromptSubmit
+with each part's prompt command, which prints nothing when nothing
+changed and never exits 2. Each SessionStart context carries its
+delivery time under its part's heading
+(`provider.SessionStartHook.Stamp`). The headless parser counts a
+`hook_response` with exit code 0 whose context opens with a part's
+heading as that part's delivery, and checks at `system/init` for a fresh
+start and at its `compact_boundary` for a compaction that every part
+arrived; a miss forgets the thread's records of what its
+sessions were shown, so the next prompt delivers the whole memory
+(`parse_session_start.go`). A failed UserPromptSubmit `hook_response` is
+the hook's when its stderr opens with `__memory-context:`, and is a
+non-fatal error row. claude-tui's gateway reads the first main model
+request after the start or `PostCompact`: in the
+`SessionStart hook additional context: ` blocks, read from the last, each
+part's context runs from its heading to its ending, and counts only when
+its stamp's time is not before that start or compaction
+(`claudetui/session_start.go`). A claude-tui session closed before that
+request forgets the records.
+
+## Auto memory and additional directories (verified 2.1.283)
+
+Source read in the decompiled 2.1.88 tree; each point checked in the
+installed 2.1.283 bundle's strings, whose module exports name
+`isAutoMemoryEnabled`. No spike. Agent Overflow relies on these for its
+Claude memory setting and its writable memory folders
+([memory](../specs/memory.md#settings)).
+
+### Auto memory switch
+
+`isAutoMemoryEnabled` (`src/memdir/paths.ts`) decides, first match
+wins:
+
+1. Off while the session has memory paused, in safe mode
+   (`CLAUDE_CODE_SAFE_MODE`, `--safe-mode`) or in a restricted session
+   (2.1.283; the bundle names the gate without the pause
+   `isAutoMemoryEnabledIgnoringPause`).
+2. `CLAUDE_CODE_DISABLE_AUTO_MEMORY` as `process.env` holds it: `1`,
+   `true`, `yes` or `on` turns it off, and `0`, `false`, `no` or `off`
+   turns it on, whatever the settings say.
+3. Off under `--bare` (`CLAUDE_CODE_SIMPLE`), in a remote session
+   without `CLAUDE_CODE_REMOTE_MEMORY_DIR`, and (2.1.283) for a main
+   loop model the server excludes.
+4. `autoMemoryEnabled` of the merged settings; on when no layer sets it.
+
+Settings merge the user, project, local, flag and policy layers in that
+order, each overriding the earlier ones (`loadSettingsFromDisk`,
+`src/utils/settings/settings.ts`). Inline JSON passed to `--settings` is
+written to a temporary file and read as the flag layer
+(`loadSettingsFromFlag`, `src/main.tsx`). So `autoMemoryEnabled: false`
+there outranks the user, project and local settings files, and policy
+settings outrank it.
+
+The spawn environment does not fix the variable. At startup the CLI
+assigns onto `process.env` the `env` of `~/.claude.json`, then of the
+user and flag settings, then of policy settings, and once the workspace
+is trusted the `env` of every layer in merge order
+(`applySafeConfigEnvironmentVariables` and
+`applyConfigEnvironmentVariables`, `src/utils/managedEnv.ts`). In 2.1.283
+only a desktop or `byoc` host keeps its spawn keys from this. A settings
+`env` entry for `CLAUDE_CODE_DISABLE_AUTO_MEMORY` therefore replaces the
+value the process was spawned with; the flag layer's own `env` entry
+outranks the user, project and local layers' and yields only to policy.
+
+### Additional directories
+
+`permissions.additionalDirectories` of any settings layer, `--settings`
+included, and `--add-dir` both become working directories: each is
+validated and added by the same `addDirectories` permission update
+(`src/utils/permissions/permissionSetup.ts`), so file tools and
+permission checks treat them alike, and the sandbox's write allowlist
+holds both. The layers' arrays join. A directory that does not exist is
+skipped without a warning. In 2.1.283 the directories of a project or
+local settings file count only once the workspace's trust is persisted;
+the flag layer's always count.
+
+Only directories passed with `--add-dir` or added during the session
+join the list the CLI loads project configuration from
+(`setAdditionalDirectoriesForClaudeMd`, `src/main.tsx`): each
+directory's `.claude/skills` (`src/skills/loadSkillsDir.ts`), the
+`enabledPlugins` and `extraKnownMarketplaces` of its
+`.claude/settings.json` and `.claude/settings.local.json`
+(`src/utils/plugins/addDirPluginSettings.ts`), and, when
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is truthy, its
+`CLAUDE.md`, `.claude/CLAUDE.md` and (2.1.283) `.claude/rules`
+(`src/utils/claudemd.ts`). A directory granted only by
+`permissions.additionalDirectories` loads none of them.
+
 ## `system` model-fallback family
 
 Four subtypes, one shape, one meaning each: the model the user asked for
@@ -1292,7 +1454,7 @@ Spike 2026-10-11 (haiku, AO's flag set), each case with its
 AO confirms a send from whichever of the two names its uuid first: the
 parser reports a main-transcript user entry under a uuid in the session's
 issued ledger as a confirm-only `EventUserText`
-(`provider.MetaUserTextTranscriptRecordedKey`, `recordedOwnPrompts`), and
+(`provider.MetaUserTextTranscriptRecordedKey`, `recordedOwnPrompt`), and
 triage consumes the pending send by identity only. The echo that follows
 is a duplicate. The parser also never reclassifies an echo carrying an
 issued uuid by its content, so a prompt quoting a balanced injected or
@@ -1524,6 +1686,90 @@ handling is a queue at priority `"next"`:
 by comparing the wire round open when the `queued` ack landed against the
 one open at `started` (`internal/triage/command_lifecycle.go`), because
 the enqueue-time round is not recoverable after the fact.
+A thread request's settlement is bound to the turn its message was
+delivered into, read off the first of its `started` and its confirmation:
+the turn open then, or, for a held message whose `started` precedes its
+own `system/init`, the next turn to open. A message dispatched with no turn
+running reserved its own turn, and a delivery for it inside another
+message's round waits for that turn, which its echo opens when no init
+does (`internal/triage/send_delivery.go`). On 2.1.284 the echo of a
+mid-loop drain precedes its `started` (next section), so the echo is that
+first signal. A confirmation that arrives with no turn open, for a
+message a turn start took and ran, is delivered into that turn; a turn
+that took a message whose `queued` ack is on record before its `started`
+raced it and did not run it (`ranInTakingTurn`). A message whose turn
+never echoes it is bound to the turn that took it when that turn's end is
+read (`Router.PendingSendTurn`).
+
+### Frame order per consumption path (verified 2.1.284)
+
+Spike 2026-10-15, claude 2.1.284 (Sonnet), AO's flag set, three runs per
+case; the order was identical in every run. Each fixture is run 1 under
+`docs/references/fixtures/claude/`;
+`queued_delivery_orders_20261015.summary.json` has every run's order with
+timings. Writes are the client's stdin writes; `queued` acks are left out.
+
+| Case | Fixture | Order |
+|---|---|---|
+| M written during a cascade round's foreground Bash, drained mid-loop | `queued_midloop_after_cascade_20261015.ndjson` | turn 0 `result`, `task_notification`, cascade `system/init`, write M, `tool_result`, echo M, `started` M, `completed` M, `result` |
+| A from idle; B written right after `started` A, drained mid-loop into A's round | `queued_deferred_pair_midloop_20261015.ndjson` | write A, `started` A, write B, `system/init`, echo A, `tool_result`, echo B, `started` B, `completed` B, `result`, `completed` A |
+| A and B written 400 ms apart during a tool-free turn | `queued_boundary_merge_20261015.ndjson` | `result`, echo A (own block, no `timestamp`), `started` A, `started` B, `system/init`, echo B (both blocks, `timestamp`), `result`, `completed` A, `completed` B |
+| The same, written during a tool-free cascade round after turn 0's `result` | `queued_boundary_merge_after_cascade_20261015.ndjson` | cascade `result`, echo A (no `timestamp`), `started` A, `started` B, `system/init`, echo B (both blocks), `result`, `completed` A, `completed` B |
+| A and B in one stdin write at an idle session | `queued_idle_pair_split_20261015.ndjson` | `started` A, `system/init`, echo A, `result`, `completed` A, `started` B, `system/init`, echo B, `result`, `completed` B |
+
+- A mid-loop drain writes the echo first and `started` 1 to 5 ms after it,
+  with nothing between: `query.ts` yields the `queued_command` attachment
+  (which the echo replays) and only then calls
+  `notifyCommandLifecycle(uuid, 'started')`. This holds for a message AO
+  wrote into a running turn and for one it dispatched as deferred.
+- A boundary pickup (`print.ts` `drainCommandQueue`) writes every
+  merged-away echo, then `started` for every member, then `system/init`,
+  then the survivor's echo.
+- Every turn the boundary drain opens has exactly one `system/init`. The
+  2.1.284 bundle's `submitMessage` yields init once per `ask()`; the only
+  condition (`orphanedPermission.initFirst` or `handedOffTurn`) moves it
+  before input processing and never drops it. A boundary merge without an
+  init does not occur on 2.1.284.
+- A task-notification cascade round opens with its own `system/init` and
+  no stdout echo for the notification (the replay filter drops
+  `<task-notification>`). A message written during it drains mid-loop when
+  the round still runs tools and is held to its boundary otherwise.
+- Messages written together at an idle session never merge: the CLI
+  dequeues the first as it is enqueued, and the second waits for a turn of
+  its own.
+- The round-opening message's `completed` follows the round's `result`; a
+  mid-loop drained message's `completed` precedes it.
+
+What these orders mean for the delivery code in
+`internal/triage/send_delivery.go`, each checked by a replay of its
+fixture through the parser and router (`send_delivery_capture_test.go`,
+`TestReplayQueued<Fixture>20261015`):
+
+- A mid-loop drain is delivered by its echo, which opens the message's own
+  turn (`openQueuedEchoTurn`) when the message was deferred; its `started`
+  finds the delivery already reported. Deferred pair.
+- A message flushed while the turn a task notification woke the CLI for
+  runs is delivered into that turn, as into any running turn. Midloop
+  after cascade.
+- `deliveryFloor` decides the boundary merge of deferred members: `started`
+  B arrives while the turn A's merged-away echo opened is still open, and
+  the floor holds B for its own turn. No capture holds it: the unit tests
+  of the order below do.
+- A turn start releases deliveries a `started` left waiting: the members of
+  a merge after a running turn, the held second of an idle pair. Boundary
+  merge, merge after cascade, idle pair split.
+- Merge-fold rebind (`SendDelivery.Rebind`) moves A from the turn its
+  merged-away echo opened to the survivor's, with the init before the
+  survivor's echo. No capture holds it
+  (`TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn`).
+
+Two orders triage handles were not observed on 2.1.284. If a later CLI
+writes one of them, these tests already cover it:
+
+| Order not observed | Covering tests |
+|---|---|
+| `started` before the echo on a mid-loop drain | triage `TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens`, `TestSendDeliveryOfASecondDeferredSendIsItsOwnTurn`, `TestSendDeliveryOfThreeDeferredSendsWaitsForEachOwnTurn`, `TestSendDeliveryOfADeferredSendBehindAPersonsMessageIsItsOwnTurn`; app `TestARequestDrainedIntoASelfWokenTurnSettlesWithThatTurn`, `TestASecondDeferredRequestSettlesWithItsOwnTurn` |
+| A boundary merge with no `system/init` before the survivor's echo | triage `TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn/no_init`; app `TestAMergeFoldedRequestEchoedIntoATurnOfItsOwnSettlesWithTheSurvivor/no_init` |
 
 ### ⚠ The `priority` field is known and deliberately unused
 
@@ -1553,13 +1799,16 @@ state, plus the terminal settlement above. The correlation is registered at
 `queued` and survives the wire echo popping the pending-send FIFO, so
 both arrival orders resolve.
 
-### A `command_uuid` the client never minted (verified 2.1.237)
+### A `command_uuid` the client never minted (verified 2.1.237, 2.1.284)
 
 Every `command_uuid` above is one AO stamped on an outbound envelope,
-with ONE exception, and it is the whole tell for a turn this app did not
-ask for. When cross-session messaging is on and a peer's `SendMessage` is
-accepted, the CLI mints its own uuid for the user row it injects and
-opens the bracket with it:
+except for turns the CLI starts itself, and that is the whole tell for a
+turn this app did not ask for. Two producers mint their own uuid: a
+peer's accepted `SendMessage` (below) and a scheduled turn, a
+`CronCreate` job's fire or a `ScheduleWakeup` wake (§E11). When
+cross-session messaging is on and a peer's `SendMessage` is accepted,
+the CLI mints its own uuid for the user row it injects and opens the
+bracket with it:
 
 ```
 command_lifecycle{state:"started", command_uuid:"<CLI-minted>"}
@@ -1571,14 +1820,17 @@ command_lifecycle{state:"completed", command_uuid:"<CLI-minted>"}
 ```
 
 `started` precedes even the `system/init`, so the bracket is the FIRST
-observable of a peer turn. AO keeps a ledger of the uuids it issued
-(`internal/provider/claude/session_peer.go`) and stamps
-`Meta.origin = "peer-session"` on every frame of a bracket whose uuid the
-ledger positively lacks (every frame, not just `started`, so a consumer
-reading the terminal frame reaches the same verdict). The classifier fails
-SAFE: an unknown session or an overflowed ledger reads as ours, because
-labelling the user's own message "from another Claude session" is the
-transcript lying about who asked for what.
+observable of a foreign turn, and it does not say which producer
+started it. AO keeps a ledger of the uuids it issued
+(`internal/provider/claude/session_peer.go`); for a uuid the ledger
+positively lacks, the bracket's frames carry `Meta.origin` only once the
+turn's own user row names the cause under the same uuid: the peer echo
+above (`peer-session`) or the scheduled mirror row (`scheduled`, §E11).
+`started` therefore carries none, and the terminal frame carries the
+proven origin. The classifier fails SAFE: an unknown session or an
+overflowed ledger reads as ours, because labelling the user's own message
+"from another Claude session" is the transcript lying about who asked for
+what. The user rows, not the bracket, are what the timeline renders.
 
 Observed states for a peer turn are `started` and `completed` only. No
 `queued` and no `discarded` were seen for one in any spike run
@@ -2651,9 +2903,39 @@ starting the next API iteration. Stdout carries `system/init` +
 stream-json client therefore cannot render what woke the model or what
 it was told; the transcript file is the only record. The
 `system/task_notification` delivery above holds for events that land
-while a turn is open. AO currently shows a new response starting "from
-nothing" in this case; fixing it requires a transcript-tail backfill,
-which is not built.
+while a turn is open.
+
+On 2.1.280 and 2.1.284 (AO provider-events logs, 2026-09 to 2026-10) the
+woken turn is visible: after `system/init` and `system/status` comes a
+main-transcript `transcript_mirror` user row with
+`turnOrigin:"task_notification"`, `promptSource:"system"` and
+`origin:{kind:"task-notification", producer:"session-task"}`, whose
+content is the `<task-notification>` block. A terminal completion
+(Bash, agent stop) also sends `task_updated` and a structured
+`system/task_notification` first; a Monitor event sends neither. There
+is no `command_lifecycle` bracket and no user replay echo. The block's
+`<summary>` names the task (`Background command "…" completed (exit
+code 0)`, `Agent "…" finished`, `Monitor event: "…"`), an agent stop adds
+`<result>` and a Monitor event adds `<event>`:
+
+```xml
+<task-notification>
+<task-id>bwatch002</task-id>
+<summary>Monitor event: "deploy log errors"</summary>
+<event>ERROR deploy step 3 failed: connection refused</event>
+</task-notification>
+```
+
+The parser (`parse_turn_origin.go`) turns a Monitor event's row (a block
+with no `<status>`) into one `background_wake` notification (summary, plus
+the `<event>` text bounded to 2,000 runes) when the session is between
+turns: after a top-level `result` and before the next turn's first
+top-level assistant frame or `command_lifecycle` start. A terminal
+completion's row adds nothing: its `system/task_notification` already put
+the completion notice above the turn. A row injected mid-turn also reaches
+the `isReplay` echo, which reports it already. The timeline shows the row
+ahead of the reply it caused. The rest of what the model read stays in
+the transcript file; a transcript-tail backfill is not built.
 
 ### E8: ScheduleWakeup ack (pending in-process wakeup, NO task lifecycle)
 
@@ -2688,11 +2970,16 @@ Operationally: triage records the fire time per thread
 (`internal/triage/session_wakeup.go`) and the idle-session reaper
 refuses to close a session whose wakeup is still in the future (plus a
 firing-latency grace), because closing the process would silently kill the
-timer. The record is swept on session teardown AND on
-replacement-session commit: the timer never survives its CLI process.
+timer. The update admission check and the conversation transfer guard
+wait for it the same way. The record ends with the CLI process: the host
+drops it when the session's read loop reports `disconnected`, which
+follows the process's own exit (clean, crash or signal) and every host
+stop (idle reap, transfer, explicit stop, replacement start).
 When the wakeup fires, the injected turn's own wire activity takes over
 protection; observed delays run 240–1800s, so a wakeup can legally
-exceed the idle-reap threshold on its own.
+exceed the idle-reap threshold on its own. The wake is a scheduled turn
+with the §E11 fire shape: its stored prompt renders as the turn's
+badged user row.
 
 ### E9: Forked skill (`Skill` tool, `context: fork`)
 
@@ -2928,6 +3215,88 @@ worktree; verified 2.1.257 in `-p` mode). The app's start-time
 move and only acts when row and file disagree. The claude-tui provider's
 PostToolUse hook carries the same
 `tool_response`, so both providers share this path.
+
+### E11: `CronCreate` / `CronList` / `CronDelete` and scheduled turns
+
+The CLI's cron tools arm jobs that live only in its process and fire as
+turns it starts itself. Like §E8 there is no task lifecycle and no wire
+traffic between the ack and a fire, so an armed job is invisible to
+every other "is this session busy" signal. Captured on 2.1.284
+(2026-10-10, isolated spike):
+[`cron_create_fire_20261010.ndjson`](fixtures/claude/cron_create_fire_20261010.ndjson),
+[`cron_loop_midturn_20261010.ndjson`](fixtures/claude/cron_loop_midturn_20261010.ndjson)
+and [`cron_spike_20261010.summary.json`](fixtures/claude/cron_spike_20261010.summary.json).
+
+Acks (`tool_use_result`):
+
+| Tool | Input | Ack |
+|---|---|---|
+| `CronCreate` | `{cron, prompt, recurring?, durable?}` | `{id, humanSchedule, recurring, durable}` |
+| `CronList` | `{}` | `{jobs: [{id, cron, humanSchedule, prompt, recurring, durable}]}` |
+| `CronDelete` | `{id}` | `{id}` |
+
+The `CronCreate` ack carries no cron expression; only the input and a
+later `CronList` do. `CronDelete` of an unknown id answers `is_error:true`
+with a string `tool_use_result` (`"Error: No scheduled job with id
+'…'"`). `/loop` arms through the same `CronCreate`, runs its prompt once
+in the same turn, and acks the same way. No key overlaps the §E2, §E5,
+§E7 or §E8 markers.
+
+The parser classifies by tool name, checks the ack shape, and keeps the
+session's job table (`parse_cron.go`): an ack it cannot prove (an error,
+a missing `id`, `recurring` or `jobs`) changes nothing. Every change
+emits `EventScheduledJobs`, the full list with each job's latest
+possible next fire. Triage keeps the list per thread beside the §E8
+wakeup. The idle-session reaper treats a session as scheduled to resume
+until the latest deadline of the wakeup and every job, plus the wakeup
+grace. The update admission check and the conversation transfer guard
+wait only for the wakeup and one-shot jobs: a recurring job never
+counts as unfinished work, because the update restarts the backend and
+the transfer stops the session, ending the job either way. The transfer
+dialog names the recurring jobs it ends (`ListThreadRecurringJobs`).
+The table dies with the parser, which lives exactly as long as the CLI
+process; triage drops its copy whenever the process ends, as for the
+wakeup.
+
+**Fire shape.** A fire is a `command_lifecycle` bracket with a
+CLI-minted uuid and no `queued` state: `started`, `system/status` (a
+ScheduleWakeup wake also re-emits `system/init`), then a main-transcript
+`transcript_mirror` batch holding a `queue-operation` enqueue (content =
+the prompt), its dequeue, and the user row
+`{type:"user", isSidechain:false, isMeta:true, promptSource:"system",
+turnOrigin:"scheduled", uuid:<command_uuid>, message.content:<prompt>}`,
+then the reply, `result` and `completed`. No user envelope reaches
+stdout and no task lifecycle runs. A fire due during a busy turn is
+held and runs once right after that turn's `result`. ScheduleWakeup
+wakes share the shape and the `turnOrigin`. The parser emits the row as
+an `EventUserText` with `origin:"scheduled"` under the fire's uuid
+(triage persists `user:scheduled:<uuid>`, badged "Scheduled") and moves
+the job table past the fire. History import keeps the same row
+(`sessionimport.ScheduledTurnOrigin`).
+
+**Deadlines.** Grammar and matching mirror the 2.1.284 bundle
+(`cron_schedule.go`): five fields, each a comma list of `*`, `*/n`,
+`a-b`, `a-b/n` or `n`, weekday 7 = 0, no names; local time; day of month
+and day of week are ORed when both are restricted, where a field whose
+set covers its whole range counts as unrestricted. The search sets the
+wall clock as JavaScript's `Date` does, so a repeated hour matches at its
+first occurrence; from inside its second occurrence, where those setters
+name an instant already past, the parser keeps the anchor's instant and
+takes its next minute, assuming the CLI fires such a past match at once.
+Every match is strictly after its anchor. The CLI fires a
+recurring job at its next match `i` plus a per-job delay of
+`frac(id) x recurringFrac x o` capped at `recurringCapMs` (`o` is the gap
+to the following match; a `*/n` minute job may instead fire up to
+`cacheLeadMs` early) and a one-shot at its match or up to `oneShotMaxMs`
+early. The `tengu_kairos_cron_config` flag may replace those constants at
+runtime within a schema capping `recurringFrac` at 1 and
+`recurringCapMs` at 30 minutes, so the parser bounds a recurring fire by
+`i + min(o, 30m)` and a one-shot by `i`, which holds under every
+permitted config. A fire's row names no job, so a fire at `t` re-anchors
+every recurring job whose match is at or before `t` (its deadline only
+moves later) and releases every such one-shot. A deadline that passes
+with no fire leaves the job inert rather than protecting the session
+forever; that also covers the CLI's age-out of recurring jobs.
 
 ### Subagent approvals carry `agent_id`
 
@@ -4406,9 +4775,13 @@ call not delivered yet, the child's batches stay buffered, and they project
 once the launch does. Ownerless `agent_metadata` plus `isSidechain:true` and
 `attributionSkill` claim a forked Skill, unless its agent is already bound to
 a call (a resumed fork, or a forked Skill call inside the fork). An explicit
-`isSidechain:false` clears
-the buffer and leaves the command unprojected. If the file, entry, or byte bound
-drops any prefix data, AO persists a warning beneath the command row instead of
+`isSidechain:false` clears the buffer and leaves the command unprojected.
+Main-transcript rows are never projected: `mainTranscriptEvents` reads their
+user rows, in order, for the two facts stdout lacks. A row under an issued
+uuid confirms AO's own send (the filtered-echo section above); any other row
+with a `turnOrigin` is a turn the CLI started itself, a scheduled fire (§E11)
+or an idle background wake. If the file, entry, or byte bound drops any
+prefix data, AO persists a warning beneath the command row instead of
 leaving the gap silent.
 
 The main session file's mirror also carries its uuid-less

@@ -6,7 +6,7 @@ workspace membership, setup recipes, and deletion snapshots.
 `internal/app` retains Wails bindings, event projection, git mutation, async
 worktree setup, and the live deletion transaction. Project deletion must cancel
 workflows before acquiring thread locks, then coordinate session shutdown,
-filesystem cleanup, scheduler refresh, and thread teardown.
+filesystem cleanup, and thread teardown.
 
 ## Contracts
 
@@ -37,5 +37,3 @@ filesystem cleanup, scheduler refresh, and thread teardown.
   normalize or reinterpret the submitted IDs.
 - `WorkflowFootprint.SameAs` compares sorted identity sets. The deletion
   transaction uses it to detect rows created during unlocked cleanup.
-- `ThreadLockOrder` is deterministic and parent-before-child. Do not derive a
-  second lock order in `internal/app`.

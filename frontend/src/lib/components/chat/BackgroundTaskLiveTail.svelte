@@ -4,8 +4,8 @@
   // watch (stores/backgroundTaskOutput.svelte.ts) and unmounting, which is
   // the row collapsing or its completion payload taking over, releases it.
   //
-  // The tail follows its own bottom the way the digest clip and the
-  // discussion do: the shared scroll controller owns every scrollTop write
+  // The tail follows its own bottom the way the digest clip does: the
+  // shared scroll controller owns every scrollTop write
   // and the reader's intent, so a wheel, key, touch or scrollbar gesture
   // away from the bottom pauses the follow, and returning to the bottom
   // resumes it. The box is a nested scroller inside the pane, so its

@@ -34,6 +34,7 @@ import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping
 import type { Item } from '../../types/models';
 import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { nodeSignature } from '../../utils/timelineStructureSignature';
+import { isAgentMessageItem } from '../../utils/agentMessage';
 
 // Module scope, not inside createTimelineSizePriors: this must run once,
 // before any pane's timeline mounts, in both the embedded webview and
@@ -129,7 +130,8 @@ function activityRunCapFloorPx(): number {
  * Estimate for a node the kind table cannot price, or undefined to fall back
  * to it.
  *
- * Only activity runs qualify so far. A run has no single typical height — the
+ * An activity run, and an agent's message (a `user_text` whose kind price is
+ * the user bubble's). A run has no single typical height: the
  * same `runId` is a chip one moment and a capped clip the next, and one kind
  * entry would be wrong by ~20× in one of the two states, which lands
  * fast-scroll placement badly through unmeasured runs. Pure and exported so
@@ -138,6 +140,9 @@ function activityRunCapFloorPx(): number {
 export function timelineRowStructuralSizeFor(
   node: TimelineNode | undefined,
 ): number | undefined {
+  // An agent's message is a user_text row in the register of a tool row,
+  // not the bubble the kind table prices.
+  if (node?.kind === 'leaf' && isAgentMessageItem(node.item)) return ROW_KIND_ESTIMATE_PX.tool_call;
   if (node?.kind !== 'activity_run') return undefined;
   // The header is unconditional, so a run is its header plus a clip when it has
   // one — and `collapsed` is exactly whether it has one, liveness already folded

@@ -90,6 +90,23 @@ export interface ApprovalRequest {
   availableDecisions?: unknown[];
   permissions?: PermissionProfile;
   elicitation?: ElicitationRequest;
+  /**
+   * The standing agent this prompt went to instead of the user: the thread
+   * that spawned this one (ruling 19). The user can still answer it here.
+   */
+  routedTo?: PromptRoute | null;
+  /**
+   * Names this one prompt, which a request id does not: the provider can ask
+   * again under the same id. Opaque; an answer echoes it, so it answers only
+   * the prompt this screen showed.
+   */
+  occurrence?: string;
+}
+
+/** The standing agent a worker's prompt was delivered to. */
+export interface PromptRoute {
+  threadId: string;
+  title: string;
 }
 
 export interface ContextWindow {
@@ -134,6 +151,10 @@ export interface UserInputRequest {
   toolName: string;
   title: string;
   questions: UserInputQuestion[];
+  /** Same route as ApprovalRequest.routedTo. */
+  routedTo?: PromptRoute | null;
+  /** Same as ApprovalRequest.occurrence. */
+  occurrence?: string;
 }
 
 export interface UserInputEvent {
@@ -573,6 +594,13 @@ export interface TurnCompletedEvent {
   aborted?: boolean;
   /** False for nested subagent/internal turns that should not reorder the sidebar. */
   countsAsActivity?: boolean;
+  /**
+   * True for a tick that ended cleanly: a turn only loop and watch wakes
+   * started, which nobody needs to read. It does not move the thread in
+   * the sidebar, and the thread row the backend sent just before it
+   * carries the read marker it kept.
+   */
+  quiet?: boolean;
   /**
    * Thread history invalidation stamps (docs/architecture/thread-replica-sync.md
    * §3) read as this event was built. Adopted IN MEMORY ONLY: a writer

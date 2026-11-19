@@ -55,8 +55,8 @@ func TestFullIdResolvesLocallyWithoutFanningOut(t *testing.T) {
 	if !target.Local || target.ThreadID != localThreadID {
 		t.Fatalf("target = %+v, want the local thread", target)
 	}
-	if p.peer.resolves != 0 {
-		t.Fatalf("the peer was asked %d times about a full id that matched locally", p.peer.resolves)
+	if p.peer.resolves.Load() != 0 {
+		t.Fatalf("the peer was asked %d times about a full id that matched locally", p.peer.resolves.Load())
 	}
 }
 
@@ -73,8 +73,8 @@ func TestFullIdFansOutOnALocalMiss(t *testing.T) {
 	if target.Local || target.ComputerID != "studio" || target.Computer != "Studio" {
 		t.Fatalf("target = %+v, want the thread on Studio", target)
 	}
-	if p.peer.resolves != 1 {
-		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves)
+	if p.peer.resolves.Load() != 1 {
+		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves.Load())
 	}
 }
 
@@ -138,6 +138,9 @@ func TestMissWithASilentComputerIsIncomplete(t *testing.T) {
 	if !strings.Contains(message, "Studio did not answer") {
 		t.Fatalf("the refusal does not name the silent computer: %s", message)
 	}
+	if !strings.HasPrefix(message, "No thread or assistant matches") {
+		t.Fatalf("the refusal does not say a name may be an assistant's: %s", message)
+	}
 }
 
 // TestMissEverywhereIsNotFound when every computer answered.
@@ -197,8 +200,8 @@ func TestHintNarrowsToOneComputer(t *testing.T) {
 	if target.ThreadID != twinThreadID {
 		t.Fatalf("target = %+v, want the Studio thread", target)
 	}
-	if p.peer.resolves != 1 {
-		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves)
+	if p.peer.resolves.Load() != 1 {
+		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves.Load())
 	}
 }
 
@@ -241,8 +244,8 @@ func TestLocalAmbiguityIsRefusedWithoutPairing(t *testing.T) {
 	app.addThread(Thread{ID: twinThreadID, Title: "Two"})
 
 	_, err := soloSession(app).resolve(context.Background(), "1111", "")
-	if code, _ := publicMessage(err); code != CodeInvalidRequest {
-		t.Fatalf("a too-short prefix should be refused as an invalid request, got %v", err)
+	if code, message := publicMessage(err); code != CodeNotFound || !strings.Contains(message, "a thread id prefix needs at least 6 characters") {
+		t.Fatalf("a too-short reference names only an assistant and should miss with the prefix rule, got %v", err)
 	}
 	_, err = soloSession(app).resolve(context.Background(), "111111", "")
 	code, _ := publicMessage(err)

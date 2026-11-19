@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
@@ -17,7 +18,20 @@ import (
 )
 
 type CreateOptions struct {
-	ProjectID                  string
+	ProjectID string
+	// Home, in place of ProjectID, creates a thread outside every project
+	// with this folder as its workspace: an assistant's thread or helper
+	// (docs/specs/standing-agents.md, ruling 38). Groups, worktrees and
+	// recent workspaces do not apply to it.
+	Home string
+	// HelperOfAgentID records the thread as a helper of this assistant. A
+	// helper lives in the home, so it needs Home and no project.
+	HelperOfAgentID string
+	// SpawnInstructions and SpawnLevel are a thread_spawn's: the text
+	// appended to the thread's system prompt for its life, and the
+	// sub-thread level a paired computer's spawn carried (store.Thread).
+	SpawnInstructions          string
+	SpawnLevel                 int
 	GroupID                    string
 	Title                      string
 	Provider                   string
@@ -110,12 +124,26 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		return store.Thread{}, err
 	}
 	projectID := strings.TrimSpace(opts.ProjectID)
-	if projectID == "" {
+	home := strings.TrimSpace(opts.Home)
+	var project store.Project
+	switch {
+	case strings.TrimSpace(opts.HelperOfAgentID) != "" && home == "":
+		return store.Thread{}, fmt.Errorf("create thread: a helper lives in its assistant's home, outside every project")
+	case home != "":
+		if projectID != "" || strings.TrimSpace(opts.GroupID) != "" || opts.Worktree != nil ||
+			strings.TrimSpace(opts.WorktreePath) != "" || strings.TrimSpace(opts.WorkspaceOverride) != "" || strings.TrimSpace(opts.Branch) != "" {
+			return store.Thread{}, fmt.Errorf("create thread: a thread in a home has no project, group, worktree, branch or other workspace")
+		}
+		if !filepath.IsAbs(home) {
+			return store.Thread{}, fmt.Errorf("create thread: home %q is not an absolute path", home)
+		}
+	case projectID == "":
 		return store.Thread{}, fmt.Errorf("create thread: projectId is required")
-	}
-	project, err := database.GetProject(projectID)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+	default:
+		project, err = database.GetProject(projectID)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+		}
 	}
 
 	groupID := strings.TrimSpace(opts.GroupID)
@@ -220,7 +248,10 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		}
 	}
 	workspace := strings.TrimSpace(opts.WorkspaceOverride)
-	if workspace == "" {
+	switch {
+	case home != "":
+		workspace = home
+	case workspace == "":
 		workspace = project.Path
 	}
 	var branch, worktreePath string
@@ -261,8 +292,14 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 	default:
 		branch = explicitBranch
 	}
-	if branch == "" && s.deps.Workspace != nil {
+	if branch == "" && s.deps.Workspace != nil && home == "" {
 		branch = s.deps.Workspace.CurrentBranch(workspace)
+	}
+
+	// A home is not a checkout: it has no git coordinates to record.
+	var origin store.ThreadOrigin
+	if home == "" {
+		origin = s.observeOrigin(workspace)
 	}
 
 	title := strings.TrimSpace(opts.Title)
@@ -291,7 +328,10 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
 		CreatedByDevice:            opts.CreatedByDevice,
-		Origin:                     s.observeOrigin(workspace),
+		HelperOfAgentID:            strings.TrimSpace(opts.HelperOfAgentID),
+		SpawnInstructions:          opts.SpawnInstructions,
+		SpawnLevel:                 opts.SpawnLevel,
+		Origin:                     origin,
 	}
 	created, err := database.CreateThreadAndRead(thread)
 	if err != nil {
@@ -306,7 +346,7 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 	if cutOut != nil {
 		*cutOut = cut
 	}
-	if s.deps.RecentWorkspaces != nil {
+	if s.deps.RecentWorkspaces != nil && home == "" {
 		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)
 	}
 	if cutWorktree && s.deps.WorktreeSetup != nil {

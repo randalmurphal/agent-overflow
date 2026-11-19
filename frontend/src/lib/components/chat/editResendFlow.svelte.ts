@@ -186,6 +186,12 @@ export interface EditResendFlowHandle {
   /** The kill confirmation was accepted / declined. */
   confirmPending(): void;
   declinePending(): void;
+  /**
+   * The thread takes no edit now (its assistants were turned off): the
+   * editor and any pending confirmation close, and the edited text goes
+   * to the composer's draft. An edit already sent runs out.
+   */
+  closeKeepingDraft(): void;
   /** Invalidation passes; call from an `$effect` so their reads track. */
   invalidateOnThreadChange(): void;
   invalidateOnAnchorRemoved(): void;
@@ -404,7 +410,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
         try {
           const state = await reconcile();
           if (flow === executing) flow = state.userItemExists ? { ...sessionOf(executing), stage: 'editing' } : null;
-          if (!state.sendAccepted && !state.userItemExists) await recoverEditedText(executing);
+          if (!state.sendAccepted && !state.userItemExists) await recoverEditedText(executing, executing.payload.message.trim());
           else if (!opts.getComposerDraft().hasPendingSave) await opts.getComposerDraft().reloadFromBackend(thread.id);
         } catch (recoveryError) {
           addErrorToast(`Could not restore the conversation state: ${userFacingError(recoveryError)}`, recoveryError);
@@ -437,7 +443,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     // The deleted editor hands its text to the composer. Merge against live
     // keystrokes; backend recovery protects the edit if this client disappears.
     if (flow === failed) flow = null;
-    void recoverEditedText(failed);
+    void recoverEditedText(failed, failed.payload.message.trim());
     addErrorToast('Reverted, but sending failed — your message is in the composer.', err);
   }
 
@@ -463,7 +469,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
    *     the intact crash copy — attachments included — and rewriting it
    *     could only race a fresher save.
    */
-  async function recoverEditedText(failed: ExecutingFlow): Promise<void> {
+  async function recoverEditedText(failed: EditFlow, staged: string): Promise<void> {
     const threadId = failed.item.threadId;
     const edited = {
       content: failed.draft.content,
@@ -472,7 +478,6 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     if (edited.content.trim() === '' && edited.attachments.length === 0) return;
     const composerDraft = opts.getComposerDraft();
     if (composerDraft.threadId === threadId) {
-      const staged = failed.payload.message.trim();
       const alreadyRecovered = (composerDraft.content === staged || composerDraft.content.startsWith(`${staged}\n\n`))
         && edited.attachments.every(attachment => composerDraft.attachments.some(current => current.id === attachment.id));
       if (staged && alreadyRecovered) return;
@@ -495,7 +500,6 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     }
     try {
       const row = await composerDraft.loadPersistedSnapshot(threadId);
-      const staged = failed.payload.message.trim();
       if (staged !== '' && row.content.includes(staged)) return;
       // restoreDraftFor persists to the named thread and skips the local
       // paint when the store points elsewhere — exactly the cross-thread
@@ -559,6 +563,14 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
       // the user consented to nothing, and their edit is still valid.
       if (current?.stage !== 'confirm') return;
       flow = { ...sessionOf(current), stage: 'editing' };
+    },
+
+    closeKeepingDraft(): void {
+      const current = flow;
+      if (!current || current.stage === 'executing') return;
+      flow = null;
+      // The draft keeps the editor's attachments, so its uploads stay.
+      void recoverEditedText(current, '');
     },
 
     // A thread switch voids the flow at any stage: the editor's consent

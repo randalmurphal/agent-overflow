@@ -33,15 +33,20 @@ describe('usage period store', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe('week');
   });
 
-  it('setUsagePeriod writes through to Go settings (localStorage is not durable)', () => {
+  it('setUsagePeriod writes through to Go settings (localStorage is not durable)', async () => {
     // The webview origin changes every launch (ephemeral transport
     // port), so localStorage alone silently resets the period; the Go
-    // settings patch is the durable copy.
+    // settings patch is the durable copy. A device preference reaches the
+    // computer once its settings answer names the key.
+    setBindingMock('GetSettings', async () => ({ usagePeriod: 'month' }));
     const updateMock = setBindingMock('UpdateSettings', async () => null);
     setUsagePeriod('day');
+    expect(updateMock).not.toHaveBeenCalled();
+    await loadSettings();
     expect(updateMock).toHaveBeenCalledWith(
       expect.objectContaining({ usagePeriod: 'day' }),
     );
+    expect(getUsagePeriod()).toBe('day');
   });
 
   describe('syncUsagePeriodFromSettings', () => {

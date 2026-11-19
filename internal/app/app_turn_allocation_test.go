@@ -105,8 +105,13 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 			return
 		}
 		app.sendStageFn = nil
+		sess, ok := app.sessionManager().get(threadID)
+		if !ok {
+			t.Error("no session to replace")
+			return
+		}
 		app.triage.CleanupThread(threadID)
-		app.triage.MarkThreadActive(threadID)
+		app.triage.MarkThreadActive(threadID, sess.Token)
 	}
 	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
@@ -172,7 +177,7 @@ func TestFlushDispatchHoldsTurnAllocationThroughRegistration(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{ID: "queue:alloc", Message: "queued", Payload: json.RawMessage(`{}`)}})
+		dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:alloc", Message: "queued", Payload: json.RawMessage(`{}`)}})
 	}()
 	time.Sleep(100 * time.Millisecond)
 	if app.triage.HasPendingSendForThread(thread.ID) {

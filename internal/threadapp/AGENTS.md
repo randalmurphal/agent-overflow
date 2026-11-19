@@ -27,12 +27,12 @@ projection, and destructive cleanup.
   execution. It checks AO and native ownership, including deleted display rows
   retained for transfer. `CheckCleanup` additionally admits only confirmed
   outgoing transfer cleanup.
-- `DeleteTree` performs slow provider and terminal cleanup before taking the
+- `DeleteThread` performs slow provider and terminal cleanup before taking the
   mutation lock for final attachment cleanup and row deletion. Preserve action
   to mutation order. Uploads stage outside the mutation lock, then reacquire it
   for ownership-checked publication.
-- `DeletePorts.CheckDelete` runs before cleanup and again under the final
-  mutation lock. Recursive deletion applies it to every child.
+- `DeletePorts.StopRemoteWork` runs before cleanup and again under the final
+  mutation lock.
 - Public metadata reads use `GetOwnedThread`. Direct store reads may expose
   retained transfer caches and must not back public methods.
 - Creation provenance is write-once. Every creation path supplies

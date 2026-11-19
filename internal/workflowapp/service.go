@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
-	"agent-overflow/internal/workflow/scheduler"
 	"agent-overflow/internal/workflowdefs"
 	"agent-overflow/internal/workflowhost"
 	"agent-overflow/internal/workflowwatch"
@@ -57,8 +56,14 @@ type Deps struct {
 	WakeDelivery        WakeDeliveryPorts
 	Attention           AttentionPorts
 	ResumeRun           func(context.Context, string) error
-	Logf                func(format string, args ...any)
-	Now                 func() time.Time
+	// OriginChanged hears a run's binding move, with the thread it
+	// reported to before and the one it reports to now.
+	OriginChanged func(store.WorkItemOriginChange)
+	// ReportSettled hears that a rest's report of run itemID is no longer
+	// owed (settleOwedReport), once the store says so.
+	ReportSettled func(itemID string)
+	Logf          func(format string, args ...any)
+	Now           func() time.Time
 }
 
 // Service owns the store-backed workflow agent read surface. It has no
@@ -69,10 +74,9 @@ type Service struct {
 	runtimeMu          sync.RWMutex
 	engine             *engine.Engine
 	runner             *workflowhost.Runner
-	scheduler          *scheduler.Scheduler
 	autoDisposition    serialqueue.Queue
-	schedulerQueue     serialqueue.Queue
 	wake               serialqueue.Queue
+	holds              wakeHolds
 	autoResume         autoResumeState
 	digestMu           sync.Mutex
 	digestSlots        chan struct{}
@@ -90,6 +94,16 @@ func (s *Service) HandleEngineEvent(name eventchan.Channel, payload any, emit fu
 }
 
 func (s *Service) WaitWake() { s.wake.Wait() }
+
+// BlockWakeQueueForTesting holds the wake queue until the returned release
+// runs: every wake job queued meanwhile runs after it, as one does behind a
+// slow delivery.
+func (s *Service) BlockWakeQueueForTesting() (release func()) {
+	gate := make(chan struct{})
+	s.wake.Go(func() { <-gate })
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
+}
 
 func New(deps Deps) *Service {
 	if deps.Now == nil {
@@ -122,7 +136,7 @@ func requireCallerScope(ctx context.Context) (transport.CallerScope, error) {
 	scope, ok := transport.CallerScopeFrom(ctx)
 	if !ok {
 		return transport.CallerScope{}, fmt.Errorf(
-			"this method is part of the ao CLI surface and requires a session-scoped token")
+			"this method is part of the workflow tools surface and requires a session caller scope")
 	}
 	if strings.TrimSpace(scope.ProjectID) == "" {
 		return transport.CallerScope{}, fmt.Errorf("this session is not attached to a project")

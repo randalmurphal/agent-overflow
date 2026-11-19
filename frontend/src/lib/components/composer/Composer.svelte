@@ -52,6 +52,8 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterrupt } from '../../stores/threadInterrupt.svelte';
+  import { endThreadSession, isAssistantDraftMoved } from '../../stores/assistants.svelte';
+  import { threadSessionLive } from '../../stores/threadSessionLive.svelte';
   import { isEmptyDraftCleanupPending, removedOrDeletionObserved, settleEmptyDraftCleanup, withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import { keepDraftInNewThread } from '../../stores/deletedDraftThread';
   import { applyThreadDeleted } from '../../stores/eventsThreadRows';
@@ -87,7 +89,7 @@
   import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
   import { hasScope } from '../../transport/scopes';
-  import { getFlushedForThread, getQueueForThread, registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { personPendingMessages, registerQueueItem } from '../../stores/sendQueue.svelte';
   import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
@@ -138,6 +140,9 @@
   // and the disabled state is the affordance the rest of the app already
   // uses for a control that is out of reach.
   let sendUngranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
+  // An agent's question runs in this hidden copy: it is watched and
+  // stopped from here, never written to.
+  let askCopy = $derived(Boolean(pane.thread?.askCopy));
   // The thread's machine, when it is not this page's own and its socket is
   // down. Empty on a single-backend client and for home, whose drop the
   // transport banner already announces.
@@ -200,7 +205,7 @@
   // An engine that cannot capture for any source the computer has on shows
   // no mic rather than one that fails.
   let showDictation = $derived(
-    !isDisabled && !sendUngranted && !offline && dictationMachine !== null
+    !isDisabled && !sendUngranted && !askCopy && !offline && dictationMachine !== null
       && dictationSource(dictationMachine, dictationEngine) !== null,
   );
   // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
@@ -328,6 +333,7 @@
     shell: shellSendState,
     isDisabled,
     sendUngranted,
+    askCopy,
     sending: false,
     sendSuspended: sendSuspended || interruptPending,
     hasBlockingPrompt,
@@ -346,6 +352,7 @@
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
     sendUngranted,
+    askCopy,
     unreachableTarget,
     offline,
     compact: compactLayout,
@@ -808,6 +815,12 @@
         // admission too. Release typing admission once preparation succeeds.
         await registerQueueItem(midTurnThreadId, message, sendOptions, draftReady.then(release));
       } catch (err) {
+        // A handoff moved this text to the assistant's new thread's
+        // composer; restoring it here as well would leave it in two.
+        if (isAssistantDraftMoved(err)) {
+          addToast('info', err.message);
+          return;
+        }
         pane.setGeneralError(`Failed to queue message: ${String(err)}`, err);
         // Putting the message back is a second, independent operation: if
         // it fails too, the banner has to say so rather than let the queue
@@ -935,6 +948,11 @@
     runInterrupt(pane);
   }
 
+  function endSession() {
+    const thread = pane.thread;
+    if (thread) void endThreadSession(thread);
+  }
+
   function resetTextareaHeight() {
     surface?.resetInputHeight();
   }
@@ -981,10 +999,7 @@
     flushDraft: () => draft.flushPending(),
     fetchHistory: (threadId) => GetThreadUserMessageHistory(threadId, HISTORY_RECALL_LIMIT),
     paneItems: () => pane.items,
-    pendingMessages: () => [
-      ...getFlushedForThread(pane.threadId).map((f) => f.message),
-      ...getQueueForThread(pane.threadId).map((q) => q.message),
-    ],
+    pendingMessages: () => personPendingMessages(pane.threadId),
     paint: paintHistoryPreview,
     reportError: (msg, err) => pane.setGeneralError(msg, err),
   });
@@ -1085,6 +1100,12 @@
   // first. That is not a failure to report — the question is closed, just not
   // by this click — so it resolves quietly and the panel closes on the
   // resolution event like any other.
+  // A prompt asked again under the same request id is another prompt: its
+  // panel starts fresh rather than carry the earlier one's answers.
+  function promptKey(prompt: { requestId: string; occurrence?: string }): string {
+    return `${prompt.requestId}\u0000${prompt.occurrence ?? ''}`;
+  }
+
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
     if (!threadId || respondUngranted) return;
@@ -1189,6 +1210,8 @@
       <ActivityRail
         {pane}
         bg={activityRail.bg}
+        wakes={activityRail.wakes}
+        agents={activityRail.agents}
         clock={activityRail.clock}
         usage={activityRail.usage}
         inputRequest={hasUserInputPrompt ? activeUserInput : null}
@@ -1198,7 +1221,7 @@
     {/if}
 
     {#if activeApproval}
-      {#key activeApproval.requestId}
+      {#key promptKey(activeApproval)}
         <ComposerPendingApprovalPanel
           approval={activeApproval}
           count={blockingApprovals.length}
@@ -1208,7 +1231,7 @@
         />
       {/key}
     {:else if activeUserInput && pane.threadId}
-      {#key activeUserInput.requestId}
+      {#key promptKey(activeUserInput)}
         <ComposerPendingUserInputPanel
           request={activeUserInput}
           ungranted={respondUngranted}
@@ -1312,6 +1335,9 @@
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
       onInterrupt={interrupt}
+      onEndSession={pane.thread?.agentId ? endSession : undefined}
+      sessionLive={threadSessionLive(pane.threadId)}
+      sessionUngranted={sendUngranted}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

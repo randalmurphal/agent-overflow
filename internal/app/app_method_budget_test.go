@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/workflowapp"
 )
 
 // methodServerBounds is how long each budgeted method's server side may
@@ -91,7 +92,9 @@ var methodServerBounds = map[string]time.Duration{
 	"InterruptTurn":             claude.DefaultControlRequestCeiling + transport.DefaultMethodBudget/2,
 	"InterruptAndRevertIfClean": claude.DefaultControlRequestCeiling + transport.DefaultMethodBudget/2,
 	// A forwarded wait, then the page it renders.
-	"ThreadToolQuery": time.Duration(threadtools.MaxForwardedWaitSeconds)*time.Second + 5*time.Second,
+	"ThreadToolQuery":    time.Duration(threadtools.MaxForwardedWaitSeconds)*time.Second + 5*time.Second,
+	"ThreadOwnerChanges": ownerWaitBound,
+	"ThreadToolWatch":    time.Duration(threadtools.MaxForwardedWaitSeconds)*time.Second + 5*time.Second,
 	// A spawn may fork (the Codex cut), resolve its worktree's name against
 	// origin and add the worktree.
 	"ThreadToolCall": codexForkTimeout + hooked + 2*transport.DefaultMethodBudget,
@@ -141,9 +144,9 @@ func TestMethodBudgetsCoverServerBounds(t *testing.T) {
 		}
 	}
 	for name, bound := range map[string]time.Duration{
-		"maxWorkflowWatchHold":  maxWorkflowWatchHold,
-		"readAloudTimeout":      readAloudTimeout,
-		"codexReviewRPCTimeout": codexReviewRPCTimeout,
+		"workflowapp.MaxWatchHold": workflowapp.MaxWatchHold,
+		"readAloudTimeout":         readAloudTimeout,
+		"codexReviewRPCTimeout":    codexReviewRPCTimeout,
 	} {
 		if bound > transport.DefaultMethodBudget {
 			t.Errorf("%s (%s) bounds a method with no budget of its own and is past the default %s", name, bound, transport.DefaultMethodBudget)

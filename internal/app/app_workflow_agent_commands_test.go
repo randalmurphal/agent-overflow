@@ -1,14 +1,13 @@
 package app
 
 import (
-	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
-	"agent-overflow/internal/workflow/scheduler"
+	"agent-overflow/internal/workflowtools"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,6 +41,16 @@ inputs:
     optional: true
     schema:
       type: string`
+
+// workflowAgentRunStatus is run_status's document, as the tool adapter
+// projects it.
+func (a *App) workflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
+	observed, err := workflowToolsAdapter{a: a}.RunStatus(ctx, itemID)
+	if err != nil {
+		return WorkflowAgentRunView{}, err
+	}
+	return observed.Result.(WorkflowAgentRunView), nil
+}
 
 // newCLIFixture boots the tool-driver workflow fixture with a command that
 // always succeeds, so a run itself reaches `done` without any provider
@@ -98,7 +107,7 @@ func TestWorkflowAgentStartRunBindsAnInteractiveThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread.ID))
-	result, err := fixture.app.WorkflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	result, err := fixture.app.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "start from a conversation",
 	})
 	if err != nil {
@@ -124,7 +133,7 @@ func TestWorkflowAgentStartRunBindsAnInteractiveThread(t *testing.T) {
 	// A second identical start from an interactive scope is a second run: an
 	// interactive invocation is a human-approved bash call, and replaying one is
 	// the human's decision.
-	second, err := fixture.app.WorkflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	second, err := fixture.app.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "start from a conversation",
 	})
 	if err != nil {
@@ -149,7 +158,7 @@ func TestWorkflowAgentStartRunReportsAnUnbindableThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread.ID))
-	result, err := fixture.app.WorkflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	result, err := fixture.app.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "unbindable",
 	})
 	if err != nil {
@@ -180,7 +189,7 @@ func TestWorkflowAgentStartRunSurfacesAndSkipsForAPhase(t *testing.T) {
 		WorkflowID: "tool-flow", Goal: "decompose",
 		Seeds: json.RawMessage(`{"depth":1,"label":"a"}`),
 	}
-	first, err := fixture.app.WorkflowAgentStartRun(ctx, input)
+	first, err := fixture.app.workflowAgentStartRun(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +210,7 @@ func TestWorkflowAgentStartRunSurfacesAndSkipsForAPhase(t *testing.T) {
 
 	// Re-entering the phase with the same arguments must NOT fire again; it must
 	// answer with the run the earlier attempt started.
-	replay, err := fixture.app.WorkflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	replay, err := fixture.app.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "decompose",
 		// Reordered seeds hash the same: the payload hash is canonical JSON.
 		Seeds: json.RawMessage(`{"label":"a","depth":1}`),
@@ -214,7 +223,7 @@ func TestWorkflowAgentStartRunSurfacesAndSkipsForAPhase(t *testing.T) {
 	}
 
 	// A different payload is a different effect and does fire.
-	different, err := fixture.app.WorkflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	different, err := fixture.app.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "decompose", Seeds: json.RawMessage(`{"depth":2,"label":"a"}`),
 	})
 	if err != nil {
@@ -229,7 +238,7 @@ func TestWorkflowAgentStartRunSurfacesAndSkipsForAPhase(t *testing.T) {
 	// different effect: the ledger key is (item, phase, tool, hash).
 	otherPhase := scope
 	otherPhase.PhaseID = "verify"
-	sibling, err := fixture.app.WorkflowAgentStartRun(
+	sibling, err := fixture.app.workflowAgentStartRun(
 		transport.WithCallerScope(context.Background(), otherPhase), input)
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +254,7 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 	fixture := newCLIFixture(t)
 	scope := phaseScope(fixture, "caller-item", def.GrantStartRun)
 	ctx := transport.WithCallerScope(context.Background(), scope)
-	started, err := fixture.app.WorkflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	started, err := fixture.app.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "mine",
 	})
 	if err != nil {
@@ -260,13 +269,13 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, fixture.app, foreign.ID, engine.StateDone, "")
-	if _, err := fixture.app.WorkflowAgentRunStatus(ctx, foreign.ID); err == nil {
+	if _, err := fixture.app.workflowAgentRunStatus(ctx, foreign.ID); err == nil {
 		t.Fatal("a start-run-only phase read a run it did not start")
 	}
 	// ... and readable with it.
 	introspecting := transport.WithCallerScope(context.Background(),
 		phaseScope(fixture, "caller-item", def.GrantStartRun, def.GrantIntrospect))
-	if _, err := fixture.app.WorkflowAgentRunStatus(introspecting, foreign.ID); err != nil {
+	if _, err := fixture.app.workflowAgentRunStatus(introspecting, foreign.ID); err != nil {
 		t.Fatalf("introspect could not read a project run: %v", err)
 	}
 	// Acting on it stays refused even with introspect: reading the project is
@@ -286,10 +295,10 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 
 	// The listing needs introspect outright — an empty list would read as "no
 	// runs", which is a different and wrong answer.
-	if _, err := fixture.app.WorkflowAgentListRuns(ctx, false); err == nil {
+	if _, err := fixture.app.workflowAgentListRuns(ctx, false); err == nil {
 		t.Fatal("a start-run-only phase listed the project's runs")
 	}
-	views, err := fixture.app.WorkflowAgentListRuns(introspecting, false)
+	views, err := fixture.app.workflowAgentListRuns(introspecting, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,8 +312,8 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 	}
 }
 
-// `run status` is the only CLI surface that can name a run's failed units, and
-// those ids are the second argument of `run retry-unit`. Reporting
+// `run_status` is the only CLI surface that can name a run's failed units, and
+// those ids are the second argument of `retry_unit`. Reporting
 // needs-human(unit-failed) without them tells an agent a fan-out needs repair
 // and leaves the ids only in the app — the one place a scoped credential cannot
 // look. The parent rides along for the same reason: a campaign's runs are a
@@ -340,7 +349,7 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-2", UnitIndex: 1,
 			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitDone, UnitAttempt: 1},
 		// A failed join is a failed unit of the attempt, so it is named here for
-		// the same reason every other one is: `run retry-unit` takes its id.
+		// the same reason every other one is: `retry_unit` takes its id.
 		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "merge", UnitIndex: 2,
 			Kind: store.WorkItemUnitKindJoin, Status: store.WorkItemUnitFailed, UnitAttempt: 1,
 			Feedback: "interrupted with its phase attempt (parked)"},
@@ -355,7 +364,7 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	interactive := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread.ID))
-	view, err := fixture.app.WorkflowAgentRunStatus(interactive, child.ID)
+	view, err := fixture.app.workflowAgentRunStatus(interactive, child.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,14 +388,14 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 	// A run that is not parked on a failed fan-out carries none, and neither
 	// does the list: one unit query per listed run is a fan-out of its own, and
 	// a list is for locating a run rather than repairing one.
-	rootView, err := fixture.app.WorkflowAgentRunStatus(interactive, root.ID)
+	rootView, err := fixture.app.workflowAgentRunStatus(interactive, root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rootView.FailedUnits) != 0 {
 		t.Fatalf("a done run reported failed units: %#v", rootView.FailedUnits)
 	}
-	views, err := fixture.app.WorkflowAgentListRuns(interactive, false)
+	views, err := fixture.app.workflowAgentListRuns(interactive, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +457,7 @@ func TestAnInteractiveScopeActsOnDescendantRunsAndAPhaseScopeDoesNot(t *testing.
 				t.Fatalf("an interactive session was refused %q on %s: %v", action, itemID, err)
 			}
 		}
-		if _, err := fixture.app.WorkflowAgentRunStatus(interactive, itemID); err != nil {
+		if _, err := fixture.app.workflowAgentRunStatus(interactive, itemID); err != nil {
 			t.Fatalf("an interactive session could not read %s: %v", itemID, err)
 		}
 	}
@@ -481,7 +490,7 @@ func TestResolvingAParkIsConfinedToWhatAPhaseStarted(t *testing.T) {
 	fixture := newCLIFixture(t)
 	resolving := transport.WithCallerScope(context.Background(),
 		phaseScope(fixture, "caller-item", def.GrantStartRun, def.GrantResolve))
-	started, err := fixture.app.WorkflowAgentStartRun(resolving, WorkflowAgentStartInput{
+	started, err := fixture.app.workflowAgentStartRun(resolving, WorkflowAgentStartInput{
 		WorkflowID: "tool-flow", Goal: "mine",
 	})
 	if err != nil {
@@ -541,8 +550,8 @@ func TestResolvingAParkIsConfinedToWhatAPhaseStarted(t *testing.T) {
 // The campaign shape's second blind spot: a gate consumed the outputs of ONE
 // attempt, and a reader holding only the CLI could see neither which attempt
 // that was nor what it ran with. Both are already persisted — the attempt rows
-// carry the gate trace, the thread rows carry the settings resolution landed on
-// — so `run status` projects them rather than making an agent open the app.
+// carry the gate trace, the thread rows carry the settings resolution landed on,
+// so `run_status` projects them rather than making an agent open the app.
 func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 	t.Parallel()
 	fixture := newCLIFixture(t)
@@ -624,7 +633,7 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	interactive := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread2.ID))
-	view, err := fixture.app.WorkflowAgentRunStatus(interactive, item.ID)
+	view, err := fixture.app.workflowAgentRunStatus(interactive, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +652,7 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 
 	// A listing pays one query per row, so it carries none — the same bound
 	// FailedUnits is held to.
-	views, err := fixture.app.WorkflowAgentListRuns(interactive, false)
+	views, err := fixture.app.workflowAgentListRuns(interactive, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,73 +660,6 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 		if len(listed.Phases) != 0 {
 			t.Fatalf("run %s carried phase attempts in a list: %#v", listed.ItemID, listed.Phases)
 		}
-	}
-}
-
-func TestWorkflowAgentNotesAndScheduleRecordOneEffect(t *testing.T) {
-	t.Parallel()
-	fixture := newCLIFixture(t)
-	scope := phaseScope(fixture, "caller-item", def.GrantSchedule, def.GrantUpdateNotes)
-	ctx := transport.WithCallerScope(context.Background(), scope)
-
-	schedule := WorkflowAgentScheduleInput{WorkflowID: "tool-flow", Cron: "0 3 * * *", Name: "Nightly"}
-	created, err := fixture.app.WorkflowAgentSchedule(ctx, schedule)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.Skipped || created.AutomationID == "" {
-		t.Fatalf("schedule = %#v", created)
-	}
-	replay, err := fixture.app.WorkflowAgentSchedule(ctx, schedule)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !replay.Skipped || replay.AutomationID != created.AutomationID {
-		t.Fatalf("schedule replay = %#v, want a skip naming %s", replay, created.AutomationID)
-	}
-	automations, err := fixture.app.store.ListAutomations(fixture.project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(automations) != 1 {
-		t.Fatalf("re-entering the phase created %d automations", len(automations))
-	}
-	var trigger scheduler.Trigger
-	if err := json.Unmarshal(automations[0].Trigger, &trigger); err != nil {
-		t.Fatal(err)
-	}
-	if trigger.Kind != scheduler.KindCron || trigger.Expr != "0 3 * * *" {
-		t.Fatalf("trigger = %#v", trigger)
-	}
-
-	notesResult, err := fixture.app.WorkflowAgentSetNotes(ctx, created.AutomationID, "watch the flaky suite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if notesResult.Skipped {
-		t.Fatal("the first notes write reported a skip")
-	}
-	notes, err := fixture.app.WorkflowAgentGetNotes(ctx, created.AutomationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if notes != "watch the flaky suite" {
-		t.Fatalf("notes = %q", notes)
-	}
-	again, err := fixture.app.WorkflowAgentSetNotes(ctx, created.AutomationID, "watch the flaky suite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !again.Skipped {
-		t.Fatal("rewriting identical notes fired a second write")
-	}
-	// Different notes are a different effect.
-	changed, err := fixture.app.WorkflowAgentSetNotes(ctx, created.AutomationID, "the suite is fixed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed.Skipped {
-		t.Fatal("a changed notes write was skipped")
 	}
 }
 
@@ -746,7 +688,7 @@ func TestEffectPayloadHashIsCanonical(t *testing.T) {
 func TestWorkflowAgentMethodsRequireAScope(t *testing.T) {
 	t.Parallel()
 	fixture := newCLIFixture(t)
-	if _, err := fixture.app.WorkflowAgentStartRun(context.Background(), WorkflowAgentStartInput{
+	if _, err := fixture.app.workflowAgentStartRun(context.Background(), WorkflowAgentStartInput{
 		WorkflowID: "tool-flow",
 	}); err == nil {
 		t.Fatal("an unscoped caller started a run through the agent surface")
@@ -755,7 +697,7 @@ func TestWorkflowAgentMethodsRequireAScope(t *testing.T) {
 	// project from the credential, not from an argument.
 	ctx := transport.WithCallerScope(context.Background(),
 		transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: "t"})
-	if _, err := fixture.app.WorkflowAgentListRuns(ctx, false); err == nil {
+	if _, err := fixture.app.workflowAgentListRuns(ctx, false); err == nil {
 		t.Fatal("a projectless scope listed runs")
 	}
 }
@@ -781,36 +723,37 @@ func TestWorkflowComposerBlockRendersTheProjectSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"agent-overflow run start", "agent-overflow workflow list",
-		aocli.EnvEndpoint, "tool-flow (shared)", fixture.configRoot,
+		"run_start(", "workflow_list", workflowtools.MCPServerName,
+		"tool-flow (shared)", fixture.configRoot,
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("composer block is missing %q:\n%s", want, block)
 		}
 	}
-	// This fixture's App never ran Start, so it published no command; the block
-	// has to say so instead of instructing an agent to run something it cannot
-	// resolve. The reachable case is covered in app_cli_path_test.go and by the
-	// e2e spec that resolves the name through the published directory alone.
-	if !strings.Contains(block, "could not publish `agent-overflow`") {
-		t.Fatalf("composer block promised a command the app never published:\n%s", block)
-	}
-	fixture.app.cliBinDir = t.TempDir()
-	published, err := fixture.app.workflowComposerBlock(thread.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(published, "could not publish") {
-		t.Fatalf("a published command was reported as missing:\n%s", published)
-	}
 	// The run above finished, so it is not active and must not be listed.
 	if strings.Contains(block, item.ID) {
 		t.Fatalf("a finished run appeared in the active-runs list:\n%s", block)
 	}
-	// The thread has no live session, so the block must say the environment is
-	// not there yet rather than promise credentials that do not exist.
+	// The thread has no live session, so the block must say the tools are not
+	// attached yet rather than promise tools the thread does not have.
 	if !strings.Contains(block, "no live session yet") {
 		t.Fatalf("composer block claimed a session that does not exist:\n%s", block)
+	}
+	// Once a session registers the workflow tools, the block says they are here.
+	refreshed, err := fixture.app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.app.workflowMCPConfigForThread(refreshed, "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { fixture.app.workflowMCPServer().UnregisterThread(thread.ID) })
+	ready, err := fixture.app.workflowComposerBlock(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ready, "This session already has them") || strings.Contains(ready, "no live session yet") {
+		t.Fatalf("composer block missed the registered workflow tools:\n%s", ready)
 	}
 	if _, err := fixture.app.workflowComposerBlock(""); err == nil {
 		t.Fatal("an empty thread id produced a block")
@@ -822,13 +765,13 @@ func TestWorkflowAmendmentNoteNamesWhatMakesTheValueTake(t *testing.T) {
 	fresh := workflowAmendmentNote(engine.SeedAmendment{
 		ItemID: "run-1", PhaseID: "wave", Effect: engine.SeedEffectFreshEntry,
 	})
-	if !strings.Contains(fresh, "run resume run-1 --phase wave") {
-		t.Fatalf("fresh-entry note = %q, want the verb that enters the phase now", fresh)
+	if !strings.Contains(fresh, `run_control(run_id: "run-1", action: "resume", phase_id: "wave")`) {
+		t.Fatalf("fresh-entry note = %q, want the call that enters the phase now", fresh)
 	}
 	next := workflowAmendmentNote(engine.SeedAmendment{
 		ItemID: "run-1", PhaseID: "wave", Effect: engine.SeedEffectNextAttempt,
 	})
-	if strings.Contains(next, "--phase") {
+	if strings.Contains(next, "phase_id") {
 		t.Fatalf("next-attempt note = %q, want it not to demand a phase be re-entered", next)
 	}
 	if !strings.Contains(next, "next attempt") {
@@ -836,7 +779,7 @@ func TestWorkflowAmendmentNoteNamesWhatMakesTheValueTake(t *testing.T) {
 	}
 }
 
-// The seed write behind `agent-overflow run amend`. The engine owns the rules
+// The seed write behind run_amend. The engine owns the rules
 // (see internal/workflow/engine/amend_test.go); what these drive is the app half
 // — that the verb reaches them through a real engine, that its refusals arrive
 // whole, and that the read verbs afterwards report the change.
@@ -873,7 +816,7 @@ func newAmendFixture(t *testing.T) (*toolWorkflowFixture, store.WorkItem) {
 	return fixture, item
 }
 
-// `run amend`'s app half. The engine's rules are its own (see
+// `run_amend`'s app half. The engine's rules are its own (see
 // internal/workflow/engine/amend_test.go); what this asserts is that the verb
 // reaches them through a real engine, and that the amendment is what the read
 // verbs afterwards report — a change no surface showed would be a change an
@@ -883,7 +826,7 @@ func TestWorkflowAgentAmendSeedsIsVisibleToTheReadVerbs(t *testing.T) {
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
-	result, err := fixture.app.WorkflowAgentAmendSeeds(ctx,
+	result, err := fixture.app.workflowAgentAmendSeeds(ctx,
 		WorkflowAgentAmendSeedsInput{ItemID: item.ID, Seeds: json.RawMessage(`{"fix-budget":4}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -901,7 +844,7 @@ func TestWorkflowAgentAmendSeedsIsVisibleToTheReadVerbs(t *testing.T) {
 		t.Fatalf("a root run's amendment named a caller: %q", result.CallerNote)
 	}
 
-	status, err := fixture.app.WorkflowAgentRunStatus(ctx, item.ID)
+	status, err := fixture.app.workflowAgentRunStatus(ctx, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +855,7 @@ func TestWorkflowAgentAmendSeedsIsVisibleToTheReadVerbs(t *testing.T) {
 	if seeds["fix-budget"] != float64(4) || seeds["label"] != "first" {
 		t.Fatalf("run status seeds = %v, want the amended value beside the untouched one", seeds)
 	}
-	inspected, err := fixture.app.WorkflowAgentInspectRun(ctx,
+	inspected, err := fixture.app.workflowAgentInspectRun(ctx,
 		WorkflowAgentInspectInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -933,7 +876,7 @@ func TestWorkflowAgentAmendSeedsForwardsTheEnginesRefusal(t *testing.T) {
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
-	_, err := fixture.app.WorkflowAgentAmendSeeds(ctx,
+	_, err := fixture.app.workflowAgentAmendSeeds(ctx,
 		WorkflowAgentAmendSeedsInput{ItemID: item.ID, Seeds: json.RawMessage(`{"fixbudget":4}`)})
 	if err == nil {
 		t.Fatal("an undeclared seed was accepted")
@@ -959,7 +902,7 @@ func TestWorkflowAgentAmendSeedsIsConfinedToWhatAPhaseStarted(t *testing.T) {
 	ctx := transport.WithCallerScope(context.Background(),
 		phaseScope(fixture, "supervisor", def.GrantIntrospect, def.GrantStartRun))
 
-	_, err := fixture.app.WorkflowAgentAmendSeeds(ctx,
+	_, err := fixture.app.workflowAgentAmendSeeds(ctx,
 		WorkflowAgentAmendSeedsInput{ItemID: item.ID, Seeds: json.RawMessage(`{"fix-budget":4}`)})
 	if err == nil {
 		t.Fatal("a phase amended a run it did not start")
@@ -969,7 +912,7 @@ func TestWorkflowAgentAmendSeedsIsConfinedToWhatAPhaseStarted(t *testing.T) {
 	}
 }
 
-// `run guide`'s app half. The engine's rules are its own (see
+// `run_guide`'s app half. The engine's rules are its own (see
 // internal/workflow/engine/guidance_test.go); what this asserts is that the verb
 // reaches them through a real engine, that the author is the caller's rather than
 // the request's, and that the read verbs afterwards report the entry — guidance
@@ -1007,7 +950,7 @@ func TestWorkflowAgentGuideRunIsVisibleToTheReadVerbs(t *testing.T) {
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
-	result, err := fixture.app.WorkflowAgentGuideRun(ctx,
+	result, err := fixture.app.workflowAgentGuideRun(ctx,
 		WorkflowAgentGuideRunInput{ItemID: item.ID, Text: "prefer the smaller diff"})
 	if err != nil {
 		t.Fatal(err)
@@ -1025,8 +968,8 @@ func TestWorkflowAgentGuideRunIsVisibleToTheReadVerbs(t *testing.T) {
 		t.Fatalf("a root run's guidance named a caller: %q", result.CallerNote)
 	}
 
-	// `run status` carries the COUNT — what a reader of a run's state needs.
-	status, err := fixture.app.WorkflowAgentRunStatus(ctx, item.ID)
+	// `run_status` carries the COUNT: what a reader of a run's state needs.
+	status, err := fixture.app.workflowAgentRunStatus(ctx, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1034,9 +977,9 @@ func TestWorkflowAgentGuideRunIsVisibleToTheReadVerbs(t *testing.T) {
 		t.Fatalf("run status pending guidance = %d, want 1", status.PendingGuidance)
 	}
 
-	// `run inspect` carries the entries, with who left each one and how long it
+	// `run_inspect` carries the entries, with who left each one and how long it
 	// has been waiting.
-	inspected, err := fixture.app.WorkflowAgentInspectRun(ctx,
+	inspected, err := fixture.app.workflowAgentInspectRun(ctx,
 		WorkflowAgentInspectInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -1068,7 +1011,7 @@ func TestWorkflowAgentGuideRunReportsAHealedSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := fixture.app.WorkflowAgentGuideRun(ctx,
+	result, err := fixture.app.workflowAgentGuideRun(ctx,
 		WorkflowAgentGuideRunInput{ItemID: item.ID, Text: "prefer the smaller diff"})
 	if err != nil {
 		t.Fatalf("a guide over a healed slot was refused, losing the caller's entry: %v", err)
@@ -1089,7 +1032,7 @@ func TestWorkflowAgentGuideRunReportsAHealedSlot(t *testing.T) {
 	}
 
 	// And the second guide, over the now-healthy slot, warns about nothing.
-	again, err := fixture.app.WorkflowAgentGuideRun(ctx,
+	again, err := fixture.app.workflowAgentGuideRun(ctx,
 		WorkflowAgentGuideRunInput{ItemID: item.ID, Text: "and skip the changelog"})
 	if err != nil {
 		t.Fatal(err)
@@ -1109,13 +1052,13 @@ func TestWorkflowAgentGuideRunForwardsTheEnginesRefusal(t *testing.T) {
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
-	_, err := fixture.app.WorkflowAgentGuideRun(ctx,
+	_, err := fixture.app.workflowAgentGuideRun(ctx,
 		WorkflowAgentGuideRunInput{ItemID: item.ID, Text: "   "})
 	if err == nil || !strings.Contains(err.Error(), "cannot be empty") {
 		t.Fatalf("empty guidance refusal = %v", err)
 	}
 	// Nothing was written, so the read verbs still report an unguided run.
-	status, err := fixture.app.WorkflowAgentRunStatus(ctx, item.ID)
+	status, err := fixture.app.workflowAgentRunStatus(ctx, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

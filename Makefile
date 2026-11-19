@@ -85,6 +85,16 @@ WSL_VERSION ?= $(VERSION)
 
 GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 
+# Every Go command under make builds with -trimpath. The compiler then leaves
+# the checkout's directory out of a package's build cache key, so worktrees
+# holding the same sources share cache entries. File paths in stack traces and
+# from runtime.Caller become module-relative (agent-overflow/internal/...);
+# tests locate the checkout through internal/testutil/reporoot. Flags the
+# developer set are kept: GOFLAGS from the make command line or the
+# environment, else the value saved with `go env -w`.
+override GOFLAGS := $(strip $(filter-out -trimpath,$(or $(GOFLAGS),$(shell go env GOFLAGS 2>/dev/null))) -trimpath)
+export GOFLAGS
+
 # Single source of truth for the release version is build/config.yml#info.version.
 # `make build` reads it and forwards it via VERSION= to wails3 build, which the
 # platform Taskfiles consume as {{.VERSION | default "dev"}} to stamp
@@ -592,8 +602,9 @@ mockforge:
 
 # harness-build produces bin/agent-overflow with the production SPA
 # embedded, plus the sibling ao-mockprovider and ao-mockforge the harness
-# resolves by default. That same bin/agent-overflow is the workflow CLI the
-# workflows spec drives by verb (D30) — there is no second binary to build. UI_TRACE=1
+# resolves by default. That same bin/agent-overflow carries the remaining CLI
+# verbs (D30) and the workflow tools (D77); there is no second binary to
+# build. UI_TRACE=1
 # bakes the render-trace instrumentation into the SPA (see the flag docs at
 # the top of this file).
 #

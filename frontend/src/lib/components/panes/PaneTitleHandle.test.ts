@@ -14,7 +14,12 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
+import { TransportError } from '../../transport/wsClient';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { replaceAllThreads } from '../../stores/threads.svelte';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -45,6 +50,24 @@ describe('<PaneTitleHandle>', () => {
     const title = getByTestId('pane-title');
     expect(title.tagName.toLowerCase()).toBe('button');
     expect(title).toHaveTextContent('Defaulted');
+  });
+
+  it('names an assistant with its computer while another computer holds the same name', async () => {
+    __resetEntityIndexForTest();
+    stageBackend({ id: 'laptop', name: 'Laptop' });
+    try {
+      const here = makeThread({ id: 'here', title: 'Ops', agentId: 'a1' });
+      noteThread('here', HOME_BACKEND);
+      noteThread('there', 'laptop');
+      replaceAllThreads([here, makeThread({ id: 'there', title: 'Ops', agentId: 'a2' })]);
+      const pane = await buildPane(here);
+      const { getByTestId } = render(PaneTitleHandle, { props: { pane } });
+      await tick();
+      expect(getByTestId('pane-title').textContent?.trim()).toMatch(/^Ops-\S/);
+    } finally {
+      replaceAllThreads([]);
+      resetStagedBackends();
+    }
   });
 
   it('lets a consumer override the title/input testids', async () => {
@@ -82,12 +105,12 @@ describe('<PaneTitleHandle>', () => {
     Object.defineProperty(scroller, 'clientWidth', { configurable: true, get: () => 200 });
     await fireEvent.scroll(scroller);
     expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
-    expect(scroller.style.getPropertyValue('--fade-right')).toBe('24px');
+    expect(scroller.style.getPropertyValue('--fade-right')).toBe('2em');
 
     // Swiped to the end: fade left only.
     scroller.scrollLeft = 200;
     await fireEvent.scroll(scroller);
-    expect(scroller.style.getPropertyValue('--fade-left')).toBe('24px');
+    expect(scroller.style.getPropertyValue('--fade-left')).toBe('2em');
     expect(scroller.style.getPropertyValue('--fade-right')).toBe('0px');
   });
 
@@ -126,6 +149,24 @@ describe('<PaneTitleHandle>', () => {
     await tick();
     expect(queryByTestId('pane-title-input')).toBeNull();
     expect(getByTestId('pane-title')).toHaveTextContent('Other');
+  });
+
+  it("keeps the editor open with the refusal beside it when another assistant has the name", async () => {
+    setBindingMock('RenameThread', async () => {
+      throw new TransportError('assistant_name_taken', 'The assistant "Ops" already has that name; names are unique on this computer.');
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Original' }));
+    const { getByTestId } = render(PaneTitleHandle, { props: { pane } });
+    await tick();
+
+    await fireEvent.contextMenu(getByTestId('pane-title'));
+    await tick();
+    await fireEvent.input(getByTestId('pane-title-input'), { target: { value: 'ops' } });
+    await fireEvent.keyDown(getByTestId('pane-title-input'), { key: 'Enter' });
+
+    await waitFor(() => expect(getByTestId('pane-title-rename-error')).toHaveTextContent('The assistant "Ops" already has that name'));
+    expect(getByTestId('pane-title-input')).toBeInTheDocument();
+    expect(pane.generalError).toBeNull();
   });
 
   it('keeps a failed rename behind the pane banner', async () => {

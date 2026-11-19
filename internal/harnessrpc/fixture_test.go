@@ -42,6 +42,7 @@ type testHost struct {
 	browserScroll       func(string, string, float64, float64) error
 	browserScreenshot   func(string, string) ([]byte, error)
 	pushSent            []PushMessage
+	updateWorkReason    string
 	claudeUsage         *claudefake.Usage
 	usageReadings       int
 	updateFeed          *updatefake.Feed
@@ -50,10 +51,15 @@ type testHost struct {
 	droppedRetained     int
 	droppedImages       int
 	broadcastRows       []string
-	mergedPRPauses      int
-	mergedPRResumes     int
-	onPause             func()
-	onResume            func()
+	// stopped is every StopSession call, in order. liveAfterStop is what
+	// each AwaitSessionEndWork returns in turn: the sessions the stops'
+	// work started. Exhausted, it reports none.
+	stopped         []string
+	liveAfterStop   [][]string
+	mergedPRPauses  int
+	mergedPRResumes int
+	onPause         func()
+	onResume        func()
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -113,8 +119,14 @@ func (h *testHost) Notify(string, string, notify.Target) error { return nil }
 
 // The fixture never installs a push recorder, which is what a boot with no
 // push configured looks like.
-func (h *testHost) PushSent() []PushMessage              { return h.pushSent }
-func (h *testHost) ForgetPushSent()                      { h.pushSent = nil }
+func (h *testHost) PushSent() []PushMessage { return h.pushSent }
+func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
+func (h *testHost) UpdateWorkReason() (string, error) {
+	return h.updateWorkReason, nil
+}
+func (h *testHost) StallProviderEvents(string) error     { return nil }
+func (h *testHost) ReleaseProviderEvents(string) error   { return nil }
+func (h *testHost) PendingProviderEvents(string) int     { return 0 }
 func (h *testHost) ClaudeUsageFake() *claudefake.Usage   { return h.claudeUsage }
 func (h *testHost) RequestClaudeUsageReading()           { h.usageReadings++ }
 func (h *testHost) ProviderUpdateFeed() *updatefake.Feed { return h.updateFeed }
@@ -162,11 +174,30 @@ func (h *testHost) ArchiveThread(threadID string) error {
 	_, _, err := h.store.ArchiveThread(threadID)
 	return err
 }
+func (h *testHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
+	agent := store.StandingAgent{ID: threadID, ThreadID: threadID, Home: "/agents/" + threadID, CreatedAt: 1}
+	if err := h.store.PlaceThreadInHome(threadID, agent.Home); err != nil {
+		return store.StandingAgent{}, err
+	}
+	return agent, h.store.CreateStandingAgent(agent)
+}
 func (h *testHost) BroadcastThreadRow(threadID string) {
 	h.broadcastRows = append(h.broadcastRows, threadID)
 }
-func (h *testHost) StopSession(string) error              { return nil }
+func (h *testHost) StopSession(threadID string) error {
+	h.stopped = append(h.stopped, threadID)
+	return nil
+}
+func (h *testHost) AwaitSessionEndWork() []string {
+	if len(h.liveAfterStop) == 0 {
+		return nil
+	}
+	live := h.liveAfterStop[0]
+	h.liveAfterStop = h.liveAfterStop[1:]
+	return live
+}
 func (h *testHost) DeleteProject(projectID string) error  { return h.store.DeleteProject(projectID) }
+func (h *testHost) DeleteThread(threadID string) error    { return h.store.DeleteThread(threadID) }
 func (h *testHost) RecoverCrashedTurns() error            { return nil }
 func (h *testHost) RecoverOrphanedBackgroundTasks() error { return nil }
 func (h *testHost) ClearUIState() error {

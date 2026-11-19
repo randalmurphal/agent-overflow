@@ -52,6 +52,9 @@ export interface TimelinePagingOptions {
   getListRef(): TimelineVirtualizerHandle | undefined;
   getScrollEl(): HTMLDivElement | undefined;
   getRevealedNodes(): TimelineNode[];
+  /** Whether every row the virtualizer mounted has measured (its latest
+   * content-geometry sample's `windowMeasured`). */
+  isWindowMeasured(): boolean;
   getRestoredThreadId(): string | null;
   /** The restore session's navigation lifetime (`TimelineRestore`). */
   beginNavigation(): number;
@@ -78,8 +81,17 @@ export interface TimelinePaging {
    * section per pass until the window is tall enough, there is nothing
    * more to page, or the window holds what retention would cut anyway.
    * Returns whether it started a load.
+   *
+   * Decides on measured rows only. Estimated heights can call a window short
+   * that is not, and the load's pause lease would hold a pinned reader where
+   * the estimates put the bottom while the rows measure taller under it.
    */
   maybeFillViewport(): boolean;
+  /**
+   * The window just measured. True when a fill stood down for it, so the
+   * caller schedules one more pass; false otherwise.
+   */
+  noteWindowMeasured(): boolean;
   handleLoadOlder(): Promise<void>;
   handleLoadNewer(): Promise<void>;
   handleLoadNewerAuto(): Promise<void>;
@@ -97,6 +109,8 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // reader moving toward the top, the intent that lets the probe fire in
   // a window too short for disjoint zones.
   let lastOlderProbeOffset: number | null = null;
+  // A fill pass stood down because the window had not measured yet.
+  let fillAwaitsMeasurement = false;
 
   // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
   // reading near the top of the loaded window, so older items page in
@@ -190,8 +204,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     // A hidden pane reports no height; filling against zero would page
     // the whole thread in behind a screen nobody is looking at.
     if (!options.getListRef() || !viewport || viewport.clientHeight <= 0) return false;
-    if (viewport.scrollHeight >= viewport.clientHeight + 2 * AUTO_LOAD_OFFSET_PX) return false;
     if (pane.items.length >= ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS) return false;
+    // An empty window has nothing to measure.
+    if (options.getRevealedNodes().length > 0 && !options.isWindowMeasured()) {
+      fillAwaitsMeasurement = true;
+      return false;
+    }
+    fillAwaitsMeasurement = false;
+    if (viewport.scrollHeight >= viewport.clientHeight + 2 * AUTO_LOAD_OFFSET_PX) return false;
     // Older first: the reader entered at the tail, so history is what a
     // short window is missing. Newer only exists after a jump away from it.
     if (pane.hasMoreHistory && !pane.loadingOlder) {
@@ -203,6 +223,12 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       return true;
     }
     return false;
+  }
+
+  function noteWindowMeasured(): boolean {
+    if (!fillAwaitsMeasurement) return false;
+    fillAwaitsMeasurement = false;
+    return true;
   }
 
   // Shared shape behind all three load handlers below: pause auto-scroll
@@ -319,6 +345,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     autoLoadOlderGate.reset();
     autoLoadNewerGate.reset();
     lastOlderProbeOffset = null;
+    fillAwaitsMeasurement = false;
   }
 
   return {
@@ -326,6 +353,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     probeOlderOnUpwardGesture,
     maybeAutoLoadNewer,
     maybeFillViewport,
+    noteWindowMeasured,
     handleLoadOlder,
     handleLoadNewer,
     handleLoadNewerAuto,

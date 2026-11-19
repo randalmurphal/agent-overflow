@@ -62,6 +62,9 @@ var budgetReachBoundaries = map[string]string{
 	"param:" + appMethodKey + "subscribeGlobalTurnObserver#0":       "runs when a provider turn ends",
 	appMethodKey + "enqueueFlushDispatch":                           "queues rows for the thread's flush dispatch worker",
 	"(*agent-overflow/internal/providerupdate.Service).runUpdate":   "runs on its own goroutine; Run answers once the run has started",
+	"param:(*agent-overflow/internal/app.workerPrompts).run#0":      "runs on the worker prompts' serial queue",
+	appMethodKey + "queueThreadAgentEmit":                           "batches agent-row frames for a drain that only emits them",
+	"param:" + appMethodKey + "goAgentNoticeWork#1":                 "runs on joined notice work; a message is accepted once queued",
 }
 
 // budgetReachMethodBoundaries stop one method's walk where the graph joins
@@ -71,7 +74,18 @@ var budgetReachMethodBoundaries = map[string]map[string]string{
 		"(*agent-overflow/internal/workflowapp.Service).landDisposition": "lands a merge or a PR; a discard removes the worktree instead",
 	},
 	"ThreadToolQuery": {
-		"(*agent-overflow/internal/threadtools.session).spawn": "a write tool; the method refuses every tool but the reads",
+		"(*agent-overflow/internal/threadtools.session).spawn":        "a write tool; the method refuses every tool but the reads",
+		"(*agent-overflow/internal/threadtools.session).newAssistant": "a write tool; the method refuses every tool but the reads",
+	},
+	"ThreadToolWatch": {
+		"(*agent-overflow/internal/threadtools.session).spawn":        "a write tool; the method refuses every tool but a thread_status wait",
+		"(*agent-overflow/internal/threadtools.session).newAssistant": "a write tool; the method refuses every tool but a thread_status wait",
+	},
+	"CreateAssistant": {
+		"(agent-overflow/internal/threadapp.Workspace).CreateWorktree": "an assistant's thread is made in its home with no worktree cut (createThreadRow)",
+	},
+	"StartNextAssistantThread": {
+		"(agent-overflow/internal/threadapp.Workspace).CreateWorktree": "an assistant's next thread is made in its home with no worktree cut (createThreadRow)",
 	},
 }
 

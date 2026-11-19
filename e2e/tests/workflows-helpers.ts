@@ -548,6 +548,8 @@ export interface MockSessionConfig {
   appendSystemPrompt?: string;
   systemPromptSnapshot?: string;
   developerInstructions?: string;
+  /** Codex: the report came from thread/resume in a process that only resumed. */
+  resumed?: boolean;
   bashMaxTimeoutMs?: string;
   cleanupPeriodDays?: number;
 }
@@ -558,11 +560,18 @@ export interface MockInjectedItem {
   text: string;
 }
 
+/** One run of a mock session's SessionStart hooks: the source and each delivered context, in order. */
+export interface MockSessionStartRun {
+  source: string;
+  contexts: string[];
+}
+
 export interface MockInfo {
   mockId: string;
-  registration: { protocol: string; cwd: string };
+  registration: { protocol: string; cwd: string; resumeRef?: string };
   sessionConfig?: MockSessionConfig;
   injectedItems?: MockInjectedItem[];
+  sessionStartRuns?: MockSessionStartRun[];
 }
 
 // mockSessions returns every mock of one protocol that has reported a launch

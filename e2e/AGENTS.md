@@ -15,11 +15,24 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   descendant of it. Every launch passes `HARNESS_TIMING`
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
-  PR CI live, follow and log wait polls, and the gap between two usage
-  probes of one provider); a spec that needs another value,
-  or the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
-  (`merged-pr-poll`) or the first retry of a failed open-PR lookup
-  (`pr-lookup-retry`), passes its own through `env`.
+  PR CI live, follow and log wait polls, the shortest loop or watch interval,
+  how long a watch keeps failing before it notifies, and the gap between two
+  usage probes of one provider); a spec that needs another value,
+  the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
+  (`merged-pr-poll`), the first retry of a failed open-PR lookup
+  (`pr-lookup-retry`), a shortened idle-session reaper (`idle-reap`,
+  `idle-reap-sweep`, `wakeup-grace`), a longer remote-job watcher cadence
+  (`remote-watch-poll`), a shorter provider event drain stall bound
+  (`drain-stall`) or a shorter lease on a worker's prompt routed to a
+  paired computer (`prompt-lease`), passes its own through `env`.
+- `src/product-process.ts` starts every product binary (`bin/agent-overflow`
+  and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
+  and `writeProductScript` for a launch a product process makes, such as a
+  remote command behind a stand-in ssh client. The process inherits only the
+  variables `src/harness-env.ts` allows, never the developer's credentials or
+  settings; a caller that needs another variable passes it through `env`.
+  `tests/product-launch.spec.ts` fails when another file names a product
+  binary and can start a process, or writes a script that names one.
 - `src/harness-launch-step.ts` bounds each step of starting a suite-owned
   process. A new launch path runs every step through `launchStep`; a bound
   that grows keeps `launchBudgetMs()` under the worker fixture timeout.
@@ -46,10 +59,11 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - `rigs/` contains manual performance tools outside release gates. Follow
   [rigs/README.md](rigs/README.md) for their data and scenario rules.
 - `update-launcher-helpers.ts` drives a backend as the Windows launcher
-  does: the from-nothing sandbox, the update commands and the gated
-  headless boot. `update-trial.spec.ts` and the release upgrade check share
-  it; a spec about the launcher's side of an update extends it rather than
-  spawning the backend itself.
+  does: the sandbox (a temporary home and fake provider and forge CLIs over
+  the launch environment), the update commands and the gated headless boot.
+  `update-trial.spec.ts` and the release upgrade check share it; a spec
+  about the launcher's side of an update extends it rather than spawning
+  the backend itself.
 - `upgrade-corpus-*.ts` own the upgrade corpus: the generator, the top-up
   the candidate writes after a migration, the schema coverage gate every
   pull request runs, and the release upgrade check
@@ -81,6 +95,16 @@ LAN interface; a spec cannot reach host services or any real network.
 Elsewhere, macOS included, instances stay on loopback and specs that need an
 off-host peer skip. See
 [network isolation](../docs/specs/testing-harness.md#network-isolation).
+
+A test that fails while holding the worker backend, including in the
+per-test reset, gets `backend.log` (the backend's stdout and stderr since
+launch), `backend-launch.json` (binary, args, roots, `AO_HARNESS_TIMING` and
+the whole environment the backend started with) and `backend-logs/` (the
+backend's own log files) beside its trace in `test-results`. The worker
+data root is still deleted at teardown unless `AO_E2E_KEEP_FAILED_ROOT=1`,
+which leaves it at the `dataRoot` the launch record names. A backend a spec
+launches itself keeps its console in
+`<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See

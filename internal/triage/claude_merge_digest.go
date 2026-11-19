@@ -21,15 +21,44 @@ type flushSendDigest struct {
 	Digest   []string
 }
 
-// flushSendDigestHistory bounds recentFlushDigests. The CLI merges the
-// commands sitting in its queue at one turn boundary; that is bounded by how
-// many messages a person types during a single turn, and the ledger only has
-// to reach back far enough to decompose one such batch. Eight is well past any
-// observed batch and still nothing to hold.
-const flushSendDigestHistory = 8
+// MaxOutstandingFlushSends is the most follow-up messages a thread has at
+// once between their admission and the boundary that resolves them:
+// queued, in flight to the provider, waiting for their echo, or kept as
+// merge evidence (OutstandingFlushSendCount). The app refuses a message
+// past it (queueMaxLength), so recentFlushDigests, which holds only
+// sends whose boundary is unresolved (retireResolvedFlushDigests), never
+// reaches its eviction for admitted work.
+const MaxOutstandingFlushSends = 64
+
+// OutstandingFlushSendCount counts the thread's flush sends the provider was
+// handed and whose boundary has not resolved: those waiting for their echo
+// and those kept as evidence of a merge still to be echoed
+// (unresolvedFlushDigests). Each counts once. Evidence left by sends that
+// went without an echo (given back, retired unread) counts for nothing: no
+// confirmation is coming to retire it, and counting it would refuse new
+// messages on a thread with nothing outstanding.
+func (r *Router) OutstandingFlushSendCount(threadID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0
+	}
+	count := st.unresolvedFlushDigests()
+	for _, pending := range st.pendingSends {
+		if pending.Shape != sendShapeFlush {
+			continue
+		}
+		if !slices.ContainsFunc(st.recentFlushDigests, func(entry flushSendDigest) bool { return entry.AOItemID == pending.AOItemID }) {
+			count++
+		}
+	}
+	return count
+}
 
 // recordFlushSendDigest appends a flush send to the thread's ledger, evicting
-// the oldest entry past the bound. A re-registration of the same row id (a
+// the oldest entry past the bound, which only a send the app did not admit
+// can reach. A re-registration of the same row id (a
 // requeued dispatch) replaces its previous entry rather than leaving a stale
 // digest that a later decomposition could match against. Caller holds r.mu.
 func (st *threadState) recordFlushSendDigest(aoItemID string, digest []string) {
@@ -41,9 +70,40 @@ func (st *threadState) recordFlushSendDigest(aoItemID string, digest []string) {
 		AOItemID: aoItemID,
 		Digest:   slices.Clone(digest),
 	})
-	if overflow := len(st.recentFlushDigests) - flushSendDigestHistory; overflow > 0 {
+	if overflow := len(st.recentFlushDigests) - MaxOutstandingFlushSends; overflow > 0 {
 		st.recentFlushDigests = slices.Clone(st.recentFlushDigests[overflow:])
 	}
+}
+
+// retireResolvedFlushDigests drops the ledger's entries that no merge still
+// to be echoed can include. A merge's members are the commands queued before
+// its survivor, and its survivor has no echo yet, so every entry after the
+// last send still pending (pendingSends, including one put back for a
+// retry) is resolved. Caller holds r.mu.
+func (st *threadState) retireResolvedFlushDigests() {
+	keep := st.unresolvedFlushDigests()
+	if keep == len(st.recentFlushDigests) {
+		return
+	}
+	if keep == 0 {
+		st.recentFlushDigests = nil
+		return
+	}
+	clear(st.recentFlushDigests[keep:])
+	st.recentFlushDigests = st.recentFlushDigests[:keep]
+}
+
+// unresolvedFlushDigests is how many of the ledger's leading entries a merge
+// still to be echoed can include: those up to the last send still pending.
+// Caller holds r.mu.
+func (st *threadState) unresolvedFlushDigests() int {
+	keep := 0
+	for i, entry := range st.recentFlushDigests {
+		if slices.ContainsFunc(st.pendingSends, func(send pendingSend) bool { return send.AOItemID == entry.AOItemID }) {
+			keep = i + 1
+		}
+	}
+	return keep
 }
 
 // dropFlushSendDigests removes the named rows from the ledger — used when a

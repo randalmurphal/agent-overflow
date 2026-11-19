@@ -166,7 +166,7 @@ func TestCompacting_SweepsDropWindowSilently(t *testing.T) {
 		sweep func(router *Router)
 	}{
 		{"cleanupThread", func(router *Router) { router.CleanupThread("t1") }},
-		{"markThreadActive", func(router *Router) { router.MarkThreadActive("t1") }},
+		{"markThreadActive", func(router *Router) { router.MarkThreadActive("t1", "") }},
 	}
 	for _, tc := range sweeps {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,7 +185,7 @@ func TestCompacting_SweepsDropWindowSilently(t *testing.T) {
 			}
 
 			// A replacement session must be able to open a fresh window.
-			router.MarkThreadActive("t1")
+			router.MarkThreadActive("t1", "")
 			reopened := time.UnixMilli(1_754_000_900_000)
 			if err := router.Handle(compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Active: true}, reopened)); err != nil {
 				t.Fatalf("reopen: %v", err)

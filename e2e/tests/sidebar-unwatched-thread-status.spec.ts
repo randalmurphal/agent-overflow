@@ -27,6 +27,8 @@ for (const provider of ['codex', 'claude'] as const) {
         { steps: [
           { call: { tool: 'thread_spawn', args: {
             prompt: 'Review the change.', title: 'Unwatched review', project_id: seed.projects[1].projectId, provider,
+            // A sidebar row, whose dot the spec reads (ruling 36).
+            placement: 'standalone',
           } } },
           { capture: { var: 'TARGET', from: '${MCP_RESULT}', pattern: RESULT_THREAD_PATTERN } },
         ], text: 'Spawned.' },

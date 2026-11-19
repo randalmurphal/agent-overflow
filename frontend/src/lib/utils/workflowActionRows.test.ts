@@ -79,7 +79,7 @@ describe('workflowActionRow', () => {
     ['unit-failed', ['retry-unit', 'retry-failed-units', 'drop-unit', 'take-over-unit', 'discard']],
     ['taken-over', ['complete-takeover', 'discard']],
     ['done', ['merge', 'create-pr', 'discard']],
-    ['running', ['pause', 'open-phase-thread', 'cancel']],
+    ['running', ['pause', 'pause-end-sessions', 'open-phase-thread', 'cancel']],
     ['cancelled', ['discard', 'back']],
   ] as const)('%s offers exactly its §4.3 row', (kind, expected) => {
     expect(ids(kind)).toEqual([...expected]);
@@ -126,7 +126,7 @@ describe('workflowActionRow', () => {
   // state: it exists only where a call boundary can honour it, and its label is
   // the only place a human sees that a stop is already pending.
   it('offers no stop when the run has no boundary to stop at', () => {
-    expect(ids('running')).toEqual(['pause', 'open-phase-thread', 'cancel']);
+    expect(ids('running')).toEqual(['pause', 'pause-end-sessions', 'open-phase-thread', 'cancel']);
   });
 
   it.each([
@@ -134,10 +134,10 @@ describe('workflowActionRow', () => {
     [true, 'clear-soft-stop', 'Stopping after this wave — undo'],
   ] as const)('renders the stop request armed=%s as %s', (isArmed, id, label) => {
     const row = workflowActionRow({ kind: 'running', softStop: { armed: isArmed } });
-    expect(row.map((action) => action.id)).toEqual(['pause', id, 'open-phase-thread', 'cancel']);
-    expect(row[1]).toMatchObject({ label });
+    expect(row.map((action) => action.id)).toEqual(['pause', 'pause-end-sessions', id, 'open-phase-thread', 'cancel']);
+    expect(row[2]).toMatchObject({ label });
     // Nothing is destroyed either way, so neither direction arms a confirm.
-    expect(row[1].arms).toBeUndefined();
+    expect(row[2].arms).toBeUndefined();
   });
 
   it('gives the stop request no key, leaving §8 bindings untouched', () => {

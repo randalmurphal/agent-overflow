@@ -150,7 +150,7 @@ func TestLegacyEmptyQueueSettlesWithoutBlockingMeaningfulInput(t *testing.T) {
 			// session for nothing to send.
 			holdFlushQueue(app)
 			app.triage.RegisterQueueItem(thread.ID, batch[2])
-			app.dispatchFlush(thread.ID, batch[:2])
+			dispatchThroughWorker(app, thread.ID, batch[:2])
 			if _, started := app.sessionManager().get(thread.ID); started {
 				t.Fatal("settling empty rows started a session")
 			}

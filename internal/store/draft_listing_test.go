@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -229,4 +230,133 @@ func TestEmptyDraftCleanupKeepsEveryListedThread(t *testing.T) {
 			t.Fatalf("%s: DeleteEmptyDraftThread = %v, %v; want kept", name, deleted, err)
 		}
 	}
+}
+
+// An owned worker has no sidebar row (catalogThreadClause), so its draft
+// never lists it; placed standalone, the same draft makes it listed.
+func TestDraftWriteListsNoOwnedWorker(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "owner")
+	worker := createDraftCleanupThread(t, s, "worker", "chat")
+	spawnLocal(t, s, "tok-worker", "owner", worker.ID, true)
+	if placement, _ := placementOf(t, s, worker.ID); placement != PlacementOwned {
+		t.Fatalf("worker placement = %q, want owned", placement)
+	}
+	got, err := s.UpsertThreadDraft(draftWith(worker.ID, "typed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (DraftWrite{Changed: true}) {
+		t.Fatalf("owned worker's draft: write %+v, want changed only", got)
+	}
+	if listed, err := s.ThreadListed(worker.ID); err != nil || listed || slices.Contains(listedThreadIDs(t, s), worker.ID) {
+		t.Fatalf("owned worker listed = %v (err %v), want it off the sidebar", listed, err)
+	}
+	if _, err := s.SetThreadPlacement([]string{worker.ID}, PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := s.ThreadListed(worker.ID); err != nil || !listed || !slices.Contains(listedThreadIDs(t, s), worker.ID) {
+		t.Fatalf("standalone worker listed = %v (err %v), want it on the sidebar", listed, err)
+	}
+}
+
+// A spawn makes both of its threads real (threadRealClause): the thread an
+// agent spawned from the write that names it, listed by that write unless
+// it is owned, and the thread that spawned it. Neither is an empty draft
+// the cleanup may delete, though neither ever sent a message.
+func TestASpawnMakesBothThreadsReal(t *testing.T) {
+	s := newTestStore(t)
+	spawner := createDraftCleanupThread(t, s, "spawner", "chat")
+	child := createDraftCleanupThread(t, s, "spawned", "chat")
+	for _, id := range []string{spawner.ID, child.ID} {
+		if empty, err := s.IsEmptyDraftThread(id); err != nil || !empty {
+			t.Fatalf("%s before the spawn: empty draft = %v, %v; want empty", id, empty, err)
+		}
+	}
+	if _, err := s.AcceptLocalThreadRequest(ThreadRequest{
+		Token: "tok", CallerThreadID: spawner.ID, Kind: ThreadRequestSpawn, State: ThreadRequestUnconfirmed,
+	}, ThreadRequestReceipt{Token: "tok", OwnerDeviceID: "device", Kind: ThreadRequestSpawn, SourceThreadID: spawner.ID}); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := s.NameLocalThreadRequestTarget("tok", child.ID, false)
+	if err != nil || listing != ListingListed {
+		t.Fatalf("naming the standalone spawn = %v, %v; want it listed", listing, err)
+	}
+	listed := listedThreadIDs(t, s)
+	for _, id := range []string{spawner.ID, child.ID} {
+		if !slices.Contains(listed, id) {
+			t.Errorf("%s is not listed after the spawn", id)
+		}
+		if empty, err := s.IsEmptyDraftThread(id); err != nil || empty {
+			t.Errorf("%s after the spawn: empty draft = %v, %v; want real", id, empty, err)
+		}
+		if deleted, err := s.DeleteEmptyDraftThread(id); err != nil || deleted {
+			t.Errorf("%s: DeleteEmptyDraftThread = %v, %v; want kept", id, deleted, err)
+		}
+	}
+}
+
+// Every placement and group write reports how it moved a real thread across
+// the listing, read inside its own transaction: owning a spawned thread
+// takes it off, showing it standalone or grouping it puts it back, and an
+// owned spawn's naming lists nothing.
+func TestPlacementWritesReportTheListingTheyMove(t *testing.T) {
+	s := newTestStore(t)
+	owner := createDraftCleanupThread(t, s, "owner", "chat")
+	worker := createDraftCleanupThread(t, s, "worker", "chat")
+	if _, err := s.AcceptLocalThreadRequest(ThreadRequest{
+		Token: "tok", CallerThreadID: owner.ID, Kind: ThreadRequestSpawn, State: ThreadRequestUnconfirmed,
+	}, ThreadRequestReceipt{Token: "tok", OwnerDeviceID: "device", Kind: ThreadRequestSpawn, SourceThreadID: owner.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if listing, err := s.NameLocalThreadRequestTarget("tok", worker.ID, true); err != nil || listing != ListingUnchanged {
+		t.Fatalf("naming the owned spawn = %v, %v; want nothing listed", listing, err)
+	}
+	if empty, err := s.IsEmptyDraftThread(worker.ID); err != nil || empty {
+		t.Fatalf("owned worker: empty draft = %v, %v; want real", empty, err)
+	}
+	group, err := s.CreateThreadGroup(defaultTestProjectID, "Sweep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	standalone, owned := PlacementStandalone, PlacementOwned
+	steps := []struct {
+		name  string
+		write func() (ListingChange, error)
+		want  ListingChange
+	}{
+		{"show", func() (ListingChange, error) { return onlyMove(s.SetThreadPlacement([]string{worker.ID}, standalone)) }, ListingListed},
+		{"show again", func() (ListingChange, error) { return onlyMove(s.SetThreadPlacement([]string{worker.ID}, standalone)) }, ListingUnchanged},
+		{"own", func() (ListingChange, error) { return onlyMove(s.SetThreadPlacement([]string{worker.ID}, owned)) }, ListingUnlisted},
+		{"group", func() (ListingChange, error) { return onlyMove(s.SetThreadGroup([]string{worker.ID}, group.ID)) }, ListingListed},
+		{"ungroup", func() (ListingChange, error) { return onlyMove(s.SetThreadGroup([]string{worker.ID}, "")) }, ListingUnchanged},
+		{"organize own", func() (ListingChange, error) {
+			result, err := s.ApplyThreadOrganize(worker.ID, ThreadOrganizeWrite{Placement: &owned})
+			return result.Listing, err
+		}, ListingUnlisted},
+		{"organize show", func() (ListingChange, error) {
+			result, err := s.ApplyThreadOrganize(worker.ID, ThreadOrganizeWrite{Placement: &standalone})
+			return result.Listing, err
+		}, ListingListed},
+	}
+	for _, step := range steps {
+		got, err := step.write()
+		if err != nil || got != step.want {
+			t.Fatalf("%s: listing = %v, %v; want %v", step.name, got, err, step.want)
+		}
+		listed, err := s.ThreadListed(worker.ID)
+		if err != nil || listed != slices.Contains(listedThreadIDs(t, s), worker.ID) {
+			t.Fatalf("%s: ThreadListed = %v, %v, disagrees with the catalog", step.name, listed, err)
+		}
+	}
+}
+
+func onlyMove(moves []ThreadMove, err error) (ListingChange, error) {
+	if err != nil {
+		return ListingUnchanged, err
+	}
+	if len(moves) != 1 {
+		return ListingUnchanged, fmt.Errorf("moved %d rows, want 1", len(moves))
+	}
+	return moves[0].Listing, nil
 }

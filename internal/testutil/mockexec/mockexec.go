@@ -9,16 +9,18 @@
 // ID is the wrapper's, so signals, process groups and exit codes behave as if
 // the script were executed directly.
 //
-// The package depends only on the standard library so any test package can use
-// it, including the packages internal/testutil itself imports.
+// The package depends only on the standard library and reporoot, which does
+// too, so any test package can use it, including the packages
+// internal/testutil itself imports.
 package mockexec
 
 import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // Write installs script as an executable at path and returns path. An existing
@@ -56,9 +58,5 @@ func WriteIn(t testing.TB, dir, name, script string) string {
 
 func wrapperPath(t testing.TB) string {
 	t.Helper()
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("mockexec: resolve wrapper: runtime.Caller failed")
-	}
-	return filepath.Join(filepath.Dir(source), "testdata", "wrapper.sh")
+	return reporoot.Path(t, "internal/testutil/mockexec/testdata/wrapper.sh")
 }

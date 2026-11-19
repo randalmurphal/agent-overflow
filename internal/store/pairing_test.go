@@ -556,7 +556,7 @@ func TestActivateSessionRefusesARevokedRow(t *testing.T) {
 	if err := s.CreateSession(pending); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if _, err := s.RevokeSession("sess-pending", 2000); err != nil {
+	if _, _, err := s.RevokeSession("sess-pending", 2000); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 	moved, err := s.ActivateSession("sess-pending", 3000, 950000)
@@ -584,7 +584,7 @@ func TestExtendSessionOnlyMovesALiveWindowForward(t *testing.T) {
 	if backwards {
 		t.Fatal("a stale renewal shortened a live window")
 	}
-	if _, err := s.RevokeSession(session.ID, 2500); err != nil {
+	if _, _, err := s.RevokeSession(session.ID, 2500); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 	revived, err := s.ExtendSession(session.ID, 990000, 3000)
@@ -605,10 +605,10 @@ func TestDeleteSessionsExpiredBeforeKeepsLiveAndRevokedRows(t *testing.T) {
 			t.Fatalf("CreateSession %s: %v", id, err)
 		}
 	}
-	if _, err := s.RevokeSession("revoked", 2500); err != nil {
+	if _, _, err := s.RevokeSession("revoked", 2500); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
-	dropped, err := s.DeleteSessionsExpiredBefore(5000)
+	dropped, _, err := s.DeleteSessionsExpiredBefore(5000)
 	if err != nil {
 		t.Fatalf("DeleteSessionsExpiredBefore: %v", err)
 	}

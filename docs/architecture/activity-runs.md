@@ -761,7 +761,7 @@ The clip carries `data-scroll-owner="controller" | "settle"` for diagnostics.
 
 - It leaves `externalContentGeometry` unset. There is no virtualizer inside a
   run, so the controller's own contentEl ResizeObserver is the right geometry
-  source, following the `ChannelView` precedent.
+  source.
 - That source is the CONTENT box only, so a clip-VIEWPORT change — the cap
   lift retracting when a body inside collapses, the `50vh` half on a window
   resize — must reach the controller separately: the component's clip

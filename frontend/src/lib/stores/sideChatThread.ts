@@ -8,7 +8,7 @@ import { DeleteThread } from './bindings';
 import { removeThread } from './threads.svelte';
 import { addErrorToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
-import { threadCleanupFailure } from '../transport/threadCleanupFailure';
+import { reportThreadCleanupError } from './threadCleanupReport';
 
 /**
  * Delete a side chat's fork. The caller has already taken its pane down.
@@ -20,9 +20,9 @@ import { threadCleanupFailure } from '../transport/threadCleanupFailure';
 export async function deleteSideChatThread(threadId: string): Promise<void> {
   if (!threadId) return;
   try {
-    const cleanupFailure = await threadCleanupFailure(DeleteThread(threadId));
+    const result = await DeleteThread(threadId);
     removeThread(threadId);
-    if (cleanupFailure) addErrorToast(userFacingError(cleanupFailure), cleanupFailure);
+    reportThreadCleanupError(result);
   } catch (err) {
     console.error('Failed to delete the side chat thread:', err);
     addErrorToast(

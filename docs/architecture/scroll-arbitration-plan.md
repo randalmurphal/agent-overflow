@@ -71,8 +71,8 @@ requestBottom(opts: {
   //            glide).
   takeover: 'claim' | 'yield';
   // Virtualized panes place via scrollToIndex(last, align end) so the
-  // write self-converges as measurements land; ChannelView's default is
-  // the direct chokepoint write. Both end at markAtBottom-equivalent
+  // write self-converges as measurements land; a non-virtualized
+  // surface's default is the direct chokepoint write. Both end at markAtBottom-equivalent
   // flag state.
   write?: () => void;
 }): void

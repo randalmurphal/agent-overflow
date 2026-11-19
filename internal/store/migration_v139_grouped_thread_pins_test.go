@@ -156,6 +156,13 @@ func migrationThreadRows(t *testing.T, db *sql.DB) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return migrationThreadRowsOf(t, db, columns)
+}
+
+// migrationThreadRowsOf is migrationThreadRows over the named columns, for
+// a migration that adds columns.
+func migrationThreadRowsOf(t *testing.T, db *sql.DB, columns []string) []string {
+	t.Helper()
 	quoted := make([]string, len(columns))
 	for i, column := range columns {
 		quoted[i] = "'" + column + "=' || quote(" + column + ")"

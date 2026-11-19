@@ -1,20 +1,22 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
-import { render } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
 import ProjectThreadList from './ProjectThreadList.svelte';
+import AssistantsSection from './AssistantsSection.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';
-import { getCollapsedGroups, isDiscussionExpanded, resetSidebarForTest, toggleDiscussion } from '../../stores/sidebar.svelte';
+import { getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { touchThreadActivity } from '../../stores/threads.svelte';
+import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
+import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
+import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
 import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
 import type { Thread, ThreadGroup } from '../../types/models';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
-import { __setTransportStatusForTest, getTransportStatus } from '../../stores/transportStatus.svelte';
 
 const group: ThreadGroup = { id: 'group', projectId: 'project', name: 'Work', createdAt: 0, updatedAt: 0 };
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -138,53 +140,12 @@ it.each([false, true])('keeps the focused member painted while collapsing and ch
   expect([...getCollapsedGroups()]).toEqual(['group']);
 });
 
-it.each([false, true])('keeps a focused discussion child visible without reopening its ancestors (grouped=%s)', async grouped => {
-  const groupId = grouped ? group.id : undefined;
-  const threads = [
-    thread('parent', { groupId }),
-    thread('child', { groupId, parentThreadId: 'parent' }),
-    thread('sibling', { groupId }),
-  ];
-  const pane = createThreadPane();
-  registerPaneForTest('main', pane);
-  pane.replaceThread(threads[1]);
-  toggleDiscussion('parent');
-  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: grouped ? [group] : [], pane });
-  await settled(view.container);
-  row(view.container, 'parent').querySelector<HTMLButtonElement>('[data-testid="thread-row-expand"]')!.click();
-  await tick();
-  await sampleFocusedRow(view.container, 'child', 350);
-  expect(isDiscussionExpanded('parent')).toBe(false);
-  expect(row(view.container, 'child')).toBeTruthy();
-
-  pane.replaceThread(threads[2]);
-  await settled(view.container);
-  expect(view.container.querySelector('[data-sidebar-thread-id="child"]')).toBeNull();
-  pane.replaceThread(threads[1]);
-  await settled(view.container);
-  expect(isDiscussionExpanded('parent')).toBe(false);
-  expect(view.container.querySelectorAll('[data-sidebar-thread-id="child"]')).toHaveLength(1);
-  if (!grouped) return;
-
-  view.getByTestId('thread-group-row-expand').click();
-  await tick();
-  await sampleFocusedRow(view.container, 'child', 350);
-  expect(view.container.querySelectorAll('[data-sidebar-thread-id]')).toHaveLength(1);
-  expect(row(view.container, 'child').querySelector('[data-testid="thread-row-pin"]')).toBeNull();
-  view.getByTestId('thread-group-row-expand').click();
-  await settled(view.container);
-  expect(isDiscussionExpanded('parent')).toBe(false);
-  expect(view.container.querySelectorAll('[data-sidebar-thread-id="child"]')).toHaveLength(1);
-});
-
 it('aligns the group chevron with top-level pins and member pins with the folder glyph', async () => {
   const threads = [
     thread('member', { groupId: group.id, pinnedAt: 1 }),
-    thread('member-child', { groupId: group.id, parentThreadId: 'member' }),
     thread('plain-member', { groupId: group.id }),
     thread('loose', { pinnedAt: 1 }),
   ];
-  toggleDiscussion('member');
   const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane: createThreadPane() });
   view.container.style.width = '360px';
   await settled(view.container);
@@ -201,64 +162,110 @@ it('aligns the group chevron with top-level pins and member pins with the folder
   // The member rail drops from the chevron's centre.
   const railX = view.container.querySelector<HTMLElement>('[data-group-member]')!.getBoundingClientRect().left;
   expect(Math.abs(railX - centre(chevron))).toBeLessThanOrEqual(1);
-  // A member's title (or its discussion chevron) lines up with the group
-  // name; its discussion child steps in from there.
+  // A member's title lines up with the group name.
   const titleLeft = (id: string) => row(view.container, id).querySelector('[data-testid="thread-row-title"]')!.getBoundingClientRect().left;
   const groupName = view.getByTestId('thread-group-row-name').getBoundingClientRect();
   expect(Math.abs(titleLeft('plain-member') - groupName.left)).toBeLessThanOrEqual(1);
-  const memberChevron = row(view.container, 'member').querySelector('[data-testid="thread-row-expand"]')!.getBoundingClientRect();
-  expect(Math.abs(memberChevron.left - groupName.left)).toBeLessThanOrEqual(1);
-  expect(titleLeft('member-child')).toBeGreaterThan(titleLeft('plain-member'));
+  expect(Math.abs(titleLeft('member') - groupName.left)).toBeLessThanOrEqual(1);
 });
 
-it("bubbles a child's last-known status up still while its computer is unreachable", async () => {
-  const parent = thread('parent', { updatedAt: 2 });
-  const child = thread('child', { parentThreadId: 'parent', updatedAt: 1 });
-  // The parent lives on this page's own computer, which is up.
-  const home = getTransportStatus();
-  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-  const staged = stageBackend({ status: 'reconnecting' });
-  noteThread('child', 'laptop');
-  projectTurnStarted('child', 'turn-1', 0, 0);
-  try {
-    const view = render(ProjectThreadList, { projectId: 'project', threads: [parent, child], groups: [], pane: createThreadPane() });
-    await settled(view.container);
-    const dot = () => row(view.container, 'parent').querySelector('[data-testid="thread-row-status-dot"]');
-    expect(dot()?.getAttribute('data-status')).toBe('running');
-    expect(dot()).not.toHaveClass('animate-pulse');
-    // Attributed to the child's computer, not the parent's.
-    expect(dot()?.getAttribute('title')).toMatch(/^Last known: Working\. .+ is unreachable$/);
+// An assistant is one row (docs/specs/standing-agents.md, "Sidebar"): its
+// glyph in the pin's column, its title where any title starts, and its state
+// and projects lines under the title.
+describe('assistant rows', () => {
+  beforeEach(() => {
+    resetThreadWakesForTest();
+    resetProjectsForTest();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+  });
 
-    staged.setStatus('connected');
-    await tick();
-    expect(dot()).toHaveClass('animate-pulse');
-    expect(dot()?.getAttribute('title')).toBe('Working');
-  } finally {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __setTransportStatusForTest(home);
-  }
+  const centre = (el: Element) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; };
+  const fromRow = (container: HTMLElement, id: string, x: number) => x - row(container, id).getBoundingClientRect().left;
+
+  it.each([false, true])('puts the glyph in the pin column and the lines under the title (compact=%s)', async (compact) => {
+    await page.viewport(compact ? 390 : 800, 700);
+    setCompactLayoutForTest(compact);
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-a', path: '/repo/a', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
+      { project: { id: 'p-b', path: '/repo/b', name: 'Beta', sortPosition: 1, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
+    ]);
+    await refreshProjects();
+    const agent = thread('agent', { agentId: 'agent', projectId: '', agentProjectIds: ['p-a', 'p-b'], updatedAt: 5 });
+    const loose = thread('loose', { pinnedAt: 1 });
+    replaceAllThreads([agent, loose]);
+    setBindingMock('ListThreadWakes', async (threadId: unknown) => ({
+      moreReminders: false,
+      rows: threadId === 'agent' ? [{
+        id: 'w1', kind: 'loop', label: 'board check', state: 'armed',
+        intervalSeconds: 900, nextAt: Date.now() + 12 * 60_000, missed: 1,
+      }] : [],
+    }));
+    const props = (assistant: Thread) => ({ assistants: [assistant], pane: createThreadPane(), searching: false });
+    const view = render(AssistantsSection, props(agent));
+    view.container.style.width = '360px';
+    const plain = render(ProjectThreadList, { projectId: 'project', threads: [loose], groups: [], pane: createThreadPane() });
+    plain.container.style.width = '360px';
+    await waitFor(() => expect(view.queryByTestId('thread-row-agent-state')).not.toBeNull());
+    await settled(view.container);
+
+    const assistantRow = row(view.container, 'agent');
+    expect(view.container.querySelectorAll('[data-sidebar-thread-id]')).toHaveLength(1);
+    expect(assistantRow.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
+    const glyph = assistantRow.querySelector('[data-testid="thread-row-agent-icon"]')!;
+    const pin = row(plain.container, 'loose').querySelector('[data-testid="thread-row-pin"]')!;
+    expect(Math.abs(fromRow(view.container, 'agent', centre(glyph)) - fromRow(plain.container, 'loose', centre(pin)))).toBeLessThanOrEqual(1);
+    const titleLeft = (container: HTMLElement, id: string) =>
+      row(container, id).querySelector('[data-testid="thread-row-title"]')!.getBoundingClientRect().left;
+    expect(Math.abs(fromRow(view.container, 'agent', titleLeft(view.container, 'agent')) - fromRow(plain.container, 'loose', titleLeft(plain.container, 'loose')))).toBeLessThanOrEqual(1);
+
+    const line = view.getByTestId('thread-row-agent-state');
+    expect(line.textContent?.trim()).toBe('loop board check · next 12m · 1 missed');
+    const projects = view.getByTestId('thread-row-agent-projects');
+    expect(projects.textContent?.trim()).toBe('Alpha, Beta');
+    for (const el of [line, projects]) {
+      expect(Math.abs(el.querySelector('span')!.getBoundingClientRect().left - titleLeft(view.container, 'agent'))).toBeLessThanOrEqual(1);
+    }
+    plain.unmount();
+
+    await view.rerender(props({ ...agent, agentAllProjects: true, agentProjectIds: [] }));
+    await settled(view.container);
+    expect(view.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('All projects');
+    await view.rerender(props({ ...agent, agentProjectIds: [] }));
+    await settled(view.container);
+    expect(view.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('No projects');
+  });
 });
 
-it("keeps a reachable child's live status live on a parent whose computer is unreachable", async () => {
-  const parent = thread('parent', { updatedAt: 2 });
-  const child = thread('child', { parentThreadId: 'parent', updatedAt: 1 });
-  const home = getTransportStatus();
-  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-  stageBackend({ status: 'reconnecting' });
-  noteThread('parent', 'laptop');
-  projectTurnStarted('child', 'turn-1', 0, 0);
-  try {
-    const view = render(ProjectThreadList, { projectId: 'project', threads: [parent, child], groups: [], pane: createThreadPane() });
+// A row's worker count and needs-you badge sit between its title and its
+// time, on the title's line, at every density.
+describe('worker counts', () => {
+  beforeEach(() => {
+    resetThreadWorkerSummariesForTest();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+  });
+
+  it.each([false, true])('fit between the title and the time without overlapping either (compact=%s)', async (compact) => {
+    await page.viewport(compact ? 390 : 800, 700);
+    setCompactLayoutForTest(compact);
+    const spawner = thread('spawner', { title: 'A spawner with a title long enough to be cut short', updatedAt: 5 });
+    replaceAllThreads([spawner]);
+    setBindingMock('ListThreadWorkerSummaries', async () => ({ summaries: [{ threadId: 'spawner', open: 12, needYou: 3 }], next: '' }));
+    await refreshThreadWorkerSummaries();
+    const view = render(ProjectThreadList, { projectId: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
+    view.container.style.width = '300px';
     await settled(view.container);
-    expect(row(view.container, 'parent').getAttribute('data-machine-unreachable')).toBe('true');
-    const dot = row(view.container, 'parent').querySelector('[data-testid="thread-row-status-dot"]');
-    expect(dot?.getAttribute('data-status')).toBe('running');
-    expect(dot).toHaveClass('animate-pulse');
-    expect(dot?.getAttribute('title')).toBe('Working');
-  } finally {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __setTransportStatusForTest(home);
-  }
+
+    const rowRect = row(view.container, 'spawner').getBoundingClientRect();
+    const title = view.getByTestId('thread-row-title').getBoundingClientRect();
+    const badge = view.getByTestId('thread-row-workers-need-you').getBoundingClientRect();
+    const count = view.getByTestId('thread-row-workers').getBoundingClientRect();
+    const time = view.getByTestId('thread-row-time').getBoundingClientRect();
+    expect(title.right).toBeLessThanOrEqual(badge.left);
+    expect(badge.right).toBeLessThanOrEqual(count.left);
+    expect(count.right).toBeLessThanOrEqual(time.left);
+    expect(time.right).toBeLessThanOrEqual(rowRect.right);
+    // One line: each sits on the title's centre line.
+    const middle = (r: DOMRect) => r.top + r.height / 2;
+    for (const r of [badge, count]) expect(Math.abs(middle(r) - middle(title))).toBeLessThanOrEqual(1);
+  });
 });

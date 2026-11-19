@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/provider"
 )
 
@@ -23,31 +24,36 @@ import (
 // refuses itself.
 
 type spawnArgs struct {
-	Prompt        string `json:"prompt"`
-	Title         string `json:"title"`
-	FromThread    string `json:"from_thread"`
-	ComputerID    string `json:"computer_id"`
-	ProjectID     string `json:"project_id"`
-	WorkspacePath string `json:"workspace_path"`
-	Worktree      string `json:"worktree"`
-	Base          string `json:"base"`
-	BaseLocal     bool   `json:"base_local"`
-	Group         string `json:"group"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	Effort        string `json:"effort"`
-	Mode          string `json:"mode"`
-	RuntimeMode   string `json:"runtime_mode"`
-	WaitSeconds   *int   `json:"wait_seconds"`
-	Notify        bool   `json:"notify"`
+	Prompt        string   `json:"prompt"`
+	Title         string   `json:"title"`
+	FromThread    string   `json:"from_thread"`
+	ComputerID    string   `json:"computer_id"`
+	ProjectID     string   `json:"project_id"`
+	WorkspacePath string   `json:"workspace_path"`
+	Worktree      string   `json:"worktree"`
+	Base          string   `json:"base"`
+	BaseLocal     bool     `json:"base_local"`
+	Group         string   `json:"group"`
+	Placement     string   `json:"placement"`
+	Provider      string   `json:"provider"`
+	Model         string   `json:"model"`
+	Effort        string   `json:"effort"`
+	Mode          string   `json:"mode"`
+	RuntimeMode   string   `json:"runtime_mode"`
+	Profile       string   `json:"profile"`
+	Instructions  string   `json:"instructions"`
+	WaitSeconds   *int     `json:"wait_seconds"`
+	Notify        bool     `json:"notify"`
+	HomeFiles     []string `json:"home_files"`
 }
 
 type sendArgs struct {
-	ThreadID    string `json:"thread_id"`
-	ComputerID  string `json:"computer_id"`
-	Message     string `json:"message"`
-	WaitSeconds *int   `json:"wait_seconds"`
-	Notify      bool   `json:"notify"`
+	ThreadID    string   `json:"thread_id"`
+	ComputerID  string   `json:"computer_id"`
+	Message     string   `json:"message"`
+	WaitSeconds *int     `json:"wait_seconds"`
+	Notify      bool     `json:"notify"`
+	HomeFiles   []string `json:"home_files"`
 }
 
 type askArgs struct {
@@ -75,7 +81,12 @@ type ackResult struct {
 	Notify     bool   `json:"notify"`
 	Delivered  string `json:"delivered,omitempty"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
-	Note       string `json:"note,omitempty"`
+	// NextFire is when a reminder fires.
+	NextFire string `json:"next_fire,omitempty"`
+	// Instructions are a spawn's, as its thread stores them
+	// (RequestAck.Instructions); the spawn's row shows them from here.
+	Instructions string `json:"instructions,omitempty"`
+	Note         string `json:"note,omitempty"`
 }
 
 func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -101,16 +112,41 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		Effort:            trim(args.Effort),
 		Mode:              trim(args.Mode),
 		RuntimeMode:       trim(args.RuntimeMode),
+		Instructions:      trim(args.Instructions),
 		Notify:            args.Notify,
 	}
 	if err := checkText(call.Prompt, "prompt"); err != nil {
 		return nil, err
 	}
+	if len(call.Instructions) > MaxSpawnInstructionsBytes {
+		return nil, invalidf("instructions must be at most %d bytes.", MaxSpawnInstructionsBytes)
+	}
+	if name := trim(args.Profile); name != "" {
+		if err := c.applyProfile(ctx, &call, name); err != nil {
+			return nil, err
+		}
+		if len(call.Instructions) > MaxSpawnInstructionsBytes {
+			return nil, invalidf("Profile %s's instructions and yours come to %d bytes together; at most %d fit. Shorten instructions.", call.Profile, len(call.Instructions), MaxSpawnInstructionsBytes)
+		}
+	}
+	files, err := homeFiles(args.HomeFiles)
+	if err != nil {
+		return nil, err
+	}
+	call.HomeFiles = files
 	if utf8.RuneCountInString(call.Title) > MaxTitleRunes {
 		return nil, invalidf("title must be at most %d characters.", MaxTitleRunes)
 	}
 	if utf8.RuneCountInString(call.Group) > MaxTitleRunes {
 		return nil, invalidf("group must be at most %d characters.", MaxTitleRunes)
+	}
+	// Checked here and resolved where the thread is made: an omitted
+	// placement travels empty, because the destination decides the default
+	// by who is asking (a standing agent's fork leaves its source's group,
+	// any other caller's keeps it).
+	call.Placement = trim(args.Placement)
+	if _, err := ResolveSpawnPlacement(call.Placement, call.Group); err != nil {
+		return nil, err
 	}
 	if call.Mode != "" && !slices.Contains([]string{"chat", "plan"}, call.Mode) {
 		return nil, invalidf("mode must be chat or plan. The permission level is runtime_mode, a separate parameter.")
@@ -166,6 +202,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := c.checkSpawnDestination(ctx, &call); err != nil {
 		return nil, err
 	}
+	if err := c.checkProfileOffered(ctx, call); err != nil {
+		return nil, err
+	}
 	ack, err := c.app.Spawn(ctx, c.caller, call)
 	if err != nil {
 		return nil, err
@@ -198,13 +237,9 @@ func (c *session) checkSpawnDestination(ctx context.Context, call *SpawnCall) er
 	if err != nil {
 		return err
 	}
-	var answer optionsAnswerShape
-	if err := peerResult(raw, &answer); err != nil {
+	row, err := peerOptions(raw)
+	if err != nil {
 		return err
-	}
-	row := answer.computerOptions
-	if len(answer.Computers) > 0 {
-		row = answer.Computers[0]
 	}
 	return publicf(CodeInvalidRequest, "A thread on %s needs project_id: projects are registered per computer and cannot be inherited. %s offers: %s.", NameOfComputer(computer), NameOfComputer(computer), describeProjects(row.Projects))
 }
@@ -254,6 +289,10 @@ func (c *session) send(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkText(message, "message"); err != nil {
 		return nil, err
 	}
+	files, err := homeFiles(args.HomeFiles)
+	if err != nil {
+		return nil, err
+	}
 	wait, err := waitSeconds(args.WaitSeconds, 0)
 	if err != nil {
 		return nil, err
@@ -264,7 +303,7 @@ func (c *session) send(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	ack, err := c.app.Send(ctx, c.caller, SendCall{
 		ThreadID: target.ThreadID, ComputerID: target.Destination(),
-		Message: message, WaitSeconds: wait, Notify: args.Notify,
+		Message: message, WaitSeconds: wait, Notify: args.Notify, HomeFiles: files,
 	})
 	if err != nil {
 		return nil, err
@@ -315,6 +354,25 @@ func (c *session) resolveOther(ctx context.Context, ref, hint, verb string) (Tar
 	return target, nil
 }
 
+// homeFiles checks home_files for shape: at most agenthome.MaxHomeFiles
+// paths, none blank. Where they point, and whether the caller has a home at
+// all, only the app can tell.
+func homeFiles(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if len(paths) > agenthome.MaxHomeFiles {
+		return nil, invalidf("home_files names %d files; at most %d can be attached.", len(paths), agenthome.MaxHomeFiles)
+	}
+	out := make([]string, len(paths))
+	for i, path := range paths {
+		if out[i] = trim(path); out[i] == "" {
+			return nil, invalidf("home_files has a blank path; name each file relative to your home.")
+		}
+	}
+	return out, nil
+}
+
 func checkText(text, field string) error {
 	if text == "" {
 		return invalidf("%s is required and cannot be blank.", field)
@@ -353,8 +411,13 @@ func (c *session) ack(receipt RequestAck, kind string) ackResult {
 		Notify:     receipt.Notify,
 		Delivered:  receipt.Delivered,
 		ExpiresAt:  unixMsToRFC3339(receipt.ExpiresAt),
+
+		Instructions: receipt.Instructions,
 	}
 	result.Note = ackNote(result)
+	if receipt.Notice != "" {
+		result.Note = receipt.Notice + " " + result.Note
+	}
 	return result
 }
 
@@ -368,7 +431,7 @@ func ackNote(result ackResult) string {
 	case OutcomeBlocked:
 		return "That thread is waiting on the user for an approval or a question, so it cannot answer right now. The request stays open: leave it to the user, check it later with thread_status token " + result.Token + ", or stop it with thread_cancel."
 	case OutcomeUnconfirmed:
-		return "The call failed before it was known whether the work started. Do NOT start it again: check thread_status with token " + result.Token + "."
+		return "This computer has not confirmed whether the work started. Do NOT start it again: check thread_status with token " + result.Token + "."
 	default:
 		// Only a request with notify armed wakes this thread when the other
 		// thread's turn ends. Without it the work runs unattended unless
@@ -388,4 +451,29 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ResolveSpawnPlacement resolves a spawn's placement: owned by default,
+// grouped when group names a group, and refused when the two contradict.
+// The tools layer runs it to refuse a contradiction before a request
+// exists; the destination runs it on the call it receives to resolve the
+// placement, so a caller that skips the tools layer cannot spawn with a
+// contradiction either.
+func ResolveSpawnPlacement(placement, group string) (string, error) {
+	named := &group
+	if group == "" {
+		named = nil
+	}
+	if err := checkPlacement(placement, named); err != nil {
+		return "", err
+	}
+	switch {
+	case group != "":
+		return PlacementGrouped, nil
+	case placement == PlacementGrouped:
+		return "", invalidf("placement grouped needs group, the name of the group to put the thread in.")
+	case placement == "":
+		return PlacementOwned, nil
+	}
+	return placement, nil
 }

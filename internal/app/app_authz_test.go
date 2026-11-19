@@ -292,18 +292,12 @@ func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Cont
 			_, err := app.RunThreadShellCommand(ctx, id, ShellCommandRequest{RunID: "run", Command: "true"})
 			return err
 		},
-		// A discussion's participants start in full-access whatever the
-		// parent runs in, so these refuse on any parent.
-		"StartDiscussion": func(t *testing.T, ctx context.Context, id string) error {
-			return app.StartDiscussion(ctx, id, driveDiscussionDefinition(t, app, "drive-by-name").Name)
-		},
-		"StartDiscussionByID": func(t *testing.T, ctx context.Context, id string) error {
-			return app.StartDiscussionByID(ctx, id, driveDiscussionDefinition(t, app, "drive-by-id").ID)
-		},
-		"PostChannelMessage": func(t *testing.T, ctx context.Context, _ string) error {
-			parent, _ := seedDiscussionChannel(t, app, "drive", []string{"architect", "reviewer"}, 4)
-			_, err := app.PostChannelMessage(ctx, parent.DiscussionID, "go")
+		"SendExternalThreadMessage": func(_ *testing.T, ctx context.Context, id string) error {
+			_, err := app.SendExternalThreadMessage(ctx, id, "a script says hello")
 			return err
+		},
+		"WakeThreadWakeNow": func(_ *testing.T, ctx context.Context, id string) error {
+			return app.WakeThreadWakeNow(ctx, id, threadWakeKindReminder, "reminder")
 		},
 	}
 }
@@ -313,6 +307,7 @@ func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Cont
 var threadDrivingProvenElsewhere = map[string]string{
 	"ThreadToolCall":  "TestThreadToolsWritesNeedAutonomyForAnAutonomousThread",
 	"ThreadToolQuery": "TestThreadToolQueryRunsOnlyReadTools",
+	"ThreadToolWatch": "TestThreadToolWatchRunsOnlyAThreadWait",
 }
 
 // TestThreadToolQueryRunsOnlyReadTools. ThreadToolQuery shares the forwarded
@@ -333,20 +328,6 @@ func TestThreadToolQueryRunsOnlyReadTools(t *testing.T) {
 	}
 }
 
-// driveDiscussionDefinition saves a global two-participant definition.
-func driveDiscussionDefinition(t *testing.T, app *App, name string) store.DiscussionDefinition {
-	t.Helper()
-	def := store.DiscussionDefinition{
-		ID: name, Name: name, Scope: "global",
-		Participants: []store.DiscussionParticipant{{Role: "architect"}, {Role: "reviewer"}},
-		Settings:     store.DiscussionSettings{MaxTurns: 4},
-	}
-	if err := app.store.CreateDiscussionDef(def); err != nil {
-		t.Fatalf("CreateDiscussionDef: %v", err)
-	}
-	return def
-}
-
 // TestDrivingAnAutonomousThreadNeedsAutonomy. These select nothing here.
 // Their effective mode is the mode the TARGET already runs in, because
 // sending into a full-access thread commits the agent to acting without
@@ -355,8 +336,8 @@ func driveDiscussionDefinition(t *testing.T, app *App, name string) store.Discus
 func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
-	// A discussion start that got past its check would start participant
-	// sessions; none may reach a provider.
+	// A call that got past its check would start a session; none may
+	// reach a provider.
 	app.startSessionFn = func(string) error { return nil }
 	ctx := callFrom(ungranted, false)
 	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
@@ -409,6 +390,19 @@ var threadDriveBoundaries = map[string]string{
 	appMethodKey + "deliverThreadWakes":                                    "answers a request the woken thread's own agent made, with the request's outcome as the text",
 	"(*agent-overflow/internal/provider/claude.Session).RenamePeerSession": "a /rename the Claude CLI answers itself, with no model turn",
 	"(*agent-overflow/internal/provider/claude.Session).sendConfigCommand": "a configuration command the Claude CLI answers itself, with no model turn",
+	"param:(*agent-overflow/internal/app.workerPrompts).run#0":             "delivers a worker's own approval or question to the agent that spawned it, on the prompts' serial queue",
+	appMethodKey + "reconcileRemotePrompts":                                "on the prompt queue, applies prompts the peer held for the recorded spawner using the authenticated read",
+	appMethodKey + "queueThreadAgentEmit":                                  "batches agent-row frames for a drain that only emits them",
+	"(*agent-overflow/internal/workflowapp.Service).deliverWorkflowWake":   "tells a run's bound thread about the workflow run it is bound to",
+	appMethodKey + "giveBackToOwners":                                      "gives the answers, reminders and completions a queue drop took back to the threads that are owed them",
+	appMethodKey + "giveBackTeardownRequests":                              "gives the requests and wakes a teardown took back to their queues; the calls that made them were admitted",
+	appMethodKey + "settleNotTakenIn":                                      "gives what the app wrote into a message the provider never took in back to its owners",
+	"field:agent-overflow/internal/app.queuedOwner.settle":                 "settles a withdrawn message with the owner that wrote it",
+	appMethodKey + "tellSpawnerOfUserStop":                                 "answers the spawn the told thread's own agent made, with the stop as the outcome",
+	appMethodKey + "recoverAssistantSessionLoss":                           "moves an assistant whose provider session is gone to a next thread in the old thread's mode and opens it with the handoff block; the start that found the loss may be a person's, whose autonomy nothing checks",
+	appMethodKey + "recoverAgentWakesAtBoot":                               "replays at boot the fires of watches and loops the thread's own agent set",
+	appMethodKey + "runThreadRequestSweeps":                                "the request sweep, started once at boot: fires the watches, loops and reminders the threads' own agents set",
+	appMethodKey + "convergeAssistants":                                    "applies the Assistants setting: stops the assistants, giving back what they owe, or resumes the watches and loops their own agents set and starts the session for messages already accepted",
 }
 
 // TestEveryThreadDrivingMethodIsListed derives the bound methods that drive a
@@ -476,8 +470,6 @@ func TestEveryThreadDrivingMethodIsListed(t *testing.T) {
 				method.name, strings.Join(path, "\n  > "))
 		}
 	}
-	// A discussion start drives no turn yet but creates the threads its
-	// posts will, so its entry is kept by the check it reaches.
 	for name := range listed {
 		if !driving[name] && !checking[name] {
 			t.Errorf("threadDrivingCalls lists %s, which is not a bound method that drives a thread or checks autonomy", name)

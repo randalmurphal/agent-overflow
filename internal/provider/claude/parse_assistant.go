@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -512,6 +513,12 @@ func (p *Parser) appendToolUseEvent(
 	if isWorktreeToolName(block.Name) {
 		p.markWorktreeTool(block.ID, block.Name, parentToolUseID)
 	}
+	// CronCreate / CronList / CronDelete render as ordinary tool rows AND
+	// change the CLI's armed jobs; the result side applies the ack
+	// (parse_cron.go). A job is the session's whichever agent armed it.
+	if isCronToolName(block.Name) {
+		p.markCronTool(block.ID, block.Name, block.Input)
+	}
 
 	isBackground := hasRunInBackground(block.Input)
 	if isBackground {
@@ -869,8 +876,13 @@ func contextWindowFromClaudeUsage(usage assistantUsage) (provider.ContextWindow,
 // classification, not a tool name (see claude-wire.md
 // §system/task_started).
 func isAgentLaunchToolName(name string) bool {
-	return name == "Agent" || name == "Task"
+	return slices.Contains(SubagentLaunchTools, name)
 }
+
+// SubagentLaunchTools are the names Claude's subagent launcher has had, in
+// the form `--disallowedTools` takes: removing both from a session leaves it
+// no subagents on any CLI version.
+var SubagentLaunchTools = []string{"Agent", "Task"}
 
 // skillToolName is Claude's Skill tool. A forking skill runs as a
 // local_agent task bound to this call (claude-wire.md §E9).

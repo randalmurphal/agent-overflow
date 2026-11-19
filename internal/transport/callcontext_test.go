@@ -10,21 +10,21 @@ import (
 )
 
 // scopedCallApp answers two /rpc methods by their generated names:
-// WorkflowAgentStartRun is not caller-bound, WorkflowAgentRunStatus is.
+// AgentRemoteStatus is not caller-bound, ListThreadsOnPR is.
 type scopedCallApp struct {
 	entered chan string
 	release chan struct{}
 	done    chan error
 }
 
-func (a *scopedCallApp) WorkflowAgentStartRun(ctx context.Context) error {
+func (a *scopedCallApp) AgentRemoteStatus(ctx context.Context) error {
 	a.entered <- "start"
 	<-a.release
 	a.done <- ctx.Err()
 	return nil
 }
 
-func (a *scopedCallApp) WorkflowAgentRunStatus(ctx context.Context) error {
+func (a *scopedCallApp) ListThreadsOnPR(ctx context.Context) error {
 	a.entered <- "status"
 	select {
 	case <-ctx.Done():
@@ -44,6 +44,14 @@ func newScopedCallServer(t *testing.T) (*Server, *scopedCallApp) {
 			close(app.release)
 		}
 	})
+	// No method a scoped token may call is caller-bound, so the test admits
+	// one that is. The package's parallel tests run after this one ends.
+	const callerBound = "ListThreadsOnPR"
+	if _, listed := ScopedTokenMethods[callerBound]; listed {
+		t.Fatalf("%s is already a scoped-token method", callerBound)
+	}
+	ScopedTokenMethods[callerBound] = []string{"remote-commands"}
+	t.Cleanup(func() { delete(ScopedTokenMethods, callerBound) })
 	registry := newTokenRegistry()
 	registry.put("chat-token", CallerScope{Kind: ScopeKindInteractive, ThreadID: "chat", ProjectID: "project"})
 	dispatcher := NewDispatcher()
@@ -96,7 +104,7 @@ func postAndAbandon(t *testing.T, server *Server, app *scopedCallApp, method, wa
 
 func TestScopedRPCRunsAnUnboundMethodPastItsCaller(t *testing.T) {
 	server, app := newScopedCallServer(t)
-	postAndAbandon(t, server, app, "WorkflowAgentStartRun", "start")
+	postAndAbandon(t, server, app, "AgentRemoteStatus", "start")
 	time.Sleep(50 * time.Millisecond)
 	close(app.release)
 	select {
@@ -111,7 +119,7 @@ func TestScopedRPCRunsAnUnboundMethodPastItsCaller(t *testing.T) {
 
 func TestScopedRPCEndsACallerBoundMethodWithItsCaller(t *testing.T) {
 	server, app := newScopedCallServer(t)
-	postAndAbandon(t, server, app, "WorkflowAgentRunStatus", "status")
+	postAndAbandon(t, server, app, "ListThreadsOnPR", "status")
 	select {
 	case err := <-app.done:
 		if err == nil {

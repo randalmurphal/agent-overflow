@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
@@ -45,7 +47,11 @@ type reachPair struct {
 	source   *App
 	dest     *App
 	destWire *pairedBackend
-	manager  *attachedbackends.Manager
+	// destBus is what the destination's router emits to.
+	destBus *capturedEventBus
+	manager *attachedbackends.Manager
+	// profile is the device profile directory manager keeps its pairing in.
+	profile string
 	// computer is the destination's id as the source's pairings name it.
 	computer string
 	// project is a project registered on the DESTINATION. A spawn there
@@ -56,6 +62,7 @@ type reachPair struct {
 	sourceID string
 	// dbPath and settingsDir are the source's durable state, so a test can
 	// boot a second App over what the first one wrote.
+	destDBPath  string
 	dbPath      string
 	settingsDir string
 }
@@ -69,11 +76,14 @@ func newReachPair(t *testing.T) *reachPair {
 
 // newReachPairServedBy is newReachPair with the destination's listener
 // built by the caller, which is how a test gives that computer a fault:
-// a reply that never comes back, or a call that never returns.
+// a reply that never comes back, or a call that never returns. A build
+// without remote access skips the test: the pair is two paired computers.
 func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *reachPair {
 	t.Helper()
+	remotetest.Require(t)
 
-	dest, _ := setupE2EApp(t)
+	destDBPath := storetest.ClonePath(t)
+	dest, destBus := setupE2EAppOn(t, destDBPath, t.TempDir())
 	dest.configDir = t.TempDir()
 	if err := dest.initIdentity("thread-tools-destination"); err != nil {
 		t.Fatal(err)
@@ -90,17 +100,22 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 
 	dbPath, settingsDir := storetest.ClonePath(t), t.TempDir()
 	source, _ := setupE2EAppOn(t, dbPath, settingsDir)
+	// A life a test can end, as shutdown does, set before anything reads it.
+	source.appCtx, source.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(source.appCancel)
 	source.configDir = t.TempDir()
 	source.installThreadRequestObserver()
 	sourceID := uuid.NewString()
 	publishReachIdentity(t, source, sourceID)
 
 	pair := &reachPair{
-		source: source, dest: dest, destWire: wire, sourceID: sourceID,
+		source: source, dest: dest, destDBPath: destDBPath, destWire: wire, destBus: destBus, sourceID: sourceID,
 		project: project.ID, dbPath: dbPath, settingsDir: settingsDir,
 	}
-	pair.manager = pair.pairWith(t, "source")
+	pair.profile = t.TempDir()
+	pair.manager = pair.pairWithIn(t, pair.profile, "source")
 	source.backends = pair.manager
+	source.observePairedComputers(pair.manager)
 	pair.computer = pair.attachedID(t, pair.manager)
 
 	caller, err := createTestThread(t, source, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
@@ -137,7 +152,13 @@ func publishReachIdentity(t *testing.T, app *App, backendID string) {
 // ownership test needs.
 func (p *reachPair) pairWith(t *testing.T, label string) *attachedbackends.Manager {
 	t.Helper()
-	manager, err := attachedbackends.New(t.TempDir(), label, "test")
+	return p.pairWithIn(t, t.TempDir(), label)
+}
+
+// pairWithIn is pairWith over the device profile directory dir.
+func (p *reachPair) pairWithIn(t *testing.T, dir, label string) *attachedbackends.Manager {
+	t.Helper()
+	manager, err := attachedbackends.New(dir, label, "test")
 	if err != nil {
 		t.Fatalf("attachedbackends.New: %v", err)
 	}
@@ -218,7 +239,14 @@ func (p *reachPair) pollOn(t *testing.T, app *App) {
 	// Every open row is due: the cadence is tested by threadPollDelay, and
 	// a test that waited out five seconds per pass would prove nothing
 	// more.
-	app.pollRemoteThreadRequests(time.Now().Add(time.Hour))
+	p.pollAt(t, app, time.Now().Add(time.Hour))
+}
+
+// pollAt runs one whole pass of app's poller as the clock reads now, which
+// decides the rows it visits and what an unknown token means then.
+func (p *reachPair) pollAt(t *testing.T, app *App, now time.Time) {
+	t.Helper()
+	app.pollRemoteThreadRequests(now)
 	app.threadRequestsWG.Wait()
 }
 
@@ -331,7 +359,7 @@ func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	shape := pair.source.threadToolsShape(pair.caller.ID)
+	shape := pair.source.threadToolsShape(pair.caller.ID, subThreadPlace{})
 	if len(shape.Computers) != 1 || shape.Computers[0].ID != pair.computer {
 		t.Fatalf("shape names %+v, want the paired destination alone", shape.Computers)
 	}
@@ -346,7 +374,7 @@ func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
 	if err := pair.source.RemoveBackend(pair.computer, false); err != nil {
 		t.Fatalf("forget the destination: %v", err)
 	}
-	if computers := pair.source.threadToolsShape(pair.caller.ID).Computers; len(computers) != 0 {
+	if computers := pair.source.threadToolsShape(pair.caller.ID, subThreadPlace{}).Computers; len(computers) != 0 {
 		t.Fatalf("the forgotten computer is still in the shape: %+v", computers)
 	}
 	if threadToolsOfferComputer(pair.source.threadMCPTools(threadMCPAccess{ThreadID: pair.caller.ID})) {
@@ -484,6 +512,8 @@ func reachThread(t *testing.T, app *App, id, title string) store.Thread {
 // that is asleep. It embeds the App and is registered under the same
 // labels, so the source reaches it through the ordinary method ids.
 type peerFaults struct {
+	ownerWaitCalls   atomic.Int64
+	holdOwnerChanges chan struct{}
 	*App
 	// dropReplies is how many answered ThreadToolCall replies are thrown
 	// away before one is allowed back to the source. The destination has
@@ -491,14 +521,145 @@ type peerFaults struct {
 	dropReplies atomic.Int32
 	// calls counts every ThreadToolCall this destination answered.
 	calls atomic.Int32
+	// unread is how many ThreadToolCalls fail before the destination reads
+	// them, with an error the source cannot read: each reached the
+	// destination, and nothing there ran it.
+	unread atomic.Int32
+	// unreadRetries fails every ThreadToolCall after the first as unread
+	// does, whatever the first one does.
+	unreadRetries atomic.Bool
+	entered       atomic.Int32
+	// refuseRetries refuses every ThreadToolCall after the first with a
+	// thread tools refusal, as a destination whose state changed between
+	// two attempts does.
+	refuseRetries atomic.Bool
+	attempts      atomic.Int32
+	// detachFirst keeps the first ThreadToolCall running after its source
+	// is told it was lost, as a handler does when the socket under it
+	// drops. Its answer to the source waits for creating to close, which
+	// the test does once that handler is making its thread; detached joins
+	// the handler.
+	detachFirst atomic.Bool
+	creating    chan struct{}
+	detached    sync.WaitGroup
+	// admit, when set, holds the detached handler before it runs at all
+	// until it is closed: a handler still before admission, whose token
+	// the destination does not hold yet.
+	admit chan struct{}
+	// held, when set, is closed by the first ThreadToolCall past unread,
+	// which then waits for hold to close before it runs.
+	held, hold chan struct{}
+	holdOnce   sync.Once
 	// stall holds every ThreadToolRequestStatus until it is closed, which
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
 	stall chan struct{}
+	// reword, when set, rewrites each request a ThreadToolRequestStatus
+	// reply reports, as a computer of another build would word it.
+	reword atomic.Pointer[func(*ThreadPeerRequest)]
+	// refuseAcks fails every ThreadToolRequestStatus that carries an
+	// acknowledgement before this computer reads it: the call is lost on
+	// the way there.
+	refuseAcks atomic.Bool
+	// asked, when set, sees each ThreadToolRequestStatus as it arrives, as
+	// a computer of another build would read it.
+	asked atomic.Pointer[func(*ThreadPeerPoll)]
+	// answered, when set, sees each ThreadToolCall this computer answered
+	// before its reply leaves, and can hold the reply there.
+	answered atomic.Pointer[func(ThreadPeerCall)]
+	// released answers a spawn or ask whose token holds a receipt naming no
+	// thread yet as v0.0.19 does: it settles the receipt interrupted and
+	// refuses, while the attempt making the thread runs on.
+	released atomic.Bool
+	// watchEnded, when set, is told each time a forwarded thread_status
+	// wait returns here, whichever peer method carried it.
+	watchEnded chan struct{}
+	// beforeWatch, when set, runs as each forwarded thread_status wait
+	// arrives over ThreadToolWatch, before it is served.
+	beforeWatch func()
+	// exportChunk, when set, sees each export chunk this destination serves
+	// and may change it before it goes back (app_thread_tools_export_test.go).
+	exportChunk func(ctx context.Context, offset int64, chunk *RemoteArtifactChunk)
+	// exportAsked is every offset an export chunk was asked for, served or
+	// refused.
+	exportMu    sync.Mutex
+	exportAsked []int64
+	// resolveHold, when set, holds every ThreadToolResolve until it is
+	// closed, after telling resolveHeld.
+	resolveHold atomic.Pointer[chan struct{}]
+	resolveHeld chan struct{}
+}
+
+func (p *peerFaults) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	defer p.endWatch(call)
+	return p.App.ThreadToolQuery(ctx, call)
+}
+
+func (p *peerFaults) ThreadToolWatch(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.beforeWatch != nil {
+		p.beforeWatch()
+	}
+	defer p.endWatch(call)
+	return p.App.ThreadToolWatch(ctx, call)
+}
+
+func (p *peerFaults) endWatch(call ThreadPeerCall) {
+	if p.watchEnded != nil && call.Tool == "thread_status" {
+		p.watchEnded <- struct{}{}
+	}
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.entered.Add(1) > 1 && p.unreadRetries.Load() {
+		return ThreadPeerReply{}, errors.New("the destination failed before it read the call")
+	}
+	if left := p.unread.Load(); left > 0 && p.unread.CompareAndSwap(left, left-1) {
+		return ThreadPeerReply{}, errors.New("the destination failed before it read the call")
+	}
+	if p.held != nil {
+		p.holdOnce.Do(func() {
+			close(p.held)
+			<-p.hold
+		})
+	}
+	if p.attempts.Add(1) > 1 && p.refuseRetries.Load() {
+		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, "This attempt is refused.", nil)
+	}
+	if p.released.Load() && (call.Tool == "thread_spawn" || call.Tool == "thread_ask") {
+		receipt, found, err := p.store.GetThreadRequestReceipt(call.Token)
+		if err != nil {
+			return ThreadPeerReply{}, err
+		}
+		if found && receipt.TargetThreadID == "" {
+			// The sentence v0.0.19 stored, as text with no cause.
+			const neverStarted = "That request was accepted but its thread was never created."
+			if err := p.settleThreadReceipt(call.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+				State: store.ThreadReceiptInterrupted, Answer: []byte(neverStarted), AnswerKind: store.ThreadAnswerError,
+			}); err != nil {
+				return ThreadPeerReply{}, err
+			}
+			return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
+				neverStarted+" It is settled as interrupted; make the request again.", nil)
+		}
+	}
+	if p.detachFirst.CompareAndSwap(true, false) {
+		p.detached.Go(func() {
+			if p.admit != nil {
+				<-p.admit
+			}
+			_, _ = p.App.ThreadToolCall(context.WithoutCancel(ctx), call)
+		})
+		select {
+		case <-p.creating:
+		case <-ctx.Done():
+			return ThreadPeerReply{}, ctx.Err()
+		}
+		return ThreadPeerReply{}, errors.New("the connection dropped")
+	}
 	reply, err := p.App.ThreadToolCall(ctx, call)
+	if answered := p.answered.Load(); answered != nil {
+		(*answered)(call)
+	}
 	if err != nil {
 		return reply, err
 	}
@@ -516,14 +677,42 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 			return ThreadPeerPollReply{}, ctx.Err()
 		}
 	}
-	return p.App.ThreadToolRequestStatus(ctx, poll)
+	if p.refuseAcks.Load() && len(poll.Ack) > 0 {
+		return ThreadPeerPollReply{}, errors.New("the acknowledgement was lost on the way")
+	}
+	if asked := p.asked.Load(); asked != nil {
+		(*asked)(&poll)
+	}
+	reply, err := p.App.ThreadToolRequestStatus(ctx, poll)
+	if reword := p.reword.Load(); err == nil && reword != nil {
+		for i := range reply.Requests {
+			(*reword)(&reply.Requests[i])
+		}
+	}
+	return reply, err
 }
 
-// serveFaultyApp serves one destination through the fault wrapper.
-func serveFaultyApp(t *testing.T, app *App) (*pairedBackend, *peerFaults) {
+func (p *peerFaults) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
+	p.ownerWaitCalls.Add(1)
+	if c := p.holdOwnerChanges; c != nil && cursor.Launch != "" {
+		select {
+		case <-ctx.Done():
+			return OwnerChanges{}, ctx.Err()
+		case <-c:
+		}
+	}
+	return p.App.ThreadOwnerChanges(ctx, cursor)
+}
+
+// serveFaultyApp serves one destination through the fault wrapper, its
+// listener configured further by configure.
+func serveFaultyApp(t *testing.T, app *App, configure ...func(*transport.Config)) (*pairedBackend, *peerFaults) {
 	t.Helper()
 	faults := &peerFaults{App: app}
 	wire := servePairedApp(t, app, func(cfg *transport.Config) {
+		for _, apply := range configure {
+			apply(cfg)
+		}
 		dispatcher := transport.NewDispatcher()
 		if _, err := dispatcher.Register(faults, transport.RegisterOptions{
 			Package:   "main",
@@ -719,7 +908,7 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 		t.Fatal("an ask ran in the target thread instead of its own scratch fork")
 	}
 
-	if err := pair.source.DeleteThread(pair.caller.ID); err != nil {
+	if err := pair.source.deleteThread(pair.caller.ID); err != nil {
 		t.Fatalf("delete the caller: %v", err)
 	}
 	waitUntilE2E(t, 30*time.Second, "the destination drops the fork", func() bool {
@@ -824,7 +1013,7 @@ func (p *reachPair) collect(t *testing.T, token, answer string) string {
 
 // A wake for work that ran on another computer names that thread the way a
 // local one does, in its body and in the attribution a client renders as
-// the origin chip. The caller has no row for that thread, so the only name
+// the sender of an agent row. The caller has no row for that thread, so the only name
 // it has is what the destination reported while the request was open.
 func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T) {
 	t.Parallel()
@@ -864,7 +1053,8 @@ func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T
 		t.Fatalf("the wake carries no attribution: %+v", payload)
 	}
 	got := *payload.OriginThread
-	if got.Title != "Kernel build" || got.ThreadID != target || got.ComputerID != id || got.ComputerName != name {
+	if got.Title != "Kernel build" || got.ThreadID != target || got.ComputerID != id || got.ComputerName != name ||
+		got.Kind != agentmeta.OriginKindWake {
 		t.Errorf("wake origin = %+v, want %q (%s) on %q (%s)", got, "Kernel build", target, name, id)
 	}
 }
@@ -963,17 +1153,26 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 // TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken pins what a
 // call whose answer never came back owes the model: the token, so the work
 // is checked rather than started again, and a row the poller reconciles.
-// The poller waits until nothing is in flight for that token before it
-// treats the destination's "unknown" as a refusal.
+// The poller stays away while a call is out; once the call returned, a
+// destination on thread-tools.v2 with no handler admitting the token
+// settles it as never started on the first poll.
 func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
-	pair := newReachPair(t)
-	// The call is cancelled before it can be answered, which is what a
-	// lost reply looks like from the source: the destination may have
-	// accepted it, and this computer cannot tell.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	var faults *peerFaults
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		wire, injected := serveFaultyApp(t, app)
+		faults = injected
+		return wire
+	})
+	// Every attempt reaches the destination and fails with an error this
+	// computer cannot read, which is what a lost answer looks like from the
+	// source: the destination may have accepted it, and this computer
+	// cannot tell. Here it never ran any of them.
+	faults.unread.Store(threadPeerAdmissionAttempts)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	called := time.Now()
 	ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
 		Prompt: "work whose answer never came back", ComputerID: pair.computer, ProjectID: pair.project,
 	})
@@ -983,40 +1182,38 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	if ack.Token == "" || ack.State != store.ThreadRequestUnconfirmed || ack.Outcome != threadtools.OutcomeUnconfirmed {
 		t.Fatalf("ack = %+v, want an unconfirmed request carrying its token", ack)
 	}
+	returned := time.Now()
 	row := pair.request(t, ack.Token)
 	if row.State != store.ThreadRequestUnconfirmed {
 		t.Fatalf("the source row settled %q on a call whose answer was lost", row.State)
 	}
-
-	// A row still being admitted is fenced out of the poll, and the fence
-	// covers every attempt the admission can make.
-	if wait := threadPeerCallWait("ThreadToolCall"); threadRequestAdmissionFence < wait*threadPeerAdmissionAttempts {
-		t.Fatalf("the admission fence %s does not cover %d attempts of %s",
-			threadRequestAdmissionFence, threadPeerAdmissionAttempts, wait)
+	// The deadline covers the last attempt's handler, and it is the row's.
+	if wait := threadPeerCallWait("ThreadToolCall"); row.AdmitUntil < called.Add(wait).UnixMilli() {
+		t.Fatalf("the request's admission deadline %s is before one call's wait (%s) after %s",
+			time.UnixMilli(row.AdmitUntil), wait, called)
 	}
+
+	// A call still out keeps the poll away from its row: its frame may not
+	// have been read there yet.
 	inFlight := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: inFlight, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
 		TargetComputerID: pair.computer, State: store.ThreadRequestUnconfirmed,
-		NextCheck: time.Now().Add(threadRequestAdmissionFence).UnixMilli(),
+		NextCheck: time.Now().Add(time.Hour).UnixMilli(), AdmitUntil: time.Now().Add(time.Hour).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert the row being admitted: %v", err)
 	}
-	pair.source.pollRemoteThreadRequests(time.Now())
-	pair.source.threadRequestsWG.Wait()
+
+	// Once the call returned, the poll asks at its normal pace. The
+	// destination holds no receipt and no handler is admitting the token,
+	// so the request was never accepted.
+	pair.pollAt(t, pair.source, returned.Add(pair.source.threadPollNormal()))
 	if state := pair.request(t, inFlight).State; state != store.ThreadRequestUnconfirmed {
 		t.Fatalf("a poll refused a request that was still being admitted: %q", state)
 	}
-	if state := pair.request(t, ack.Token).State; state != store.ThreadRequestUnconfirmed {
-		t.Fatalf("a poll refused the request before its next check: %q", state)
-	}
-
-	// Once the source is done trying, the poll is the recovery path: the
-	// destination holds no receipt, so the request was never accepted.
-	pair.poll(t)
 	row = pair.request(t, ack.Token)
 	if row.State != store.ThreadRequestRefused || !strings.Contains(string(row.Answer), "never accepted") {
-		t.Fatalf("the poll settled the lost request as %q %q, want refused", row.State, row.Answer)
+		t.Fatalf("the first poll settled the lost request as %q %q, want refused", row.State, row.Answer)
 	}
 }
 
@@ -1068,6 +1265,71 @@ func TestThreadToolsAdmissionIsRetriedWithOneTokenAfterALostReply(t *testing.T) 
 	}
 	if prompts != 1 {
 		t.Fatalf("the retries queued the prompt %d times", prompts)
+	}
+}
+
+// A fork on another computer whose every admission reply is lost: the
+// destination did the work, and a poll during the call's wait recovers
+// it. The spawn's reply still records the instructions its thread runs
+// with, its source's before the call's, which only the destination knows:
+// its receipt recorded them when it named the thread, and the answer the
+// poll collected stated them.
+func TestARecoveredRemoteForkRecordsItsInstructions(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	var faults *peerFaults
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		wire, injected := serveFaultyApp(t, app)
+		faults = injected
+		return wire
+	})
+	installMockClaudeReplies(t, pair.dest, "forked and done")
+	faults.dropReplies.Store(int32(threadPeerAdmissionAttempts))
+	source := instructedForkableThreadOn(t, pair.dest, "instructed-lost", "Review only.")
+
+	type result struct {
+		ack threadtools.RequestAck
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
+			Prompt: "carry on", FromThread: source.ID, FromThreadComputer: pair.computer, ComputerID: pair.computer,
+			Instructions: "Be brief.", WaitSeconds: 30,
+		})
+		done <- result{ack, err}
+	}()
+	var got result
+	for collected := false; !collected; {
+		select {
+		case got = <-done:
+			collected = true
+		case <-time.After(100 * time.Millisecond):
+			// pair.poll reaches past the next check that keeps the poller
+			// off a row while its attempts are out (DispatchThreadRequest),
+			// so it waits for the last of them to be answered.
+			if faults.calls.Load() >= int32(threadPeerAdmissionAttempts) {
+				pair.poll(t)
+			}
+		}
+	}
+	if got.err != nil {
+		t.Fatalf("Spawn: %v", got.err)
+	}
+	if calls := faults.calls.Load(); calls != int32(threadPeerAdmissionAttempts) {
+		t.Fatalf("the destination answered %d calls, want every one of %d attempts lost", calls, threadPeerAdmissionAttempts)
+	}
+	want := "Review only.\n\nBe brief."
+	if got.ack.Instructions != want || got.ack.ThreadID == "" {
+		t.Fatalf("the recovered spawn replies %+v, want its thread named and instructions %q", got.ack, want)
+	}
+	if recorded, err := pair.source.store.ThreadRequestSpawnInstructions(got.ack.Token); err != nil || recorded != want {
+		t.Fatalf("the source row records %q, %v", recorded, err)
+	}
+	if receipt := pair.receipt(t, got.ack.Token); receipt.SpawnInstructions != want {
+		t.Fatalf("the receipt records %q", receipt.SpawnInstructions)
 	}
 }
 
@@ -1168,8 +1430,23 @@ func TestThreadToolsUncollectedRemoteAnswerExpires(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	installMockClaudeReplies(t, pair.dest, "nobody collects this")
+	// The worker's turn ends only once the spawn has returned: a worker
+	// that rested before the spawn's reply was read would hand the answer
+	// back on that reply, and the source would have collected it.
+	spawned := filepath.Join(t.TempDir(), "spawned")
+	installMockClaudeTurns(t, pair.dest, [][]string{{
+		mockClaudeInitLine,
+		testutil.MockWaitForFile(spawned),
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"nobody collects this"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}})
 	spawn := pair.spawnThere(t, "answer into the void", nil)
+	if row := pair.request(t, spawn.Token); threadRequestSettled(row) {
+		t.Fatalf("the spawn's reply carried its answer: %q", row.State)
+	}
+	if err := os.WriteFile(spawned, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	waitUntilE2E(t, 30*time.Second, "the destination settles the spawn", func() bool {
 		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(spawn.Token)
 		return err == nil && found && receipt.SettledAt != 0
@@ -1229,8 +1506,8 @@ func TestThreadToolsRemoteAnswerSurvivesARestartOfEitherSide(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("the restarted source lost the request: found=%v err=%v", found, err)
 	}
-	if row.State != store.ThreadRequestInterrupted || !strings.Contains(string(row.Answer), "restarted") {
-		t.Fatalf("the restarted source collected %q %q, want the interruption", row.State, row.Answer)
+	if row.State != store.ThreadRequestInterrupted || row.Cause != threadtools.CauseRestart {
+		t.Fatalf("the restarted source collected %q %q, want the interruption by the restart", row.State, row.Cause)
 	}
 }
 
@@ -1514,14 +1791,20 @@ func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
 	if report.ComputerID != pair.computer || report.Effect == "" {
 		t.Fatalf("cancel report = %+v, want an effect on %s", report, pair.computer)
 	}
+	// Its effect is the other computer's word, which may stand for a turn
+	// left running or a message left unread there, and is noted as such.
+	if !report.RemoteRequest {
+		t.Fatalf("cancel report = %+v, want it marked as a request another computer holds", report)
+	}
 	// The destination settled its own receipt, which is the only side that
 	// could have stopped the work.
 	receipt := pair.receipt(t, spawn.Token)
 	if receipt.State != store.ThreadReceiptCancelled {
 		t.Fatalf("the destination's receipt is %q, want cancelled", receipt.State)
 	}
-	if row := pair.request(t, spawn.Token); row.Notify {
-		t.Fatalf("a cancelled request kept its wake: %+v", row)
+	// The report told the agent, so no wake tells it again.
+	if row := pair.request(t, spawn.Token); row.DeliveredHow != store.ThreadWakeInline {
+		t.Fatalf("a cancelled request was not delivered by its report: %+v", row)
 	}
 	// The settlement came back on the cancel's reply, so no poll will
 	// acknowledge it.
@@ -1808,15 +2091,15 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 	})
 
 	answeredAt := time.Now().Add(-time.Hour).UnixMilli()
-	settled, err := pair.dest.store.SettleThreadRequestReceipt(spawn.Token, store.ThreadReceiptOpenStates(),
+	result, err := pair.dest.store.SettleLocalThreadRequest(spawn.Token, store.ThreadReceiptOpenStates(),
 		store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptReplied,
 			Answer:     []byte("the backfill touched 412 rows"),
 			AnswerKind: store.ThreadAnswerReply,
 			SettledAt:  answeredAt,
-		})
-	if err != nil || !settled {
-		t.Fatalf("settle the receipt an hour ago: settled=%v err=%v", settled, err)
+		}, store.ThreadRequestReplied)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle the receipt an hour ago: settled=%v err=%v", result.Settled, err)
 	}
 
 	pair.poll(t)
@@ -1844,6 +2127,64 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 	}
 }
 
+// A fork of a grouped thread on the paired computer is made there, and the
+// source forwards an omitted placement as omitted: the destination resolves
+// it as a spawn's default, which leaves the source's group, and the fork is
+// owned there through its link, whoever asked.
+func TestThreadToolsReachForkLeavesItsSourcesGroup(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	for _, tc := range []struct {
+		name      string
+		assistant bool
+	}{
+		{name: "plain caller"},
+		{name: "assistant", assistant: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := newReachPair(t)
+			if tc.assistant {
+				testAssistant(t, p.source, p.caller.ID)
+			}
+			installMockClaudeReplies(t, p.dest, "on it")
+			if _, err := p.dest.settings.Update(map[string]any{"subThreadLevels": 1}); err != nil {
+				t.Fatal(err)
+			}
+			source := forkableThreadOn(t, p.dest, "reach-fork-source")
+			group, err := p.dest.store.CreateThreadGroup(source.ProjectID, "Sweep")
+			if err != nil {
+				t.Fatalf("CreateThreadGroup: %v", err)
+			}
+			if _, err := p.dest.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
+				t.Fatalf("SetThreadGroup: %v", err)
+			}
+			result := p.call(t, "thread_spawn", `{"from_thread":"`+source.ID+`","prompt":"carry on"}`)
+			threadID, _ := result["thread_id"].(string)
+			fork, err := p.dest.store.GetThread(threadID)
+			if err != nil {
+				t.Fatalf("the fork on the destination (%v): %v", result, err)
+			}
+			if fork.Placement != store.PlacementOwned || fork.GroupID != "" {
+				t.Errorf("fork = %s in group %q, want owned in no group", fork.Placement, fork.GroupID)
+			}
+			// Leaving the source's group is how the fork is made, not a
+			// person filing it: it counts the level its spawn carried, and
+			// at the destination's limit starts without spawning tools of
+			// either kind.
+			if fork.SpawnLevel != 1 {
+				t.Errorf("the fork carries level %d, want 1", fork.SpawnLevel)
+			}
+			shape := sessionShapeOf(t, p.dest, fork.ID)
+			closed := shape.nativeClosed[string(provider.Claude)] && shape.nativeClosed[string(provider.ClaudeTUI)] && shape.nativeClosed[string(provider.Codex)]
+			if shape.level != 1 || !shape.threadTools || shape.spawns || !closed {
+				t.Errorf("the fork starts at level %d with thread tools %t, thread_spawn %t, native subagents closed %v; want level 1 without either way to spawn",
+					shape.level, shape.threadTools, shape.spawns, shape.nativeClosed)
+			}
+		})
+	}
+}
+
 // A thread on another computer that stops a turn here is named the way this
 // computer names that computer, never by the name it reports for itself:
 // pairing is directional, so one this computer cannot reach back is only
@@ -1852,12 +2193,13 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	gate := filepath.Join(t.TempDir(), "stop")
+	// The mock acknowledges each interrupt at once and never reports the
+	// turn's end, as the CLI can be slow to: the cancel's rest cuts the turn
+	// for the spawn's request and again as it ends the session, both while
+	// the turn is still open.
 	installMockClaudeTurns(t, pair.dest, [][]string{{
 		mockClaudeInitLine,
 		`{"type":"assistant","message":{"id":"msg-stop","role":"assistant","content":[{"type":"text","text":"working on it"}]}}`,
-		testutil.MockWaitForFile(gate),
-		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[Request interrupted by user]"]}`,
 	}})
 	spawn := pair.spawnThere(t, "work to be stopped", map[string]any{"notify": true})
 	waitUntilE2E(t, 30*time.Second, "the turn opens on the destination", func() bool {
@@ -1866,19 +2208,16 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	})
 	threadID := pair.receipt(t, spawn.Token).TargetThreadID
 
-	stopped := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{ThreadID: threadID, ComputerID: pair.computer})
-		stopped <- err
-	}()
-	waitUntilE2E(t, 30*time.Second, "the destination records the stop", func() bool { return pair.dest.holdsTurnStop(threadID) })
-	if err := os.WriteFile(gate, nil, 0o600); err != nil {
-		t.Fatalf("open gate: %v", err)
-	}
-	if err := <-stopped; err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{ThreadID: threadID, ComputerID: pair.computer}); err != nil {
 		t.Fatalf("cancel the thread on the other computer: %v", err)
+	}
+	if state := pair.receipt(t, spawn.Token).State; state != store.ThreadReceiptCancelled {
+		t.Fatalf("the spawn's receipt on the other computer = %s, want cancelled", state)
+	}
+	if _, live := pair.dest.sessionManager().get(threadID); live {
+		t.Fatal("the spawned thread on the other computer still has a session")
 	}
 
 	sourceID, _ := pair.source.backendIdentity()
@@ -1906,5 +2245,60 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	})
 	if len(stopRows) != 1 || stopRows[0] != want {
 		t.Fatalf("stop rows = %q, want [%q]", stopRows, want)
+	}
+}
+
+// A spawn's first message there tells a worker its spawner owns that its
+// questions and approvals go to the spawner, as a spawn on one computer
+// does; one given a sidebar row there is told nothing of the kind.
+func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}, {mockClaudeInitLine}})
+	const routes = "\nThe sender spawned this thread, so your questions and approval requests go to it, not to the user.\n"
+	for _, placement := range []string{"", store.PlacementStandalone} {
+		extra := map[string]any{}
+		if placement != "" {
+			extra["placement"] = placement
+		}
+		ack := pair.spawnThere(t, "work over there", extra)
+		worker := pair.receipt(t, ack.Token).TargetThreadID
+		t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
+		var first string
+		waitUntil(t, 15*time.Second, func() bool {
+			items, err := pair.dest.store.ListItems(worker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range items {
+				if item.Kind == "user_text" {
+					first = item.Summary
+					return true
+				}
+			}
+			return false
+		})
+		if strings.Contains(first, routes) != (placement == "") {
+			t.Fatalf("placement %q: the spawn's message there reads\n%s", placement, first)
+		}
+		if placement != "" {
+			continue
+		}
+		// A send that names the spawner's computer and thread but comes over
+		// another device's pairing is not the link's owner.
+		link := pair.receipt(t, ack.Token)
+		for device, want := range map[string]bool{link.OwnerDeviceID: true, "other-device": false} {
+			message, err := threadToolsApp{app: pair.dest}.requestMessage(threadRequestOrigin{
+				caller:  threadtools.Caller{ComputerID: link.SourceComputerID, ThreadID: link.SourceThreadID, Title: link.SourceThreadTitle},
+				foreign: true, ownerDevice: device,
+			}, "a-send", store.ThreadRequestSend, worker, "one more thing", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(message.Text(), routes) != want {
+				t.Fatalf("a send over device %q reads\n%s\nwant the prompts line: %v", device, message.Text(), want)
+			}
+		}
 	}
 }

@@ -391,7 +391,7 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
 	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
-	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	f.app.noteReceiptRunning(f.thread.ID, "tok", testSessionToken(f.app, f.thread.ID))
 	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
 
 	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
@@ -400,8 +400,8 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	if got := f.interrupts(t); got != 1 {
 		t.Fatalf("interrupts = %d, want 1", got)
 	}
-	if got, want := f.app.turnStopCause(f.thread.ID, 1), stopByUser(nil).cause; got != want {
-		t.Fatalf("cause of turn 1 = %q, want %q", got, want)
+	if recorded, ok := f.app.turnStopOf(f.thread.ID, store.Turn{TurnIndex: 1}); !ok || recorded.cause.Code != threadtools.CauseUserStop {
+		t.Fatalf("stop of turn 1 = %+v, %v; want the person's Stop recorded", recorded, ok)
 	}
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)
 	if rows := stopRowsOf(t, f.app.store, f.thread.ID); len(rows) != 0 {
@@ -451,7 +451,7 @@ func TestInterruptTurnAtIndexFencesOnTheTurnOfASendWaitingForIt(t *testing.T) {
 		t.Fatalf("interrupts = %d, want 0", got)
 	}
 	if got := f.app.turnStopCause(f.thread.ID, 2); got != turnStoppedUnknown {
-		t.Fatalf("cause of turn 2 = %q, want none recorded", got)
+		t.Fatalf("cause of turn 2 = %+v, want none recorded", got)
 	}
 
 	interrupted, err = f.app.interruptTurnAtIndex(context.Background(), f.thread.ID, 2, stop)
@@ -471,7 +471,7 @@ func TestThreadCancelStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
 	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
-	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	f.app.noteReceiptRunning(f.thread.ID, "tok", testSessionToken(f.app, f.thread.ID))
 	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
 
 	stop := stopByThread("caller", "caller-id", "")
@@ -486,7 +486,7 @@ func TestThreadCancelStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 		t.Fatalf("interrupts = %d, want 1", got)
 	}
 	if got := f.app.turnStopCause(f.thread.ID, 1); got != stop.cause {
-		t.Fatalf("cause of turn 1 = %q, want %q", got, stop.cause)
+		t.Fatalf("cause of turn 1 = %+v, want %+v", got, stop.cause)
 	}
 }
 

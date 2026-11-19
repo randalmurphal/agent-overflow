@@ -37,8 +37,11 @@ var holderKeptTables = []string{
 // every thread it read.
 var holderClearedRows = []struct{ table, column string }{
 	{"agent_end_backfill", "thread_id"},
+	{"agent_helpers", "thread_id"},
+	{"agent_past_threads", "thread_id"},
+	{"agent_wakes", "thread_id"},
+	{"agents", "thread_id"},
 	{"async_questions", "thread_id"},
-	{"channels", "thread_id"},
 	{"codex_developer_instructions", "thread_id"},
 	{"diff_review_comments", "thread_id"},
 	{"flush_queue_items", "thread_id"},
@@ -47,7 +50,9 @@ var holderClearedRows = []struct{ table, column string }{
 	{"proposed_plan_comments", "thread_id"},
 	{"proposed_plans", "thread_id"},
 	{"provider_thread_cost", "thread_id"},
+	{"remote_watches", "thread_id"},
 	{"scratch_threads", "thread_id"},
+	{"session_start_failures", "thread_id"},
 	{"subagent_aggregate_backfill", "thread_id"},
 	{"thread_draft_recoveries", "thread_id"},
 	{"thread_drafts", "thread_id"},
@@ -56,6 +61,7 @@ var holderClearedRows = []struct{ table, column string }{
 	{"thread_pull_requests", "thread_id"},
 	{"thread_request_receipts", "target_thread_id"},
 	{"thread_requests", "caller_thread_id"},
+	{"thread_tallies", "thread_id"},
 }
 
 // retireToHolderTx makes id a holder when a fork reads it, in place of
@@ -88,17 +94,15 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 	if err := deleteThreadSearchWhereTx(tx, "thread_id = ? AND item_id = ''", []any{id}); err != nil {
 		return false, err
 	}
-	for _, column := range []string{"forked_from_thread_id", "parent_thread_id"} {
-		if _, err := tx.Exec(`UPDATE threads SET `+column+` = NULL WHERE `+column+` = ?`, id); err != nil {
-			return false, fmt.Errorf("store: clear the %s links to retired thread %s: %w", column, id, err)
-		}
+	if _, err := tx.Exec(`UPDATE threads SET forked_from_thread_id = NULL WHERE forked_from_thread_id = ?`, id); err != nil {
+		return false, fmt.Errorf("store: clear the forked_from_thread_id links to retired thread %s: %w", id, err)
 	}
 	result, err := tx.Exec(`UPDATE threads
-		    SET mode = ?, deleting = 0, project_id = NULL, workspace_path = '', worktree_path = NULL,
+		    SET mode = ?, deleting = 0, delete_claim = '', project_id = NULL, workspace_path = '', worktree_path = NULL,
 		        branch = NULL, session_ref = NULL, pending_fork_session_ref = NULL,
-		        pending_fork_resume_at = '', fork_preparing = 0, discussion_id = NULL,
-		        parent_thread_id = NULL, forked_from_thread_id = NULL, pinned_at = NULL,
-		        pin_group = NULL, group_id = NULL, archived = 0, live_todo = '',
+		        pending_fork_resume_at = '', fork_preparing = 0,
+		        forked_from_thread_id = NULL, pinned_at = NULL,
+		        pin_group = NULL, group_id = NULL, placement = 'standalone', live_todo = '',
 		        worktree_setup_state = '', fork_source_thread_id = ''
 		  WHERE id = ?`, threadmode.ModeHolder, id)
 	if err != nil {
@@ -106,6 +110,9 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 	}
 	if err := requireRowsAffected(result, "store: retire thread "+id+" to a holder"); err != nil {
 		return false, err
+	}
+	if _, _, err := setThreadArchivedTx(tx, id, false, workerFence{}); err != nil {
+		return false, fmt.Errorf("store: retire thread %s to a holder: %w", id, err)
 	}
 	return true, nil
 }

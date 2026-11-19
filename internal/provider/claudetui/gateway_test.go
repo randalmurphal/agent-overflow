@@ -21,6 +21,7 @@ type recordingDriver struct {
 	subBegins     int
 	captureBegins int
 	ends          int
+	observed      [][]byte
 	envelope      []json.RawMessage
 	rec           *reconstructor
 }
@@ -61,6 +62,18 @@ func (d *recordingDriver) beginCompactionCapture(req *messagesRequest) *agentReq
 		d.mu.Unlock()
 	}
 	return ar
+}
+
+func (d *recordingDriver) observeMainRequest(body []byte) {
+	d.mu.Lock()
+	d.observed = append(d.observed, append([]byte(nil), body...))
+	d.mu.Unlock()
+}
+
+func (d *recordingDriver) observedMainRequests() [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([][]byte(nil), d.observed...)
 }
 
 func (d *recordingDriver) endAgentTurn(ar *agentRequest) {

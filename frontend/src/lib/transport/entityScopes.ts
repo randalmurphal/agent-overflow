@@ -4,7 +4,7 @@
 // matching RPC routing; ambiguity must never borrow local host authority.
 import type { BackendKey } from './backendKey';
 import { requireEntityBackend } from './backends';
-import { automationBackend, projectBackend, workflowItemBackend } from './entityIndex';
+import { projectBackend, workflowItemBackend } from './entityIndex';
 import { hasScope, type Scope } from './scopes';
 import { threadClaimant } from './threadOwner';
 
@@ -24,7 +24,4 @@ export function projectHasScope(scope: Scope, projectId: string | null | undefin
 }
 export function workflowItemHasScope(scope: Scope, itemId: string): boolean {
   return entityHasScope(scope, workflowItemBackend(itemId));
-}
-export function automationHasScope(scope: Scope, automationId: string): boolean {
-  return entityHasScope(scope, automationBackend(automationId));
 }

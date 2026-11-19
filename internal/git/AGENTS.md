@@ -30,6 +30,11 @@ A worktree attach or create also holds an outer per-repository lock across
 its branch checks, branch creation, add and undo, and adds the worktree
 locked with a reason unique to the attempt; a failed add removes only the
 registration carrying that reason, so another process's checkout survives.
+A cut reports the commit it made its branch at, read before the checkout's
+hook runs. Undoing a cut that succeeded goes through `UndoCut`, under the
+same outer lock: the checkout is removed without force, and the branch only
+while it still points there and nothing has it checked out; what stays is
+returned as `CutKept`.
 Worktree operations confirm the target through Git before removing or reusing
 it. Never recursively delete a path merely because it appears under a project
 directory. Keep main-worktree resolution and stale registration rules in

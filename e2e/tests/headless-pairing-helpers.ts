@@ -1,9 +1,8 @@
 // The owner console of a separately running harness. The child owns no
 // backend: closing SSH/stdin must leave that host alive.
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
-import { spawnContained } from '../src/harness-process.js';
+import { productBinary, spawnProduct } from '../src/product-process.js';
 import { launchStep, processDiagnostics } from '../src/harness-launch-step.js';
 import type { HarnessApp } from '../src/harness.js';
 import type { PairingInvite } from './offhost-helpers.js';
@@ -58,7 +57,7 @@ export async function connectedAfterConfirm(
 const PAIRING_CONSOLE_STEP_MS = 10_000;
 
 export async function headlessPairing(harness: HarnessApp) {
-  const child = spawnContained(process.env.AO_HARNESS_BIN ?? fileURLToPath(new URL('../../bin/agent-overflow', import.meta.url)),
+  const child = spawnProduct(productBinary('agent-overflow'),
     ['pair', '--json', '--class', 'desktop', '--config-root', harness.bootstrap.dataDir],
     { stdio: ['pipe', 'pipe', 'pipe'], memoryLimitBytes: 512 * 1024 * 1024 });
   const lines = createInterface({ input: child.stdout! });
@@ -89,4 +88,20 @@ export async function headlessPairing(harness: HarnessApp) {
       close,
     };
   } catch (error) { close(); throw error; }
+}
+
+/**
+ * Pairs `other` to `owner` as the owner's own device through AddBackend,
+ * names it, and returns its backend id on the owner.
+ */
+export async function pairOwnDevice(owner: HarnessApp, other: HarnessApp, name: string): Promise<string> {
+  const pairing = await headlessPairing(other);
+  try {
+    const attachment = await owner.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
+    await pairing.confirm(attachment.verificationNumber);
+    await owner.rpc('RenameBackend', attachment.id, name);
+    return attachment.id;
+  } finally {
+    pairing.close();
+  }
 }

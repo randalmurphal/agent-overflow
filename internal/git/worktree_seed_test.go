@@ -462,8 +462,8 @@ func TestAttachWorktreeChecksOutABranchOnlyOriginHasTrackingOrigin(t *testing.T)
 
 	core := NewCore()
 	worktree := filepath.Join(t.TempDir(), "mr")
-	if created, err := core.AttachWorktreeAt(repo, worktree, BranchRef("feature/mr")); err != nil || !created {
-		t.Fatalf("AttachWorktree = created %v, %v; want the local branch made from origin's", created, err)
+	if madeTip, err := core.AttachWorktreeAt(repo, worktree, BranchRef("feature/mr")); err != nil || madeTip == "" {
+		t.Fatalf("AttachWorktree = tip %q, %v; want the local branch made from origin's", madeTip, err)
 	}
 	if head := revParse(t, worktree, "HEAD"); head != revParse(t, repo, "origin/feature/mr") {
 		t.Fatalf("worktree HEAD = %s, want origin/feature/mr", head)

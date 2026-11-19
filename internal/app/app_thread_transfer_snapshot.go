@@ -235,7 +235,7 @@ func (a *App) finishTransferSnapshot(ctx context.Context, row store.ThreadTransf
 	for _, file := range attachments {
 		sources = append(sources, transferfiles.Source{Root: a.attachments.Root(), Path: file.RelativePath, Name: "attachments/" + file.RelativePath})
 	}
-	options := store.ThreadHistoryExport{}
+	options := store.ThreadHistoryExport{Tallies: row.Kind == "move"}
 	var private threadtransfer.SourceData
 	if err := json.Unmarshal(row.PrivateState, &private); err != nil {
 		return receipt, err

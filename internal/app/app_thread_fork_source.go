@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -26,12 +27,25 @@ func (a *App) forkSource(op, sourceThreadID string) (store.Thread, error) {
 }
 
 // checkForkSource is CheckMutable for a fork's source. A holder, the
-// history of a deleted thread its forks still read, is refused as a
-// deleted source, as forkSource refuses a thread whose delete has begun.
-// CheckMutable reports a holder alone as store.ErrThreadGone.
+// history of a deleted thread its forks still read, and a thread whose
+// delete committed are refused as a deleted source, as forkSource refuses
+// them. CheckMutable reports a holder as store.ErrThreadGone, and a thread
+// a delete claimed or committed as store.ErrThreadDeleting: a claimed one
+// is refused as being deleted, since its delete may yet be refused.
 func (a *App) checkForkSource(op, sourceThreadID string) error {
+	if _, err := a.admitPersonOperation(context.Background(), sourceThreadID); err != nil {
+		return err
+	}
 	err := a.threadApplication().CheckMutable(sourceThreadID)
-	if errors.Is(err, store.ErrThreadGone) {
+	deleted := errors.Is(err, store.ErrThreadGone)
+	if !deleted && errors.Is(err, store.ErrThreadDeleting) {
+		_, committed, readErr := a.store.ThreadDeleteClaim(sourceThreadID)
+		if readErr != nil {
+			return fmt.Errorf("%s %s: %w", op, sourceThreadID, readErr)
+		}
+		deleted = committed
+	}
+	if deleted {
 		return forkRefusal(fmt.Errorf("%s %s: %w", op, sourceThreadID, store.ErrForkSourceDeleted))
 	}
 	return err

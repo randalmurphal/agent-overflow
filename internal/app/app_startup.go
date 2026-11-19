@@ -43,7 +43,7 @@ import (
 // because every other subsystem either embeds the store or reads from it,
 // observability boots next because the triage router installs metrics
 // before it can accept events, and the remaining subsystems (triage,
-// discussion, terminals, attachments, workspace search) boot
+// terminals, attachments, workspace search) boot
 // last once their inputs are ready.
 //
 //wails:ignore
@@ -376,12 +376,12 @@ func (a *App) startUnattendedWork() []bootStep {
 		// outside the snapshot boundary, and announces this machine to a
 		// coordination server.
 		infallibleBootStep(func() { a.startTailnetLoop(a.configDir) }),
-		// Workflow automation: the self-resume schedules and the §11 trigger
-		// cadence, both of which START PROVIDER TURNS with no one asking. The
-		// engine itself is already running (initWorkflowEngine, during
-		// initSubsystems) because rebuilding its state from SQLite is exactly
-		// what a trial has to prove works; what waits is the part that acts.
-		a.startWorkflowAutomation,
+		// Workflow self-resume schedules, which START PROVIDER TURNS with no
+		// one asking. The engine itself is already running (initWorkflowEngine,
+		// during initSubsystems) because rebuilding its state from SQLite is
+		// exactly what a trial has to prove works; what waits is the part that
+		// acts.
+		infallibleBootStep(a.armWorkflowAutoResumes),
 	}
 }
 
@@ -496,6 +496,9 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	// `theme` key further down the boot.
 	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
 	a.settingsAttached.Store(true)
+	// Assistants turned off stay paused from the first read on: their loops
+	// are not recovered and nothing of theirs starts.
+	a.initAssistantsPause(st)
 	// Prompt override texts move out of the user-tier rows into
 	// <configDir>/prompts once the rows are in the store, and before the
 	// prompts watcher starts (initPromptDirectory). A failure leaves the
@@ -751,8 +754,7 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 }
 
 // initSubsystems wires the remaining services: triage (with metrics),
-// discussion registry/channels, terminals, attachments, and workspace
-// search. Called after initStores / initObservability so every subsystem
+// terminals, attachments, and workspace search. Called after initStores / initObservability so every subsystem
 // has its dependencies in place.
 //
 // An attachment init failure closes the store before returning — matching
@@ -785,6 +787,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		return fmt.Errorf("restore replacement drafts: %w", err)
 	}
 	a.restoreDurableFlushQueueAtBoot()
+	if err := a.loadSessionStartFailures(); err != nil {
+		a.bootPhaseFailed(fmt.Errorf("load the threads whose start failed: %w", err))
+	}
 	endPhase()
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()

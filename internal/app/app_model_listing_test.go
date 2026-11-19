@@ -111,7 +111,7 @@ func TestProviderDefaultAndListedOptionsFollowTheCLI(t *testing.T) {
 	// An agent spawn or fork naming an unlisted model a thread runs is
 	// accepted, though thread_options does not offer it.
 	opts := CreateThreadOptions{Provider: string(provider.Claude)}
-	if err := (threadToolsApp{app: app}).applySpawnModel(&opts, threadtools.SpawnCall{Model: "claude-opus-4-7"}); err != nil {
+	if err := (threadToolsApp{app: app}).applySpawnModel(context.Background(), &opts, threadtools.SpawnCall{Model: "claude-opus-4-7"}); err != nil {
 		t.Fatalf("spawn on an unlisted model refused: %v", err)
 	}
 	if opts.Model != "claude-opus-4-7" {

@@ -15,7 +15,7 @@ func TestAsyncQuestionHistoryTransferCloneAndCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.InsertItem(Item{ID: "answer", ThreadID: "q", TurnIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"send","provider_item_id":"native"}`}); err != nil {
@@ -70,11 +70,11 @@ func TestAsyncQuestionRetriesCannotChangeQuestionSetOrContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	queue := FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: "unrelated message"}
-	if err := s.QueueAsyncAnswers(queue, answers); err == nil {
+	if err := s.QueueAsyncAnswers(queue, answers, nil); err == nil {
 		t.Fatal("claimed answers for unrelated message")
 	}
 	queue.Message = body
-	if err := s.QueueAsyncAnswers(queue, answers); err != nil {
+	if err := s.QueueAsyncAnswers(queue, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.AsyncAnswerMessage("q", "send", answers[:1]); err == nil {

@@ -9,13 +9,13 @@
 // other client (Playwright MCP sessions, ad-hoc scripts): everything
 // goes through the same bootstrap line + WS wire shown here.
 
+import type { ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
-  spawnContained,
   captureProcessIdentity,
   captureProcessTreeProof,
   captureProcessGroupMemberProof,
@@ -27,6 +27,9 @@ import {
 } from './harness-process.ts';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from './harness-watchdog.ts';
 import { boundedCleanup } from './harness-cleanup.ts';
+import { BackendConsoleLog } from './harness-console-log.ts';
+import { launchEnvironment } from './harness-env.ts';
+import { productBinary, spawnProduct } from './product-process.ts';
 import {
   BOOTSTRAP_STEP_MS,
   LAUNCH_CLEANUP_MS,
@@ -35,10 +38,10 @@ import {
   processDiagnostics,
 } from './harness-launch-step.ts';
 import { terminateHarness } from './harness-teardown.ts';
-import type { HarnessBootstrap, LaunchOptions } from './harness-types.ts';
+import type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
 import { HarnessApp } from './harness-app.ts';
 
-export type { HarnessBootstrap, LaunchOptions } from './harness-types.ts';
+export type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
 export { HarnessApp } from './harness-app.ts';
 export type {
   HarnessMockReport,
@@ -56,7 +59,7 @@ const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 // routes' per-peer budget (internal/transport/ratelimit.go). A spec that
 // needs product timing, or a further interval, passes its own
 // AO_HARNESS_TIMING in `env`.
-export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,usage-probe-gap=250ms';
+export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,wake-floor=1s,watch-failure-window=3s,usage-probe-gap=250ms';
 
 // macOS exposes /var and /tmp as root-owned aliases under /private. Normalize
 // only those system prefixes; resolving arbitrary descendants would follow a
@@ -75,9 +78,7 @@ function normalizeSystemPath(value: string): string {
  * fails naming the step within `launchBudgetMs`.
  */
 export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessApp> {
-  const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-  const binary =
-    opts.binary ?? process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
+  const binary = opts.binary ?? productBinary('agent-overflow');
   const mockProvider = opts.mockProvider ?? process.env.AO_MOCKPROVIDER;
   const mockForge = opts.mockForge ?? process.env.AO_MOCKFORGE;
   const ownsDataDir = !opts.dataDir;
@@ -106,24 +107,44 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     args.push('--exit-with-parent', String(process.pid));
   }
 
-  const child = spawnContained(binary, args, {
-    memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,
-    env: {
-      ...process.env,
-      AO_HARNESS_TIMING: HARNESS_TIMING,
-      ...opts.env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // Give the backend and every provider/helper it starts an owned
-    // process group. Teardown must never leave a descendant writing to
-    // the run's database after the browser fixture has moved on.
-    detached: true,
-  });
+  let consoleLog: BackendConsoleLog;
+  try {
+    consoleLog = await BackendConsoleLog.open(dataDir);
+  } catch (error) {
+    if (ownsDataDir) await removeOwnedRoot(dataDir, undefined, 'after console log error');
+    throw new Error(`harness console log could not be opened under ${dataDir}: ${(error as Error).message}`);
+  }
+  // Built once so the record is exactly what spawnProduct passes: a full
+  // launch environment given back to it as overrides comes out unchanged.
+  const env = launchEnvironment({ AO_HARNESS_TIMING: HARNESS_TIMING, ...opts.env });
+  const launch: HarnessLaunchRecord = { binary, args, harnessTiming: env.AO_HARNESS_TIMING ?? '', env };
+
+  let child: ChildProcess;
+  try {
+    child = spawnProduct(binary, args, {
+      memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Give the backend and every provider/helper it starts an owned
+      // process group. Teardown must never leave a descendant writing to
+      // the run's database after the browser fixture has moved on.
+      detached: true,
+    });
+  } catch (error) {
+    if (ownsDataDir) await removeOwnedRoot(dataDir, consoleLog, 'after spawn error');
+    else await closeConsoleLog(consoleLog);
+    throw error;
+  }
   let launchIdentity: ProcessIdentity | undefined;
   let launchMemberProof: ProcessGroupMemberProof | undefined;
   let launchTreeProof: ProcessTreeProof | undefined;
+  // Every console line has been delivered by the time the child closes.
+  child.once('close', () => {
+    void consoleLog.close();
+  });
   const stderrTail: string[] = [];
   createInterface({ input: child.stderr! }).on('line', (line) => {
+    consoleLog.write(line);
     stderrTail.push(line);
     if (stderrTail.length > 200) stderrTail.shift();
     if (process.env.AO_HARNESS_DEBUG) console.error('[backend]', line);
@@ -150,6 +171,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   // while the launch identity is still being authenticated on macOS.
   const bootstrapPromise = new Promise<HarnessBootstrap>((resolve, reject) => {
     createInterface({ input: child.stdout! }).on('line', (line) => {
+      consoleLog.write(`[stdout] ${line}`);
       const at = line.indexOf(BOOTSTRAP_PREFIX);
       if (at === -1) return;
       try {
@@ -210,13 +232,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
             `harness launch could not authenticate child and cleanup failed; preserving the owned root: ${reason}; ${(cleanupError as Error).message}`,
           );
         }
-        if (ownsDataDir) {
-          try {
-            await boundedCleanup(`remove harness data dir ${dataDir}`, rm(dataDir, { recursive: true, force: true }));
-          } catch (cleanupError) {
-            console.error(`harness data-dir cleanup failed after identity error: ${(cleanupError as Error).message}`);
-          }
-        }
+        if (ownsDataDir) await removeOwnedRoot(dataDir, consoleLog, 'after identity error');
         return new Error(`harness launch could not authenticate child: ${reason}`);
       });
     }
@@ -264,6 +280,8 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     const started = new HarnessApp(
       child,
       bootstrap,
+      consoleLog,
+      launch,
       ownsDataDir ? dataDir : undefined,
       launchMemberProof,
       launchTreeProof,
@@ -298,15 +316,30 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
         }
         safeToRemove = true;
       } finally {
-        if (ownsDataDir && safeToRemove) {
-          try {
-            await boundedCleanup(`remove harness data dir ${dataDir}`, rm(dataDir, { recursive: true, force: true }));
-          } catch (cleanupError) {
-            console.error(`harness data-dir cleanup failed: ${(cleanupError as Error).message}`);
-          }
-        }
+        if (ownsDataDir && safeToRemove) await removeOwnedRoot(dataDir, consoleLog, 'after launch error');
       }
       return undefined;
     });
+  }
+}
+
+async function closeConsoleLog(log: BackendConsoleLog): Promise<void> {
+  try {
+    await boundedCleanup(`close harness console log ${log.path}`, log.close());
+  } catch (error) {
+    console.error((error as Error).message);
+  }
+}
+
+// Removes a root this launch created after a failed launch. The console
+// log in it is closed first: Windows cannot remove a directory holding an
+// open file. A close timeout and a removal failure are reported, not
+// thrown over the launch error the caller is about to raise.
+async function removeOwnedRoot(dataDir: string, log: BackendConsoleLog | undefined, context: string): Promise<void> {
+  if (log) await closeConsoleLog(log);
+  try {
+    await boundedCleanup(`remove harness data dir ${dataDir}`, rm(dataDir, { recursive: true, force: true }));
+  } catch (cleanupError) {
+    console.error(`harness data-dir cleanup failed ${context}: ${(cleanupError as Error).message}`);
   }
 }

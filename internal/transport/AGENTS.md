@@ -92,7 +92,9 @@ input, add it to its input manifest so cached tests remain valid.
 
 Additional receivers widen the production RPC surface. Register only the
 intended receiver and preserve stable package/type labels when moving its Go
-implementation. Harness-only receivers remain local-only.
+implementation. Harness-only receivers remain local-only. `ReleasedMethods`
+answers, with empty values, retired methods a previous-release window calls
+outside the retired feature's own screens; nothing else belongs there.
 
 ## Events and connection state
 

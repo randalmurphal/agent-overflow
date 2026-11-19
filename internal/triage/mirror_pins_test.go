@@ -5,28 +5,13 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/reporoot"
 )
-
-// repoRelativePath resolves a repo-relative path from this source file's own
-// location rather than the working directory, which `go test` sets to the
-// package directory.
-func repoRelativePath(t *testing.T, rel string) string {
-	t.Helper()
-	_, sourcePath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve the repository root: runtime.Caller failed")
-	}
-	// internal/triage/<this file> → repository root.
-	root := filepath.Join(filepath.Dir(sourcePath), "..", "..")
-	return filepath.Join(root, filepath.FromSlash(rel))
-}
 
 // goStringConstants parses one Go source file and returns the untyped string
 // constants it declares, by name. It exists so triage can pin a vocabulary it
@@ -35,7 +20,7 @@ func repoRelativePath(t *testing.T, rel string) string {
 // boundary), and the constants on the other side are unexported.
 func goStringConstants(t *testing.T, rel string) map[string]string {
 	t.Helper()
-	path := repoRelativePath(t, rel)
+	path := reporoot.Path(t, rel)
 	fileSet := token.NewFileSet()
 	parsed, err := parser.ParseFile(fileSet, path, nil, 0)
 	if err != nil {
@@ -103,7 +88,7 @@ func TestPermissionNoticeKindsMatchTheProviderConstants(t *testing.T) {
 // switch rather than to a constant, because upstream names them inline.
 func TestModelFallbackKindsMatchTheParserSubtypes(t *testing.T) {
 	const mirror = "internal/provider/claude/parse_system.go"
-	source, err := os.ReadFile(repoRelativePath(t, mirror))
+	source, err := os.ReadFile(reporoot.Path(t, mirror))
 	if err != nil {
 		t.Fatalf("read %s: %v", mirror, err)
 	}
@@ -123,7 +108,7 @@ func TestCodexLatestToolTrayMetaKeysMatchFrontendMirror(t *testing.T) {
 	const backend = "internal/store/subagent_items.go"
 	const frontend = "frontend/src/lib/utils/codexTrayProjection.ts"
 	backendValues := goStringConstants(t, backend)
-	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
+	frontendSource, err := os.ReadFile(reporoot.Path(t, frontend))
 	if err != nil {
 		t.Fatalf("read %s: %v", frontend, err)
 	}
@@ -146,7 +131,7 @@ func TestAgentRunStateMetaKeysMatchFrontendMirror(t *testing.T) {
 	const backend = "internal/store/background_tray_run_state.go"
 	const frontend = "frontend/src/lib/utils/subagentRunState.ts"
 	backendValues := goStringConstants(t, backend)
-	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
+	frontendSource, err := os.ReadFile(reporoot.Path(t, frontend))
 	if err != nil {
 		t.Fatalf("read %s: %v", frontend, err)
 	}
@@ -193,7 +178,7 @@ func TestUserEchoClientIDKeyMatchesTheProviderConstant(t *testing.T) {
 // the timeline reads both back by name.
 func TestParkedStopMetaKeysMatchFrontendMirror(t *testing.T) {
 	const frontend = "frontend/src/lib/utils/parkedStop.ts"
-	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
+	frontendSource, err := os.ReadFile(reporoot.Path(t, frontend))
 	if err != nil {
 		t.Fatalf("read %s: %v", frontend, err)
 	}

@@ -247,9 +247,8 @@ func (s *Store) RetirePendingPairings(at int64) error {
 		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE sessions SET revoked_at = ?
-		WHERE revoked_at IS NULL AND activated_at IS NULL
-		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NULL)`, at); err != nil {
+	if _, _, err = endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
+		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NULL)`); err != nil {
 		return fmt.Errorf("store: retire pending pairing sessions: %w", err)
 	}
 	if _, err = tx.Exec(`UPDATE pairing_links SET canceled_at = ?

@@ -23,7 +23,7 @@ function fixture() {
   const observe = vi.spyOn(controller, 'observe');
   const mark = vi.spyOn(controller, 'markStructuralContentPending');
   const scroll = createThreadPaneScroll({
-    getThread: () => null, getLoading: () => state.loading,
+    getLoading: () => state.loading,
     getSwitchGeneration: () => state.generation, getItemCount: () => 10,
     stampLiveContent: () => {},
   });
@@ -39,7 +39,7 @@ it('coalesces a burst into one post-flush frame while arming every append synchr
   await tick();
   expect(frames.size).toBe(1);
   expect(vi.getTimerCount()).toBe(1);
-  for (const callback of [...frames.values()]) callback(16);
+  for (const callback of Array.from(frames.values())) callback(16);
   expect(observe).toHaveBeenCalledExactlyOnceWith('live-content');
   expect(frames.size).toBe(0);
   expect(vi.getTimerCount()).toBe(0);

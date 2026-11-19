@@ -606,11 +606,3 @@ func codexAgentMessageFrames(item recordedItem, stats *synthStats) []wireFrame {
 	})
 	return frames
 }
-
-// shellQuote renders text for the single-quoted argument of a printed
-// `ao-harness send` line. The full text is printed rather than a
-// truncation: the recipe is meant to be pasted, and a cut prompt drives a
-// different turn than the one that was recorded.
-func shellQuote(text string) string {
-	return "'" + strings.ReplaceAll(text, "'", `'\''`) + "'"
-}

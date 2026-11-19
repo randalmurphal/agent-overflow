@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usermessage"
 )
 
 // unconfirmedSendFixture is a Claude thread with turn 2 running and a message
@@ -34,6 +34,9 @@ func newUnconfirmedSendFixture(t *testing.T, name string, fromAgent bool) *uncon
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	// The session below is committed as startSessionNow commits one, so
+	// triage takes its frames (the session-token gate).
+	app.triage.MarkThreadActive(thread.ID, "tok")
 	now := time.Now().UnixMilli()
 	if err := app.store.InsertTurn(store.Turn{TurnID: "turn-2", ThreadID: thread.ID, TurnIndex: 2, StartedAt: now}); err != nil {
 		t.Fatalf("InsertTurn: %v", err)
@@ -55,8 +58,8 @@ func newUnconfirmedSendFixture(t *testing.T, name string, fromAgent bool) *uncon
 	if fromAgent {
 		// An agent's thread_send queued behind the running turn.
 		if _, err := app.registerQueueItem(thread.ID, unconfirmedSendText, SendMessageOptions{SendID: "send-agent"}, injectedQueueOptions{
-			origin:       usermessage.OriginAgentThread,
-			originThread: &usermessage.OriginThread{ThreadID: "caller-thread", Token: "tok-agent"},
+			origin:       agentmeta.OriginAgentThread,
+			originThread: &agentmeta.OriginThread{ThreadID: "caller-thread", Token: "tok-agent"},
 		}); err != nil {
 			t.Fatalf("registerQueueItem: %v", err)
 		}

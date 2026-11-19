@@ -23,7 +23,7 @@ import (
 )
 
 // setupCascadeApp builds an App wired up with every subsystem a delete path
-// touches: attachments, drafts, terminals, message anchors, discussion registry.
+// touches: attachments, drafts, terminals, message anchors.
 // Unlike setupE2EApp, this flavour turns on every real component so that a
 // DeleteThread exercises the full cascade.
 func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
@@ -190,7 +190,7 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 	}
 
 	// Act.
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 
@@ -237,12 +237,12 @@ func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("first DeleteThread: %v", err)
 	}
 
-	// Second delete: deleteThreadTree uses sql.ErrNoRows as idempotent-success.
-	err := app.DeleteThread(thread.ID)
+	// Second delete: the thread delete uses sql.ErrNoRows as idempotent-success.
+	err := app.deleteThread(thread.ID)
 	if err != nil {
 		// If the production code ever transitions to returning an error here,
 		// it must be clear (not a panic). Accept any non-nil error as long as
@@ -289,7 +289,7 @@ func TestCascade_DeletingWithActiveSession(t *testing.T) {
 		t.Fatalf("InsertItem: %v", err)
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 
@@ -404,7 +404,7 @@ func TestCascade_UnarchiveRestoresToSidebar(t *testing.T) {
 		t.Fatalf("InsertItem: %v", err)
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	active, err := app.ListThreads()

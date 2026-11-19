@@ -31,7 +31,7 @@ func seedHeldSource(t *testing.T, app *App, forks int) (string, []string) {
 		}
 		ids[i] = fork.ID
 	}
-	if err := app.DeleteThread(id); err != nil {
+	if err := app.deleteThread(id); err != nil {
 		t.Fatal(err)
 	}
 	if held, err := app.store.GetThread(id); err != nil || held.Mode != threadmode.ModeHolder {
@@ -91,7 +91,7 @@ func TestHolderIsDeletedWhenItsLastForkGoes(t *testing.T) {
 	app.startPendingThreadDeletes()
 	holder, forks := seedHeldSource(t, app, 2)
 
-	if err := app.DeleteThread(forks[0]); err != nil {
+	if err := app.deleteThread(forks[0]); err != nil {
 		t.Fatal(err)
 	}
 	// The fork's delete released no holder: the walk it started finds
@@ -116,7 +116,7 @@ func TestHolderIsDeletedWhenItsLastForkGoes(t *testing.T) {
 		t.Fatalf("the remaining fork reads %d rows, %v", len(items), err)
 	}
 
-	if err := app.DeleteThread(forks[1]); err != nil {
+	if err := app.deleteThread(forks[1]); err != nil {
 		t.Fatal(err)
 	}
 	requireHolderGone(t, app, holder)
@@ -134,7 +134,7 @@ func TestReleasedHolderIsDeletedAtBoot(t *testing.T) {
 	t.Parallel()
 	app, path := newTestAppWithStorePath(t)
 	holder, forks := seedHeldSource(t, app, 1)
-	if err := app.DeleteThread(forks[0]); err != nil {
+	if err := app.deleteThread(forks[0]); err != nil {
 		t.Fatal(err)
 	}
 	if released, err := app.store.ListReleasedHolders(); err != nil || len(released) != 1 || released[0] != holder {

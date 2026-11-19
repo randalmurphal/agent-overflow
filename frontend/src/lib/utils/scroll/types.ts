@@ -140,7 +140,7 @@ export interface ReconnectScrollRecovery {
  *
  * MessageTimeline's pane-facing adapter overrides `'host-layout'` to
  * re-pin and revalidate its virtualizer geometry; the raw controller
- * mapping is the correct fallback for surfaces without one (ChannelView).
+ * mapping is the correct fallback for surfaces without one.
  */
 export type ScrollObservationKind =
   | 'content'
@@ -315,7 +315,7 @@ export interface UseStickToBottomController {
    * the outgoing thread's geometry during the DOM flush), then arm a
    * one-shot consent for the next `forceStick({reason:'restore'})`.
    * Called by the thread-switch entry point (MessageTimeline's
-   * `$effect.pre`, ChannelView's initial-poll path) BEFORE the DOM
+   * `$effect.pre`) BEFORE the DOM
    * update flushes; the restore $effect consumes the consent after.
    * The consent auto-clears on outer-scroll escape intent (wheel / key /
    * touch / pointer that can reach the chat scroller) and on any
@@ -473,9 +473,9 @@ export interface UseStickToBottomOptions {
    * Defaults to () => false: a surface that supplies none ends its
    * chase at arrival and takes the instant path for nudges.
    *
-   * Chat's MessageTimeline and Discussion's ChannelView both wire this
-   * to `isLiveContentActive(performance.now(), <stamp>,
-   * LIVE_CONTENT_ACTIVE_HOLD_MS)` over their respective stamps.
+   * Chat's MessageTimeline and ActivityRun's clip both wire this to
+   * `isLiveContentActive(performance.now(), <stamp>,
+   * LIVE_CONTENT_ACTIVE_HOLD_MS)` over the pane's stamp.
    */
   liveContentActive?: () => boolean;
   /**
@@ -494,8 +494,8 @@ export interface UseStickToBottomOptions {
    * consumer should call `notifyQuietContextSignalChanged()`.
    *
    * Defaults to undefined (preserves existing QUIET_MS behavior for
-   * surfaces that have no async-typesetting signal — Discussion's
-   * ChannelView is the canonical example).
+   * surfaces that have no async-typesetting signal, such as the review
+   * pane's ReviewCILogView).
    */
   quietContextSignal?: () => boolean;
   /**
@@ -504,8 +504,8 @@ export interface UseStickToBottomOptions {
    * `ContentGeometrySample`s through `deliverContentGeometry`. Chat's
    * MessageTimeline sets this — the engine's spacer height IS the content
    * height, so a second observer on the same element would just re-read
-   * layout one frame later. Surfaces without a virtualizer (ChannelView)
-   * leave it unset and keep the RO-backed source.
+   * layout one frame later. Surfaces without a virtualizer (an activity
+   * run's nested controller) leave it unset and keep the RO-backed source.
    *
    * The option and `deliverContentGeometry` come as a pair:
    * delivering a sample without the option throws (the RO would

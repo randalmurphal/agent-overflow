@@ -83,10 +83,10 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 	router.state("idle")
 	router.mu.Unlock()
 
-	router.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: "running", TurnID: "round-1", TurnIndex: 3, StartedAt: 1_000})
-	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-2"}})
-	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-1"}})
-	router.setPendingUserInput("blocked", provider.UserInputRequest{RequestID: "question-1"})
+	router.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: "running", TurnID: "round-1", TurnIndex: 3, StartedAt: 1_000}, "")
+	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-2"}}, "")
+	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-1"}}, "")
+	router.setPendingUserInput("blocked", provider.UserInputRequest{RequestID: "question-1"}, "")
 	router.mu.Lock()
 	router.state("compacting").compactingSince = 2_000
 	router.state("compacting").compactingSinceSet = true
@@ -114,7 +114,7 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 	}
 
 	// A closed round drops the thread from the list on the next read.
-	if _, ok := router.takeOpenRound("running"); !ok {
+	if _, ok := router.takeOpenRound("running", ""); !ok {
 		t.Fatal("takeOpenRound(running) = false, want the open round")
 	}
 	for _, entry := range router.LiveActivitySnapshot() {
@@ -171,5 +171,43 @@ func TestLiveStateSnapshotDoesNotAllocateIdleThreadIdentity(t *testing.T) {
 	}
 	if router.identityIfPresent("idle") != nil {
 		t.Fatal("live-state read allocated a permanent identity")
+	}
+}
+
+// TestLiveStateSnapshot_ATurnIsOwedFromItsSendUntilItsRoundIsPublished: a
+// direct send is never a composer marker, but from its write until its
+// turn's round is published the thread has a turn coming. The real start
+// is held after it claimed the send and wrote the turns row: the snapshot
+// still owes the turn there, and ActiveTurn takes over once it returns. A
+// steer joins a running turn and opens none.
+func TestLiveStateSnapshot_ATurnIsOwedFromItsSendUntilItsRoundIsPublished(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	r.RegisterPendingSteerSendWithExpectation("t1", "user:0:steer:1", 0, PendingSendExpectation{})
+	if r.LiveStateSnapshotForThread("t1").TurnOwed {
+		t.Fatal("a steer reads as a turn owed")
+	}
+	r.ClearPendingSendForFailure("t1", "user:0:steer:1")
+	r.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+	snapshot := r.LiveStateSnapshotForThread("t1")
+	if !snapshot.TurnOwed || len(snapshot.FlushedItems) != 0 {
+		t.Fatalf("snapshot after a direct send = %+v; want a turn owed and no marker", snapshot)
+	}
+	// No wire index: the start claims the send for its turn.
+	held := holdTurnStart(t, r, turnStartEvent("t1", 0), false)
+	if _, unclaimed := r.turnOpeningPendingSend("t1"); unclaimed {
+		t.Fatal("the held start did not claim the send")
+	}
+	snapshot = r.LiveStateSnapshotForThread("t1")
+	if !snapshot.TurnOwed || snapshot.ActiveTurn != nil {
+		t.Fatalf("snapshot inside the start = %+v; want the turn owed before its round", snapshot)
+	}
+	held.release()
+	if err := <-held.handled; err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	snapshot = r.LiveStateSnapshotForThread("t1")
+	if snapshot.ActiveTurn == nil || snapshot.ActiveTurn.TurnIndex != 1 || snapshot.TurnOwed {
+		t.Fatalf("snapshot after the start = %+v; want its round active and nothing more owed", snapshot)
 	}
 }

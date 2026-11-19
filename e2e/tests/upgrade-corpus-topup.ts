@@ -14,6 +14,8 @@ import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
 import { timed } from './upgrade-corpus-tools.js';
+import { compactBoundaryLine } from './agent-visibility-helpers.js';
+import { awaitToolAnswer, awaitTurnCompleted, plainScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   doneResult,
   humanGateWorkflow,
@@ -145,6 +147,141 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('ArchiveThread', scenarioThreads['session-death']);
     await harness.rpc('RenameThread', scenarioThreads['usage-limit-claude'], `Top-up v${version}: renamed after its usage limit`);
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
+    // Two assistants made by New Assistant, one serving every project and
+    // one moved to a new thread by New Thread, Same Assistant, which leaves
+    // a past thread. Each opening and handoff message takes a turn. A new
+    // assistant takes the provider of the thread created last, so a Claude
+    // thread goes first.
+    const remembered = await harness.rpc<{ id: string }>('CreateThread', {
+      projectId,
+      title: `Top-up v${version}: the profile New Assistant takes`,
+      provider: 'claude',
+      model: MODEL.claude,
+      mode: 'chat',
+    });
+    threadIds.push(remembered.id);
+    await harness.rpc('HarnessSetScenario', {
+      scenario: threadToolsScenario({ name: 'topup-assistants', provider: 'claude', turns: [{ text: 'Noted.' }], afterTurns: 'repeatLast' }),
+    });
+    const assistant = async (name: string, allProjects = false): Promise<string> => {
+      const created = await harness.rpc<{ id: string }>('CreateAssistant', { name, projectIds: allProjects ? [] : [projectId], allProjects });
+      await awaitTurnCompleted(harness, created.id, TURN_TIMEOUT_MS);
+      threadIds.push(created.id);
+      return created.id;
+    };
+    await assistant(`Top-up v${version} ${nonce}: every project`, true);
+    const moved = await assistant(`Top-up v${version} ${nonce}: moved on`);
+    // Unsent text with an attachment, which the handoff moves to the new
+    // thread and records on the past thread's row.
+    const note = await uploadAttachment(harness, moved, 'handoff.txt', 'text/plain', Buffer.from(`Handoff v${version}\n`));
+    await harness.rpc('SaveDraft', moved, `Top-up handoff draft v${version} [File #1]`, [note], [], null);
+    const successor = await harness.rpc<{ id: string }>('StartNextAssistantThread', moved);
+    await awaitTurnCompleted(harness, successor.id, TURN_TIMEOUT_MS);
+    threadIds.push(successor.id);
+    // An assistant that spawned a helper of its own work and set itself a
+    // loop and a watch through the thread tools, an hour out, and stopped a
+    // second loop. The helper runs on Codex in the home, from a script of
+    // its own. The hourly watch is run once now and keeps its stderr, and
+    // a second hourly one, run once in a missing directory, keeps its
+    // failure notice; a
+    // short watch fires once, and the turn its wake starts cancels it
+    // before a second fire is due; a long-running watch is started and
+    // stopped. Nothing is left running for a later boot of the corpus to
+    // restart.
+    const agent = { id: await assistant(`Top-up v${version} ${nonce}: loop and watch`) };
+    const record = await harness.rpc<{ home: string }>('GetStandingAgent', agent.id);
+    const home = record.home;
+    // The scenario below applies to the session it starts.
+    await harness.rpc('StopSession', agent.id);
+    await harness.rpc('HarnessSetScenario', {
+      cwd: home,
+      scenario: plainScenario({ name: 'topup-helper', provider: 'codex', texts: ['Collected the notes.'] }),
+    });
+    await harness.rpc('HarnessSetScenario', {
+      scenario: threadToolsScenario({
+        name: 'topup-wakes',
+        provider: 'claude',
+        turns: [{
+          steps: [
+            { call: { tool: 'thread_spawn', args: { prompt: 'Collect the inbox notes.', title: `Top-up v${version}: helper`, provider: 'codex', instructions: 'Keep each note to one line.', wait_seconds: 0 } } },
+            { call: { tool: 'thread_loop', args: { label: 'board', note: 'look at the board', every_seconds: 3600 } } },
+            // A run prints nothing on stdout, so it wakes nobody, and the
+            // line on stderr is kept on the row (last_stderr).
+            { call: { tool: 'thread_watch', args: { label: 'inbox', command: 'echo "inbox: nothing new" >&2', cwd: home, every_seconds: 3600, timeout_seconds: 30 } } },
+            // Its directory does not exist, so its run cannot start and the
+            // watch raises its failure notice (failure_noticed_at).
+            { call: { tool: 'thread_watch', args: { label: 'mailbox', command: 'true', cwd: path.join(home, 'mailbox'), every_seconds: 3600 } } },
+            { call: { tool: 'thread_loop', args: { label: 'retired', note: 'an old check', every_seconds: 3600 } } },
+            { call: { tool: 'thread_loop', args: { label: 'retired', stop: true } } },
+            {
+              call: {
+                tool: 'thread_watch',
+                args: {
+                  label: 'once',
+                  command: 'echo "once: checked the inbox" >&2; [ -e once.done ] || { : > once.done; echo found; }',
+                  cwd: home,
+                  every_seconds: 10,
+                  timeout_seconds: 30,
+                },
+              },
+            },
+            { call: { tool: 'thread_watch', args: { label: 'tail', command: 'sleep 600', cwd: home, long_running: true } } },
+            { call: { tool: 'thread_watch', args: { label: 'tail', stop: true } } },
+          ],
+          text: 'Scheduled.',
+        }, {
+          // The turn compacts first, so the corpus holds a compaction row.
+          // It then flags the thread for the user (attention_kind and the
+          // rest).
+          steps: [
+            { emitLines: [compactBoundaryLine('topup-compaction-${TURN}')] },
+            { call: { tool: 'thread_cancel', args: { label: 'once' } } },
+            { call: { tool: 'thread_attention', args: { kind: 'review', reason: 'The inbox has a note for you' } } },
+          ],
+          text: 'Stopped the one-off watch.',
+        }],
+        afterTurns: 'silent',
+      }),
+    });
+    await harness.rpc('StartSession', agent.id);
+    const scheduled = awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
+    await harness.rpc('SendMessage', agent.id, 'Look at the board and the inbox every hour.', null);
+    const spawned = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', timeoutMs: TURN_TIMEOUT_MS });
+    if (spawned.isError || !spawned.value) throw new Error(`top-up thread_spawn of a helper was refused: ${spawned.text}`);
+    await awaitTurnCompleted(harness, spawned.value.thread_id, TURN_TIMEOUT_MS);
+    threadIds.push(spawned.value.thread_id);
+    for (const label of ['inbox', 'mailbox', 'once', 'tail', 'tail stopped']) {
+      const answer = await awaitToolAnswer(harness, { tool: 'thread_watch', timeoutMs: TURN_TIMEOUT_MS });
+      if (answer.isError) throw new Error(`top-up thread_watch ${label} was refused: ${answer.text}`);
+    }
+    await scheduled;
+    // The short watch's one fire is waited for by its effect: the turn its
+    // wake starts cancels the watch.
+    const cancelled = await awaitToolAnswer(harness, { tool: 'thread_cancel', timeoutMs: TURN_TIMEOUT_MS });
+    if (cancelled.isError) throw new Error(`top-up thread_cancel was refused: ${cancelled.text}`);
+    const flagged = await awaitToolAnswer(harness, { tool: 'thread_attention', timeoutMs: TURN_TIMEOUT_MS });
+    if (flagged.isError) throw new Error(`top-up thread_attention was refused: ${flagged.text}`);
+    await awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
+    // A cancel keeps nothing the row carried, so the hourly watch, run once
+    // now, is the row that keeps a stderr tail. It stays armed an hour out.
+    // The mailbox watch, run once now, cannot start, so it keeps its
+    // failure notice; it too stays armed an hour out.
+    type WakeRow = { id: string; label: string; state: string; lastRunAt?: number; lastOutcome?: string };
+    const watch = async (label: string) =>
+      (await harness.rpc<{ rows: WakeRow[] }>('ListThreadWakes', agent.id)).rows.find((row) => row.label === label);
+    for (const label of ['inbox', 'mailbox']) {
+      const armed = await watch(label);
+      if (!armed) throw new Error(`top-up watch ${label} is not listed`);
+      await harness.rpc('WakeThreadWakeNow', agent.id, 'watch', armed.id);
+      await expect
+        .poll(async () => {
+          const row = await watch(label);
+          return row?.state === 'armed' && (row.lastRunAt ?? 0) > 0;
+        }, { timeout: TURN_TIMEOUT_MS })
+        .toBe(true);
+    }
+    const failed = await watch('mailbox');
+    if (!failed?.lastOutcome?.startsWith('error: ')) throw new Error(`top-up watch mailbox ran without failing: ${failed?.lastOutcome}`);
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     // Claude fast mode is offered only on a model the CLI reports fast, so
@@ -176,8 +313,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const item = await startWorkflow(harness, projectId, 'topup-flow', `Top-up run v${version}`);
     await awaitWorkflowState(harness, 'workflow run', item.id, 'done');
 
-    // A gated run approved by a human, a run that asks a question, a run
-    // cancelled while stepping, and a run an automation fired.
+    // A gated run approved by a human, a run that asks a question, and a
+    // run cancelled while stepping.
     const gated = await startWorkflow(harness, projectId, 'topup-gate', `Top-up gated run v${version}`);
     await awaitWorkflowState(harness, 'gated run', gated.id, 'needs-human', 'gate');
     await harness.rpc('WorkflowResolveGate', gated.id, 'approve', 'approved by the top-up');
@@ -195,19 +332,6 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const stepped = await startWorkflow(harness, projectId, 'topup-flow', `Top-up cancelled run v${version}`, undefined, true);
     await harness.rpc('WorkflowCancelItem', stepped.id);
     await awaitWorkflowState(harness, 'cancelled run', stepped.id, 'cancelled');
-
-    await setClaudeScenario(harness, 'topup-workflow', done);
-    const automation = await harness.rpc<{ id: string }>('WorkflowCreateAutomation', {
-      projectId,
-      workflowScope: 'project',
-      enabled: true,
-      workflowId: 'topup-flow',
-      name: `Top-up nightly v${version}`,
-      trigger: { kind: 'cron', expr: '0 3 * * *' },
-      seeds: { goal: 'the top-up' },
-    });
-    const fired = await harness.rpc<{ id: string }>('WorkflowRunAutomationNow', automation.id);
-    await awaitWorkflowState(harness, 'automation run', fired.id, 'done');
     return item.id;
   });
   ms.workflow = workflow.ms;

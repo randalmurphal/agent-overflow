@@ -95,7 +95,7 @@ func TestFanOutJoinFailureParksUnitFailed(t *testing.T) {
 	h.requireNoHeldResources(t)
 }
 
-// The join is nameable by `run retry-unit`, and retrying it re-runs the join
+// The join is nameable by `retry_unit`, and retrying it re-runs the join
 // alone: the wave's finished units keep their results and their children are
 // never re-executed.
 func TestRetryUnitRerunsAFailedJoinOverTheSameChildren(t *testing.T) {
@@ -129,7 +129,7 @@ func TestRetryUnitRerunsAFailedJoinOverTheSameChildren(t *testing.T) {
 	h.requireNoHeldResources(t)
 }
 
-// `run retry-failed-units` is the verb an agent reaches for first, and a failed
+// `retry_failed_units` is the verb an agent reaches for first, and a failed
 // join has to be in its set: it is the only failed unit there is, so a set that
 // excluded it would leave the run with no repair at all.
 func TestRetryFailedUnitsRerunsOnlyTheFailedJoin(t *testing.T) {
@@ -158,7 +158,7 @@ func TestRetryFailedUnitsRerunsOnlyTheFailedJoin(t *testing.T) {
 	}
 }
 
-// The generic verb is the dangerous one: an agent that types `run resume` must
+// The generic verb is the dangerous one: an agent that types a bare resume must
 // get the preserving repair, not a fresh wave. It continues the join on the
 // session the attempt parked on, exactly as Answer does.
 func TestResumeOnAFailedJoinContinuesTheAttempt(t *testing.T) {
@@ -197,7 +197,7 @@ func TestResumeOnAFailedJoinContinuesTheAttempt(t *testing.T) {
 
 // Naming the parked phase is the explicit start-over, and it must still work:
 // the wave expands again and its call units run new children. That is the whole
-// point of `--phase`, and the reason bare resume no longer implies it.
+// point of `phase_id`, and the reason bare resume no longer implies it.
 func TestResumeWithTheParkedPhaseReExpandsTheWave(t *testing.T) {
 	h := newCallHarness(t, callUnitWorkflows(2), nil)
 	parent, children := parkCampaignOnFailedJoin(t, h, "join-thread")

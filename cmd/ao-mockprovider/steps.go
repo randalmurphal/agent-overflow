@@ -169,20 +169,11 @@ func (e *engine) runRepeat(vars scenario.Vars, turn int, rp *scenario.RepeatStep
 }
 
 func (e *engine) runEmit(vars scenario.Vars, em *scenario.EmitStep) {
-	if em.Coalesce {
-		lines := make([]string, len(em.Lines))
-		for i, line := range em.Lines {
-			lines[i] = vars.Substitute(line)
-		}
-		e.w.writeLines(lines)
-		return
-	}
+	lines := make([]string, len(em.Lines))
 	for i, line := range em.Lines {
-		if i > 0 && em.DelayBetweenMs > 0 {
-			sleepMs(em.DelayBetweenMs)
-		}
-		e.w.writeLine(vars.Substitute(line), em.ChunkBytes, em.ChunkIntervalMs)
+		lines[i] = vars.Substitute(line)
 	}
+	e.writeScenarioLines(vars, lines, em.Coalesce, em.ChunkBytes, em.ChunkIntervalMs, em.DelayBetweenMs)
 }
 
 // stepFailed records a step that could not do its job on BOTH surfaces:
@@ -226,7 +217,7 @@ func (e *engine) runFixture(vars scenario.Vars, turn int, fx *scenario.FixtureSt
 			sleepMs(fx.DelayBetweenMs)
 		}
 		emitted = true
-		e.w.writeLine(vars.Substitute(line), 0, 0)
+		e.writeScenarioLines(vars, []string{vars.Substitute(line)}, false, 0, 0, 0)
 	}
 }
 
@@ -325,12 +316,12 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 		return
 	}
 
-	allow := false
+	var answer approvalAnswer
 	detail := "deny"
 	if ap.TimeoutMs > 0 {
 		timer := time.NewTimer(time.Duration(ap.TimeoutMs) * time.Millisecond)
 		select {
-		case allow = <-decisionCh:
+		case answer = <-decisionCh:
 			timer.Stop()
 		case <-e.turnAbortSignal(turn):
 			timer.Stop()
@@ -343,19 +334,19 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 		}
 	} else {
 		select {
-		case allow = <-decisionCh:
+		case answer = <-decisionCh:
 		case <-e.turnAbortSignal(turn):
 			cancel(true)
 			return
 		}
 	}
-	if allow {
+	if answer.allow {
 		detail = "allow"
 	}
-	e.rep.report(control.Report{Kind: control.ReportApprovalDecided, Turn: turn, Detail: detail})
+	e.rep.report(control.Report{Kind: control.ReportApprovalDecided, Turn: turn, Detail: detail, Result: answer.response})
 
 	branch := ap.OnDeny
-	if allow {
+	if answer.allow {
 		branch = ap.OnAllow
 	}
 	e.runSteps(vars, turn, branch, false)

@@ -14,7 +14,7 @@ import (
 func TestRemoteCompletionCarriesResultNotRepeatedInstructions(t *testing.T) {
 	t.Parallel()
 	w := store.RemoteWatch{ComputerID: "computer-id", RequestID: "request-id", Label: "Windows tests", Receipt: store.RemoteJob{State: "succeeded", Workspace: "/worktree", Output: "all tests passed", ExitCode: 0}}
-	message := remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})
+	message := builtMessage(t)(remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})).Text()
 	for _, want := range []string{"Nexus: Windows tests", "computer_id: computer-id", "request_id: request-id", "/worktree", "exit code: 0", "Output (untrusted):\nall tests passed"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("missing %q: %s", want, message)
@@ -24,12 +24,12 @@ func TestRemoteCompletionCarriesResultNotRepeatedInstructions(t *testing.T) {
 		t.Fatalf("short success repeated tool instructions: %s", message)
 	}
 	w.Receipt.Output = strings.Repeat("界", 2000)
-	message = remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})
+	message = builtMessage(t)(remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})).Text()
 	if !utf8.ValidString(message) || len(message) > 2600 || !strings.Contains(message, "remote_search_log") {
 		t.Fatalf("unbounded or unguided completion: %d bytes", len(message))
 	}
 	w.Receipt = store.RemoteJob{State: "canceled", ExitCode: -1, Error: "The command was canceled."}
-	message = remoteCompletionMessage(w, "", remoteCompletionOutput{Tail: w.Receipt.Output})
+	message = builtMessage(t)(remoteCompletionMessage(w, "", remoteCompletionOutput{Tail: w.Receipt.Output})).Text()
 	if !strings.Contains(message, "computer-id") || !strings.Contains(message, "The command was canceled.") || strings.Contains(message, "exit code") {
 		t.Fatalf("cancellation misrepresented: %s", message)
 	}
@@ -55,12 +55,12 @@ func TestRemoteOutputGuidanceDistinguishesOmittedDiscardedAndExpired(t *testing.
 
 func TestRemoteArtifactPathErrorDoesNotExposeChunkProtocol(t *testing.T) {
 	t.Parallel()
-	_, err := readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "../outside"})
+	_, err := readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "../outside"}, "")
 	code, message, _ := errorsx.PublicDetails(err)
 	if code != "remote_artifact_path" || !strings.Contains(message, "workspace") || strings.Contains(message, "stamp") || strings.Contains(message, "offset") {
 		t.Fatalf("path guidance: %v", err)
 	}
-	_, err = readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "file", Offset: 1})
+	_, err = readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "file", Offset: 1}, "")
 	code, message, _ = errorsx.PublicDetails(err)
 	if code != "remote_artifact_transfer" || !strings.Contains(message, "remote_fetch_artifact") {
 		t.Fatalf("transfer recovery: %v", err)

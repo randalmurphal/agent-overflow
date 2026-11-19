@@ -854,8 +854,10 @@ func TestRecoverCrashedTurnsSettlesInflightRowsAcrossThreads(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("GetTurn(%s): ok=%v err=%v", turnID, ok, err)
 		}
-		if got.CompletedAt == nil || *got.CompletedAt != 999 {
-			t.Errorf("%s CompletedAt = %v, want 999", turnID, got.CompletedAt)
+		// No item recorded activity past the start: the turn ends there,
+		// not at the boot's now.
+		if want := map[string]int64{"turn-crashed-1": 200, "turn-crashed-2": 300}[turnID]; got.CompletedAt == nil || *got.CompletedAt != want {
+			t.Errorf("%s CompletedAt = %v, want %d", turnID, got.CompletedAt, want)
 		}
 		if got.StopReason != "interrupted" {
 			t.Errorf("%s StopReason = %q, want interrupted", turnID, got.StopReason)

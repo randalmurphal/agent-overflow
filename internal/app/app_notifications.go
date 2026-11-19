@@ -501,6 +501,8 @@ func notificationKindEnabledIn(current settings.Settings, kind notify.Kind) bool
 		return current.NotifyWorkflowAttention
 	case notify.KindAppUpdate:
 		return current.NotifyAppUpdate
+	case notify.KindThreadAttention:
+		return current.NotifyThreadAttention
 	default:
 		return false
 	}

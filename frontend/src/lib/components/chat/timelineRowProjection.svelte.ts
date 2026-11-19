@@ -85,8 +85,12 @@ export function createTimelineRowProjection(
   // reads it existed for into the card removed the need, not just the
   // cost — the card is also where the walk is bounded by what is
   // actually mounted.
+  // An agent's message is not held for its echo: it is in no composer
+  // preview to stand in for it, so the timeline shows it once dispatched.
   let pendingFlushIDs = $derived(JSON.stringify(
-    getFlushedForThread(options.getPane().threadId).map((entry) => entry.userItemId),
+    getFlushedForThread(options.getPane().threadId)
+      .filter((entry) => !entry.agentMessage)
+      .map((entry) => entry.userItemId),
   ));
   let groupedNodes = $derived.by(() => {
     void options.getPane().timelineRevision;

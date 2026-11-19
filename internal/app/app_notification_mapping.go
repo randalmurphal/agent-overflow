@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/serialqueue"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
@@ -47,9 +48,10 @@ import (
 // queue mapped moments run on, the provider sign-in edges the mapping needs
 // supplied, and the log-once ledger.
 //
-// signedOut and loggedCodes are touched ONLY from queue jobs, which the
-// queue runs one at a time with a happens-before edge between them. That is
-// why neither needs a mutex — and why nothing outside a job may read them.
+// signedOut and loggedCodes are touched ONLY from queue jobs,
+// which the queue runs one at a time with a happens-before edge between them.
+// That is why none needs a mutex — and why nothing outside a job may read
+// them.
 type notificationDispatch struct {
 	queue serialqueue.Queue
 	// harnessSeq numbers the harness RPC's throwaway notification ids. It is
@@ -85,11 +87,15 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// error message is what distinguishes a turn that failed from one
 		// that finished; the two are one moment with two outcomes, so the
 		// mapping picks the kind rather than this tap sending both.
+		// A tick that ended cleanly is quiet (triage's turnIsQuiet, from the
+		// turn's rows): it raises nothing unless it raised an attention flag.
 		rest := notify.TurnRest{
-			Thread:   notify.ThreadRef{ID: event.ThreadID},
-			TopLevel: event.CountsAsActivity,
-			Failed:   event.ErrorMessage != "",
-			Aborted:  event.Aborted,
+			Thread:    notify.ThreadRef{ID: event.ThreadID},
+			TopLevel:  event.CountsAsActivity,
+			Failed:    event.ErrorMessage != "",
+			Aborted:   event.Aborted,
+			QuietTick: event.Quiet,
+			StartedAt: event.StartedAt,
 		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			rest.Thread = a.notificationThreadRef(rest.Thread.ID)
@@ -104,7 +110,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// The thread going back to work is the "handled elsewhere" that
 		// retracts its rest notification. No title read: a retraction says
 		// nothing.
-		resumed := notify.ThreadResumed{ThreadID: event.ThreadID}
+		resumed := notify.ThreadResumed{ThreadID: event.ThreadID, Tick: a.agentWakeTickStarted(event.ThreadID)}
 		a.queueNotification(func() (notify.Notification, bool) {
 			return notify.MapThreadResumed(resumed)
 		})
@@ -132,11 +138,38 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		if moment.RequestID == "" {
 			return
 		}
+		// A worker's approval routed to its spawner is not the
+		// user's to answer, so it does not call them (ruling 19).
+		if event.Request != nil && event.Request.RoutedTo != nil {
+			return
+		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			if !moment.Answered {
 				moment.Thread = a.notificationThreadRef(moment.Thread.ID)
 			}
 			return notify.MapApproval(moment)
+		})
+
+	case eventchan.ProviderUserInput:
+		event, ok := data.(provider.UserInputEvent)
+		if !ok {
+			return
+		}
+		moment := questionMoment(event)
+		if moment.RequestID == "" {
+			return
+		}
+		// A worker's question routed to its spawner is not the
+		// user's to answer, so it does not call them (ruling 19); handed
+		// back, it is announced again without the route and does.
+		if event.Request != nil && event.Request.RoutedTo != nil {
+			return
+		}
+		a.queueNotification(func() (notify.Notification, bool) {
+			if !moment.Answered {
+				moment.Thread = a.notificationThreadRef(moment.Thread.ID)
+			}
+			return notify.MapQuestion(moment)
 		})
 
 	case eventchan.ProviderStatus:
@@ -195,6 +228,25 @@ func approvalMoment(event provider.ApprovalEvent) notify.ApprovalMoment {
 	return moment
 }
 
+// questionMoment projects a UserInputEvent onto the mapping's input, the way
+// approvalMoment does an ApprovalEvent.
+func questionMoment(event provider.UserInputEvent) notify.QuestionMoment {
+	moment := notify.QuestionMoment{
+		Thread:    notify.ThreadRef{ID: event.ThreadID},
+		RequestID: event.RequestID,
+		Answered:  event.Action != "request",
+	}
+	if event.Request != nil {
+		if moment.RequestID == "" {
+			moment.RequestID = event.Request.RequestID
+		}
+		if moment.Thread.ID == "" {
+			moment.Thread.ID = event.Request.ThreadID
+		}
+	}
+	return moment
+}
+
 // observeProviderAuth records one edge of a provider's sign-in state and
 // answers the transition the mapping needs. Queue-only, like the map it
 // reads.
@@ -241,8 +293,47 @@ func (a *App) queueNotification(build func() (notify.Notification, bool)) {
 	})
 }
 
-// notificationThreadRef reads the two things a notification may know about a
-// thread: its title, and whether the sidebar lists it.
+// notifySessionStartFailed tells the person that a session the app started
+// on its own, for a message it queued in the thread, did not start. The
+// thread's error row says why; nobody was watching for it. The failure
+// streak that raises it is the notice work's (noteAgentNoticeStartFailed).
+func (a *App) notifySessionStartFailed(threadID string) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapSessionStartFailed(notify.SessionStartFailed{
+			Thread: a.notificationThreadRef(threadID),
+		})
+	})
+}
+
+// withdrawSessionStartFailed takes back the notification
+// notifySessionStartFailed raised.
+func (a *App) withdrawSessionStartFailed(threadID string) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapSessionStarted(notify.SessionStarted{ThreadID: threadID, FailureRaised: true})
+	})
+}
+
+// notifyAgentWatchFailing tells the person that a watch keeps failing. The
+// episode that raises it is app_agent_watch_failure.go's.
+func (a *App) notifyAgentWatchFailing(row store.AgentWake, failure notify.WatchFailure) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapWatchFailing(notify.WatchFailing{
+			Thread: a.notificationThreadRef(row.ThreadID), WakeID: row.ID, Label: row.Label, Failure: failure,
+		})
+	})
+}
+
+// withdrawAgentWatchFailing takes back the notification
+// notifyAgentWatchFailing raised.
+func (a *App) withdrawAgentWatchFailing(wakeID string) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapWatchRecovered(notify.WatchRecovered{WakeID: wakeID})
+	})
+}
+
+// notificationThreadRef reads what a notification may know about a thread:
+// its title, whether the sidebar lists it, whether the thread that spawned
+// it owns it, and its pending attention flag.
 //
 // A thread with no row is HIDDEN: the sidebar cannot show it, so its
 // completion is judged by the same opt-in as a workflow-owned thread's
@@ -263,6 +354,17 @@ func (a *App) notificationThreadRef(threadID string) notify.ThreadRef {
 	}
 	ref.Title = facts.Title
 	ref.Hidden = !facts.Exists || threadmode.IsHidden(facts.Mode)
+	if !ref.Hidden {
+		// An assistant's thread while assistants are off is one the
+		// sidebar does not list either.
+		paused, err := a.pausedAssistantThread(threadID)
+		if err != nil {
+			log.Printf("notifications: read whether %s lives under an assistant: %v", threadID, err)
+		}
+		ref.Hidden = paused
+	}
+	ref.Owned = facts.Owned
+	ref.Attention, ref.AttentionAt = facts.Attention, facts.AttentionAt
 	return ref
 }
 
@@ -308,12 +410,17 @@ func (a *App) logNotificationFailure(err error) {
 
 // drainNotifications lets queued moments finish before SQLite closes.
 func (a *App) drainNotifications(ctx context.Context, timeout time.Duration) error {
+	return drainSerialQueue(ctx, &a.notifications.queue, timeout)
+}
+
+// drainSerialQueue waits for a queue to empty, up to timeout.
+func drainSerialQueue(ctx context.Context, queue *serialqueue.Queue, timeout time.Duration) error {
 	drainCtx, cancel := contextWithTimeout(ctx, timeout)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		a.notifications.queue.Wait()
+		queue.Wait()
 		close(done)
 	}()
 	select {

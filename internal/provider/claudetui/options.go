@@ -42,6 +42,10 @@ type Config struct {
 	// one answer; a take-control session must not be the surface that
 	// prompts.
 	AdditionalDirs []string
+	// AccessDirs are folders outside the workspace the session may read and
+	// write, granted as claude.Config.AccessDirs grants them: in the
+	// session's `--settings` block (hookSettingsJSON).
+	AccessDirs []string
 	// SystemPrompt REPLACES the CLI's default system prompt for this
 	// session. It reaches the TUI as `--system-prompt-file <path>`, never as
 	// an argv value — same MAX_ARG_STRLEN / /proc reasoning as the headless
@@ -58,6 +62,24 @@ type Config struct {
 	// headless does (spike-verified 2.1.284 via PTY + wire capture). The
 	// app stamps its guide here (internal/app/app_agent_guide.go).
 	AppendSystemPrompt string
+	// SessionStartHook runs at a fresh start, after a compaction and after a
+	// clear, and its PromptCommand at each prompt, registered beside the
+	// relay in the `--settings` payload (claude.SessionStartHookGroup,
+	// claude.UserPromptSubmitHookGroup). The gateway checks the first main
+	// request after a start or a compaction for its context and reports a
+	// warning when it is missing (Session.observeMainRequest). nil for
+	// none.
+	SessionStartHook *provider.SessionStartHook
+	// SessionStartForget forgets what the thread's records say its model
+	// was shown, so the next prompt delivers the whole memory: it runs when
+	// a start or a compaction ended without the hook's output. nil for
+	// nothing.
+	SessionStartForget func() error
+	// NativeMemoryOff turns Claude Code's auto memory off for the session,
+	// as claude.Config.NativeMemoryOff does: `autoMemoryEnabled: false` in
+	// the session's `--settings` block (hookSettingsJSON), with
+	// claude.AutoMemoryOffEnv=1 in the block's env.
+	NativeMemoryOff bool
 	// SystemPromptDir is the directory both prompt files are created in;
 	// required when either prompt is set. Same contract as
 	// claude.Config.SystemPromptDir.
@@ -66,6 +88,15 @@ type Config struct {
 	// empty when unknown; gates claude.SystemPromptSnapshotArgs, which the
 	// TUI honors like headless (same 2.1.284 capture).
 	InstalledCLIVersion string
+	// MCPServers are the MCP servers registered for this session, passed as
+	// one `--mcp-config <json>` in the shape the headless provider uses
+	// (claude.MCPConfigJSON). The app registers only its workflow tools
+	// here; empty omits the flag.
+	MCPServers map[string]any
+	// AllowedTools admits tools without a permission prompt, one
+	// `--allowedTools <name>` each, through the same argv boundary as the
+	// headless provider (claude.SanitizeAllowedTools).
+	AllowedTools []string
 	// DisallowedTools are the tool names removed from the session outright
 	// via one `--disallowedTools <name>` flag each; their schemas never
 	// reach the request (spike-verified 2.1.234, same capture).

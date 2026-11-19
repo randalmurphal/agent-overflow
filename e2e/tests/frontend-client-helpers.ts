@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Page } from '@playwright/test';
-import { spawnContained } from '../src/harness-process.js';
+import { productBinary, spawnProduct } from '../src/product-process.js';
 import { launchStep, processDiagnostics } from '../src/harness-launch-step.js';
 
 const FRONTEND_STARTUP_MS = 10_000;
@@ -9,9 +9,9 @@ const FRONTEND_STARTUP_MS = 10_000;
 /** Owns only a frontend controller. Both execution hosts are independent
  * harness processes, so stopping either cannot stop this screen. */
 export async function launchFrontendClient(profiles: string, config: string, computer: string, port = 0) {
-  const child = spawnContained(fileURLToPath(new URL('../../bin/ao-frontendclient-test', import.meta.url)), [], {
+  const child = spawnProduct(productBinary('ao-frontendclient-test'), [], {
     stdio: ['pipe', 'pipe', 'pipe'], memoryLimitBytes: 512 * 1024 * 1024,
-    env: { ...process.env, AO_TEST_FRONTEND_FIXTURE: '1', AO_TEST_FRONTEND_PROFILES: profiles,
+    env: { AO_TEST_FRONTEND_FIXTURE: '1', AO_TEST_FRONTEND_PROFILES: profiles,
       AO_TEST_FRONTEND_CONFIG: config, AO_TEST_FRONTEND_COMPUTER: computer, AO_TEST_FRONTEND_PORT: String(port),
       AO_TEST_FRONTEND_ASSETS: fileURLToPath(new URL('../../frontend/dist', import.meta.url)) },
   });

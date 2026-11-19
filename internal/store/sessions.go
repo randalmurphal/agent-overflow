@@ -167,18 +167,26 @@ func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, err
 // generous margin so the device list can still show recent history.
 // Revoked-but-unexpired rows are deliberately NOT covered — they are the
 // evidence that a revocation happened.
-func (s *Store) DeleteSessionsExpiredBefore(before int64) (int64, error) {
-	result, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at < ?
+//
+// This is where a session that ended by time ends reach: the deletion runs
+// through endSessionsTx, and released names the threads whose links it
+// released.
+func (s *Store) DeleteSessionsExpiredBefore(before int64) (deleted int64, released []string, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, nil, fmt.Errorf("store: delete expired sessions: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ids, released, err := endSessionsTx(tx, deleteSessions, 0, nil, `expires_at < ?
         AND NOT EXISTS (SELECT 1 FROM refresh_secrets r
                         WHERE r.session_id = sessions.id AND r.expires_at >= ?)`, before, before)
 	if err != nil {
-		return 0, fmt.Errorf("store: delete expired sessions: %w", err)
+		return 0, nil, fmt.Errorf("store: delete expired sessions: %w", err)
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: delete expired sessions: rows affected: %w", err)
+	if err := tx.Commit(); err != nil {
+		return 0, nil, fmt.Errorf("store: delete expired sessions: commit: %w", err)
 	}
-	return rows, nil
+	return int64(len(ids)), released, nil
 }
 
 // GetSession reads one session by id. sql.ErrNoRows when it does not
@@ -234,18 +242,23 @@ func (s *Store) ListLiveSessions(now int64) ([]Session, error) {
 
 // RevokeSession marks one session revoked, reporting whether it moved. A
 // second revocation of the same session reports false and keeps the first
-// stamp, so the log records when access actually ended.
-func (s *Store) RevokeSession(sessionID string, at int64) (bool, error) {
-	result, err := s.db.Exec(
-		`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, at, sessionID)
+// stamp, so the log records when access actually ended. When it was the
+// device's last unrevoked session, the device's spawn links are released in
+// the same transaction and released names their threads (session_end.go).
+func (s *Store) RevokeSession(sessionID string, at int64) (moved bool, released []string, err error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return false, fmt.Errorf("store: revoke session: %w", err)
+		return false, nil, fmt.Errorf("store: revoke session: %w", err)
 	}
-	rows, err := result.RowsAffected()
+	defer func() { _ = tx.Rollback() }()
+	ids, released, err := endSessionsTx(tx, revokeSessions, at, nil, `id = ?`, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("store: revoke session: rows affected: %w", err)
+		return false, nil, fmt.Errorf("store: revoke session: %w", err)
 	}
-	return rows > 0, nil
+	if err := tx.Commit(); err != nil {
+		return false, nil, fmt.Errorf("store: revoke session: commit: %w", err)
+	}
+	return len(ids) > 0, released, nil
 }
 
 // TouchSession advances last_seen_at on a live session, reporting whether

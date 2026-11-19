@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,9 +57,20 @@ type Store struct {
 	// reads counts the read statements accessors have issued; see
 	// ReadCount.
 	reads atomic.Uint64
+	// readObserver is the function ObserveReads set, or nil.
+	readObserver atomic.Pointer[func()]
+	// assistantsPaused keeps the due reads off the threads that live under
+	// an assistant while assistants are turned off (assistants_paused.go).
+	assistantsPaused atomic.Bool
+	// assistantsHidden keeps those threads out of message search while the
+	// setting is off (assistants_paused.go).
+	assistantsHidden atomic.Bool
 	// writes counts the row writes the writer connection has run; see
 	// WriteCount.
 	writes *atomic.Uint64
+	// committed counts the transactions the writer connection has
+	// committed; see CommitCount.
+	committed *atomic.Uint64
 	// historyReads bounds the read pool connections history reads and
 	// background checkpoints hold; see historyReadSnapshot.
 	historyReads readSlots
@@ -86,6 +98,15 @@ type Store struct {
 	groups groupCommit
 	// holdersReleased is the function OnHoldersReleased set, or nil.
 	holdersReleased atomic.Pointer[func()]
+	// threadRequestChanged is the function OnThreadRequestChanged set, or
+	// nil.
+	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
+	// agentRecordDeleted is the function OnAgentRecordDeleted set, or nil.
+	agentRecordDeleted atomic.Pointer[func(home string)]
+	// agentStopPageReadForTest, set only by tests before the store is
+	// shared, runs in ListThreadAgentStopRows after each full page, so a
+	// test can write a request between two of its pages.
+	agentStopPageReadForTest func()
 }
 
 // Options configures NewWithOptions.
@@ -128,11 +149,12 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	gate := &connGate{}
 	commits := newCommitSignal()
 	writes := new(atomic.Uint64)
+	committed := new(atomic.Uint64)
 	pragmas := writerConnPragmas
 	if opts.scratch {
 		pragmas = scratchWriterConnPragmas
 	}
-	db, err := openPool(writerDSN(dbPath, pragmas), gate, commits, writes)
+	db, err := openPool(writerDSN(dbPath, pragmas), gate, commits, writes, committed)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -157,7 +179,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db, path: dbPath, gate: gate, writes: writes}
+	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed}
 
 	// Reclaim the WAL file before anything can read from it. Every other
 	// checkpoint the app runs is PASSIVE, which recycles WAL pages for
@@ -215,7 +237,7 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := openPool(poolDSN(dbPath, readerConnPragmas), gate, nil, nil)
+	read, err := openPool(poolDSN(dbPath, readerConnPragmas), gate, nil, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
@@ -244,6 +266,9 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 // with its deadline as the backstop.
 func (s *Store) reader() *sql.DB {
 	s.reads.Add(1)
+	if observe := s.readObserver.Load(); observe != nil {
+		(*observe)()
+	}
 	if s.read == nil || s.readsQuiesced.Load() {
 		return s.db
 	}
@@ -260,6 +285,16 @@ func (s *Store) reader() *sql.DB {
 // production reads it.
 func (s *Store) ReadCount() uint64 { return s.reads.Load() }
 
+// ObserveReads runs fn on the reading goroutine at each read ReadCount
+// counts, until the returned stop runs. A window of ReadCount also counts
+// whatever another goroutine read meanwhile; fn sees the reading stack, so
+// a test can count only the reads of the path it measures. One observer at
+// a time; nothing in production sets it.
+func (s *Store) ObserveReads(fn func()) (stop func()) {
+	s.readObserver.Store(&fn)
+	return func() { s.readObserver.CompareAndSwap(&fn, nil) }
+}
+
 // WriteCount is how many row writes the writer connection has run since
 // the store opened: each INSERT, UPDATE, DELETE or REPLACE statement,
 // and each executed WITH, counted once per run whether or not it changed
@@ -269,6 +304,13 @@ func (s *Store) ReadCount() uint64 { return s.reads.Load() }
 // statements. It counts statements, not rows, so a single statement that
 // writes many rows counts once. Nothing in production reads it.
 func (s *Store) WriteCount() uint64 { return s.writes.Load() }
+
+// CommitCount is how many transactions the writer connection has
+// committed since the store opened, an autocommit statement's included:
+// each is a turn holding the one writer. It is WriteCount's counterpart
+// for the tests that pin how many writer transactions a path takes.
+// Nothing in production reads it.
+func (s *Store) CommitCount() uint64 { return s.committed.Load() }
 
 // quiesceReads routes new reads to the writer pool, waits for in-flight
 // read-pool queries to drain, runs fn, then restores read-pool routing.
@@ -464,6 +506,11 @@ type Thread struct {
 	SessionRef     string `json:"sessionRef,omitempty"`
 	PendingForkRef string `json:"pendingForkRef,omitempty"`
 	ForkPreparing  bool   `json:"forkPreparing,omitempty"`
+	// Delete is how far a delete had gone with the thread when it was
+	// read: claimed (threads.delete_claim) or committed (threads.deleting).
+	// CheckThreadExecutionAccess refuses both; only a commit is the
+	// thread's end (CheckThreadDeliverable). Never sent to a client.
+	Delete ThreadDeleteState `json:"-"`
 	// PendingForkResumeAt pins the transcript cut for a lazy Claude fork:
 	// the source-session leaf uuid captured when the fork was taken. The
 	// fork's first session start passes it (repaired against the CLI's
@@ -484,8 +531,6 @@ type Thread struct {
 	// (which would create a cycle) — provider.NormalizeRuntimeMode is the
 	// authoritative normalizer at the binding boundary.
 	RuntimeMode        string `json:"runtimeMode"`
-	DiscussionID       string `json:"discussionId,omitempty"`
-	ParentThreadID     string `json:"parentThreadId,omitempty"`
 	ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`
 	LastTokenUsage     string `json:"lastTokenUsage,omitempty"`
 	CreatedAt          int64  `json:"createdAt"`
@@ -504,6 +549,11 @@ type Thread struct {
 	// MarkThreadUnread, and auto-refreshed when the user switches into a
 	// thread.
 	LastReadAt *int64 `json:"lastReadAt,omitempty"`
+	// Attention is the flag the thread's agent raised for the user
+	// (SetThreadAttention), nil when it raised none. It is pending while
+	// LastReadAt is before its At, as an unread completion is, so a read
+	// of the thread clears it.
+	Attention *ThreadAttention `json:"attention,omitempty"`
 	// PinnedAt is the Unix-ms timestamp of when the user pinned the
 	// thread. NULL (nil) = unpinned. Pinned threads sort into two manual
 	// attention groups above needs-attention in the sidebar. Set by
@@ -517,11 +567,17 @@ type Thread struct {
 	// (migration v76), or "" for a top-level thread. SetThreadGroup is its
 	// ONE writer. A grouped row pins like any other; a row that joins or
 	// leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
-	// the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
-	// members instead of deleting them.
-	// Discussion children follow their root, so the frontend reads it on
-	// top-level nodes only.
+	// DeleteThreadGroup ungroups its members before the group row goes.
 	GroupID string `json:"groupId,omitempty"`
+	// Placement is where the sidebar shows the row (migration v154):
+	// PlacementOwned nowhere, as a worker of the thread that spawned it
+	// (SpawnedByThreadID); PlacementGrouped in GroupID's group;
+	// PlacementStandalone as a plain row of its project. The schema makes
+	// it grouped exactly when GroupID is set. Its writers are
+	// SetThreadGroup, SetThreadPlacement, the write that names a local
+	// spawn's thread and a handoff; an insert derives it from GroupID, so
+	// the field is ignored there.
+	Placement string `json:"placement"`
 	// WorktreeSetupState is the durable half of the per-project worktree
 	// setup run this thread's worktree was cut with (migration v47):
 	// "running", "failed", or "" for nothing to say — never ran, succeeded,
@@ -552,6 +608,57 @@ type Thread struct {
 	// was created. Write-once for the same reason and by the same mechanism
 	// as the two fields above.
 	Origin ThreadOrigin `json:"origin"`
+	// AgentID names the assistant whose current thread this is, "" for
+	// any other thread (docs/specs/standing-agents.md, "Standing agent").
+	// PastAgentID names the assistant a handoff superseded this thread for,
+	// and AgentSupersededAt is when. All three are derived from agents and
+	// agent_past_threads, not persisted threads columns.
+	AgentID           string `json:"agentId,omitempty"`
+	PastAgentID       string `json:"pastAgentId,omitempty"`
+	AgentSupersededAt *int64 `json:"agentSupersededAt,omitempty"`
+	// HelperOfAgentID names the assistant this thread is a helper of: a
+	// thread it spawned without a project, always owned by it
+	// (agent_helpers). Read like the three above; CreateThread and a fork
+	// record it from this field.
+	HelperOfAgentID string `json:"helperOfAgentId,omitempty"`
+	// AgentAllProjects and AgentProjectIDs are the projects the assistant
+	// whose current thread this is serves (agents.all_projects,
+	// agent_projects), for the sidebar's assistant card. Derived; empty for
+	// any other thread.
+	AgentAllProjects bool     `json:"agentAllProjects,omitempty"`
+	AgentProjectIDs  []string `json:"agentProjectIds,omitempty"`
+	// SpawnedByThreadID names the local thread whose thread_spawn made this
+	// one, read from its spawn link (spawnerOfSQL), or "" when the user
+	// started it or its spawner is gone; an owned thread's owner. Derived: the spawn request
+	// row is the record, and it outlives the retention floor while this
+	// thread exists (spawnLineageSQL).
+	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
+	// SpawnedByComputerID names the paired computer whose owned spawn made
+	// this thread, read from its link (spawn_links.go), or "" for none.
+	// Derived, as SpawnedByThreadID is; set whatever the placement, so a
+	// linked thread given a sidebar row can be owned again.
+	SpawnedByComputerID string `json:"spawnedByComputerId,omitempty"`
+	// SpawnInstructions is the text a thread_spawn appended to this
+	// thread's system prompt for its whole life: its profile's
+	// instructions, then the spawn's own (migration v155). Every session
+	// start appends it after what the app and the person append. Written
+	// at creation and carried by a fork and a transfer; absent from
+	// updateThreadSetSQL, so nothing rewrites it.
+	SpawnInstructions string `json:"spawnInstructions,omitempty"`
+	// SpawnLevel is the sub-thread level a paired computer's spawn or ask
+	// carried here (migration v155): how far below a thread the person
+	// talks to the thread is. Zero for every thread a local spawn, a local
+	// ask or the person made, whose level its links answer
+	// (SubThreadLevel), and zero again once the thread is transferred. It
+	// counts only while the thread is owned or an ask copy
+	// (carriedLevelSQL), so a sidebar row ends it and Remove from Sidebar
+	// restores it.
+	SpawnLevel int `json:"spawnLevel,omitempty"`
+	// AskCopy marks the hidden copy a thread_ask runs in (a scratch thread
+	// its request owns, scratch_threads.request_token): it takes no
+	// message from a person and cannot be kept, and it is deleted once it
+	// answers. Derived; false for a side chat and every other thread.
+	AskCopy bool `json:"askCopy,omitempty"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.
@@ -708,8 +815,7 @@ type PayloadMeta struct {
 }
 
 // ChatBarFavorite is one starred entry in the composer model menu.
-// Kind is "model" or "discussion". Provider is set only for model
-// favorites; Value is the model slug or discussion definition id.
+// Kind is always "model"; Value is the model slug.
 type ChatBarFavorite struct {
 	Kind      string `json:"kind"`
 	Provider  string `json:"provider,omitempty"`
@@ -751,4 +857,45 @@ func boolToInt(b bool) int {
 
 func nowMillis() int64 {
 	return time.Now().UnixMilli()
+}
+
+// ThreadAttention is the flag an agent raises on its thread for the user:
+// its kind, the short reason it gave and when it raised it.
+type ThreadAttention struct {
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
+	At     int64  `json:"at"`
+}
+
+// The kinds of attention an agent can flag, as threads.attention_kind
+// allows them: a choice that is the user's to make, work ready for the
+// user to look at, and something wrong the agent cannot fix alone.
+const (
+	AttentionDecision = "decision"
+	AttentionReview   = "review"
+	AttentionProblem  = "problem"
+)
+
+// AttentionKinds are the kinds an agent can flag, in the order the
+// thread_attention tool lists them.
+func AttentionKinds() []string {
+	return []string{AttentionDecision, AttentionReview, AttentionProblem}
+}
+
+// AttentionPending reports whether t's attention flag still asks for the
+// user (attentionPending).
+func (t Thread) AttentionPending() bool {
+	return t.Attention != nil && attentionPending(t.Attention.At, t.LastReadAt)
+}
+
+// attentionPending reports whether a flag raised at at still asks for the
+// user: raised after the user last read the thread. A thread never tracked
+// (no read marker) has read nothing since, so its flag asks.
+func attentionPending(at int64, lastReadAt *int64) bool {
+	return lastReadAt == nil || at > *lastReadAt
+}
+
+// ValidAttentionKind reports whether kind is one an agent can flag.
+func ValidAttentionKind(kind string) bool {
+	return slices.Contains(AttentionKinds(), kind)
 }

@@ -1,4 +1,5 @@
-import { execFile as execFileCallback, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { execFile as execFileCallback, execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { readFile, readdir, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
@@ -34,11 +35,20 @@ export function spawnContained(
   options: SpawnOptions & { memoryLimitBytes: number },
 ): ChildProcess {
   const { memoryLimitBytes, ...spawnOptions } = options;
+  const command = containedCommand(binary, args, memoryLimitBytes);
+  return spawn(command.file, command.args, spawnOptions);
+}
+
+/**
+ * The command spawnContained runs for `binary` and `args`. `args` stay last,
+ * so a caller may append more.
+ */
+export function containedCommand(binary: string, args: string[], memoryLimitBytes: number): { file: string; args: string[] } {
   if (process.platform === 'win32') {
     // The Go launcher uses a Job Object on Windows. This direct TS entrypoint
     // cannot create one without a native helper, so the process-tree watchdog
     // still fails visibly on its first unverifiable sample.
-    return spawn(binary, args, spawnOptions);
+    return { file: binary, args };
   }
   const kib = Math.floor(memoryLimitBytes / 1024);
   if (!Number.isSafeInteger(kib) || kib < 1) {
@@ -48,32 +58,29 @@ export function spawnContained(
     // Current macOS kernels reject lowering RLIMIT_DATA, RLIMIT_RSS, and
     // RLIMIT_AS. HarnessWatchdog applies the same exact-tree ceiling at 100ms
     // cadence, and the outer ao-harness-e2e launcher monitors the whole suite.
-    return spawn(binary, args, spawnOptions);
+    return { file: binary, args };
   }
-  // RLIMIT_AS (`ulimit -v`) prevents Go and Node from reserving their normal
-  // runtime address space before the watchdog can start. RLIMIT_DATA bounds
+  // RLIMIT_AS prevents Go and Node from reserving their normal runtime
+  // address space before the watchdog can start. RLIMIT_DATA bounds
   // heap/data allocations without blocking those virtual reservations.
-  const script = 'limit="$1"; shift; ulimit -d "$limit" || exit 125; exec "$@"';
-  return spawn(
-    '/bin/sh',
-    ['-c', script, 'ao-harness-memory-limit', String(kib), binary, ...args],
-    spawnOptions,
-  );
+  // prlimit (util-linux) sets it, soft and hard, and execs the binary with
+  // no shell between them.
+  return { file: 'prlimit', args: [`--data=${kib * 1024}`, '--', binary, ...args] };
 }
 
 export async function captureProcessIdentity(pid: number | undefined): Promise<ProcessIdentity> {
   if (!pid || pid <= 0) throw new Error('harness watchdog: child has no pid');
-  // Linux fallback containment starts through `/bin/sh` so it can apply
-  // ulimit before exec'ing the backend. Do not authenticate that short-lived
-  // wrapper. A later identity check would otherwise reject the same PID when
-  // exec turns it into the backend process.
+  // Linux fallback containment starts through `prlimit` so it can apply
+  // RLIMIT_DATA before exec'ing the backend. Do not authenticate that
+  // short-lived wrapper. A later identity check would otherwise reject the
+  // same PID when exec turns it into the backend process.
   let previous: ProcessIdentity | undefined;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const identity = await captureProcessIdentityOnce(pid);
-    if (!isShellExecutable(identity.executable) && previous && sameProcessIdentity(previous, identity)) {
+    if (!isLaunchWrapper(identity.executable) && previous && sameProcessIdentity(previous, identity)) {
       return identity;
     }
-    previous = isShellExecutable(identity.executable) ? undefined : identity;
+    previous = isLaunchWrapper(identity.executable) ? undefined : identity;
     if (attempt === 99) return identity;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -161,9 +168,8 @@ async function captureProcessIdentityOnce(pid: number): Promise<ProcessIdentity>
   throw new Error(`harness watchdog: unsupported platform ${process.platform}`);
 }
 
-function isShellExecutable(executable: string): boolean {
-  const name = path.basename(executable).toLowerCase();
-  return name === 'sh' || name === 'dash' || name === 'bash' || name === 'zsh';
+function isLaunchWrapper(executable: string): boolean {
+  return path.basename(executable).toLowerCase() === 'prlimit';
 }
 
 export async function captureProcessGroupMemberProof(
@@ -194,6 +200,28 @@ async function captureProcessGroupMemberProofForGroup(
   return undefined;
 }
 
+/**
+ * Whether a process runs: it exists and is not a zombie. Linux reads its
+ * state from /proc; macOS, which has no /proc, asks ps.
+ */
+export function processRuns(pid: number): boolean {
+  if (process.platform === 'darwin') {
+    try {
+      return !execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
+    } catch (err) {
+      // ps exits 1 when no such process exists; anything else is a failure.
+      if ((err as { status?: number }).status === 1) return false;
+      throw err;
+    }
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
+  } catch {
+    return false;
+  }
+}
+
 export type ProcessHoldState = 'held' | 'released' | 'changed';
 
 /**
@@ -213,7 +241,10 @@ export async function processHoldState(identity: ProcessIdentity): Promise<Proce
       try {
         stat = await readFile(`/proc/${identity.pid}/stat`, 'utf8');
       } catch (statError) {
-        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') return 'released';
+        // ESRCH: the stat file opened, then the process was reaped before
+        // the read.
+        const code = (statError as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ESRCH') return 'released';
         throw statError;
       }
       const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);

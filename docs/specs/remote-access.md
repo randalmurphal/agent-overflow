@@ -610,7 +610,7 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `files:read` | observe | diffs, file content, context lines, search |
 | `threads:operate` | execute | send/steer/queue/start **in read-only or approval-required modes only** |
 | `approvals:respond` | execute | answering tool-use approvals |
-| `threads:autonomy` | execute | creating or moving threads into auto / auto-accept-edits / full-access; running workflows & automations |
+| `threads:autonomy` | execute | creating or moving threads into auto / auto-accept-edits / full-access; running workflows |
 | `terminal:operate` | execute | PTY create/attach/write/replay, worktree-setup output |
 | `preview:open` | execute | opening this machine's dev-server previews from another machine: the discovered port list and the ticketed preview URL for one port (§7; deliberately not `terminal:operate`) |
 | `git:operate` | execute | git mutations, worktrees, PR surface |
@@ -687,8 +687,8 @@ a decision the enforcement wave inherits rather than one it may
 rediscover:
 
 - **The day-one derivation rule is not reachability-preserving.** 21
-  thread/project/discussion bookkeeping mutations (rename, archive,
-  pin, read-state, plan/discussion CRUD) are execute-tier by any
+  thread and project bookkeeping mutations (rename, archive, pin,
+  read-state, plan CRUD) are execute-tier by any
   honest reading and were wire-reachable before the table existed. A
   shrink-only `transitionalReachability` override map (43 entries,
   reasons inline) pins today's partition bit-identically; each entry
@@ -2126,19 +2126,18 @@ Prerequisite sweep, valuable standalone:
   bridge-client mechanism, which is what keeps
   `ChannelSubscriberCount`'s "no connected launcher subscriber"
   diagnostic sound. The watched set is composed from surface
-  EXISTENCE only — every open pane foreground or background, plus the
-  discussion live-tail roster's pane-less child threads — never from
+  EXISTENCE only — every open pane foreground or background — never from
   visibility or focus; pane open sends the union ahead of the mount so
   the history load and the narrowed pushes cannot race (same-socket
   frame ordering is the seam). Two channels were entity-filtered
   then: `highlight:diff_seed` and the streaming-code span channel (now
   `highlight:live`), whose designed fallback is the highlight RPC. The
   central finding: **`provider:item_event` is NOT narrowable yet** —
-  six off-pane consumers read it for threads with no pane (sidebar
+  five off-pane consumers read it for threads with no pane (sidebar
   error/interrupted/Plan badges, activity ordering bumps, proposed-plan
-  status, discussion child routing, the workspace change lock, and the
-  inactive-thread cache eviction), argued on its policy row. Narrowing
-  the transcript stream requires re-homing those six onto
+  status, the workspace change lock, and the inactive-thread cache
+  eviction), argued on its policy row. Narrowing the transcript stream
+  requires re-homing those five onto
   low-frequency channels first — that re-home is the open design item
   for the phone client, which cannot afford every thread's transcript.
   One accepted loss: a content-addressed highlight cache hit across
@@ -2169,8 +2168,7 @@ Prerequisite sweep, valuable standalone:
   (foreground tool completions never changed its answer) and
   `provider:background_tasks_changed` now fires on Claude's exit,
   drain and orphan-recovery transitions, which previously reached only
-  the `threads:read`-gated `background_task_state`. Discussion child threads
-  were already watched via the live-tail roster. The eviction branch
+  the `threads:read`-gated `background_task_state`. The eviction branch
   stays as written and simply stops firing for unwatched threads: both
   the warm-reentry cache and the replica window are stamp-validated on
   every open (`SyncThreadWindow` answers `stale` with a replacing
@@ -2274,7 +2272,7 @@ Prerequisite sweep, valuable standalone:
   fire where a banner was suppressed. It is independent of whether the
   OS presentation SUCCEEDS: on a machine whose notification permission
   was denied, the cue is the only channel left. `notify.SoundEventFor`
-  folds the six kinds onto three events (turn complete, input needed,
+  folds the seven kinds onto three events (turn complete, input needed,
   attention) because that is the distinction a person makes by ear;
   `TestSoundEventCoversEveryKind` keeps it total. Preferences are
   device tier on the backend machine's own screen: a master
@@ -2981,7 +2979,7 @@ chip. 7d: project identity and merged entries.
 (155 thread, 21 project, 153 home, 38 selected, 6 all at landing;
 122 / 14 / 162 / 43 / 7 plus 31 `workspace` after the 2026-09-03 main
 merge added that inferred route; the methods keyed by workflow item,
-automation, terminal, subscription, thread-group or thread-batch ids
+terminal, subscription, thread-group or thread-batch ids
 are parked `home` in the table, and the client's index resolves the
 49 of them that carry that id as argument 0, a count
 `methodFamilies.test.ts` asserts; the `WorkflowAgent*` methods whose
@@ -3010,7 +3008,7 @@ an `all` route with one attached computer is dispatched to it directly
 by the fan-out, whichever computer that is. Route
 resolution: a one-call pin (`withBackendTarget`, drained at dispatch)
 for path-argument and subscription calls, then the id-family index for
-workflow items, automations and terminals, then the generated table;
+workflow items and terminals, then the generated table;
 `all` fans out and merges in one place (arrays concatenate in attach
 order, id-keyed objects shallow-merge, a failed backend's share is
 dropped and recorded on its entry). `selected` resolves focused thread
@@ -3884,7 +3882,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    2026-09-02 behind step-up, Go half and Settings surface both.
 6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
    wave 6d — §9 "Phone-era efficiency": the watch frame + entity
-   filter on the two highlight channels; the six-consumer re-home
+   filter on the two highlight channels; the five-consumer re-home
    LANDED 2026-09-01, wave 6d2, and `provider:item_event` is now
    entity-filtered too), buffered deltas, scope
    leases, reduced snapshots, attachment flows (LANDED 2026-09-01,
@@ -3892,7 +3890,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    notification semantics + deep links (notification mapping,
    preference gate, retraction, and desktop presenters: LANDED
    2026-09-01, wave 6a — §9 "Desktop notifications ride the same event
-   mapping"; push senders stay gated on the signing discussion). The Capacitor shell itself
+   mapping"; push senders stay gated on the open signing question). The Capacitor shell itself
    (same SPA + native plugins, §9) is scaffolded here, including the
    WebView's own socket over WebPKI TLS (§9; the pinned native bridge
    is the deferred domainless fallback) and bundle sync from the backend with rollback (§9); store builds
@@ -3947,12 +3945,11 @@ its acquire is refused while another holds the keyboard (§7 "Anywhere
 access", the take-control rule). `TestArmingMethodsAreTiedToTheirConnection`
 holds the class: an `App` method whose name arms or releases a
 per-client resource reads `ConnStateFromContext` or says why not.
-Convergence: eleven write paths that persisted and answered only their
+Convergence: ten write paths that persisted and answered only their
 caller now emit, under the real-time ruling (§5, §8): worktree cut and
 attach ride the thread-row chokepoint; `terminal:opened` completes
 `terminal:exit`; `keybindings:updated`, `chatbar:favorites`,
-`chatbar:new-thread-defaults`, `discussion:definitions-changed`,
-`provider:accounts_changed` (which also fixes a removal of an inactive
+`chatbar:new-thread-defaults`, `provider:accounts_changed` (which also fixes a removal of an inactive
 account announcing nothing) and `review:comments-changed` are new rows;
 `backend:set-changed` is a host-directive row beside `backend:attach`;
 the editor preference re-reads on a `settings:updated` naming its key;

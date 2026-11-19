@@ -89,12 +89,26 @@ done
 // caller can Close() it via t.Cleanup.
 func installSteerTestSession(t *testing.T, app *App, thread store.Thread, steerOutcome string) *codex.Session {
 	t.Helper()
-	return installCodexTestSessionWithBinary(t, app, thread, writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome))
+	return installSteerTestSessionWithEvents(t, app, thread, steerOutcome, func(provider.ProviderEvent) {})
+}
+
+// installSteerTestSessionWithEvents is installSteerTestSession with the
+// session's own events, such as its disconnect at Close, handed to onEvent.
+func installSteerTestSessionWithEvents(t *testing.T, app *App, thread store.Thread, steerOutcome string, onEvent func(provider.ProviderEvent)) *codex.Session {
+	t.Helper()
+	return installCodexTestSessionWithEvents(t, app, thread, writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome), onEvent)
 }
 
 // installCodexTestSessionWithBinary is installSteerTestSession over a fake
 // app-server of the caller's own.
 func installCodexTestSessionWithBinary(t *testing.T, app *App, thread store.Thread, binary string) *codex.Session {
+	t.Helper()
+	return installCodexTestSessionWithEvents(t, app, thread, binary, func(provider.ProviderEvent) {})
+}
+
+// installCodexTestSessionWithEvents is installCodexTestSessionWithBinary
+// with the session's own events handed to onEvent.
+func installCodexTestSessionWithEvents(t *testing.T, app *App, thread store.Thread, binary string, onEvent func(provider.ProviderEvent)) *codex.Session {
 	t.Helper()
 	sess, err := codex.NewSession(
 		context.Background(),
@@ -104,7 +118,7 @@ func installCodexTestSessionWithBinary(t *testing.T, app *App, thread store.Thre
 			Binary:  binary,
 			WorkDir: thread.WorkspacePath,
 		},
-		func(provider.ProviderEvent) {},
+		onEvent,
 	)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

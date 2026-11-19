@@ -102,6 +102,57 @@ func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftMove, e
 	return move, tx.Commit()
 }
 
+// HandOffThreadDraft writes an assistant's next thread's draft and deletes
+// its previous thread's draft in one transaction, so a handoff moves the
+// unsent text whole or not at all, and records the text and attachment ids
+// it took on the previous thread's agent_past_threads row (MovedDraftOf).
+// expected is the previous thread's draft as the move read it, nil when it
+// had none; a draft that changed since refuses the move. It reports the
+// write on each thread as MoveThreadDraft does, the listing included: the
+// next thread gains the draft, and the previous one loses it.
+func (s *Store) HandOffThreadDraft(sourceThreadID string, expected *ThreadDraft, destination ThreadDraft) (DraftMove, error) {
+	if sourceThreadID == "" || destination.ThreadID == "" || sourceThreadID == destination.ThreadID {
+		return DraftMove{}, errors.New("draft handoff requires two different threads")
+	}
+	tx, release, err := s.beginDurableTx(context.Background())
+	if err != nil {
+		return DraftMove{}, err
+	}
+	defer release()
+	defer func() { _ = tx.Rollback() }()
+	current, found, err := getThreadDraft(tx, sourceThreadID)
+	if err != nil {
+		return DraftMove{}, err
+	}
+	if found != (expected != nil) || (found && !SameDraft(current, *expected)) {
+		return DraftMove{}, errors.New("the previous thread's draft changed during the handoff")
+	}
+	sourceListed, err := threadListed(tx, sourceThreadID)
+	if err != nil {
+		return DraftMove{}, err
+	}
+	var move DraftMove
+	if move.Destination, err = upsertThreadDraft(tx, destination); err != nil {
+		return DraftMove{}, err
+	}
+	if found {
+		if _, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, sourceThreadID); err != nil {
+			return DraftMove{}, fmt.Errorf("clear the previous thread's draft: %w", err)
+		}
+		moved := current.stored()
+		if _, err = tx.Exec(`UPDATE agent_past_threads SET moved_draft = ?, moved_draft_attachments = ? WHERE thread_id = ?`,
+			moved.Content, moved.Attachments, sourceThreadID); err != nil {
+			return DraftMove{}, fmt.Errorf("record the draft the handoff moved: %w", err)
+		}
+		sourceStillListed, err := threadListed(tx, sourceThreadID)
+		if err != nil {
+			return DraftMove{}, err
+		}
+		move.Source = DraftWrite{Changed: true, Listing: listingChange(sourceListed, sourceStillListed)}
+	}
+	return move, tx.Commit()
+}
+
 // CheckUnsentDraft rejects history, accepted sends, and provider sessions, even
 // when the current timeline window happens to be empty.
 func (s *Store) CheckUnsentDraft(threadID string) error {

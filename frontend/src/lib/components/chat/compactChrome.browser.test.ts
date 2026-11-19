@@ -48,11 +48,11 @@ it.each([320, 360, 412])('keeps the title on one swipeable line beside the badge
   // second line would push it past 40.
   expect(titleEl.getBoundingClientRect().height).toBeLessThan(40);
   expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth + 1);
-  expect(scroller.style.getPropertyValue('--fade-right')).toBe('24px');
+  expect(scroller.style.getPropertyValue('--fade-right')).toBe('2em');
   expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
   scroller.scrollLeft = scroller.scrollWidth;
   scroller.dispatchEvent(new Event('scroll'));
-  expect(scroller.style.getPropertyValue('--fade-left')).toBe('24px');
+  expect(scroller.style.getPropertyValue('--fade-left')).toBe('2em');
   expect(scroller.style.getPropertyValue('--fade-right')).toBe('0px');
   // Badge and menu share the title's row and stay inside the viewport.
   const titleBox = titleEl.getBoundingClientRect();

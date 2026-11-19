@@ -237,9 +237,16 @@ func (e *env) frontendErrorSection(dataDir string, from healthFileCursor) (healt
 		// An uncaught fault in the renderer is red on its own: nothing
 		// throws here in a healthy session.
 		return healthSection{Name: "frontend-errors", Status: healthRed,
-			Detail: fmt.Sprintf("%d new fault(s) since the last check (%d engine notice(s))%s",
-				scan.Faults, scan.Notices, rotatedSuffix(rotated)),
+			Detail: fmt.Sprintf("%d new fault(s) since the last check (%d app diagnostic(s), %d engine notice(s))%s",
+				scan.Faults, scan.Diagnostics, scan.Notices, rotatedSuffix(rotated)),
 			Lines: scan.Sample}, next
+	case scan.Diagnostics > 0:
+		// The app caught these and reported them itself, so they are
+		// evidence to read, not a renderer fault.
+		return healthSection{Name: "frontend-errors", Status: healthWarn,
+			Detail: fmt.Sprintf("no faults; %d app diagnostic(s), %d engine notice(s)%s",
+				scan.Diagnostics, scan.Notices, rotatedSuffix(rotated)),
+			Lines: scan.DiagnosticSample}, next
 	case scan.Notices > 0:
 		return healthSection{Name: "frontend-errors", Status: healthWarn,
 			Detail: fmt.Sprintf("no faults; %d engine notice(s) (ResizeObserver loop: layout work outran a frame)%s",

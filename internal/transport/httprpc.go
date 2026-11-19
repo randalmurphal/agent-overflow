@@ -10,11 +10,11 @@ import (
 	"agent-overflow/internal/loopback"
 )
 
-// ScopedRPCPath is the one-shot HTTP RPC route the `ao` CLI speaks. The
-// WebSocket wire is built for a long-lived client that also consumes pushed
-// events; a CLI process makes one call and exits, so it gets a POST that reuses
-// the same dispatcher, the same frame shapes, and the same method table — never
-// a second API.
+// ScopedRPCPath is the one-shot HTTP RPC route the `agent-overflow remote`
+// command speaks. The WebSocket wire is built for a long-lived client that also
+// consumes pushed events; a command process makes one call and exits, so it
+// gets a POST that reuses the same dispatcher, the same frame shapes, and the
+// same method table, never a second API.
 //
 // The route accepts SCOPED tokens only. The server's own session token is not
 // honoured here, so this surface can never be wider than ScopedTokenMethods
@@ -99,7 +99,7 @@ func (s *Server) invokeScoped(r *http.Request, scope CallerScope, frame ClientFr
 	}
 	if frameErr := AuthorizeScopedMethod(scope, frame.Method); frameErr != nil {
 		if frameErr.Code == ErrCodeMethodNotFound {
-			log.Printf("transport: refused %s for a %s scoped token (not a workflow CLI method)", frame.Method, scope.Kind)
+			log.Printf("transport: refused %s for a %s scoped token (not a scoped CLI method)", frame.Method, scope.Kind)
 		}
 		response.Error = frameErr
 		return response

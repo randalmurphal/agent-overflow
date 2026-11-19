@@ -46,6 +46,13 @@ describe('<StorageSettings> — Retention', () => {
     expect(input.value).toBe('30');
   });
 
+  it('says assistants are never cleaned up and that Claude sessions started here keep their files at least as long', async () => {
+    const { getByTestId } = render(StorageSettings);
+    const text = getByTestId('settings-retention').textContent ?? '';
+    expect(text).toContain('Assistants and their past threads are never cleaned up.');
+    expect(text).toContain('Claude and Codex delete their own session files under their own settings; Claude sessions Agent Overflow starts keep theirs at least this long.');
+  });
+
   it('renders the retention input inert, saying why, off the host without a passkey', async () => {
     // `retention` is host tier (internal/settings/tier.go): the backend takes
     // the write only under a step-up proof, which a networked page with no

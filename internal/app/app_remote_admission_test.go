@@ -27,12 +27,43 @@ type remoteAdmissionReceiver struct {
 	*App
 	calls, statusCalls atomic.Int32
 	refusal            error
+	// cancelRefusal, when set, refuses every RemoteCommandCancel.
+	cancelRefusal atomic.Pointer[error]
+	// cancelHold, when set, holds every RemoteCommandCancel until it is
+	// closed or the call's context ends.
+	cancelHold atomic.Pointer[chan struct{}]
+	// lostReply, when set, starts the command and then fails the call, as a
+	// reply lost on the way back does.
+	lostReply atomic.Bool
+	// wire is the destination's listener, which a test stops to take the
+	// computer offline.
+	wire *pairedBackend
+}
+
+func (r *remoteAdmissionReceiver) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand, error) {
+	if hold := r.cancelHold.Load(); hold != nil {
+		select {
+		case <-*hold:
+		case <-ctx.Done():
+			return RemoteCommand{}, ctx.Err()
+		}
+	}
+	if refusal := r.cancelRefusal.Load(); refusal != nil {
+		return RemoteCommand{}, *refusal
+	}
+	return r.App.RemoteCommandCancel(ctx, id)
 }
 
 func (r *remoteAdmissionReceiver) RemoteCommandStart(ctx context.Context, workspace gitapp.WorkspaceRef, request RemoteCommandRequest) (RemoteCommand, error) {
 	r.calls.Add(1)
 	if r.refusal != nil {
 		return RemoteCommand{}, r.refusal
+	}
+	if r.lostReply.Load() {
+		if _, err := r.App.RemoteCommandStart(ctx, workspace, request); err != nil {
+			return RemoteCommand{}, err
+		}
+		return RemoteCommand{}, errors.New("the reply was lost")
 	}
 	return r.App.RemoteCommandStart(ctx, workspace, request)
 }
@@ -52,7 +83,7 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 		}
 		cfg.Dispatcher = dispatcher
 	})
-	receiver.App = backend.app
+	receiver.App, receiver.wire = backend.app, backend
 	source := identityApp(t)
 	manager, err := attachedbackends.New(t.TempDir(), "admission source", "linux")
 	if err != nil {
@@ -159,6 +190,71 @@ func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
 	}
 	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.Receipt.ID != input.Request.ID {
 		t.Fatalf("retry after refusal lost completion tracking: %#v %v", watch, err)
+	}
+}
+
+// A start the carrier never sent, because the computer cannot be reached,
+// is refused at once: its fresh watch is released, so it neither blocks
+// the conversation nor forgetting the computer, and the same ID admits an
+// identical retry once the computer is back.
+func TestRemoteAdmissionToAnUnreachableComputerReleasesTheWatch(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	scope, _ := transport.CallerScopeFrom(ctx)
+	stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := receiver.wire.srv.Shutdown(stop); err != nil {
+		t.Fatalf("stop the destination: %v", err)
+	}
+	_, err := source.AgentRemoteStart(ctx, input)
+	if _, message, _ := errorsx.PublicDetails(err); !strings.Contains(message, "nothing was sent") {
+		t.Fatalf("start on an unreachable computer = %v, want it said that nothing was sent", err)
+	}
+	if receiver.calls.Load() != 0 {
+		t.Fatalf("the destination saw %d starts", receiver.calls.Load())
+	}
+	watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+	if err != nil || watch.Notification != "dismissed" || watch.Receipt.ID != "" {
+		t.Fatalf("a start never sent retained its watch: %#v %v", watch, err)
+	}
+	if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || pending {
+		t.Fatalf("a start never sent blocks the conversation: %v %v", pending, err)
+	}
+	if err := source.RemoveBackend(input.ComputerID, false); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+}
+
+// A start whose reply was lost may have run. A retry under the same ID that
+// cannot reach the computer says so beside its own failure, tells the
+// caller to read the first attempt's status before retrying, and keeps the
+// watch that stands for it.
+func TestRemoteAdmissionRetryAfterALostReplySaysTheFirstAttemptMayHaveRun(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	receiver.lostReply.Store(true)
+	if _, err := source.AgentRemoteStart(ctx, input); err == nil {
+		t.Fatal("a start whose reply was lost succeeded")
+	}
+	stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := receiver.wire.srv.Shutdown(stop); err != nil {
+		t.Fatalf("stop the destination: %v", err)
+	}
+	_, err := source.AgentRemoteStart(ctx, input)
+	_, message, _ := errorsx.PublicDetails(err)
+	for _, said := range []string{"nothing was sent", "earlier attempt with this request_id may already have run", "Check remote_status with these same IDs"} {
+		if !strings.Contains(message, said) {
+			t.Fatalf("retry on an unreachable computer = %q, want it to say %q", message, said)
+		}
+	}
+	if receiver.calls.Load() != 1 {
+		t.Fatalf("the destination saw %d starts, want the first alone", receiver.calls.Load())
+	}
+	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" {
+		t.Fatalf("the first attempt's watch = %#v %v, want it pending", watch, err)
 	}
 }
 
@@ -315,9 +411,9 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 			threadID := started.SourceThreadID
 			switch action {
 			case "delete":
-				err = source.DeleteThread(threadID)
+				err = source.deleteThread(threadID)
 			case "archive":
-				err = source.ArchiveThread(threadID)
+				err = archiveThread(source, threadID)
 			case "move":
 				source.configDir = t.TempDir()
 				if err := source.startThreadTransfers(); err != nil {
@@ -346,7 +442,12 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
-			if err != nil || watch.Notification != "dismissed" {
+			if action == "delete" {
+				// The watch goes with its thread.
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("watch after delete: %+v %v", watch, err)
+				}
+			} else if err != nil || watch.Notification != "dismissed" {
 				t.Fatalf("watch after %s: %+v %v", action, watch, err)
 			}
 			if pending, err := source.store.HasUnfinishedRemoteWatches(threadID); err != nil || pending {

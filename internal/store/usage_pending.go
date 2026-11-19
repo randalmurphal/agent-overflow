@@ -86,8 +86,11 @@ func rollbackUsageTx(tx *sql.Tx, result *error) { rollbackTx(tx, "store: usage",
 // turns of the same process. A settled turn's own pending rows are then
 // retired whatever scope reported them: the ledger row is that turn's final
 // accounting. An empty interrupt result leaves unaccounted tokens available
-// to usage queries. Cost is never subtracted from token progress.
-func (s *Store) AppendUsageAndReconcile(scope string, rows []UsageLedgerRow) (err error) {
+// to usage queries. Cost is never subtracted from token progress. own is
+// the thread's own spend the settlement accounts, added to its tally in the
+// same transaction (thread_tallies.tokens), so the pending rows it retires
+// and the tally they move into are never both counted or both missing.
+func (s *Store) AppendUsageAndReconcile(scope string, rows []UsageLedgerRow, own OwnSpend) (err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: usage settlement begin: %w", err)
@@ -114,6 +117,9 @@ func (s *Store) AppendUsageAndReconcile(scope string, rows []UsageLedgerRow) (er
 		if _, err := tx.Exec(`DELETE FROM usage_pending WHERE thread_id = ? AND turn_id = ?`, row.ThreadID, row.TurnID); err != nil {
 			return fmt.Errorf("store: retire settled pending usage: %w", err)
 		}
+	}
+	if err := addOwnSpendTx(tx, own); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

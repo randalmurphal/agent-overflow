@@ -2,7 +2,6 @@ package app
 
 import (
 	"cmp"
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -20,10 +19,12 @@ import (
 
 // deliverThreadWakeMessages queues each message, and rebuilds the ones that
 // were not written because a request they name stopped owing the wake while
-// they were being written (store.QueueThreadWake): another route delivered
-// it, or a late reply superseded it. The rebuild reads the rows as they are
-// now, which drops that request and keeps the rest in one message. Every
-// rebuild drops at least one request, and the passes are bounded anyway.
+// they were being written (store.QueueThreadWake: another route delivered
+// it, or a late reply superseded it), or because New Thread, Same Assistant
+// moved their requests to another thread after they were built. The rebuild
+// reads the rows as they are now, which drops that request and keeps the
+// rest in one message, or names the thread they moved to and where they
+// were made. The passes are bounded.
 func (a *App) deliverThreadWakeMessages(messages []threadWakeMessage) {
 	for pass := 0; ; pass++ {
 		var stale []threadWakeRef
@@ -60,9 +61,14 @@ var errThreadWakeStillChanging = errors.New("the requests it answers kept changi
 // id, and the rest record its token as the message that delivered them.
 type threadWakeMessage struct {
 	late bool
-	// kind and text are what every row says: the wake's kind and its body.
+	// kind, text and cause are what every row says: the wake's kind, its
+	// body and, for an interruption, its cause.
 	kind, text string
-	rows       []store.ThreadRequest
+	cause      threadtools.Cause
+	// madeIn is the assistant's past thread every row was made in, empty
+	// when its caller made it (store.ThreadRequest.MadeIn).
+	madeIn string
+	rows   []store.ThreadRequest
 }
 
 // threadWakeMessageRequests bounds how many requests one message answers. It
@@ -76,9 +82,10 @@ const threadWakeMessageRequests = 512
 // so a message names its requests in the order the thread made them however
 // the settlements were observed.
 //
-// The key is the caller, the kind and the whole text. A late reply is never
-// folded: it is an answer to one request, written after the others were
-// already told. A wake that is no longer owed is dropped here, which is what
+// The key is the caller, the kind, the whole text, the cause and the past
+// thread a handoff moved the request from: every line the message says outside its
+// list of threads is every row's. A late reply is never folded: it is an
+// answer to one request, written after the others were already told. A wake that is no longer owed is dropped here, which is what
 // makes a repeated observation of one settlement a no-op, and so is one that
 // was disarmed since it was decided (the caller was archived, deleted or
 // moved).
@@ -93,12 +100,12 @@ func (a *App) threadWakeMessages(refs []threadWakeRef) []threadWakeMessage {
 		if !found || !row.Notify || !row.WakeOwed(ref.late) {
 			continue
 		}
-		kind, text, err := threadWakeContent(row, ref.late)
+		message, err := soloThreadWakeMessage(row, ref.late)
 		if err != nil {
 			a.failThreadWake(ref.token, "render the wake", err)
 			continue
 		}
-		owed = append(owed, threadWakeMessage{late: ref.late, kind: kind, text: text, rows: []store.ThreadRequest{row}})
+		owed = append(owed, message)
 	}
 	slices.SortStableFunc(owed, func(x, y threadWakeMessage) int {
 		return cmp.Or(
@@ -106,7 +113,10 @@ func (a *App) threadWakeMessages(refs []threadWakeRef) []threadWakeMessage {
 			cmp.Compare(x.rows[0].Token, y.rows[0].Token),
 		)
 	})
-	type sameWake struct{ caller, kind, text string }
+	type sameWake struct {
+		caller, kind, text, madeIn string
+		cause                      threadtools.Cause
+	}
 	taking := make(map[sameWake]int, len(owed))
 	messages := make([]threadWakeMessage, 0, len(owed))
 	for _, message := range owed {
@@ -115,7 +125,7 @@ func (a *App) threadWakeMessages(refs []threadWakeRef) []threadWakeMessage {
 			continue
 		}
 		row := message.rows[0]
-		key := sameWake{caller: row.CallerThreadID, kind: message.kind, text: message.text}
+		key := sameWake{caller: row.CallerThreadID, kind: message.kind, text: message.text, madeIn: message.madeIn, cause: message.cause}
 		if index, ok := taking[key]; ok && len(messages[index].rows) < threadWakeMessageRequests {
 			messages[index].rows = append(messages[index].rows, row)
 			continue
@@ -124,6 +134,23 @@ func (a *App) threadWakeMessages(refs []threadWakeRef) []threadWakeMessage {
 		messages = append(messages, message)
 	}
 	return messages
+}
+
+// soloThreadWakeMessage is the message one wake of row would be alone: its
+// kind, text, cause and past thread, the key threadWakeMessages folds by.
+func soloThreadWakeMessage(row store.ThreadRequest, late bool) (threadWakeMessage, error) {
+	kind, text, err := threadWakeContent(row, late)
+	if err != nil {
+		return threadWakeMessage{}, err
+	}
+	message := threadWakeMessage{late: late, kind: kind, text: text, rows: []store.ThreadRequest{row}}
+	if kind == threadtools.WakeInterrupted {
+		message.cause = threadtools.Cause{Code: row.Cause, Arg: row.CauseArg}
+	}
+	if row.MadeIn() != row.CallerThreadID {
+		message.madeIn = row.MadeIn()
+	}
+	return message, nil
 }
 
 // deliverThreadWakeMessage queues one message and records, in the same
@@ -163,22 +190,41 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 		fail("read the caller thread", err)
 		return true
 	}
-	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
+	// A caller a delete claimed takes the wake into its queue, as every
+	// app-written message (store.CheckThreadDeliverable).
+	if err := a.store.CheckThreadDeliverable(thread); err != nil {
 		fail("deliver to "+thread.ID, err)
 		return true
 	}
-	wake := a.threadWake(message)
-	origin, originThread := a.threadWakeAttribution(carrier, wake)
-	body := wake.String()
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadWakeLockTimeout)
-	defer cancel()
-	if err := a.queueAgentNotice(ctx, agentNotice{
-		threadID:     thread.ID,
-		sendID:       threadWakeSendIDFor(carrier.Token, message.late),
-		origin:       origin,
-		originThread: originThread,
-		prepare: func() (string, bool, error) {
-			return body, true, a.unarchiveForThreadWake(carrier, message.late)
+	// The message is attributed to the thread that answered, for the same
+	// reason the request is attributed to its sender. One that lists several
+	// threads is attributed to the carrier's, which threadWakeFor lists first
+	// under its token, the one its echo confirms (ConfirmThreadWake), and
+	// names them all in its facts.
+	note, err := usermessage.Answer(a.threadWakeFor(message))
+	if err != nil {
+		fail("write the wake", err)
+		return true
+	}
+	if hook := a.threadWakeRenderedForTest; hook != nil {
+		hook(carrier.Token)
+	}
+	// The thread the notice is queued on: the assistant's current thread
+	// when New Thread, Same Assistant superseded the caller the message was
+	// built for. The message names its requests' caller and where they were
+	// made as they stood when it was built, so one bound for another thread
+	// is stale and is rebuilt from the requests as they are now, which the
+	// handoff moved with the thread they were made in.
+	recipient := thread.ID
+	if err := a.queueAgentNotice(agentNotice{
+		threadID:  thread.ID,
+		sendID:    threadWakeSendIDFor(carrier.Token, message.late),
+		recipient: func(threadID string) { recipient = threadID },
+		prepare: func() (usermessage.AgentMessage, bool, error) {
+			if recipient != thread.ID {
+				return note, false, fmt.Errorf("request %s was built for %s and goes to %s: %w", carrier.Token, thread.ID, recipient, store.ErrThreadWakeNotOwed)
+			}
+			return note, true, a.unarchiveForThreadWake(recipient, carrier, message.late)
 		},
 		// One transaction writes the durable queue row and every delivery
 		// mark, so a second observation of the same settlement cannot queue
@@ -203,13 +249,30 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 // bring it back, and a wake queued on an archived thread would sit unread
 // behind a row the sidebar does not show.
 //
-// It runs under the caller's action lock, which an archive holds while it
-// flips the row and disarms the thread's wakes. So it reads the thread either
-// before an archive or after the disarm: a wake that was on its way when the
+// A thread that is not archived is not locked: an archive that lands after
+// this read is refused by the queue write (errThreadArchived) or takes the
+// wake back (withdrawQueuedMessages). An archived one is unarchived under
+// the caller's action lock, which an archive holds while it flips the row
+// and disarms the thread's wakes, so a wake that was on its way when the
 // thread was archived finds its request disarmed and is not delivered, and
-// only one re-armed since (a later wait or thread_status) unarchives.
-func (a *App) unarchiveForThreadWake(carrier store.ThreadRequest, late bool) error {
-	thread, err := a.store.GetThread(carrier.CallerThreadID)
+// only one re-armed since (a later wait or thread_status) unarchives. A
+// handoff archives a thread under the same lock in the transaction that
+// moves its requests to the successor, so a request whose caller is no
+// longer threadID is refused here and rebuilt for the thread it moved to.
+func (a *App) unarchiveForThreadWake(threadID string, carrier store.ThreadRequest, late bool) error {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return fmt.Errorf("read the caller thread: %w", err)
+	}
+	if !thread.Archived {
+		return nil
+	}
+	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
+	if err != nil {
+		return fmt.Errorf("lock the caller thread: %w", err)
+	}
+	defer unlock()
+	thread, err = a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("read the caller thread: %w", err)
 	}
@@ -220,7 +283,7 @@ func (a *App) unarchiveForThreadWake(carrier store.ThreadRequest, late bool) err
 	if err != nil {
 		return fmt.Errorf("read request %s: %w", carrier.Token, err)
 	}
-	if !found || !row.Notify || !row.WakeOwed(late) {
+	if !found || !row.Notify || !row.WakeOwed(late) || row.CallerThreadID != threadID {
 		return fmt.Errorf("request %s: %w", carrier.Token, store.ErrThreadWakeNotOwed)
 	}
 	if _, err := a.unarchiveThreadLocked(thread.ID); err != nil {
@@ -229,23 +292,7 @@ func (a *App) unarchiveForThreadWake(carrier store.ThreadRequest, late bool) err
 	return nil
 }
 
-// threadWakeAttribution says who a wake's message is from. One that speaks
-// for a single thread is attributed to that thread, for the same reason the
-// request itself is attributed to its sender: a person reading the timeline
-// can see where it came from. One that lists several threads is the app's
-// own notice about them, and names them in its text.
-func (a *App) threadWakeAttribution(carrier store.ThreadRequest, wake threadtools.Wake) (string, *usermessage.OriginThread) {
-	if len(wake.Sources) != 1 {
-		return usermessage.OriginApp, nil
-	}
-	origin := &usermessage.OriginThread{ThreadID: carrier.TargetThreadID, Token: carrier.Token, Title: wake.Sources[0].Title}
-	if carrier.TargetComputerID != "" {
-		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(carrier.TargetComputerID)
-	}
-	return usermessage.OriginAgentThread, origin
-}
-
-// threadWake renders one message's wake from the fixed template: the thread
+// threadWakeFor renders one message's wake from the fixed template: the thread
 // or threads that answered, each with the requests of it this message
 // answers.
 //
@@ -253,8 +300,17 @@ func (a *App) threadWakeAttribution(carrier store.ThreadRequest, wake threadtool
 // computer has no row here: its title is what that computer reported, kept on
 // the request so a wake rendered after a restart still names it, and the
 // computer is named the way every other row names it.
-func (a *App) threadWake(message threadWakeMessage) threadtools.Wake {
-	wake := threadtools.Wake{Kind: message.kind, Text: message.text}
+func (a *App) threadWakeFor(message threadWakeMessage) threadtools.Wake {
+	wake := threadtools.Wake{Kind: message.kind, Text: message.text, Cause: message.cause}
+	// A handoff made the assistant's current thread the caller and kept the
+	// thread that asked; the wake says which one that was.
+	if message.madeIn != "" {
+		carrier := message.rows[0]
+		wake.MadeIn, wake.Now = message.madeIn, carrier.CallerThreadID
+		if current, ok := a.assistantCurrentThread(carrier.CallerThreadID); ok {
+			wake.Now = current
+		}
+	}
 	type target struct{ computer, thread string }
 	index := make(map[target]int, len(message.rows))
 	now := time.Now().UnixMilli()
@@ -273,7 +329,7 @@ func (a *App) threadWake(message threadWakeMessage) threadtools.Wake {
 			source := threadtools.WakeSource{ThreadID: row.TargetThreadID}
 			if row.TargetComputerID != "" {
 				source.Title = row.TargetThreadTitle
-				source.Computer, _ = a.threadTools().threadToolsBackendName(row.TargetComputerID)
+				source.Computer, source.ComputerID = a.threadTools().requestComputerName(row)
 			} else if row.TargetThreadID != "" {
 				if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 					source.Title = thread.Title
@@ -284,6 +340,16 @@ func (a *App) threadWake(message threadWakeMessage) threadtools.Wake {
 			wake.Sources = append(wake.Sources, source)
 		}
 		wake.Sources[at].Tokens = append(wake.Sources[at].Tokens, row.Token)
+		// A standing agent that answered is named as one, from what the
+		// answer this wake carries recorded, so a thread on either computer
+		// reads the same.
+		agent := row.AnswerAgent
+		if message.late {
+			agent = row.LateReplyAgent
+		}
+		if agent != nil && wake.Sources[at].Agent == nil {
+			wake.Sources[at].Agent = &threadtools.SenderAgent{Role: agent.Role}
+		}
 		// The oldest answer is the age stated: it is the one that has waited.
 		wake.Sources[at].Age = max(wake.Sources[at].Age, age)
 	}
@@ -307,8 +373,14 @@ func threadWakeContent(row store.ThreadRequest, late bool) (kind, text string, e
 	case row.State == store.ThreadRequestErrored, row.State == store.ThreadRequestRefused:
 		return threadtools.WakeErrored, string(row.Answer), nil
 	case row.State == store.ThreadRequestCancelled:
-		return threadtools.WakeCancelled, "", nil
+		// A cancel the agent made itself disarms the wake; one that still
+		// owes it was made for the agent, and the answer says by whom.
+		return threadtools.WakeCancelled, string(row.Answer), nil
 	case row.State == store.ThreadRequestInterrupted:
+		// What the wake says is its cause's (soloThreadWakeMessage); the
+		// text is what the turn had written or said, or with no known cause
+		// the whole text an earlier build or computer recorded, whatever
+		// the answer's kind.
 		return threadtools.WakeInterrupted, string(row.Answer), nil
 	case row.State == store.ThreadRequestExpired:
 		return threadtools.WakeExpired, "", nil

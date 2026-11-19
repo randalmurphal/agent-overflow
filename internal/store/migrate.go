@@ -198,12 +198,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// The DEFAULT 8 literal mirrors discussion.DefaultMaxTurns (and
-		// the frontend's DEFAULT_MAX_TURNS in
-		// frontend/src/lib/types/discussion.ts), but is frozen by
-		// migration semantics — shipped migrations never change. If the
-		// shared default ever moves, this SQL stays 8 and a new
-		// migration carries the new value.
+		// v154 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -404,6 +399,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
+		// v154 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -638,6 +634,8 @@ CREATE INDEX idx_work_item_units_worktree
 		// automation source, because every other run's source_ref means something
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
+		//
+		// v154 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -867,7 +865,7 @@ CREATE TABLE thread_import_state (
 		// this carries a person's steering in without parking the run.
 		//
 		// A JSON array of `{text, at, by, byRun}` objects, appended by
-		// `run guide` and cleared by the entry that delivers it. Empty (the
+		// `run_guide` and cleared by the entry that delivers it. Empty (the
 		// default, and what a cleared slot is set back to) means nothing is
 		// pending. The engine bounds both the per-entry size and the entry count
 		// before it writes, so the column stays small enough to read on every
@@ -888,8 +886,8 @@ CREATE TABLE thread_import_state (
 		// Unix milliseconds at which a parked run resumes ITSELF, or 0 for the
 		// runs that never will — which is almost all of them.
 		//
-		// It is written by `agent-overflow run resume --at`, an explicit request
-		// to continue a parked attempt at a future moment. Provider usage-limit
+		// It is written by a scheduled resume (`run_control` resume with `at`),
+		// an explicit request to continue a parked attempt at a future moment. Provider usage-limit
 		// handling no longer arms it (D75): a typed refusal parks and waits for an
 		// ordinary explicit action.
 		//
@@ -1759,6 +1757,21 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		Fix:     clearStalePendingFlushMarks,
 	},
 	{Version: findTextShellCommandsMigrationVersion, Name: "find_text_shell_commands", SQL: findTextShellCommandsV153SQL},
+	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV154SQL, Rebuild: true},
+	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV155SQL + threadTalliesV155SQL + threadAnswerDueV155SQL, Fix: fillAssistantLedger},
+	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV156SQL},
+	{
+		Version: userFindTextMigrationVersion,
+		Name:    "user_find_text",
+		SQL:     userFindTextV157SQL,
+		Deferred: &DeferredMigration{
+			Title: "Find index",
+			Steps: []DeferredStep{
+				{Name: "fill_find_text", Run: backfillFindText},
+			},
+		},
+	},
+	{Version: remoteOwnershipMigrationVersion, Name: "remote_ownership", SQL: remoteOwnershipV158SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

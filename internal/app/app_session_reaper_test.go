@@ -931,6 +931,8 @@ func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
 	}
 	live := newSessionLiveness(time.Unix(1, 0))
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "current", Liveness: live})
+	// The registration's own provider:session_live frame is not the heartbeat's.
+	waitSendsPendingIdle(t, app)
 	var emitted []string
 	app.testEmitHook = func(name string, _ any) { emitted = append(emitted, name) }
 	frames, err := claude.ParseLine(thread.ID, []byte(`{"type":"tool_progress","tool_use_id":"skill-heartbeat-0","parent_tool_use_id":"skill","elapsed_time_seconds":30,"heartbeat":true}`))
@@ -938,7 +940,7 @@ func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
 		t.Fatalf("heartbeat parse: %+v %v", frames, err)
 	}
 	for range 2 {
-		app.sessionEventHandler(thread.ID, "current", "claude")(frames[0])
+		startedSessionEventHandler(app, thread.ID, "current", "claude")(frames[0])
 	}
 	waitProviderEvents(t, app, thread.ID)
 	if live.LastActivityUnixNano.Load() <= time.Unix(1, 0).UnixNano() {

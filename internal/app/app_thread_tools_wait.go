@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,16 +35,42 @@ type threadRequestState struct {
 	next uint64
 	// waits is every parked call, by registration id.
 	waits map[uint64]threadRequestWait
+	// parked counts the calls parked on each request token, so a read of
+	// rest asks of one token without reading every wait (parkedOn).
+	parked map[string]int
 	// running maps a target thread to the receipt tokens whose turn a turn
 	// end on that thread could settle. It is the settlement observer's
 	// gate: a thread with no entry here costs one map read per turn end
 	// and no query. Written only where a receipt enters and leaves
-	// `running`, so it cannot claim a receipt the store does not have.
-	running map[string]map[string]struct{}
-	// stops is who stopped a turn on a thread in running, for the requests
-	// that turn answers (app_turn_stop.go). It leaves with the thread's
-	// last running receipt.
-	stops map[string]recordedTurnStop
+	// `running`, so it cannot claim a receipt the store does not have. A
+	// token's value is the session its message went to and whether that
+	// session took it in before the turn that reads it opened
+	// (receiptGate).
+	running map[string]map[string]receiptGate
+	// bindings are the delivery turns whose receipt write failed, by
+	// token, and echoes the echoed answers, reminders and completions whose
+	// confirmation write failed, by send id (app_thread_tools_bookkeeping.go).
+	// A binding leaves with its token's running entry.
+	bindings map[string]receiptBinding
+	echoes   map[string]ownedEcho
+	// cancels are the cancels waiting on their request's delivery, by
+	// token (armRequestCancel), armed only by the settlement that cancelled
+	// it. One goes with that delivery, the cancel finding the message
+	// still queued or never sent, or its thread's session end.
+	cancels map[string]requestCancel
+	// stops is who stopped which turns on a thread in running, for the
+	// requests those turns answer (app_turn_stop.go). They leave with the
+	// thread's last running receipt.
+	stops map[string][]recordedTurnStop
+	// stopSeq numbers the stops, so a retirement names exactly the records
+	// it read.
+	stopSeq uint64
+	// answeredReads maps a thread to the turns whose answer to its spawner
+	// settled while they ran (a thread_reply), so the turn's end stamps the
+	// read mark the answer earned (holdAnsweredRead). An entry goes at
+	// that turn's end or the session's, so it holds at most the turns
+	// still running.
+	answeredReads map[string]map[int]bool
 	// settleLocks serializes everything that can settle or deliver one
 	// token, so a settlement and a timing-out wait never both deliver the
 	// answer and never neither.
@@ -72,14 +99,39 @@ type threadRequestState struct {
 	// claimInlineDelivery).
 	wakesInFlight map[string]int
 	// blocked records which remote requests their own computer last
-	// reported as waiting on a person. It is not state: the record is the
-	// source row, this is the live reading beside it, and after a restart
-	// it is empty until the next poll fills it in.
-	blocked map[string]bool
+	// reported as waiting on a prompt, and where that prompt went. It is
+	// not state: the record is the source row, this is the live reading
+	// beside it, and after a restart it is empty until the next poll fills
+	// it in.
+	blocked map[string]remoteBlocked
 	// boot is what the boot sweep's settlements owe until the activation
 	// gate opens (finishThreadRequestSweepAtBoot).
 	boot bootThreadRequestSweep
+	// rest schedules the passes over the requests held for their thread's
+	// rest (noteRestWaitsMayChange).
+	rest restPasses
 }
+
+// remoteBlocked is what a remote request's computer last reported of its
+// target's prompt: whether it is waiting on one, and the thread there the
+// prompt was routed to instead of the person, if any.
+type remoteBlocked struct {
+	blocked  bool
+	routedTo string
+	// routedToCaller is that computer saying the prompt came back here, to
+	// the request's caller, whose spawn owns its target
+	// (ThreadPeerRequest.BlockedRoutedToCaller); routedToThread names the
+	// thread here it came back to, the caller or another
+	// (ThreadPeerRequest.BlockedRoutedToThread).
+	routedToCaller bool
+	routedToThread string
+	// waitingOn is what the target waits on while its request waits for
+	// its rest (ThreadPeerRequest.WaitingOn).
+	waitingOn string
+}
+
+// routedHere reports whether the prompt came back to a thread here.
+func (b remoteBlocked) routedHere() bool { return b.routedToCaller || b.routedToThread != "" }
 
 // threadRequestWait is one parked tool call.
 type threadRequestWait struct {
@@ -123,8 +175,11 @@ func (a *App) threadRequestSettleLock(token string) func() {
 // dropped, or the request settled after the reply was rendered.
 func (a *App) beginRequestWait(ctx context.Context, threadID string, keys []string) (context.Context, <-chan string, func()) {
 	waitCtx, woke, end := a.beginWait(ctx, threadRequestWait{threadID: threadID}, keys)
+	// A send or ask is an Agents row while its caller waits on it.
+	a.noteThreadAgentWait(threadID, keys)
 	return waitCtx, woke, func() {
 		end()
+		a.noteThreadAgentWait(threadID, keys)
 		a.nudgeThreadRequestSweep()
 	}
 }
@@ -167,14 +222,43 @@ func (a *App) beginWait(ctx context.Context, wait threadRequestWait, keys []stri
 	a.threadRequests.next++
 	id := a.threadRequests.next
 	a.threadRequests.waits[id] = wait
+	a.countParkedLocked(wait, 1)
 	a.threadRequests.mu.Unlock()
 
 	return waitCtx, wait.woke, func() {
 		a.threadRequests.mu.Lock()
-		delete(a.threadRequests.waits, id)
+		if _, registered := a.threadRequests.waits[id]; registered {
+			delete(a.threadRequests.waits, id)
+			a.countParkedLocked(wait, -1)
+		}
 		a.threadRequests.mu.Unlock()
 		cancel(nil)
 	}
+}
+
+// countParkedLocked adds by to the count of each key of a call parked on
+// thread requests. The caller holds threadRequests.mu.
+func (a *App) countParkedLocked(wait threadRequestWait, by int) {
+	if wait.remote {
+		return
+	}
+	if a.threadRequests.parked == nil {
+		a.threadRequests.parked = map[string]int{}
+	}
+	for key := range wait.keys {
+		if n := a.threadRequests.parked[key] + by; n > 0 {
+			a.threadRequests.parked[key] = n
+		} else {
+			delete(a.threadRequests.parked, key)
+		}
+	}
+}
+
+// parkedOn reports whether a call is parked on the request token.
+func (a *App) parkedOn(token string) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.parked[token] > 0
 }
 
 // requestWaitActive reports whether a call is parked on this key. The
@@ -237,23 +321,125 @@ func (a *App) cancelWaits(threadID string, remote bool) {
 	}
 }
 
-// noteReceiptRunning and forgetReceiptRunning maintain the settlement
-// observer's gate. Both are idempotent.
-func (a *App) noteReceiptRunning(threadID, token string) {
-	if threadID == "" || token == "" {
+// receiptGate is what the observer's gate records of one running receipt:
+// session, the token of the session its message was last written to; and
+// takenIn, whether that session took the message in before the turn that
+// reads it opened (SendDelivery.AwaitingTurn). A session's end settles only
+// the receipts whose gate names it (settleReceiptOnSessionEnd).
+//
+// Every note names the session it is about, never the thread's live one: a
+// delivery is reported on the thread's event worker, by which time a
+// replacement can be live. What orders the notes is the write. A message
+// is written only to the thread's live session, under the thread action
+// lock, so each write is to the same session as the one before it or a
+// later one. It reaches a second session only through the queue (a request
+// given back is queued again, requeueRequest), and the queue's dispatch
+// moves the gate to the session just before the write (noteReceiptWriting),
+// so the gate names that session before it can report anything about the
+// message. A dispatch or delivery from the session the gate names applies.
+// One from any other session is about an earlier write, which a write to a
+// later session has overtaken, and changes nothing. A note finding no gate
+// names its session: nothing was written before it to be stale against, or
+// the receipt was settled or gone and the gate forgotten with it.
+//
+// held marks a request waiting for its thread's rest: its turn ended as it
+// would settle `finished` while the thread was not at rest
+// (app_thread_tools_rest_settle.go). turn is that turn, whose last message
+// on is the answer, and through the last of the thread's turns whose end
+// the request has read.
+type receiptGate struct {
+	session string
+	takenIn bool
+	held    bool
+	turn    int
+	through int
+}
+
+// noteReceiptWriting moves the gate to session as the receipt's message is
+// about to be written to it. A different session starts the gate afresh: what
+// the earlier one took in is not what this one will.
+func (a *App) noteReceiptWriting(threadID, token, session string) {
+	if threadID == "" || token == "" || session == "" {
 		return
 	}
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
+	tokens := a.receiptGatesLocked(threadID)
+	if gate := tokens[token]; gate.session != session {
+		tokens[token] = receiptGate{session: session}
+	}
+}
+
+// noteRequestsWriting is noteReceiptWriting for every request among the send
+// ids of one message about to be written to session.
+func (a *App) noteRequestsWriting(threadID, session string, sendIDs []string) {
+	for _, sendID := range sendIDs {
+		if token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix); ok && token != "" {
+			a.noteReceiptWriting(threadID, token, session)
+		}
+	}
+}
+
+// noteReceiptRunning and forgetReceiptRunning maintain the settlement
+// observer's gate. Both are idempotent. noteReceiptRunning runs as session
+// reports the message dispatched or delivered, and reports whether the note
+// applied: false for a note from a session the gate does not name, which the
+// caller drops (receiptGate).
+func (a *App) noteReceiptRunning(threadID, token, session string) bool {
+	return a.noteReceiptGate(threadID, token, session, false)
+}
+
+// noteReceiptTakenIn records that session took the receipt's message in
+// before the turn that reads it opened, so that session's end says the
+// request was read and not answered.
+func (a *App) noteReceiptTakenIn(threadID, token, session string) bool {
+	return a.noteReceiptGate(threadID, token, session, true)
+}
+
+func (a *App) noteReceiptGate(threadID, token, session string, takenIn bool) bool {
+	if threadID == "" || token == "" || session == "" {
+		return false
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	tokens := a.receiptGatesLocked(threadID)
+	gate, found := tokens[token]
+	if found && gate.session != session {
+		return false
+	}
+	gate.session = session
+	gate.takenIn = gate.takenIn || takenIn
+	tokens[token] = gate
+	return true
+}
+
+// receiptGatesLocked is the thread's gates, made on first use. Caller holds
+// threadRequests.mu.
+func (a *App) receiptGatesLocked(threadID string) map[string]receiptGate {
 	if a.threadRequests.running == nil {
-		a.threadRequests.running = make(map[string]map[string]struct{})
+		a.threadRequests.running = make(map[string]map[string]receiptGate)
 	}
 	tokens := a.threadRequests.running[threadID]
 	if tokens == nil {
-		tokens = make(map[string]struct{})
+		tokens = make(map[string]receiptGate)
 		a.threadRequests.running[threadID] = tokens
 	}
-	tokens[token] = struct{}{}
+	return tokens
+}
+
+// receiptTakenIn reports what noteReceiptTakenIn recorded for the session the
+// gate names.
+func (a *App) receiptTakenIn(threadID, token string) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.running[threadID][token].takenIn
+}
+
+// receiptSession is the session the gate names for the receipt.
+func (a *App) receiptSession(threadID, token string) string {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.running[threadID][token].session
 }
 
 func (a *App) forgetReceiptRunning(threadID, token string) {
@@ -262,6 +448,9 @@ func (a *App) forgetReceiptRunning(threadID, token string) {
 	}
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
+	if b, ok := a.threadRequests.bindings[token]; ok && b.threadID == threadID {
+		delete(a.threadRequests.bindings, token)
+	}
 	tokens := a.threadRequests.running[threadID]
 	if tokens == nil {
 		return
@@ -403,19 +592,29 @@ func threadRequestSettled(row store.ThreadRequest) bool {
 // A target that has just become blocked ends the waits parked on it, the way
 // a settlement does: the reading changed, and the wait's own clock is slower
 // than the round trip that carried it.
-func (a *App) noteRemoteRequestBlocked(token string, blocked bool) {
+func (a *App) noteRemoteRequestBlocked(token string, reading remoteBlocked) {
 	if token == "" {
 		return
 	}
-	a.threadRequests.mu.Lock()
-	changed := blocked && !a.threadRequests.blocked[token]
-	if a.threadRequests.blocked == nil {
-		a.threadRequests.blocked = make(map[string]bool)
+	if !reading.blocked {
+		reading.routedTo, reading.routedToCaller, reading.routedToThread = "", false, ""
 	}
-	a.threadRequests.blocked[token] = blocked
+	a.threadRequests.mu.Lock()
+	previous := a.threadRequests.blocked[token]
+	changed := reading.blocked && !previous.blocked
+	flipped := previous != reading
+	if a.threadRequests.blocked == nil {
+		a.threadRequests.blocked = make(map[string]remoteBlocked)
+	}
+	a.threadRequests.blocked[token] = reading
 	a.threadRequests.mu.Unlock()
 	if changed {
 		a.wakeRequestWaits(token)
+	}
+	if flipped {
+		// The Agents row shows the reading: the request is blocked or not,
+		// and on whom.
+		a.noteThreadRequestChanged(store.ThreadRequestChange{Token: token})
 	}
 }
 
@@ -425,7 +624,7 @@ func (a *App) forgetRemoteRequestBlocked(token string) {
 	delete(a.threadRequests.blocked, token)
 }
 
-func (a *App) remoteRequestBlocked(token string) bool {
+func (a *App) remoteRequestBlocked(token string) remoteBlocked {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
 	return a.threadRequests.blocked[token]
@@ -445,7 +644,7 @@ func (a *App) threadRequestBlocked(row store.ThreadRequest) bool {
 		return false
 	}
 	if row.TargetComputerID != "" {
-		return a.remoteRequestBlocked(row.Token)
+		return a.remoteRequestBlocked(row.Token).blocked
 	}
 	live, err := a.threadToolsAdapter().LiveState(context.Background(), row.TargetThreadID)
 	if err != nil {

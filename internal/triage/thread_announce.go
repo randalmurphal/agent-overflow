@@ -27,13 +27,15 @@ import (
 // One announcer serves the whole process (the App's, shared with the
 // Router), because two would order frames only among their own callers.
 type ThreadAnnouncer struct {
-	read  func(threadID string) (store.Thread, error)
-	locks *keyedlock.Registry
+	read   func(threadID string) (store.Thread, error)
+	listed func(threadID string) (bool, error)
+	locks  *keyedlock.Registry
 }
 
-// NewThreadAnnouncer returns an announcer that reads rows with read.
-func NewThreadAnnouncer(read func(threadID string) (store.Thread, error)) *ThreadAnnouncer {
-	return &ThreadAnnouncer{read: read, locks: keyedlock.New()}
+// NewThreadAnnouncer returns an announcer that reads rows with read and
+// whether the sidebar lists a thread with listed (store.Store.ThreadListed).
+func NewThreadAnnouncer(read func(threadID string) (store.Thread, error), listed func(threadID string) (bool, error)) *ThreadAnnouncer {
+	return &ThreadAnnouncer{read: read, listed: listed, locks: keyedlock.New()}
 }
 
 // Announce emits threadID's current row with action (ThreadActionFull,
@@ -62,6 +64,71 @@ func (an *ThreadAnnouncer) AnnounceWithin(ctx context.Context, emit func(eventch
 		return
 	}
 	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row})
+}
+
+// AnnouncePlaced emits threadID's current row after a write that may have
+// moved it into or out of the sidebar and reports no listing change of its
+// own (a send's first item, the delete of a spawner that returned its owned
+// threads to standalone), its action following the listing read under the
+// lock: `listed` while the sidebar
+// lists it (store.ThreadListed: unarchived, not owned and real), so a client
+// that lacks the row inserts it, and `full` otherwise, so a client holding it
+// converges in place and drops an owned row from its sidebar. A never-sent
+// thread with nothing that makes it real is listed by the write that does.
+// Never `unlisted`, which is an archive's frame and closes the panes that
+// show the thread; a pane on a worker stays open.
+func (an *ThreadAnnouncer) AnnouncePlaced(emit func(eventchan.Channel, any), threadID string) {
+	if threadID == "" {
+		return
+	}
+	defer an.locks.Lock(threadID)()
+	row, err := an.read(threadID)
+	if err != nil {
+		log.Printf("announce thread %s placement: %v", threadID, err)
+		return
+	}
+	action := ThreadActionFull
+	if an.placedListed(row) {
+		action = ThreadActionListed
+	}
+	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row})
+}
+
+// placedListed reports whether the sidebar lists row. A failed listing read
+// is logged and answered from the row: listed when unarchived and not owned.
+// A row shown early is corrected by the next catalog read, a real one hidden
+// is not, and an owned one is never listed.
+func (an *ThreadAnnouncer) placedListed(row store.Thread) bool {
+	listed, err := an.listed(row.ID)
+	if err == nil {
+		return listed
+	}
+	log.Printf("announce thread %s placement: read its listing: %v", row.ID, err)
+	return !row.Archived && row.Placement != store.PlacementOwned
+}
+
+// AnnounceHandOff emits threadID's current row with HandOffTo naming
+// successorID: an assistant moved from this thread to successorID, so a
+// client moves the panes showing it there instead of closing them. The
+// action follows the row read: `unlisted` while it is archived, as the
+// handoff leaves it, and `full` once an unarchive landed after the handoff,
+// so the frame never takes a listed row out of the sidebar. Announce after
+// the successor's `listed` frame, so a client has the row it moves to.
+func (an *ThreadAnnouncer) AnnounceHandOff(emit func(eventchan.Channel, any), threadID, successorID string) {
+	if threadID == "" {
+		return
+	}
+	defer an.locks.Lock(threadID)()
+	row, err := an.read(threadID)
+	if err != nil {
+		log.Printf("announce thread %s handoff: %v", threadID, err)
+		return
+	}
+	action := ThreadActionFull
+	if row.Archived {
+		action = ThreadActionUnlisted
+	}
+	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row, HandOffTo: successorID})
 }
 
 // AnnouncePatch emits the named fields of a write the caller has committed,

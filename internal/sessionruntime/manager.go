@@ -90,7 +90,6 @@ type Manager struct {
 	liveClaudeReconcileDirty            bool
 	reconcileSessionConfigFn            func(string)
 	readClaudeAppliedSettingsFn         func(string, string) (*claude.AppliedSettings, error)
-	threadSystemPrompts                 map[string]string
 	idleReaperStop                      chan struct{}
 	idleReaperWG                        sync.WaitGroup
 	retentionCleanupStop                chan struct{}
@@ -108,7 +107,6 @@ func New() *Manager {
 		claudeLiveApplies:          make(map[string]ClaudeLiveApply),
 		claudeLiveApplyDegraded:    make(map[liveApplyKey]struct{}),
 		claudeLiveApplyGenerations: make(map[liveApplyKey]uint64),
-		threadSystemPrompts:        make(map[string]string),
 	}
 }
 
@@ -198,9 +196,13 @@ func (m *Manager) remove(threadID string, entry Entry) {
 	m.purgeClaudeLiveConfigState(entry.Token)
 }
 
+// registerAOToken resolves the session's credential to its scope, naming
+// the session it belongs to (CallerScope.Session).
 func (m *Manager) registerAOToken(entry Entry) {
 	if entry.AOToken != "" {
-		m.aoTokens[entry.AOToken] = entry.AOScope
+		scope := entry.AOScope
+		scope.Session = entry.Token
+		m.aoTokens[entry.AOToken] = scope
 	}
 }
 
@@ -684,39 +686,6 @@ func (m *Manager) HasActiveTurnOrRecent(cutoffNano int64) bool {
 		}
 	}
 	return false
-}
-
-func (m *Manager) ThreadSystemPrompt(threadID string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.threadSystemPrompts[threadID]
-}
-
-func (m *Manager) ThreadSystemPromptCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.threadSystemPrompts)
-}
-
-func (m *Manager) SetThreadSystemPrompt(threadID, prompt string) {
-	threadID = strings.TrimSpace(threadID)
-	prompt = strings.TrimSpace(prompt)
-	if threadID == "" || prompt == "" {
-		return
-	}
-	m.mu.Lock()
-	m.threadSystemPrompts[threadID] = prompt
-	m.mu.Unlock()
-}
-
-func (m *Manager) ClearThreadSystemPrompt(threadID string) {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return
-	}
-	m.mu.Lock()
-	delete(m.threadSystemPrompts, threadID)
-	m.mu.Unlock()
 }
 
 func (m *Manager) purgeClaudeLiveConfigState(sessionToken string) {

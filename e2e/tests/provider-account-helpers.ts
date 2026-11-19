@@ -98,6 +98,47 @@ export async function cardOrder(page: Page): Promise<string[]> {
     .evaluateAll((cards) => cards.map((card) => (card as HTMLElement).dataset.accountCard ?? ''));
 }
 
+/** `control.MockInfo`, narrowed to what picking a live mock needs. */
+interface MockInfo {
+  mockId: string;
+  registration: { protocol: string };
+  exited: boolean;
+}
+
+/**
+ * The mock serving the live Codex sign-in: the newest Codex process that has
+ * not exited. A sign-in registers on the control channel because something
+ * outside it has to steer it; account probes do not. A caller starts no
+ * Codex threads meanwhile, so no other Codex mock is live.
+ */
+export async function liveCodexMock(harness: HarnessApp): Promise<string> {
+  let mockId = '';
+  await expect
+    .poll(
+      async () => {
+        const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
+        const live = mocks.filter((m) => m.registration.protocol === 'codex' && !m.exited);
+        mockId = live.at(-1)?.mockId ?? '';
+        return live.length;
+      },
+      { message: 'the sign-in must reach a live Codex mock', timeout: SIGNIN_STEP_MS },
+    )
+    .toBeGreaterThan(0);
+  return mockId;
+}
+
+/**
+ * Signs Codex in from its open Settings page and finishes on the "other
+ * screen", which the mock's control channel stands in for.
+ */
+export async function completeCodexSignIn(harness: HarnessApp, page: Page): Promise<void> {
+  await page.getByTestId('provider-accounts-codex').getByRole('button', { name: 'Log in to another account' }).click();
+  const flow = page.getByTestId('provider-login-flow-codex');
+  await expect(flow).toHaveAttribute('data-phase', 'awaiting_code', { timeout: SIGNIN_STEP_MS });
+  await harness.rpc('HarnessMockCommand', await liveCodexMock(harness), { type: 'login_complete' });
+  await expect(flow).toHaveCount(0, { timeout: SIGNIN_STEP_MS });
+}
+
 /** Finishes the open Claude sign-in flow as the account `email`. */
 export async function completeClaudeSignIn(page: Page, email: string): Promise<void> {
   const flow = page.getByTestId('provider-login-flow-claude');

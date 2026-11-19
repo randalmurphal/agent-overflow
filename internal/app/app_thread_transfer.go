@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"reflect"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -39,6 +41,12 @@ type ThreadTransferIntent struct {
 	OwnershipEpoch       int64  `json:"ownershipEpoch"`
 	ActivationHash       string `json:"activationHash"`
 }
+
+// errAssistantStays refuses a move of an assistant's current thread, before
+// the move stops anything (store.ErrAssistantThreadStays refuses its
+// transfer row as well). Its code is method_error, the refusal the transfer
+// dialog reopens its choices on.
+var errAssistantStays = errorsx.Public(transport.ErrCodeMethodError, "This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.", nil)
 
 type transferSourceDetails struct {
 	DraftMCP         *draftMCPPreferences `json:"draftMcp,omitempty"`
@@ -95,18 +103,42 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 	if destinationBackendID == backendID {
 		return ThreadTransferIntent{}, errors.New("Choose another computer for this transfer.")
 	}
+	if includeWorkspace {
+		thread, err := a.store.GetThread(threadID)
+		if err != nil {
+			return ThreadTransferIntent{}, err
+		}
+		// A thread outside every project runs in its assistant's home,
+		// which stays on this computer: there is no workspace to carry.
+		if thread.ProjectID == "" {
+			return ThreadTransferIntent{}, errorsx.Public(transport.ErrCodeMethodError, "This conversation has no project workspace to include. Transfer it without workspace changes.", nil)
+		}
+	}
+	// A paused assistant's thread neither moves nor is copied; refused before
+	// a move's stops below change anything.
+	if _, err := a.admitPersonOperation(ctx, threadID); err != nil {
+		return ThreadTransferIntent{}, err
+	}
 	// A move takes the conversation away from the computer that owns its
 	// remote commands; stop them before fencing the thread. A copy leaves
 	// the original in place and waits for them like any other pending work.
 	// Stopping them is the move's first effect, so from there the fence is
 	// recorded whether or not the caller still waits.
 	if kind == "move" {
+		// An assistant stays on this computer, so its current thread does
+		// not move. Refused before the stops below change anything; the
+		// store refuses the transfer row as well.
+		if _, found, err := a.store.GetStandingAgent(threadID); err != nil {
+			return ThreadTransferIntent{}, err
+		} else if found {
+			return ThreadTransferIntent{}, errAssistantStays
+		}
 		ctx = context.WithoutCancel(ctx)
 		// Work whose stop could not be delivered does not hold the move: a
-		// command ends on its computer after the owner grace, and an ask's
-		// scratch thread is swept at that computer's next boot.
-		// It is logged before a store failure returns, which may come with it.
-		undelivered, err := a.cancelThreadRemoteCommands(ctx, threadID)
+		// command's cancel is owed to its computer, and an ask's scratch
+		// thread is swept at that computer's next boot. It is logged before a
+		// store failure returns, which may come with it.
+		undelivered, err := a.cancelThreadRemoteCommands(ctx, threadID, false)
 		if undelivered != nil {
 			log.Printf("transfer: move thread %s: %v", threadID, undelivered)
 		}
@@ -321,7 +353,7 @@ func (a *App) makeTransferOffer(row store.ThreadTransfer, grant string) (transfe
 		return transferclient.Offer{}, err
 	}
 	backendID, _ := a.backendIdentity()
-	offer := transferclient.Offer{Version: transferwire.Version, OwnershipEpoch: row.OwnershipEpoch, BackendID: backendID, OperationID: row.ID, Endpoint: endpoint, CertFingerprint: fingerprint, Grant: grant}
+	offer := transferclient.Offer{Version: transferwire.Version, OwnershipEpoch: row.OwnershipEpoch, BackendID: backendID, OperationID: row.ID, Endpoint: endpoint, CertFingerprint: fingerprint, Grant: grant, SpawnInstructions: true}
 	client, err := transferclient.New(offer, a.dialComputer)
 	if err != nil {
 		return transferclient.Offer{}, err
@@ -352,6 +384,9 @@ func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string
 	if row.ThreadID != threadID || row.Direction != "outgoing" || row.PeerBackendID != offer.BackendID || row.OwnershipEpoch != offer.OwnershipEpoch {
 		return row, errors.New("The destination offer belongs to another transfer.")
 	}
+	if err := a.refuseTransferDroppingInstructions(threadID, offer); err != nil {
+		return row, err
+	}
 	client, err := transferclient.New(offer, a.dialComputer)
 	if err != nil {
 		return row, err
@@ -367,6 +402,31 @@ func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string
 		a.emit(eventchan.ThreadTransfer, row)
 	}
 	return row, err
+}
+
+// refuseTransferDroppingInstructions refuses a destination that would drop
+// the instructions a spawn gave the thread: a computer from before them
+// reads the manifest's thread without that field and keeps nothing of it.
+// The refusal comes before any byte is uploaded or the source is retired.
+// The sub-thread level needs no such check, because a transferred thread
+// keeps none (store.CommitIncomingThreadTransfer).
+func (a *App) refuseTransferDroppingInstructions(threadID string, offer transferclient.Offer) error {
+	if offer.SpawnInstructions {
+		return nil
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return err
+	}
+	if thread.SpawnInstructions == "" {
+		return nil
+	}
+	name := a.threadRequestDestinationName(offer.BackendID)
+	if name == "" {
+		name = "The destination computer"
+	}
+	return errorsx.Public(transport.ErrCodeMethodError, fmt.Sprintf(
+		"%s runs an older version that would drop the instructions this conversation's spawn added to its system prompt. Update it first, then transfer the conversation again.", name), nil)
 }
 
 // RetryThreadTransfer wakes a durable operation without minting another copy.

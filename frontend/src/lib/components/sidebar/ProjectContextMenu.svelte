@@ -30,6 +30,7 @@
   import { hasScope } from '../../transport/scopes';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { newThreadGroupInProject } from './threadGroupActions';
+  import { assistantsOn } from '../../stores/assistants.svelte';
 
   interface Props {
     project: ProjectWithCounts;
@@ -44,10 +45,12 @@
     /** Compact only: the header's hover-revealed create controls, which the
      *  phone cannot reveal, so the menu carries them there. */
     onNewThread?: () => void;
+    onNewAssistant?: () => void;
     onNewTerminal?: () => void;
   }
 
-  let { project, labelText, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
+  let { project, labelText, anchor, open, onClose, onRename, onNewThread, onNewAssistant, onNewTerminal }: Props = $props();
+  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', project.project.id));
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
   // Rename, New Group, Archive and Delete all ride `threads:operate`; Delete
@@ -172,8 +175,19 @@
               onNewTerminal?.();
             }}
           />
-          <MenuDivider />
         {/if}
+        {#if assistantsOn(projectBackend(project.project.id) ?? HOME_BACKEND)}
+          <MenuItem
+            label="New Assistant…"
+            disabled={newAssistantUngranted}
+            title={newAssistantUngranted ? 'Not granted to this device' : undefined}
+            onSelect={() => {
+              onClose();
+              onNewAssistant?.();
+            }}
+          />
+        {/if}
+        <MenuDivider />
         <MenuItem
           label="Rename Project"
           disabled={operateUngranted}

@@ -4,10 +4,8 @@
   // `mode.cycle` command (Shift+Tab) calls — both go through cycleMode
   // so the keyboard shortcut and the button stay in lockstep.
   //
-  // This component renders ONLY on chat threads. Design and discussion
-  // threads have immutable types and their composer omits this slot
-  // entirely; the in-pane ThreadModePicker in the workspace strip is
-  // where the mode is surfaced. ComposerToolbar gates the render.
+  // This component renders ONLY on chat threads; ComposerToolbar gates the
+  // render.
 
   import Bot from '@lucide/svelte/icons/bot';
   import type { ThreadPane } from '../../../stores/thread.svelte';

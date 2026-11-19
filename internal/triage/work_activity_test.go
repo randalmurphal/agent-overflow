@@ -3,6 +3,8 @@ package triage
 import (
 	"testing"
 	"time"
+
+	"agent-overflow/internal/provider"
 )
 
 func TestUnfinishedWorkKeepsEchoVisibleAcrossConsumptionAndCleanup(t *testing.T) {
@@ -29,7 +31,7 @@ func TestUnfinishedWorkIncludesFlushHandoffAfterCleanup(t *testing.T) {
 		}
 	})
 	r.RegisterQueueItem("thread", makeQueueItem("queue:0", "send"))
-	r.tryFlushQueue("thread")
+	r.tryFlushQueue("thread", "")
 	if r.AnyUnfinishedWork(time.Minute) {
 		t.Fatal("settled dispatch left an admission claim")
 	}
@@ -45,6 +47,9 @@ func TestUnfinishedWorkUsesExistingOwners(t *testing.T) {
 		"wakeup": func(s *threadState) {
 			s.pendingWakeupSet = true
 			s.pendingWakeupAt = time.Now().Add(time.Hour).UnixMilli()
+		},
+		"one-shot scheduled job": func(s *threadState) {
+			s.scheduledJobs = []provider.ScheduledJob{{ID: "job", FireByUnixMs: time.Now().Add(time.Hour).UnixMilli()}}
 		},
 	}
 	for name, active := range cases {
@@ -67,6 +72,26 @@ func TestUnfinishedWorkUsesExistingOwners(t *testing.T) {
 		r.mu.Unlock()
 		if r.AnyUnfinishedWork(time.Minute) {
 			t.Fatal("stale wakeup blocked maintenance")
+		}
+	})
+	// The update restarts the backend, which ends a recurring job either
+	// way, so waiting for it would block the update forever.
+	t.Run("recurring scheduled job", func(t *testing.T) {
+		r, _, _ := newTestRouter(t)
+		r.mu.Lock()
+		r.state("thread").scheduledJobs = []provider.ScheduledJob{{ID: "job", Recurring: true, FireByUnixMs: time.Now().Add(time.Hour).UnixMilli()}}
+		r.mu.Unlock()
+		if r.AnyUnfinishedWork(time.Minute) {
+			t.Fatal("a recurring job blocked maintenance")
+		}
+	})
+	t.Run("expired scheduled job", func(t *testing.T) {
+		r, _, _ := newTestRouter(t)
+		r.mu.Lock()
+		r.state("thread").scheduledJobs = []provider.ScheduledJob{{ID: "job", FireByUnixMs: time.Now().Add(-time.Hour).UnixMilli()}}
+		r.mu.Unlock()
+		if r.AnyUnfinishedWork(time.Minute) {
+			t.Fatal("a job whose deadline passed blocked maintenance")
 		}
 	})
 }

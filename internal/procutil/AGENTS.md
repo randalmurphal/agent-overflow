@@ -27,7 +27,8 @@ This package owns six utilities:
   given linger; on Windows a pipe still open after linger is an error.
   Pass the context the command was created with: exec stops watching it at
   exit, so on Unix RunDrained watches it while draining and returns its
-  error.
+  error. On both, a run whose process the context killed returns its error,
+  which exec's Wait replaces with the exit status.
 - `StartGroup` starts argv as the leader of its own process group and
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
   the two together. Both take the `Reaper` that ends the group if this
@@ -40,7 +41,9 @@ This package owns six utilities:
   cancellation, the leftover sweep and the drain: do not build another from
   `ConfigureGroup`. A done context starts nothing. The `Group` owns the
   output pipe, so output from grandchildren is captured, from the start and
-  never after `Wait` returns. Cancellation sends SIGTERM, then SIGKILL after
+  never after `Wait` returns. `GroupCommand.Stderr` gives stderr a pipe and
+  sink of its own, owned the same way; without it stderr joins `Output`.
+  Cancellation sends SIGTERM, then SIGKILL after
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops
   whatever is still in the group and reports those processes as `Leftovers`;

@@ -423,6 +423,28 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	}
 }
 
+// A GitLab write body sent with a Content-Type other than
+// application/json is refused: GitLab reads a body as JSON only when its
+// Content-Type says so.
+func TestGitLabWriteNeedsAJSONBody(t *testing.T) {
+	discussion := strings.Repeat("ab", 20)
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"grp/tool","pulls":[{"number":1,"title":"x","threads":[{"id":"`+discussion+`","path":"a.go","line":1,"comments":[{"author":"erin","body":"rename"}]}]}]}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+	note := "/gitlab/api/v4/projects/grp%2Ftool/merge_requests/1/discussions/" + discussion + "/notes"
+	form := http.Header{"Private-Token": {testAPIToken}, "Content-Type": {"application/x-www-form-urlencoded"}}
+	if got := httpRequest(t, srv, "POST", "gitlab.com", note, `{"body":"hi"}`, form); got.status != 404 || !strings.Contains(got.body, "not application/json") {
+		t.Errorf("note sent as a form = %d %q, want unhandled naming the Content-Type", got.status, got.body)
+	}
+	header := http.Header{"Private-Token": {testAPIToken}, "Content-Type": {"application/json; charset=utf-8"}}
+	if got := httpRequest(t, srv, "POST", "gitlab.com", note, `{"body":"hi"}`, header); got.status != 201 || !strings.Contains(got.body, `"body":"hi"`) {
+		t.Errorf("note sent as JSON = %d %q", got.status, got.body)
+	}
+}
+
 func TestRepositoryIdentityEndpointHonorsHost(t *testing.T) {
 	e, fixture := seeded(t, Options{})
 	srv := testServer(t, e)

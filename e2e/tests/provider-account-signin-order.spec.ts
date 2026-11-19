@@ -45,9 +45,10 @@ const completeSignIn = (email: string) => completeClaudeSignIn(page, email);
 test.describe.serial('Claude sign-in lands without switching, in the order the user keeps', () => {
   test.beforeAll(async ({ browser }) => {
     harness = await launchHarness();
-    // A native Claude login already on this machine, five days from the end
-    // of its session.
-    await seedNativeClaudeLogin(harness, ACTIVE_EMAIL, Date.now() + 5 * 24 * 3600_000);
+    // A native Claude login already on this machine, a minute under five
+    // days from the end of its session: a card drawn in the second of the
+    // seed still reads "4d 23h", never "5d".
+    await seedNativeClaudeLogin(harness, ACTIVE_EMAIL, Date.now() + 5 * 24 * 3600_000 - 60_000);
     page = await browser.newPage();
     page.on('console', (message) => {
       if (message.type() === 'error') consoleErrors.push(message.text());

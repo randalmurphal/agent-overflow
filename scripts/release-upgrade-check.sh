@@ -108,5 +108,35 @@ fi
 [ -n "$keep" ] && export AO_RELEASE_UPGRADE_KEEP=1
 [ -n "$sandbox_root" ] && export AO_RELEASE_UPGRADE_ROOT="$sandbox_root"
 
+# The sandbox's path is fixed under its parent (RIG_NAME in
+# e2e/tests/upgrade-corpus-tools.ts), because a corpus archive restores only
+# at the root it was made at. One check runs in it at a time: a check
+# started while another holds it waits for that one to end, from any
+# checkout, instead of replacing the directory under it. The harness
+# inherits the lock, so it is held until both this shell and the run end.
+parent=${sandbox_root:-/tmp}
+rig="$parent/ao-upgrade-corpus"
+mkdir -p "$parent"
+exec 9>"$rig.lock"
+if ! flock -n 9; then
+	echo "==> another release upgrade check is running in $rig; waiting for it to end"
+	flock 9
+fi
+
 cd "$ROOT_DIR"
-exec bin/ao-harness-e2e --config=playwright.manual.config.ts tests/upgrade-corpus.manual.spec.ts
+# A signal to this shell stops the run, which stops its contained suite,
+# and the shell waits for it so the sandbox is removed below.
+signaled=
+bin/ao-harness-e2e --config=playwright.manual.config.ts tests/upgrade-corpus.manual.spec.ts &
+run=$!
+trap 'signaled=1; kill -TERM "$run" 2>/dev/null || :' INT TERM HUP
+status=0
+wait "$run" || status=$?
+while [ -n "$signaled" ]; do
+	signaled=
+	status=0
+	wait "$run" || status=$?
+done
+# The sandbox ends with the run, however the run ended, unless --keep.
+[ -n "$keep" ] || rm -rf "$rig"
+exit "$status"

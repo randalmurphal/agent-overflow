@@ -225,38 +225,3 @@ func registerLiveClaudeCaptureSession(t *testing.T, app *App, threadID, workspac
 	})
 	return capture
 }
-
-// A feature-owned prompt (currently discussions) is untouched by the pin:
-// buildSessionOptions has already written it, so an edit to it reaches the
-// reconciler and converges by restart, on every provider. A pin that
-// swallowed it would freeze a feature-owned prompt at its first value.
-func TestReconcileSettingsOwnedAxesKeepsFeaturePromptsConverging(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct{ providerName, model, key string }{
-		{string(provider.Claude), "claude-opus-5", "claudePromptOverrides"},
-		{string(provider.ClaudeTUI), "claude-opus-5", "claudePromptOverrides"},
-		{string(provider.Codex), "gpt-5.4", "codexPromptOverrides"},
-	} {
-		t.Run(tc.providerName, func(t *testing.T) {
-			t.Parallel()
-			app := newTestAppWithStore(t)
-			id, _ := seedPromptOverrideThread(t, app, "thread-feature-prompt-"+tc.providerName, tc.providerName, tc.model)
-			setPromptOverrides(t, app, tc.key, testPromptEntry{Enabled: true, Models: []string{tc.model}, Prompt: "settings override"})
-			app.setThreadSystemPrompt(id, "deliberation prompt v1")
-			launch := promptOverrideOptions(t, app, id)
-			if launch.SystemPrompt != "deliberation prompt v1" || launch.SystemPromptOverrideSource != "" {
-				t.Fatalf("launch prompt = (%q, %q), want the feature-owned prompt and no override",
-					launch.SystemPrompt, launch.SystemPromptOverrideSource)
-			}
-
-			app.setThreadSystemPrompt(id, "deliberation prompt v2")
-			opts := reconcileOptionsFor(t, app, id, launch)
-			if opts.SystemPrompt != "deliberation prompt v2" {
-				t.Fatalf("SystemPrompt = %q, want the edited feature prompt to survive the reconcile", opts.SystemPrompt)
-			}
-			if opts.SystemPromptOverrideSource != "" {
-				t.Fatalf("SystemPromptOverrideSource = %q, want empty: no settings override is in play", opts.SystemPromptOverrideSource)
-			}
-		})
-	}
-}

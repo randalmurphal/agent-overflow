@@ -12,7 +12,7 @@
 
 import { expect } from '@playwright/test';
 
-import type { HarnessApp } from '../src/harness.js';
+import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 
 export const THREAD_TOOLS_SERVER = 'ao-thread-tools';
 
@@ -21,6 +21,8 @@ export type ProviderName = 'claude' | 'codex';
 /** One tool call a turn makes. */
 export interface ToolCall {
   tool: string;
+  /** The built-in MCP server to call; ao-thread-tools when omitted. */
+  server?: string;
   args?: Record<string, unknown>;
   toolUseId?: string;
   /** Bounds the HTTP call. A parked wait needs its own value. */
@@ -39,6 +41,8 @@ export type TurnStep =
   | { drainQueued: true }
   /** Ask the app for a decision and branch on it. */
   | { approval: ApprovalRequest }
+  /** Claude: take input held under `holdQueuedInput` into the running turn. */
+  | { drainQueuedInput: true }
   | { delayMs: number };
 
 /** One provider approval a turn raises, with the branches it takes. */
@@ -56,6 +60,10 @@ export interface ScriptedTurn {
   steps?: TurnStep[];
   /** Final assistant text. Empty keeps the turn silent but complete. */
   text?: string;
+  /** Overrides the scenario's echoUserMessage for this turn. */
+  echo?: boolean;
+  /** Ends the turn failed with this provider error instead of with `text`. */
+  fail?: string;
 }
 
 /**
@@ -103,12 +111,22 @@ function codexTurnLines(text: string): string[] {
   return lines;
 }
 
+/** The provider's frames for a turn that ends failed. */
+function failedTurnLines(provider: ProviderName, message: string): string[] {
+  if (provider === 'claude') {
+    return [`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":[${jsonString(message)}]}`];
+  }
+  return [
+    `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"\${THREAD_ID}","turn":{"id":"\${TURN_ID}","status":"failed","error":{"message":${jsonString(message)}}}}}`,
+  ];
+}
+
 function stepJSON(step: TurnStep): Record<string, unknown> {
   if ('call' in step) {
-    const { tool, args, toolUseId, timeoutMs } = step.call;
+    const { tool, server, args, toolUseId, timeoutMs } = step.call;
     return {
       mcpCall: {
-        server: THREAD_TOOLS_SERVER,
+        server: server ?? THREAD_TOOLS_SERVER,
         tool,
         args: args ?? {},
         ...(toolUseId ? { toolUseId } : {}),
@@ -143,6 +161,7 @@ function stepJSON(step: TurnStep): Record<string, unknown> {
     };
   }
   if ('emitLines' in step) return { emit: { lines: step.emitLines } };
+  if ('drainQueuedInput' in step) return { drainQueuedInput: true };
   return { delayMs: step.delayMs };
 }
 
@@ -159,6 +178,13 @@ export function threadToolsScenario(opts: {
   turns: ScriptedTurn[];
   afterTurns?: 'repeatLast' | 'silent' | 'exit';
   /**
+   * Codex: echo the turn's `userMessage` item with the caller's client id,
+   * as a real app-server does for every turn. A queued message (a wake, a
+   * reply) persists its row only on that echo. Claude's mock echoes on its
+   * own.
+   */
+  echoUserMessage?: boolean;
+  /**
    * Claude only: a message that arrives while a turn runs is held until that
    * turn ends and then opens a turn of its own, as the CLI picks a queued
    * message up. Off, the mock opens its turn at once, over the running one.
@@ -170,17 +196,26 @@ export function threadToolsScenario(opts: {
   const turns = opts.turns.map((turn, index) => {
     const steps: Array<Record<string, unknown>> = [];
     if (opts.provider === 'codex') {
-      steps.push({
-        emit: {
-          lines: [
-            '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
-          ],
-        },
-      });
+      const lines = [
+        '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
+      ];
+      // The echo's text is a placeholder: the app keys a queued message's
+      // row on the client id and keeps its own text.
+      if (turn.echo ?? opts.echoUserMessage) {
+        lines.push(
+          '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"userMessage","id":"user-${TURN}","clientId":"${CLIENT_ID}","content":[{"type":"text","text":"echo"}]}}}',
+        );
+      }
+      steps.push({ emit: { lines } });
     }
     for (const step of turn.steps ?? []) steps.push(stepJSON(step));
     const text = turn.text ?? '';
-    const lines = opts.provider === 'claude' ? claudeTurnLines(text) : codexTurnLines(text);
+    const lines =
+      turn.fail !== undefined
+        ? failedTurnLines(opts.provider, turn.fail)
+        : opts.provider === 'claude'
+          ? claudeTurnLines(text)
+          : codexTurnLines(text);
     steps.push({ emit: { lines } });
     return { label: `${opts.name}-${index + 1}`, steps };
   });
@@ -213,10 +248,13 @@ export function plainScenario(opts: {
   provider: ProviderName;
   texts: string[];
   afterTurns?: 'repeatLast' | 'silent' | 'exit';
+  /** Echo each user message, as a real CLI does; Codex needs it for an app-written message to show. */
+  echoUserMessage?: boolean;
 }): Record<string, unknown> {
   return threadToolsScenario({
     name: opts.name,
     provider: opts.provider,
+    echoUserMessage: opts.echoUserMessage,
     turns: opts.texts.map((text) => ({ text })),
     afterTurns: opts.afterTurns,
   });
@@ -229,6 +267,17 @@ export async function setScenario(
   scenario: Record<string, unknown>,
 ): Promise<void> {
   await harness.rpc('HarnessSetScenario', { cwd, scenario });
+}
+
+/**
+ * The home of the assistant whose current thread is threadId: its
+ * sessions run there, outside every project, so a scenario for them is set
+ * on it.
+ */
+export async function assistantHome(harness: HarnessApp, threadId: string): Promise<string> {
+  const agent = await harness.rpc<{ home: string } | null>('GetStandingAgent', threadId);
+  if (!agent?.home) throw new Error(`thread ${threadId} is no assistant's current thread`);
+  return agent.home;
 }
 
 /** The tool answer, decoded. A refusal carries `isError` and prose. */
@@ -269,6 +318,40 @@ export async function awaitToolAnswer<T = Record<string, unknown>>(
     }
   }
   return answer;
+}
+
+/**
+ * Await the next input a mock takes whose text includes every part, from
+ * the mock in `cwd` when one is named. `input` on the report is the text
+ * the provider received for the turn.
+ */
+/**
+ * The line a message Agent Overflow writes into a thread reaches the model
+ * under, naming its sender, or the app itself with no sender
+ * (agentmeta.WireText).
+ */
+export function aoMessageOpening(sender?: string): string {
+  return sender === undefined
+    ? '[Agent Overflow message. The user did not write it.]\n'
+    : `[Agent Overflow message from ${sender}. The user did not write it.]\n`;
+}
+
+/** The line that closes such a message. */
+export const AO_MESSAGE_CLOSING = '\n[End of Agent Overflow message]';
+
+export async function awaitMockInput(
+  harness: HarnessApp,
+  filter: { includes: string | readonly string[]; cwd?: string; timeoutMs?: number },
+): Promise<HarnessMockEventData> {
+  const parts = typeof filter.includes === 'string' ? [filter.includes] : filter.includes;
+  return await harness.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      (filter.cwd === undefined || ev.cwd === filter.cwd) &&
+      parts.every((part) => (ev.report.input ?? '').includes(part)),
+    filter.timeoutMs ?? 60_000,
+  );
 }
 
 /** Release one parked `gate` step. */
@@ -313,6 +396,7 @@ export interface ThreadRow {
   runtimeMode: string;
   reasoningEffort: string;
   forkedFromThreadId?: string;
+  placement: string;
 }
 
 /** Every non-archived thread row the backend holds, drafts included. */

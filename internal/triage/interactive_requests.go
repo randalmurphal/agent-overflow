@@ -2,7 +2,9 @@ package triage
 
 import (
 	"strings"
+	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -120,4 +122,161 @@ func (r *Router) PendingInteractiveRequests(threadID string) provider.PendingInt
 	}
 
 	return snapshot
+}
+
+// PromptRef names one prompt. A request id does not: a session can ask
+// again under an id it resolved, and a replacement session under its
+// predecessor's. The occurrence does (provider.ApprovalRequest.Occurrence).
+type PromptRef struct {
+	ThreadID, RequestID string
+	Occurrence          provider.PromptOccurrence
+}
+
+// openPromptLocked finds the prompt open under threadID and requestID: its
+// route, occurrence and the session that asked. Caller holds r.mu.
+func (r *Router) openPromptLocked(threadID, requestID string) (route *provider.PromptRoute, occurrence provider.PromptOccurrence, session string, open bool) {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil, 0, "", false
+	}
+	if pending, ok := st.pendingApprovals[requestID]; ok {
+		return pending.Request.RoutedTo, pending.Request.Occurrence, pending.Request.SessionToken, true
+	}
+	if request, ok := st.pendingUserInputs[requestID]; ok {
+		return request.RoutedTo, request.Occurrence, request.SessionToken, true
+	}
+	return nil, 0, "", false
+}
+
+// PromptRoute reports whether the prompt ref names is still waiting for an
+// answer, and the thread it is routed to: nil when it is the user's. A
+// prompt of a session that no longer holds its thread is not open.
+func (r *Router) PromptRoute(ref PromptRef) (*provider.PromptRoute, bool) {
+	if r == nil {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	route, open := r.promptRouteLocked(ref)
+	if route == nil {
+		return nil, open
+	}
+	copied := *route
+	return &copied, open
+}
+
+// promptRouteLocked is PromptRoute under r.mu, returning the held route.
+func (r *Router) promptRouteLocked(ref PromptRef) (*provider.PromptRoute, bool) {
+	route, occurrence, session, open := r.openPromptLocked(ref.ThreadID, ref.RequestID)
+	if !open || occurrence != ref.Occurrence || r.frameRetiredLocked(ref.ThreadID, session) {
+		return nil, false
+	}
+	return route, true
+}
+
+// ReroutePrompts reconciles the open prompts routed to from, a thread a
+// handoff, an archive or a delete changed, with where the prompt router
+// routes their threads now: a route that still resolves to from is kept,
+// and every other prompt moves, to the user when the router routes it
+// nowhere. It returns how many moved.
+func (r *Router) ReroutePrompts(from string) int {
+	return r.reroutePrompts(from, nil, false)
+}
+
+// RejectPrompt moves the one prompt ref names off from, which could not
+// take it, to where the prompt router routes its thread now, or to the
+// user when that is from again. It reports whether the prompt moved.
+func (r *Router) RejectPrompt(from string, ref PromptRef) bool {
+	return r.reroutePrompts(from, []PromptRef{ref}, true) > 0
+}
+
+// reroutePrompts moves the prompts routed to from, those refs names or
+// every one when refs is empty. reject says from cannot take them, so a
+// route back to it goes to the user; otherwise such a prompt keeps its
+// route. Each prompt that moved is announced again with its new route, so
+// every client and the app's delivery follow it, and one handed to the user
+// raises its notification.
+func (r *Router) reroutePrompts(from string, refs []PromptRef, reject bool) int {
+	if r == nil || from == "" {
+		return 0
+	}
+	routedFrom := func(route *provider.PromptRoute) bool { return route != nil && route.ThreadID == from }
+	var moving []PromptRef
+	r.mu.Lock()
+	if len(refs) > 0 {
+		for _, ref := range refs {
+			if route, open := r.promptRouteLocked(ref); open && routedFrom(route) {
+				moving = append(moving, ref)
+			}
+		}
+	} else {
+		for threadID, st := range r.threads {
+			for requestID, pending := range st.pendingApprovals {
+				if routedFrom(pending.Request.RoutedTo) {
+					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: pending.Request.Occurrence})
+				}
+			}
+			for requestID, request := range st.pendingUserInputs {
+				if routedFrom(request.RoutedTo) {
+					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: request.Occurrence})
+				}
+			}
+		}
+	}
+	r.mu.Unlock()
+	if len(moving) == 0 {
+		return 0
+	}
+	// The router reads the store, so it runs outside r.mu. A prompt whose
+	// route changed meanwhile is left to whatever changed it.
+	routes := make(map[string]*provider.PromptRoute, len(moving))
+	for _, ref := range moving {
+		if _, done := routes[ref.ThreadID]; done {
+			continue
+		}
+		route := r.routePrompt(ref.ThreadID)
+		if reject && routedFrom(route) {
+			route = nil
+		}
+		routes[ref.ThreadID] = route
+	}
+	var approvals []provider.ApprovalEvent
+	var questions []provider.UserInputEvent
+	now := time.Now().UnixMilli()
+	r.mu.Lock()
+	for _, ref := range moving {
+		to := routes[ref.ThreadID]
+		if routedFrom(to) {
+			// Still the prompt's recipient: nothing changed for it.
+			continue
+		}
+		if route, open := r.promptRouteLocked(ref); !open || !routedFrom(route) {
+			continue
+		}
+		var route *provider.PromptRoute
+		if to != nil {
+			copied := *to
+			route = &copied
+		}
+		st := r.threadStateIfPresent(ref.ThreadID)
+		if pending, ok := st.pendingApprovals[ref.RequestID]; ok {
+			pending.Request.RoutedTo = route
+			st.pendingApprovals[ref.RequestID] = pending
+			request := pending.Request
+			approvals = append(approvals, provider.ApprovalEvent{Action: "request", ThreadID: ref.ThreadID, Request: &request, RequestedAt: now})
+			continue
+		}
+		request := st.pendingUserInputs[ref.RequestID]
+		request.RoutedTo = route
+		st.pendingUserInputs[ref.RequestID] = request
+		questions = append(questions, provider.UserInputEvent{Action: "request", ThreadID: ref.ThreadID, Request: &request, RequestedAt: now})
+	}
+	r.mu.Unlock()
+	for _, event := range approvals {
+		r.emit(eventchan.ProviderApproval, event)
+	}
+	for _, event := range questions {
+		r.emit(eventchan.ProviderUserInput, event)
+	}
+	return len(approvals) + len(questions)
 }

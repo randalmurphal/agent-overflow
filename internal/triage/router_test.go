@@ -93,6 +93,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventBackgroundTaskTerminal:     true, // Wave 1 — new, Wave 2 wires triage
 		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
 		provider.EventSessionWakeup:              true, // Claude ScheduleWakeup ack; records pending in-process wakeup for reaper protection
+		provider.EventScheduledJobs:              true, // Claude CronCreate job list; records armed in-process jobs for reaper protection
 		provider.EventCompactionStatus:           true, // live compacting window open/close; drives provider:compacting, never persisted
 		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
 		provider.EventSubagentStatus:             true, // Codex execution state and terminal completion
@@ -2587,7 +2588,7 @@ func TestProposedPlanPersistBroadcastsTheThreadRow(t *testing.T) {
 func TestProposedPlanRowFrameUsesTheSharedAnnouncer(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	shared := NewThreadAnnouncer(st.GetThread)
+	shared := NewThreadAnnouncer(st.GetThread, st.ThreadListed)
 	router.SetThreadAnnouncer(shared)
 
 	release := shared.Hold("t1")
@@ -4183,7 +4184,7 @@ func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
 
 	// Simulate a restart: the host start path re-admits the thread
 	// before spawning the replacement subprocess.
-	router.MarkThreadActive("restart")
+	router.MarkThreadActive("restart", "")
 
 	// A subsequent event must persist — the stopped marker from the
 	// earlier CleanupThread cannot continue to suppress the restart.
@@ -4260,7 +4261,7 @@ func TestMarkThreadActiveReadmitsPreInitEvents(t *testing.T) {
 	createTestThread(t, st, "doa")
 
 	router.CleanupThread("doa")
-	router.MarkThreadActive("doa")
+	router.MarkThreadActive("doa", "")
 	router.RegisterPendingSendWithExpectation("doa", "user:3", 3, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -4344,13 +4345,13 @@ func TestCleanupThreadIfEpochSkipsAfterReactivation(t *testing.T) {
 
 	// Replacement session start claims the thread while the teardown
 	// goroutine is still in flight.
-	router.MarkThreadActive("race")
+	router.MarkThreadActive("race", "")
 	router.RegisterPendingSendWithExpectation("race", "user:1", 1, PendingSendExpectation{})
 
 	if router.CleanupThreadIfEpoch("race", epoch) {
 		t.Fatalf("stale-epoch cleanup reported it ran")
 	}
-	if router.isThreadStopped("race") {
+	if router.frameRefusal(provider.ProviderEvent{ThreadID: "race"}) != "" {
 		t.Fatalf("stale-epoch cleanup stopped the live replacement thread")
 	}
 	if !router.HasPendingSendForThread("race") {
@@ -4369,7 +4370,7 @@ func TestCleanupThreadIfEpochRunsWhenUnchanged(t *testing.T) {
 	if !router.CleanupThreadIfEpoch("doa-clean", router.ThreadEpoch("doa-clean")) {
 		t.Fatalf("matching-epoch cleanup did not run")
 	}
-	if !router.isThreadStopped("doa-clean") {
+	if router.frameRefusal(provider.ProviderEvent{ThreadID: "doa-clean"}) == "" {
 		t.Fatalf("cleanup did not mark the thread stopped")
 	}
 	if router.HasPendingSendForThread("doa-clean") {

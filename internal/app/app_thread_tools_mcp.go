@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"slices"
 	"sync"
@@ -18,14 +19,20 @@ import (
 	"agent-overflow/internal/threadtools"
 )
 
-const threadMCPName = "ao-thread-tools"
+const threadMCPName = threadtools.MCPServerName
 
 // threadToolsDisabledCode is the refusal a call gets while the switch or
 // the per-conversation toggle is off. It is a documented code so the
 // model reads it as a capability that is off rather than a broken call.
 const threadToolsDisabledCode = "thread_tools_disabled"
 
-type threadMCPAccess struct{ ThreadID, SessionToken string }
+// threadMCPAccess is one session's registration: its thread, its token and
+// its sub-thread place when it started, which fixes whether its tool list
+// has thread_spawn for the session's life.
+type threadMCPAccess struct {
+	ThreadID, SessionToken string
+	Place                  subThreadPlace
+}
 
 type appThreadMCP struct {
 	once   sync.Once
@@ -50,12 +57,13 @@ const threadMCPCallCeiling = 20 * time.Minute
 func (a *App) threadMCPServer() *threadmcp.Server[threadMCPAccess] {
 	a.threadMCP.once.Do(func() {
 		a.threadMCP.tools = threadtools.New(a.threadToolsAdapter())
+		a.threadMCP.tools.SetWakeFloor(int(math.Ceil(a.agentWakeFloor().Seconds())))
 		server := threadmcp.New(threadMCPName, "", a.threadMCPTools, a.callThreadMCP)
 		// The tool list and the guide both follow the shape, which is
 		// recomputed per handshake: pairing a computer changes what a
 		// running session sees without adding or removing a tool.
 		server.SetInstructionsFunc(func(access threadMCPAccess) string {
-			return a.threadMCP.tools.Instructions(a.threadToolsShape(access.ThreadID))
+			return a.threadMCP.tools.Instructions(a.threadToolsShape(access.ThreadID, access.Place))
 		})
 		server.SetDisabledError(errorsx.Public(threadToolsDisabledCode,
 			"Thread tools are turned off for this conversation. Turn them on in Settings → Agents → Thread tools, or in this conversation's MCP menu.", nil))
@@ -70,14 +78,17 @@ func (a *App) threadToolsServer() *threadtools.Server {
 }
 
 // threadToolsShape is what the schemas and the guide are computed from:
-// the computers this one is paired with, and the calling thread's own
-// live provider settings, which a spawn inherits.
-func (a *App) threadToolsShape(threadID string) threadtools.Shape {
-	shape := threadtools.Shape{}
+// the computers this one is paired with, the calling thread's own live
+// provider settings, which a spawn inherits, and what it may spawn: its
+// place when its session started, and the providers and profiles this
+// computer offers.
+func (a *App) threadToolsShape(threadID string, place subThreadPlace) threadtools.Shape {
+	shape := threadtools.Shape{AssistantsOff: !a.currentSettings().AssistantsEnabled}
 	adapter := a.threadToolsAdapter()
 	shape.Computers = a.threadToolsShapeComputers(adapter)
 	thread, err := adapter.Thread(context.Background(), threadID)
 	if err != nil {
+		shape.Spawn = threadtools.SpawnShape{Level: place.level, Limit: place.limit}
 		return shape
 	}
 	shape.Defaults = threadtools.SpawnDefaults{
@@ -87,6 +98,7 @@ func (a *App) threadToolsShape(threadID string) threadtools.Shape {
 		Mode:        thread.Mode,
 		RuntimeMode: thread.RuntimeMode,
 	}
+	shape.Spawn = a.spawnShape(threadID, place, shape.Defaults)
 	return shape
 }
 
@@ -113,7 +125,7 @@ func (a *App) threadMCPTools(access threadMCPAccess) []map[string]any {
 	if !a.threadToolsEnabledFor(access.ThreadID) {
 		return nil
 	}
-	return a.threadToolsServer().Tools(a.threadToolsShape(access.ThreadID))
+	return a.threadToolsServer().Tools(a.threadToolsShape(access.ThreadID, access.Place))
 }
 
 // threadToolsEnabledFor is the effective per-thread answer. The settings
@@ -182,7 +194,7 @@ func (a *App) refreshThreadToolsAdmission(threadID string) {
 // server, so flipping it reaches a running session without a restart.
 // Workflow phase sessions are excluded; they run a scripted step and have
 // no business driving other threads.
-func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
+func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string, place subThreadPlace) (map[string]any, error) {
 	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex) {
 		return nil, nil
 	}
@@ -196,14 +208,16 @@ func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string)
 	if !a.threadMCPServer().ThreadEnabled(thread.ID) {
 		return nil, nil
 	}
-	return a.threadMCPServer().RegisterThread(thread.ID, sessionToken, threadMCPAccess{thread.ID, sessionToken})
+	return a.threadMCPServer().RegisterThread(thread.ID, sessionToken, threadMCPAccess{thread.ID, sessionToken, place})
 }
 
 // threadMCPServerConfig decorates the shared entry with what each provider
 // needs to run these tools without prompting the user for every call and
-// without failing a parked one. Claude takes a per-server timeout in
-// milliseconds and the allowlist through argv; Codex takes seconds and
-// approves the server's tools in its own entry.
+// without failing a parked one. Claude, on either provider, takes a
+// per-server timeout in milliseconds and the allowlist through argv; Codex
+// takes seconds and approves the server's tools in its own entry. The
+// workflow tools ride the same transport and park calls as long, so they
+// take the same decoration.
 func threadMCPServerConfig(providerName string, config any) any {
 	entry, ok := config.(map[string]any)
 	if !ok {
@@ -214,7 +228,7 @@ func threadMCPServerConfig(providerName string, config any) any {
 		out[key] = value
 	}
 	switch providerName {
-	case string(provider.Claude):
+	case string(provider.Claude), string(provider.ClaudeTUI):
 		out["timeout"] = threadMCPCallCeiling.Milliseconds()
 	case string(provider.Codex):
 		out["tool_timeout_sec"] = int(threadMCPCallCeiling.Seconds())
@@ -260,6 +274,9 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 		threadmcp.WriteToolError(w, req.ID, err)
 		return
 	}
+	// The work the call starts is the session's that authenticated it
+	// (admitWork), however long the call takes to get there.
+	caller.Session = access.SessionToken
 	// Work a call defers until its answer is written: the inline delivery
 	// marks, and the deletion of a scratch thread whose own agent is still
 	// inside this call.

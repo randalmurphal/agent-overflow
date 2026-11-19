@@ -27,6 +27,12 @@ type LiveStateSnapshot struct {
 	// total wire silence — a reconnect inside it has no upcoming frame
 	// to re-learn the state from. See compaction_status.go.
 	CompactingSinceUnixMs int64
+	// TurnOwed is whether a turn is owed or starting: a send written to the
+	// provider has a turn still to open (pendingSend.canOpenTurn), or a turn
+	// start is under way and has not published its round (ActiveTurn). It
+	// holds from the send's write until ActiveTurn does, so the thread never
+	// reads as at rest between them; a direct send is never in FlushedItems.
+	TurnOwed bool
 }
 
 // LiveStateSnapshotForThread copies all frontend-visible live state for one
@@ -102,7 +108,11 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	//     behind. Checked FIRST for that reason.
 	//   - A flush resend carries neither copy: its row was persisted and
 	//     emitted by the interrupt that produced it. No marker.
+	snapshot.TurnOwed = st.turnOpenings > 0
 	for _, pending := range st.pendingSends {
+		if pending.canOpenTurn() {
+			snapshot.TurnOwed = true
+		}
 		if pending.Shape != sendShapeFlush || pending.AnchoredAtInterrupt {
 			continue
 		}
@@ -150,10 +160,13 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 // provider:compacting. Ids and timestamps only; the requests' prose stays
 // on LiveStateSnapshotForThread, whose RPC carries the higher scope.
 type ThreadLiveActivity struct {
-	ThreadID              string
-	ActiveTurn            *ActiveTurnSnapshot
-	ApprovalRequestIDs    []string
-	UserInputRequestIDs   []string
+	ThreadID            string
+	ActiveTurn          *ActiveTurnSnapshot
+	ApprovalRequestIDs  []string
+	UserInputRequestIDs []string
+	// PromptRoutes names, by request id, the spawner each routed
+	// prompt went to instead of the user. Nil when none was routed.
+	PromptRoutes          map[string]provider.PromptRoute
 	CompactingSinceUnixMs int64
 }
 
@@ -177,14 +190,25 @@ func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
 			round := st.currentRound
 			entry.ActiveTurn = &round
 		}
+		route := func(requestID string, to *provider.PromptRoute) {
+			if to == nil {
+				return
+			}
+			if entry.PromptRoutes == nil {
+				entry.PromptRoutes = make(map[string]provider.PromptRoute)
+			}
+			entry.PromptRoutes[requestID] = *to
+		}
 		for _, requestID := range st.pendingApprovalOrder {
-			if _, ok := st.pendingApprovals[requestID]; ok {
+			if pending, ok := st.pendingApprovals[requestID]; ok {
 				entry.ApprovalRequestIDs = append(entry.ApprovalRequestIDs, requestID)
+				route(requestID, pending.Request.RoutedTo)
 			}
 		}
 		for _, requestID := range st.pendingUserInputOrder {
-			if _, ok := st.pendingUserInputs[requestID]; ok {
+			if request, ok := st.pendingUserInputs[requestID]; ok {
 				entry.UserInputRequestIDs = append(entry.UserInputRequestIDs, requestID)
+				route(requestID, request.RoutedTo)
 			}
 		}
 		if entry.ActiveTurn == nil && len(entry.ApprovalRequestIDs) == 0 &&

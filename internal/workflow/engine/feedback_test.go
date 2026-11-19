@@ -19,7 +19,7 @@ import (
 // and dispatched the continuation, and the runner start wedged. The answer was
 // durably recorded and effectively destroyed — nothing ever re-read a parked
 // attempt's feedback, so the fresh entry the operator recovered with carried
-// none of it and `run guide` was the only way left to say it again by hand.
+// none of it and `run_guide` was the only way left to say it again by hand.
 
 const answerText = "use the safe option"
 

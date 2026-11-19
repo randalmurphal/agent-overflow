@@ -467,10 +467,12 @@ func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 // a lock with any other reason is a person's, and the removal is refused
 // with *WorktreeLockedError.
 func (c *Core) RemoveWorktreeUnattended(cwd, path string) error {
-	return c.removeWorktree(cwd, path, false, func(reason string) bool {
-		return reason == "" || isAppLockReason(reason)
-	})
+	return c.removeWorktree(cwd, path, false, unattendedLift)
 }
+
+// unattendedLift accepts the locks a removal nobody asked for may lift: one
+// with no reason, or one Agent Overflow wrote.
+func unattendedLift(reason string) bool { return reason == "" || isAppLockReason(reason) }
 
 // WorktreeLockedError is an unattended removal refused because a person
 // locked the worktree: its lock carries a reason Agent Overflow did not

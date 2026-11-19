@@ -78,10 +78,44 @@ type IsolationConfig struct {
 	PRCILogWaitInterval  time.Duration
 	MergedPRPollInterval time.Duration
 	PRLookupRetryBase    time.Duration
+	// IdleReapThreshold, IdleReapInterval and WakeupReapGrace replace the
+	// idle-session reaper's inactivity window, sweep cadence and
+	// scheduled-wakeup grace (app_session_reaper.go). Zero keeps the
+	// product value.
+	IdleReapThreshold time.Duration
+	IdleReapInterval  time.Duration
+	WakeupReapGrace   time.Duration
+	// AgentWakeFloor replaces the shortest interval a loop or watch may
+	// register (agentWakeFloor), so a test can watch fires without waiting
+	// out a minute each. Zero keeps the product floor.
+	AgentWakeFloor time.Duration
+	// AgentWatchFailureWindow replaces how long a watch keeps failing before
+	// the person is told (agentWatchFailureWindow). Zero keeps the product
+	// window.
+	AgentWatchFailureWindow time.Duration
+	// RemoteWatchPoll replaces how often the remote-job watcher asks the
+	// destination about a job still running, so a test can act between two
+	// of its checks. Zero keeps the product cadence.
+	RemoteWatchPoll time.Duration
+	// ProviderEventDrainStall replaces providerEventDrainStall, how long a
+	// session stop waits for the thread's event worker to handle its next
+	// event, so a test can stall a worker past it without waiting seconds.
+	// Zero keeps the product bound.
+	ProviderEventDrainStall time.Duration
 	// UsageProbeGap replaces the shortest gap between two usage probes of
 	// one provider, so a spec that sets a usage answer is not held behind a
 	// probe the boot just made. Zero keeps the product gap.
 	UsageProbeGap time.Duration
+	// WorkerPromptLease replaces workerPromptLease, how long a worker's
+	// prompt stays routed to its spawner on a paired computer without that
+	// computer saying it holds it, so a test can see it reach the person
+	// here without waiting minutes. Zero keeps the product lease.
+	WorkerPromptLease time.Duration
+	// OmitOwnerOps makes this computer answer agent_owner_op as a build
+	// before owner operations does, an unknown write call, so a paired
+	// spawner's archive or delete names it as running an older version.
+	// Only a harness boot sets it (diagenv.HarnessOlderComputer).
+	OmitOwnerOps bool
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -102,6 +136,8 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
+	a.workerPromptLeaseOverride = config.WorkerPromptLease
+	a.ownerOpsOmitted = config.OmitOwnerOps
 	a.usageProbeGap = config.UsageProbeGap
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval
@@ -109,6 +145,15 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.prUpdates.ciLiveInterval = config.PRCILiveInterval
 	a.prUpdates.ciFollowInterval = config.PRCIFollowInterval
 	a.prUpdates.ciLogWaitInterval = config.PRCILogWaitInterval
+	a.idleReap = idleReapTiming{
+		threshold:   config.IdleReapThreshold,
+		interval:    config.IdleReapInterval,
+		wakeupGrace: config.WakeupReapGrace,
+	}
+	a.agentWakes.floorOverride = config.AgentWakeFloor
+	a.agentWakes.failures.windowOverride = config.AgentWatchFailureWindow
+	a.remoteWatchPoll = config.RemoteWatchPoll
+	a.providerEvents.drainStall = config.ProviderEventDrainStall
 	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network

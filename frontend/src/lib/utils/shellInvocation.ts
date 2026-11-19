@@ -26,7 +26,7 @@ export interface ShellOutputMeta {
   more?: boolean;
 }
 
-/** Mirrors `usermessage.JoinSeparator`: the rule between joined queued messages. */
+/** Mirrors `agentmeta.JoinSeparator`: the rule between joined queued messages. */
 export const MESSAGE_JOIN_SEPARATOR = '\n\n---\n\n';
 
 const SHELL_PREFIX = '!';

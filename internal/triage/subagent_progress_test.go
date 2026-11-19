@@ -121,7 +121,7 @@ func TestPersistSubagentFinalProgressFoldsLiveAndFinal(t *testing.T) {
 	if err := r.Handle(subagentProgressEvent(t, h.threadID, launch.ID, "", provider.SubagentProgressMeta{ToolUses: 4, TotalTokens: 900, Activity: "Running tests"})); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{TotalTokens: 1200, DurationMs: 8000}); err != nil {
+	if err := r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{TotalTokens: 1200, DurationMs: 8000}, ""); err != nil {
 		t.Fatal(err)
 	}
 	persisted, ok, err := h.store.GetThreadItem(h.threadID, launch.ID)
@@ -149,7 +149,7 @@ func TestPersistSubagentFinalProgressFoldsLiveAndFinal(t *testing.T) {
 	// A second terminal path (the task_notification's authoritative usage
 	// after the task_updated terminal) merges over what is persisted.
 	launch.Meta = persisted.Meta
-	if err := r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{ToolUses: 5, TotalTokens: 1300}); err != nil {
+	if err := r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{ToolUses: 5, TotalTokens: 1300}, ""); err != nil {
 		t.Fatal(err)
 	}
 	persisted, _, _ = h.store.GetThreadItem(h.threadID, launch.ID)

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/agenthome"
 )
 
 func spawnApp() *fakeApp {
@@ -388,6 +390,9 @@ func TestRemindTakesExactlyOneClockAndResolvesItAgainstNow(t *testing.T) {
 	if note := result["note"].(string); !strings.Contains(note, "2026-09-19T12:10:00Z") || !strings.Contains(note, "thread_cancel token tok-r") {
 		t.Errorf("note = %q", note)
 	}
+	if next, _ := result["next_fire"].(string); next != "2026-09-19T12:10:00Z" {
+		t.Errorf("next_fire = %q, want the due time", next)
+	}
 
 	call(t, server, localCaller(), "thread_remind", `{"at":"2026-09-20T09:00:00Z","note":"standup"}`)
 	if app.rem[1].DueAtUnixMs != time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC).UnixMilli() {
@@ -527,6 +532,57 @@ func TestUpdateGroupsIdsByTheComputerThatHoldsThem(t *testing.T) {
 	}
 	if len(p.peer.invokes) != 1 || p.peer.invokes[0] != "thread_update" {
 		t.Fatalf("invokes = %v", p.peer.invokes)
+	}
+}
+
+// TestUpdateReportsWorkersAnArchiveLeftOpen on this computer and on
+// another: the owner's row is updated and names each worker and why.
+func TestUpdateReportsWorkersAnArchiveLeftOpen(t *testing.T) {
+	p := newPair(t)
+	p.local.addThread(Thread{ID: localThreadID, Title: "Local"})
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
+	left := []WorkerNotArchived{{ThreadID: "worker", Error: "That change could not be applied on this computer, and nothing was changed."}}
+	p.local.updated = []ThreadUpdateResult{{ThreadID: localThreadID, Updated: true, WorkersNotArchived: left}}
+	cleanup := "The thread was archived, but its browser pages could not all be closed."
+	p.remote.updated = []ThreadUpdateResult{{ThreadID: remoteThreadID, Updated: true, WorkersNotArchived: left, Error: cleanup, ErrorCode: CodeCleanupFailed}}
+
+	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`","`+remoteThreadID+`"],"archived":true}`)
+	list := rows(t, result["results"])
+	if len(list) != 2 {
+		t.Fatalf("results = %v", result["results"])
+	}
+	for _, row := range list {
+		workers, _ := row.(map[string]any)["workers_not_archived"].([]any)
+		if field(t, row, "updated") != true || len(workers) != 1 || field(t, workers[0], "thread_id") != "worker" {
+			t.Errorf("row = %v, want updated and naming the worker", row)
+		}
+	}
+	if field(t, list[1], "error") != cleanup || field(t, list[1], "error_code") != CodeCleanupFailed {
+		t.Errorf("the forwarded cleanup error was dropped: %v", list[1])
+	}
+	if note, _ := result["note"].(string); !strings.Contains(note, "workers_not_archived") || strings.Contains(note, "left untouched") || !strings.Contains(note, "tell the user") {
+		t.Errorf("note = %q", note)
+	}
+}
+
+// TestUpdateSaysAPendingWorkerElsewhereIsSentAgain: a worker on another
+// computer that has not taken the archive yet is named pending with its
+// computer, and the note says the archive is sent again, not to retry it.
+func TestUpdateSaysAPendingWorkerElsewhereIsSentAgain(t *testing.T) {
+	p := newPair(t)
+	p.local.addThread(Thread{ID: localThreadID, Title: "Local"})
+	pending := []WorkerNotArchived{{ThreadID: "worker", Error: "Desk did not answer in time", Computer: "Desk", Pending: true}}
+	p.local.updated = []ThreadUpdateResult{{ThreadID: localThreadID, Updated: true, WorkersNotArchived: pending}}
+
+	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"archived":true}`)
+	list := rows(t, result["results"])
+	workers, _ := list[0].(map[string]any)["workers_not_archived"].([]any)
+	if len(workers) != 1 || field(t, workers[0], "pending") != true || field(t, workers[0], "computer") != "Desk" {
+		t.Fatalf("row = %v, want the worker pending on Desk", list[0])
+	}
+	note, _ := result["note"].(string)
+	if !strings.Contains(note, "sent again until") || strings.Contains(note, "Archive them again") {
+		t.Errorf("note = %q", note)
 	}
 }
 
@@ -703,4 +759,62 @@ func TestSpawnRefusesAForkThatAlsoPicksACheckout(t *testing.T) {
 	}
 	// from_thread on its own is still a fork, not a refusal.
 	call(t, server, localCaller(), "thread_spawn", `{"prompt":"go","from_thread":"`+localThreadID+`"}`)
+}
+
+// TestHomeFilesReachTheAppTrimmed on a spawn and a send, and a bad list
+// is refused before the app is called.
+func TestHomeFilesReachTheAppTrimmed(t *testing.T) {
+	app := spawnApp()
+	call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"go","home_files":[" verification.md ","memory/rule.md"]}`)
+	if len(app.spawns) != 1 || strings.Join(app.spawns[0].HomeFiles, "|") != "verification.md|memory/rule.md" {
+		t.Fatalf("spawns = %+v", app.spawns)
+	}
+	app.addThread(Thread{ID: localThreadID, Title: "Worker"})
+	call(t, New(app), localCaller(), "thread_send", `{"thread_id":"`+localThreadID+`","message":"go","home_files":["verification.md"]}`)
+	if len(app.sends) != 1 || strings.Join(app.sends[0].HomeFiles, "|") != "verification.md" {
+		t.Fatalf("sends = %+v", app.sends)
+	}
+	callErr(t, New(app), localCaller(), "thread_send", `{"thread_id":"`+localThreadID+`","message":"go","home_files":[""]}`, CodeInvalidRequest)
+	server := New(spawnApp())
+	many := `["` + strings.TrimSuffix(strings.Repeat(`a.md","`, agenthome.MaxHomeFiles+1), `","`) + `"]`
+	for name, args := range map[string]string{
+		"blank":      `{"prompt":"go","home_files":["  "]}`,
+		"too many":   `{"prompt":"go","home_files":` + many + `}`,
+		"not a list": `{"prompt":"go","home_files":"verification.md"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			callErr(t, server, localCaller(), "thread_spawn", args, CodeInvalidRequest)
+		})
+	}
+}
+
+// A request another computer reported nothing_to_stop for may have been left
+// running or unread there, so its note claims neither that nothing was
+// running nor an interruption. A local nothing_to_stop keeps its own words.
+func TestCancelNoteOfARemoteRequestsNothingToStop(t *testing.T) {
+	t.Parallel()
+	remote := cancelNote(EffectNothing, true)
+	if remote != "Nothing could be stopped for this request from here; its message may still be read by that thread." {
+		t.Errorf("remote note = %q", remote)
+	}
+	if local := cancelNote(EffectNothing, false); !strings.Contains(local, "Nothing was running or queued") {
+		t.Errorf("local note = %q", local)
+	}
+	if note := cancelNote(EffectInterrupted, true); !strings.Contains(note, "This interrupted the work") {
+		t.Errorf("a remote interruption's note = %q, want it reported as one", note)
+	}
+}
+
+// A cancel that left a turn alone says so, and never claims an interruption.
+func TestCancelNoteOfAnEffectThatLeavesATurnAlone(t *testing.T) {
+	t.Parallel()
+	for effect, want := range map[string]string{
+		EffectLeftRunning: "keeps working on its current turn",
+		EffectLeftUnread:  "cancelled before the thread read it",
+	} {
+		note := cancelNote(effect, false)
+		if !strings.Contains(note, want) || !strings.Contains(note, "interrupted") || strings.Contains(note, "This interrupted") {
+			t.Errorf("cancelNote(%q) = %q, want it to say %q and that nothing was interrupted", effect, note, want)
+		}
+	}
 }

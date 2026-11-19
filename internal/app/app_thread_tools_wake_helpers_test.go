@@ -3,6 +3,7 @@ package app
 import (
 	"testing"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
@@ -12,17 +13,25 @@ import (
 // as when nothing else is delivered with it.
 func soloWakeBody(t *testing.T, a *App, row store.ThreadRequest, late bool) string {
 	t.Helper()
-	kind, text, err := threadWakeContent(row, late)
+	body, err := wakeBodyOf(a, row, late)
 	if err != nil {
-		t.Fatalf("threadWakeContent(%s): %v", row.Token, err)
+		t.Fatalf("render the wake of %s: %v", row.Token, err)
 	}
-	return a.threadWake(threadWakeMessage{late: late, kind: kind, text: text, rows: []store.ThreadRequest{row}}).String()
+	return body
+}
+
+// wakeBodyOf is soloWakeBody reporting a request that owes no wake.
+func wakeBodyOf(a *App, row store.ThreadRequest, late bool) (string, error) {
+	message, err := soloThreadWakeMessage(row, late)
+	if err != nil {
+		return "", err
+	}
+	return a.threadWakeFor(message).String(), nil
 }
 
 // soloWakeOrigin is who a message carrying only this request's answer is
 // attributed to. It does not need the request settled.
-func soloWakeOrigin(a *App, row store.ThreadRequest) *usermessage.OriginThread {
-	wake := a.threadWake(threadWakeMessage{kind: threadtools.WakeReply, rows: []store.ThreadRequest{row}})
-	_, origin := a.threadWakeAttribution(row, wake)
-	return origin
+func soloWakeOrigin(t testing.TB, a *App, row store.ThreadRequest) *agentmeta.OriginThread {
+	wake := a.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, rows: []store.ThreadRequest{row}})
+	return builtMessage(t)(usermessage.Answer(wake)).Attribution().Thread
 }

@@ -112,20 +112,22 @@ func (s *Store) UpdateTurnCompleted(
 	}
 	label := fmt.Sprintf("store: update turn %s", turnID)
 	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
-		result, err := tx.Exec(
-			`UPDATE turns
-			    SET completed_at = ?,
-			        stop_reason = ?,
-			        assistant_message_id = ?,
-			        token_usage_json = ?,
-			        error_message = ?
-			  WHERE turn_id = ?`,
-			completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, turnID,
-		)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		return requireRowsAffected(result, label)
+		return tallyTurnSpanTx(tx, turnID, func() error {
+			result, err := tx.Exec(
+				`UPDATE turns
+				    SET completed_at = ?,
+				        stop_reason = ?,
+				        assistant_message_id = ?,
+				        token_usage_json = ?,
+				        error_message = ?
+				  WHERE turn_id = ?`,
+				completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, turnID,
+			)
+			if err != nil {
+				return fmt.Errorf("%s: %w", label, err)
+			}
+			return requireRowsAffected(result, label)
+		})
 	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
 }
 
@@ -138,11 +140,13 @@ func (s *Store) ReopenTurn(turnID string) error {
 	}
 	label := fmt.Sprintf("store: reopen turn %s", turnID)
 	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
-		result, err := tx.Exec(`UPDATE turns SET completed_at = NULL WHERE turn_id = ?`, turnID)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		return requireRowsAffected(result, label)
+		return tallyTurnSpanTx(tx, turnID, func() error {
+			result, err := tx.Exec(`UPDATE turns SET completed_at = NULL WHERE turn_id = ?`, turnID)
+			if err != nil {
+				return fmt.Errorf("%s: %w", label, err)
+			}
+			return requireRowsAffected(result, label)
+		})
 	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
 }
 
@@ -228,7 +232,7 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 	}
 	label := fmt.Sprintf("store: update turn %s late payload", turnID)
 	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
-		return updateTurnLatePayloadTx(tx, turnID, payload, label)
+		return tallyTurnSpanTx(tx, turnID, func() error { return updateTurnLatePayloadTx(tx, turnID, payload, label) })
 	}, func() error { return nil })
 }
 
@@ -409,6 +413,20 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 		return nil, fmt.Errorf("store: iterate recent turns for %s: %w", threadID, err)
 	}
 	return out, nil
+}
+
+// FirstUserRowOfTurn returns when the earliest top-level user row of a
+// thread's own turn was written, false when the turn has none. A message
+// is written to its row before the provider reports the turn it starts, so
+// this is when the turn was asked for. It reads idx_items_user_text.
+func (s *Store) FirstUserRowOfTurn(threadID string, turnIndex int) (int64, bool, error) {
+	var at sql.NullInt64
+	if err := s.reader().QueryRow(`SELECT MIN(created_at) FROM items
+		  WHERE thread_id = ? AND turn_index = ? AND kind = 'user_text' AND parent_id = ''`,
+		threadID, turnIndex).Scan(&at); err != nil {
+		return 0, false, fmt.Errorf("store: first user row of %s/%d: %w", threadID, turnIndex, err)
+	}
+	return at.Int64, at.Valid, nil
 }
 
 // GetActiveTurn returns the latest turn for a thread only when that latest

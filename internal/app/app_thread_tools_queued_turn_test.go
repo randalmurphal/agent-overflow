@@ -22,7 +22,13 @@ type queuedRequests struct {
 	// notify makes the requests queued from here on ask for their answer as
 	// a message.
 	notify bool
+	// session is the target's session: the one triage admits frames from,
+	// which every frame handle passes carries.
+	session string
 }
+
+// queuedTargetSession is the target's first session.
+const queuedTargetSession = "stop-target"
 
 // queuedRequest is one of them.
 type queuedRequest struct {
@@ -35,13 +41,14 @@ type queuedRequest struct {
 func newQueuedRequests(t *testing.T) *queuedRequests {
 	t.Helper()
 	f := newRequestFixture(t)
-	// The consumed hook is what tells the receipts which turn answers.
+	// The send-delivered hook is what tells the receipts which turn answers.
 	f.app.configureTriageQueueCallbacks()
 	target, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
 	if err != nil {
 		t.Fatalf("create target thread: %v", err)
 	}
-	q := &queuedRequests{f: f, target: target}
+	q := &queuedRequests{f: f, target: target, session: queuedTargetSession}
+	f.app.triage.MarkThreadActive(target.ID, q.session)
 	q.handle(t, "turn 0 start", provider.ProviderEvent{Kind: provider.EventTurnStart, TurnIndex: 0})
 	q.say(t, 0, "turn zero's own last words")
 	return q
@@ -90,6 +97,9 @@ func (q *queuedRequests) handle(t *testing.T, what string, evt provider.Provider
 	t.Helper()
 	evt.ThreadID = q.target.ID
 	evt.Timestamp = time.Now()
+	if evt.SessionToken == "" {
+		evt.SessionToken = q.session
+	}
 	if err := q.f.app.triage.Handle(evt); err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
@@ -130,16 +140,18 @@ func (r *queuedRequest) consumed(t *testing.T) {
 	})
 }
 
-// bind is the dispatch marking the request running once the provider has
-// its message.
+// bind is the dispatch writing the request's message to the target's session
+// and marking the request running once the provider has it. The turn that
+// answers comes from the delivery.
 func (r *queuedRequest) bind(t *testing.T) {
 	t.Helper()
-	r.q.f.adapter().markRequestRunning(r.token, r.q.target.ID, r.row)
+	r.q.f.app.noteReceiptWriting(r.q.target.ID, r.token, r.q.session)
+	r.q.f.adapter().markRequestDispatched(r.token, r.q.target.ID, r.q.session, r.row.ID)
 }
 
 func (r *queuedRequest) observeTurnEnd(t *testing.T) {
 	t.Helper()
-	work, err := r.q.f.app.settleReceiptOnTurnEnd(r.q.target.ID, r.token)
+	work, _, err := r.q.f.app.settleReceiptOnTurnEnd(r.q.target.ID, r.token)
 	if err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
@@ -244,7 +256,7 @@ func TestAQueuedRequestSettlesOnItsAnswerAfterTheSessionIsReplaced(t *testing.T)
 	q.endTurn(t)
 
 	q.f.app.triage.CleanupThread(q.target.ID)
-	q.f.app.triage.MarkThreadActive(q.target.ID)
+	q.f.app.triage.MarkThreadActive(q.target.ID, "")
 
 	r.observeTurnEnd(t)
 	r.wantFinishedWith(t, "41,220 rows")
@@ -360,6 +372,7 @@ func TestALateBindingOfAQueuedRequestSkipsTheTurnThatDidNotReadIt(t *testing.T) 
 		q.say(t, 1, "the backfill touched 41,220 rows")
 		q.endTurn(t)
 		r.bind(t)
+		r.observeTurnEnd(t)
 		r.wantFinishedWith(t, "41,220 rows")
 	})
 }

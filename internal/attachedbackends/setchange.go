@@ -47,7 +47,8 @@ const (
 type SetAction string
 
 const (
-	// SetRemoved: the machine's profile is gone.
+	// SetRemoved: the machine's profile is gone, whoever ended it: a
+	// removal here, the far machine, or an own-device tombstone.
 	SetRemoved SetAction = "removed"
 	// SetRenamed: this installation's nickname for the machine changed.
 	SetRenamed SetAction = "renamed"

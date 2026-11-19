@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/stringsx"
 )
 
@@ -33,9 +34,13 @@ import (
 //   - assistant rows: the summary as its Markdown shows (findShownMarkdown),
 //     and the text of each table cell a row-span marker merges into the cell
 //     above;
-//   - user rows: the summary without its attachment image blocks, and the
+//   - user rows: the summary without its attachment image blocks, the
 //     command of each shell output in meta, which its command block shows
-//     whether or not the typed text still holds it;
+//     whether or not the typed text still holds it, and its first line with
+//     white space collapsed, which a provider's agent message shows; an
+//     agent's message (agentmeta) also its header line and each joined
+//     member's, and the person's message joined after a report also the
+//     report's data decoded;
 //   - tool rows: also the tool name and every string in meta and in their
 //     payload's meta, where a card's command and arguments come from;
 //   - reasoning rows: the full streamed content, which an expanded row
@@ -130,11 +135,29 @@ func findCandidateText(kind, summary, meta, toolName string, payload *string) st
 	case "user_text":
 		// The bubble shows its text as typed, less the image blocks
 		// (frontend utils/userMessageMeta.ts stripAttachmentImages).
-		if stripped := findUserImageBlock.ReplaceAllString(summary, ""); stripped != summary {
+		stripped := findUserImageBlock.ReplaceAllString(summary, "")
+		if stripped != summary {
 			variants = append(variants, findLoose(stripped))
 		}
 		for _, command := range findUserShellCommands(meta) {
 			variants = append(variants, findLoose(command))
+		}
+		// A provider's agent message (frontend utils/agentMessage.ts
+		// fromProvider), and an agent's whose facts a client cannot read,
+		// show the first line, white space collapsed.
+		variants = append(variants, findLoose(agentmeta.FirstLine(summary)))
+		attribution := findAttribution(meta)
+		switch {
+		case agentmeta.IsAgentMessage(attribution):
+			// An agent's row shows its header line and each joined
+			// member's, which its meta says (agentmeta.Headlines).
+			for _, line := range agentmeta.Headlines(summary, attribution) {
+				variants = append(variants, findLoose(line))
+			}
+		case attribution.Origin == agentmeta.OriginAgentWake:
+			// The person's message joined after a report shows the
+			// report's quoted data decoded (userMessageVisibleText).
+			variants = append(variants, findLoose(agentmeta.ReadableWakeText(stripped)))
 		}
 	}
 	if findToolKind(kind) {
@@ -145,6 +168,16 @@ func findCandidateText(kind, summary, meta, toolName string, payload *string) st
 		}
 	}
 	return joinFindVariants(variants...)
+}
+
+// findAttribution is the attribution a user row's meta records; none for
+// meta that does not decode, which no reader attributes either.
+func findAttribution(meta string) agentmeta.Meta {
+	var attribution agentmeta.Meta
+	if strings.TrimSpace(meta) == "" || json.Unmarshal([]byte(meta), &attribution) != nil {
+		return agentmeta.Meta{}
+	}
+	return attribution
 }
 
 // joinFindVariants joins the nonempty variants no other variant holds, in

@@ -21,6 +21,7 @@ function fixture(over: {
   loadingNewer?: boolean;
   listRef?: boolean;
   revealed?: number;
+  measured?: boolean;
 }) {
   const loadOlder = vi.fn(async () => ({ status: 'loaded' as const, insertedBeforeWindow: true, insertedRows: true }));
   const loadNewer = vi.fn(async () => ({ status: 'loaded' as const, insertedBeforeWindow: false, insertedRows: true }));
@@ -51,12 +52,13 @@ function fixture(over: {
       over.listRef === false ? undefined : ({ scrollToIndex: () => {} } as unknown as TimelineVirtualizerHandle),
     getScrollEl: () => viewport,
     getRevealedNodes: () => Array.from({ length: over.revealed ?? 0 }, () => ({})) as never[],
+    isWindowMeasured: () => over.measured ?? true,
     getRestoredThreadId: () => null,
     beginNavigation: () => 1,
     claimNavigation: () => true,
     saveScrollSnapshot: () => {},
   });
-  return { paging, loadOlder, loadNewer, markEscaped };
+  return { paging, loadOlder, loadNewer, markEscaped, over };
 }
 
 describe('maybeFillViewport', () => {
@@ -106,6 +108,32 @@ describe('maybeFillViewport', () => {
     const { paging, loadOlder } = fixture({ scrollHeight: 0, clientHeight: 0 });
     expect(paging.maybeFillViewport()).toBe(false);
     expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  // Estimates are not the window's height. A fill started on them pauses
+  // auto-scroll while the rows measure taller, and a reader pinned to the
+  // bottom is left where the estimates put it until the page lands.
+  it('waits for the mounted rows to measure, then asks for one more pass', () => {
+    const { paging, loadOlder, over } = fixture({ scrollHeight: 900, revealed: 3, measured: false });
+    expect(paging.maybeFillViewport()).toBe(false);
+    expect(loadOlder).not.toHaveBeenCalled();
+    over.measured = true;
+    expect(paging.noteWindowMeasured()).toBe(true);
+    expect(paging.noteWindowMeasured()).toBe(false);
+    expect(paging.maybeFillViewport()).toBe(true);
+    expect(loadOlder).toHaveBeenCalledOnce();
+  });
+
+  it('asks for no pass on a measurement it did not wait for', () => {
+    const { paging } = fixture({ scrollHeight: 900, revealed: 3 });
+    expect(paging.maybeFillViewport()).toBe(true);
+    expect(paging.noteWindowMeasured()).toBe(false);
+  });
+
+  it('fills an empty window, which has nothing to measure', () => {
+    const { paging, loadOlder } = fixture({ scrollHeight: 0, revealed: 0, measured: false });
+    expect(paging.maybeFillViewport()).toBe(true);
+    expect(loadOlder).toHaveBeenCalledOnce();
   });
 
   it('refuses before the virtualizer exists', () => {

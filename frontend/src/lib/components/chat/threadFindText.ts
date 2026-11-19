@@ -9,7 +9,10 @@
 //   - user_text: the command line of each shell output's block, as the
 //     row's meta holds it (the rest of a longer command shows only once the
 //     block is read), then the bubble's text (userMessageVisibleText),
-//     without image blocks and the typed `!command` the block stands for;
+//     without image blocks and the typed `!command` the block stands for; a
+//     message an agent wrote renders as an agent-message row instead
+//     (utils/agentMessage.ts), whose find text is its header's first line,
+//     not its body, which it shows only when expanded;
 //   - assistant_text: the rendered markdown (markdownFindText under the
 //     chat options, after the raw-JSON fence AssistantMessage applies); a
 //     generated image or a question card has none;
@@ -33,7 +36,14 @@
 import type { Item } from '../../types/models';
 import { parseJsonObject } from '../../utils/parseJsonObject';
 import { generatedImageRow } from '../../utils/generatedImageMeta';
-import { isShellOutput, parseUserMessageAttachments, userMessageVisibleText } from '../../utils/userMessageMeta';
+import { agentMessageFromItem } from '../../utils/agentMessage';
+import {
+  isShellOutput,
+  parseUserMessageAttachments,
+  parseUserMessageMeta,
+  userMessageOrigin,
+  userMessageVisibleText,
+} from '../../utils/userMessageMeta';
 import {
   COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY,
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
@@ -115,9 +125,12 @@ function reasoningFindRuns(item: Item, context: FindTextContext): readonly strin
 export function rowFindRuns(item: Item, context: FindTextContext): readonly string[] {
   switch (item.kind) {
     case 'user_text': {
+      const agentMessage = agentMessageFromItem(item);
+      if (agentMessage) return agentMessage.firstLine ? [agentMessage.firstLine] : [];
+      const origin = userMessageOrigin(parseUserMessageMeta(item.meta));
       const attachments = parseUserMessageAttachments(item.meta, item.threadId);
       const commands = attachments.filter(isShellOutput).map((attachment) => attachment.shell.command);
-      const text = userMessageVisibleText(item.summary, attachments);
+      const text = userMessageVisibleText(item.summary, attachments, origin);
       return text ? [...commands, text] : commands;
     }
     case 'assistant_text':

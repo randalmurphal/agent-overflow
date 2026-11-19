@@ -167,22 +167,27 @@ func countOracleTriggers(lines []string) map[string]int {
 	return counts
 }
 
-// healthFrontendScan splits captured renderer errors into the two things
+// healthFrontendScan splits captured renderer errors into the three things
 // that land in one file. A FAULT is an application error: something threw
 // and nothing caught it. A NOTICE is the engine talking, and the only
 // member so far is "ResizeObserver loop completed with undelivered
 // notifications", emitted through window.onerror with no stack whenever a
 // resize callback chain does not settle in one frame, which a heavy stream
-// produces routinely and which no code threw.
+// produces routinely and which no code threw. A DIAGNOSTIC is a record the
+// app wrote itself through reportFrontendDiagnostic (kind "diagnostic"):
+// a condition it caught and handled, such as a failed read the page shows
+// with Retry or a transport outage it recovered from.
 //
-// They are separated rather than filtered because the notice is still
-// evidence (it means layout work outran a frame) and hiding it would lose
-// a signal this timeline actually cares about. It is counted and reported;
-// it just does not turn a rollup red on its own.
+// Notices and diagnostics are separated rather than filtered because they
+// are still evidence, and hiding them would lose a signal this timeline
+// cares about. They are counted and reported; they do not turn a rollup
+// red on their own. A line that does not decode stays a fault.
 type healthFrontendScan struct {
-	Faults  int      `json:"faults"`
-	Notices int      `json:"notices"`
-	Sample  []string `json:"sample,omitempty"`
+	Faults           int      `json:"faults"`
+	Notices          int      `json:"notices"`
+	Diagnostics      int      `json:"diagnostics"`
+	Sample           []string `json:"sample,omitempty"`
+	DiagnosticSample []string `json:"diagnosticSample,omitempty"`
 }
 
 var healthFrontendNotices = []string{"ResizeObserver loop"}
@@ -194,12 +199,26 @@ func scanFrontendErrors(lines []string) healthFrontendScan {
 			scan.Notices++
 			continue
 		}
+		if isFrontendDiagnostic(line) {
+			scan.Diagnostics++
+			if len(scan.DiagnosticSample) < healthLogSampleCap {
+				scan.DiagnosticSample = append(scan.DiagnosticSample, truncate(line, 160))
+			}
+			continue
+		}
 		scan.Faults++
 		if len(scan.Sample) < healthLogSampleCap {
 			scan.Sample = append(scan.Sample, truncate(line, 160))
 		}
 	}
 	return scan
+}
+
+func isFrontendDiagnostic(line string) bool {
+	var record struct {
+		Kind string `json:"kind"`
+	}
+	return json.Unmarshal([]byte(line), &record) == nil && record.Kind == "diagnostic"
 }
 
 func isFrontendNotice(line string) bool {

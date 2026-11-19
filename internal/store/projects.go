@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/repoidentity"
+	"agent-overflow/internal/threadmode"
 )
 
 // ErrProjectPathInUse is returned by CreateProject when the supplied path
@@ -206,7 +207,7 @@ func (s *Store) ListAllProjects() ([]Project, error) {
 // text. A plan that materializes the view here scans `items` once per
 // sidebar thread.
 func listProjectsWithThreadCountsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
+	hiddenClause, hiddenArgs := catalogThreadClause("t")
 	return `SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived, p.identity_error, p.repository_id, p.identity_source,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
@@ -434,6 +435,20 @@ func (s *Store) DeleteProject(id string) error {
 		}
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: delete project %s", id))
+}
+
+// ThreadIDsOutsideProjects returns every thread that belongs to no
+// project, archived ones included, assistants' current threads first: a
+// project's delete leaves them, and an assistant's delete takes its past
+// threads and helpers with it. A holder is not a thread to delete: it goes
+// when the last fork that reads it does (holdersMayBeReleased).
+func (s *Store) ThreadIDsOutsideProjects() ([]string, error) {
+	ids, err := queryIDs(s.reader(), `SELECT id FROM threads WHERE project_id IS NULL AND mode <> `+sqlTextLiteral(threadmode.ModeHolder)+`
+		ORDER BY EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id) DESC, id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads outside every project: %w", err)
+	}
+	return ids, nil
 }
 
 // ListThreadIDsForProject returns every thread owned by a project. The app

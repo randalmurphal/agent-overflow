@@ -40,8 +40,9 @@ export const LONG_PRESS_HOLD_MS = 500;
 /** Movement that turns a hold into a scroll. */
 export const LONG_PRESS_SLOP_PX = 8;
 /** How long after release the compatibility mouse sequence may still
- *  arrive (a fresh press ends the window early). */
-const COMPAT_GRACE_MS = 700;
+ *  arrive (a fresh press ends the window early). The tap hold waits the
+ *  same window for a tap's click (tapHold.ts). */
+export const COMPAT_GRACE_MS = 700;
 
 const EDITABLE_SELECTOR = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 

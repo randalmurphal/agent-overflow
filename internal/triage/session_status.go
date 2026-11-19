@@ -97,7 +97,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 		log.Printf("triage: settled %d background launches on session_died for thread %s", settled, evt.ThreadID)
 	}
 
-	if firstReport && r.claimDeathAnnouncement(evt.ThreadID, deathID) {
+	if firstReport && r.claimDeathAnnouncement(evt.ThreadID, deathID, evt.SessionToken) {
 		r.emit(eventchan.ProviderSessionDied, SessionDiedEvent{
 			ThreadID:   evt.ThreadID,
 			Reason:     info.Reason,
@@ -111,10 +111,14 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 }
 
 // claimDeathAnnouncement records that the thread's session announced the
-// death deathID, and reports whether this call is the first to.
-func (r *Router) claimDeathAnnouncement(threadID, deathID string) bool {
+// death deathID, and reports whether this call is the first to. A retired
+// session's frame claims nothing: the thread's session is another one.
+func (r *Router) claimDeathAnnouncement(threadID, deathID, sessionToken string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false
+	}
 	st := r.state(threadID)
 	if st.announcedDeath == deathID {
 		return false

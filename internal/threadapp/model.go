@@ -159,40 +159,30 @@ func (s *Service) latestProviderProfile(providerName string) (store.ChatModelPro
 	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, models.DefaultModel(providerName))), nil
 }
 
-func ThreadWithModelProfile(thread store.Thread, profile store.ChatModelProfile) store.Thread {
+// modelSettingsFromProfile is the model configuration a chosen profile
+// gives a thread, its auto-compact thresholds back at their defaults. The
+// store clears the resume wiring when the provider changes.
+func modelSettingsFromProfile(profile store.ChatModelProfile) store.ThreadModelSettings {
 	profile = chatmodel.SanitizeProfile(profile)
-	providerChanged := thread.Provider != profile.Provider
-	thread.Provider = profile.Provider
-	thread.Model = profile.Model
-	thread.ReasoningEffort = profile.ReasoningEffort
-	thread.FastMode = profile.FastMode
-	thread.ContextWindow = profile.ContextWindow
-	thread.RuntimeMode = string(provider.NormalizeRuntimeMode(profile.RuntimeMode))
-	thread.AutoCompactStandardPercent = 0
-	thread.AutoCompactExtendedPercent = 0
-	if providerChanged {
-		thread.SessionRef = ""
-		thread.PendingForkRef = ""
-		thread.PendingForkResumeAt = ""
+	return store.ThreadModelSettings{
+		Provider:        profile.Provider,
+		Model:           profile.Model,
+		ReasoningEffort: profile.ReasoningEffort,
+		FastMode:        profile.FastMode,
+		ContextWindow:   profile.ContextWindow,
+		RuntimeMode:     string(provider.NormalizeRuntimeMode(profile.RuntimeMode)),
 	}
-	return thread
 }
 
 func (s *Service) applyModelProfile(previous store.Thread, profile store.ChatModelProfile) (ModelUpdate, error) {
-	updated := ThreadWithModelProfile(previous, profile)
-	var err error
-	if previous.Provider == updated.Provider {
-		err = s.deps.Store.UpdateThread(updated)
-	} else {
-		err = s.deps.Store.UpdateThreadIfProviderSwitchAllowed(updated, previous.Provider)
-	}
-	if err != nil {
+	settings := modelSettingsFromProfile(profile)
+	if err := s.deps.Store.UpdateThreadModelSettings(previous.ID, previous.Provider, settings); err != nil {
 		if errors.Is(err, store.ErrThreadProviderLocked) {
-			return ModelUpdate{}, fmt.Errorf("update provider: thread is locked to %s (start a new thread to use %s)", previous.Provider, updated.Provider)
+			return ModelUpdate{}, fmt.Errorf("update provider: thread is locked to %s (start a new thread to use %s)", previous.Provider, settings.Provider)
 		}
 		return ModelUpdate{}, err
 	}
-	stored, err := s.deps.Store.GetThread(updated.ID)
+	stored, err := s.deps.Store.GetThread(previous.ID)
 	if err != nil {
 		return ModelUpdate{}, err
 	}

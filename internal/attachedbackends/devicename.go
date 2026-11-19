@@ -12,7 +12,7 @@ import (
 func (m *Manager) SyncDeviceName() {
 	m.WakeOwnDevices()
 	for _, profile := range m.Attached() {
-		if held, err := m.carrier(profile.ID); err == nil {
+		if held, err := m.carrier(m.life, profile.ID); err == nil {
 			held.syncDeviceName()
 		}
 	}

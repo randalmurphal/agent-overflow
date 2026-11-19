@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/usermessage"
 )
 
 // thread_status and thread_cancel: reading, waiting on and stopping requests
@@ -130,10 +130,18 @@ func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Calle
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return threadtools.RequestAck{
+	ack := threadtools.RequestAck{
 		RequestState: state,
 		Outcome:      threadRequestOutcome(row, state.State == threadtools.RequestBlocked),
-	}, nil
+	}
+	if row.Kind == store.ThreadRequestSpawn {
+		// Recorded with the request when its thread was named, here or on
+		// the computer that ran it, never read from the thread now.
+		if ack.Instructions, err = t.app.store.ThreadRequestSpawnInstructions(token); err != nil {
+			return threadtools.RequestAck{}, err
+		}
+	}
+	return ack, nil
 }
 
 // waitForRequest parks on one token and returns the row as it stands
@@ -300,25 +308,18 @@ func (t threadToolsApp) ownRequests(caller threadtools.Caller, tokens []string) 
 }
 
 // watchThreads answers the thread_ids half of thread_status: the live state
-// of threads the caller is interested in, waiting until one of them rests or
-// stops to ask a person something.
+// of threads the caller is interested in, waiting until one of them rests,
+// stops to ask a person something, or can no longer be read here.
 func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Caller, call threadtools.StatusCall) (threadtools.StatusReport, error) {
-	for _, threadID := range call.ThreadIDs {
-		if _, err := t.localThread(threadID); err != nil {
-			return threadtools.StatusReport{}, err
-		}
-	}
 	keys := make([]string, 0, len(call.ThreadIDs))
 	for _, threadID := range call.ThreadIDs {
 		keys = append(keys, threadWatchKey(threadID))
 	}
 	outcome, release, err := t.app.waitRequest(ctx, caller.ThreadID, keys, call.WaitSeconds, func() (string, bool, error) {
 		for _, threadID := range call.ThreadIDs {
-			state, err := t.threadStateNow(ctx, threadID)
-			if err != nil {
-				return "", false, err
-			}
-			if threadtools.Resting(state.State) || state.State == threadtools.StatePendingApproval || state.State == threadtools.StateAwaitingInput {
+			state := t.watchedThread(ctx, threadID)
+			// A thread deleted or moved away will not rest here.
+			if state.Error != "" || state.Resting || state.State == threadtools.StatePendingApproval || state.State == threadtools.StateAwaitingInput {
 				return threadID, true, nil
 			}
 		}
@@ -330,13 +331,20 @@ func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Cal
 	}
 	report := threadtools.StatusReport{WokeOn: outcome.WokeOn, TimedOut: outcome.TimedOut}
 	for _, threadID := range call.ThreadIDs {
-		state, err := t.threadStateNow(ctx, threadID)
-		if err != nil {
-			return threadtools.StatusReport{}, err
-		}
-		report.Threads = append(report.Threads, state)
+		report.Threads = append(report.Threads, t.watchedThread(ctx, threadID))
 	}
 	return report, nil
+}
+
+// watchedThread is one watched thread's row: its state as it stands, or why
+// it cannot be read here, so a thread deleted or moved away during a wait
+// costs its siblings nothing.
+func (t threadToolsApp) watchedThread(ctx context.Context, threadID string) threadtools.ThreadState {
+	state, err := t.threadStateNow(ctx, threadID)
+	if err != nil {
+		return threadtools.FailedRow(threadID, err)
+	}
+	return state
 }
 
 func (t threadToolsApp) threadStateNow(ctx context.Context, threadID string) (threadtools.ThreadState, error) {
@@ -349,13 +357,22 @@ func (t threadToolsApp) threadStateNow(ctx context.Context, threadID string) (th
 		return threadtools.ThreadState{}, err
 	}
 	projected := t.projectThread(thread)
-	state := threadtools.State(projected, live)
-	return threadtools.ThreadState{
-		ThreadID: thread.ID,
-		Title:    thread.Title,
-		State:    state,
-		Resting:  threadtools.Resting(state),
-	}, nil
+	out := threadtools.ThreadState{ThreadID: thread.ID, Title: thread.Title, State: threadtools.State(projected, live)}
+	if threadtools.Resting(out.State) {
+		// Its turn is over; it rests once nothing it started is left
+		// (threadRest), the rest a spawn's request settles on.
+		rest, err := t.app.threadRest(threadID)
+		if err != nil {
+			return threadtools.ThreadState{}, err
+		}
+		if rest.unrest == workerBlocked {
+			// An async question nothing else shows.
+			out.State = threadtools.StateAwaitingInput
+		}
+		out.WaitingOn = rest.waitingLine()
+	}
+	out.Resting = threadtools.Rests(out)
+	return out, nil
 }
 
 // threadRequestStateWords and threadAnswerKindWords map the store's rows onto
@@ -408,48 +425,9 @@ func threadToolsWord(what string, words map[string]string, stored string) string
 // requestState renders one source row, and records the inline delivery that
 // rendering it performs.
 func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadRequest) (threadtools.RequestState, error) {
-	state := threadtools.RequestState{
-		Token:      row.Token,
-		Kind:       row.Kind,
-		ThreadID:   row.TargetThreadID,
-		ComputerID: row.TargetComputerID,
-		State:      threadRequestStateWord(row.State),
-		AnswerKind: threadAnswerKindWord(row.AnswerKind),
-		Revision:   row.Revision,
-		Notify:     row.Notify,
-		Delivered:  row.DeliveredHow,
-		ExpiresAt:  row.ExpiresAt,
-		DueAt:      row.DueAt,
-		WakeIssue:  row.WakeIssue,
-	}
-	// The newest revision is the answer: a late reply supersedes the final
-	// message the caller was already told about.
-	answer, late := row.Answer, false
-	if len(row.LateReply) > 0 {
-		answer, late = row.LateReply, true
-		state.AnswerKind = threadtools.AnswerReply
-	}
-	state.Answer = string(answer)
-	if !threadRequestSettled(row) && t.app.threadRequestBlocked(row) {
-		state.State = threadtools.RequestBlocked
-	}
-	if row.TargetThreadID != "" && row.TargetComputerID != "" {
-		// A thread on another computer has no row here. Its title is what
-		// that computer reported when the target was recorded.
-		state.Title = row.TargetThreadTitle
-	} else if row.TargetThreadID != "" {
-		if thread, err := t.app.store.GetThread(row.TargetThreadID); err == nil {
-			state.Title = thread.Title
-		} else if row.OriginThreadID != "" {
-			// An ask's scratch fork is deleted once it has answered. The
-			// thread it was forked from is what the caller asked about, and
-			// naming it is more useful than naming nothing.
-			if origin, err := t.app.store.GetThread(row.OriginThreadID); err == nil {
-				state.Title = origin.Title
-			}
-		}
-	}
-	if len(answer) > 0 && threadRequestSettled(row) && !threadRequestDelivered(row, late) {
+	state := t.requestStateView(row)
+	late := len(row.LateReply) > 0
+	if len(state.Answer) > 0 && threadRequestSettled(row) && !threadRequestDelivered(row, late) {
 		// Reading the answer here IS the delivery, but only once the model
 		// has it: the mark runs after the response is written. An open row
 		// can carry an answer before anything settles it (a reminder holds
@@ -470,10 +448,115 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 			return state, nil
 		}
 		row = claim.row
-		state.Delivered = row.DeliveredHow
+		state.Delivered = row.DeliveryRoute(late)
 	}
 	state.WakeQueued = t.wakeQueued(row, late)
 	return state, nil
+}
+
+// requestStateView renders one source row as thread_status reports it, and
+// does nothing else: it records no delivery, so a reader that is not the
+// calling agent (the activity rail) can show a settled answer without
+// taking the wake it owes.
+func (t threadToolsApp) requestStateView(row store.ThreadRequest) threadtools.RequestState {
+	// The newest revision is the answer: a late reply supersedes the final
+	// message the caller was already told about.
+	answer, late := row.Answer, len(row.LateReply) > 0
+	if late {
+		answer = row.LateReply
+	}
+	state := requestStateFrom(row, answer, late, t.requestTitle(row), t.app.threadRequestBlocked(row))
+	state.WaitingOn = t.app.requestWaitingOn(row)
+	return state
+}
+
+// requestStateFrom is requestStateView's derivation from what it reads:
+// the newer answer and whether it is a late reply, the target's title and
+// whether the target waits on a person. The Agents listing reads those for
+// all its rows at once and derives each row here.
+func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, title string, blocked bool) threadtools.RequestState {
+	state := threadtools.RequestState{
+		Token:      row.Token,
+		Kind:       row.Kind,
+		ThreadID:   row.TargetThreadID,
+		ComputerID: row.TargetComputerID,
+		Title:      title,
+		State:      threadRequestStateWord(row.State),
+		AnswerKind: threadAnswerKindWord(row.AnswerKind),
+		Revision:   row.Revision,
+		Notify:     row.Notify,
+		Delivered:  row.DeliveryRoute(row.LateDeliveredAt != 0),
+		ExpiresAt:  row.ExpiresAt,
+		DueAt:      row.DueAt,
+		Answer:     requestAnswerWords(row, answer),
+		WakeIssue:  row.WakeIssue,
+		// Kept as a late reply supersedes it: the computer still could not
+		// say whether the thread came to rest.
+		RestUnreported: row.RestUnreported,
+	}
+	if lateReply {
+		state.AnswerKind = threadtools.AnswerReply
+	}
+	if row.LateReplyExpired {
+		state.LateReplyExpiredAt = row.LateReplyAt
+	}
+	if !threadRequestSettled(row) && blocked {
+		state.State = threadtools.RequestBlocked
+	}
+	return state
+}
+
+// requestAnswerWords is answer as an agent reads it: an interruption's
+// cause in its words, with what its turn wrote (threadtools.Cause.Answer),
+// and any other answer as it was written. Only a `finished` request, which
+// has no cause, takes a late reply.
+func requestAnswerWords(row store.ThreadRequest, answer []byte) string {
+	return threadtools.Cause{Code: row.Cause, Arg: row.CauseArg}.Answer(string(answer))
+}
+
+// requestTitle names a request's target thread.
+func (t threadToolsApp) requestTitle(row store.ThreadRequest) string {
+	if row.TargetThreadID == "" {
+		return ""
+	}
+	if row.TargetComputerID != "" {
+		return requestTitleFrom(row, nil)
+	}
+	ids := []string{row.TargetThreadID}
+	if row.OriginThreadID != "" {
+		ids = append(ids, row.OriginThreadID)
+	}
+	names := map[string]store.ThreadName{}
+	for _, id := range ids {
+		if thread, err := t.app.store.GetThread(id); err == nil {
+			names[id] = store.ThreadName{Title: thread.Title, Provider: thread.Provider}
+			break
+		}
+	}
+	return requestTitleFrom(row, names)
+}
+
+// requestTitleFrom names a request's target from the names of the threads
+// it reads.
+func requestTitleFrom(row store.ThreadRequest, names map[string]store.ThreadName) string {
+	switch {
+	case row.TargetThreadID == "":
+		return ""
+	case row.TargetComputerID != "":
+		// A thread on another computer has no row here. Its title is what
+		// that computer reported when the target was recorded.
+		return row.TargetThreadTitle
+	}
+	if name, ok := names[row.TargetThreadID]; ok {
+		return name.Title
+	}
+	if row.OriginThreadID != "" {
+		// An ask's scratch fork is deleted once it has answered. The thread
+		// it was forked from is what the caller asked about, and naming it
+		// is more useful than naming nothing.
+		return names[row.OriginThreadID].Title
+	}
+	return ""
 }
 
 // inlineClaim is what a reply found when it went to deliver an answer.
@@ -550,36 +633,21 @@ func threadRequestDelivered(row store.ThreadRequest, late bool) bool {
 // way to the caller, so a reply that also carries it can say so rather than
 // leaving the agent to read the same answer twice without knowing why.
 //
-// It spans both halves of the queued path, because an agent reading this is
-// mid-turn by definition and a live thread's queue hands its message to the
-// provider at once: the durable queue row holds the wake only while the
-// thread has no session to take it, and after that the dispatched user row
-// waits in the provider's own queue until the turn boundary. The echo that
-// stamps provider_item_id on that row is the model reading the message, so an
-// unstamped row is a message that has not arrived yet. Probing the queue row
-// alone answers no for almost the whole window this notice exists for.
+// A queued delivery is on its way from its mark until the provider's echo
+// of the message, which is the model reading it: in the durable queue, and
+// then in the provider's own queue until the turn boundary. The echo
+// confirms the delivery on every request the message answers
+// (store.ConfirmThreadWake); one whose confirmation failed to write is kept
+// until it does (echoed). A give-back clears the mark.
 func (t threadToolsApp) wakeQueued(row store.ThreadRequest, late bool) bool {
-	if !threadRequestDelivered(row, late) || row.DeliveredHow != store.ThreadWakeQueued {
+	if !threadRequestDelivered(row, late) || row.DeliveryRoute(late) != store.ThreadWakeQueued {
 		return false
 	}
-	// One message can answer several requests; it is queued under the send
-	// id of the request that carried it.
-	carrier := row.Token
-	if !late && row.DeliveredWith != "" {
-		carrier = row.DeliveredWith
+	confirmed, carrier := row.ConfirmedAt, row.WakeCarrier()
+	if late {
+		confirmed, carrier = row.LateConfirmedAt, row.Token
 	}
-	record, found, err := t.app.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(carrier, late))
-	if err != nil {
-		log.Printf("thread tools: probe queued wake %s: %v", row.Token, err)
-		return false
-	}
-	if !found {
-		return false
-	}
-	if !record.dispatched {
-		return true
-	}
-	return usermessage.ReadProviderItemID(record.item.Meta) == ""
+	return confirmed == 0 && !t.app.echoed(threadWakeSendIDFor(carrier, late))
 }
 
 // ListRequests lists the caller's own requests, open first then newest first.
@@ -621,10 +689,10 @@ func (t threadToolsApp) ExportAnswer(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.ExportFile{}, err
 	}
-	answer := row.Answer
-	late := false
-	if len(row.LateReply) > 0 {
-		answer, late = row.LateReply, true
+	late := len(row.LateReply) > 0
+	answer := row.LateReply
+	if !late {
+		answer = []byte(requestAnswerWords(row, row.Answer))
 	}
 	if len(answer) == 0 {
 		return threadtools.ExportFile{}, errorsx.Public(threadtools.CodeInvalidRequest,
@@ -663,9 +731,43 @@ func (t threadToolsApp) Cancel(ctx context.Context, caller threadtools.Caller, c
 		return t.cancelRequest(ctx, caller, call.Token)
 	}
 	if t.remoteDestination(call.ComputerID) {
-		return t.cancelRemoteThread(ctx, caller, call)
+		return t.cancelRemoteSpawnedThread(ctx, caller, call)
 	}
 	return t.cancelThread(ctx, caller, call.ThreadID)
+}
+
+// cancelRemoteSpawnedThread is an agent's thread_cancel by thread id of a
+// thread on a paired computer. The destination brings a thread the caller
+// spawned there to rest; the caller's spawns of it are disarmed first, as a
+// local one's are, since the agent reads what happened in the report. A
+// destination that only interrupted, being older or the thread not a spawn,
+// leaves the spawns as they were.
+func (t threadToolsApp) cancelRemoteSpawnedThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
+	spawns, err := t.app.store.CallerSpawnsOf(caller.ThreadID, call.ComputerID, call.ThreadID)
+	if err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	var disarmed []string
+	for _, spawn := range spawns {
+		if !spawn.Notify {
+			continue
+		}
+		if _, err := t.app.store.SetThreadRequestNotify(spawn.Token, false); err != nil {
+			return threadtools.CancelReport{}, err
+		}
+		disarmed = append(disarmed, spawn.Token)
+	}
+	report, err := t.cancelRemoteThread(ctx, caller, call, false)
+	if err == nil && report.Effect == threadtools.EffectThreadStopped {
+		report.State = threadtools.RequestCancelled
+		return report, nil
+	}
+	for _, token := range disarmed {
+		if _, rearmErr := t.app.store.SetThreadRequestNotify(token, true); rearmErr != nil {
+			err = errors.Join(err, rearmErr)
+		}
+	}
+	return report, err
 }
 
 func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Caller, token string) (threadtools.CancelReport, error) {
@@ -681,15 +783,14 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 		return report, nil
 	}
 	if row.TargetComputerID != "" {
-		return t.cancelRemoteRequest(ctx, caller, row)
+		return t.cancelRemoteRequest(ctx, caller, row, false)
 	}
 	// A reminder is nothing but a row: there is no work to stop, and the
 	// caller cancelling it wants it gone rather than settled as cancelled.
 	if row.Kind == store.ThreadRequestRemind {
-		if _, err := t.app.store.DeleteThreadRequest(token); err != nil {
+		if _, err := t.app.dropThreadReminder(row); err != nil {
 			return threadtools.CancelReport{}, err
 		}
-		t.app.wakeRequestWaits(token)
 		report.State, report.Effect = threadtools.RequestCancelled, threadtools.EffectReminderDropped
 		return report, nil
 	}
@@ -712,7 +813,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 
 // threadCancelTimeout bounds one forwarded cancel. It matches the remote
 // command stop: a cancel that cannot be delivered must not hold the calling
-// turn while an offline computer times out its whole call budget.
+// turn while an offline computer times out its whole call budget
+// (threadPeerCallWait). The destination settles its own receipt, so a cancel
+// whose answer is lost to the bound is collected by the next poll.
 const threadCancelTimeout = 20 * time.Second
 
 // cancelRemoteRequest stops one request on the computer that accepted it.
@@ -721,10 +824,26 @@ const threadCancelTimeout = 20 * time.Second
 // can take back a queued message or interrupt a turn. The source row is
 // settled from the receipt the reply carries, through the same collector a
 // poll would have used.
-func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest) (threadtools.CancelReport, error) {
-	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
+//
+// The agent's own cancel is told by this call's reply. The reply is claimed
+// as the delivery before the cancel is sent, so a poll that collects the
+// cancelled receipt meanwhile queues no message, and the claim is released
+// once the reply has been written, which marks the cancellation delivered.
+// A reply that never reached the agent leaves it owed, and its wake tells
+// it; so does a reply that found the request already settled some other way,
+// whose answer the report does not carry.
+//
+// userStop is a person's Stop in the Agents tray: nothing is claimed, so
+// the caller's agent is told by its wake, and the destination words the
+// settlement as the user's.
+func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, userStop bool) (threadtools.CancelReport, error) {
+	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID, RemoteRequest: true}
 	if _, err := t.Peer(ctx, row.TargetComputerID); err != nil {
 		return threadtools.CancelReport{}, err
+	}
+	if !userStop {
+		_, _, release := t.app.beginRequestWait(ctx, row.CallerThreadID, []string{row.Token})
+		defer t.releaseAfterResponse(ctx, release)
 	}
 	call, cancel := context.WithTimeout(ctx, threadCancelTimeout)
 	defer cancel()
@@ -737,9 +856,10 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		source.ThreadID = row.CallerThreadID
 	}
 	err := t.app.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
-		Tool:   "thread_cancel",
-		Token:  row.Token,
-		Source: source,
+		Tool:     "thread_cancel",
+		Token:    row.Token,
+		Source:   source,
+		UserStop: userStop,
 	})
 	if err != nil {
 		// The wake stays armed: the destination was not reached, so the work
@@ -748,26 +868,32 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		// finishes later with nobody to tell.
 		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)
 	}
-	// Disarmed only now, and before the reply's settlement is applied: the
-	// report the caller is about to read says what happened, so the same
-	// cancellation must not arrive again as an unread message.
-	if row.Notify {
-		if _, err := t.app.store.SetThreadRequestNotify(row.Token, false); err != nil {
-			return threadtools.CancelReport{}, err
-		}
-	}
 	report.Effect = reply.Effect
 	if report.Effect == "" {
 		report.Effect = threadtools.EffectNothing
 	}
 	if reply.Request != nil {
-		if err := t.app.collectThreadPeerReply(row.Token, row.TargetComputerID, *reply.Request); err != nil {
+		settlement := *reply.Request
+		// A person stopped it: the source says so whatever the destination
+		// wrote, since a computer that predates the user Stop words the
+		// cancel as the sender's.
+		if userStop && settlement.State == store.ThreadReceiptCancelled {
+			settlement.Answer = threadRequestUserStop
+		}
+		if err := t.app.collectThreadPeerReply(row.Token, row.TargetComputerID, settlement); err != nil {
 			return threadtools.CancelReport{}, err
 		}
 	}
 	report.State = threadtools.RequestCancelled
-	if settled, found, err := t.app.store.GetThreadRequest(row.Token); err == nil && found {
+	settled, found, err := t.app.store.GetThreadRequest(row.Token)
+	if err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	if found {
 		report.State = threadRequestStateWord(settled.State)
+		if !userStop && settled.State == store.ThreadRequestCancelled {
+			t.markDeliveredInline(ctx, row.Token, false)
+		}
 	}
 	return report, nil
 }
@@ -775,7 +901,10 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 // cancelRemoteThread interrupts a thread on another computer the caller
 // started there. The lineage check runs on the destination, against the
 // receipts it holds for this source.
-func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
+//
+// userStop marks a Stop a person made from the caller's Agents tray, so the
+// stopped thread's timeline names the user and not the caller's agent.
+func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall, userStop bool) (threadtools.CancelReport, error) {
 	if _, err := t.Peer(ctx, call.ComputerID); err != nil {
 		return threadtools.CancelReport{}, err
 	}
@@ -783,14 +912,23 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 	if err != nil {
 		return threadtools.CancelReport{}, fmt.Errorf("thread tools: encode cancel for %s: %w", call.ComputerID, err)
 	}
+	// The destination checks lineage against the thread that made the
+	// request, which a handoff may have replaced with this caller.
+	source := caller
+	if madeIn, err := t.app.store.RemoteRequestSource(caller.ThreadID, call.ComputerID, call.ThreadID); err != nil {
+		return threadtools.CancelReport{}, err
+	} else if madeIn != "" && madeIn != caller.ThreadID {
+		source = t.app.threadAgentCaller(madeIn)
+	}
 	rpc, cancel := context.WithTimeout(ctx, threadCancelTimeout)
 	defer cancel()
 	var reply ThreadPeerReply
 	err = t.app.backends.CallThreadPeer(rpc, call.ComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
-		Tool:   "thread_cancel",
-		Args:   args,
-		Token:  newThreadRequestToken(),
-		Source: caller,
+		Tool:     "thread_cancel",
+		Args:     args,
+		Token:    newThreadRequestToken(),
+		Source:   source,
+		UserStop: userStop,
 	})
 	if err != nil {
 		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", call.ComputerID, call.ThreadID, err)
@@ -808,15 +946,24 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 	return report, nil
 }
 
-// cancelThread interrupts a thread the caller started, sent to or asked. The
+// cancelThread stops a thread the caller started, sent to or asked. The
 // lineage is the request ledger: without a row linking the two, a thread is
-// none of this caller's business.
+// none of this caller's business. A thread the caller spawned is brought to
+// rest (restSpawnedThread); one it only sent to or asked has its running
+// turn interrupted.
 func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Caller, threadID string) (threadtools.CancelReport, error) {
 	thread, err := t.localThread(threadID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
-	linked, err := t.callerStartedThread(caller.ThreadID, threadID)
+	spawns, err := t.app.store.CallerSpawnsOf(caller.ThreadID, "", thread.ID)
+	if err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	if len(spawns) > 0 {
+		return t.restSpawnedThread(ctx, thread.ID, spawns, threadRestStop(caller.Title, caller.ThreadID, ""))
+	}
+	linked, err := t.app.store.CallerRequestedOf(caller.ThreadID, thread.ID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
@@ -856,8 +1003,9 @@ func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID str
 // interruptForeignThread is the destination half of a thread_cancel by
 // thread id: the same lineage rule as cancelThread, read from the receipts
 // this computer holds for the calling thread rather than from source rows
-// it does not have.
-func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threadRequestOrigin, threadID string) (string, error) {
+// it does not have. A thread the caller spawned here is brought to rest; the
+// source disarmed its own spawn's wake before it asked.
+func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threadRequestOrigin, threadID string, userStop bool) (string, error) {
 	thread, err := t.localThread(threadID)
 	if err != nil {
 		return "", err
@@ -866,18 +1014,35 @@ func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threa
 	if err != nil {
 		return "", err
 	}
-	linked := false
+	linked, spawned := false, false
 	for _, receipt := range receipts {
 		if receipt.OwnerDeviceID == origin.ownerDevice && receipt.SourceThreadID == origin.caller.ThreadID {
 			linked = true
-			break
+			spawned = spawned || receipt.Kind == store.ThreadRequestSpawn
 		}
 	}
 	if !linked {
 		return "", threadNotYoursToInterrupt(threadID)
 	}
-	caller := origin.caller
-	return t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, t.app.stoppingComputerName(caller.ComputerID)))
+	if spawned {
+		by := userRestStop()
+		if !userStop {
+			by = threadRestStop(origin.caller.Title, origin.caller.ThreadID, t.app.stoppingComputerName(origin.caller.ComputerID))
+		}
+		report, err := t.restSpawnedThread(ctx, thread.ID, nil, by)
+		return report.Effect, err
+	}
+	return t.interruptRunningThread(ctx, thread.ID, t.foreignThreadStop(origin.caller, userStop))
+}
+
+// foreignThreadStop is who a paired computer's thread-id cancel names as
+// stopping the turn: the user for a Stop from the Agents tray, otherwise
+// the thread that made the call.
+func (t threadToolsApp) foreignThreadStop(caller threadtools.Caller, userStop bool) turnStop {
+	if userStop {
+		return stopFromAgentsTray()
+	}
+	return stopByThread(caller.Title, caller.ThreadID, t.app.stoppingComputerName(caller.ComputerID))
 }
 
 // threadNotYoursToInterrupt is the refusal both lineage checks give. The
@@ -888,35 +1053,34 @@ func threadNotYoursToInterrupt(threadID string) error {
 		threadID), nil)
 }
 
-// callerStartedThread reports whether any request, settled or not, links this
-// caller to that thread.
-func (t threadToolsApp) callerStartedThread(callerThreadID, threadID string) (bool, error) {
-	offset := 0
-	for offset < threadCancelLineageScan {
-		rows, err := t.app.store.ListThreadRequestsByCaller(callerThreadID, threadCancelLineagePage, offset)
-		if err != nil {
-			return false, err
+// restSpawnedThread is a thread_cancel by thread id of a thread the caller
+// spawned: the caller's spawns of it are disarmed, since the calling agent
+// reads what happened in this call's report, and the thread is brought to
+// rest with the stop attributed as by names it. A step that failed fails the
+// call; the steps after it still ran.
+func (t threadToolsApp) restSpawnedThread(ctx context.Context, threadID string, spawns []store.ThreadRequest, by restStop) (threadtools.CancelReport, error) {
+	var errs []error
+	for _, spawn := range spawns {
+		if !spawn.Notify {
+			continue
 		}
-		for _, row := range rows {
-			if row.TargetThreadID == threadID || row.OriginThreadID == threadID {
-				return true, nil
-			}
+		if _, err := t.app.store.SetThreadRequestNotify(spawn.Token, false); err != nil {
+			errs = append(errs, fmt.Errorf("disarm the wake of %s: %w", spawn.Token, err))
 		}
-		if len(rows) < threadCancelLineagePage {
-			return false, nil
-		}
-		offset += len(rows)
 	}
-	return false, nil
+	var result ThreadAgentStop
+	t.app.restThreadHere(ctx, threadID, by, map[string]bool{threadID: true}, &result)
+	for _, failure := range result.Failures {
+		errs = append(errs, errors.New(failure))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return threadtools.CancelReport{}, fmt.Errorf("thread tools: stop thread %s: %w", threadID, err)
+	}
+	return threadtools.CancelReport{ThreadID: threadID, State: threadtools.RequestCancelled, Effect: threadtools.EffectThreadStopped}, nil
 }
 
-// threadCancelLineagePage and threadCancelLineageScan bound the lineage walk.
-// A thread that made more requests than this and is asking about one older
-// than all of them is past the point where an interrupt is the right tool.
-const (
-	threadCancelLineagePage = 200
-	threadCancelLineageScan = 2000
-)
+// threadCancelLineagePage bounds one read of the requests a caller made.
+const threadCancelLineagePage = 200
 
 // threadRequestExportAge is how long an answer file with no reader is kept.
 // The tool tells the model to read it now; a file still there a day later was

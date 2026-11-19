@@ -12,6 +12,10 @@
      * rather than uniformly — the shape the straddling-row attribution
      * exists for. Zero means a single undifferentiated block. */
     headPx?: number;
+    /** With `headPx`, the trailing block is a scroll clip holding this many
+     * px of 50px blocks: content that moves inside the row when the clip
+     * scrolls, as an activity run's clip does. */
+    clipContentPx?: number;
   }
 </script>
 
@@ -185,7 +189,15 @@
       <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">{tapRowRender(row.id)}
         {#if row.headPx}
           <div data-row-head style="height: {row.headPx}px;">{row.label}</div>
-          <div data-row-body style="height: {row.heightPx - row.headPx}px;"></div>
+          {#if row.clipContentPx}
+            <div data-row-clip style="height: {row.heightPx - row.headPx}px; overflow-y: auto;">
+              {#each { length: Math.ceil(row.clipContentPx / 50) }, block}
+                <div data-clip-block={block} style="height: 50px;">Block {block}</div>
+              {/each}
+            </div>
+          {:else}
+            <div data-row-body style="height: {row.heightPx - row.headPx}px;"></div>
+          {/if}
         {:else}
           {row.label}
         {/if}

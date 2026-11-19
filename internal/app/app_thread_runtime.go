@@ -135,13 +135,13 @@ func (p threadWorkspacePort) attachWorktree(projectPath string, ref gitops.Ref) 
 	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	created, err := p.app.gitCore().AttachWorktreeAt(projectPath, worktreePath, ref)
+	tip, err := p.app.gitCore().AttachWorktreeAt(projectPath, worktreePath, ref)
 	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	made := threadapp.CutWorktree{Path: worktreePath}
+	made := threadapp.CutWorktree{Path: worktreePath, Tip: tip}
 	if ref.IsBranch() {
-		made.Branch, made.CreatedBranch = ref.Name, created
+		made.Branch = ref.Name
 	}
 	return made, nil
 }
@@ -166,28 +166,21 @@ func (p threadWorkspacePort) cutNewBranch(ctx context.Context, projectPath, reso
 	if cut.BaseLocal {
 		// The caller asked for this computer's head of the base, unpushed
 		// commits included, so origin is not consulted at all.
-		if err := p.app.gitCore().CreateWorktreeFromRef(projectPath, worktreePath, base, resolvedBranch); err != nil {
+		tip, err := p.app.gitCore().CreateWorktreeFromRef(projectPath, worktreePath, base, resolvedBranch)
+		if err != nil {
 			return threadapp.CutWorktree{}, err
 		}
-		return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
+		return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, Tip: tip}, nil
 	}
-	if err := p.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, resolvedBranch); err != nil {
+	tip, err := p.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, resolvedBranch)
+	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
+	return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, Tip: tip}, nil
 }
 
 func (p threadWorkspacePort) RemoveCutWorktree(projectPath string, cut threadapp.CutWorktree) error {
-	core := p.app.gitCore()
-	if err := core.RemoveWorktreeForce(projectPath, cut.Path, true); err != nil {
-		return fmt.Errorf("remove worktree %s: %w", cut.Path, err)
-	}
-	if cut.CreatedBranch {
-		if err := core.DeleteBranch(projectPath, cut.Branch, true); err != nil {
-			return fmt.Errorf("delete branch %s: %w", cut.Branch, err)
-		}
-	}
-	return nil
+	return p.app.gitCore().UndoCut(projectPath, cut.Path, cut.Branch, cut.Tip)
 }
 
 type threadWorktreeSetupPort struct{ app *App }
@@ -265,46 +258,26 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 	return a.reconnectSessionLocked(context.Background(), threadID)
 }
 
-func (a *App) deleteThreadTreeLocked(threadID string) error {
-	return a.threadApplication().DeleteTree(threadID, false, a.threadDeletePorts(nil))
-}
-
-func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
-	return a.threadApplication().DeleteTree(threadID, true, a.threadDeletePorts(nil))
-}
-
-// threadDeletePorts wires a delete to the app. Work the delete could not
-// stop (an ask, or a command on another computer whose cancel was not
-// delivered) does not hold the delete: it goes into unstopped when the
-// caller reports it, and to the log otherwise.
-func (a *App) threadDeletePorts(unstopped *threadCleanupError) threadapp.DeletePorts {
-	// DeleteTree stops each thread's remote work twice. An ask the first
-	// pass could not stop is still open, so the second pass tries it again
-	// and its answer is the one that stands. A command whose cancel was not
-	// delivered is dismissed either way and never tried again, so every
-	// pass's undelivered cancels count.
-	var askThreads []string
-	asksByThread := map[string]error{}
+// threadDeletePorts are the ports of one thread's delete
+// (familyDelete.destroyMember). Work the delete could not stop, an ask or a
+// command on another computer whose cancel was not delivered, does not hold
+// the delete: it is logged, and noted in unstopped when the caller reports
+// it.
+func (a *App) threadDeletePorts(unstopped *deleteUnstopped) threadapp.DeletePorts {
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
+			// Runs twice per delete; both halves are conditional updates,
+			// so the second pass finds only what the first could not stop.
 			asks, err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID)
 			if err != nil {
 				return err
 			}
-			commands, err := a.cancelThreadRemoteCommands(context.Background(), threadID)
+			commands, err := a.cancelThreadRemoteCommands(context.Background(), threadID, false)
 			if asks != nil || commands != nil {
 				log.Printf("app: delete thread %s: %v", threadID, errors.Join(asks, commands))
 			}
 			if unstopped != nil {
-				if _, seen := asksByThread[threadID]; !seen {
-					askThreads = append(askThreads, threadID)
-				}
-				asksByThread[threadID] = asks
-				unstopped.asks = nil
-				for _, id := range askThreads {
-					unstopped.asks = errors.Join(unstopped.asks, asksByThread[id])
-				}
-				unstopped.commands = errors.Join(unstopped.commands, commands)
+				unstopped.note(threadID, asks, commands)
 			}
 			return err
 		},
@@ -319,10 +292,10 @@ func (a *App) threadDeletePorts(unstopped *threadCleanupError) threadapp.DeleteP
 			return a.terminals.CloseThread(threadID)
 		},
 		CloseBrowserPages:  a.closeThreadBrowserPages,
-		ClearSystemPrompt:  a.clearThreadSystemPrompt,
-		RemoveDiscussion:   a.removeDeliberation,
 		ClearAutoReconnect: a.clearAutoReconnectAttempted,
 		CleanupAttachments: a.cleanupThreadAttachmentFiles,
+		CleanupMemoryFiles: a.deleteMemoryFiles,
+		AssistantHome:      a.assistantHomeForDelete,
 		CleanupReplayLog: func(threadID string) error {
 			if a.replay == nil {
 				return nil
@@ -334,7 +307,22 @@ func (a *App) threadDeletePorts(unstopped *threadCleanupError) threadapp.DeleteP
 			a.terminalThreads.forget(threadID)
 			a.forgetUnsavedThreadRows(threadID)
 		},
-		Deleted: func(thread store.Thread) { a.broadcastThreadDeleted(thread.ID) },
+		Dropped: func(thread store.Thread, spawned []string) {
+			// The delete announced the row gone when it committed
+			// (familyDelete.commit). A thread it spawned with a sidebar
+			// row lost its spawner, and an owned one the delete did not
+			// take, a moved thread's worker left here, is standalone now
+			// and joins the sidebar.
+			for _, id := range spawned {
+				a.announcePlaced(id)
+			}
+			// A live worker it made lost its spawn link with the row: its
+			// prompts go where they route now.
+			a.reroutePromptsFrom(thread.ID)
+			if err := a.forgetLiveWorker(thread.ID); err != nil {
+				log.Printf("agent rows: look up the spawns of live workers after deleting %s: %v", thread.ID, err)
+			}
+		},
 	}
 }
 
@@ -359,14 +347,6 @@ func (a *App) cleanupThreadAttachmentFiles(threadID string) error {
 		return fmt.Errorf("remove attachment files for %s: %w", threadID, err)
 	}
 	return nil
-}
-
-func (a *App) removeDeliberation(thread store.Thread) {
-	a.discussionService().RemoveForThread(thread)
-}
-
-func (a *App) removeDeliberationByID(channelID string) {
-	a.discussionService().Remove(channelID)
 }
 
 const applyActiveModeTimeout = 5 * time.Second

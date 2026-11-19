@@ -137,13 +137,6 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+shift+o"
   },
   {
-    "key": "mod+shift+d",
-    "command": "thread.new.discussion",
-    "when": "!terminalFocus",
-    "defaultId": "thread.new.discussion",
-    "defaultKey": "mod+shift+d"
-  },
-  {
     "key": "mod+w",
     "command": "pane.close",
     "when": "!terminalFocus",

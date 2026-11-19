@@ -3,7 +3,9 @@ package attachedbackends
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/deviceclient"
@@ -83,10 +85,44 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
 	if !entityid.Valid(id) {
-		return errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)
+		return rpcclient.NotSentError{Err: errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
 	}
+	// Refused before the pairing is looked at, so a method outside the
+	// surface is named as that whatever the computer's state.
+	if err := m.admitAgentCall(id, method); err != nil {
+		return rpcclient.NotSentError{Err: err}
+	}
+	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
+}
+
+// HoldAgentPeer runs use with calls that share one connection to the
+// computer, as the chunks of one artifact copy do (holdPeer). Every call is
+// checked as CallAgentPeer checks its one.
+func (m *Manager) HoldAgentPeer(ctx context.Context, id string, use func(PeerCall) error) error {
+	if !entityid.Valid(id) {
+		return rpcclient.NotSentError{Err: errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
+	}
+	_, err := m.holdPeer(ctx, id, transport.CapabilityRemoteCommands, "", func(call PeerCall) error {
+		return use(func(ctx context.Context, method string, result any, params ...any) error {
+			if err := m.admitAgentCall(id, method); err != nil {
+				return rpcclient.NotSentError{Err: err}
+			}
+			return call(ctx, method, result, params...)
+		})
+	})
+	return err
+}
+
+// admitAgentCall refuses a method outside the agent commands surface, and
+// one that starts or lists work on a computer the owner has not enabled.
+// What reads or ends a job already started stays reachable after the owner
+// turns the computer off.
+func (m *Manager) admitAgentCall(id, method string) error {
+	started := false
 	switch method {
-	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects", "RemoteCommandEnvironment", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact", "RemoteCommandLogArtifact":
+	case "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact", "RemoteCommandLogArtifact":
+		started = true
+	case "RemoteCommandStart", "RemoteCommandProjects", "RemoteCommandEnvironment":
 	default:
 		return errors.New("this method is not available to agent commands")
 	}
@@ -94,10 +130,10 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 	if err != nil {
 		return err
 	}
-	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" && method != "RemoteCommandLogArtifact" {
+	if !access[id] && !started {
 		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)
 	}
-	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
+	return nil
 }
 
 // CheckAgentPeer proves the pairing, protocol, and command scope before an
@@ -106,30 +142,17 @@ func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
 	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
 }
 
-// The refusals this package raises for the agent thread tools. They are
-// named because the source side reads them to decide whether a request was
-// ever made: both say the call never left this computer, which is what lets
-// a source settle its row instead of polling a destination that never heard
-// of it (app.threadRequestNeverSent).
-const (
-	// CodeThreadUnreachable is a call that could not be addressed at all:
-	// the computer id does not name a computer.
-	CodeThreadUnreachable = "thread_unreachable"
-	// CodeThreadUnsupported is a destination whose version does not serve
-	// the thread tools.
-	CodeThreadUnsupported = "thread_unsupported"
-)
-
 // threadPeerMethods is the whole surface agent thread tools reach on a
 // paired computer. It is separate from the command allowlist because the
 // two carry different authority: a thread call never runs a shell.
 var threadPeerMethods = map[string]struct{}{
 	"ThreadToolResolve": {}, "ThreadToolQuery": {}, "ThreadToolCall": {},
-	"ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {},
+	"ThreadOwnerRecovery": {}, "ThreadOwnerChanges": {}, "ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {}, "ThreadToolWatch": {},
 }
 
 // CallThreadPeer makes one authenticated RPC call for the agent thread
-// tools, on the same rotating credential CallAgentPeer uses.
+// tools, on the same rotating credential CallAgentPeer uses, to a
+// destination that advertises transport.CapabilityThreadTools.
 //
 // There is no opt-in check: reach is pairing alone. Pairing a computer is
 // the user saying these two computers are theirs, and the destination
@@ -138,46 +161,165 @@ var threadPeerMethods = map[string]struct{}{
 // agent-commands opt-in exists because a remote command runs a shell;
 // nothing here does.
 func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
-	if !entityid.Valid(id) {
-		return errorsx.Public(CodeThreadUnreachable, "computer_id must be a computer UUID from thread_options.", nil)
-	}
-	if _, ok := threadPeerMethods[method]; !ok {
-		return errors.New("this method is not available to agent thread tools")
-	}
-	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
+	return m.CallThreadPeerOn(ctx, id, transport.CapabilityThreadTools, method, result, params...)
 }
 
-// callPeer is the shared body: load the carrier, take or open an RPC that
-// proves the destination advertises `capability` (peerconns.go), and make
-// the call. The
-// capability is the only thing that differs between the two surfaces, and
-// it is what turns an older destination into a clear refusal instead of a
-// method error.
-func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
-	held, err := m.carrier(id)
-	if err != nil {
-		if errors.Is(err, deviceclient.ErrNoSession) {
-			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
-		}
-		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
+// CallThreadPeerOn is CallThreadPeer for a destination that speaks the
+// thread peer protocol generation `protocol` (transport.CapabilityThreadTools
+// or a later one). A destination that does not advertise it is refused
+// before anything is sent, which Unsupported reports.
+func (m *Manager) CallThreadPeerOn(ctx context.Context, id, protocol, method string, result any, params ...any) error {
+	_, err := m.CallThreadPeerProving(ctx, id, protocol, "", method, result, params...)
+	return err
+}
+
+// CallThreadPeerProving is CallThreadPeerOn that also reports whether the
+// connection the call went out on advertised generation, a later thread
+// peer protocol generation. That is the destination's hello on it, read
+// before the call was sent: a call that failed after it still reports it,
+// and an answer that came is that same build's. It is false when no
+// connection was proven.
+func (m *Manager) CallThreadPeerProving(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (bool, error) {
+	answer, err := m.ReadThreadPeer(ctx, id, protocol, generation, method, result, params...)
+	return answer.proved, err
+}
+
+// HoldThreadPeer runs use with calls that share one connection to the
+// computer, as the chunks of one export copy do (holdPeer).
+func (m *Manager) HoldThreadPeer(ctx context.Context, id string, use func(PeerCall) error) error {
+	_, err := m.holdThreadPeer(ctx, id, transport.CapabilityThreadTools, "", use)
+	return err
+}
+
+// holdThreadPeer is holdPeer for the thread tools' surface: a computer id,
+// a thread peer protocol generation, and only the methods the tools reach.
+func (m *Manager) holdThreadPeer(ctx context.Context, id, protocol, generation string, use func(PeerCall) error) (PeerRead, error) {
+	if !entityid.Valid(id) {
+		return PeerRead{}, rpcclient.NotSentError{Err: errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
 	}
-	rpc := held.peers.take(ctx, capability)
-	if rpc == nil {
-		rpc, err = openPeerRPC(ctx, held, capability)
-		if err != nil {
+	if protocol != transport.CapabilityThreadTools && protocol != transport.CapabilityThreadToolsV2 {
+		return PeerRead{}, rpcclient.NotSentError{Err: fmt.Errorf("%s is not a thread peer protocol", protocol)}
+	}
+	return m.holdPeer(ctx, id, protocol, generation, func(call PeerCall) error {
+		return use(func(ctx context.Context, method string, result any, params ...any) error {
+			if _, ok := threadPeerMethods[method]; !ok {
+				return rpcclient.NotSentError{Err: errors.New("this method is not available to agent thread tools")}
+			}
+			return call(ctx, method, result, params...)
+		})
+	})
+}
+
+// PeerCall makes one call on a connection holdPeer holds.
+type PeerCall func(ctx context.Context, method string, result any, params ...any) error
+
+// Unanswered reports whether a PeerCall ended without an answer: its
+// connection closed or went quiet, or the call's own context ended. The hold
+// has dropped that connection, so a read sent again goes over a fresh one,
+// pinged or dialed, or is refused unsent once the pairing has ended. A
+// refusal the computer answered and a refusal about the pairing are not
+// unanswered.
+func Unanswered(err error) bool {
+	var answered *rpcclient.Error
+	if err == nil || errors.As(err, &answered) {
+		return false
+	}
+	_, _, refused := errorsx.PublicDetails(err)
+	return !refused
+}
+
+// Unsupported reports whether a failed call was refused because the
+// destination does not advertise the capability it needed.
+func Unsupported(err error) bool { return errors.Is(err, errUnsupportedPeerOperation) }
+
+func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
+	_, err := m.holdPeer(ctx, id, capability, "", func(call PeerCall) error { return call(ctx, method, result, params...) })
+	return err
+}
+
+// holdPeer is the shared body: load the carrier, then hand use a call that
+// takes or opens an RPC proving the destination advertises `capability`
+// (peerconns.go) and keeps it for the calls after. Those go out without the
+// pool's ping, because the connection has just answered. A call that ends
+// without an answer closes the connection, which may hold a reply nobody
+// reads, and the next call takes or opens another. A connection still open
+// when use returns goes back to the pool. use makes one call at a time.
+//
+// The capability is the only thing that differs between the two surfaces,
+// and it is what turns an older destination into a clear refusal instead of
+// a method error. Every failure before a proven connection has the call is
+// a rpcclient.NotSentError; from then on the RPC client says whether its
+// frame was written. It reports whether the connection the last call went
+// out on advertised generation ("" asks nothing).
+func (m *Manager) holdPeer(ctx context.Context, id, capability, generation string, use func(PeerCall) error) (read PeerRead, err error) {
+	held, err := m.carrier(ctx, id)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PeerRead{}, rpcclient.NotSentError{Err: err}
+		}
+		return PeerRead{}, rpcclient.NotSentError{Err: pairingRefusal(err)}
+	}
+	var rpc *rpcclient.Client
+	defer func() {
+		if rpc != nil {
+			held.peers.put(capability, rpc)
+		}
+	}()
+	err = use(func(ctx context.Context, method string, result any, params ...any) error {
+		// Once the carrier has left, a call is refused with its verdict
+		// before it is sent. A call already in flight when it left fails on
+		// its closed connection instead: the destination may have acted on
+		// it, which a pairing refusal would deny.
+		if verdict := held.peers.verdict(); verdict != nil {
+			if rpc != nil {
+				rpc.Close()
+				rpc = nil
+			}
+			return rpcclient.NotSentError{Err: pairingRefusal(verdict)}
+		}
+		if rpc == nil {
+			if rpc = held.peers.take(ctx, capability); rpc == nil {
+				opened, err := openPeerRPC(ctx, held, capability)
+				if err != nil {
+					if verdict := held.peers.verdict(); verdict != nil {
+						err = pairingRefusal(errors.Join(verdict, err))
+					}
+					return rpcclient.NotSentError{Err: err}
+				}
+				rpc = opened
+			}
+		}
+		read = PeerRead{pool: &held.peers, disconnected: rpc.Done(), launch: rpc.LaunchID(), proved: generation != "" && rpc.Advertises(generation)}
+		if expected, ok := ctx.Value(peerReadContextKey{}).(PeerRead); ok && (read.pool != expected.pool || read.launch != expected.launch) {
+			return rpcclient.NotSentError{Err: errors.New("the peer connection changed before the call")}
+		}
+		err := rpc.Call(ctx, method, result, params...)
+		var answered *rpcclient.Error
+		if err != nil && !errors.As(err, &answered) {
+			rpc.Close()
+			rpc = nil
 			return err
 		}
-	}
-	err = rpc.Call(ctx, method, result, params...)
-	var answered *rpcclient.Error
-	if err != nil && !errors.As(err, &answered) {
-		// The connection may hold a reply this call no longer reads.
-		rpc.Close()
+		held.reached()
 		return err
+	})
+	return read, err
+}
+
+// pairingRefusal maps why a pairing cannot carry a call, its carrier's
+// lookup failing or the verdict the carrier left with, onto the agent
+// surfaces' codes. It is raised only before a call is sent, so its caller
+// marks it not sent.
+func pairingRefusal(err error) error {
+	switch {
+	case errors.Is(err, errPairingEnded):
+		return errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access.", err)
+	case errors.Is(err, errPairingReplaced):
+		return errorsx.Public("remote_pairing_replaced", "This computer was paired again while the call was on its way. Retry it.", err)
+	case errors.Is(err, deviceclient.ErrNoSession):
+		return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
 	}
-	held.reached()
-	held.peers.put(capability, rpc)
-	return err
+	return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 }
 
 // openPeerRPC dials a new connection for callPeer and maps the refusals
@@ -202,8 +344,51 @@ func openPeerRPC(ctx context.Context, held *carrier, capability string) (*rpccli
 // advertise, so the caller reads a refusal about the feature it asked for
 // rather than a method error.
 func unsupportedPeerError(capability string, cause error) error {
-	if capability == transport.CapabilityThreadTools {
-		return errorsx.Public(CodeThreadUnsupported, "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
+	if strings.HasPrefix(capability, "thread-tools.") {
+		return errorsx.Public("thread_unsupported", "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
 	}
 	return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", cause)
 }
+
+// PeerRead identifies the carrier and peer launch that answered a call.
+type PeerRead struct {
+	pool         *peerConns
+	disconnected <-chan struct{}
+	launch       string
+	proved       bool
+}
+
+func (m *Manager) ReadThreadPeer(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (PeerRead, error) {
+	return m.holdThreadPeer(ctx, id, protocol, generation, func(call PeerCall) error { return call(ctx, method, result, params...) })
+}
+
+type peerReadContextKey struct{}
+
+// Bind restricts follow-up calls to the carrier and launch that answered this read.
+func (r PeerRead) Bind(ctx context.Context) context.Context {
+	return context.WithValue(ctx, peerReadContextKey{}, r)
+}
+
+// Validate checks the responding carrier and, when supplied, the expected launch.
+// The owner serializes its commit with its peer invalidation observer. No owner
+// code runs under the carrier lock.
+func (r PeerRead) Validate(launch string) error {
+	if r.pool == nil || (launch != "" && r.launch != launch) {
+		return errors.New("the answer came from a different peer launch")
+	}
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+	if r.pool.ended != nil {
+		return r.pool.ended
+	}
+	if r.pool.launch != r.launch {
+		return errors.New("the peer restarted before its answer was recorded")
+	}
+	return nil
+}
+
+func (r PeerRead) ProvedGeneration() bool { return r.proved }
+func (r PeerRead) Answered() bool         { return r.pool != nil }
+
+// Disconnected closes when the connection that supplied the observation ends.
+func (r PeerRead) Disconnected() <-chan struct{} { return r.disconnected }

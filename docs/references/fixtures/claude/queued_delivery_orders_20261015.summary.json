@@ -1,0 +1,235 @@
+{
+ "cli": "claude 2.1.284",
+ "model": "claude-sonnet-5-5",
+ "captured": "2026-10-15",
+ "flags": "-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --forward-subagent-text --session-mirror --setting-sources project --permission-mode bypassPermissions --model sonnet",
+ "notation": "Frames from the first write of the case's first queued message on, stream_event/status/rate_limit/mirror omitted. ms = milliseconds after that write. echo(X,n,ts) = user{isReplay} for X with n content blocks, ts = carries timestamp.",
+ "cases": {
+  "case1": {
+   "fixture": "queued_midloop_after_cascade_20261015.ndjson",
+   "fixture_run": 1,
+   "description": "Turn 0 starts a background Bash and ends; its task notification opens a cascade round (with its own system/init) that runs a foreground Bash; M is written during that Bash and drained mid-loop.",
+   "order_identical_across_runs": true,
+   "runs": [
+    [
+     "write M @0ms",
+     "tool_result @12062ms",
+     "echo(M,1,ts) @12069ms",
+     "started M @12071ms",
+     "completed M @13295ms",
+     "result @13304ms"
+    ],
+    [
+     "write M @0ms",
+     "tool_result @12072ms",
+     "echo(M,1,ts) @12095ms",
+     "started M @12098ms",
+     "completed M @13826ms",
+     "result @13830ms"
+    ],
+    [
+     "write M @0ms",
+     "tool_result @12065ms",
+     "echo(M,1,ts) @12069ms",
+     "started M @12070ms",
+     "completed M @13318ms",
+     "result @13333ms"
+    ]
+   ]
+  },
+  "case2": {
+   "fixture": "queued_deferred_pair_midloop_20261015.ndjson",
+   "fixture_run": 1,
+   "description": "A written at an idle session (runs a foreground Bash); B written right after A's started, before A's init; B is drained mid-loop into A's round.",
+   "order_identical_across_runs": true,
+   "runs": [
+    [
+     "write A @0ms",
+     "started A @5ms",
+     "write B @5ms",
+     "system/init @22ms",
+     "echo(A,1,ts) @1287ms",
+     "tool_result @12475ms",
+     "echo(B,1,ts) @12483ms",
+     "started B @12485ms",
+     "completed B @13956ms",
+     "result @13961ms",
+     "completed A @13962ms"
+    ],
+    [
+     "write A @0ms",
+     "started A @5ms",
+     "write B @5ms",
+     "system/init @21ms",
+     "echo(A,1,ts) @1186ms",
+     "tool_result @12454ms",
+     "echo(B,1,ts) @12487ms",
+     "started B @12492ms",
+     "completed B @14236ms",
+     "result @14242ms",
+     "completed A @14245ms"
+    ],
+    [
+     "write A @0ms",
+     "started A @3ms",
+     "write B @3ms",
+     "system/init @22ms",
+     "echo(A,1,ts) @1604ms",
+     "tool_result @13182ms",
+     "echo(B,1,ts) @13192ms",
+     "started B @13193ms",
+     "completed B @14412ms",
+     "result @14417ms",
+     "completed A @14418ms"
+    ]
+   ]
+  },
+  "case3": {
+   "fixture": "queued_boundary_merge_20261015.ndjson",
+   "fixture_run": 1,
+   "description": "A and B written 400 ms apart during a tool-free streaming turn; held and merged at the boundary.",
+   "order_identical_across_runs": true,
+   "runs": [
+    [
+     "write A @0ms",
+     "write B @400ms",
+     "result @4897ms",
+     "completed T0 @4901ms",
+     "echo(A,1,no-ts) @4902ms",
+     "started A @4902ms",
+     "started B @4903ms",
+     "system/init @4911ms",
+     "echo(B,2,ts) @6191ms",
+     "result @6749ms",
+     "completed A @6750ms",
+     "completed B @6751ms"
+    ],
+    [
+     "write A @0ms",
+     "write B @400ms",
+     "result @5690ms",
+     "completed T0 @5691ms",
+     "echo(A,1,no-ts) @5691ms",
+     "started A @5691ms",
+     "started B @5691ms",
+     "system/init @5704ms",
+     "echo(B,2,ts) @6708ms",
+     "result @7251ms",
+     "completed A @7252ms",
+     "completed B @7253ms"
+    ],
+    [
+     "write A @0ms",
+     "write B @401ms",
+     "result @4703ms",
+     "completed T0 @4706ms",
+     "echo(A,1,no-ts) @4706ms",
+     "started A @4707ms",
+     "started B @4707ms",
+     "system/init @4718ms",
+     "echo(B,2,ts) @6122ms",
+     "result @6638ms",
+     "completed A @6640ms",
+     "completed B @6640ms"
+    ]
+   ]
+  },
+  "case3cascade": {
+   "fixture": "queued_boundary_merge_after_cascade_20261015.ndjson",
+   "fixture_run": 1,
+   "description": "Turn 0 ends with a background Bash running; its notification opens a tool-free streaming round; A and B written 400 ms apart during it (after turn 0's result, so AO dispatches both as deferred); merged at that round's end.",
+   "order_identical_across_runs": true,
+   "runs": [
+    [
+     "write A @0ms",
+     "write B @400ms",
+     "result @4439ms",
+     "echo(A,1,no-ts) @4441ms",
+     "started A @4441ms",
+     "started B @4441ms",
+     "system/init @4447ms",
+     "echo(B,2,ts) @7090ms",
+     "result @7602ms",
+     "completed A @7604ms",
+     "completed B @7604ms"
+    ],
+    [
+     "write A @0ms",
+     "write B @400ms",
+     "result @3841ms",
+     "echo(A,1,no-ts) @3843ms",
+     "started A @3844ms",
+     "started B @3844ms",
+     "system/init @3851ms",
+     "echo(B,2,ts) @4769ms",
+     "result @5272ms",
+     "completed A @5273ms",
+     "completed B @5273ms"
+    ],
+    [
+     "write A @0ms",
+     "write B @400ms",
+     "result @4369ms",
+     "echo(A,1,no-ts) @4370ms",
+     "started A @4371ms",
+     "started B @4371ms",
+     "system/init @4376ms",
+     "echo(B,2,ts) @4854ms",
+     "result @5318ms",
+     "completed A @5319ms",
+     "completed B @5320ms"
+    ]
+   ]
+  },
+  "case3idle": {
+   "fixture": "queued_idle_pair_split_20261015.ndjson",
+   "fixture_run": 1,
+   "description": "A and B written in one stdin write at an idle session; A is dequeued alone at once, B is held and runs as its own turn.",
+   "order_identical_across_runs": true,
+   "runs": [
+    [
+     "write A @0ms",
+     "write B @0ms",
+     "started A @4ms",
+     "system/init @16ms",
+     "echo(A,1,ts) @1358ms",
+     "result @1980ms",
+     "completed A @1980ms",
+     "started B @1980ms",
+     "system/init @1981ms",
+     "echo(B,1,ts) @3819ms",
+     "result @3845ms",
+     "completed B @3846ms"
+    ],
+    [
+     "write A @0ms",
+     "write B @0ms",
+     "started A @9ms",
+     "system/init @64ms",
+     "echo(A,1,ts) @1101ms",
+     "result @1634ms",
+     "completed A @1636ms",
+     "started B @1637ms",
+     "system/init @1653ms",
+     "echo(B,1,ts) @2678ms",
+     "result @3549ms",
+     "completed B @3550ms"
+    ],
+    [
+     "write A @0ms",
+     "write B @0ms",
+     "started A @12ms",
+     "system/init @88ms",
+     "echo(A,1,ts) @1368ms",
+     "result @1399ms",
+     "completed A @1400ms",
+     "started B @1402ms",
+     "system/init @1421ms",
+     "echo(B,1,ts) @2748ms",
+     "result @2780ms",
+     "completed B @2780ms"
+    ]
+   ]
+  }
+ }
+}

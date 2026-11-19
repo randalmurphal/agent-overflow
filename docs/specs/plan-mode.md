@@ -52,7 +52,7 @@ Spike evidence (2026-09-25, Claude 2.1.257 and 2.1.280, Codex 0.155.1):
 - The chat/plan interaction choice is removed for every provider. The
   manual selection (`ValidateCreate`, `ValidateSet`, drafts,
   `thread_spawn`, peer calls) accepts `chat` only. The `mode` column keeps
-  its other values (discussion, terminal, workflow, scratch, holder).
+  its other values (terminal, workflow, scratch, holder).
   `plan` from an older peer, an older transfer manifest or the closed
   thread-tool decoder is accepted and coerced to `chat` at that
   boundary, never rejected.

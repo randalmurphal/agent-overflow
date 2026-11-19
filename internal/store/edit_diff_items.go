@@ -189,10 +189,12 @@ func (s *Store) ListTurnEditDiffPayloads(threadID string, turnIndex int) ([]stri
 }
 
 // TurnUserSummary labels a turn with its first user prompt's summary,
-// for grouping the edit selector by turn.
+// for grouping the edit selector by turn. Meta is the prompt row's meta,
+// which says whether an agent wrote it.
 type TurnUserSummary struct {
 	TurnIndex int
 	Summary   string
+	Meta      string
 }
 
 // ListTurnUserSummaries returns each turn's first reader-authored
@@ -215,7 +217,7 @@ func listTurnUserSummaries(q sqlQueryer, threadID string) ([]TurnUserSummary, er
 	// carries MIN(item_index) — the first prompt of the turn (a steer
 	// or queued flush lands later in the same turn).
 	rows, err := q.Query(`
-		SELECT turn_index, summary, MIN(item_index)
+		SELECT turn_index, summary, meta, MIN(item_index)
 		  FROM timeline_items
 		 WHERE thread_id = ?
 		   AND `+readerAuthoredUserTextFilter+`
@@ -232,7 +234,7 @@ func listTurnUserSummaries(q sqlQueryer, threadID string) ([]TurnUserSummary, er
 	for rows.Next() {
 		var entry TurnUserSummary
 		var minIndex int
-		if err := rows.Scan(&entry.TurnIndex, &entry.Summary, &minIndex); err != nil {
+		if err := rows.Scan(&entry.TurnIndex, &entry.Summary, &entry.Meta, &minIndex); err != nil {
 			return nil, fmt.Errorf("store: scan turn user summary for %s: %w", threadID, err)
 		}
 		summaries = append(summaries, entry)

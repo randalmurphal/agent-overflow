@@ -151,8 +151,10 @@ func (a *App) accountSwitchPool(providerName string) accountswitch.Pool {
 }
 
 // threadContinueModel returns the model a continue of the thread would run
-// on. ok is false for a thread that is gone, archived, or in a hidden mode
-// (workflow-owned, scratch, holder).
+// on. ok is false for a thread that is gone, archived, in a hidden mode
+// (workflow-owned, scratch, holder), or an assistant's past thread: an app
+// message to one goes to the assistant's current thread
+// (queueAgentNotice), which the limit did not stop.
 func (a *App) threadContinueModel(threadID string) (model string, ok bool) {
 	if a.store == nil {
 		return "", false
@@ -165,6 +167,9 @@ func (a *App) threadContinueModel(threadID string) (model string, ok bool) {
 	if thread.Archived || threadmode.IsHidden(thread.Mode) {
 		return "", false
 	}
+	if _, superseded := a.assistantCurrentThread(threadID); superseded {
+		return "", false
+	}
 	return a.threadRunningModel(thread), true
 }
 
@@ -173,15 +178,18 @@ func (a *App) threadContinueModel(threadID string) (model string, ok bool) {
 func (a *App) continueAfterUsageLimit(ctx context.Context, threadID string, admit func() bool) error {
 	ctx, cancel := context.WithTimeout(ctx, continueLockTimeout)
 	defer cancel()
-	return a.queueAgentNotice(ctx, agentNotice{
+	// A notice is queued without the thread's action lock; this one takes it
+	// because admit must not race a send to the thread, which ends the wait.
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return a.queueAgentNotice(agentNotice{
 		threadID: threadID,
 		sendID:   "usage-continue:" + threadID + ":" + uuid.NewString(),
-		origin:   usermessage.OriginApp,
-		prepare: func() (string, bool, error) {
-			if !admit() {
-				return "", false, nil
-			}
-			return accountswitch.ContinueMessage, true, nil
+		prepare: func() (usermessage.AgentMessage, bool, error) {
+			return usermessage.AppMessage(accountswitch.ContinueMessage), admit(), nil
 		},
 		startFailed: func(err error) string {
 			return "Could not start this thread to continue it after the usage limit: " + err.Error()

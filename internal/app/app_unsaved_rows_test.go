@@ -276,7 +276,7 @@ func TestDeletingAThreadForgetsItsUnsavedRows(t *testing.T) {
 		t.Fatal("setup: no unsaved error retained")
 	}
 
-	if err := app.DeleteThread("thread-deleted"); err != nil {
+	if err := app.deleteThread("thread-deleted"); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 

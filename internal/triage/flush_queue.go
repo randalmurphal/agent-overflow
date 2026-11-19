@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 )
 
@@ -75,8 +77,9 @@ type QueuedFlushItem struct {
 	// dispatch of this message whose session-death cleanup failed
 	// (app-layer requeue, round-11 R11-1). The dispatcher must retry
 	// that cleanup before persisting a fresh row — dispatching over
-	// the stale row would show the message twice in the timeline.
-	// Empty for normal queue items.
+	// the stale row would show the message twice in the timeline. A
+	// joined row's cleanup is one item's, and a copy dropped as withdrawn
+	// retires the row it names. Empty for normal queue items.
 	StaleUserItemID string
 	// Settlement is opaque app-layer bookkeeping whose lifetime is the
 	// message's. The app settles it when the message reaches either durable
@@ -87,7 +90,37 @@ type QueuedFlushItem struct {
 	// Nil for user-typed messages. Workflow wakes use it for the durable wake
 	// signature and provider-usage attention claim that suppress duplicates.
 	Settlement *FlushSettlement
+	// NoRow marks a message with no durable queue row: a recovery that could
+	// not restore a message the provider was already handed queued it again
+	// (the app's requeue fallbacks), its row having gone at that write, and
+	// its durable copy is the timeline row it still has (StaleUserItemID) or
+	// none, when writing its queue row again failed. Every other queued
+	// message has a row, and the app sends or restores it only while the row
+	// stands; this one passes those checks, and a withdrawal finds nothing of
+	// it to take back.
+	NoRow bool
+	// DispatchGeneration is the thread's dispatch generation when the queue
+	// handed the message out (tryFlushQueue): a handoff that outlived a
+	// teardown or a recovery carries an older one than the thread's.
+	DispatchGeneration uint64
 }
+
+// FlushQueueMember is one queued message a flush send carries: the queue row
+// it was dispatched from, its send id, and whether it is known to have no
+// row: its write retired the row (Router.NoteFlushRowRetired), or it had none
+// (QueuedFlushItem.NoRow). Any other member keeps its row while it is wanted,
+// as an async answer does until its echo, and was withdrawn once the row is
+// gone. A joined message has one per queued message it joined, each deciding
+// for itself whether it is still wanted.
+type FlushQueueMember struct {
+	QueueItemID string
+	SendID      string
+	NoRow       bool
+}
+
+// KeepsRow reports whether the member has a durable row for as long as it is
+// wanted.
+func (m FlushQueueMember) KeepsRow() bool { return m.QueueItemID != "" && !m.NoRow }
 
 type UnconfirmedFlushItem struct {
 	QueueItemID  string
@@ -98,6 +131,10 @@ type UnconfirmedFlushItem struct {
 	DeferredItem *store.Item
 	QuietItem    *store.Item
 	Settlement   *FlushSettlement
+	// JoinedParts are the members of a joined message as they appear in its
+	// text, when the dispatch that joined it recorded them
+	// (PendingSendExpectation.JoinedParts).
+	JoinedParts []agentmeta.JoinedPart
 	// StaleUserItemID carries a requeued item's failed-cleanup row id
 	// (QueuedFlushItem.StaleUserItemID) through a session-death drain
 	// that catches the item still queued, so the obligation survives
@@ -105,6 +142,17 @@ type UnconfirmedFlushItem struct {
 	// never carry it: their dispatch already ran the cleanup before
 	// persisting.
 	StaleUserItemID string
+	// Discarded marks a send the provider dropped unrun because its session
+	// ended (provider.CommandDiscarded), as against one it cancelled while
+	// the session lives on.
+	Discarded bool
+	// Queued marks a message drained from a queue, never handed to the
+	// provider.
+	Queued bool
+	// QueueMembers are the queued messages the item carries: the one a
+	// queued message or a message sent alone is, or every member of a
+	// joined one, from its pending send (pendingSend.QueueMembers).
+	QueueMembers []FlushQueueMember
 }
 
 // FlushSettlement owns the one durable-delivery transition for an injected
@@ -116,24 +164,26 @@ type UnconfirmedFlushItem struct {
 // workflow's durable pending records are what re-surface the wake on boot.
 type FlushSettlement struct {
 	once sync.Once
-	fn   func()
+	fn   func(session string)
 }
 
 // NewFlushSettlement binds one injected queue item's durable bookkeeping.
-func NewFlushSettlement(fn func()) *FlushSettlement {
+func NewFlushSettlement(fn func(session string)) *FlushSettlement {
 	if fn == nil {
 		return nil
 	}
 	return &FlushSettlement{fn: fn}
 }
 
-// Settle runs the durable bookkeeping at most once. Nil and zero values are
-// no-ops so ordinary user-authored queue items need no conditional path.
-func (s *FlushSettlement) Settle() {
+// Settle runs the durable bookkeeping at most once. session is the token of
+// the session the message was written to, empty when it was restored
+// instead. Nil and zero values are no-ops so ordinary user-authored queue
+// items need no conditional path.
+func (s *FlushSettlement) Settle(session string) {
 	if s == nil || s.fn == nil {
 		return
 	}
-	s.once.Do(s.fn)
+	s.once.Do(func() { s.fn(session) })
 }
 
 // CombineFlushSettlements preserves every obligation when two in-memory
@@ -147,9 +197,9 @@ func CombineFlushSettlements(left, right *FlushSettlement) *FlushSettlement {
 	case right == nil || left == right:
 		return left
 	default:
-		return NewFlushSettlement(func() {
-			left.Settle()
-			right.Settle()
+		return NewFlushSettlement(func(session string) {
+			left.Settle(session)
+			right.Settle(session)
 		})
 	}
 }
@@ -198,6 +248,26 @@ func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item sto
 	r.mu.Unlock()
 }
 
+// ConsumedSend is a flush send the provider consumed: the timeline row that
+// carries it and the send ids it carries (all of a joined message's).
+type ConsumedSend struct {
+	ItemID  string
+	SendIDs []string
+}
+
+// SetFlushSendConsumedHook wires the app-layer callback that runs when the
+// provider consumes flush sends. It runs on every confirmation source and
+// never on an interrupt's anchoring, under the thread's flush anchor lock
+// and often on the provider read loop: the same contract as
+// SetFlushUserTextConfirmedHook. A queue-boundary merge reports its folded
+// members again with the row that now carries them, whether or not they
+// were reported before. Nil disables it.
+func (r *Router) SetFlushSendConsumedHook(fn func(threadID string, sends []ConsumedSend)) {
+	r.mu.Lock()
+	r.flushSendConsumed = fn
+	r.mu.Unlock()
+}
+
 // SetSendUndeliveredHook wires the app's signal that a thread has sends the
 // provider cancelled without running (DrainUndeliveredSends). Called under
 // the thread's flush anchor lock, so it must hand the work off. With no hook
@@ -213,7 +283,7 @@ func (r *Router) SetSendUndeliveredHook(fn func(threadID string)) {
 // frontend can keep showing the submitted message above the composer while
 // the app writes it to the provider and waits for the provider-visible echo.
 func (r *Router) FlushQueuedItems(threadID string) bool {
-	return r.tryFlushQueue(threadID)
+	return r.tryFlushQueue(threadID, "")
 }
 
 // RegisterQueueItem appends a queued user message to the per-thread
@@ -240,15 +310,58 @@ func (r *Router) RegisterQueueItem(threadID string, item QueuedFlushItem) int64 
 	return item.EnqueuedAt
 }
 
+// FlushDispatchGeneration is the thread's dispatch generation, which the
+// app advances when a teardown or a recovery takes the thread's queued
+// work (AdvanceFlushDispatchGeneration). It lives on the never-deleted
+// identity, read under the lock the queue hands messages out under, so
+// every handoff carries the generation it was made in.
+func (r *Router) FlushDispatchGeneration(threadID string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if identity := r.identityIfPresent(threadID); identity != nil {
+		return identity.dispatchGeneration
+	}
+	return 0
+}
+
+// AdvanceFlushDispatchGeneration starts the thread's next dispatch
+// generation and returns it: every handoff and batch of an earlier one is
+// stale from now on. dropped says the generation ends because its queued
+// work was thrown away (a Stop's teardown, a revert), as against taken by a
+// recovery: a stale handoff of it, or of any earlier one, is then thrown away
+// too (FlushGenerationDropped).
+func (r *Router) AdvanceFlushDispatchGeneration(threadID string, dropped bool) uint64 {
+	if threadID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identity(threadID)
+	if dropped {
+		identity.flushDroppedBelow = identity.dispatchGeneration + 1
+	}
+	identity.dispatchGeneration++
+	return identity.dispatchGeneration
+}
+
+// FlushGenerationDropped reports whether the thread's queued work was
+// thrown away at or after generation's end (AdvanceFlushDispatchGeneration).
+func (r *Router) FlushGenerationDropped(threadID string, generation uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identityIfPresent(threadID)
+	return identity != nil && generation < identity.flushDroppedBelow
+}
+
 // RemoveQueuedFlushItem drops one still-queued message by id and returns it,
 // so a caller that owns the message (a cancelled agent request) can take it
 // back before the provider ever sees it.
 //
-// It refuses — false, nothing removed — once the message has left the queue:
-// a batch claimed for dispatch is already on its way to the provider, and a
-// removal that raced it would leave the caller believing a delivered message
-// was withdrawn. The claim is checked on the never-deleted identity, the same
-// place QueuedFlushItemCount reads it from, so the handoff window is covered.
+// It refuses — false, nothing removed — once the message has left the queue,
+// a batch claimed for dispatch included: the dispatcher holds that copy, and
+// drops it at its commit point once the message's durable row is gone. The
+// claim is checked on the never-deleted identity, the same place
+// QueuedFlushItemCount reads it from, so the handoff window is covered.
 //
 // The removed item's settlement is NOT run here: the durable row belongs to
 // the caller, which deletes it with whatever bookkeeping the message carried.
@@ -445,7 +558,8 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // no-op until new items are registered.
 //
 // Returns true when the dispatcher was invoked; false otherwise (no
-// items, no dispatcher, empty threadID). The boolean is
+// items, no dispatcher, empty threadID, a boundary of a retired session's
+// frame). The boolean is
 // informational — lifecycle handlers don't branch on it.
 //
 // Dispatcher invocation happens AFTER r.mu is released so callbacks can call
@@ -469,11 +583,17 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // (round-14 close-out, C14-1). The overlap is airtight only if the count
 // reads the triage counts BEFORE the App inflight count —
 // pendingFlushWorkCount does.
-func (r *Router) tryFlushQueue(threadID string) bool {
+func (r *Router) tryFlushQueue(threadID, sessionToken string) bool {
 	if threadID == "" {
 		return false
 	}
 	r.mu.Lock()
+	// A retired session's boundary is not the live session's: the queue
+	// waits for one of its own.
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		r.mu.Unlock()
+		return false
+	}
 	st := r.threadStateIfPresent(threadID)
 	if st == nil || len(st.queuedFlushItems) == 0 {
 		r.mu.Unlock()
@@ -487,6 +607,12 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	}
 	batch := make([]QueuedFlushItem, len(queue))
 	copy(batch, queue)
+	// The generation is the one the messages leave the queue in, so a
+	// handoff a teardown or a recovery overtakes arrives stale.
+	generation := r.identity(threadID).dispatchGeneration
+	for i := range batch {
+		batch[i].DispatchGeneration = generation
+	}
 	st.queuedFlushItems = nil
 	// The claim lives on the never-deleted identity (see threadIdentity):
 	// the dispatcher below runs outside r.mu, so a session teardown can
@@ -541,7 +667,7 @@ func releaseClaimedFlushItems(claimed, released []QueuedFlushItem) []QueuedFlush
 	return kept
 }
 
-func (r *Router) maybeFlushQueueAtBoundary(threadID string) bool {
+func (r *Router) maybeFlushQueueAtBoundary(threadID, sessionToken string) bool {
 	if threadID == "" || !r.HasQueuedFlushItems(threadID) {
 		return false
 	}
@@ -555,7 +681,7 @@ func (r *Router) maybeFlushQueueAtBoundary(threadID string) bool {
 	if active {
 		return false
 	}
-	return r.tryFlushQueue(threadID)
+	return r.tryFlushQueue(threadID, sessionToken)
 }
 
 func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
@@ -650,6 +776,8 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 			EnqueuedAt:      item.EnqueuedAt,
 			StaleUserItemID: item.StaleUserItemID,
 			Settlement:      item.Settlement,
+			Queued:          true,
+			QueueMembers:    []FlushQueueMember{{QueueItemID: item.ID, NoRow: item.NoRow}},
 		})
 	}
 	drainState.queuedFlushItems = nil
@@ -676,14 +804,73 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 	return drained
 }
 
+// UnconfirmedFlushSends returns the sends the provider was handed and has
+// not confirmed, from the pending-send FIFO and the provider's cancelled
+// sends, as DrainUnconfirmedFlushItems would hand them back, without taking
+// them. A teardown reads them before CleanupThread drops them.
+func (r *Router) UnconfirmedFlushSends(threadID string) []UnconfirmedFlushItem {
+	if threadID == "" {
+		return nil
+	}
+	// Under the anchor lock, as the drain is: an interrupt transition in
+	// flight commits before the snapshot.
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil
+	}
+	var sends []UnconfirmedFlushItem
+	for _, entry := range st.pendingSends {
+		if entry.QueueItemID == "" || entry.Shape != sendShapeFlush || entry.EchoConsumed {
+			continue
+		}
+		sends = append(sends, unconfirmedFlushItemFromPending(entry))
+	}
+	return append(sends, st.undeliveredSends...)
+}
+
+// NoteFlushRowRetired records on the flush send that carries queue item
+// queueItemID, pending or retired unrun, that its write retired the item's
+// durable row (FlushQueueMember.NoRow).
+func (r *Router) NoteFlushRowRetired(threadID, queueItemID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return
+	}
+	for i := range st.pendingSends {
+		if st.pendingSends[i].Shape == sendShapeFlush {
+			markFlushMemberRowless(st.pendingSends[i].QueueMembers, queueItemID)
+		}
+	}
+	for i := range st.undeliveredSends {
+		markFlushMemberRowless(st.undeliveredSends[i].QueueMembers, queueItemID)
+	}
+}
+
+func markFlushMemberRowless(members []FlushQueueMember, queueItemID string) {
+	for i := range members {
+		if members[i].QueueItemID == queueItemID {
+			members[i].NoRow = true
+		}
+	}
+}
+
 // unconfirmedFlushItemFromPending is the restore form of a pending send the
 // provider never consumed: its identity and whichever retained copy it holds.
 // A direct send retains none; its row is in the store under UserItemID.
 func unconfirmedFlushItemFromPending(entry pendingSend) UnconfirmedFlushItem {
 	restored := UnconfirmedFlushItem{
-		QueueItemID: entry.QueueItemID,
-		UserItemID:  entry.AOItemID,
-		EnqueuedAt:  entry.EnqueuedAt,
+		QueueItemID:  entry.QueueItemID,
+		UserItemID:   entry.AOItemID,
+		EnqueuedAt:   entry.EnqueuedAt,
+		JoinedParts:  entry.JoinedParts,
+		QueueMembers: slices.Clone(entry.QueueMembers),
 	}
 	if entry.DeferredItem != nil {
 		item := *entry.DeferredItem

@@ -4,7 +4,7 @@ import {
   BeginThreadTransfer, BindThreadTransferDestination, CreateThreadTransferOffer,
   GetThreadTransfers, GetThreadTransferIntent, RetryThreadTransfer,
   CancelThreadTransfer, DiscardUnpreparedThreadTransfer,
-  GetThreadTransferDestinationProject, GetThread,
+  GetThreadTransferDestinationProject, GetThread, GetStandingAgent, ListThreadRecurringJobs,
 } from './bindings';
 import type { Thread } from '../types/models';
 import { type BackendKey } from '../transport/backendKey';
@@ -25,6 +25,7 @@ import { createSnapshotStream } from './snapshotStream';
 
 export type ConversationTransfer = Awaited<ReturnType<typeof GetThreadTransfers>>[number];
 type TransferIntent = Awaited<ReturnType<typeof BeginThreadTransfer>>;
+export type RecurringJob = Awaited<ReturnType<typeof ListThreadRecurringJobs>>[number];
 export type TransferKind = 'move' | 'copy';
 export interface TransferRequest {
   operationID: string;
@@ -39,6 +40,12 @@ export interface TransferRequest {
   kind?: TransferKind;
   includeWorkspace?: boolean;
   intent?: TransferIntent;
+  /** Recurring jobs the source session holds; the transfer ends them. */
+  recurringJobs?: RecurringJob[];
+  recurringJobsError?: string;
+  /** Whether the source thread is a standing agent, once the source answered. */
+  standingAgent?: boolean;
+  standingAgentError?: string;
 }
 
 interface ComputerTransfers { rows: readonly ConversationTransfer[]; error: string }
@@ -70,11 +77,34 @@ export function openConversationTransfer(thread: Thread, destination?: BackendKe
     if (!previous || !terminal(previous)) { pending = { ...pending, open: true }; return; }
   }
   pending = { operationID: randomId(), thread, source: threadMachine(thread.id, thread.projectId), destination, open: true, submitted: false, submitting: false, error: '' };
+  void loadRecurringJobs(pending);
+  void loadStandingAgent(pending);
+}
+// A transfer stops the source session, so the recurring jobs it holds end
+// rather than holding the transfer. The dialog names them before the user
+// commits.
+async function loadRecurringJobs(request: TransferRequest): Promise<void> {
+  try {
+    const recurringJobs = await withBackendTarget(request.source, () => ListThreadRecurringJobs(request.thread.id));
+    patchRequest(request.operationID, { recurringJobs });
+  } catch (error) {
+    patchRequest(request.operationID, { recurringJobsError: userFacingError(error) });
+  }
+}
+// A standing agent's home and schedules belong to its computer, so the
+// dialog says what a transfer leaves behind before the user commits.
+async function loadStandingAgent(request: TransferRequest): Promise<void> {
+  try {
+    const agent = await withBackendTarget(request.source, () => GetStandingAgent(request.thread.id));
+    patchRequest(request.operationID, { standingAgent: agent !== null });
+  } catch (error) {
+    patchRequest(request.operationID, { standingAgentError: userFacingError(error) });
+  }
 }
 export function canOfferConversationTransfer(thread: Thread): boolean {
   if (!remoteAccessAvailable()) return false;
   const source = threadMachine(thread.id, thread.projectId);
-  return (thread.provider === 'claude' || thread.provider === 'codex') && !thread.parentThreadId && !thread.discussionId && !thread.mode?.startsWith('workflow') &&
+  return (thread.provider === 'claude' || thread.provider === 'codex') && !thread.mode?.startsWith('workflow') &&
     supportsConversationTransfer(source) && getAttachedBackends().some((entry) => entry.id !== source && supportsConversationTransfer(entry.id));
 }
 export function closeConversationTransfer(): void {

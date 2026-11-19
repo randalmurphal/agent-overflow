@@ -80,7 +80,7 @@ func TestInvalidUsageBatchIsAtomicAndKeepsPending(t *testing.T) {
 	for _, value := range []float64{-1, math.NaN(), math.Inf(1)} {
 		invalid := row
 		invalid.CostUSD = value
-		if err := s.AppendUsageAndReconcile("p", []UsageLedgerRow{row, invalid}); err == nil {
+		if err := s.AppendUsageAndReconcile("p", []UsageLedgerRow{row, invalid}, OwnSpend{}); err == nil {
 			t.Fatal("invalid cost accepted")
 		}
 		buckets, _, err := s.ReadUsageStats(UsageQuery{})

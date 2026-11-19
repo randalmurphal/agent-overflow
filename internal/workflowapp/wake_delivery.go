@@ -6,6 +6,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/wake"
 )
 
 // Wake delivery — the one place a composed message becomes a message in a
@@ -27,7 +28,7 @@ const maxWakeMessageBytes = 24 * 1024
 // message it did not send, or send a message whose signature nobody computed.
 type composedWake struct {
 	signature      string
-	message        string
+	message        wake.Message
 	usageAttention *store.WorkflowProviderUsageAttentionClaim
 }
 
@@ -41,25 +42,18 @@ type composedWake struct {
 // record is written last, after the message has stopped being losable, so a
 // failed send leaves the run able to say the same thing again.
 //
-// The two delivery branches are the same two a human gets, and each records its
-// signature at its OWN durability point:
-//
-//   - A live session takes the message through the flush queue. That queue is
-//     process memory until the dispatch worker writes the message to the
-//     provider or session-death recovery persists it in the composer, so the
-//     row is CLAIMED here with a `queued:` marker and the delivered record is
-//     deferred to the queue item's durability settlement. Recording the real
-//     signature at register time would let a
-//     crash, a session teardown, or a rollback take the message while the run
-//     row swore it had been delivered — and that record suppresses the
-//     identical wake FOREVER, because the coalescing rule only spends it when
-//     somebody acts on the run. A run nobody is ever told about again is the
-//     failure this ordering exists to prevent; the cost of getting it wrong in
-//     the other direction is one duplicate message, which is the same trade the
-//     guidance slot makes.
-//   - A session-less thread takes an ordinary send, which lazily starts the
-//     session and persists the message as a durable row before it returns — so
-//     its record is written right here, where that durability already is.
+// The message goes through the thread's queue, which starts the thread's
+// session when it has none, and its signature is recorded at the queue's
+// durability point: the dispatch writing the message to the provider, or
+// session-death recovery persisting it in the composer. Until then the row
+// is CLAIMED with a `queued:` marker. Recording the real
+// signature at register time would let a crash, a session teardown, or a
+// rollback take the message while the run row swore it had been delivered —
+// and that record suppresses the identical wake FOREVER, because the
+// coalescing rule only spends it when somebody acts on the run. A run nobody
+// is ever told about again is the failure this ordering exists to prevent;
+// the cost of getting it wrong in the other direction is one duplicate
+// message, which is the same trade the guidance slot makes.
 func (s *Service) deliverWorkflowWake(item store.WorkItem, composed composedWake) bool {
 	threadID, ok := s.resolveWakeThread(item)
 	if !ok {
@@ -70,55 +64,37 @@ func (s *Service) deliverWorkflowWake(item store.WorkItem, composed composedWake
 		s.releaseWorkflowUsageAttention(composed.usageAttention)
 		return false
 	}
-	if s.deps.WakeDelivery.HasLiveSession != nil && s.deps.WakeDelivery.HasLiveSession(threadID) {
-		// Claim the row BEFORE handing the message over, with the marker that
-		// says "queued, not durable" — see wakeQueuedPrefix. The claim is an
-		// ordinary write because this path and the clear both run on the app's
-		// serial wake queue, so they are ordered by the transitions that caused
-		// them; the PROMOTION below is the one that races and is guarded.
-		//
-		// The closure captures ids and strings rather than the row: it outlives
-		// this call by however long the thread stays busy, and the row it came
-		// from carries the run's frozen workflow snapshot.
-		itemID, signature := item.ID, composed.signature
-		claim := wakeQueuedRecord(signature)
-		s.recordWakeDelivery(itemID, claim)
-		onDurable := func() {
-			s.promoteWakeDelivery(itemID, claim, signature)
-			if composed.usageAttention != nil {
-				s.promoteWorkflowUsageAttention(*composed.usageAttention)
-			}
-		}
-		if s.deps.WakeDelivery.QueueMessage == nil {
-			s.reportWakeFailure(item, threadID, fmt.Errorf("wake queue unavailable"))
-			s.releaseWorkflowUsageAttention(composed.usageAttention)
-			s.casWakeRecord(itemID, claim, "")
-			return false
-		}
-		if err := s.deps.WakeDelivery.QueueMessage(threadID, composed.message, onDurable); err != nil {
-			s.reportWakeFailure(item, threadID, err)
-			s.releaseWorkflowUsageAttention(composed.usageAttention)
-			// Nothing will ever promote this claim — drop it rather than leave
-			// the row marked for a message that was never queued. Guarded, so a
-			// claim already superseded by a later wake is left alone.
-			s.casWakeRecord(itemID, claim, "")
-			return false
-		}
-		return true
-	}
-	if s.deps.WakeDelivery.SendMessage == nil {
-		s.reportWakeFailure(item, threadID, fmt.Errorf("wake sender unavailable"))
+	if s.deps.WakeDelivery.QueueMessage == nil {
+		s.reportWakeFailure(item, threadID, fmt.Errorf("wake queue unavailable"))
 		s.releaseWorkflowUsageAttention(composed.usageAttention)
 		return false
 	}
-	if err := s.deps.WakeDelivery.SendMessage(threadID, composed.message); err != nil {
+	// Claim the row BEFORE handing the message over, with the marker that
+	// says "queued, not durable" — see wakeQueuedPrefix. The claim is an
+	// ordinary write because this path and the clear both run on the app's
+	// serial wake queue, so they are ordered by the transitions that caused
+	// them; the PROMOTION below is the one that races and is guarded.
+	//
+	// The closure captures ids and strings rather than the row: it outlives
+	// this call by however long the thread stays busy, and the row it came
+	// from carries the run's frozen workflow snapshot.
+	itemID, signature := item.ID, composed.signature
+	claim := wakeQueuedRecord(signature)
+	s.recordWakeDelivery(itemID, claim)
+	onDurable := func() {
+		s.promoteWakeDelivery(itemID, claim, signature)
+		if composed.usageAttention != nil {
+			s.promoteWorkflowUsageAttention(*composed.usageAttention)
+		}
+	}
+	if err := s.deps.WakeDelivery.QueueMessage(threadID, item.WorkflowID, composed.message, onDurable); err != nil {
 		s.reportWakeFailure(item, threadID, err)
 		s.releaseWorkflowUsageAttention(composed.usageAttention)
+		// Nothing will ever promote this claim — drop it rather than leave
+		// the row marked for a message that was never queued. Guarded, so a
+		// claim already superseded by a later wake is left alone.
+		s.casWakeRecord(itemID, claim, "")
 		return false
-	}
-	s.recordWakeDelivery(item.ID, composed.signature)
-	if composed.usageAttention != nil {
-		s.promoteWorkflowUsageAttention(*composed.usageAttention)
 	}
 	return true
 }
@@ -318,8 +294,10 @@ func (s *Service) resolveWakeThread(item store.WorkItem) (string, bool) {
 
 func (s *Service) clearStaleWakeBinding(item store.WorkItem, reason string) {
 	s.deps.Logf("workflow wake %s: %s; falling back to the unbound surface", item.ID, reason)
-	if err := s.deps.Store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
+	if change, err := s.deps.Store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
 		s.deps.Logf("workflow wake %s: clear stale binding: %v", item.ID, err)
+	} else if s.deps.OriginChanged != nil {
+		s.deps.OriginChanged(change)
 	}
 	// The record describes what a thread that no longer exists was told, so it
 	// is spent. Transition clearing skips unbound roots because it fires on every
@@ -350,8 +328,8 @@ func (s *Service) reportWakeFailure(item store.WorkItem, threadID string, cause 
 //
 // Workflow-owned threads (phase, unit, studio, triage) are excluded because
 // they are driven by the run machinery itself: waking one would inject a user
-// turn into a session the engine is steering. Terminal and discussion threads
-// are excluded because neither takes an ordinary user message.
+// turn into a session the engine is steering. Terminal threads are excluded
+// because they take no ordinary user message.
 func ValidateBindingThread(item store.WorkItem, thread store.Thread) error {
 	if thread.ProjectID != item.ProjectID {
 		return fmt.Errorf("thread %s belongs to project %s, not to this run's project %s",

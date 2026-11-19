@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,10 +34,11 @@ import (
 // UpdateThreads applies one organize patch to threads on this computer.
 func (t threadToolsApp) UpdateThreads(ctx context.Context, caller threadtools.Caller, call threadtools.UpdateCall) (threadtools.UpdateReport, error) {
 	patch := threadapp.OrganizePatch{
-		Title:    call.Title,
-		Archived: call.Archived,
-		Pin:      call.Pin,
-		Group:    call.Group,
+		Title:     call.Title,
+		Archived:  call.Archived,
+		Pin:       call.Pin,
+		Group:     call.Group,
+		Placement: call.Placement,
 	}
 	// A refusal that belongs to the patch itself is the same answer for
 	// every id, so it refuses the call rather than filling fifty rows with
@@ -74,10 +76,16 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 		result.ErrorCode = threadtools.CodeIsCaller
 		return result
 	}
+	if refusal, err := t.refuseFreeingOwnChain(caller, threadID, patch); err != nil || refusal != "" {
+		result.Error, result.ErrorCode = refusal, threadtools.CodeInvalidRequest
+		if err != nil {
+			result.Error, result.ErrorCode = organizeRefusal(threadID, err)
+		}
+		return result
+	}
 
 	applied, err := t.app.applyThreadOrganizePatch(ctx, threadID, patch)
-	var cleanup *threadCleanupError
-	if err != nil && !errors.As(err, &cleanup) {
+	if err != nil {
 		result.Error, result.ErrorCode = organizeRefusal(threadID, err)
 		return result
 	}
@@ -85,42 +93,81 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 		result.Title = applied.Thread.Title
 	}
 	result.Updated = true
-	if cleanup != nil {
-		// The patch applied; what follows is what the archive's cleanup
-		// could not do, for the agent to pass on.
-		result.ErrorCode, result.Error, _ = errorsx.PublicDetails(err)
+	for _, worker := range applied.archive.workers {
+		notArchived := threadtools.WorkerNotArchived{ThreadID: worker.threadID, Computer: worker.computer, Pending: worker.pending}
+		if worker.computer != "" {
+			// A worker on another computer: the report is this computer's own.
+			notArchived.Error = worker.err.Error()
+		} else {
+			notArchived.Error, notArchived.ErrorCode = organizeRefusal(worker.threadID, worker.err)
+		}
+		result.WorkersNotArchived = append(result.WorkersNotArchived, notArchived)
+	}
+	if cause := applied.archive.cleanup.Unwrap(); cause != nil {
+		// The patch applied; the error is what may still be running or open,
+		// for the agent to pass on. The causes may name paths and queries;
+		// the host log keeps them.
+		log.Printf("thread tools: archive thread %s: %v", threadID, cause)
+		result.Error, result.ErrorCode = applied.archive.cleanup.message(), threadtools.CodeCleanupFailed
 	}
 	return result
 }
 
+// refuseFreeingOwnChain refuses a placement or group change that would
+// lift the sub-thread limit the caller works under: one of a thread on the
+// caller's own delegation chain, itself included, that is a sub-thread. A
+// move into the sidebar ends that thread's delegation (store.SubThreadLevel),
+// which is the user's to decide, not the chain's.
+func (t threadToolsApp) refuseFreeingOwnChain(caller threadtools.Caller, threadID string, patch threadapp.OrganizePatch) (string, error) {
+	if patch.Group == nil && (patch.Placement == nil || *patch.Placement == store.PlacementOwned) {
+		return "", nil
+	}
+	chain, err := t.app.store.DelegationChain(caller.ThreadID)
+	if err != nil || !slices.Contains(chain, threadID) {
+		return "", err
+	}
+	level, err := t.app.store.SubThreadLevel(threadID)
+	if err != nil || level == 0 {
+		return "", err
+	}
+	return "Only the user can move this thread into the sidebar or a group: it is a sub-thread on the chain that delegated your work, and the move would free that chain from the sub-thread limit.", nil
+}
+
 // applyThreadOrganizePatch is the write itself, with the locks, the events
-// and the archive side effects the sidebar's own bindings carry. A patch
-// that archived the thread and whose cleanup failed returns the applied
-// result with a *threadCleanupError, as ArchiveThread does.
+// and the archive side effects the sidebar's own bindings carry.
 //
 // Archiving releases the thread's provider session (app_thread_archive.go
 // says why), and that release is serialized by the ACTION lock, so a patch
 // that archives takes action then mutation, the order transfer takes, and
 // never the reverse. A patch that does not archive takes the mutation lock
 // alone, exactly as the pin and rename bindings do.
-func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
+func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (organizeApplied, error) {
 	result, work, err := a.applyThreadOrganizePatchLocked(ctx, threadID, patch)
 	if err != nil {
-		return threadapp.OrganizeResult{}, err
+		return organizeApplied{}, err
 	}
+	applied := organizeApplied{OrganizeResult: result}
 	if work != nil {
-		// The same cleanup the archive binding runs, through the same door,
-		// for the archive this patch committed. The tool result carries only
-		// the public message, so the causes are logged here.
-		if err := a.stopArchivedThreadWork(*work); err != nil {
-			log.Printf("thread tools: archive thread %s: %v", threadID, err)
-			return result, err
-		}
+		// The same cleanup and cascade the archive binding runs, through the
+		// same door, for the archive this patch made: the requests this
+		// thread is waiting on end, its wakes are disarmed and what the app
+		// queued for it is withdrawn, the commands it started elsewhere are
+		// cancelled, and its workers are archived. The archive itself is
+		// already durable, so what of that failed is reported beside the
+		// change that landed rather than turned into a refusal of it.
+		applied.archive = a.finishArchive(*work, reachNow)
 	}
-	return result, nil
+	return applied, nil
 }
 
-func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *archivedThreadWork, error) {
+// organizeApplied is a patch that applied, with what its archive, if it
+// made one, could not finish.
+type organizeApplied struct {
+	threadapp.OrganizeResult
+	archive archiveOutcome
+}
+
+func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *restingThreadWork, error) {
 	archiving := patch.Archived != nil && *patch.Archived
 	// Stamped before the locks, for the same reason ArchiveThread stamps it
 	// there: waiting for the lock is exactly the window in which this
@@ -128,6 +175,9 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	// this instant.
 	requestedAt := time.Now().UnixMilli()
 	if archiving {
+		// As ArchiveThread closes it (archiveThreadLocked).
+		reopen := a.resting.close(threadID)
+		defer reopen()
 		unlockAction := a.threadLocks().Lock(threadID)
 		defer unlockAction()
 	}
@@ -135,21 +185,26 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	if err != nil {
 		return threadapp.OrganizeResult{}, nil, err
 	}
-	// Under the action lock alone, as archiveThreadLocked stops it: the
-	// teardown's queue drop takes the thread's mutation lock
-	// (settleQueueForTeardown), which is not reentrant.
+	// The session stops after the mutation lock is released, as the archive
+	// binding's does: its teardown takes that lock to drop the queue, and a
+	// queue write after the flip refuses the archived thread. The workers
+	// to archive are read after it, under the action lock.
 	if work != nil {
-		a.stopArchivedThreadSession(work, requestedAt)
+		a.beginArchiveWalk(threadID)
+		if work.captured {
+			a.stopArchivedThreadSession(work, requestedAt)
+		}
+		a.readArchivedWorkers(work)
 	}
 	return result, work, nil
 }
 
 // applyThreadOrganizePatchMutable writes the patch and announces it under
-// the thread's mutation lock, and releases the lock before it returns. A
-// patch that archives the thread captures, in the same critical section,
-// the work that archive stops (captureArchivedThreadWork); a repeated
-// archive captures nothing.
-func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *archivedThreadWork, error) {
+// the thread's mutation lock. A patch that archives the thread captures, in
+// the same critical section, the work that archive stops
+// (captureRestingThreadWork); a repeated archive captures nothing of the
+// thread's own, and still goes on to its workers.
+func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *restingThreadWork, error) {
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return threadapp.OrganizeResult{}, nil, err
@@ -160,37 +215,35 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	if err != nil {
 		return threadapp.OrganizeResult{}, nil, err
 	}
-	var work *archivedThreadWork
-	if result.ArchivedChanged && result.Thread.Archived {
-		captured := a.captureArchivedThreadWork(threadID)
+	var work *restingThreadWork
+	switch {
+	case result.ArchivedChanged && result.Thread.Archived:
+		captured := a.captureRestingThreadWork(threadID, archiveRest)
 		work = &captured
+	case patch.Archived != nil && *patch.Archived && result.Thread.Archived:
+		work = &restingThreadWork{threadID: threadID}
+	case result.ArchivedChanged:
+		// The completions the archive held are the watcher's again.
+		a.nudgeRemoteWatches()
 	}
 	// The group frame goes first: a client that receives the thread's new
 	// groupId before it has the group row has nowhere to render the thread.
 	if result.CreatedGroup != nil {
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
-	a.announceThreadIfChanged(a.organizeThreadAction(result), result.Thread.ID, result.Changed)
-	// The discussion children a group move carried, as SetThreadGroup's own
-	// binding announces them.
-	for _, carried := range result.Carried {
-		a.announceThread(triage.ThreadActionFull, carried.ID)
+	switch {
+	case !result.Changed:
+	case result.ArchivedChanged && result.Thread.Archived:
+		// An archive closes the panes that show the thread.
+		a.announceThread(triage.ThreadActionUnlisted, result.Thread.ID)
+	default:
+		// An unarchive, a group move or a placement goes out by the
+		// listing change its write read: an owned worker or a never-sent
+		// thread nothing makes real stays off the list as `full`, and
+		// anything else is a whole-row update of a row already there.
+		a.announcePlacement(result.Thread.ID, result.Listing)
 	}
 	return result, work, nil
-}
-
-// organizeThreadAction picks the sidebar frame this patch produced. An
-// archive flip is what adds or removes the row from the active sidebar, so
-// it is announced as such (an unarchive as listedAction); anything else is
-// a whole-row update of a row that is already there.
-func (a *App) organizeThreadAction(result threadapp.OrganizeResult) string {
-	if !result.ArchivedChanged {
-		return triage.ThreadActionFull
-	}
-	if result.Thread.Archived {
-		return triage.ThreadActionUnlisted
-	}
-	return a.listedAction(result.Thread.ID)
 }
 
 // UpdateGroup renames or deletes one group of this computer.
@@ -305,21 +358,43 @@ func threadToolsOrganizeError(threadID string, err error) error {
 		return err
 	}
 	var moved *store.ThreadTransferError
+	var taken *store.AssistantNameTakenError
 	switch {
+	case errors.As(err, &taken):
+		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"That thread is an assistant's, and its title is its name: the assistant %q (thread %s) already has that name. Names are unique on this computer, ignoring case.",
+			taken.Name, taken.ThreadID), err)
 	case errors.Is(err, threadapp.ErrEmptyThreadTitle):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"A title is trimmed, and an empty title is refused. Omit title to leave it alone.", err)
 	case errors.Is(err, threadapp.ErrThreadHasNoProject):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"That thread belongs to no project, and a group belongs to one project, so it cannot join a group.", err)
-	case errors.Is(err, store.ErrThreadNotRoot):
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"That thread is a discussion reply and travels with its discussion. Group the top-level thread instead.", err)
 	case errors.Is(err, store.ErrThreadGroupGone):
 		return errorsx.Public(threadtools.CodeNotFound,
 			"That group is no longer in this project. Read the groups again with thread_options.", err)
 	case errors.Is(err, store.ErrEmptyThreadGroupName):
 		return errorsx.Public(threadtools.CodeInvalidRequest, "A group name is trimmed, and a blank one is refused.", err)
+	case errors.Is(err, store.ErrStandingAgentGrouped):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is an assistant's, and an assistant is not grouped: it has a sidebar row of its own.", err)
+	case errors.Is(err, store.ErrStandingAgentPlaced):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is an assistant's, and an assistant always has its own sidebar row: it takes no placement.", err)
+	case errors.Is(err, store.ErrPlacementOutsideProjects):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is outside every project, a helper or past thread of an assistant, and belongs to the assistant: it takes no placement.", err)
+	case errors.Is(err, store.ErrThreadNotSpawned):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"No thread on this computer spawned that thread, so no thread can own it and it keeps its sidebar row. Use standalone, or group it.", err)
+	case errors.Is(err, store.ErrPlacementNeedsGroup):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is in no group, so placement grouped needs group, the name of the group to put it in.", err)
+	case errors.Is(err, threadapp.ErrPlacementContradictsGroup):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"group and placement disagree: a group name means grouped, and group null cannot be grouped.", err)
+	case errors.Is(err, store.ErrInvalidPlacement):
+		return errorsx.Public(threadtools.CodeInvalidRequest, "placement must be owned, grouped or standalone.", err)
 	case errors.Is(err, store.ErrThreadGone), errors.Is(err, sql.ErrNoRows), errors.As(err, &moved):
 		return threadToolsNotFound(threadID)
 	}
