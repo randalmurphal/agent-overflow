@@ -458,6 +458,20 @@ func SetBootProgress(a *App, progress BootProgress) { a.bootProgress = progress 
 // application runs.
 func SetStartDone(a *App, done func(error)) { a.startDone = done }
 
+// UpdateBootFollows is the install the WSL boot's update marker named and
+// whether it applied (appupdate.Service.UpdateThisBootFollows); "" before
+// InitWSLUpdater or without one.
+func UpdateBootFollows(a *App) (to string, applied bool) {
+	return a.updater.UpdateThisBootFollows()
+}
+
+// EndUpdateRestart ends the timing of a restart to update that took the
+// framework's swap (appupdate.Service.EndRestart): call once the process
+// has shut down, with the error that ends it, if any.
+func EndUpdateRestart(a *App, err error) {
+	a.updater.EndRestart(err)
+}
+
 // ConfigureTransportNotifications installs the headless launcher bridge.
 func ConfigureTransportNotifications(a *App) {
 	a.osNotifications = newTransportNotificationSender(a)

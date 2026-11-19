@@ -181,9 +181,10 @@ func (c *child) readMessages(logf func(string, ...any)) {
 	}
 }
 
-// stopChild ends the child gracefully, then by force, then waits.
-func (s *Supervisor) stopChild(c *child) {
-	stopChildProcess(c, s.config.StopTimeout, s.config.Log)
+// stopChild ends the child gracefully, then by force, then waits. killed
+// reports the force.
+func (s *Supervisor) stopChild(c *child) (killed bool) {
+	return stopChildProcess(c, s.config.StopTimeout, s.config.Log)
 }
 
 // stopChildProcess ends a child gracefully, then by force, then waits.

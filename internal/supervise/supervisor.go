@@ -115,6 +115,86 @@ func New(config Config) (*Supervisor, error) {
 type Supervisor struct {
 	config Config
 	layout Layout
+	// update times the update this supervisor is running, from its
+	// acceptance, or the first transition of one it found recorded, to its
+	// settlement (docs/specs/app-update.md, "What an update logs"). nil
+	// when none is in flight. Owned by Run's goroutine, as everything is.
+	update *updateTiming
+}
+
+// updateTiming is one update's phase log across the supervisor's state
+// transitions.
+type updateTiming struct {
+	id      string
+	phases  *PhaseLog
+	started time.Time
+	// begunMs is the record's StartedAtMs, for since_begin.
+	begunMs int64
+	// open is the phase that spans a return to the loop: grace until the
+	// stop, trial.start until the trial's hello, trial.boot until its end.
+	// Zero when none is open.
+	open Phase
+}
+
+// begin opens the phase that spans a return to the loop. A nil u times
+// nothing.
+func (u *updateTiming) begin(name string) {
+	if u != nil {
+		u.open = u.phases.Begin(name)
+	}
+}
+
+// endOpen ends the open phase, if any, with err.
+func (u *updateTiming) endOpen(err error, fields ...any) {
+	if u == nil || u.open.log == nil {
+		return
+	}
+	u.open.End(err, fields...)
+	u.open = Phase{}
+}
+
+// log is u's phase log; nil for a nil u.
+func (u *updateTiming) log() *PhaseLog {
+	if u == nil {
+		return nil
+	}
+	return u.phases
+}
+
+// timing is the phase log of the update state records, the one in flight
+// when it is the same update; a new one otherwise, started now. nil when
+// state records none.
+func (s *Supervisor) timing(state State) *updateTiming {
+	if state.Update == nil {
+		return nil
+	}
+	if s.update != nil && s.update.id == state.Update.ID {
+		return s.update
+	}
+	s.update = &updateTiming{
+		id:      state.Update.ID,
+		phases:  s.phases(state.Update.ID),
+		started: s.config.Now(),
+		begunMs: state.Update.StartedAtMs,
+	}
+	return s.update
+}
+
+// endUpdate ends the update in flight with its summary: outcome is the
+// state it settled in, or why this supervisor stopped running it. The
+// phase still open ends with err.
+func (s *Supervisor) endUpdate(outcome string, err error) {
+	u := s.update
+	if u == nil {
+		return
+	}
+	s.update = nil
+	u.endOpen(err)
+	fields := []any{"outcome", outcome}
+	if u.begunMs > 0 {
+		fields = append(fields, "since_begin", roundPhase(s.config.Now().Sub(time.UnixMilli(u.begunMs))))
+	}
+	u.phases.Summary(s.config.Now().Sub(u.started), fields...)
 }
 
 // Layout exposes where this supervisor keeps its state.
@@ -126,7 +206,17 @@ func (s *Supervisor) Layout() Layout { return s.layout }
 // non-zero exits non-zero itself, so `Restart=on-failure` means the same thing
 // it meant before a supervisor existed. A clean child exit is the operator
 // stopping the backend, and it ends the supervisor cleanly too.
-func (s *Supervisor) Run(ctx context.Context) error {
+func (s *Supervisor) Run(ctx context.Context) (err error) {
+	// An update still in flight when Run returns ends its summary here, with
+	// the error that ended this supervisor or as interrupted; the next
+	// supervisor continues the update under a summary of its own.
+	defer func() {
+		if err != nil {
+			s.endUpdate("error", err)
+			return
+		}
+		s.endUpdate("interrupted", errors.New("the supervisor stopped"))
+	}()
 	// Before anything reads the state file, let alone spawns a version: a
 	// half-restored database must not be opened by either version.
 	if marker, resumed, err := ResumeRestore(s.layout, RestoreOptions{
@@ -169,12 +259,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			// Count the attempt BEFORE it happens, and durably. A supervisor
 			// killed by the very trial it is starting must find the attempt
 			// recorded when it comes back, or the two of them loop forever.
+			recording := s.timing(state).log().Begin("record-attempt")
 			if state, err = state.Retry(); err != nil {
+				recording.End(err)
 				return err
 			}
-			if err := SaveState(s.layout, state); err != nil {
+			err = SaveState(s.layout, state)
+			recording.End(err, "attempt", state.Update.Attempts)
+			if err != nil {
 				return err
 			}
+			s.timing(state).begin("trial.start")
 		}
 
 		child, err := s.spawn(selection)
@@ -182,6 +277,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if !selection.Trial {
 				return err
 			}
+			s.update.endOpen(err)
 			// A trial that will not even start is an update that never
 			// happened. Nothing of the target's has run, so there is nothing
 			// to undo beyond putting the snapshot back.
@@ -196,7 +292,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		outcome := s.runChild(ctx, child, &state)
 		switch outcome.kind {
 		case outcomeShutdown:
-			s.stopChild(child)
+			s.stopTrialOrChild(child)
 			return nil
 		case outcomeRestart:
 			s.stopChild(child)
@@ -210,7 +306,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		case outcomeUpdate:
 			s.stopForTrial(child, outcome.target)
 		case outcomeTrialFailed:
-			s.stopChild(child)
+			s.stopTrialOrChild(child)
 			state, err = s.rollBack(state, outcome.reason)
 			if err != nil {
 				return err
@@ -318,15 +414,24 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 		judge = newTrialJudge(s.config.TrialRule, s.config.LegacyTrialBudget)
 	}
 	defer func() { judge.stop() }()
+	// failTrial ends the trial's open phase (trial.start or trial.boot)
+	// with reason and returns the trial's failure.
+	failTrial := func(reason string) outcome {
+		s.update.endOpen(errors.New(reason))
+		return outcome{kind: outcomeTrialFailed, reason: reason}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			if trial {
+				s.update.endOpen(ctx.Err())
+			}
 			return outcome{kind: outcomeShutdown}
 
 		case <-c.exited:
 			if trial {
-				return outcome{kind: outcomeTrialFailed, reason: trialExitReason(c.exitErr)}
+				return failTrial(trialExitReason(c.exitErr))
 			}
 			if acceptedFor != "" {
 				return outcome{kind: outcomeUpdate, target: acceptedFor}
@@ -339,11 +444,11 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 
 		case <-judge.stalled():
 			if reason, failed := judge.stall(); failed {
-				return outcome{kind: outcomeTrialFailed, reason: reason}
+				return failTrial(reason)
 			}
 
 		case <-judge.expired():
-			return outcome{kind: outcomeTrialFailed, reason: judge.ceilingReason()}
+			return failTrial(judge.ceilingReason())
 
 		case <-graceTimer.C():
 			return outcome{kind: outcomeUpdate, target: acceptedFor}
@@ -368,6 +473,11 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 					msg.Version, msg.ProtocolVersion, msg.ReportsProgress)
 				if trial {
 					judge.hello(msg)
+					// The trial's start ends at its first hello.
+					if u := s.update; u != nil && u.open.name == "trial.start" {
+						u.endOpen(nil)
+						u.begin("trial.boot")
+					}
 				}
 				if msg.ProtocolVersion > ProtocolVersion {
 					s.config.Log("supervise: the running backend speaks a newer update protocol " +
@@ -398,7 +508,7 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 						"which changes nothing: %s", failedReason(msg))
 					continue
 				}
-				return outcome{kind: outcomeTrialFailed, reason: failedReason(msg)}
+				return failTrial(failedReason(msg))
 
 			case MsgPrepared:
 				if !trial {
@@ -406,6 +516,7 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 				}
 				judge.stop()
 				judge = nil
+				s.update.endOpen(nil)
 				next, err := s.commit(*state, c)
 				if err != nil {
 					// The commit is what makes the trial's work durable; a
@@ -423,12 +534,19 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 					s.refuse(c, "an update is already in flight")
 					continue
 				}
+				accepting := s.config.Now()
 				next, err := s.acceptUpdate(*state, msg.TargetVersion)
 				if err != nil {
 					s.config.Log("supervise: refusing update to %q: %v", msg.TargetVersion, err)
 					s.refuse(c, err.Error())
 					continue
 				}
+				// The update begins with its acceptance: the preflight and
+				// the record. The grace runs until this child is stopped.
+				u := s.timing(next)
+				u.started = accepting
+				u.phases.BeginAt("accept", accepting).End(nil, "to", next.Update.To)
+				u.begin("grace")
 				*state = next
 				acceptedFor = msg.TargetVersion
 				if err := c.conn.Send(Message{
@@ -531,7 +649,28 @@ const preflightTimeout = 5 * time.Second
 // goroutine, and the loop's next pass takes the snapshot.
 func (s *Supervisor) stopForTrial(c *child, target string) {
 	s.config.Log("supervise: stopping the backend so version %s can be trialled", target)
-	s.stopChild(c)
+	s.update.endOpen(nil)
+	stopping := s.update.log().Begin("stop-previous")
+	killed := s.stopChild(c)
+	stopping.End(nil, "killed", killed)
+}
+
+// stopTrialOrChild stops c, timed as trial.stop when c is a trial still
+// running; a trial that already exited needs no stop.
+func (s *Supervisor) stopTrialOrChild(c *child) {
+	running := true
+	select {
+	case <-c.exited:
+		running = false
+	default:
+	}
+	if !c.trial || !running {
+		s.stopChild(c)
+		return
+	}
+	stopping := s.update.log().Begin("trial.stop")
+	killed := s.stopChild(c)
+	stopping.End(nil, "killed", killed)
 }
 
 // snapshotForTrial guarantees the rollback boundary exists before a trial is
@@ -570,10 +709,11 @@ func (s *Supervisor) snapshotForTrial(state State) (_ State, failure bool, _ err
 					"to choose a version explicitly",
 				state.Update.ID, s.layout.SnapshotDir(), state.Update.From)
 		}
+		s.timing(state).log().Skip("snapshot", fmt.Sprintf("attempt %d reuses the backup taken before the first", state.Update.Attempts+1))
 		return state, false, nil
 	}
 	s.config.Log("supervise: snapshotting the database before trialling version %s", state.Update.To)
-	if _, err := TakeSnapshot(s.layout, s.config.DataDir, s.config.Now(), SnapshotOptions{Phases: s.phases(state.Update.ID)}); err != nil {
+	if _, err := TakeSnapshot(s.layout, s.config.DataDir, s.config.Now(), SnapshotOptions{Phases: s.timing(state).log()}); err != nil {
 		s.config.Log("supervise: could not snapshot the database: %v", err)
 		settled, settleErr := s.settleFailure(state, fmt.Sprintf("the database could not be snapshotted: %v", err))
 		if settleErr != nil {
@@ -590,8 +730,11 @@ func (s *Supervisor) snapshotForTrial(state State) (_ State, failure bool, _ err
 // gate on the commit frame, so a frame sent before the write would be a
 // backend acting unattended on an update no restart would select.
 func (s *Supervisor) commit(state State, c *child) (State, error) {
+	phases := s.timing(state).log()
+	settling := phases.Begin("settle")
 	next, err := state.Settle(UpdateCommitted, "", s.config.Now())
 	if err != nil {
+		settling.End(err)
 		return State{}, err
 	}
 	// Reported in the same write as settled: the commit frame below carries
@@ -599,12 +742,18 @@ func (s *Supervisor) commit(state State, c *child) (State, error) {
 	// "committed" the moment its gate opens. A flag left clear here would
 	// have the NEXT boot announce the same commit a second time.
 	if next, _, err = next.MarkReported(); err != nil {
+		settling.End(err)
 		return State{}, err
 	}
-	if err := SaveState(s.layout, next); err != nil {
+	err = SaveState(s.layout, next)
+	settling.End(err)
+	if err != nil {
 		return State{}, err
 	}
-	if err := DiscardSnapshot(s.layout); err != nil {
+	discarding := phases.Begin("discard")
+	err = DiscardSnapshot(s.layout)
+	discarding.End(err)
+	if err != nil {
 		// The commit is already durable, so this is housekeeping that failed:
 		// the snapshot is stale bytes, not a rollback anybody will take.
 		s.config.Log("supervise: could not delete the snapshot after commit: %v", err)
@@ -613,12 +762,15 @@ func (s *Supervisor) commit(state State, c *child) (State, error) {
 		s.config.Log("supervise: telling the backend its update committed: %v", err)
 	}
 	s.config.Log("supervise: update %s committed: now running %s", next.Update.ID, next.Update.To)
+	pruning := phases.Begin("prune")
 	s.pruneVersions(next)
+	pruning.End(nil)
+	s.endUpdate(string(UpdateCommitted), nil)
 	return next, nil
 }
 
-// phases logs the snapshot and restore phases of update id, which this
-// supervisor runs in its own process.
+// phases logs the phases of update id, which this supervisor runs in its
+// own process.
 func (s *Supervisor) phases(id string) *PhaseLog {
 	return NewPhaseLog(s.config.Log, "supervise: update "+id, s.config.Now)
 }
@@ -629,38 +781,51 @@ func (s *Supervisor) rollBack(state State, reason string) (State, error) {
 	if state.Update != nil {
 		updateID = state.Update.ID
 	}
+	phases := s.timing(state).log()
 	s.config.Log("supervise: rolling back update %s: %s", updateID, reason)
-	if err := RestoreSnapshot(s.layout, s.config.DataDir, updateID, reason, s.config.Now(), RestoreOptions{Phases: s.phases(updateID)}); err != nil {
+	if err := RestoreSnapshot(s.layout, s.config.DataDir, updateID, reason, s.config.Now(), RestoreOptions{Phases: phases}); err != nil {
 		// A restore that cannot complete is the one failure this supervisor
 		// must not paper over: the database is the trial's, and starting the
 		// previous version against it would be worse than not starting.
 		return State{}, fmt.Errorf("supervise: restore the database snapshot: %w", err)
 	}
-	next, err := state.Settle(UpdateRolledBack, reason, s.config.Now())
+	next, err := s.settle(phases, state, UpdateRolledBack, reason, "rollback")
 	if err != nil {
 		return State{}, err
 	}
-	if err := SaveState(s.layout, next); err != nil {
-		return State{}, err
-	}
-	if err := DiscardSnapshot(s.layout); err != nil {
-		s.config.Log("supervise: could not delete the snapshot after rollback: %v", err)
-	}
 	s.config.Log("supervise: restarting version %s", next.Update.From)
+	s.endUpdate(string(UpdateRolledBack), nil)
 	return next, nil
 }
 
 // settleFailure records an update that never reached a trial.
 func (s *Supervisor) settleFailure(state State, reason string) (State, error) {
-	next, err := state.Settle(UpdateFailed, reason, s.config.Now())
+	next, err := s.settle(s.timing(state).log(), state, UpdateFailed, reason, "a failed update")
 	if err != nil {
 		return State{}, err
 	}
-	if err := SaveState(s.layout, next); err != nil {
+	s.endUpdate(string(UpdateFailed), nil)
+	return next, nil
+}
+
+// settle writes state settled as to with reason, then discards the
+// snapshot, a failure of which is logged as after what. phases times
+// both.
+func (s *Supervisor) settle(phases *PhaseLog, state State, to UpdateState, reason, after string) (State, error) {
+	settling := phases.Begin("settle")
+	next, err := state.Settle(to, reason, s.config.Now())
+	if err == nil {
+		err = SaveState(s.layout, next)
+	}
+	settling.End(err)
+	if err != nil {
 		return State{}, err
 	}
-	if err := DiscardSnapshot(s.layout); err != nil {
-		s.config.Log("supervise: could not delete the snapshot after a failed update: %v", err)
+	discarding := phases.Begin("discard")
+	err = DiscardSnapshot(s.layout)
+	discarding.End(err)
+	if err != nil {
+		s.config.Log("supervise: could not delete the snapshot after %s: %v", after, err)
 	}
 	return next, nil
 }

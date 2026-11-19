@@ -69,6 +69,7 @@ import (
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/startuppage"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/webview2host"
@@ -572,6 +573,9 @@ type launcherApp struct {
 	// bridge's dispatch goroutine and held across the whole install, which
 	// would otherwise block every lifecycle path that takes the mutex.
 	updateInstalling atomic.Bool
+	// updateSwap times an install that took the framework's swap, from the
+	// directive to this process's end (run); nil until one does. Under mu.
+	updateSwap *supervise.SwapTiming
 	// payloadDistro and payloadPath are the running backend's distro and
 	// Linux path, recorded by launchAndShow for an in-app update (under mu).
 	// payloadTransient is whether that launch saves its distro choice,
@@ -1961,6 +1965,11 @@ func (a *launcherApp) run() {
 			log.Printf("launcher: final backend teardown: %v", err)
 		}
 	}
+	// An install that took the framework's swap ends its shutdown here.
+	a.mu.Lock()
+	swap := a.updateSwap
+	a.mu.Unlock()
+	swap.End(nil)
 }
 
 func logBootPhase(phase string, started time.Time) {

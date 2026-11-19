@@ -123,6 +123,11 @@ func runServe(flags cliFlags) {
 	// Runtime-gated on the Windows launcher having spawned us, so on a
 	// serve host it is a no-op.
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), appupdate.LauncherFailure{})
+	// The boot that follows a settled update, the previous version's after
+	// a rollback, ends that update's phase on every exit. A trial's boot is
+	// the supervisor's trial.boot.
+	followedTo, committed := supervisor.followedUpdate()
+	boot := beginUpdateBoot(log.Printf, followedTo, committed, processStarted)
 
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		BackendLockHeldBySupervisor:  supervisor != nil && supervisor.ownsDataRoot,
@@ -143,6 +148,7 @@ func runServe(flags cliFlags) {
 	supervisor.startFinished(startErr)
 	if startErr != nil {
 		logBootPhase("serve.service_startup", phaseStarted)
+		boot.end(startErr)
 		log.Printf("app: service startup: %v", startErr)
 		srv.MarkStartupFailed()
 		// Deliberately not exiting: the transport is bound and answers
@@ -158,6 +164,7 @@ func runServe(flags cliFlags) {
 	}
 	logBootPhase("serve.service_startup", phaseStarted)
 	srv.MarkReady()
+	boot.end(nil)
 
 	printServeEndpoints(os.Stdout, appservice.ServeEndpoints(appService.App, srv), srv.Addr())
 

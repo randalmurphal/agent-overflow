@@ -3,6 +3,8 @@ package supervise
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -143,4 +145,144 @@ func TestPhaseLogWritesOneLinePerPhaseAndASummary(t *testing.T) {
 	none.Begin("x").End(nil)
 	none.Skip("x", "y")
 	none.Summary(time.Second)
+}
+
+// An update without a trial logs the branch it took, never a failed
+// handoff: a handoff that found the target cannot run the trial is logged
+// on the swap with branch=swap, and on the trial's log not at all. Then the
+// steps, the swap's start, the shutdown and one summary; a second end
+// writes nothing. A swap that fails ends with its error and no shutdown.
+func TestSwapTimingLogsTheBranchItsPhasesAndASummary(t *testing.T) {
+	t.Parallel()
+	clock := time.Unix(100, 0)
+	now := func() time.Time { return clock }
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	swap := NewSwapTiming(logf, "2.0.0", now)
+	handing := NewPhaseLog(logf, "updater: update u1", now).Begin("handoff")
+	clock = clock.Add(3 * time.Second)
+	swap.Declined(handing)
+	verifying := swap.Phases().Begin("verify")
+	clock = clock.Add(time.Second)
+	verifying.End(nil)
+	swapping := swap.Phases().Begin("swap")
+	swapping.End(nil)
+	swap.Quitting()
+	clock = clock.Add(2 * time.Second)
+	swap.End(nil)
+	swap.End(errors.New("a second end"))
+	swap.Quitting()
+
+	want := []string{
+		"updater: swap to 2.0.0: phase=handoff duration=3s branch=swap",
+		"updater: swap to 2.0.0: phase=verify duration=1s",
+		"updater: swap to 2.0.0: phase=swap duration=0s",
+		"updater: swap to 2.0.0: phase=shutdown duration=2s",
+		"updater: swap to 2.0.0: summary total=6s phases=handoff:3s,verify:1s,swap:0s,shutdown:2s outcome=swapped",
+	}
+	if strings.Join(logged, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("logged:\n%s\nwant:\n%s", strings.Join(logged, "\n"), strings.Join(want, "\n"))
+	}
+
+	logged = nil
+	failing := NewSwapTiming(logf, "", now)
+	failing.Phases().Skip("handoff", "the target is the running version")
+	failing.Phases().Begin("swap").End(errors.New("spawn helper: boom"))
+	failing.End(errors.New("spawn helper: boom"))
+	want = []string{
+		"updater: swap: phase=handoff skipped: the target is the running version",
+		"updater: swap: phase=swap duration=0s failed: spawn helper: boom",
+		"updater: swap: summary total=0s phases=handoff:skipped,swap:0s(failed) outcome=error",
+	}
+	if strings.Join(logged, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("logged:\n%s\nwant:\n%s", strings.Join(logged, "\n"), strings.Join(want, "\n"))
+	}
+
+	var none *SwapTiming
+	none.Declined(handing)
+	none.Phases().Begin("x").End(nil)
+	none.Quitting()
+	none.End(nil)
+}
+
+// A restore's sync ends before the update's attempt record is written, and
+// the record is its own phase: one that cannot be written fails that phase
+// and the restore with the same error as before, never the sync.
+func TestRestoreTimesTheAttemptRecordApartFromTheSync(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		breakRecord bool
+	}{
+		{"recorded", false},
+		{"the record cannot be written", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dataDir := t.TempDir()
+			layout := appLayout(t, dataDir)
+			writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), "database")
+			if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{UpdateID: "u1"}); err != nil {
+				t.Fatalf("TakeSnapshot: %v", err)
+			}
+			if err := RecordAttempt(layout, dataDir, 2, false); err != nil {
+				t.Fatal(err)
+			}
+			var logged []string
+			phases := NewPhaseLog(func(format string, args ...any) {
+				logged = append(logged, fmt.Sprintf(format, args...))
+			}, "supervise: update u1", nil)
+			broken := false
+			err := RestoreSnapshot(layout, dataDir, "u1", "the trial failed", time.Now(), RestoreOptions{
+				Phases: phases,
+				// The manifest was read before the copy; a directory in its
+				// place now refuses the record's rename, and nothing else.
+				Progress: func(copied, total int64) {
+					if !tc.breakRecord || broken || copied < total {
+						return
+					}
+					broken = true
+					manifest := filepath.Join(layout.SnapshotDir(), snapshotManifest)
+					if err := os.Remove(manifest); err != nil {
+						t.Error(err)
+					}
+					writeFile(t, filepath.Join(manifest, "occupied"), "")
+				},
+			})
+			p := parsePhaseLines(t, logged)
+			p.wantOnce(t, "restore.remove", "restore.copy", "restore.sync", "restore.record")
+			if p.failed["restore.sync"] != 0 {
+				t.Errorf("the sync is logged failed:\n%s", strings.Join(logged, "\n"))
+			}
+			sync, record := -1, -1
+			for i, line := range logged {
+				switch {
+				case strings.Contains(line, "phase=restore.sync "):
+					sync = i
+				case strings.Contains(line, "phase=restore.record "):
+					record = i
+				}
+			}
+			if sync < 0 || record < sync {
+				t.Errorf("restore.sync ended at line %d and restore.record at %d; want the sync first:\n%s",
+					sync, record, strings.Join(logged, "\n"))
+			}
+			if !tc.breakRecord {
+				if err != nil || p.failed["restore.record"] != 0 {
+					t.Fatalf("RestoreSnapshot = %v, failed %v", err, p.failed)
+				}
+				return
+			}
+			if !broken {
+				t.Fatal("the copy reported no progress, so the record was never broken")
+			}
+			if err == nil || !strings.HasPrefix(err.Error(), "supervise: record the restored database for trial attempt 2: ") {
+				t.Fatalf("RestoreSnapshot = %v, want the record's own error", err)
+			}
+			if p.failed["restore.record"] != 1 {
+				t.Fatalf("failed %v, want restore.record:\n%s", p.failed, strings.Join(logged, "\n"))
+			}
+		})
+	}
 }

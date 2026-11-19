@@ -116,11 +116,17 @@ func runDesktopApply(args []string) int {
 // waitForUpdateHelper waits for the helper that started this launch to
 // exit: it holds the single-instance identity and the backend lock until
 // then. The wait is the new version's first phase after the update; one
-// that runs out is logged and the launch goes on.
-func waitForUpdateHelper(helper supervise.ProcessRef, timeout time.Duration, logf func(string, ...any)) {
-	waiting := supervise.NewPhaseLog(logf, "updater: update helper", nil).Begin("wait-helper")
+// that runs out is logged and the launch goes on. It returns when this
+// boot's own work starts, where the boot that follows an update begins
+// (beginUpdateBoot): the wait's end by now, or the process's start when
+// no helper started it. nil now is time.Now.
+func waitForUpdateHelper(helper supervise.ProcessRef, timeout time.Duration, logf func(string, ...any), now func() time.Time) (bootStarted time.Time) {
+	if helper.PID == 0 {
+		return processStarted
+	}
+	waiting := supervise.NewPhaseLog(logf, "updater: update helper", now).Begin("wait-helper")
 	err := supervise.WaitForExit(context.Background(), helper, timeout)
-	waiting.End(err, "pid", helper.PID)
+	return waiting.End(err, "pid", helper.PID)
 }
 
 // desktopApplyPhases logs the helper's own phases for the update or

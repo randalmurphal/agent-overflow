@@ -53,9 +53,13 @@ var errLegacyTarget = errors.New("the new launcher predates trial updates")
 // start the new launcher and quit. It returns errLegacyTarget when the target
 // cannot run the trial, and nil only once the app is quitting. The handoff
 // is the update's first timed phase; this launcher's shutdown follows it.
-func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, staged string, digest []byte) (err error) {
+// Choosing the swap is logged on swap, as the branch taken: skipped for the
+// running version, and for a target that writes no preflight answer the
+// handoff's time with branch=swap, never a failed handoff.
+func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, staged string, digest []byte, swap *supervise.SwapTiming) (err error) {
 	// The same version has the same schema: nothing for a trial to prove.
 	if directive.Version == payloadVersion {
+		swap.Phases().Skip("handoff", "the target is the running version")
 		return errLegacyTarget
 	}
 	a.mu.Lock()
@@ -77,7 +81,13 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		return err
 	}
 	handing := supervise.NewPhaseLog(log.Printf, "updater: update "+id, nil).Begin("handoff")
-	defer func() { handing.End(err) }()
+	defer func() {
+		if errors.Is(err, errLegacyTarget) {
+			swap.Declined(handing)
+			return
+		}
+		handing.End(err)
+	}()
 	launcherPath := wsllauncher.StagedLauncherPath(dir, id)
 	// StageCopy verifies the digest of the bytes it writes, so the file the
 	// new launcher runs from is the one the backend verified.
@@ -141,7 +151,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		return fmt.Errorf("start the new launcher: %w", err)
 	}
 	log.Printf("updater: update %s to %s handed to %s", id, directive.Version, launcherPath)
-	armUpdateExitWatchdog(updateRestartExitWatchdogDelay)
+	armUpdateExitWatchdog(updateRestartExitWatchdogDelay, nil)
 	a.wails.Quit()
 	return nil
 }

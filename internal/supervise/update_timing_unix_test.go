@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,84 @@ func (r *desktopRig) phases(t *testing.T) phaseLines {
 	logged := append([]string(nil), r.logged...)
 	r.mu.Unlock()
 	return parsePhaseLines(t, logged)
+}
+
+// servedUpdate stages 1.0.0, which asks for 2.0.0, and 2.0.0 with behavior,
+// over a database of one file so each file phase runs once.
+func (r *rig) servedUpdate(behavior string) {
+	r.t.Helper()
+	r.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
+	r.stageReporting("2.0.0", behavior)
+	r.adopt("1.0.0")
+	writeFile(r.t, filepath.Join(r.dataDir, DatabaseFiles()[0]), "before")
+}
+
+// A supervised serve update runs every phase in the supervisor, which logs
+// each once, from accepting the request to the commit, and one summary.
+func TestAServeUpdateLogsEachPhaseOnce(t *testing.T) {
+	t.Parallel()
+	rig := newRig(t)
+	rig.servedUpdate(behaviorPrepare)
+	if err := rig.runUntil(rig.config(), "committed 2.0.0", 1); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if state := rig.state(); state.Update == nil || state.Update.State != UpdateCommitted {
+		t.Fatalf("state = %+v, want a committed record", state.Update)
+	}
+	p := parsePhaseLines(t, rig.supervisorLog())
+	phases := []string{"accept", "grace", "stop-previous",
+		"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
+		"record-attempt", "trial.start", "trial.boot", "settle", "discard", "prune"}
+	p.wantOnce(t, phases...)
+	p.wantNone(t, "trial.stop", "restore.remove", "restore.copy", "restore.sync", "restore.record")
+	if len(p.failed) != 0 || len(p.skipped) != 0 {
+		t.Fatalf("failed %v, skipped %v; want every phase run and passed", p.failed, p.skipped)
+	}
+	p.wantSummary(t, phases...)
+	rig.wantOutcome(t, "committed")
+}
+
+// wantOutcome fails unless the supervisor's one summary names outcome.
+func (r *rig) wantOutcome(t *testing.T, outcome string) {
+	t.Helper()
+	for _, line := range r.supervisorLog() {
+		if summaryLineRE.MatchString(line) {
+			if !strings.Contains(line+" ", " outcome="+outcome+" ") {
+				t.Fatalf("summary %q, want outcome=%s", line, outcome)
+			}
+			return
+		}
+	}
+	t.Fatal("no summary")
+}
+
+// A serve trial that fails is stopped and rolled back by the supervisor,
+// which logs the failed boot, the stop, the restore and the settlement, and
+// ends the update with one summary before the previous version starts.
+func TestAServeRollbackLogsEachPhaseOnce(t *testing.T) {
+	t.Parallel()
+	rig := newRig(t)
+	rig.servedUpdate(behaviorFailedStart)
+	if err := rig.runUntil(rig.config(), "hello 1.0.0", 2); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if state := rig.state(); state.Update == nil || state.Update.State != UpdateRolledBack {
+		t.Fatalf("state = %+v, want a rolled-back record", state.Update)
+	}
+	p := parsePhaseLines(t, rig.supervisorLog())
+	p.wantOnce(t, "accept", "grace", "stop-previous",
+		"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
+		"record-attempt", "trial.start", "trial.boot", "trial.stop",
+		"restore.remove", "restore.copy", "restore.sync", "settle", "discard")
+	p.wantNone(t, "prune")
+	if len(p.failed) != 1 || p.failed["trial.boot"] != 1 {
+		t.Fatalf("failed %v, want the trial's boot", p.failed)
+	}
+	p.wantSummary(t, "accept", "grace", "stop-previous",
+		"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
+		"record-attempt", "trial.start", "trial.boot(failed)", "trial.stop",
+		"restore.remove", "restore.copy", "restore.sync", "restore.record:skipped", "settle", "discard")
+	rig.wantOutcome(t, "rolled-back")
 }
 
 // The helper runs every step in its own process, so every phase's line is

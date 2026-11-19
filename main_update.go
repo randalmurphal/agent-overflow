@@ -11,10 +11,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/store"
@@ -33,14 +36,71 @@ import (
 // tell: package variables initialize before main.
 var processStarted = time.Now()
 
-// logUpdateFirstBoot logs, once a boot that finishes the update to `to` is
-// ready for clients, how long it took from its process's start. It is the
-// update's last phase: the new version's real boot, until it is usable.
-func logUpdateFirstBoot(logf func(string, ...any), to string) {
+// updateBoot times the boot that follows an update, the update's last
+// phase: the new version's real boot after a commit, or the previous
+// version's after a rollback or failure, from when this process's own work
+// starts until it is ready for clients or fails to start. It ends once,
+// whichever exit comes first. A nil *updateBoot is a boot that follows no
+// update.
+type updateBoot struct {
+	phase supervise.Phase
+	after string
+	once  sync.Once
+}
+
+// activeUpdateBoot is the boot fatalf ends: a process can exit through
+// fatalf from many places, and the boot's phase ends there too.
+var activeUpdateBoot atomic.Pointer[updateBoot]
+
+// beginUpdateBoot times the boot that follows the update to `to` from
+// started, which committed says applied; nil when to is "".
+func beginUpdateBoot(logf func(string, ...any), to string, committed bool, started time.Time) *updateBoot {
 	if to == "" {
+		return nil
+	}
+	after := "unsuccessful"
+	if committed {
+		after = "committed"
+	}
+	b := &updateBoot{
+		phase: supervise.NewPhaseLog(logf, "updater: update to "+to, nil).BeginAt("first-boot", started),
+		after: after,
+	}
+	activeUpdateBoot.Store(b)
+	return b
+}
+
+// end ends the boot with err, nil once it is ready for clients. Only the
+// first call logs.
+func (b *updateBoot) end(err error) {
+	if b == nil {
 		return
 	}
-	supervise.NewPhaseLog(logf, "updater: update to "+to, nil).BeginAt("first-boot", processStarted).End(nil)
+	b.once.Do(func() {
+		activeUpdateBoot.CompareAndSwap(b, nil)
+		b.phase.End(err, "after", b.after)
+	})
+}
+
+// followedUpdate is the update a WSL backend's boot follows, and whether
+// it applied: the launcher's record names a committed one (--updating-to)
+// or one that did not apply (--update-failed-to); otherwise the install
+// marker names one that took the direct swap, applied or not
+// (appupdate.Service.UpdateThisBootFollows).
+func followedUpdate(updatingTo string, failure appupdate.LauncherFailure, markerTo string, markerApplied bool) (to string, committed bool) {
+	switch {
+	case updatingTo != "":
+		return updatingTo, true
+	case failure.To != "":
+		return failure.To, false
+	}
+	return markerTo, markerApplied
+}
+
+// endActiveUpdateBoot ends the boot in progress, if any, with err: the
+// process is exiting.
+func endActiveUpdateBoot(err error) {
+	activeUpdateBoot.Load().end(err)
 }
 
 func isUpdateCommand(name string) bool {

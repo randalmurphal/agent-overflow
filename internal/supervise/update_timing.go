@@ -65,12 +65,14 @@ func (l *PhaseLog) BeginAt(name string, started time.Time) Phase {
 }
 
 // End logs the phase's line with fields, key and value pairs, and failed
-// with err when it is not nil.
-func (p Phase) End(err error, fields ...any) {
+// with err when it is not nil. It returns the time the phase ended, from
+// the log's clock, so a phase that follows can begin exactly there; zero
+// for a phase of a nil log.
+func (p Phase) End(err error, fields ...any) (ended time.Time) {
 	if p.log == nil {
-		return
+		return time.Time{}
 	}
-	took := p.log.record(p, err)
+	took, ended := p.log.record(p, err)
 	var line strings.Builder
 	fmt.Fprintf(&line, "phase=%s duration=%s", p.name, took)
 	for i := 0; i+1 < len(fields); i += 2 {
@@ -80,6 +82,7 @@ func (p Phase) End(err error, fields ...any) {
 		fmt.Fprintf(&line, " failed: %v", err)
 	}
 	p.log.logf("%s: %s", p.log.prefix, line.String())
+	return ended
 }
 
 // Waited records the caller's wait for a phase whose own line another
@@ -120,8 +123,9 @@ func (l *PhaseLog) Summary(total time.Duration, fields ...any) {
 	l.logf("%s: %s", l.prefix, line.String())
 }
 
-func (l *PhaseLog) record(p Phase, err error) time.Duration {
-	took := roundPhase(l.now().Sub(p.started))
+func (l *PhaseLog) record(p Phase, err error) (took time.Duration, ended time.Time) {
+	ended = l.now()
+	took = roundPhase(ended.Sub(p.started))
 	entry := p.name + ":" + took.String()
 	if err != nil {
 		entry += "(failed)"
@@ -129,7 +133,90 @@ func (l *PhaseLog) record(p Phase, err error) time.Duration {
 	l.mu.Lock()
 	l.phases = append(l.phases, entry)
 	l.mu.Unlock()
-	return took
+	return took, ended
+}
+
+// SwapTiming times an update that skips the trial and takes the
+// framework's swap, in the old version's process: the choice of that
+// branch (handoff), the steps before the swap, the swap's start (swap) and
+// this process's shutdown from the quit it requests (shutdown), then one
+// summary. The framework's helper replaces the executable and relaunches
+// it after this process exits, and logs no durations.
+//
+// A nil *SwapTiming is valid and does nothing. Safe for concurrent use.
+type SwapTiming struct {
+	phases  *PhaseLog
+	now     func() time.Time
+	started time.Time
+
+	mu       sync.Mutex
+	shutdown Phase
+	ended    bool
+}
+
+// NewSwapTiming starts timing the swap to version to. nil logf is silent;
+// nil now is time.Now.
+func NewSwapTiming(logf func(string, ...any), to string, now func() time.Time) *SwapTiming {
+	prefix := "updater: swap"
+	if to != "" {
+		prefix += " to " + to
+	}
+	phases := NewPhaseLog(logf, prefix, now)
+	return &SwapTiming{phases: phases, now: phases.now, started: phases.now()}
+}
+
+// Phases is the log of the swap's phases.
+func (s *SwapTiming) Phases() *PhaseLog {
+	if s == nil {
+		return nil
+	}
+	return s.phases
+}
+
+// Declined ends handoff, the trial's handoff begun on another log, as the
+// branch taken: the target cannot run the trial, so its time is logged
+// here with branch=swap and never as a failure.
+func (s *SwapTiming) Declined(handoff Phase) {
+	if s == nil {
+		return
+	}
+	s.phases.BeginAt("handoff", handoff.started).End(nil, "branch", "swap")
+}
+
+// Quitting begins shutdown: the swap's helper is running and this process
+// has asked to quit.
+func (s *SwapTiming) Quitting() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ended {
+		s.shutdown = s.phases.Begin("shutdown")
+	}
+}
+
+// End ends the swap once: the shutdown, when it began, with err, then the
+// summary with outcome swapped, or error when err is not nil. A swap that
+// failed before the quit passes its error, and this process keeps running.
+func (s *SwapTiming) End(err error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
+	s.ended = true
+	if s.shutdown.log != nil {
+		s.shutdown.End(err)
+	}
+	outcome := "swapped"
+	if err != nil {
+		outcome = "error"
+	}
+	s.phases.Summary(s.now().Sub(s.started), "outcome", outcome)
 }
 
 func roundPhase(d time.Duration) time.Duration {

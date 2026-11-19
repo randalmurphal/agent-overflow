@@ -84,6 +84,7 @@ func runClient(rawURL string) {
 	// the independently connected computers, so no App receiver is registered.
 	app := application.New(desktopApplicationOptions(title))
 	var window *application.WebviewWindow
+	var updates *appupdate.Service
 	stub, err := serveClientWindow(cfg, clientWindowHooks{
 		setBackground: func(r, g, b uint8) {
 			if window != nil {
@@ -91,6 +92,7 @@ func runClient(rawURL string) {
 			}
 		},
 		configureUpdater: func(service *appupdate.Service) {
+			updates = service
 			appservice.InitWindowUpdater(service, app, version, frontendRelaunchArgs(dataDirRoot))
 		},
 	})
@@ -121,6 +123,8 @@ func runClient(rawURL string) {
 	if err := stub.Shutdown(shutCtx); err != nil {
 		log.Printf("clientmode: shutdown: %v", err)
 	}
+	// A restart that took the framework's swap ends its shutdown here.
+	updates.EndRestart(runErr)
 	if runErr != nil {
 		fatalf("wails run (client): %v", runErr)
 	}
@@ -329,19 +333,24 @@ func nativeWindowPointer(getWindow func() *application.WebviewWindow) func() uns
 // (main_update_apply.go), zero when none did: it holds the single-instance
 // identity and the backend lock until it exits.
 func runDesktop(listenAddr string, helper supervise.ProcessRef) {
+	logf := log.Printf
 	if helper.PID != 0 {
-		logf := log.Printf
 		if path, err := desktopUpdateLogPath(); err != nil {
 			log.Printf("updater: locate the update log: %v", err)
 		} else {
 			logf = desktopUpdateLogf(path)
 		}
-		waitForUpdateHelper(helper, desktopWaitTimeout, logf)
 	}
+	// The boot that follows an update begins where the helper wait ends,
+	// so the two phases never overlap.
+	bootStarted := waitForUpdateHelper(helper, desktopWaitTimeout, logf, nil)
 	if runExistingDesktop() {
 		return
 	}
 	appService := newApp()
+	// boot times the boot that follows an update, which beforeRun learns
+	// from the record; it ends once, on whichever exit comes first.
+	var boot *updateBoot
 	// Assigned inside beforeRun, on this goroutine, before the app loop
 	// starts — so every later read (the reload keybinding on the UI
 	// thread, the shutdown below) sees the started server.
@@ -397,6 +406,11 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 				return false
 			}
 			launch = true
+			if plan.updatingTo != "" {
+				boot = beginUpdateBoot(gate.updateLogf(), plan.updatingTo, true, bootStarted)
+			} else {
+				boot = beginUpdateBoot(gate.updateLogf(), plan.failedTo, false, bootStarted)
+			}
 			// Configure in-app self-update before the transport serves, so the updater
 			// RPC handlers observe appService.updater.handle without a race. No-op for dev
 			// builds and on provider/init failure (logged) — updates stay unavailable
@@ -428,10 +442,11 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 			appservice.SetStartDone(appService.App, func(err error) {
 				if err == nil {
 					srv.MarkReady()
-					logUpdateFirstBoot(gate.updateLogf(), plan.updatingTo)
+					boot.end(nil)
 					appservice.NotifyPendingUpdateApplyFailure(appService.App)
 					return
 				}
+				boot.end(err)
 				log.Printf("app: service startup: %v", err)
 				srv.MarkStartupFailed()
 				setStartErr(err)
@@ -464,6 +479,13 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 	}
 
 	runErr := shell.run()
+	// A Start that the window's close canceled reports nothing, so a boot
+	// still open here ended before it was ready.
+	if runErr != nil {
+		boot.end(runErr)
+	} else {
+		boot.end(errors.New("the app closed before it finished starting"))
+	}
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
 	defer cancel()
@@ -472,6 +494,8 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 			log.Printf("transport: shutdown: %v", err)
 		}
 	}
+	// A restart that took the framework's swap ends its shutdown here.
+	appservice.EndUpdateRestart(appService.App, runErr)
 	if runErr != nil {
 		fatalf("wails run: %v", runErr)
 	}

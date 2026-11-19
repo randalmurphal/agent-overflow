@@ -1381,6 +1381,50 @@ func TestConfigureWSLNamesTheLauncherReason(t *testing.T) {
 	}
 }
 
+// The install marker names the update this boot follows, which the boot
+// times: applied when this boot runs its version, as after the direct
+// swap, and not applied otherwise. A boot without a marker follows none.
+func TestConfigureWSLNamesTheUpdateThisBootFollows(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		expected string
+		to       string
+		applied  bool
+	}{
+		{"applied", "0.0.10", "0.0.10", true},
+		{"did not apply", "0.0.11", "0.0.11", false},
+		{"no marker", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			markerDir := t.TempDir()
+			if tc.expected != "" {
+				if err := selfupdate.SaveMarker(markerDir, selfupdate.Marker{
+					ExpectedVersion: tc.expected, PriorVersion: "0.0.9", StagedAt: time.Now(),
+				}); err != nil {
+					t.Fatalf("save marker: %v", err)
+				}
+			}
+			a := New("0.0.10", Deps{})
+			if to, applied := a.UpdateThisBootFollows(); to != "" || applied {
+				t.Fatalf("before ConfigureWSL = %q, %t", to, applied)
+			}
+			if err := a.ConfigureWSL(WSLConfig{
+				CurrentVersion: "0.0.10", Arch: "amd64", StagingRoot: t.TempDir(), MarkerDir: markerDir,
+				Provider: wslTestProvider(t),
+			}); err != nil {
+				t.Fatalf("ConfigureWSL: %v", err)
+			}
+			if to, applied := a.UpdateThisBootFollows(); to != tc.to || applied != tc.applied {
+				t.Fatalf("UpdateThisBootFollows = %q, %t; want %q, %t", to, applied, tc.to, tc.applied)
+			}
+		})
+	}
+	var none *Service
+	if to, applied := none.UpdateThisBootFollows(); to != "" || applied {
+		t.Fatalf("a nil service = %q, %t", to, applied)
+	}
+}
+
 func TestCheckForUpdateSurfacesCheckFailureAsState(t *testing.T) {
 	// An offline check must not eat the boot-detected apply-failure notice.
 	// The failed release check comes back as CheckError on the result, not as

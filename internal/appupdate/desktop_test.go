@@ -3,6 +3,7 @@ package appupdate
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,6 +329,117 @@ func TestDesktopTrialLeavesATargetWithoutItToTheFrameworkSwap(t *testing.T) {
 		t.Fatal("a failed swap left the updater busy")
 	}
 	d2.refuteExit(t)
+}
+
+// swapLines captures the standard logger's lines about a framework swap.
+// Serial: it replaces the standard logger's output.
+func swapLines(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var buf strings.Builder
+	previous, flags := log.Writer(), log.Flags()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previous)
+		log.SetFlags(flags)
+	})
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		var lines []string
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.HasPrefix(line, "updater: swap") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// A target without the trial takes the framework's swap, and the update
+// logs that branch as skipped, never failed, then the swap's start, this
+// process's shutdown once the host has shut down, and one summary. A swap
+// whose shutdown the watchdog cuts short says so, and one that cannot
+// start ends with its error and no shutdown.
+func TestDesktopSwapWithoutTheTrialLogsItsPhases(t *testing.T) {
+	t.Run("swapped", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		// The watchdog's own case is below; here the host shuts down first.
+		d.deps.RestartWatchdogDelay = time.Hour
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error { return nil }
+		if err := d.RestartToUpdate(nil); err != nil {
+			t.Fatalf("RestartToUpdate: %v", err)
+		}
+		d.EndRestart(nil)
+		d.EndRestart(errors.New("a second end"))
+		want := []string{
+			"updater: swap to 0.8.1: phase=handoff skipped: 0.8.1 does not apply updates with a trial",
+			"updater: swap to 0.8.1: phase=swap duration=",
+			"updater: swap to 0.8.1: phase=shutdown duration=",
+			"updater: swap to 0.8.1: summary total=",
+		}
+		got := lines()
+		if len(got) != len(want) {
+			t.Fatalf("logged %q\nwant %q", got, want)
+		}
+		for i, prefix := range want {
+			if !strings.HasPrefix(got[i], prefix) || strings.Contains(got[i], " failed: ") {
+				t.Fatalf("line %d = %q, want %q and no failure", i, got[i], prefix)
+			}
+		}
+		if !strings.Contains(got[3], "phases=handoff:skipped,swap:") || !strings.Contains(got[3], ",shutdown:") ||
+			!strings.HasSuffix(got[3], " outcome=swapped") {
+			t.Fatalf("summary = %q", got[3])
+		}
+	})
+	t.Run("the watchdog ends the shutdown", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error { return nil }
+		if err := d.RestartToUpdate(nil); err != nil {
+			t.Fatalf("RestartToUpdate: %v", err)
+		}
+		select {
+		case <-d.exited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the restart watchdog did not fire")
+		}
+		d.EndRestart(nil)
+		got := strings.Join(lines(), "\n")
+		if strings.Count(got, "phase=shutdown duration=") != 1 ||
+			!strings.Contains(got, "phase=shutdown duration=") || !strings.Contains(got, "failed: the shutdown did not finish within 50ms") ||
+			strings.Count(got, "summary total=") != 1 || !strings.Contains(got, "outcome=error") {
+			t.Fatalf("logged:\n%s\nwant the shutdown failed once and one summary", got)
+		}
+	})
+	t.Run("the swap cannot start", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error { return errors.New("spawn helper: boom") }
+		if err := d.RestartToUpdate(nil); err == nil {
+			t.Fatal("RestartToUpdate succeeded without its helper")
+		}
+		d.EndRestart(nil)
+		got := strings.Join(lines(), "\n")
+		if !strings.Contains(got, "phase=swap duration=") || !strings.Contains(got, "failed: spawn helper: boom") ||
+			strings.Contains(got, "phase=shutdown") || strings.Count(got, "summary total=") != 1 ||
+			!strings.Contains(got, "outcome=error") {
+			t.Fatalf("logged:\n%s\nwant the swap failed, no shutdown and one summary", got)
+		}
+	})
 }
 
 func TestReportUnsuccessfulUpdateIsTheBootNotice(t *testing.T) {

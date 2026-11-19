@@ -118,6 +118,10 @@ type wslUpdateMode struct {
 	// launcherFailure is the update the launcher's record settled as rolled
 	// back or failed, which the launcher passed on this backend's argv.
 	launcherFailure LauncherFailure
+	// followed is the install this boot's marker named, and applied whether
+	// this boot runs its version (UpdateThisBootFollows).
+	followed string
+	applied  bool
 	// ackTimeout and backstopTimeout are the two install deadlines
 	// (wslInstallACKTimeout / wslInstallBackstopTimeout in production; tests
 	// inject short ones so both paths are asserted rather than slept through).
@@ -225,6 +229,7 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	if marker == nil {
 		return // nothing pending: the ordinary boot
 	}
+	mode.followed, mode.applied = marker.ExpectedVersion, marker.ExpectedVersion == currentVersion
 	if marker.ExpectedVersion == currentVersion {
 		log.Printf("updater: update to %s applied", currentVersion)
 		clearWSLUpdateResidue(mode)
@@ -238,6 +243,17 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	}
 	a.setUpdateApplyFailure(unsuccessfulUpdateNotice(marker.ExpectedVersion, reason, currentVersion))
 	clearWSLUpdateResidue(mode)
+}
+
+// UpdateThisBootFollows is the install the WSL boot's marker named, which
+// this boot follows, and whether it applied; "" when the marker named none
+// or the WSL updater is not configured. The boot that follows an update
+// times its phase by it (docs/specs/app-update.md, "What an update logs").
+func (a *Service) UpdateThisBootFollows() (to string, applied bool) {
+	if a == nil || a.updater.wsl == nil {
+		return "", false
+	}
+	return a.updater.wsl.followed, a.updater.wsl.applied
 }
 
 // unsuccessfulUpdateNotice is the boot notice for an update to `to` that

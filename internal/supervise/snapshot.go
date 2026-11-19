@@ -531,21 +531,25 @@ func applyRestore(layout Layout, dataDir string, opts RestoreOptions) error {
 	}
 	syncing := opts.Phases.Begin("restore.sync")
 	err = atomicfile.SyncDir(dataDir)
-	if err == nil {
-		err = endAttemptAtRestore(layout, dataDir, snapshot)
-	}
 	syncing.End(err)
-	return err
+	if err != nil {
+		return err
+	}
+	return endAttemptAtRestore(layout, dataDir, snapshot, opts.Phases)
 }
 
 // endAttemptAtRestore records that the update's last trial attempt, if one
 // started, left the snapshot just restored: a restore ends an attempt the
 // way its command's own record does, whichever process finishes it. It runs
-// before the marker is cleared, so a failure repeats the restore.
-func endAttemptAtRestore(layout Layout, dataDir string, snapshot Snapshot) error {
+// before the marker is cleared, so a failure repeats the restore. phases
+// times it as restore.record.
+func endAttemptAtRestore(layout Layout, dataDir string, snapshot Snapshot, phases *PhaseLog) (err error) {
 	if snapshot.Left == nil {
+		phases.Skip("restore.record", "no trial attempt of the update started")
 		return nil
 	}
+	recording := phases.Begin("restore.record")
+	defer func() { recording.End(err, "attempt", snapshot.Left.Attempt) }()
 	files, _, err := identifyDatabase(dataDir)
 	if err != nil {
 		return err
