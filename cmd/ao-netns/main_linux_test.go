@@ -5,11 +5,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -38,6 +41,15 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "exit7":
 		os.Exit(7)
+	case "await-term":
+		dir, err := goWorkSource()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		fmt.Println(dir)
+		time.Sleep(10 * time.Second)
+		os.Exit(5)
 	case "await-quit":
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGQUIT)
@@ -75,6 +87,111 @@ func TestProgramSeesOnlyTheIsolatedInterfaces(t *testing.T) {
 	if got, want := strings.Fields(stdout.String()), []string{"lo", netisolate.LANName}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("interfaces = %v, want %v", got, want)
 	}
+}
+
+// TestGoWorkDirectoryIsRemovedWhenASignalEndsTheRun: the run's Go work
+// directory on disk is gone once a forwarded SIGTERM has ended the program.
+func TestGoWorkDirectoryIsRemovedWhenASignalEndsTheRun(t *testing.T) {
+	// A namespace of its own, as from a shell: inside one, the run shares
+	// that one's work directory and makes none.
+	t.Setenv(netisolate.EnvNamespace, "")
+	t.Setenv("GOTMPDIR", "")
+	t.Setenv("GOENV", filepath.Join(t.TempDir(), "absent"))
+	t.Setenv(roleEnv, "await-term")
+	// Under make go-test this binary sits in the outer namespace's temp
+	// directory, which the new namespace's own mount hides.
+	binary := copyOutsideTempDir(t)
+	reader, writer := io.Pipe()
+	code := make(chan int, 1)
+	go func() {
+		var stderr bytes.Buffer
+		code <- run([]string{binary, "-test.run=^$"}, nil, writer, &stderr)
+		t.Logf("stderr: %s", stderr.String())
+		writer.Close()
+	}()
+	line, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil {
+		t.Fatalf("program did not start: %v", err)
+	}
+	go io.Copy(io.Discard, reader)
+	dir := strings.TrimSpace(line)
+	if !strings.HasPrefix(filepath.Base(dir), "ao-gowork-") {
+		t.Fatalf("program reports Go work directory %q", dir)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("Go work directory while the program runs: %v", err)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-code:
+		if got != 128+int(syscall.SIGTERM) {
+			t.Fatalf("exit %d, want the program's SIGTERM status", got)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("program never exited")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Go work directory %s outlived the run: %v", dir, err)
+	}
+}
+
+// goWorkSource names the directory mounted at the run's Go work directory,
+// from the mount's root in /proc/self/mountinfo, in the host's temp
+// directory.
+func goWorkSource() (string, error) {
+	data, err := os.ReadFile(filepath.Join(os.Getenv("TMPDIR"), ".ao-go-env"))
+	if err != nil {
+		return "", err
+	}
+	_, mount, ok := strings.Cut(strings.TrimSpace(string(data)), "GOTMPDIR=")
+	if !ok {
+		return "", fmt.Errorf("no GOTMPDIR in %q", data)
+	}
+	info, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", err
+	}
+	// The last mount on the path is the visible one; an outer namespace's
+	// may be listed under it.
+	source := ""
+	for _, line := range strings.Split(string(info), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 4 && fields[4] == mount {
+			source = filepath.Join(os.Getenv(netisolate.EnvHostTempDir), filepath.Base(fields[3]))
+		}
+	}
+	if source == "" {
+		return "", fmt.Errorf("%s is not a mount point", mount)
+	}
+	return source, nil
+}
+
+func copyOutsideTempDir(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("/tmp", "ao-netns-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove test binary copy: %v", err)
+		}
+	})
+	binary := filepath.Join(dir, "ao-netns.test")
+	if err := os.WriteFile(binary, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return binary
 }
 
 func TestExitStatusPassesThrough(t *testing.T) {

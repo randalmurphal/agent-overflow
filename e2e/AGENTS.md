@@ -90,11 +90,12 @@ memory boundary. The `desktop` project runs ordinary specs; `compact` runs
 `compact-*.spec.ts` with touch and compact viewport settings. Run one file with
 `bin/ao-harness-e2e tests/<spec>`; it runs the `bin/agent-overflow` from the last
 `make harness-build`, so rebuild after changing Go or frontend code. On Linux
-the launcher runs the suite in an isolated network namespace with one private
-LAN interface; a spec cannot reach host services or any real network.
+the launcher runs the suite in an isolated namespace with one private LAN
+interface, a private RAM temp directory that holds the data roots, and the
+lowest CPU priority; a spec cannot reach host services or any real network.
 Elsewhere, macOS included, instances stay on loopback and specs that need an
 off-host peer skip. See
-[network isolation](../docs/specs/testing-harness.md#network-isolation).
+[isolation](../docs/specs/testing-harness.md#isolation-network-temp-directory-and-priority).
 
 A test that fails while holding the worker backend, including in the
 per-test reset, gets `backend.log` (the backend's stdout and stderr since
@@ -102,7 +103,9 @@ launch), `backend-launch.json` (binary, args, roots, `AO_HARNESS_TIMING` and
 the whole environment the backend started with) and `backend-logs/` (the
 backend's own log files) beside its trace in `test-results`. The worker
 data root is still deleted at teardown unless `AO_E2E_KEEP_FAILED_ROOT=1`,
-which leaves it at the `dataRoot` the launch record names. A backend a spec
+which creates worker data roots in the host's temp directory rather than
+the namespace's, and leaves a failed test's at the `dataRoot` the launch
+record names. A backend a spec
 launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 

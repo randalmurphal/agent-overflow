@@ -102,7 +102,7 @@ file before finishing. For frontend changes, run
 relevant Vitest tests.
 
 Tests run only inside the isolated network namespace
-([network isolation](docs/specs/testing-harness.md#network-isolation)); a
+([network isolation](docs/specs/testing-harness.md#isolation-network-temp-directory-and-priority)); a
 bare `go test` or `pnpm test` runs on the host network. Narrow Go runs with
 `make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS='-run TestY'`; run
 targeted Vitest as `../bin/ao-netns pnpm exec vitest run <file>` from

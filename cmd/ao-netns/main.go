@@ -1,7 +1,10 @@
-// Command ao-netns runs a program inside the test network namespace from
+// Command ao-netns runs a program inside the test namespace from
 // internal/netisolate: loopback plus a private LAN interface and no route
-// off it. The Make test targets run `go test` and the frontend test scripts
-// under it, so no test reaches the host network.
+// off it, a private RAM temp directory, and the lowest CPU priority. The
+// Make test targets run `go test` and the frontend test scripts under it,
+// so no test reaches the host network or writes temp files to disk. The go
+// command's own work directory goes to a per-run directory on disk
+// (netisolate.GoWorkDir), removed when the program exits.
 //
 //	ao-netns <program> [args...]
 //
@@ -49,10 +52,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	command := exec.Command(path, args[1:]...)
 	command.Args[0] = args[0]
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
-	if err := netisolate.Command(command); err != nil {
+	release, err := netisolate.Command(command, stderr)
+	if err != nil {
 		fmt.Fprintln(stderr, "ao-netns:", err)
 		return 1
 	}
+	// Runs after the program has exited, whatever ended it; a signal
+	// reaches the program, not this process.
+	defer func() {
+		if err := release(); err != nil {
+			fmt.Fprintln(stderr, "ao-netns:", err)
+		}
+	}()
 
 	signals := make(chan os.Signal, len(forwarded))
 	signal.Notify(signals, forwarded...)

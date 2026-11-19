@@ -12,10 +12,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const isolationProbeEnv = "AO_NETISOLATE_PROBE"
@@ -27,8 +31,13 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == HelperArg {
 		os.Exit(RunHelper(os.Args[2:], os.Stderr))
 	}
-	if os.Getenv(isolationProbeEnv) == "1" {
+	switch os.Getenv(isolationProbeEnv) {
+	case "1":
 		os.Exit(runIsolationProbe(os.Stdout))
+	case "temp":
+		os.Exit(runTempProbe(os.Stdout))
+	case "nested":
+		os.Exit(runNestedTempProbe(os.Stdout))
 	}
 	os.Exit(m.Run())
 }
@@ -164,9 +173,15 @@ func runProbe(t *testing.T) isolationProbe {
 	command.Env = append(os.Environ(), isolationProbeEnv+"=1")
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := Command(command); err != nil {
+	release, err := Command(command, os.Stderr)
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if err := release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := command.Run(); err != nil {
 		t.Fatalf("isolated probe: %v\n%s", err, stderr.String())
 	}
@@ -273,6 +288,343 @@ func TestExplainConfigureErrorNamesTheAppArmorRestriction(t *testing.T) {
 	}
 	other := errors.New("find loopback: no such interface")
 	if got := explainConfigureError(other); got != other {
+		t.Fatalf("unrelated error rewritten to %v", got)
+	}
+}
+
+// hostFileEnv names a file outside the namespace that the temp probe reads.
+const hostFileEnv = "AO_NETISOLATE_PROBE_HOST_FILE"
+
+type tempProbe struct {
+	TempDir      string
+	HostTempDir  string
+	TempFS       bool
+	TempBytes    int64
+	MountNS      string
+	Written      string
+	WriteError   string
+	HostFile     string
+	Niceness     string
+	CapEff       string
+	GoEnv        string
+	GoEnvFile    string
+	GoTmpDirEnv  string
+	GoWorkFile   string
+	NestedTemp   string
+	NestedSeen   bool
+	NestedStderr string
+}
+
+// runTempProbe reports the temp directory the isolated command sees and
+// leaves a file in it that must not outlive the namespace.
+func runTempProbe(out io.Writer) int {
+	probe := tempProbe{TempDir: os.Getenv("TMPDIR"), HostTempDir: os.Getenv(EnvHostTempDir)}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(probe.TempDir, &stat); err == nil {
+		probe.TempFS = stat.Type == unix.TMPFS_MAGIC
+		probe.TempBytes = int64(stat.Blocks) * stat.Bsize
+	}
+	probe.MountNS, _ = os.Readlink("/proc/self/ns/mnt")
+	if file, err := os.CreateTemp("", "netisolate-probe-"); err != nil {
+		probe.WriteError = err.Error()
+	} else {
+		probe.Written = file.Name()
+		file.Close()
+	}
+	if data, err := os.ReadFile(os.Getenv(hostFileEnv)); err != nil {
+		probe.HostFile = "unreadable: " + err.Error()
+	} else {
+		probe.HostFile = string(data)
+	}
+	probe.Niceness = procStatNice()
+	probe.CapEff = procStatusField("CapEff")
+	probe.GoEnv = os.Getenv("GOENV")
+	probe.GoTmpDirEnv = os.Getenv("GOTMPDIR")
+	if data, err := os.ReadFile(probe.GoEnv); err == nil {
+		probe.GoEnvFile = string(data)
+	}
+	if file, err := os.CreateTemp(goWorkPath(), "probe-work-"); err == nil {
+		probe.GoWorkFile = file.Name()
+		file.Close()
+	}
+	return encodeProbe(out, probe)
+}
+
+// runNestedTempProbe runs a temp probe through Command from inside a
+// namespace Command built, after leaving a file in its own temp directory.
+func runNestedTempProbe(out io.Writer) int {
+	probe := tempProbe{TempDir: os.Getenv("TMPDIR")}
+	file, err := os.CreateTemp("", "netisolate-outer-")
+	if err != nil {
+		probe.WriteError = err.Error()
+		return encodeProbe(out, probe)
+	}
+	probe.Written = file.Name()
+	file.Close()
+	self, err := os.Executable()
+	if err != nil {
+		probe.NestedStderr = err.Error()
+		return encodeProbe(out, probe)
+	}
+	nested, stderr, err := startTempProbe(self, "temp", func(command *exec.Cmd) error {
+		release, err := Command(command, os.Stderr)
+		if err != nil {
+			return err
+		}
+		return release()
+	})
+	if err != nil {
+		probe.NestedStderr = err.Error() + "\n" + stderr
+		return encodeProbe(out, probe)
+	}
+	probe.NestedTemp = nested.TempDir
+	_, statErr := os.Stat(filepath.Join(nested.TempDir, filepath.Base(probe.Written)))
+	// The nested probe's own file stays visible here only if it wrote into
+	// this namespace's temp directory.
+	_, nestedErr := os.Stat(nested.Written)
+	probe.NestedSeen = statErr == nil && nestedErr == nil
+	return encodeProbe(out, probe)
+}
+
+func encodeProbe(out io.Writer, probe any) int {
+	if err := json.NewEncoder(out).Encode(probe); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// procStatNice is the nice field of /proc/self/stat, the 19th, counted
+// after the parenthesized command name.
+func procStatNice() string {
+	data, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return "unreadable: " + err.Error()
+	}
+	text := string(data)
+	// fields[0] is the state, the 3rd field of the line.
+	fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:])
+	if len(fields) < 17 {
+		return "short: " + text
+	}
+	return fields[16]
+}
+
+// startTempProbe runs binary, a copy of this test binary, as a temp probe
+// in role, isolated by isolate.
+func startTempProbe(binary, role string, isolate func(*exec.Cmd) error) (tempProbe, string, error) {
+	command := exec.Command(binary, "-test.run=^$")
+	command.Env = append(os.Environ(), isolationProbeEnv+"="+role)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := isolate(command); err != nil {
+		return tempProbe{}, "", err
+	}
+	if err := command.Run(); err != nil {
+		return tempProbe{}, stderr.String(), fmt.Errorf("isolated probe: %w", err)
+	}
+	var probe tempProbe
+	if err := json.Unmarshal(stdout.Bytes(), &probe); err != nil {
+		return tempProbe{}, stderr.String(), fmt.Errorf("decode probe %q: %w", stdout.String(), err)
+	}
+	return probe, stderr.String(), nil
+}
+
+// privateNamespace isolates a command in a namespace with a temp directory
+// of its own even when the test already runs inside one, as it does under
+// make go-test.
+func privateNamespace(command *exec.Cmd) error { return isolate(command, helperOptions{}) }
+
+// privateNamespaceWithGoWork is privateNamespace with a Go work directory
+// on disk, as Command gives a namespace of its own. The developer's Go
+// environment file is userEnv.
+func privateNamespaceWithGoWork(t *testing.T, userEnv string) (isolateCommand func(*exec.Cmd) error, goWork string) {
+	t.Helper()
+	userFile := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(userFile, []byte(userEnv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", userFile)
+	t.Setenv("GOTMPDIR", "")
+	goWork, release, err := newGoWorkDir(os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goWork == "" {
+		t.Fatal("no Go work directory")
+	}
+	t.Cleanup(func() {
+		if err := release(); err != nil {
+			t.Error(err)
+		}
+	})
+	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: goWork}) }, goWork
+}
+
+// probeBinary copies this test binary to a directory under /tmp. Under
+// make go-test the binary sits in go test's work directory inside the
+// outer namespace's temp directory, which a private namespace's own mount
+// hides from the probe it starts.
+func probeBinary(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("/tmp", "netisolate-probe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove probe binary: %v", err)
+		}
+	})
+	binary := filepath.Join(dir, "probe")
+	if err := os.WriteFile(binary, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return binary
+}
+
+// mountNamespacesInUse lists the mount namespaces of the processes this
+// user can inspect.
+func mountNamespacesInUse() map[string]bool {
+	seen := map[string]bool{}
+	entries, _ := os.ReadDir("/proc")
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		if id, err := os.Readlink(filepath.Join("/proc", entry.Name(), "ns", "mnt")); err == nil {
+			seen[id] = true
+		}
+	}
+	return seen
+}
+
+// TestIsolatedCommandGetsAPrivateRAMTempDir: TMPDIR names a size-capped
+// tmpfs at the fixed TempDir, whose files nobody outside the namespace sees
+// and which is gone with the namespace; /tmp stays the host's, so a path a
+// caller passes in is readable; and the command runs at nice 19.
+func TestIsolatedCommandGetsAPrivateRAMTempDir(t *testing.T) {
+	hostFile, err := os.CreateTemp("/tmp", "netisolate-host-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(hostFile.Name()) })
+	if _, err := hostFile.WriteString("from the host"); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(hostFileEnv, hostFile.Name())
+
+	ownMountNS, err := os.Readlink("/proc/self/ns/mnt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolateCommand, goWork := privateNamespaceWithGoWork(t, "GOPROXY=off")
+	probe, stderr, err := startTempProbe(probeBinary(t), "temp", isolateCommand)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, stderr)
+	}
+	if probe.TempDir != TempDir() {
+		t.Fatalf("TMPDIR = %q, want the fixed %q", probe.TempDir, TempDir())
+	}
+	if !probe.TempFS || probe.TempBytes != tempDirBytes {
+		t.Fatalf("TMPDIR is tmpfs=%v of %d bytes, want a tmpfs of %d", probe.TempFS, probe.TempBytes, int64(tempDirBytes))
+	}
+	if probe.HostTempDir == "" || probe.HostTempDir == TempDir() {
+		t.Fatalf("%s = %q, want the temp directory outside the namespace", EnvHostTempDir, probe.HostTempDir)
+	}
+	if !strings.HasPrefix(probe.Written, TempDir()+"/") {
+		t.Fatalf("probe wrote %q (%s), want a file under %s", probe.Written, probe.WriteError, TempDir())
+	}
+	if _, err := os.Stat(probe.Written); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a file the namespace wrote is visible outside it: stat %s: %v", probe.Written, err)
+	}
+	if probe.HostFile != "from the host" {
+		t.Fatalf("host file read inside = %q, want its content", probe.HostFile)
+	}
+	// Under make go-test this process runs at nice 19 already and the probe
+	// inherits it; run the test binary at normal priority to see the
+	// helper lower it.
+	if probe.Niceness != strconv.Itoa(Niceness) {
+		t.Fatalf("niceness = %s, want %d", probe.Niceness, Niceness)
+	}
+	// The helper mounted with CAP_SYS_ADMIN; the command holds nothing.
+	if probe.CapEff != "0000000000000000" {
+		t.Fatalf("CapEff = %s, want none after the helper mounts the temp directory", probe.CapEff)
+	}
+	if probe.MountNS == "" || probe.MountNS == ownMountNS {
+		t.Fatalf("probe mount namespace %q, want one of its own (this process: %s)", probe.MountNS, ownMountNS)
+	}
+	if mountNamespacesInUse()[probe.MountNS] {
+		t.Fatalf("mount namespace %s, and with it the temp mount, outlived the command", probe.MountNS)
+	}
+	// The go command's work directory is the run's directory on disk,
+	// named only in the Go environment file at a fixed path.
+	if probe.GoEnv != goEnvPath() || probe.GoTmpDirEnv != "" {
+		t.Fatalf("GOENV = %q and GOTMPDIR = %q, want GOENV %q and no GOTMPDIR", probe.GoEnv, probe.GoTmpDirEnv, goEnvPath())
+	}
+	if want := "GOPROXY=off\nGOTMPDIR=" + goWorkPath() + "\n"; probe.GoEnvFile != want {
+		t.Fatalf("Go environment file = %q, want %q", probe.GoEnvFile, want)
+	}
+	if probe.GoWorkFile == "" {
+		t.Fatal("probe could not write to the Go work directory")
+	}
+	if _, err := os.Stat(filepath.Join(goWork, filepath.Base(probe.GoWorkFile))); err != nil {
+		t.Fatalf("a file in the Go work directory is not in the run's directory on disk: %v", err)
+	}
+}
+
+// TestNestedCommandKeepsTheOuterTempDir: a command isolated from inside a
+// namespace shares that namespace's temp directory, as it shares its files.
+func TestNestedCommandKeepsTheOuterTempDir(t *testing.T) {
+	probe, stderr, err := startTempProbe(probeBinary(t), "nested", privateNamespace)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, stderr)
+	}
+	if probe.WriteError != "" || probe.NestedStderr != "" {
+		t.Fatalf("nested probe failed: %s%s", probe.WriteError, probe.NestedStderr)
+	}
+	if probe.NestedTemp != TempDir() || !probe.NestedSeen {
+		t.Fatalf("nested TMPDIR = %q, shares files with the outer namespace: %v; want %q and shared files", probe.NestedTemp, probe.NestedSeen, TempDir())
+	}
+}
+
+// TestMountPointMustBeARealDirectory: a mount follows a symlink, so the
+// mount point must be a directory of this user's.
+func TestMountPointMustBeARealDirectory(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureMountPoint(link); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("symlink accepted as a mount point: %v", err)
+	}
+	fresh := filepath.Join(dir, "fresh")
+	if err := ensureMountPoint(fresh); err != nil {
+		t.Fatalf("new mount point: %v", err)
+	}
+	if err := ensureMountPoint(fresh); err != nil {
+		t.Fatalf("existing mount point: %v", err)
+	}
+}
+
+func TestExplainMountErrorNamesTheRefusal(t *testing.T) {
+	got := explainMountError(fmt.Errorf("mount a tmpfs on /tmp/aot-1: %w", syscall.EPERM))
+	if !errors.Is(got, syscall.EPERM) || !strings.Contains(got.Error(), "refuses mounts") {
+		t.Fatalf("EPERM explained as %v", got)
+	}
+	other := errors.New("create /tmp/aot-1: read-only file system")
+	if got := explainMountError(other); got != other {
 		t.Fatalf("unrelated error rewritten to %v", got)
 	}
 }
