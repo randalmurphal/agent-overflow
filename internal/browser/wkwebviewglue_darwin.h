@@ -69,9 +69,10 @@ void ao_wkv_host_unpark(void *view);
 // presented. Per page, because two threads with a visible pane each present a
 // page at the same moment. An absent clip pair means unclipped, which presents
 // exactly as it did before clipping existed. A placement with no backing
-// pixel left to show (a clip that snaps empty) hides the view instead, and
-// the answer is then ao_wkv_host_hide's; a presented view answers 0.
-int ao_wkv_host_present(void *view, double x, double y, double width, double height,
+// pixel left to show (a clip that snaps empty) hides the view instead, parked
+// in slot (ao_wkv_host_hide), and the answer is then that hide's; a presented
+// view answers 0.
+int ao_wkv_host_present(void *view, int slot, double x, double y, double width, double height,
                         double clip_x, double clip_y, double clip_width, double clip_height,
                         double vw, double vh);
 

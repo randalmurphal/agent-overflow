@@ -75,6 +75,14 @@ func webkitPaneTarget(handle string) *webkitPage {
 	return webkitLookupPage(id)
 }
 
+// present shows the page's view at placement, or hides it when no overlay
+// pixel of it is left to show (webkitPresentView).
+func (p *webkitPage) present(placement PanePlacement) {
+	if err := webkitPresentView(p.liveView(), placement); err != nil && !errors.Is(err, errViewClosed) {
+		log.Printf("browser: present page %d: %v", p.id, err)
+	}
+}
+
 func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
@@ -92,7 +100,7 @@ func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = webkitPresentView(p.liveView(), placement)
+		p.present(placement)
 	}
 }
 
@@ -115,7 +123,7 @@ func (e *webkitEngine) ShowPage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = webkitPresentView(p.liveView(), placement)
+		p.present(placement)
 	}
 }
 

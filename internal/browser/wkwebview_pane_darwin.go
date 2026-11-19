@@ -83,6 +83,17 @@ func wkPaneTarget(handle string) *wkPage {
 	return wkLookupPage(id)
 }
 
+// present shows the page's view at placement, or parks it in its slot when
+// no backing pixel of it is left to show (wkPresentView).
+func (p *wkPage) present(placement PanePlacement) {
+	p.mu.Lock()
+	slot := p.slot
+	p.mu.Unlock()
+	if err := wkPresentView(p.liveView(), slot, placement); err != nil && !errors.Is(err, errViewClosed) {
+		log.Printf("browser: present page %d: %v", p.id, err)
+	}
+}
+
 func (e *wkEngine) SetPageBounds(handle string, placement PanePlacement) {
 	p := wkPaneTarget(handle)
 	if p == nil {
@@ -100,7 +111,7 @@ func (e *wkEngine) SetPageBounds(handle string, placement PanePlacement) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = wkPresentView(p.liveView(), placement)
+		p.present(placement)
 	}
 }
 
@@ -123,7 +134,7 @@ func (e *wkEngine) ShowPage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = wkPresentView(p.liveView(), placement)
+		p.present(placement)
 	}
 }
 
