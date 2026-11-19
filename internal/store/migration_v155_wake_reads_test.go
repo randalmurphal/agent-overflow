@@ -329,3 +329,27 @@ func TestMigrationV155UndeliveredWakesReadSparseIndexes(t *testing.T) {
 			index, table, program.String())
 	}
 }
+
+// The superseded-spawns update asks, for every local spawn request, whether
+// a later spawn started the same thread. It answers each from the spawn
+// target index, which the migration therefore creates before the update:
+// without it every probe reads the whole requests table.
+func TestMigrationV155SupersededSpawnsProbeTheSpawnTargetIndex(t *testing.T) {
+	index := strings.Index(assistantsV155SQL, v155SpawnTargetIndexSQL)
+	update := strings.Index(assistantsV155SQL, v155SupersededSpawnsSQL)
+	if index < 0 || update < 0 || index > update {
+		t.Fatalf("v155 creates the spawn target index at %d and runs the superseded update at %d, want the index first", index, update)
+	}
+	db := migrateThrough(t, assistantsMigrationVersion)
+	plan := queryPlan(t, db, v155SupersededSpawnsSQL)
+	if !slices.ContainsFunc(plan, func(line string) bool {
+		return strings.Contains(line, "SEARCH n USING INDEX idx_thread_requests_spawn_target")
+	}) {
+		t.Fatalf("the later-spawn probe does not use the spawn target index:\n%s", strings.Join(plan, "\n"))
+	}
+	for _, line := range plan {
+		if strings.HasPrefix(line, "SCAN n") {
+			t.Fatalf("the later-spawn probe scans the requests table:\n%s", strings.Join(plan, "\n"))
+		}
+	}
+}

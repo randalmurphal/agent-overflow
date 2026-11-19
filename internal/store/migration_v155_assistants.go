@@ -305,17 +305,10 @@ UPDATE thread_requests SET late_delivered_how = delivered_how,
  WHERE late_delivered_at IS NOT NULL;
 DROP TABLE v155_undelivered_wakes;
 
-UPDATE thread_requests SET superseded = 1, lineage_only = 1
- WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id <> ''
-   AND EXISTS (SELECT 1 FROM thread_requests n
-                WHERE n.kind = 'spawn' AND n.target_computer_id = ''
-                  AND n.target_thread_id = thread_requests.target_thread_id
-                  AND (n.created_at > thread_requests.created_at
-                    OR (n.created_at = thread_requests.created_at AND n.token > thread_requests.token)));
+` + v155SpawnTargetIndexSQL + `
 
-CREATE INDEX idx_thread_requests_spawn_target
-    ON thread_requests(target_thread_id)
- WHERE kind = 'spawn' AND target_computer_id = '';
+` + v155SupersededSpawnsSQL + `
+
 CREATE INDEX idx_thread_requests_caller_settled
     ON thread_requests(caller_thread_id, settled_at, token);
 CREATE INDEX idx_thread_requests_nested_caller
@@ -588,6 +581,23 @@ BEGIN
    WHERE thread_id = NEW.thread_id AND item_id = NEW.item_id AND question_index = NEW.question_index;
 END;
 `
+
+// v155SpawnTargetIndexSQL lists the local spawn requests by the thread they
+// started. v155SupersededSpawnsSQL probes it once per spawn row, so the
+// migration creates it first.
+const v155SpawnTargetIndexSQL = `CREATE INDEX idx_thread_requests_spawn_target
+    ON thread_requests(target_thread_id)
+ WHERE kind = 'spawn' AND target_computer_id = '';`
+
+// v155SupersededSpawnsSQL keeps one current spawn request per local thread:
+// every earlier spawn of the same thread becomes lineage only.
+const v155SupersededSpawnsSQL = `UPDATE thread_requests SET superseded = 1, lineage_only = 1
+ WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id <> ''
+   AND EXISTS (SELECT 1 FROM thread_requests n
+                WHERE n.kind = 'spawn' AND n.target_computer_id = ''
+                  AND n.target_thread_id = thread_requests.target_thread_id
+                  AND (n.created_at > thread_requests.created_at
+                    OR (n.created_at = thread_requests.created_at AND n.token > thread_requests.token)));`
 
 // v155ResidueWakesSQL lists the wakes the residue rule reads undelivered:
 // a top-level user row of the caller marked pendingFlush, no older than its
