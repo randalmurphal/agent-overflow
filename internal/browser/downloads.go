@@ -20,7 +20,7 @@ const (
 )
 
 // maxPageDownloads bounds the settled entries of one page's download log
-// (trimDownloadsLocked).
+// (pageDownloadLog).
 const maxPageDownloads = 100
 
 // downloadsToArtifacts is whether this Manager's finished downloads stay
@@ -105,24 +105,12 @@ func (m *Manager) pageForDownload(id string) (*managedPage, *jarScope) {
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			p.downloadMu.Lock()
-			found := p.downloadLocked(id) != nil
-			p.downloadMu.Unlock()
-			if found {
+			if p.downloads.has(id) {
 				return p, scope
 			}
 		}
 	}
 	return nil, nil
-}
-
-// signalDownloadLocked wakes the waiters on the page's log after an entry
-// was added or settled, once the log is trimmed: a pointer to an entry is
-// invalid from here. The caller holds p.downloadMu.
-func (p *managedPage) signalDownloadLocked() {
-	p.trimDownloadsLocked()
-	close(p.downloadWait)
-	p.downloadWait = make(chan struct{})
 }
 
 // endedDownloads are the downloads a page left running when it stopped being
@@ -149,24 +137,20 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 		m.unlistedLocked().put(p.driver.Handle(), struct{}{})
 	}
 	ended := endedDownloads{scope: scope}
-	p.downloadMu.Lock()
-	p.downloadsEnded = true
-	for i := range p.downloads {
-		entry := &p.downloads[i]
+	held := p.downloads.hold()
+	held.end()
+	for _, entry := range held.running() {
 		// One being published settles when its file is in place
 		// (publishFinishedDownload).
-		if entry.State != downloadStateRunning || entry.publishing {
+		if entry.publishing {
 			continue
 		}
 		entry.State, entry.Error = downloadStateCanceled, reason
 		m.releaseDownloadLocked(p, entry)
-		ended.notes = append(ended.notes, m.noteDownloadLocked(p, entry, ""))
+		ended.notes = append(ended.notes, m.noteDownloadLocked(p, entry))
 		ended.ids = append(ended.ids, entry.ID)
 	}
-	if len(ended.ids) > 0 {
-		p.signalDownloadLocked()
-	}
-	p.downloadMu.Unlock()
+	held.release()
 	return ended
 }
 
@@ -192,10 +176,7 @@ func (m *Manager) Downloads(ctx context.Context, access Access, opts DownloadOpt
 	}
 	switch strings.ToLower(strings.TrimSpace(opts.Action)) {
 	case "", "list":
-		p.downloadMu.Lock()
-		out := append([]DownloadInfo(nil), p.downloads...)
-		p.downloadMu.Unlock()
-		return out, nil
+		return p.downloads.list(), nil
 	case "wait":
 		timeout, timeoutErr := boundedTimeout(opts.TimeoutMS)
 		if timeoutErr != nil {
@@ -210,22 +191,7 @@ func (m *Manager) Downloads(ctx context.Context, access Access, opts DownloadOpt
 }
 
 func waitDownloadPage(ctx context.Context, p *managedPage, after uint64) (DownloadInfo, error) {
-	for {
-		p.downloadMu.Lock()
-		for _, download := range p.downloads {
-			if download.Sequence > after && download.State != downloadStateRunning {
-				p.downloadMu.Unlock()
-				return download, nil
-			}
-		}
-		signal := p.downloadWait
-		p.downloadMu.Unlock()
-		select {
-		case <-signal:
-		case <-ctx.Done():
-			return DownloadInfo{}, fmt.Errorf("browser: wait for download: %w", ctx.Err())
-		}
-	}
+	return p.downloads.settledAfter(ctx, after)
 }
 
 func safeArtifactName(name, fallback string) string {

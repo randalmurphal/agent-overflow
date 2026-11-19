@@ -3,7 +3,6 @@ package browser
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -35,24 +34,20 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	p, _ := m.pageForFrame(event.Frame)
 	switch {
 	case p != nil:
-		return admission(m.admitTo(p, event, nil))
+		return m.admitTo(p, event, nil)
 	case event.Popup != "":
 		// A popup not listed yet: its fate lists it (popup_adoption.go).
-		return admission(m.parkDownload(event))
+		return m.parkDownload(event)
 	}
 	return downloadUnowned
 }
 
-func admission(admitted bool) downloadAdmission {
-	if admitted {
-		return downloadAdmitted
-	}
-	return downloadRefused
-}
-
-// admitTo lists a starting download in p. A parked download's listing
-// (parked set) takes its reservation over.
-func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDownload) bool {
+// admitTo lists a starting download in p, its owner. It answers
+// downloadRefused when p left (its log ended) or, on an engine whose
+// downloads are AO's, p's workspace refuses the reservation, which the
+// row then says. A parked download's listing (parked set) takes its
+// reservation over.
+func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDownload) downloadAdmission {
 	authority := p.authority
 	source := p.cachedInfo().URL
 	if source == "" || source == "about:blank" {
@@ -61,15 +56,14 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDow
 	if m.downloadAdmitting != nil {
 		m.downloadAdmitting()
 	}
-	p.downloadMu.Lock()
-	if p.downloadsEnded {
+	held := p.downloads.hold()
+	if held.ended() {
 		// The page left after it was looked up; nothing would settle this.
-		p.downloadMu.Unlock()
-		return false
+		held.release()
+		return downloadRefused
 	}
-	p.downloadSeq++
 	entry := DownloadInfo{
-		Sequence: p.downloadSeq, ID: event.ID, URL: event.URL,
+		ID: event.ID, URL: event.URL,
 		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
 		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		key: fmt.Sprintf("d%d", m.downloadKeys.Add(1)),
@@ -86,12 +80,13 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDow
 		}
 		entry.reservation = reservation
 	}
-	p.downloads = append(p.downloads, entry)
-	note := m.noteDownloadLocked(p, &p.downloads[len(p.downloads)-1], source)
-	p.signalDownloadLocked()
-	p.downloadMu.Unlock()
+	note := m.noteDownloadStartLocked(p, held.add(entry), source)
+	held.release()
 	m.publishDownloads(note)
-	return entry.State != downloadStateCanceled
+	if entry.State == downloadStateCanceled {
+		return downloadRefused
+	}
+	return downloadAdmitted
 }
 
 // errNoWorkspace refuses a download AO would keep that no workspace owns.
@@ -106,58 +101,8 @@ func (m *Manager) reserveDownload(authority *workspaceAuthority) (*quota.Reserva
 	return m.reserveArtifacts(maxDownloadBytes, authority.downloadBytes)
 }
 
-// trimDownloadsLocked numbers the entries that settled since it last ran
-// and drops the earliest settled beyond maxPageDownloads, so the entry that
-// just settled stays for its waiter however many run. A running one stays:
-// its progress, its reservation and its cancel all need it, and the quotas
-// bound how many can run. The caller holds p.downloadMu.
-func (p *managedPage) trimDownloadsLocked() {
-	settled := 0
-	for i := range p.downloads {
-		entry := &p.downloads[i]
-		if entry.State == downloadStateRunning {
-			continue
-		}
-		if entry.settled == 0 {
-			p.downloadSettles++
-			entry.settled = p.downloadSettles
-		}
-		settled++
-	}
-	if settled <= maxPageDownloads {
-		return
-	}
-	stamps := make([]uint64, 0, settled)
-	for _, entry := range p.downloads {
-		if entry.settled != 0 {
-			stamps = append(stamps, entry.settled)
-		}
-	}
-	slices.Sort(stamps)
-	cutoff := stamps[settled-maxPageDownloads-1]
-	kept := make([]DownloadInfo, 0, len(p.downloads)-(settled-maxPageDownloads))
-	for _, entry := range p.downloads {
-		if entry.settled == 0 || entry.settled > cutoff {
-			kept = append(kept, entry)
-		}
-	}
-	p.downloads = kept
-}
-
-// downloadLocked answers the page's entry for an engine download id, nil for
-// none. The pointer is valid until p.downloadMu is released. The caller holds
-// p.downloadMu.
-func (p *managedPage) downloadLocked(id string) *DownloadInfo {
-	for i := len(p.downloads) - 1; i >= 0; i-- {
-		if p.downloads[i].ID == id {
-			return &p.downloads[i]
-		}
-	}
-	return nil
-}
-
 // releaseDownloadLocked returns a download's whole reservation, for one that
-// ends with no file kept. The caller holds p.downloadMu.
+// ends with no file kept. The caller holds p's download log.
 func (m *Manager) releaseDownloadLocked(_ *managedPage, entry *DownloadInfo) {
 	quota.Take(&entry.reservation).Release()
 }

@@ -189,12 +189,18 @@ func framePageLocked(scope *jarScope, frame string) *managedPage {
 
 // workspaceAuthority is what a canonical workspace owns across every jar its
 // pages are in: on an engine whose downloads AO keeps, the directory they
-// land in and the bytes they reserve. It lives while the workspace has a page, live, closing or being
-// created, in any jar (pruneAuthoritiesLocked).
+// land in and the bytes they reserve. It lives while the workspace has a
+// page, live, closing or being created, in any jar (pruneAuthoritiesLocked).
+// Its download bytes are the workspace's one pool (Manager.workspacePools),
+// which a reservation against it keeps after the authority goes, so a
+// workspace whose authority is made again meets the bytes still held.
 type workspaceAuthority struct {
 	workspace     string
 	downloadDir   string
 	downloadBytes *quota.Pool
+	// pool is the authority's hold on downloadBytes, released as it goes
+	// (forgetAuthorityLocked).
+	pool *quota.PoolHold
 }
 
 // authorityLocked answers the workspace's authority, creating it. The caller
@@ -205,7 +211,8 @@ func (m *Manager) authorityLocked(workspace, downloadDir string) *workspaceAutho
 	}
 	authority := m.authorities[workspace]
 	if authority == nil {
-		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir, downloadBytes: quota.NewPool("workspace downloads", maxWorkspaceDownloadBytes)}
+		pool := m.workspacePools.Hold(workspace)
+		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir, downloadBytes: pool.Pool(), pool: pool}
 		m.authorities[workspace] = authority
 	}
 	return authority
@@ -229,11 +236,21 @@ func (m *Manager) pruneAuthoritiesLocked() {
 			used[p.access.Workspace] = true
 		}
 	}
-	for workspace := range m.authorities {
+	for workspace, authority := range m.authorities {
 		if !used[workspace] {
 			delete(m.authorities, workspace)
+			authority.pool.Release()
 		}
 	}
+}
+
+// forgetAuthoritiesLocked forgets every workspace's authority, for a
+// closing browser. The caller holds m.mu.
+func (m *Manager) forgetAuthoritiesLocked() {
+	for _, authority := range m.authorities {
+		authority.pool.Release()
+	}
+	m.authorities = nil
 }
 
 // workspaceLoadLocked counts the engine pages, in every jar, whose authority

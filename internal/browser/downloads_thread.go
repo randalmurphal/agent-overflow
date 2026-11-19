@@ -1,11 +1,13 @@
 package browser
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,22 +15,29 @@ import (
 )
 
 // A thread's downloads as its browser pane lists them. Each page keeps its
-// own download log for browser_downloads (downloads.go); this is the
+// own download log for browser_downloads (downloads_log.go); this is the
 // thread's view of the same downloads, which outlives the page a download
-// began in, so a file stays findable after its tab closes. Every change to a
-// page's entry is noted here under the page's downloadMu (noteDownloadLocked)
-// and published after it (publishDownloads): a start, a finish, a failure or
-// a cancel pushes the thread's state at once, while byte progress is
-// coalesced to one push per downloadPushInterval per thread. A download that
-// settles other than by the user's cancel is announced once, as a Kind
-// "download" event. The list is in memory only and goes with the thread
-// (CloseThread); clearing it never deletes a file.
+// began in, so a file stays findable after its tab closes. A download's
+// start is added here in the hold that adds it to its page's log
+// (noteDownloadStartLocked), and every later change to its entry is noted
+// in the hold that makes it (noteDownloadLocked), then published after it
+// (publishDownloads): a start, a finish, a failure or a cancel pushes the
+// thread's state at once, while byte progress is coalesced to one push per
+// downloadPushInterval per thread. A download that settles other than by
+// the user's cancel is announced once, as a Kind "download" event. The
+// list is in memory only and goes with the thread (CloseThread); clearing
+// it never deletes a file.
 
 const (
 	// maxThreadDownloads bounds the settled downloads the thread's list
-	// keeps, the most recently settled (trim). A running download is never
+	// shows, the most recently settled. A running download is never
 	// dropped, and the quotas bound how many run.
 	maxThreadDownloads = 20
+	// maxResolvableDownloads bounds the settled downloads past the shown
+	// ones whose id still resolves (threadDownloadList.resolvable), so the
+	// action of a notification announced moments before its row left the
+	// shown list still finds its download.
+	maxResolvableDownloads = 256
 	// downloadPushInterval is the most often byte progress pushes a thread's
 	// state.
 	downloadPushInterval = time.Second
@@ -36,10 +45,10 @@ const (
 
 // ThreadDownload is one download in the thread's browser pane. ID is AO's
 // own key for it. Source is the address of the page it began on, or the
-// download's own address when that page had none. State is a DownloadInfo
-// state. TotalBytes is zero when the engine does not know the size.
-// Openable is whether a browser tab can show the finished file
-// (downloadOpensInPage).
+// download's own address when that page had none, and empty when neither
+// is known. State is a DownloadInfo state. TotalBytes is zero when the
+// engine does not know the size. Openable is whether a browser tab can
+// show the finished file (downloadOpensInPage).
 type ThreadDownload struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
@@ -55,7 +64,7 @@ type threadDownload struct {
 	ThreadDownload
 	// engineID is the engine's id for the download; workspace the canonical
 	// workspace of the page it began in, whose pages may open its file
-	// (listedDownloadAllows); path the finished file and file what it was
+	// (listedDownloadFile); path the finished file and file what it was
 	// when the download finished, nil for a file AO does not open.
 	engineID  string
 	workspace string
@@ -66,17 +75,89 @@ type threadDownload struct {
 	settled uint64
 }
 
+// threadDownloadList is a thread's downloads: shown, every running one and
+// the newest maxThreadDownloads settled, by settle order, newest started
+// first; and past them, resolvable by id only, the newest
+// maxResolvableDownloads settled ones the shown bound dropped. Its fields
+// are written only by its methods, which enforce both bounds as an item
+// settles, so no caller trims it. Guarded by Manager.downloadsMu.
 type threadDownloadList struct {
-	// items is newest first.
-	items []*threadDownload
+	shown []*threadDownload
+	// resolvable is newest settled first. Its items carry no Source, which
+	// nothing shows.
+	resolvable []*threadDownload
 	// settles counts the items that settled (threadDownload.settled).
 	settles uint64
 	// push is the pending coalesced state push, nil for none.
 	push *time.Timer
 }
 
+// start adds a download that just started, as the newest.
+func (l *threadDownloadList) start(item *threadDownload) {
+	l.shown = append([]*threadDownload{item}, l.shown...)
+}
+
+// change applies a change to the item with key id, shown or only
+// resolvable, and answers it and whether it ran before the change; nil
+// when the list no longer has it. An item that settles in the change is
+// numbered the newest settled, and the earliest settled past the shown
+// bound leaves the shown items then.
+func (l *threadDownloadList) change(id string, apply func(*threadDownload)) (item *threadDownload, wasRunning bool) {
+	item = l.find(id)
+	if item == nil {
+		return nil, false
+	}
+	wasRunning = item.State == downloadStateRunning
+	apply(item)
+	if item.State == downloadStateRunning || item.settled != 0 {
+		return item, wasRunning
+	}
+	l.settles++
+	item.settled = l.settles
+	l.boundShown()
+	return item, wasRunning
+}
+
+// boundShown moves the earliest settled shown items past
+// maxThreadDownloads to the resolvable ones, which keep the newest
+// maxResolvableDownloads.
+func (l *threadDownloadList) boundShown() {
+	for {
+		settled, earliest := 0, -1
+		for i, item := range l.shown {
+			if item.settled == 0 {
+				continue
+			}
+			settled++
+			if earliest < 0 || item.settled < l.shown[earliest].settled {
+				earliest = i
+			}
+		}
+		if settled <= maxThreadDownloads {
+			return
+		}
+		dropped := l.shown[earliest]
+		l.shown = slices.Delete(l.shown, earliest, earliest+1)
+		dropped.Source = ""
+		at, _ := slices.BinarySearchFunc(l.resolvable, dropped.settled, func(item *threadDownload, settled uint64) int {
+			return cmp.Compare(settled, item.settled)
+		})
+		l.resolvable = slices.Insert(l.resolvable, at, dropped)
+		if len(l.resolvable) > maxResolvableDownloads {
+			clear(l.resolvable[maxResolvableDownloads:])
+			l.resolvable = l.resolvable[:maxResolvableDownloads]
+		}
+	}
+}
+
+// find answers the item with key id, shown or only resolvable, or nil.
 func (l *threadDownloadList) find(id string) *threadDownload {
-	for _, item := range l.items {
+	for _, item := range l.shown {
+		if item.ID == id {
+			return item
+		}
+	}
+	for _, item := range l.resolvable {
 		if item.ID == id {
 			return item
 		}
@@ -84,31 +165,32 @@ func (l *threadDownloadList) find(id string) *threadDownload {
 	return nil
 }
 
-// trim numbers the items that settled since it last ran and drops the
-// earliest settled beyond maxThreadDownloads, so the item that just settled
-// stays for its announcement however many run.
-func (l *threadDownloadList) trim() {
-	settled := 0
-	for i := len(l.items) - 1; i >= 0; i-- {
-		item := l.items[i]
-		if item.State == downloadStateRunning {
-			continue
-		}
-		if item.settled == 0 {
-			l.settles++
-			item.settled = l.settles
-		}
-		settled++
+// clear drops every settled item, shown or resolvable; running ones stay.
+func (l *threadDownloadList) clear() {
+	l.shown = slices.DeleteFunc(l.shown, func(item *threadDownload) bool { return item.State != downloadStateRunning })
+	clear(l.resolvable)
+	l.resolvable = nil
+}
+
+// list answers the shown items, newest started first.
+func (l *threadDownloadList) list() []ThreadDownload {
+	out := make([]ThreadDownload, len(l.shown))
+	for i, item := range l.shown {
+		out[i] = item.ThreadDownload
 	}
-	for ; settled > maxThreadDownloads; settled-- {
-		earliest := -1
-		for i, item := range l.items {
-			if item.settled != 0 && (earliest < 0 || item.settled < l.items[earliest].settled) {
-				earliest = i
-			}
+	return out
+}
+
+// completedFiles answers the files of the shown completed items of the
+// canonical workspace at path, as they were when each completed.
+func (l *threadDownloadList) completedFiles(workspace, path string) []os.FileInfo {
+	var files []os.FileInfo
+	for _, item := range l.shown {
+		if item.State == downloadStateCompleted && item.workspace == workspace && item.path == path && item.file != nil {
+			files = append(files, item.file)
 		}
-		l.items = append(l.items[:earliest], l.items[earliest+1:]...)
 	}
+	return files
 }
 
 // downloadNote is what one change to a download publishes.
@@ -121,42 +203,59 @@ type downloadNote struct {
 	announce *ThreadDownload
 }
 
-// noteDownloadLocked copies a page's entry into its thread's list, adding
-// the item for a download that just started (source is then its Source).
-// The caller holds p.downloadMu; m.downloadsMu is taken inside it.
-func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source string) downloadNote {
-	m.downloadsMu.Lock()
-	defer m.downloadsMu.Unlock()
+// threadListLocked answers the thread's list, made on first use. The
+// caller holds m.downloadsMu.
+func (m *Manager) threadListLocked(threadID string) *threadDownloadList {
 	if m.threadDownloads == nil {
 		m.threadDownloads = make(map[string]*threadDownloadList)
 	}
-	list := m.threadDownloads[p.owner]
+	list := m.threadDownloads[threadID]
 	if list == nil {
 		list = &threadDownloadList{}
-		m.threadDownloads[p.owner] = list
+		m.threadDownloads[threadID] = list
 	}
-	item := list.find(entry.key)
-	started := item == nil
-	if started {
-		if source == "" {
-			// A later change to an item the user cleared or the bound
-			// dropped, which only a settled item can be: nothing to show.
-			return downloadNote{}
+	return list
+}
+
+// noteDownloadStartLocked adds a page's new entry to its thread's list,
+// with source as its Source, empty when no address is known. The caller
+// holds p's download log; m.downloadsMu is taken inside it.
+func (m *Manager) noteDownloadStartLocked(p *managedPage, entry *DownloadInfo, source string) downloadNote {
+	m.downloadsMu.Lock()
+	defer m.downloadsMu.Unlock()
+	m.threadListLocked(p.owner).start(&threadDownload{
+		ThreadDownload: ThreadDownload{ID: entry.key, Source: source, State: downloadStateRunning},
+		engineID:       entry.ID, workspace: p.access.Workspace,
+	})
+	return m.noteChangeLocked(p, entry, true)
+}
+
+// noteDownloadLocked copies a change to a page's entry into its thread's
+// list. The caller holds p's download log; m.downloadsMu is taken inside
+// it.
+func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo) downloadNote {
+	m.downloadsMu.Lock()
+	defer m.downloadsMu.Unlock()
+	return m.noteChangeLocked(p, entry, false)
+}
+
+// noteChangeLocked is noteDownloadLocked's change, started true for the
+// change that lists the item. The caller holds m.downloadsMu.
+func (m *Manager) noteChangeLocked(p *managedPage, entry *DownloadInfo, started bool) downloadNote {
+	item, wasRunning := m.threadListLocked(p.owner).change(entry.key, func(item *threadDownload) {
+		item.Name = entry.SuggestedName
+		if entry.Path != "" {
+			item.path, item.file = entry.Path, entry.file
+			item.Name = filepath.Base(entry.Path)
 		}
-		item = &threadDownload{ThreadDownload: ThreadDownload{ID: entry.key, Source: source}, engineID: entry.ID, workspace: p.access.Workspace}
-		list.items = append([]*threadDownload{item}, list.items...)
+		item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
+		item.Openable = item.State == downloadStateCompleted && item.file != nil && downloadOpensInPage(item.Name)
+	})
+	if item == nil {
+		// A later change to an item the user cleared or the bounds dropped,
+		// which only a settled item can be: nothing to show.
+		return downloadNote{}
 	}
-	wasRunning := started || item.State == downloadStateRunning
-	item.Name = entry.SuggestedName
-	if entry.Path != "" {
-		item.path, item.file = entry.Path, entry.file
-		item.Name = filepath.Base(entry.Path)
-	}
-	item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
-	item.Openable = item.State == downloadStateCompleted && item.file != nil && downloadOpensInPage(item.Name)
-	// After the item takes its state, which numbers it as the newest
-	// settled when it just settled.
-	list.trim()
 	note := downloadNote{threadID: p.owner}
 	// The user's own cancel is not announced; a finish that beat it is.
 	userCanceled := item.State == downloadStateCanceled && entry.cancelRequested
@@ -236,14 +335,10 @@ func (m *Manager) threadDownloadsLocked(threadID string) []ThreadDownload {
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
 	list := m.threadDownloads[threadID]
-	if list == nil || len(list.items) == 0 {
+	if list == nil || len(list.shown) == 0 {
 		return nil
 	}
-	out := make([]ThreadDownload, len(list.items))
-	for i, item := range list.items {
-		out[i] = item.ThreadDownload
-	}
-	return out
+	return list.list()
 }
 
 // forgetThreadDownloads drops the thread's list (CloseThread).
@@ -287,27 +382,27 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 		// Its page is gone, and closing it settled the download.
 		return nil
 	}
-	p.downloadMu.Lock()
-	entry := p.downloadLocked(item.engineID)
+	held := p.downloads.hold()
+	entry := held.entry(item.engineID)
 	if entry == nil || entry.State != downloadStateRunning || entry.cancelRequested {
 		// A cancel already with the engine stays its request: only its own
 		// refusal withdraws it, never a later request's answer.
-		p.downloadMu.Unlock()
+		held.release()
 		return nil
 	}
 	entry.cancelRequested = true
 	// A refusal of an earlier cancel no longer stands.
 	entry.Error = ""
-	p.downloadMu.Unlock()
+	held.release()
 	err = scope.profile.CancelDownload(item.engineID)
 	if err == nil {
 		return nil
 	}
-	p.downloadMu.Lock()
-	if entry := p.downloadLocked(item.engineID); entry != nil {
+	held = p.downloads.hold()
+	if entry := held.entry(item.engineID); entry != nil {
 		entry.cancelRequested = false
 	}
-	p.downloadMu.Unlock()
+	held.release()
 	if errors.Is(err, errDownloadEnded) {
 		// The download finished first; its report is the answer.
 		return nil
@@ -315,21 +410,14 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	return fmt.Errorf("browser: cancel the download of %s: %w", item.Name, err)
 }
 
-// ClearThreadDownloads removes the thread's settled downloads from its list.
-// Running ones stay, so they can still be canceled. No file is deleted:
-// one in the user's Downloads folder is the user's, and an artifact goes
-// with the rest after artifactMaxAge.
+// ClearThreadDownloads removes the thread's settled downloads from its list,
+// shown or resolvable. Running ones stay, so they can still be canceled. No
+// file is deleted: one in the user's Downloads folder is the user's, and an
+// artifact goes with the rest after artifactMaxAge.
 func (m *Manager) ClearThreadDownloads(access Access) {
 	m.downloadsMu.Lock()
 	if list := m.threadDownloads[access.ThreadID]; list != nil {
-		kept := list.items[:0]
-		for _, item := range list.items {
-			if item.State == downloadStateRunning {
-				kept = append(kept, item)
-			}
-		}
-		clear(list.items[len(kept):])
-		list.items = kept
+		list.clear()
 	}
 	m.downloadsMu.Unlock()
 	m.emitThreadState(access.ThreadID)
@@ -405,11 +493,23 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if !downloadOpensInPage(item.path) {
 		return PageInfo{}, fmt.Errorf("browser: a browser tab does not show %s; use Show in folder", item.Name)
 	}
-	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1, nil)
-	if errors.Is(err, errSelectionPassed) {
+	// The tab is made first, then the file opened in it only while it is
+	// still the file the download wrote.
+	info, err := m.openUserTab(ctx, access, turn, "", "", -1, nil)
+	if errors.Is(err, errSelectionPassed) || (err == nil && info.ID == "") {
 		return PageInfo{}, nil
 	}
-	return info, err
+	if err != nil {
+		return info, err
+	}
+	if m.downloadOpening != nil {
+		m.downloadOpening()
+	}
+	opened, err := m.openFile(ctx, access, item.path, item.file, OpenOptions{PageID: info.ID})
+	if err != nil {
+		return info, err
+	}
+	return opened, nil
 }
 
 // downloadOpensInPage is whether every engine shows a file of this name in a

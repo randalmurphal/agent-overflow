@@ -85,13 +85,11 @@ func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
 		// In the popup's tab, not its opener's.
 		var inOpener, inPopup int
 		for _, p := range manager.ownedPages(access.ThreadID) {
-			p.downloadMu.Lock()
 			if p.id == opener.ID {
-				inOpener += len(p.downloads)
+				inOpener += len(p.downloads.list())
 			} else {
-				inPopup += len(p.downloads)
+				inPopup += len(p.downloads.list())
 			}
-			p.downloadMu.Unlock()
 		}
 		if inOpener != 0 || inPopup != 1 {
 			t.Fatalf("the opener lists %d downloads and its popups %d, want the popup's one", inOpener, inPopup)

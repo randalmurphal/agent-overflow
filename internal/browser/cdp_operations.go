@@ -208,7 +208,7 @@ func cdpEvaluateException(exception *cdpruntime.ExceptionDetails, readOnly bool)
 		return &evaluateSyntaxError{message: message}
 	}
 	if readOnly && strings.HasPrefix(message, "EvalError: Possible side-effect") {
-		return errors.New("Chrome rejected a possible side effect: it refuses anything it cannot prove side-effect free, including some reads such as getElementById and creating an Error; read with querySelector, or use browser_evaluate")
+		return errors.New("browser: Chrome rejected a possible side effect: it refuses anything it cannot prove side-effect free, including some reads such as getElementById and creating an Error; read with querySelector, or use browser_evaluate")
 	}
 	return errors.New(message)
 }

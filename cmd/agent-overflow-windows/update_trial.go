@@ -447,6 +447,13 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 		return false
 	}
 	switch decision.Action {
+	case wsllauncher.ReconcileLaunch:
+	case wsllauncher.ReconcileJoin:
+		// The loop above joins until the applier settles the record.
+		log.Printf("updater: update %s still answers join after its applier settled", decision.Record.Update.ID)
+		a.showUpdateFailure("Agent Overflow could not read its update record.",
+			"Nothing was started, so the data is left as it is. Details are in the launcher log.")
+		return false
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
 		if err := startApplier(sequence.RecordPath, decision.Record.StagedLauncher, decision.Record.Update.ID, distro, transient); err != nil {

@@ -507,10 +507,10 @@ export class RecentAddress {
 /**
  * ThreadDownload is one download in the thread's browser pane. ID is AO's
  * own key for it. Source is the address of the page it began on, or the
- * download's own address when that page had none. State is a DownloadInfo
- * state. TotalBytes is zero when the engine does not know the size.
- * Openable is whether a browser tab can show the finished file
- * (downloadOpensInPage).
+ * download's own address when that page had none, and empty when neither
+ * is known. State is a DownloadInfo state. TotalBytes is zero when the
+ * engine does not know the size. Openable is whether a browser tab can
+ * show the finished file (downloadOpensInPage).
  */
 export class ThreadDownload {
     "id": string;

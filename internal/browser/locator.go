@@ -54,9 +54,7 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 		matches[i].NodeID = p.rememberNode(nodeReference{Selector: matches[i].Selector, Frames: append([]string(nil), opts.Locator.Frames...), Tag: matches[i].Tag, Text: matches[i].Text})
 	}
 	result := LocatorResult{Count: len(matches)}
-	p.downloadMu.Lock()
-	downloadAfter := p.downloadSeq
-	p.downloadMu.Unlock()
+	downloadAfter := p.downloads.lastSequence()
 	var before navigationMark
 	if opts.ExpectNavigation {
 		before, _ = p.driver.NavigationMark(opCtx)

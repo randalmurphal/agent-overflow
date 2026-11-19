@@ -169,9 +169,12 @@ type Manager struct {
 	artifactInitMu sync.Mutex
 	artifactReady  bool
 	artifactBytes  *quota.Pool
+	// workspacePools hands each workspace its one download pool
+	// (workspaceAuthority).
+	workspacePools *quota.Registry
 	// downloadsMu guards threadDownloads, each thread's downloads as its
 	// pane lists them (downloads_thread.go). It is taken inside m.mu and
-	// inside a page's downloadMu, and never held around either.
+	// inside a page's download log hold, and never held around either.
 	downloadsMu     sync.Mutex
 	threadDownloads map[string]*threadDownloadList
 	downloadKeys    atomic.Uint64
@@ -262,6 +265,10 @@ type Manager struct {
 	// downloadAdmitting is a test seam run between a download start's page
 	// lookup and its admission. Production leaves it nil.
 	downloadAdmitting func()
+	// downloadOpening is a test seam run between the tab a finished
+	// download opens in and its file's open (OpenThreadDownload).
+	// Production leaves it nil.
+	downloadOpening func()
 }
 
 type ManagerOptions struct {
@@ -375,23 +382,14 @@ type managedPage struct {
 	logs        []ConsoleLog
 	clipboardMu sync.Mutex
 	clipboard   []ClipboardItem
-	downloadMu  sync.Mutex
-	// downloadsEnded is set when the page stops being the Manager's
-	// (pageLeftLocked); no download is admitted on it after. Guarded by
-	// downloadMu.
-	downloadsEnded bool
-	downloadSeq    uint64
-	// downloadSettles counts the entries that settled
-	// (DownloadInfo.settled). Guarded by downloadMu.
-	downloadSettles uint64
-	downloads       []DownloadInfo
-	downloadWait    chan struct{}
-	assetMu         sync.Mutex
-	inventories     map[string]AssetInventory
-	assetOrder      []string
-	nodeMu          sync.Mutex
-	nodeRefs        map[string]nodeReference
-	nodeOrder       []string
+	// downloads is the page's download log (downloads_log.go).
+	downloads   pageDownloadLog
+	assetMu     sync.Mutex
+	inventories map[string]AssetInventory
+	assetOrder  []string
+	nodeMu      sync.Mutex
+	nodeRefs    map[string]nodeReference
+	nodeOrder   []string
 	// find is written only by a find transition, which holds mu (find.go);
 	// findMu guards it for readers. findMu may be held around the Manager's
 	// mu, never taken inside it. ends are the find ends submitted and not
@@ -428,8 +426,8 @@ var pageIncarnations atomic.Uint64
 func newManagedPage(access Access) *managedPage {
 	p := &managedPage{
 		id: uuid.NewString(), owner: access.ThreadID, access: access,
-		createdAt:    time.Now().UnixNano(),
-		downloadWait: make(chan struct{}), inventories: make(map[string]AssetInventory),
+		createdAt:   time.Now().UnixNano(),
+		inventories: make(map[string]AssetInventory),
 		nodeRefs:    make(map[string]nodeReference),
 		incarnation: pageIncarnations.Add(1),
 	}
@@ -444,24 +442,25 @@ func (p *managedPage) attach(driver pageDriver) {
 
 func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
-		artifactBytes: quota.NewPool("browser artifacts", maxArtifactRootBytes),
-		config:        config,
-		profileDir:    filepath.Join(configDir, browserProfileDir),
-		scopes:        make(map[string]*jarScope),
-		suspended:     make(map[string]*suspendedPage),
-		pending:       make(map[string]*pendingPage),
-		heldInfo:      newBoundedMap[string, heldInfo](orderSlack),
-		admissions:    popupadmit.New(orderSlack),
-		disposing:     make(map[string]chan struct{}),
-		recordDir:     filepath.Join(configDir, browserPageRecordDir),
-		panes:         make(map[string]paneMount),
-		sessions:      make(map[string]SessionInfo),
-		viewportSyncs: make(map[string]*viewportSync),
-		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
-		findTimeout:   findActionTimeout,
-		closedTabs:    make(map[string]*closedTabs),
-		agentLinger:   agentActivityLinger,
-		recentLaunch:  uuid.NewString(),
+		artifactBytes:  quota.NewPool("browser artifacts", maxArtifactRootBytes),
+		workspacePools: quota.NewRegistry("workspace downloads", maxWorkspaceDownloadBytes),
+		config:         config,
+		profileDir:     filepath.Join(configDir, browserProfileDir),
+		scopes:         make(map[string]*jarScope),
+		suspended:      make(map[string]*suspendedPage),
+		pending:        make(map[string]*pendingPage),
+		heldInfo:       newBoundedMap[string, heldInfo](orderSlack),
+		admissions:     popupadmit.New(orderSlack),
+		disposing:      make(map[string]chan struct{}),
+		recordDir:      filepath.Join(configDir, browserPageRecordDir),
+		panes:          make(map[string]paneMount),
+		sessions:       make(map[string]SessionInfo),
+		viewportSyncs:  make(map[string]*viewportSync),
+		artifactRoot:   filepath.Join(configDir, "browser-artifacts"),
+		findTimeout:    findActionTimeout,
+		closedTabs:     make(map[string]*closedTabs),
+		agentLinger:    agentActivityLinger,
+		recentLaunch:   uuid.NewString(),
 	}
 	m.selectionGapTimer = turnorder.NewGapTimer
 	m.accelerators = opts.Accelerators

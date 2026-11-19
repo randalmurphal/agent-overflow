@@ -121,10 +121,10 @@ func (l *popupLauncher) respond(call fakeCDPCall) any {
 }
 
 func (l *popupLauncher) send(directive webview2host.Directive) {
-	switch directive.Op {
-	case webview2host.OpCreate:
+	if directive.Op == webview2host.OpCreate {
 		go l.report(directive.PageID, webview2host.ReportCreated, "T-"+directive.PageID)
-	case webview2host.OpClose:
+	}
+	if directive.Op == webview2host.OpClose {
 		l.mu.Lock()
 		l.closes = append(l.closes, directive.PageID)
 		l.mu.Unlock()

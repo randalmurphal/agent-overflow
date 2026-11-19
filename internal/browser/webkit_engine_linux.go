@@ -53,12 +53,11 @@ type webkitEngine struct {
 	startMu sync.Mutex
 	started bool
 
-	mu        sync.Mutex
-	popups    map[string]heldPopupView
-	profiles  map[uint64]*webkitProfile
-	pane      map[uint64]webkitPaneState
-	stopped   bool
-	pageCount int
+	mu       sync.Mutex
+	popups   map[string]heldPopupView
+	profiles map[uint64]*webkitProfile
+	pane     map[uint64]webkitPaneState
+	stopped  bool
 
 	// downloadEvents carries every download report to the Manager off the
 	// GTK thread, one at a time in the order they were made, so a fast

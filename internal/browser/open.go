@@ -22,7 +22,7 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 	if parsed.Host == "" {
 		return PageInfo{}, fmt.Errorf("browser: URL host is required")
 	}
-	return m.navigate(ctx, access, parsed.String(), opts)
+	return m.navigate(ctx, access, parsed.String(), opts, nil)
 }
 
 func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
@@ -44,9 +44,43 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 }
 
 func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts OpenOptions) (PageInfo, error) {
-	resolved, err := m.authorizeFile(access, path)
+	return m.openFile(ctx, access, path, nil, opts)
+}
+
+// errDownloadReplaced refuses to open a download's file that was moved,
+// changed or replaced since it finished.
+var errDownloadReplaced = errors.New("was moved, changed or replaced since it downloaded")
+
+// openFile opens path in a page. A file opened as a finished download's,
+// expect naming that file as it finished or the authorization granting it
+// only as a listed download's, opens only while it is still that file
+// (sameDownloadedFile), checked in the page's operation lock immediately
+// before the navigation, after any tab creation.
+func (m *Manager) openFile(ctx context.Context, access Access, path string, expect os.FileInfo, opts OpenOptions) (PageInfo, error) {
+	stillExpected := func(path string) error {
+		current, err := os.Stat(path)
+		if err != nil || !sameDownloadedFile(expect, current) {
+			return fmt.Errorf("browser: %s %w", filepath.Base(path), errDownloadReplaced)
+		}
+		return nil
+	}
+	if expect != nil {
+		// Its own reason, before the authorization, which a replaced row's
+		// file no longer passes.
+		if err := stillExpected(path); err != nil {
+			return PageInfo{}, err
+		}
+	}
+	resolved, granted, err := m.authorizeFileGrant(access, path)
 	if err != nil {
 		return PageInfo{}, err
+	}
+	if expect == nil {
+		expect = granted
+	}
+	var check func() error
+	if expect != nil {
+		check = func() error { return stillExpected(resolved) }
 	}
 	// The URL must name the file as the RENDERER sees it. An engine whose
 	// renderer is on the other side of a machine boundary answers through
@@ -57,10 +91,13 @@ func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts
 			return PageInfo{}, err
 		}
 	}
-	return m.navigate(ctx, access, fileURL, opts)
+	return m.navigate(ctx, access, fileURL, opts, check)
 }
 
-func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions) (PageInfo, error) {
+// navigate loads targetURL in the page opts names, or a new one. check, when
+// set, runs in the page's operation lock immediately before the load and
+// refuses it with its error.
+func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions, check func() error) (PageInfo, error) {
 	p, err := m.pageForOpen(ctx, access, opts.PageID, true)
 	if err != nil {
 		return PageInfo{}, err
@@ -72,6 +109,11 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	defer p.runUserNavigation(ctx)()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	if check != nil {
+		if err := check(); err != nil {
+			return PageInfo{}, err
+		}
+	}
 	if err := p.driver.Navigate(opCtx, targetURL); err != nil {
 		return PageInfo{}, err
 	}

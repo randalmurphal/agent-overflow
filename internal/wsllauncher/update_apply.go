@@ -197,17 +197,19 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 		run.Discard(ctx, record.State)
 		run.RemoveStaged(ctx, record.State)
 		return s.markReported(run, record)
+	case supervise.UpdatePending:
+		end, resume, err := run.RecoverPending(ctx, record.State, fileExists(record.StagedLauncher),
+			"the update was interrupted and its new launcher is missing")
+		if err != nil {
+			return ReconcileDecision{}, err
+		}
+		if resume {
+			return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
+		}
+		return s.afterRecovery(end)
 	}
-
-	end, resume, err := run.RecoverPending(ctx, record.State, fileExists(record.StagedLauncher),
-		"the update was interrupted and its new launcher is missing")
-	if err != nil {
-		return ReconcileDecision{}, err
-	}
-	if resume {
-		return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
-	}
-	return s.afterRecovery(end)
+	// LoadLauncherRecord validated the state.
+	return ReconcileDecision{}, fmt.Errorf("wsllauncher: update %s has the unknown state %q", update.ID, update.State)
 }
 
 // afterRecovery launches once a recovery settled the update, and blocks

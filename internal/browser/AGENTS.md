@@ -189,7 +189,9 @@ profile directory. Unsupported platform capabilities return a clear refusal.
 thread workspace or project root, or the workspace's own finished downloads
 (`authorizeFile`), unless the explicit outside-workspace setting widens
 access. The download rows the Manager still lists are the one record of
-which files in the Downloads folder are openable (`listedDownloadAllows`);
+which files in the Downloads folder are openable (`listedDownloadFile`), and a file opened on a row's grant is
+opened only while it is still that row's file, checked in the page's
+operation after any tab creation (`openFile`);
 keep no second one. Use direct `file://` navigation.
 
 Where a download goes is the engine's `DownloadSaving`; the rule is
@@ -204,14 +206,18 @@ file of the reported size is openable (`engineSavedDownload`, whose
 comment states the limit). Close waits for a publish under way.
 Headless Chromium alone keeps downloads as artifacts with quota
 reservation, the per-download cap and pruning; keep those bounds on that
-path only. Every change to a page's download entry goes through
-`noteDownloadLocked` and `publishDownloads` (`downloads_thread.go`), which
-keep the thread's list the pane shows and coalesce byte progress; an engine
-reports one terminal event per download, after its start, and that report
-alone settles the user's cancel. Every removal of a live page goes through
-`pageLeftLocked`, which settles the page's running downloads, except one
-whose file is being published, which its publish settles, and, under the
-page's `downloadMu`, ends its admission of new ones. The hosted engine's
+path only. A page's download log (`downloads_log.go`) and its thread's
+list (`threadDownloadList`) each enforce their own bound as an entry
+settles; nothing outside them trims. Every change to a page's download
+entry is made in a hold of its log and goes through
+`noteDownloadStartLocked` or `noteDownloadLocked` and `publishDownloads`
+(`downloads_thread.go`), which keep the thread's list the pane shows and
+coalesce byte progress; an engine reports one terminal event per
+download, after its start, and that report alone settles the user's
+cancel. Every removal of a live page goes through `pageLeftLocked`, which
+settles the page's running downloads, except one whose file is being
+published, which its publish settles, and, in the same hold of its log,
+ends its admission of new ones. The hosted engine's
 downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 which it applies one at a time per download, held across the Manager's
 callbacks, and only when newer than the last applied; an answer never

@@ -28,13 +28,13 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	if p == nil {
 		return
 	}
-	p.downloadMu.Lock()
-	entry := p.downloadLocked(event.ID)
+	held := p.downloads.hold()
+	entry := held.entry(event.ID)
 	// A settled download takes no further report: AO stopped it (a quota,
 	// its size, the user, its page closing) or the engine already ended it.
 	// One being published has had its finish.
 	if entry == nil || entry.State != downloadStateRunning || entry.publishing {
-		p.downloadMu.Unlock()
+		held.release()
 		return
 	}
 	if event.CancelRefused {
@@ -43,8 +43,8 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		// later end reads as the engine's own, not the user's cancel.
 		entry.cancelRequested = false
 		entry.Error = event.Error
-		note := m.noteDownloadLocked(p, entry, "")
-		p.downloadMu.Unlock()
+		note := m.noteDownloadLocked(p, entry)
+		held.release()
 		m.publishDownloads(note)
 		return
 	}
@@ -65,9 +65,8 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		m.releaseDownloadLocked(p, entry)
-		note := m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
-		p.downloadMu.Unlock()
+		note := m.noteDownloadLocked(p, entry)
+		held.release()
 		m.publishDownloads(note)
 		if scope != nil {
 			running := event.State == downloadInProgress
@@ -84,7 +83,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		return
 	}
 	if event.State == downloadCompleted && saving == downloadsStaged {
-		m.publishFinishedDownload(p, entry, event)
+		m.publishFinishedDownload(p, held, entry, event)
 		return
 	}
 	removePartial := false
@@ -118,15 +117,21 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			}
 			if !pathInside(scope.downloadDir, source) {
 				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
-			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
+			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
 				entry.State, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
 			}
 		}
 		if entry.State == downloadStateCompleted {
-			// The kept file holds its size of the quotas from here.
-			quota.Take(&entry.reservation).Settle(entry.Bytes)
+			// The kept file holds its size on disk of the quotas from here,
+			// whatever the engine reported receiving.
+			kept := entry.Bytes
+			if entry.file != nil {
+				kept = entry.file.Size()
+				entry.Bytes = kept
+			}
+			quota.Take(&entry.reservation).Settle(kept)
 		} else {
 			// Nothing is kept: the engine's file goes with its reservation.
 			m.releaseDownloadLocked(p, entry)
@@ -141,7 +146,6 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			if event.PageGone {
 				entry.Error = event.Error
 			}
-			removePartial = true
 		} else {
 			entry.State, entry.Error = downloadStateFailed, event.Error
 			if entry.Error == "" {
@@ -149,13 +153,13 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			}
 		}
 		m.releaseDownloadLocked(p, entry)
-		// A staged download that stopped, canceled or failed, leaves nothing
-		// but its staged file, which goes.
-		removePartial = removePartial || saving == downloadsStaged
+		// A download that stopped, canceled or failed, leaves nothing but
+		// the file AO had the engine write, staged or an artifact, which
+		// goes.
+		removePartial = true
 	}
-	note := m.noteDownloadLocked(p, entry, "")
-	p.signalDownloadLocked()
-	p.downloadMu.Unlock()
+	note := m.noteDownloadLocked(p, entry)
+	held.release()
 	if removePartial {
 		// What the engine wrote is a partial file.
 		m.removePartialDownload(scope, event.ID)
@@ -166,14 +170,18 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // placeArtifact moves a finished artifact download from the file its engine
 // wrote into dir under the first free variant of name, never replacing a
 // file: the downloads of a workspace's jars finish on their own engine
-// streams into one directory (placeNoReplace).
-func placeArtifact(source, dir, name string) (string, os.FileInfo, error) {
+// streams into one directory (placeNoReplace). A file over limit bytes on
+// disk is refused, whatever the engine reported.
+func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, error) {
 	info, err := os.Lstat(source)
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", source)
+	}
+	if info.Size() > limit {
+		return "", nil, fmt.Errorf("download exceeds %d bytes", limit)
 	}
 	path, file, err := placeNoReplace(source, info, dir, "the download directory", artifactNames(name))
 	if err != nil {
@@ -210,9 +218,9 @@ func (m *Manager) removePartialDownload(scope *jarScope, id string) {
 // row stays running while the file moves, outside the page's lock: a page
 // that leaves meanwhile (pageLeftLocked) and a cancel
 // (CancelThreadDownload) leave it to this, its one settlement, and Close
-// waits for it (waitPublishes). The caller holds p.downloadMu, which this
-// releases.
-func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, event downloadProgress) {
+// waits for it (waitPublishes). The caller holds p's download log, which
+// this releases.
+func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold, entry *DownloadInfo, event downloadProgress) {
 	source := m.stagedPath(event.ID)
 	failure := ""
 	switch {
@@ -223,9 +231,8 @@ func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, e
 	}
 	if failure != "" {
 		entry.State, entry.Error = downloadStateFailed, failure
-		note := m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
-		p.downloadMu.Unlock()
+		note := m.noteDownloadLocked(p, entry)
+		held.release()
 		m.releaseStagedDownload(event.ID)
 		m.publishDownloads(note)
 		return
@@ -233,14 +240,14 @@ func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, e
 	entry.publishing = true
 	name := entry.SuggestedName
 	m.beginPublish()
-	p.downloadMu.Unlock()
+	held.release()
 
 	path, file, err := publishDownload(source, name)
 	m.releaseStagedDownload(event.ID)
 
-	p.downloadMu.Lock()
+	held = p.downloads.hold()
 	// A running entry is never trimmed, so it is still there.
-	entry = p.downloadLocked(event.ID)
+	entry = held.entry(event.ID)
 	if entry != nil {
 		entry.publishing = false
 		if err != nil {
@@ -251,10 +258,9 @@ func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, e
 	}
 	var note downloadNote
 	if entry != nil {
-		note = m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
+		note = m.noteDownloadLocked(p, entry)
 	}
-	p.downloadMu.Unlock()
+	held.release()
 	m.endPublish()
 	if entry != nil {
 		m.publishDownloads(note)

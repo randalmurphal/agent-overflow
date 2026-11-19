@@ -253,22 +253,31 @@ func canonicalRoot(path string) (string, error) {
 }
 
 func (m *Manager) authorizeFile(access Access, path string) (string, error) {
+	resolved, _, err := m.authorizeFileGrant(access, path)
+	return resolved, err
+}
+
+// authorizeFileGrant is authorizeFile answering, for a file granted only as
+// a listed finished download's (listedDownloadFile), that download's file
+// as it finished, which an open checks again where it opens it; nil for a
+// file granted by its directory.
+func (m *Manager) authorizeFileGrant(access Access, path string) (string, os.FileInfo, error) {
 	resolved, err := canonicalRoot(path)
 	if err != nil {
-		return "", fmt.Errorf("browser: resolve file: %w", err)
+		return "", nil, fmt.Errorf("browser: resolve file: %w", err)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("browser: open file: %w", err)
+		return "", nil, fmt.Errorf("browser: open file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("browser: local path is not a regular file")
+		return "", nil, fmt.Errorf("browser: local path is not a regular file")
 	}
 	m.mu.Lock()
 	allowOutside := m.config.AllowOutsideWorkspace
 	m.mu.Unlock()
 	if allowOutside {
-		return resolved, nil
+		return resolved, nil, nil
 	}
 	roots := []string{access.Workspace, access.ProjectRoot}
 	// The workspace's own downloads, which the pane opens in a tab
@@ -279,8 +288,8 @@ func (m *Manager) authorizeFile(access Access, path string) (string, error) {
 	if workspace, err := canonicalRoot(access.Workspace); err == nil && strings.TrimSpace(access.Workspace) != "" {
 		if m.downloadsToArtifacts() {
 			roots = append(roots, m.workspaceDownloadDir(workspace))
-		} else if m.listedDownloadAllows(workspace, resolved) {
-			return resolved, nil
+		} else if file := m.listedDownloadFile(workspace, resolved); file != nil {
+			return resolved, file, nil
 		}
 	}
 	for _, root := range roots {
@@ -293,10 +302,10 @@ func (m *Manager) authorizeFile(access Access, path string) (string, error) {
 		}
 		rel, err := filepath.Rel(canonical, resolved)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return resolved, nil
+			return resolved, nil, nil
 		}
 	}
-	return "", fmt.Errorf("browser: file is outside the workspace; enable outside-workspace file access to open it")
+	return "", nil, fmt.Errorf("browser: file is outside the workspace; enable outside-workspace file access to open it")
 }
 
 func (m *Manager) navigationAllowed(access Access, rawURL string) bool {
