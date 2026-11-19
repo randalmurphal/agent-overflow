@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -127,6 +128,44 @@ func TestASwitchSavesItsTabsBeforeTheOldPagesClose(t *testing.T) {
 		t.Fatalf("saved copy during the switch: jar %q, tabs %q", state.Jar, tabURLs(restarted, access))
 	}
 	release()
+}
+
+// A page that changes its title during every write of a switch's saved copy
+// neither holds the switch back nor, through it, another thread's save: the
+// switch commits the copy it wrote, and the record in memory is the record
+// on disk.
+func TestABusyPageDoesNotHoldASwitch(t *testing.T) {
+	dir := t.TempDir()
+	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	page := openPage(t, manager, access, "https://example.test/busy")
+	handle := paneHandle(manager, access, page.ID)
+	var titles uint64
+	saved := make(chan error, 1)
+	manager.switchWritten = func() {
+		titles++
+		manager.updatePageInfo(handle, "https://example.test/busy", fmt.Sprintf("title %d", titles), titles)
+		if titles == 1 {
+			go func() { saved <- manager.persistThreads([]string{"other"}) }()
+		}
+	}
+	switched := make(chan error, 1)
+	go func() { switched <- manager.SetJar(access, JarThread) }()
+	for _, done := range []chan error{saved, switched} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a busy page's title held the jar switch, or the saves behind it")
+		}
+	}
+	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	if got, want := restarted.CompanionState(access).Pages, manager.CompanionState(access).Pages; len(got) != 1 || len(want) != 1 || got[0].Title != want[0].Title {
+		t.Fatalf("the saved tab %+v is not the switched tab %+v", got, want)
+	}
 }
 
 // A switch whose saved copy cannot be written changes nothing: the jar stays,

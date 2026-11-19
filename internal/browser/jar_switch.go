@@ -2,7 +2,7 @@ package browser
 
 import (
 	"fmt"
-	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -51,42 +51,47 @@ func (m *Manager) SetJar(access Access, kind string) error {
 	}
 	threadID := access.ThreadID
 
-	// persistMu is held from the first write to the commit, so no other
-	// write of the thread lands between them.
-	m.persistMu.Lock()
-	var written *pageRecordFile
+	// Each attempt holds persistMu from its write to its commit, so no other
+	// write of the thread lands between them, and lets go before the next,
+	// so another thread's save never waits for more than one attempt.
 	var closes []switchClose
 	for {
+		m.persistMu.Lock()
 		m.mu.Lock()
 		if m.closed {
 			m.mu.Unlock()
 			m.persistMu.Unlock()
 			return fmt.Errorf("browser: manager closed")
 		}
-		info := m.sessionLocked(threadID)
-		if jarKindOf(info) == kind {
+		if jarKindOf(m.sessionLocked(threadID)) == kind {
 			m.mu.Unlock()
 			m.persistMu.Unlock()
 			return nil
 		}
-		file := m.recordFileLocked(threadID, true)
-		file.ActivePageID, file.Jar = info.ActivePageID, savedJar(kind)
-		if written != nil && reflect.DeepEqual(*written, file) {
-			closes = m.switchJarLocked(threadID, info, kind)
-			m.mu.Unlock()
-			break
-		}
+		snap := m.switchSnapshotLocked(threadID, kind)
 		m.mu.Unlock()
-		// The switch commits only once the saved copy holds exactly the
-		// tabs it leaves; a tab that changed during the write is written
-		// again.
-		if err := m.writeRecordFile(file); err != nil {
+		if err := m.writeRecordFile(snap.file); err != nil {
 			m.persistMu.Unlock()
 			return err
 		}
-		written = &file
+		if m.switchWritten != nil {
+			m.switchWritten()
+		}
+		m.mu.Lock()
+		// The switch commits the copy it wrote. A tab that came, went,
+		// moved or changed between live and suspended during the write is
+		// written again; a page's own address, title and use, which it can
+		// change at any rate, are the copy's.
+		committed := !m.closed && m.switchSnapshotLocked(threadID, kind).sameTabs(snap)
+		if committed {
+			closes = m.switchJarLocked(threadID, m.sessionLocked(threadID), kind, snap)
+		}
+		m.mu.Unlock()
+		m.persistMu.Unlock()
+		if committed {
+			break
+		}
 	}
-	m.persistMu.Unlock()
 	for _, c := range closes {
 		m.startClose(c.scope, c.close)
 	}
@@ -96,6 +101,48 @@ func (m *Manager) SetJar(access Access, kind string) error {
 	return nil
 }
 
+// switchSnapshot is the saved copy a jar switch writes and then commits:
+// the thread's tabs with each live page as the record its suspension
+// makes, and which page or record each tab was.
+type switchSnapshot struct {
+	file pageRecordFile
+	tabs []switchTab
+}
+
+type switchTab struct {
+	live *managedPage
+	rec  *suspendedPage
+}
+
+// switchSnapshotLocked takes the copy a switch of the thread to kind writes.
+// The caller holds m.mu.
+func (m *Manager) switchSnapshotLocked(threadID, kind string) switchSnapshot {
+	file := m.recordFileLocked(threadID, true)
+	file.ActivePageID, file.Jar = m.sessionLocked(threadID).ActivePageID, savedJar(kind)
+	snap := switchSnapshot{file: file}
+	for _, tab := range m.threadTabsLocked(threadID) {
+		snap.tabs = append(snap.tabs, switchTab{live: tab.live, rec: tab.rec})
+	}
+	return snap
+}
+
+// sameTabs reports whether s has the tabs of written: the same pages and
+// records in the same places, with the same labels and the same active tab,
+// whatever their pages' addresses, titles and use.
+func (s switchSnapshot) sameTabs(written switchSnapshot) bool {
+	if !slices.Equal(s.tabs, written.tabs) || len(s.file.Pages) != len(written.file.Pages) ||
+		s.file.ActivePageID != written.file.ActivePageID || s.file.Jar != written.file.Jar {
+		return false
+	}
+	for i, page := range s.file.Pages {
+		was := written.file.Pages[i]
+		if page.ID != was.ID || page.Order != was.Order || page.Label != was.Label {
+			return false
+		}
+	}
+	return true
+}
+
 // switchClose is one page a jar switch closes, in its scope.
 type switchClose struct {
 	scope *jarScope
@@ -103,9 +150,14 @@ type switchClose struct {
 }
 
 // switchJarLocked commits a switch of the thread to kind: the generation
-// advances and each live page becomes a suspended record while it closes.
-// The caller holds m.mu and starts the closes after releasing it.
-func (m *Manager) switchJarLocked(threadID string, info SessionInfo, kind string) []switchClose {
+// advances and each live page becomes the suspended record snap wrote of it
+// while it closes. The caller holds m.mu, with snap's tabs the thread's
+// (sameTabs), and starts the closes after releasing it.
+func (m *Manager) switchJarLocked(threadID string, info SessionInfo, kind string, snap switchSnapshot) []switchClose {
+	written := make(map[string]pageRecord, len(snap.file.Pages))
+	for _, page := range snap.file.Pages {
+		written[page.ID] = page
+	}
 	info.Jar, info.jarGen, info.privateJar = kind, info.jarGen+1, ""
 	info.UpdatedAt = time.Now()
 	// The recent addresses and closed tabs were the old jar's browsing; an
@@ -120,8 +172,12 @@ func (m *Manager) switchJarLocked(threadID string, info SessionInfo, kind string
 		}
 		_, scope := m.livePageLocked(old.id)
 		c := m.markClosingLocked(old, scope)
-		rec := recordOf(old, old.cachedInfo())
-		m.suspended[old.id] = rec
+		page := written[old.id]
+		m.suspended[old.id] = &suspendedPage{
+			id: page.ID, owner: threadID,
+			url: page.URL, title: page.Title, label: page.Label,
+			tabOrder: page.Order, createdAt: page.Created, lastUse: page.LastUsed,
+		}
 		closes = append(closes, switchClose{scope: scope, close: c})
 	}
 	var teardown []<-chan struct{}

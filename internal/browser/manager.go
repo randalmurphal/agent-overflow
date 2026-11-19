@@ -244,6 +244,9 @@ type Manager struct {
 	// reopenPopped is a test seam run between a reopen's pop of its closed
 	// tab and the tab's add (ReopenClosedTab). Production leaves it nil.
 	reopenPopped func()
+	// switchWritten is a test seam run between a jar switch's write of its
+	// saved copy and its commit (SetJar). Production leaves it nil.
+	switchWritten func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
