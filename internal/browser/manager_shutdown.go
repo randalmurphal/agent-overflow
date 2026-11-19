@@ -99,6 +99,12 @@ func (m *Manager) ClearSiteData(ctx context.Context) error {
 // forgotten too. keepJars keeps the threads' jar settings. clear, when set,
 // runs once the browser closed without error, in the startMu hold of that
 // close, so no page opens before it ends.
+//
+// The records are forgotten first, which cancels the restores in flight and
+// fences the suspensions under way (recordsCleared), and again once the
+// browser is closed, in the same startMu hold: until the close, a live page
+// can still become a record (a jar switch, the reaper, a crash), and after
+// it no page is live or can open to become one.
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func() error) error {
 	err := m.forgetAllRecords(keepJars)
 	// Release an in-flight engine start first: it holds startMu.
@@ -108,6 +114,7 @@ func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func(
 	if err == nil && clear != nil {
 		err = clear()
 	}
+	err = errors.Join(err, m.forgetAllRecords(keepJars))
 	m.mu.Lock()
 	threads := m.forgetAllBrowsingLocked()
 	m.mu.Unlock()

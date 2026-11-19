@@ -3,6 +3,9 @@ package browser
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
@@ -44,6 +47,44 @@ func TestClearSiteDataHoldsNewPagesUntilBothClearsEnd(t *testing.T) {
 	}
 	if engine.profileInClear.Load() {
 		t.Fatal("a profile was created while the site data was being cleared")
+	}
+}
+
+// A tab a jar switch, or any other path, turns into a suspended page while
+// Clear Site Data waits to close the browser is forgotten with the rest: the
+// clear leaves no tab, in memory or saved, at an address it cleared.
+func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
+	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	access := Access{ThreadID: "t", Workspace: t.TempDir()}
+	openPage(t, manager, access, "https://example.test/old")
+
+	// An engine start in flight holds startMu, which the clear waits for
+	// after it forgets the records it finds.
+	manager.startMu.Lock()
+	manager.mu.Lock()
+	before := manager.recordsCleared
+	manager.mu.Unlock()
+	cleared := make(chan error, 1)
+	go func() { cleared <- manager.ClearSiteData(context.Background()) }()
+	eventually(t, "the clear forgets the records", func() bool {
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		return manager.recordsCleared != before
+	})
+	setJar(t, manager, access, JarThread)
+	manager.startMu.Unlock()
+	if err := <-cleared; err != nil {
+		t.Fatalf("clear site data: %v", err)
+	}
+	if tabs := manager.CompanionState(access).Pages; len(tabs) != 0 {
+		t.Fatalf("after the clear the thread lists tabs %+v", tabs)
+	}
+	saved, err := os.ReadFile(manager.recordPath(access.ThreadID))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if bytes.Contains(saved, []byte("example.test/old")) {
+		t.Fatalf("the saved pages still hold the cleared address: %s", saved)
 	}
 }
 
