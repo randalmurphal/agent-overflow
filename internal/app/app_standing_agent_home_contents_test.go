@@ -46,7 +46,7 @@ const homeContentsRole = "Release lead for the test project."
 func homeContentsWant(name string, row store.StandingAgent) string {
 	return "You are the standing agent " + strconv.Quote(name) + " (assistant id " + row.ID + "; this thread is " + row.ThreadID + "). Your home is " + row.Home +
 		". You own that directory and keep your durable state there." +
-		" Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read instructions.md and memory/ from your home before you act." +
+		" Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read instructions.md and memory/ from your home before you act, and write no memory: the rules for writing it arrive with it." +
 		"\n\n" + agenthome.BaseInstructions
 }
 

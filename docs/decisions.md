@@ -483,7 +483,10 @@ Mechanism in
   shows the model whole opens with its size, the agent reads the file
   the provider saved, and the assistant is warned (rulings 2026-10-21).
   The app builds each memory index from the facts' frontmatter, so no
-  agent keeps one (ruling 2026-10-21). On Codex the thread's config
+  agent keeps one (ruling 2026-10-21). A fact follows an event and names
+  its evidence, the user's words or a check; what an agent only judged
+  worth remembering is not saved, and a fact without that evidence is
+  left out of the index (ruling 2026-11-18). On Codex the thread's config
   trusts only the hook commands it registers. A delivery that did not
   arrive is a non-fatal error row, not a failed turn
   ([memory](specs/memory.md#delivery)).

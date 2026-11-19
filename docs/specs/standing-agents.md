@@ -648,7 +648,8 @@ memory in your context when this thread starts and after each
 compaction, and with the next prompt after any of it changes, only what
 changed; the latest copy, with the changes after it, is current. When
 you do not see them, read instructions.md and memory/ from your home
-before you act."), then the
+before you act, and write no memory: the rules for writing it arrive
+with it."), then the
 base instructions under "How you work" (`agenthome.BaseInstructions`):
 serve the role, acting ahead of the user only where that adds real
 value and never looking for work; orchestrate project work while

@@ -401,7 +401,13 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 		if got := strings.Contains(rules, "Your memory folder"); got != tc.home {
 			t.Errorf("%s: rules name the home = %v", name, got)
 		}
-		if got := strings.Contains(rules, "line that you did not write is yours to check"); got != tc.home {
+		// What keeps a fact out reaches every session that writes.
+		for _, rule := range []string{"Most sessions save nothing.", "Write a fact only after one of these happened:", "is not a fact.", "Then save it only when all of these hold:", "belongs in its docs", "Read the index before you add", "name every fact you wrote, changed or deleted"} {
+			if !strings.Contains(rules, rule) {
+				t.Errorf("%s: rules lack %q", name, rule)
+			}
+		}
+		if got := strings.Contains(rules, "line that you did not write, is yours to check"); got != tc.home {
 			t.Errorf("%s: rules hand over other sessions' facts to check = %v", name, got)
 		}
 		if !strings.Contains(rules, "the user folder holds only how the user decides") && !strings.Contains(rules, "The user folder holds only how the user decides") {

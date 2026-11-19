@@ -396,8 +396,16 @@ session that writes, naming only the scopes that session may write:
   project, the user only for how the user decides. A user's correction
   is a project `ruling` or a user `preference`. A check that caught a
   problem, or a miss that got through, becomes a project `verification`.
-- An assistant checks a new or changed line it did not write: it opens
-  the fact and deletes it when it fails these rules.
+- A session names every fact it wrote, changed or deleted, with its
+  file, when it reports its work, so whoever asked for the work, the
+  user or the spawner, sees each write.
+- An assistant checks a fact a worker reports and a new or changed line
+  it did not write: it opens the fact and deletes it when it fails these
+  rules.
+
+A session that does not see its delivery has no write rules, so the
+assistant's session block tells it to write no memory then
+([standing agents](standing-agents.md#agent-home-contents)).
 
 ## Maintenance warnings
 

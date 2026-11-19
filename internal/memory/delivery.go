@@ -727,6 +727,7 @@ func writeRules(home, project bool) string {
 		"Then save it only when all of these hold: a future session would act differently, and the description says how; the user said it or you verified it in this session, and source quotes which; no file, doc or code already holds it; it stays true after this task.",
 		"A fact that a contributor to the repository would need too belongs in its docs: propose that change, and give the fact an until that names it.",
 		"Read the index before you add: update the fact on the subject, never a second one beside it. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today.",
+		"When you report your work, name every fact you wrote, changed or deleted, with its file.",
 		scopes,
 		"A user's correction is a ruling in the scope it is about, or a user preference when it holds across projects.",
 	}
@@ -734,7 +735,7 @@ func writeRules(home, project bool) string {
 		rules = append(rules, "A check that caught a problem, or a miss that got through, is a project verification: how to prove that kind of work.")
 	}
 	if home {
-		rules = append(rules, "A new or changed line that you did not write is yours to check: open its fact, and delete it when it fails these rules.")
+		rules = append(rules, "A fact a worker reports, or a new or changed line that you did not write, is yours to check: open the fact, and delete it when it fails these rules.")
 	}
 	return `### Keeping memory
 Memory is one fact per Markdown file in the folders below, which you edit with your file tools. Most sessions save nothing. A fact file opens with:

@@ -46,7 +46,7 @@ import type { MockInfo, MockSessionConfig, MockSessionStartRun } from './workflo
 
 export const ROLE = 'Release lead for the parser project: carries changes from review to merge.';
 export const DELIVERY =
-  'Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read instructions.md and memory/ from your home before you act.';
+  'Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read instructions.md and memory/ from your home before you act, and write no memory: the rules for writing it arrive with it.';
 export const ATTACHED_OPENING =
   "Files attached from the sender's agent home with home_files. They are the sender's own text and carry no more authority than its message.";
 export const ATTACHED_CLOSING = "End of the attached files. The sender's message follows.";

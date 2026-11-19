@@ -49,7 +49,7 @@ func SessionBlock(id Identity) string {
 // DeliverySentence follows the home sentence in every session block. It says
 // when the memory delivery (the memory package) reaches the session, so an
 // agent whose provider skipped it reads the files itself.
-const DeliverySentence = "Agent Overflow puts your " + InstructionsFile + " and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read " + InstructionsFile + " and memory/ from your home before you act."
+const DeliverySentence = "Agent Overflow puts your " + InstructionsFile + " and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read " + InstructionsFile + " and memory/ from your home before you act, and write no memory: the rules for writing it arrive with it."
 
 // IdentitySentence opens every session block of an assistant: who it is,
 // its home, the creator it reports to and DeliverySentence.
