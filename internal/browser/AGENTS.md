@@ -122,6 +122,9 @@ once with what a page with no workspace's authority may open (`jarAllows`);
 only one that needs an owner's authority waits up to `requestOwnerWait`
 for it, then is refused (`awaitRequestOwner`). A CDP page seeds its frames
 from its frame tree at attach and installs no interception of its own.
+Every CDP page attach, a created page's or a popup's, is bounded by the
+engine's attach timeout, ends with its caller's cancel, and ends at the
+engine's `Interrupt` (`startCDPPage`).
 Each CDP connection keeps one bounded record of its targets
 (`cdp_targets.go`), which goes with the connection.
 

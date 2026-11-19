@@ -58,7 +58,9 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		return nil, err
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
-	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
+	setup, release := e.setups.begin(ctx, e.attachTimeout)
+	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
+	release()
 	if err != nil {
 		e.closePage(pageID)
 		return nil, err

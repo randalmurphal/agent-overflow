@@ -61,6 +61,8 @@ type fakeChromium struct {
 	ignoreClose atomic.Bool
 	// onClose, when set, runs as Browser.close arrives.
 	onClose atomic.Pointer[func()]
+	// stallFrameTree leaves every Page.getFrameTree unanswered.
+	stallFrameTree atomic.Bool
 }
 
 // writeFakeChromium installs the script and the endpoint behind it.
@@ -96,6 +98,9 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 			// whether it attached to a worker. A page answers Window.
 			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
 		case "Page.getFrameTree":
+			if browser.stallFrameTree.Load() {
+				return fakeCDPNoReply{}
+			}
 			// A page whose frames attached before the attach, as a popup's
 			// made before its adoption did: a child and its child.
 			frame := func(id, parent string) map[string]any {
@@ -1902,4 +1907,60 @@ func (e *jarEngine) ownFrame(frame, handle string) {
 		e.frames = make(map[string]string)
 	}
 	e.frames[frame] = handle
+}
+
+// A page or popup whose attach Chromium leaves unanswered, its connection
+// still open, fails at the attach bound, ends when its creation is
+// canceled, and ends at Interrupt, which shutdown calls before it waits.
+func TestHeadlessPageAttachThatStallsEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(engine *headlessEngine, cancel context.CancelFunc)
+	}{
+		{"bound", func(*headlessEngine, context.CancelFunc) {}},
+		{"canceled", func(_ *headlessEngine, cancel context.CancelFunc) { cancel() }},
+		{"interrupted", func(engine *headlessEngine, _ context.CancelFunc) { engine.Interrupt() }},
+	} {
+		for _, popup := range []bool{false, true} {
+			name := tc.name + "/page"
+			if popup {
+				name = tc.name + "/popup"
+			}
+			t.Run(name, func(t *testing.T) {
+				browser := writeFakeChromium(t, "chromium")
+				engine := newTestHeadlessEngine(t, browser.path)
+				engine.attachTimeout = time.Hour
+				if tc.name == "bound" {
+					engine.attachTimeout = 200 * time.Millisecond
+				}
+				profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+				if _, err := profile.ensureBrowser(); err != nil {
+					t.Fatalf("launch: %v", err)
+				}
+				browser.stallFrameTree.Store(true)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				attached := make(chan error, 1)
+				go func() {
+					var err error
+					if popup {
+						_, err = profile.AttachPage(ctx, "T-popup", pageHooks{})
+					} else {
+						_, err = profile.NewPage(ctx, pageHooks{})
+					}
+					attached <- err
+				}()
+				awaitCall(t, browser.calls, "Page.getFrameTree")
+				tc.end(engine, cancel)
+				select {
+				case err := <-attached:
+					if err == nil {
+						t.Fatal("a page whose attach never finished was attached")
+					}
+				case <-time.After(headlessTestDeadline):
+					t.Fatal("the stalled attach never returned")
+				}
+			})
+		}
+	}
 }

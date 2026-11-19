@@ -50,7 +50,8 @@ const (
 	hostCreateTimeout = 45 * time.Second
 	// hostAttachTimeout bounds establishing the CDP browser connection
 	// through the tunnel: waiting for the launcher's tunnel to dial back,
-	// one /json/version round trip, and the browser-level handshake.
+	// one /json/version round trip, and the browser-level handshake. It
+	// bounds each page's attach on that connection too (startCDPPage).
 	hostAttachTimeout = 30 * time.Second
 	// hostClearTimeout bounds the wait for a `cleared` report. It is
 	// deliberately the largest of the three: the launcher closes every
@@ -115,6 +116,8 @@ type hostedEngine struct {
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
 	attachMu sync.Mutex
+	// setups are the page attaches under way, which Interrupt ends.
+	setups cdpPageSetups
 
 	// infoOrder numbers the page info reports (engineEvents.PageInfoChanged).
 	infoOrder atomic.Uint64
@@ -289,6 +292,7 @@ func (e *hostedEngine) Interrupt() {
 	for _, waiter := range pending {
 		close(waiter)
 	}
+	e.setups.interrupt()
 }
 
 func (e *hostedEngine) Stop() {

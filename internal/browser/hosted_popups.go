@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
 
 	"agent-overflow/internal/webview2host"
 
@@ -193,9 +192,9 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 	}
 	popup.cancelAttach = pageCancel
 	e.mu.Unlock()
-	expire := time.AfterFunc(e.attachTimeout, pageCancel)
-	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
-	expire.Stop()
+	setup, release := e.setups.begin(context.Background(), e.attachTimeout)
+	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
+	release()
 	e.mu.Lock()
 	popup.cancelAttach = nil
 	canceled := pageCtx.Err()

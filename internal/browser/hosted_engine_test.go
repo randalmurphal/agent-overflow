@@ -791,6 +791,10 @@ type fakeCDPError struct {
 	Message string
 }
 
+// fakeCDPNoReply, returned by respond, leaves the command unanswered while
+// the connection stays open, as a browser that stopped answering does.
+type fakeCDPNoReply struct{}
+
 // fakeCDPEndpoint is a started fake CDP server. announce, when set, returns
 // the events to send before the reply to one command, as {method, params}
 // maps, the order Chromium uses: the targets Target.setDiscoverTargets
@@ -870,6 +874,9 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 				if answer := respond(call); answer != nil {
 					result = answer
 				}
+			}
+			if _, silent := result.(fakeCDPNoReply); silent {
+				continue
 			}
 			frame := map[string]any{"id": msg.ID, "result": result}
 			if refusal, ok := result.(fakeCDPError); ok {
