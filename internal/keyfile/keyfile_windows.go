@@ -56,9 +56,16 @@ func (f File) createOwnerOnly() (created bool, err error) {
 	return true, file.Close()
 }
 
+// fileDispositionInfo is FILE_DISPOSITION_INFO: its one BOOLEAN marks the
+// open file for deletion when its last handle closes.
+type fileDispositionInfo struct {
+	deleteFile byte
+}
+
 // removeOwnerOnly opens the key file's name relative to the checked folder
-// without following a reparse point, for deletion on close, so a symlink
-// there is removed itself.
+// without following a reparse point, inspects that handle and marks the
+// same handle for deletion, so what is checked is what is removed. A link
+// there, to a file or a folder, is removed itself; a real folder is refused.
 func (f File) removeOwnerOnly() (err error) {
 	folder, err := f.openFolder()
 	if errors.Is(err, ErrMissing) {
@@ -72,17 +79,26 @@ func (f File) removeOwnerOnly() (err error) {
 	if err != nil {
 		return err
 	}
-	handle, err := ntCreateIn(folder, objectName, windows.DELETE|windows.SYNCHRONIZE, windows.FILE_OPEN,
-		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_NON_DIRECTORY_FILE|windows.FILE_DELETE_ON_CLOSE)
+	handle, err := ntCreateIn(folder, objectName, windows.DELETE|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
+		windows.FILE_OPEN, windows.FILE_OPEN_REPARSE_POINT)
 	switch {
 	case errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND), errors.Is(err, windows.STATUS_OBJECT_PATH_NOT_FOUND):
 		return nil
-	case errors.Is(err, windows.STATUS_FILE_IS_A_DIRECTORY):
-		return f.refused("it is not a regular file")
 	case err != nil:
 		return f.failed("remove", "file", err)
 	}
-	if err := windows.CloseHandle(handle); err != nil {
+	// The deletion takes effect when this handle closes.
+	defer f.closeInto(&err, closeHandle(handle), "file")
+	attributes, err := handleAttributes(handle)
+	if err != nil {
+		return f.failed("inspect", "file", err)
+	}
+	if attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 && attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+		return f.refused("it is not a regular file")
+	}
+	info := fileDispositionInfo{deleteFile: 1}
+	if err := windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo,
+		(*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		return f.failed("remove", "file", err)
 	}
 	return nil
