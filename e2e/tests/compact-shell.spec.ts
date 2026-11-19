@@ -351,9 +351,6 @@ test('the chat header rolls its actions into one dropdown at the button', async 
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   await expect(page.getByTestId('palette-open')).toHaveCount(0);
-  await expect(page.getByTestId('terminal-toggle')).toHaveCount(0);
-  await expect(page.getByTestId('chat-header-open-editor')).toHaveCount(0);
-  await expect(page.getByTestId('thread-title-regenerate')).toHaveCount(0);
   // The title keeps one line with the badge and the menu beside it; the
   // facts line is its own full-width row underneath.
   const title = page.getByTestId('chat-header-title');

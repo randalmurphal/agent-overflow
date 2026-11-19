@@ -30,6 +30,11 @@
      * runs past and the line swipes sideways to read the rest.
      */
     fade?: boolean;
+    /**
+     * The host header's flex rules for the truncating title (how it gives
+     * way to its siblings). Unused with `fade`, which takes the spare width.
+     */
+    class?: string;
     titleTestId?: string;
     inputTestId?: string;
   }
@@ -38,6 +43,7 @@
     pane,
     onPaneDragStart,
     fade = false,
+    class: className = '',
     titleTestId = 'pane-title',
     inputTestId = 'pane-title-input',
   }: Props = $props();
@@ -169,6 +175,8 @@
 
 {#if pane.thread}
   {#if editing}
+    <!-- The editor takes the header's spare width from an 8rem floor, so a
+         wrapping host (ChatHeader) places it as it places a long title. -->
     <input
       bind:this={inputEl}
       type="text"
@@ -180,7 +188,7 @@
       aria-label="Rename Thread"
       aria-invalid={renameError !== null}
       oninput={() => { renameError = null; }}
-      class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
+      class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 grow basis-[8rem] outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
     />
     {#if renameError}
       <span role="alert" class="min-w-0 shrink truncate text-[0.6875rem] text-error" title={renameError} data-testid="pane-title-rename-error">{renameError}</span>
@@ -201,9 +209,7 @@
       title={`${titleText} (right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        // In a narrow chat header the title gives way first, down to an
-        // 8rem floor; past that the action cluster wraps (ChatHeader).
-        fade ? 'flex-1 overflow-hidden' : 'truncate @max-[36rem]/chat-header:min-w-[8rem] @max-[36rem]/chat-header:shrink-[100]',
+        fade ? 'flex-1 overflow-hidden' : `truncate ${className}`,
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
       ].join(' ')}
     >

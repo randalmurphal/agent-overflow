@@ -1,8 +1,7 @@
-// ChatHeader tests cover the rewrite's contract: title (view + inline
-// rename), project badge, git actions, and the Diffs toggle. The old
-// InteractionModeBadge + ModelPicker / RuntimeModePicker / BranchToolbar
-// have been deleted; those covers are carried in the composer/below-bar
-// tests now.
+// ChatHeader tests cover the header's own contract: title (view + inline
+// rename), the project crumb, the pane status line, the cluster on a draft
+// placeholder, and the spinner a title regeneration shows. The Thread
+// actions menu's rows are covered in ChatHeaderMenu.test.ts.
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
@@ -32,8 +31,6 @@ import {
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
-import { openTerminalThread } from '../../stores/threadCreation.svelte';
-import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import {
   applyThreadTitleGeneration,
   resetThreadTitleGenerationForTest,
@@ -44,13 +41,6 @@ import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { noteThread } from '../../transport/entityIndex';
-
-// The terminal button's ctrl/cmd-click opens a fresh terminal pane via
-// openTerminalThread; stub it so the gesture can be asserted without standing
-// up the real StartTerminal binding + pane registry. ChatHeader is the only
-// threadCreation consumer in this test's module graph, so a minimal factory is
-// safe (the draft-helper exports stay unused here).
-vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -106,13 +96,9 @@ describe('<ChatHeader>', () => {
     resetPaneLayoutForTest();
     resetEditorsForTest();
     resetThreadTitleGenerationForTest();
-    // The header's Open-in-editor control loads this catalog on mount.
-    // An empty catalog keeps the primary button working (the backend
-    // still resolves the default) while rendering no dropdown, which is
-    // all these header tests care about.
+    // The header's actions menu loads the editor catalog on mount.
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
-    vi.mocked(openTerminalThread).mockClear();
   });
 
   it('keeps its bottom border above the timeline fade overdraw', async () => {
@@ -238,99 +224,20 @@ describe('<ChatHeader>', () => {
     expect(pane.showReviewPane).toBe(true);
   });
 
-  it('toggles the terminal drawer and latches focus-on-open via the terminal button', async () => {
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(pane.showTerminal).toBe(false);
-    await fireEvent.click(getByTestId('terminal-toggle'));
-    expect(pane.showTerminal).toBe(true);
-    // The button must open AND focus, identical to the ⌘`/⌘J chord: it routes
-    // through runTerminalToggle, which latches the focus intent the drawer
-    // consumes on mount. consumeTerminalFocusRequest is read-and-clear, so the
-    // open click must have set it exactly once.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
-    await fireEvent.click(getByTestId('terminal-toggle'));
-    expect(pane.showTerminal).toBe(false);
-    // Plain clicks must never spawn a new pane — that path is modifier-gated.
-    expect(vi.mocked(openTerminalThread)).not.toHaveBeenCalled();
-  });
-
-  it('ctrl-click opens a fresh terminal pane rooted at the thread workspace and skips the drawer toggle', async () => {
-    const pane = await buildPane(makeThread({ projectId: 'proj-7', workspacePath: '/tmp/ws7' }));
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(pane.showTerminal).toBe(false);
-
-    await fireEvent.click(getByTestId('terminal-toggle'), { ctrlKey: true });
-
-    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
-      projectId: 'proj-7',
-      cwd: '/tmp/ws7',
-    });
-    // The drawer toggle is bypassed — ctrl-click is "new pane", not "show here".
-    expect(pane.showTerminal).toBe(false);
-  });
-
-  it('cmd-click (macOS) also opens a fresh terminal pane', async () => {
-    const pane = await buildPane(makeThread({ projectId: 'proj-7', workspacePath: '/tmp/ws7' }));
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-
-    await fireEvent.click(getByTestId('terminal-toggle'), { metaKey: true });
-
-    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
-      projectId: 'proj-7',
-      cwd: '/tmp/ws7',
-    });
-    expect(pane.showTerminal).toBe(false);
-  });
-
   it('uses platform-aware shortcut labels in action tooltips', async () => {
     // Chord hints come from the loaded keybindings store — there is no
     // hardcoded fallback (one would resurrect a chord the user rebound
     // or cleared), so the test seeds the store like the runtime load
     // does.
-    setKeybindingsForTest([
-      { key: 'ctrl+`', command: 'terminal.toggle' },
-      { key: 'ctrl+shift+g', command: 'diff.panel.toggle' },
-    ]);
+    setKeybindingsForTest([{ key: 'ctrl+shift+g', command: 'diff.panel.toggle' }]);
     try {
       const pane = await buildPane();
       const { getByTestId } = render(ChatHeader, { props: { pane } });
       await tick();
-      expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+`)');
       expect(getByTestId('review-toggle').getAttribute('title')).toBe('Toggle Review Pane (Ctrl+Shift+G)');
     } finally {
       resetKeybindingsStore();
     }
-  });
-
-  it('opens the project root in the editor via the Open button', async () => {
-    const now = Date.now();
-    addProjectLocal({
-      id: 'project-1',
-      path: '/tmp/proj',
-      name: 'Alpha',
-      sortPosition: 0,
-      createdAt: now,
-      updatedAt: now,
-      archived: false,
-    });
-    const open = setBindingMock('OpenInEditor', async () => undefined);
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    await fireEvent.click(getByTestId('chat-header-open-editor'));
-    await tick();
-    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', '']);
-  });
-
-  it('hides the Open button when the thread has no project', async () => {
-    const pane = await buildPane(makeThread({ projectId: undefined }));
-    const { queryByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(queryByTestId('chat-header-open-editor')).toBeNull();
   });
 
   it('leads with the project crumb before the title, a label once the thread has messages', async () => {
@@ -575,7 +482,7 @@ describe('<ChatHeader>', () => {
     return { pane, project };
   }
 
-  it('renders the right cluster (Open + Terminal + Diff) on a placeholder thread', async () => {
+  it('renders the right cluster (diff badge + actions menu) on a placeholder thread', async () => {
     addProjectLocal({
       id: 'project-placeholder-header',
       path: '/tmp/placeholder-header',
@@ -589,33 +496,35 @@ describe('<ChatHeader>', () => {
     expect(pane.threadId).toBeNull();
     expect(pane.thread?.isDraft).toBe(true);
 
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const { getByTestId, findByRole } = render(ChatHeader, { props: { pane } });
     await tick();
 
     // Outer gate still passes (pane.thread is set), title renders.
     expect(getByTestId('chat-header-title').textContent?.trim()).toBe('New Thread');
-    // Right cluster: each button must be present even though the row
+    // Right cluster: each control must be present even though the row
     // hasn't materialized yet. Thread-bound actions refuse to open
     // until real content creates the row.
-    expect(getByTestId('chat-header-open-editor')).toBeTruthy();
-    expect(getByTestId('terminal-toggle')).toBeTruthy();
     expect(getByTestId('review-toggle')).toBeTruthy();
+    await fireEvent.click(getByTestId('chat-header-more'));
+    expect(await findByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument();
+    expect(await findByRole('menuitem', { name: 'Open in editor' })).toBeInTheDocument();
   });
 
-  it('terminal-toggle click on a placeholder opens without creating a thread', async () => {
+  it('the Terminal row on a placeholder opens the drawer without creating a thread', async () => {
     const { pane } = placeholderPane('placeholder-term-click');
     // The shared teardown closes the placeholder, which closes the terminal it opened.
     setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
-      throw new Error('CreateThread must not be called for terminal-toggle on a placeholder');
+      throw new Error('CreateThread must not be called for the Terminal row on a placeholder');
     });
 
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const { getByTestId, findByRole } = render(ChatHeader, { props: { pane } });
     await tick();
     expect(pane.threadId).toBeNull();
     expect(pane.showTerminal).toBe(false);
 
-    await fireEvent.click(getByTestId('terminal-toggle'));
+    await fireEvent.click(getByTestId('chat-header-more'));
+    await fireEvent.click(await findByRole('menuitem', { name: 'Terminal' }));
 
     await tick();
 
@@ -624,95 +533,72 @@ describe('<ChatHeader>', () => {
     expect(pane.showTerminal).toBe(true);
   });
 
-  it('acks the regeneration RPC and spins until the completion event clears it', async () => {
+  // Regeneration is a row of the actions menu, which closes on the pick:
+  // the header itself has to say a run is in flight.
+  async function regenerateFromMenu(view: {
+    getByTestId: (id: string) => HTMLElement;
+    findByRole: (role: string, options: { name: string }) => Promise<HTMLElement>;
+  }): Promise<void> {
+    await fireEvent.click(view.getByTestId('chat-header-more'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'Regenerate title' }));
+  }
+
+  it('shows a spinner beside the title from the pick until the completion event', async () => {
     const pane = await buildPane(makeThread({ title: 'New Thread' }));
     const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
 
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const view = render(ChatHeader, { props: { pane } });
     await tick();
+    expect(view.queryByTestId('thread-title-regenerating')).toBeNull();
 
-    const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
-    await fireEvent.click(button);
+    await regenerateFromMenu(view);
 
     // Pending is set before the ack resolves and held after it: the run keeps
     // going server-side, and only the completion event may clear the flag.
-    expect(button.disabled).toBe(true);
-    expect(button.dataset.pending).toBe('true');
+    const spinner = view.getByTestId('thread-title-regenerating');
+    expect(spinner).toHaveAttribute('role', 'status');
+    expect(spinner).toHaveAccessibleName('Regenerating title');
+    const title = view.getByTestId('chat-header-title');
+    expect(title.compareDocumentPosition(spinner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await vi.waitFor(() => expect(regenerate).toHaveBeenCalledWith('thread-1'));
-    expect(button.dataset.pending).toBe('true');
+    expect(view.getByTestId('thread-title-regenerating')).toBeInTheDocument();
 
     applyThreadTitleGeneration({ threadId: 'thread-1', error: '' });
-    await vi.waitFor(() => expect(button.disabled).toBe(false));
-    expect(button.dataset.pending).toBe('false');
+    await vi.waitFor(() => expect(view.queryByTestId('thread-title-regenerating')).toBeNull());
     expect(pane.generalError).toBeNull();
   });
 
-  it('ignores a second click while a regeneration is pending', async () => {
-    const pane = await buildPane(makeThread({ title: 'New Thread' }));
-    const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
-
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-
-    const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
-    await fireEvent.click(button);
-    // The button disables on pending, but the store's own guard must hold
-    // even if a stale handler fires (disabled rendering races the click).
-    await fireEvent.click(button);
-    await vi.waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
-  });
-
-  it('surfaces the error on the pane when the regeneration ack rejects', async () => {
+  it('surfaces the error on the pane and drops the spinner when the regeneration ack rejects', async () => {
     const pane = await buildPane();
     setBindingMock('RegenerateThreadTitle', async () => {
       throw new Error('provider exploded');
     });
 
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const view = render(ChatHeader, { props: { pane } });
     await tick();
-
-    const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
-    await fireEvent.click(button);
+    await regenerateFromMenu(view);
 
     await vi.waitFor(() => {
       expect(pane.generalError).toContain('Failed to regenerate title');
     });
     // A rejected ack means no run started, so pending must release.
-    expect(button.disabled).toBe(false);
+    await vi.waitFor(() => expect(view.queryByTestId('thread-title-regenerating')).toBeNull());
   });
 
   it('surfaces a failed run on the pane when its completion event carries an error', async () => {
     const pane = await buildPane();
     setBindingMock('RegenerateThreadTitle', async () => undefined);
 
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const view = render(ChatHeader, { props: { pane } });
     await tick();
-
-    await fireEvent.click(getByTestId('thread-title-regenerate'));
-    await vi.waitFor(() => {
-      expect((getByTestId('thread-title-regenerate') as HTMLButtonElement).disabled).toBe(true);
-    });
+    await regenerateFromMenu(view);
+    await vi.waitFor(() => expect(view.getByTestId('thread-title-regenerating')).toBeInTheDocument());
 
     applyThreadTitleGeneration({ threadId: 'thread-1', error: 'provider CLI failed' });
     await vi.waitFor(() => {
       expect(pane.generalError).toBe('Failed to regenerate title: provider CLI failed');
     });
-    expect((getByTestId('thread-title-regenerate') as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it('disables the regenerate button in a view-only session (ungranted RPC)', async () => {
-    setPageGrantsFromBootstrap(true);
-    try {
-      const pane = await buildPane();
-      const { getByTestId } = render(ChatHeader, { props: { pane } });
-      await tick();
-
-      const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
-      expect(button.disabled).toBe(true);
-      expect(button.title).toBe('Not granted to this device');
-    } finally {
-      setPageGrantsFromBootstrap(false);
-    }
+    expect(view.queryByTestId('thread-title-regenerating')).toBeNull();
   });
 });
 
@@ -738,16 +624,16 @@ describe('<ChatHeader> under compact', () => {
     setCompactLayoutForTest(false);
   });
 
-  it('moves title regeneration into the actions menu and off the title row', async () => {
+  it('regenerates the title from the actions menu and shows the spinner on the title row', async () => {
     const pane = await buildPane(makeThread({ title: 'New Thread' }));
     const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
-    const { getByTestId, queryByTestId, findByRole } = render(ChatHeader, { props: { pane } });
+    const { getByTestId, findByRole } = render(ChatHeader, { props: { pane } });
     await tick();
-    expect(queryByTestId('thread-title-regenerate')).toBeNull();
     await fireEvent.click(getByTestId('chat-header-more'));
     const row = await findByRole('menuitem', { name: /Regenerate title/ });
     await fireEvent.click(row);
     await vi.waitFor(() => expect(regenerate).toHaveBeenCalledWith('thread-1'));
+    expect(getByTestId('chat-header-title-row')).toContainElement(getByTestId('thread-title-regenerating'));
     setCompactLayoutForTest(false);
   });
 

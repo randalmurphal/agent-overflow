@@ -259,8 +259,8 @@ export function installThreadViewDefaults(): void {
       .filter((thread) => thread.workspacePath === workspacePath)
       .map((thread) => ({ ...thread, branch: branch as string })));
   setBindingMock('GitListBranches', async () => []);
-  // The header's open-in-editor control loads the editor catalog and the
-  // saved default on mount. Default to no editors installed.
+  // The header's actions menu loads the editor catalog and the saved
+  // default on mount. Default to no editors installed.
   setBindingMock('ListAvailableEditors', async () => []);
   setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
   // Thread-wide aggregate surfaces (PlanSidebar / ActivityRail) fetch

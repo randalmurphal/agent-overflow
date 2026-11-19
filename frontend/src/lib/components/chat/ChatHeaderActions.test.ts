@@ -117,7 +117,7 @@ describe('<ChatHeaderActions> badge gating', () => {
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
-    // The Open-in-editor control loads this catalog on mount.
+    // The header's actions menu loads this catalog on mount.
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -198,7 +198,7 @@ describe('<ChatHeaderActions> subscription effect', () => {
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
-    // The Open-in-editor control loads this catalog on mount.
+    // The header's actions menu loads this catalog on mount.
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -378,9 +378,10 @@ describe('<ChatHeaderActions> subscription effect', () => {
 });
 
 describe('<ChatHeaderActions> compact header menu', () => {
-  // The desktop cluster is a row of icon buttons that does not fit a phone
-  // header; compact rolls the same actions into one menu. No command
-  // palette button: the phone has no chords for it to stand in for.
+  // The desktop cluster is a row of controls that does not fit a phone
+  // header; compact keeps the diff badge and rolls the rest into the
+  // Thread actions menu both layouts share. No command palette button: the
+  // phone has no chords for it to stand in for.
   beforeEach(async () => {
     resetPanesForTest();
     resetEditorsForTest();
@@ -395,21 +396,39 @@ describe('<ChatHeaderActions> compact header menu', () => {
     setCompactLayoutForTest(false);
   });
 
-  it('is absent on the desktop, and under compact replaces the cluster', async () => {
-    installSubscribeMock(status({}));
-    const pane = await buildPane();
+  const menuRows = (): string[] =>
+    within(document.body).getAllByRole('menuitem').map((row) => row.querySelector('.truncate')?.textContent?.trim() ?? '');
+
+  it('ends the cluster on both layouts, and under compact carries the controls the cluster drops', async () => {
+    installSubscribeMock(status({ openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7 }));
+    const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
     const desktop = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    expect(desktop.queryByTestId('chat-header-more')).toBeNull();
-    expect(desktop.getByTestId('terminal-toggle')).toBeInTheDocument();
+    expect(desktop.getByTestId('chat-header-pr-badge')).toBeInTheDocument();
+    expect(desktop.getByTestId('take-control-toggle')).toBeInTheDocument();
+    await fireEvent.click(desktop.getByTestId('chat-header-more'));
+    await flush();
+    expect(menuRows()).toEqual(['Terminal', 'New terminal pane', 'Regenerate title']);
     desktop.unmount();
 
     setCompactLayoutForTest(true);
     const { getByTestId, queryByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    expect(getByTestId('chat-header-more')).toBeInTheDocument();
-    expect(queryByTestId('terminal-toggle')).toBeNull();
+    expect(queryByTestId('chat-header-pr-badge')).toBeNull();
+    expect(queryByTestId('take-control-toggle')).toBeNull();
     expect(queryByTestId('palette-open')).toBeNull();
+    await fireEvent.click(getByTestId('chat-header-more'));
+    await flush();
+    expect(menuRows()).toEqual([
+      'Review changes',
+      'PR #7',
+      'Terminal',
+      'New terminal pane',
+      'Take control',
+      'Search messages',
+      'Regenerate title',
+      'Git actions…',
+    ]);
   });
 
   it('runs the picked action: Terminal opens the drawer', async () => {
@@ -420,7 +439,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
     await flush();
     await fireEvent.click(getByTestId('chat-header-more'));
     await flush();
-    const terminal = within(document.body).getByRole('menuitem', { name: /Terminal/ });
+    const terminal = within(document.body).getByRole('menuitem', { name: 'Terminal' });
     await fireEvent.click(terminal);
     await flush();
     expect(pane.showTerminal).toBe(true);
@@ -485,23 +504,17 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     expect(next.title).toBe(INERT);
   });
 
-  it('disables the desktop terminal toggle and take-control with the reason', async () => {
+  it('disables the desktop take-control button with the reason', async () => {
     installSubscribeMock(status({}));
     const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    const toggle = getByTestId('terminal-toggle') as HTMLButtonElement;
-    expect(toggle.disabled).toBe(true);
-    expect(toggle.title).toBe(INERT);
-    await fireEvent.click(toggle);
-    await flush();
-    expect(pane.showTerminal).toBe(false);
     const take = getByTestId('take-control-toggle') as HTMLButtonElement;
     expect(take.disabled).toBe(true);
     expect(take.title).toBe(INERT);
   });
 
-  it('renders the compact Terminal and Take control rows inert with the reason', async () => {
+  it('renders the compact terminal and Take control rows inert with the reason', async () => {
     installSubscribeMock(status({}));
     const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
     setCompactLayoutForTest(true);
@@ -509,7 +522,7 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     await flush();
     await fireEvent.click(getByTestId('chat-header-more'));
     await flush();
-    for (const name of ['Terminal', 'Take control']) {
+    for (const name of ['Terminal', 'New terminal pane', 'Take control']) {
       const row = within(document.body).getByRole('menuitem', { name });
       expect(row.getAttribute('aria-disabled'), name).toBe('true');
       expect(row.getAttribute('title'), name).toBe(INERT);
