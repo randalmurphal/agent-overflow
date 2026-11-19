@@ -33,9 +33,11 @@ mode. Product behavior and authority are defined in
   only through the restore path, and any create or restore admitted under
   an older generation must retry, never land in the old jar.
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
-  a pending tab, a closed page leaves the tab set before its engine teardown
-  runs, and both keep counting toward caps and holding the jar's
-  profile until the engine is done. A teardown that runs after its tab left
+  a pending tab, a popup being adopted reserves its page from admission to
+  listing (`adoptPopup`), a closed page leaves the tab set before its engine
+  teardown runs, and each keeps counting toward caps and holding the jar's
+  profile until the engine is done. A native engine lists a page in its
+  profile, where `Dispose` finds it, only once its view is in place. A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab

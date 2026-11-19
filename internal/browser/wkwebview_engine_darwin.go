@@ -330,6 +330,9 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	}
 	page.view = view
 	p.parkNew(page)
+	if err := p.publish(page); err != nil {
+		return nil, err
+	}
 	return page, nil
 }
 
@@ -357,13 +360,18 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 		return nil, err
 	}
 	p.parkNew(page)
+	if err := p.publish(page); err != nil {
+		return nil, err
+	}
 	return page, nil
 }
 
-// newPageShell allocates the Go half of a page and registers it BEFORE the view
-// exists, so a delegate that fires during construction resolves to a real page
-// instead of being dropped. A popup's page takes the number it was held
-// under (holdPopup); zero numbers a new one.
+// newPageShell allocates the Go half of a page and registers it with the
+// callbacks BEFORE the view exists, so a delegate that fires during
+// construction resolves to a real page instead of being dropped. The
+// profile lists it for Dispose only once its view is in place (publish). A
+// popup's page takes the number it was held under (holdPopup); zero numbers
+// a new one.
 func (p *wkProfile) newPageShell(hooks pageHooks, id uint64) (*wkPage, error) {
 	p.mu.Lock()
 	if p.disposed {
@@ -381,10 +389,24 @@ func (p *wkProfile) newPageShell(hooks pageHooks, id uint64) (*wkPage, error) {
 	}
 	page.handle = pageHandle(page.id)
 	wkPageByID.Store(page.id, page)
-	p.mu.Lock()
-	p.pages[page] = struct{}{}
-	p.mu.Unlock()
 	return page, nil
+}
+
+// publish lists a page whose view is built, adopted and parked in the
+// profile, where Dispose finds it. A profile disposed meanwhile never saw
+// the page, so the page is closed here, its view and slot with it.
+func (p *wkProfile) publish(page *wkPage) error {
+	p.mu.Lock()
+	disposed := p.disposed
+	if !disposed {
+		p.pages[page] = struct{}{}
+	}
+	p.mu.Unlock()
+	if disposed {
+		page.Close()
+		return fmt.Errorf("browser: workspace profile is closed")
+	}
+	return nil
 }
 
 // parkNew gives a page its slot in the park view. Parked is IN THE WINDOW: the

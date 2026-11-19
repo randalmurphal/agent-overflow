@@ -82,12 +82,12 @@ func (m *Manager) startAdoption(handle string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.adopting == nil {
-		m.adopting = make(map[string]struct{})
+		m.adopting = make(map[string]*managedPage)
 	}
 	if _, running := m.adopting[handle]; running {
 		return false
 	}
-	m.adopting[handle] = struct{}{}
+	m.adopting[handle] = nil
 	return true
 }
 

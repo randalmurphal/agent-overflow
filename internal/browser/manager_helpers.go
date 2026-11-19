@@ -102,6 +102,11 @@ func (m *Manager) threadPageCountLocked(threadID string) int {
 			count++
 		}
 	}
+	for _, p := range m.adopting {
+		if p != nil && p.owner == threadID {
+			count++
+		}
+	}
 	return count
 }
 
