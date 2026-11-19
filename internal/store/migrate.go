@@ -2245,28 +2245,3 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	log.Printf("store: rebuild migration v%d applied", m.Version)
 	return nil
 }
-
-// assertForeignKeysIntact runs PRAGMA foreign_key_check and returns an error
-// if any row references a missing parent. After a rebuild that copies ids
-// verbatim this is always clean; the check is cheap insurance that turns a
-// botched rebuild (which would otherwise silently strand child rows) into a
-// loud migration failure + rollback. foreign_key_check works regardless of
-// whether enforcement is currently enabled.
-func assertForeignKeysIntact(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
-	if err != nil {
-		return fmt.Errorf("foreign_key_check: %w", err)
-	}
-	defer rows.Close()
-	if rows.Next() {
-		// Columns: child table, child rowid, referenced table, fk index.
-		var table, referred sql.NullString
-		var rowid, fkid sql.NullInt64
-		if err := rows.Scan(&table, &rowid, &referred, &fkid); err != nil {
-			return fmt.Errorf("foreign_key_check scan: %w", err)
-		}
-		return fmt.Errorf("foreign key violation after rebuild: table %q row %d references missing %q",
-			table.String, rowid.Int64, referred.String)
-	}
-	return rows.Err()
-}
