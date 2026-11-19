@@ -99,7 +99,7 @@ func TestStartSession_ClaudeCarriesTheAppGuideAndSnapshotOptOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the append file the session is running with: %v", err)
 	}
-	want := agentGuideText(map[string]bool{threadMCPName: true})
+	want := agentGuideText(map[string]bool{threadMCPName: true, workflowMCPName: true})
 	if string(content) != want {
 		t.Errorf("append file:\n%s\nwant:\n%s", content, want)
 	}

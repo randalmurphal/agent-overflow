@@ -362,6 +362,7 @@ describe('thread.interrupt command', () => {
     pane.addUserInput({
       threadId: 'thread-1',
       requestId: 'ui-1',
+      occurrence: '41',
       toolName: 'AskUserQuestion',
       title: 'Pick scope',
       questions: [{ id: 'scope', header: 'Scope', question: 'Choose', options: [{ label: 'turn', description: 'This turn' }] }],
@@ -384,9 +385,11 @@ describe('thread.interrupt command', () => {
     await command.run(makeCommandContext(pane, {}));
 
     expect(sequence).toEqual(['RespondToUserInput', 'InterruptTurn']);
+    // The cancel names the prompt it cancels, not a later one under its id.
     expect(userInputArgs).toEqual({
       threadId: 'thread-1',
       requestId: 'ui-1',
+      occurrence: '41',
       decision: 'decline',
       answers: {},
     });
@@ -397,6 +400,7 @@ describe('thread.interrupt command', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
     pane.addApproval({
       requestId: 'app-1',
+      occurrence: '42',
       kind: 'command',
       toolName: 'Bash',
     } as unknown as Parameters<typeof pane.addApproval>[0]);
@@ -421,6 +425,7 @@ describe('thread.interrupt command', () => {
     expect(approvalArgs).toEqual({
       threadId: 'thread-1',
       requestId: 'app-1',
+      occurrence: '42',
       decision: 'cancel',
     });
   });
@@ -550,7 +555,6 @@ function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
   return {
     openThreadForm: () => {},
     openGitDialog: () => {},
-    requestDiscussion: () => {},
     focusThreadSearch: () => {},
     requestThreadJump: () => {},
     ...overrides,
@@ -681,7 +685,7 @@ describe('thread archive/delete command safety', () => {
 
   it('routes thread.archive through the confirmation flow before archiving', () => {
     const pane = readyPane();
-    const archiveMock = setBindingMock('ArchiveThread', async () => {});
+    const archiveMock = setBindingMock('ArchiveThread', async () => ({}));
     registerFixtureCommands(pane);
 
     runCommand('thread.archive', makeCommandContext(pane, {}));
@@ -694,7 +698,8 @@ describe('thread archive/delete command safety', () => {
 
   it('routes thread.delete through the confirmation flow before deleting', () => {
     const pane = readyPane();
-    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const deleteMock = setBindingMock('DeleteThreads', async () => ({}));
     registerFixtureCommands(pane);
 
     runCommand('thread.delete', makeCommandContext(pane, {}));
@@ -707,7 +712,8 @@ describe('thread archive/delete command safety', () => {
 
   it('deletes directly when delete confirmations are disabled', async () => {
     const pane = readyPane();
-    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const deleteMock = setBindingMock('DeleteThreads', async () => ({}));
     setBindingMock('StopSession', async () => {});
     setBindingMock('GetSettings', async () => ({ confirmDelete: false }));
     await loadSettings();
@@ -716,18 +722,7 @@ describe('thread archive/delete command safety', () => {
     runCommand('thread.delete', makeCommandContext(pane, {}));
 
     expect(getPendingThreadActionConfirmation()).toBeNull();
-    await vi.waitFor(() => expect(deleteMock).toHaveBeenCalledWith('thread-1'));
-  });
-
-  it('does not offer direct deletion for discussion child threads', () => {
-    const pane = readyPane({ parentThreadId: 'parent-1' });
-    const deleteMock = setBindingMock('DeleteThread', async () => {});
-    registerFixtureCommands(pane);
-
-    runCommand('thread.delete', makeCommandContext(pane, {}));
-
-    expect(getPendingThreadActionConfirmation()).toBeNull();
-    expect(deleteMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(deleteMock).toHaveBeenCalledWith(['thread-1']));
   });
 });
 
@@ -1814,7 +1809,7 @@ describe('provider.switchAccount command', () => {
 // --- mode.cycle wiring ---
 //
 // Shift+Tab toggles the active chat thread between chat and plan modes
-// (design and discussion are immutable thread types — no-op on those).
+// (a side chat is a no-op).
 // The command reads the current mode from the pane's thread and calls
 // UpdateThreadMode. Disabled while any modal or the palette is open
 // because Shift+Tab is the native "focus previous" chord inside those
@@ -1865,33 +1860,6 @@ describe('mode.cycle command', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(calls[0]).toEqual(['thread-1', 'chat']);
-  });
-
-  it('is a no-op on discussion threads (immutable thread type)', async () => {
-    const pane = readyPane({ mode: 'discussion' });
-    const calls: Array<[string, string]> = [];
-    setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
-      calls.push([id as string, mode as string]);
-      return {
-        id: id as string,
-        title: 'Discussion thread',
-        provider: 'claude',
-        workspacePath: '/tmp',
-        projectPath: '/tmp',
-        mode: mode as string,
-        model: 'claude-sonnet-4-6',
-        createdAt: 0,
-        updatedAt: 0,
-        archived: false,
-      };
-    });
-    registerFixtureCommands(pane);
-    const ctx = makeCommandContext(pane, {}) as CommandContext;
-    runCommand('mode.cycle', ctx);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(calls.length).toBe(0);
   });
 
   it('is a no-op on a side chat: only Keep moves a scratch thread', async () => {

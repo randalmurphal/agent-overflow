@@ -788,7 +788,7 @@ func TestE2E_ThreadDelete_CleansCodexBackground(t *testing.T) {
 		Codex:    fakeSess,
 	})
 
-	// stopSessionFn fires inside deleteThreadTree after the clean RPC.
+	// stopSessionFn fires inside the thread's delete after the clean RPC.
 	// Record its invocation so we can confirm the ordering.
 	app.stopSessionFn = func(threadID string) error {
 		order = append(order, "stopSession")
@@ -796,7 +796,7 @@ func TestE2E_ThreadDelete_CleansCodexBackground(t *testing.T) {
 		return nil
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 

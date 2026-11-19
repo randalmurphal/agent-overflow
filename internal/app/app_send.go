@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/planrevision"
@@ -17,11 +19,12 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflowhost"
-
 	"github.com/google/uuid"
 )
 
@@ -67,21 +70,31 @@ type sendMessageOptions struct {
 	// SendMessageWithOptions / SteerMessageWithOptions wire methods and the
 	// flush-queue dispatch of previously queued composer text. Every
 	// app-internal caller (workflow wake, seeded triage/PR turns,
-	// schema-driven phase sends, discussion drive) leaves it false by
+	// schema-driven phase sends) leaves it false by
 	// default, so a new internal send path can never expand a `/…` opener
 	// in a prompt the app itself wrote just by forgetting a flag.
 	ExpandComposerCommands bool
 	// Origin and OriginThread attribute the row to the agent thread that
-	// asked for it (usermessage.OriginAgentThread). Set only by the thread
+	// asked for it (agentmeta.OriginAgentThread). Set only by the thread
 	// tools' request send; every other caller leaves them empty.
 	Origin       string
-	OriginThread *usermessage.OriginThread
+	OriginThread *agentmeta.OriginThread
+	// OriginWake attributes a report the app writes (agentmeta.OriginWake),
+	// with Origin agentmeta.OriginAgentWake.
+	OriginWake *agentmeta.OriginWake
 	// onDurable runs once a QUEUED message has either reached the provider
 	// or been restored into the composer after a session death. It is the
 	// only hook an app-internal injector gets on the queued path, where the
 	// send returns before the message exists as a row. Ignored on the idle
-	// path, whose caller already has the persisted item.
-	onDurable func()
+	// path, whose caller already has the persisted item. session is the
+	// token of the session the message was written to, empty when it was
+	// restored instead.
+	onDurable func(session string)
+	// onSessionDispatch runs on the idle path immediately before the provider
+	// write, with the token of the session the message is written to: the
+	// session the returned item went to, which the thread's live session may
+	// no longer be by the time the send returns.
+	onSessionDispatch func(session string)
 	// onProviderDispatch runs under the provider-account read lock immediately
 	// before the provider write. It exists so an observer can attribute an error
 	// emitted as soon as stdin is written to the exact account generation that
@@ -118,7 +131,11 @@ type userMessageInputs struct {
 	// behalf (`agent-thread`). Empty for everything a person typed, which
 	// is what keeps the chip off ordinary rows.
 	origin       string
-	originThread *usermessage.OriginThread
+	originThread *agentmeta.OriginThread
+	originWake   *agentmeta.OriginWake
+	// joinedParts are a requeued joined row's members, which the wire text
+	// marks one by one.
+	joinedParts []agentmeta.JoinedPart
 	// heldBy are the rows an earlier dispatch of this same message landed
 	// as and that are still to be retired (a requeue's stale row): the
 	// review comments their claims hold are this message's own, so its
@@ -282,15 +299,15 @@ func (a *App) resolveUserMessageEnvelope(
 	// persisted the user row, so the composer restores the draft and shows
 	// the error rather than silently sending the message without the
 	// context it asked for.
-	providerContent := content
-	command := ""
-	// A shell command is not prose: a `/word` in it is a path, not a
-	// composer command to expand.
-	if inputs.expandComposerCommands && !attachments.isInvocation(content) {
-		providerContent, command, err = a.expandComposerCommand(threadID, content)
-		if err != nil {
-			return resolvedUserMessage{}, fmt.Errorf("composer command: %w", err)
-		}
+	providerContent, command, err := a.wireText(threadID, content, usermessage.Meta{
+		ExpandComposerCommands: inputs.expandComposerCommands,
+		Origin:                 inputs.origin,
+		OriginThread:           inputs.originThread,
+		OriginWake:             inputs.originWake,
+		JoinedParts:            inputs.joinedParts,
+	}, attachments.isInvocation(content))
+	if err != nil {
+		return resolvedUserMessage{}, err
 	}
 	providerContent = attachments.promptText([]string{providerContent}, "")
 
@@ -306,6 +323,7 @@ func (a *App) resolveUserMessageEnvelope(
 		SendID:                 inputs.sendID,
 		Origin:                 inputs.origin,
 		OriginThread:           inputs.originThread,
+		OriginWake:             inputs.originWake,
 
 		TextBeforeReviewComments: textBeforeReviewComments,
 	})
@@ -330,6 +348,43 @@ func (a *App) resolveUserMessageEnvelope(
 		textBeforeReviewComments: textBeforeReviewComments,
 		userMessageMeta:          userMeta,
 	}, nil
+}
+
+// rowWireText is a stored user row's text as its dispatch put it on the
+// wire, without file attachment lines.
+func (a *App) rowWireText(threadID, content, metaJSON string) (string, error) {
+	meta, err := usermessage.FromItem(store.Item{Meta: metaJSON})
+	if err != nil {
+		return "", err
+	}
+	var commands []string
+	for _, attachment := range meta.Attachments {
+		if attachment.Shell != nil {
+			commands = append(commands, attachment.Shell.Command)
+		}
+	}
+	text, _, err := a.wireText(threadID, content, meta, usermessage.IsShellInvocation(content, commands))
+	return text, err
+}
+
+// wireText is content with meta as the model receives it, before file
+// attachment lines, and the composer command it expanded. A message the
+// app or an agent wrote opens with its sender and ends with the end line,
+// member by member when it is joined (agentmeta.WireText); the stored
+// row stays as written. A person's composer command expands after that,
+// except in a shell command (shellInvocation), which is not prose: a
+// `/word` in it is a path, not a composer command to expand.
+func (a *App) wireText(threadID, content string, meta usermessage.Meta, shellInvocation bool) (text, command string, err error) {
+	here, _ := a.backendIdentity()
+	text = agentmeta.WireText(content, meta.Agent(), here)
+	if !meta.ExpandComposerCommands || shellInvocation {
+		return text, "", nil
+	}
+	text, command, err = a.expandComposerCommand(threadID, text)
+	if err != nil {
+		return "", "", fmt.Errorf("composer command: %w", err)
+	}
+	return text, command, nil
 }
 
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
@@ -473,6 +528,9 @@ func (a *App) sendMessageLocked(
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return store.Item{}, err
 	}
+	if err := refuseAskCopyMessage(thread, opts); err != nil {
+		return store.Item{}, err
+	}
 
 	// Idempotency, first thing inside the lock and before ANY side effect:
 	// no runtime-mode write, no takeover registration, no session start, and
@@ -491,8 +549,17 @@ func (a *App) sendMessageLocked(
 		return store.Item{}, nil
 	}
 
+	ctx, err = a.admitPersonOperation(ctx, threadID)
+	if err != nil {
+		return store.Item{}, err
+	}
 	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
+	if !opts.PreserveDraft {
+		if err := a.refuseSendOfMovedDraft(threadID, opts.ConsumeDraft); err != nil {
+			return store.Item{}, err
+		}
 	}
 
 	intent := messageDirect
@@ -524,6 +591,7 @@ func (a *App) sendMessageLocked(
 			preserveDraft:          opts.PreserveDraft,
 			origin:                 opts.Origin,
 			originThread:           opts.OriginThread,
+			originWake:             opts.OriginWake,
 			onDurable:              opts.onDurable,
 		})
 		return store.Item{}, err
@@ -579,6 +647,7 @@ func (a *App) sendMessageLocked(
 		sendID:                       opts.SendID,
 		origin:                       opts.Origin,
 		originThread:                 opts.OriginThread,
+		originWake:                   opts.OriginWake,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -653,10 +722,17 @@ func (a *App) sendMessageLocked(
 		}
 	}
 
+	// A request names its work in the sender's text; its footer is
+	// routing, and a title or branch named from it would read "Agent
+	// request from thread ...".
+	namingText := content
+	if opts.Origin == agentmeta.OriginAgentThread {
+		namingText = threadtools.StripFooter(content)
+	}
 	// A command says what was run, not what the work is: the first prompt
 	// names the branch.
 	if !isCodexReview && !resolved.shellCommand {
-		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+		a.maybeRenameTemporaryWorktreeBranch(threadID, namingText)
 	}
 
 	// The index is final once the row lands. Until then a turn the
@@ -729,7 +805,7 @@ func (a *App) sendMessageLocked(
 	// it starts: no turn of its own can come first.
 	if !isCodexReview {
 		if live, ok := a.sessionManager().get(threadID); ok {
-			_, earlyExpect := providerSendIdentity(live, userItem.ID, sendUUID)
+			_, earlyExpect := providerSendIdentity(live, userItem.ID, userItem.Meta, sendUUID)
 			a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, earlyExpect)
 		}
 	}
@@ -748,7 +824,8 @@ func (a *App) sendMessageLocked(
 		// send the user did not make from this screen (an agent's spawn, a
 		// queued dispatch, a workflow) would otherwise keep the draft icon in
 		// every sidebar, or never reach one that had not listed the draft.
-		a.announceThread(triage.ThreadActionListed, threadID)
+		// An owned worker's row goes out `full`: it has no sidebar row.
+		a.announcePlaced(threadID)
 	}
 	if !opts.PreserveDraft {
 		// Attributed to the screen that sent: it has already cleared its
@@ -779,6 +856,13 @@ func (a *App) sendMessageLocked(
 		if startErr := a.startSession(ctx, threadID); startErr != nil {
 			err = fmt.Errorf("start session: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			// The handoff that start set off puts the person's text in the
+			// new thread's composer, so the client keeps it out of this
+			// one's. With no handoff running to take it, the send fails as
+			// any start failure does and the client keeps the text.
+			if errors.Is(startErr, errAssistantSessionGone) && opts.Origin == "" && a.assistantHandOffs.add(threadID, userItem) {
+				return store.Item{}, errorsx.Public(transport.ErrCodeAssistantSessionGone, assistantSessionGoneMessage, err)
+			}
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}
 		sess, ok = a.sessionManager().get(threadID)
@@ -805,6 +889,9 @@ func (a *App) sendMessageLocked(
 			Provider: sess.Provider, AccountID: sess.CredentialAccountID,
 			CredentialGeneration: sess.CredentialGeneration,
 		})
+	}
+	if opts.onSessionDispatch != nil {
+		opts.onSessionDispatch(sess.Token)
 	}
 	if isCodexReview {
 		if sess.Codex == nil {
@@ -843,7 +930,7 @@ func (a *App) sendMessageLocked(
 	// A send registered with its row is registered again when the session
 	// it was registered against was torn down since (an account switch
 	// reconnects Codex here), since teardown clears the registry.
-	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, userItem.Meta, sendUUID)
 	if !a.triage.HasPendingSend(threadID, userItem.ID) {
 		a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
 	}
@@ -872,7 +959,7 @@ func (a *App) sendMessageLocked(
 	// emission here.
 
 	if !isCodexReview && !threadmode.IsSagaOwned(thread.Mode) {
-		a.maybeGenerateThreadTitleWithAttachments(thread, content, persistedAttachments, hasPriorItems)
+		a.maybeGenerateThreadTitleWithAttachments(thread, namingText, persistedAttachments, hasPriorItems)
 	}
 	return userItem, nil
 }
@@ -1084,7 +1171,7 @@ func (t turnAttachments) promptText(messages []string, separator string) string 
 			texts = append(texts, message)
 			continue
 		}
-		parts := strings.Split(message, usermessage.JoinSeparator)
+		parts := strings.Split(message, agentmeta.JoinSeparator)
 		blocks := make(map[int]string, len(commands))
 		dropped := make(map[int]bool)
 		for i, run := range usermessage.ShellInvocationRuns(parts, commands) {
@@ -1106,7 +1193,7 @@ func (t turnAttachments) promptText(messages []string, separator string) string 
 			}
 			kept = append(kept, text)
 		}
-		texts = append(texts, strings.Join(kept, usermessage.JoinSeparator))
+		texts = append(texts, strings.Join(kept, agentmeta.JoinSeparator))
 	}
 	lines := make([]string, 0, len(t.files))
 	for i, file := range t.files {
@@ -1645,11 +1732,14 @@ func (a *App) refreshProposedPlanItem(threadID, itemID string) {
 // onto the user envelope and the CLI echoes it verbatim as the item id
 // (claude-tui echoes id-less, which the registry's head-pop carve-out
 // absorbs). Codex callers, which never mint a uuid, pass sendUUID "".
-func providerSendIdentity(sess session, rowID, sendUUID string) (clientUserMessageID string, expect triage.PendingSendExpectation) {
+// rowMeta is the row's meta, whose members the send's delivery names
+// (triage.SendDelivery.Members).
+func providerSendIdentity(sess session, rowID, rowMeta, sendUUID string) (clientUserMessageID string, expect triage.PendingSendExpectation) {
+	members := usermessage.MemberSendIDsOfRow(rowMeta)
 	if sess.Codex != nil {
-		return rowID, triage.PendingSendExpectation{ByClientID: true}
+		return rowID, triage.PendingSendExpectation{ByClientID: true, Members: members}
 	}
-	return "", triage.PendingSendExpectation{ProviderItemID: sendUUID}
+	return "", triage.PendingSendExpectation{ProviderItemID: sendUUID, Members: members}
 }
 
 // sendToProvider forwards the user content to the active provider

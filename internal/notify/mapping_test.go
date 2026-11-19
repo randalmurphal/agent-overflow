@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -45,12 +46,91 @@ func TestEveryKindMapsFromItsMoment(t *testing.T) {
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
+			name: "a routine tick that failed still reports the failure",
+			got: func() (Notification, bool) {
+				return MapTurnRest(TurnRest{Thread: thread(), TopLevel: true, Failed: true, QuietTick: true})
+			},
+			kind: KindError, id: "thread:" + threadID,
+			title: "Fix the parser", body: "Failed. Open the thread to see why.",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "an owned worker that raised a flag reaches the user",
+			got: func() (Notification, bool) {
+				owned := thread()
+				owned.Owned, owned.Attention, owned.AttentionAt = true, "review", 1_000
+				return MapTurnRest(TurnRest{Thread: owned, TopLevel: true, StartedAt: 500})
+			},
+			kind: KindThreadAttention, id: "thread:" + threadID,
+			title: "Fix the parser", body: "Ready for your review",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
 			name: "provider exited",
 			got: func() (Notification, bool) {
 				return MapProviderExit(ProviderExit{Thread: thread()})
 			},
 			kind: KindError, id: "thread:" + threadID,
 			title: "Fix the parser", body: "The provider stopped. Open the thread to see why.",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "a start the app made on its own failed",
+			got: func() (Notification, bool) {
+				return MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+			},
+			kind: KindError, id: "session-start:" + threadID,
+			title: "Fix the parser", body: "The agent could not start. Open the thread to see why.",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "a watch that keeps exiting nonzero",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: "inbox",
+					Failure: WatchFailure{Cause: WatchExitStatus, ExitCode: 3}})
+			},
+			kind: KindError, id: "watch:wake-9",
+			title: "Fix the parser", body: `The watch "inbox" is failing: exit status 3. Open the thread to see why.`,
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "a watch that could not start",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: "inbox",
+					Failure: WatchFailure{Cause: WatchNotStarted}})
+			},
+			kind: KindError, id: "watch:wake-9",
+			title: "Fix the parser", body: `The watch "inbox" is failing: could not start. Open the thread to see why.`,
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "a watch that keeps timing out",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: "inbox",
+					Failure: WatchFailure{Cause: WatchTimedOut, Timeout: 10 * time.Minute}})
+			},
+			kind: KindError, id: "watch:wake-9",
+			title: "Fix the parser", body: `The watch "inbox" is failing: timed out after 10m0s. Open the thread to see why.`,
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "a long-running watch that keeps exiting",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: "events",
+					Failure: WatchFailure{Cause: WatchExited}})
+			},
+			kind: KindError, id: "watch:wake-9",
+			title: "Fix the parser", body: `The watch "events" is failing: exited. Open the thread to see why.`,
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "a watch whose run ended with another error",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: "inbox",
+					Failure: WatchFailure{Cause: WatchErrored}})
+			},
+			kind: KindError, id: "watch:wake-9",
+			title: "Fix the parser", body: `The watch "inbox" is failing: ended with an error. Open the thread to see why.`,
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
@@ -62,6 +142,15 @@ func TestEveryKindMapsFromItsMoment(t *testing.T) {
 			},
 			kind: KindApprovalNeeded, id: "approval:" + threadID + ":req-7",
 			title: "Fix the parser", body: "Pending approval: Bash",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
+			name: "question waiting",
+			got: func() (Notification, bool) {
+				return MapQuestion(QuestionMoment{Thread: thread(), RequestID: "ask-3"})
+			},
+			kind: KindApprovalNeeded, id: "question:" + threadID + ":ask-3",
+			title: "Fix the parser", body: "Waiting for your answer",
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
@@ -154,6 +243,25 @@ func TestEveryRetractionMomentWithdrawsItsOwnNotification(t *testing.T) {
 			},
 		},
 		{
+			name: "starting a session withdraws a failed start",
+			presented: func() (Notification, bool) {
+				return MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+			},
+			retracted: func() (Notification, bool) {
+				return MapSessionStarted(SessionStarted{ThreadID: threadID, FailureRaised: true})
+			},
+		},
+		{
+			name: "a watch's clean run withdraws its failure",
+			presented: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: "inbox",
+					Failure: WatchFailure{Cause: WatchExitStatus, ExitCode: 1}})
+			},
+			retracted: func() (Notification, bool) {
+				return MapWatchRecovered(WatchRecovered{WakeID: "wake-9"})
+			},
+		},
+		{
 			name: "answering an approval withdraws its prompt",
 			presented: func() (Notification, bool) {
 				return MapApproval(ApprovalMoment{Thread: thread(), RequestID: "req-7", ToolName: "Bash"})
@@ -162,6 +270,15 @@ func TestEveryRetractionMomentWithdrawsItsOwnNotification(t *testing.T) {
 				return MapApproval(ApprovalMoment{
 					Thread: ThreadRef{ID: threadID}, RequestID: "req-7", Answered: true,
 				})
+			},
+		},
+		{
+			name: "answering a question withdraws its prompt",
+			presented: func() (Notification, bool) {
+				return MapQuestion(QuestionMoment{Thread: thread(), RequestID: "ask-3"})
+			},
+			retracted: func() (Notification, bool) {
+				return MapQuestion(QuestionMoment{Thread: ThreadRef{ID: threadID}, RequestID: "ask-3", Answered: true})
 			},
 		},
 		{
@@ -218,6 +335,50 @@ func TestOneThreadHoldsOneRestNotification(t *testing.T) {
 	}
 }
 
+// TestAStartFailureIsNotARestState: a session start retracts a failed start,
+// and must not take a turn's completion with it, so the two ids differ.
+func TestAStartFailureIsNotARestState(t *testing.T) {
+	failed, _ := MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+	completed, _ := MapTurnRest(TurnRest{Thread: thread(), TopLevel: true})
+	started, _ := MapSessionStarted(SessionStarted{ThreadID: threadID, FailureRaised: true})
+	if failed.Send.ID == completed.Send.ID || started.Send.ID == completed.Send.ID {
+		t.Fatalf("a start failure shares the rest id %q", completed.Send.ID)
+	}
+}
+
+// A watch's failure is its own moment: neither a turn's completion nor a
+// session start failure takes it with them, and two watches of one thread
+// are withdrawn apart.
+func TestAFailingWatchIsItsOwnMoment(t *testing.T) {
+	failing := func(wakeID string) Notification {
+		n, _ := MapWatchFailing(WatchFailing{Thread: thread(), WakeID: wakeID, Label: "inbox"})
+		return n
+	}
+	completed, _ := MapTurnRest(TurnRest{Thread: thread(), TopLevel: true})
+	startFailed, _ := MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+	first, second := failing("wake-1"), failing("wake-2")
+	for _, other := range []string{completed.Send.ID, startFailed.Send.ID, second.Send.ID} {
+		if first.Send.ID == other {
+			t.Fatalf("a watch's failure shares the id %q", other)
+		}
+	}
+}
+
+// A long label is clipped, not dropped, and the reason after it survives.
+func TestAWatchLabelIsClippedBeforeTheReason(t *testing.T) {
+	n, ok := MapWatchFailing(WatchFailing{Thread: thread(), WakeID: "wake-9", Label: strings.Repeat("inbox ", 30),
+		Failure: WatchFailure{Cause: WatchExitStatus, ExitCode: 1}})
+	if !ok {
+		t.Fatal("moment produced no notification")
+	}
+	if !strings.HasPrefix(n.Send.Body, `The watch "inbox inbox`) || !strings.HasSuffix(n.Send.Body, `..." is failing: exit status 1. Open the thread to see why.`) {
+		t.Fatalf("body = %q", n.Send.Body)
+	}
+	if runes := len([]rune(n.Send.Body)); runes > MaxBodyRunes {
+		t.Fatalf("body is %d runes, want at most %d", runes, MaxBodyRunes)
+	}
+}
+
 // TestTwoApprovalsInOneThreadAreSeparatelyRetractable: a subagent and the
 // main agent can each be blocked at once, and answering one must not
 // withdraw the other's prompt.
@@ -268,6 +429,42 @@ func TestMomentsThatMustNotNotify(t *testing.T) {
 			},
 		},
 		{
+			name: "a routine loop or watch tick finishing is not news",
+			got: func() (Notification, bool) {
+				return MapTurnRest(TurnRest{Thread: thread(), TopLevel: true, QuietTick: true})
+			},
+		},
+		{
+			name: "an owned worker finishing answers its owner, not the user",
+			got: func() (Notification, bool) {
+				owned := thread()
+				owned.Owned = true
+				return MapTurnRest(TurnRest{Thread: owned, TopLevel: true})
+			},
+		},
+		{
+			name: "an owned worker failing answers its owner, not the user",
+			got: func() (Notification, bool) {
+				owned := thread()
+				owned.Owned = true
+				return MapTurnRest(TurnRest{Thread: owned, TopLevel: true, Failed: true})
+			},
+		},
+		{
+			name: "a routine tick starting takes away nothing the user has not read",
+			got: func() (Notification, bool) {
+				return MapThreadResumed(ThreadResumed{ThreadID: threadID, Tick: true})
+			},
+		},
+		{
+			name: "a quiet tick does not say again a flag an earlier turn raised",
+			got: func() (Notification, bool) {
+				flagged := thread()
+				flagged.Attention, flagged.AttentionAt = "review", 1_000
+				return MapTurnRest(TurnRest{Thread: flagged, TopLevel: true, QuietTick: true, StartedAt: 2_000})
+			},
+		},
+		{
 			name: "a turn with no thread has nowhere to point",
 			got: func() (Notification, bool) {
 				return MapTurnRest(TurnRest{Thread: ThreadRef{Title: "orphan"}, TopLevel: true})
@@ -277,6 +474,42 @@ func TestMomentsThatMustNotNotify(t *testing.T) {
 			name: "a provider exit with no thread",
 			got: func() (Notification, bool) {
 				return MapProviderExit(ProviderExit{})
+			},
+		},
+		{
+			name: "a failed start with no thread",
+			got: func() (Notification, bool) {
+				return MapSessionStartFailed(SessionStartFailed{})
+			},
+		},
+		{
+			name: "a session start with no thread",
+			got: func() (Notification, bool) {
+				return MapSessionStarted(SessionStarted{FailureRaised: true})
+			},
+		},
+		{
+			name: "a session start with no failure to withdraw",
+			got: func() (Notification, bool) {
+				return MapSessionStarted(SessionStarted{ThreadID: threadID})
+			},
+		},
+		{
+			name: "a failing watch with no thread",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{WakeID: "wake-9", Label: "inbox"})
+			},
+		},
+		{
+			name: "a failing watch with no id cannot be retracted later",
+			got: func() (Notification, bool) {
+				return MapWatchFailing(WatchFailing{Thread: thread(), Label: "inbox"})
+			},
+		},
+		{
+			name: "a recovered watch with no id",
+			got: func() (Notification, bool) {
+				return MapWatchRecovered(WatchRecovered{})
 			},
 		},
 		{
@@ -343,6 +576,11 @@ func TestRedactionKeepsContentOutOfEveryBody(t *testing.T) {
 			return MapTurnRest(TurnRest{Thread: loud, TopLevel: true, Failed: true})
 		},
 		func() (Notification, bool) { return MapProviderExit(ProviderExit{Thread: loud}) },
+		func() (Notification, bool) { return MapSessionStartFailed(SessionStartFailed{Thread: loud}) },
+		func() (Notification, bool) {
+			return MapWatchFailing(WatchFailing{Thread: loud, WakeID: "wake-9", Label: "inbox",
+				Failure: WatchFailure{Cause: WatchExitStatus, ExitCode: 1}})
+		},
 		func() (Notification, bool) {
 			return MapApproval(ApprovalMoment{Thread: loud, RequestID: "req-7", ToolName: "Bash"})
 		},
@@ -673,8 +911,17 @@ func TestAHiddenThreadIsMarkedOnEveryThreadScopedSend(t *testing.T) {
 			return MapTurnRest(TurnRest{Thread: hidden, TopLevel: true, Failed: true})
 		}},
 		{"provider exited", func() (Notification, bool) { return MapProviderExit(ProviderExit{Thread: hidden}) }},
+		{"start failed", func() (Notification, bool) {
+			return MapSessionStartFailed(SessionStartFailed{Thread: hidden})
+		}},
+		{"watch failing", func() (Notification, bool) {
+			return MapWatchFailing(WatchFailing{Thread: hidden, WakeID: "wake-9", Label: "inbox"})
+		}},
 		{"approval needed", func() (Notification, bool) {
 			return MapApproval(ApprovalMoment{Thread: hidden, RequestID: "req-7", ToolName: "Bash"})
+		}},
+		{"question waiting", func() (Notification, bool) {
+			return MapQuestion(QuestionMoment{Thread: hidden, RequestID: "ask-3"})
 		}},
 	}
 	for _, tt := range sends {

@@ -92,6 +92,15 @@ func (h *Hub) Since(cursor int64, watched func(itemID string) bool) ([]Transitio
 	return matched, h.seq, gap
 }
 
+// Head is the sequence of the last recorded transition: a cursor from which
+// Since reports only what is recorded later.
+func (h *Hub) Head() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seedLocked()
+	return h.seq
+}
+
 // Wait returns a channel that closes when the next transition is recorded.
 func (h *Hub) Wait() <-chan struct{} {
 	h.mu.Lock()

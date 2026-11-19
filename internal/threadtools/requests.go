@@ -3,6 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -12,8 +13,10 @@ import (
 // tools that work on requests rather than on threads.
 
 type replyArgs struct {
-	Token string `json:"token"`
-	Text  string `json:"text"`
+	Token    string   `json:"token"`
+	Text     string   `json:"text"`
+	Decision string   `json:"decision"`
+	Answers  []string `json:"answers"`
 }
 
 type replyResult struct {
@@ -24,7 +27,9 @@ type replyResult struct {
 	Late           bool   `json:"late,omitempty"`
 	SourceThreadID string `json:"source_thread_id,omitempty"`
 	SourceComputer string `json:"source_computer,omitempty"`
-	Note           string `json:"note,omitempty"`
+	// Prompt marks an answer to a worker's question or approval.
+	Prompt bool   `json:"prompt,omitempty"`
+	Note   string `json:"note,omitempty"`
 }
 
 func (c *session) reply(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -40,15 +45,37 @@ func (c *session) reply(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkText(text, "text"); err != nil {
 		return nil, err
 	}
-	ack, err := c.app.Reply(ctx, c.caller, ReplyCall{Token: token, Text: text})
+	decision := trim(args.Decision)
+	switch decision {
+	case "", DecisionAllow, DecisionDeny:
+	default:
+		return nil, invalidf("decision is allow or deny.")
+	}
+	if len(args.Answers) > MaxReplyAnswers {
+		return nil, invalidf("answers holds at most %d answers, one per question.", MaxReplyAnswers)
+	}
+	answers := make([]string, 0, len(args.Answers))
+	for _, answer := range args.Answers {
+		answer = trim(answer)
+		if err := checkText(answer, "each answer"); err != nil {
+			return nil, err
+		}
+		answers = append(answers, answer)
+	}
+	ack, err := c.app.Reply(ctx, c.caller, ReplyCall{Token: token, Text: text, Decision: decision, Answers: answers})
 	if err != nil {
 		return nil, err
 	}
 	result := replyResult{
 		Token: ack.Token, Accepted: ack.Accepted, State: ack.State, Revision: ack.Revision,
 		Late: ack.Late, SourceThreadID: ack.SourceThreadID, SourceComputer: ack.SourceComputer,
+		Prompt: ack.Prompt,
 	}
 	switch {
+	case ack.Prompt && !ack.Accepted:
+		result.Note = "You already answered that worker's prompt; the earlier answer stands."
+	case ack.Prompt:
+		result.Note = "Your answer reached the worker's open prompt, and it carries on from there."
 	case !ack.Accepted:
 		result.Note = "This token was already answered with the same text; the earlier reply stands. Reply once per token."
 	case ack.Late:
@@ -71,13 +98,18 @@ type statusArgs struct {
 
 type statusResult struct {
 	Requests []RequestState `json:"requests,omitempty"`
-	Threads  []ThreadState  `json:"threads,omitempty"`
-	WokeOn   string         `json:"woke_on,omitempty"`
-	TimedOut bool           `json:"timed_out,omitempty"`
-	More     bool           `json:"more,omitempty"`
-	Cursor   string         `json:"cursor,omitempty"`
-	File     *ExportFile    `json:"file,omitempty"`
-	Note     string         `json:"note,omitempty"`
+	// Wakes is the caller's loops and watches, on the first page of a
+	// listing only.
+	Wakes   []WakeState   `json:"wakes,omitempty"`
+	Threads []ThreadState `json:"threads,omitempty"`
+	// Errors names each computer a thread_ids wait could not read.
+	Errors   []errorRow  `json:"errors,omitempty"`
+	WokeOn   string      `json:"woke_on,omitempty"`
+	TimedOut bool        `json:"timed_out,omitempty"`
+	More     bool        `json:"more,omitempty"`
+	Cursor   string      `json:"cursor,omitempty"`
+	File     *ExportFile `json:"file,omitempty"`
+	Note     string      `json:"note,omitempty"`
 }
 
 func (c *session) status(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -205,182 +237,27 @@ func clipAnswers(requests []RequestState, budget int, page cursor, tokens []stri
 	return clipped
 }
 
-// statusThreads answers the thread_ids half of thread_status. A thread is
-// addressed by its id wherever it lives, so the ids are resolved first and
-// then grouped by the computer that holds them: this computer's run here,
-// and each other computer's are forwarded to it as one thread_status call
-// of its own.
-func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) (any, error) {
-	targets := make([]Target, 0, len(args.ThreadIDs))
-	ids := make([]string, 0, len(args.ThreadIDs))
-	for _, ref := range args.ThreadIDs {
-		target, err := c.resolve(ctx, ref, "")
-		if err != nil {
-			return nil, err
-		}
-		if target.ThreadID == c.caller.ThreadID {
-			return nil, publicf(CodeSelfSend, "A thread cannot watch itself. Watch the threads you started, or use thread_remind to wake yourself later.")
-		}
-		targets = append(targets, target)
-		ids = append(ids, target.ThreadID)
-	}
-	if duplicate, found := dedupe(ids); found {
-		return nil, invalidf("thread %s is listed twice. Each thread may appear once per call.", duplicate)
-	}
-	states, woke, err := c.watchThreadGroups(ctx, targets, groupTargetsByComputer(targets), wait, args.AfterRevision)
-	if err != nil {
-		return nil, err
-	}
-	// A wait of zero is a read, not a wait that ran out.
-	result := statusResult{WokeOn: woke, TimedOut: woke == "" && wait > 0}
-	byID := make(map[string]ThreadState, len(states))
-	for _, state := range states {
-		byID[state.ThreadID] = state
-	}
-	// The rows come back in the order the call listed them, whichever
-	// computer answered for each.
-	for _, id := range ids {
-		state, found := byID[id]
-		if !found {
-			continue
-		}
-		// Resting is derived here from the state, so a row cannot report
-		// a state and a restedness that disagree.
-		state.Resting = Resting(state.State)
-		result.Threads = append(result.Threads, state)
-	}
-	if result.TimedOut {
-		result.Note = "None of those threads rested or became blocked within the wait. They are still as reported."
-	}
-	return result, nil
-}
-
-// threadIDs reads one group's thread ids out of the targets it indexes.
-func threadIDs(targets []Target, group targetGroup) []string {
-	ids := make([]string, 0, len(group.indexes))
-	for _, index := range group.indexes {
-		ids = append(ids, targets[index].ThreadID)
-	}
-	return ids
-}
-
-// threadWatchAnswer is one group's half of the call.
-type threadWatchAnswer struct {
-	threads []ThreadState
-	wokeOn  string
-	err     error
-}
-
-// watchThreadGroups runs every group's wait at once and ends the call on
-// the first group that reports something: the agent watching three threads
-// wants the one that rested, not the one it happened to list first. The
-// groups that were still waiting are cancelled and read once more without
-// a wait, so every thread the call named is still reported.
-func (c *session) watchThreadGroups(ctx context.Context, targets []Target, groups []targetGroup, wait int, after int64) ([]ThreadState, string, error) {
-	if len(groups) == 1 {
-		answer := c.watchThreadGroup(ctx, targets, groups[0], wait, after)
-		return answer.threads, answer.wokeOn, answer.err
-	}
-	racing, cancel := context.WithCancel(ctx)
-	defer cancel()
-	answers := make([]threadWatchAnswer, len(groups))
-	finished := make(chan int, len(groups))
-	for index, group := range groups {
-		go func(slot int, group targetGroup) {
-			answers[slot] = c.watchThreadGroup(racing, targets, group, wait, after)
-			finished <- slot
-		}(index, group)
-	}
-	var failure error
-	woke := ""
-	for range groups {
-		slot := <-finished
-		answer := answers[slot]
-		switch {
-		case answer.err != nil:
-			// A failure this call caused by cancelling the group is not a
-			// failure of the call: that group is read again below.
-			if failure == nil && racing.Err() == nil {
-				failure = answer.err
-				cancel()
-			}
-		case answer.wokeOn != "" && woke == "":
-			woke = answer.wokeOn
-			cancel()
+// clipWakeOutputs keeps the listing's kept watch outputs inside the budget,
+// each clipped to an equal share of it. It reports whether any wake keeps an
+// output and whether one was clipped. The rows are the caller's own.
+func clipWakeOutputs(wakes []WakeState, budget int) (kept, clipped bool) {
+	count := 0
+	for _, wake := range wakes {
+		if wake.LastOutput != "" {
+			count++
 		}
 	}
-	if failure != nil {
-		return nil, "", failure
+	if count == 0 {
+		return false, false
 	}
-	states := make([]ThreadState, 0, len(groups))
-	for index := range answers {
-		if answers[index].err != nil {
-			// Cancelled mid-wait. Its threads are read as they stand now,
-			// on the call's own context rather than the cancelled one.
-			answers[index] = c.watchThreadGroup(ctx, targets, groups[index], 0, after)
-			if answers[index].err != nil {
-				return nil, "", answers[index].err
-			}
-		}
-		states = append(states, answers[index].threads...)
-	}
-	return states, woke, nil
-}
-
-// watchThreadGroup answers one group: this computer's threads through the
-// app, another computer's through one forwarded thread_status call.
-func (c *session) watchThreadGroup(ctx context.Context, targets []Target, group targetGroup, wait int, after int64) threadWatchAnswer {
-	ids := threadIDs(targets, group)
-	if group.local {
-		report, err := c.app.RequestStates(ctx, c.caller, StatusCall{ThreadIDs: ids, WaitSeconds: wait, AfterRevision: after})
-		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		return threadWatchAnswer{threads: c.stampThreads(group.computer, report.Threads), wokeOn: report.WokeOn}
-	}
-	peer, err := c.app.Peer(ctx, group.computer.ID)
-	if err != nil {
-		return threadWatchAnswer{err: err}
-	}
-	remaining := wait
-	for {
-		slice := remaining
-		if slice > MaxForwardedWaitSeconds {
-			slice = MaxForwardedWaitSeconds
-		}
-		args, err := json.Marshal(map[string]any{
-			"thread_ids":     ids,
-			"wait_seconds":   slice,
-			"after_revision": after,
-		})
-		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		raw, err := peer.Query(ctx, "thread_status", args)
-		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		var result statusResult
-		if err := peerResult(raw, &result); err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		remaining -= slice
-		if result.WokeOn != "" || remaining <= 0 {
-			return threadWatchAnswer{threads: c.stampThreads(group.computer, result.Threads), wokeOn: result.WokeOn}
+	share := max(budget/count, MinShowBytes)
+	for index := range wakes {
+		if len(wakes[index].LastOutput) > share {
+			wakes[index].LastOutput = clipBytes(wakes[index].LastOutput, share)
+			clipped = true
 		}
 	}
-}
-
-// stampThreads writes this computer's view of the answering computer onto
-// every row. The destination answers in its own shape and does not know
-// what this computer calls it.
-func (c *session) stampThreads(computer Computer, threads []ThreadState) []ThreadState {
-	out := slices.Clone(threads)
-	for index := range out {
-		id, name := c.stamp(Computer{ID: computer.ID, Name: computer.Name})
-		out[index].ComputerID, out[index].Computer = id, name
-	}
-	return out
+	return true, clipped
 }
 
 func (c *session) listRequests(ctx context.Context, rawCursor string, budget int) (any, error) {
@@ -398,6 +275,24 @@ func (c *session) listRequests(ctx context.Context, rawCursor string, budget int
 		result.Requests = []RequestState{}
 	}
 	result.Note = "Open requests first, then newest first. These are every request this thread has made; you never have to remember a token."
+	if page.Offset == 0 {
+		wakes, err := c.app.ListWakes(ctx, c.caller)
+		if err != nil {
+			return nil, err
+		}
+		for _, wake := range wakes {
+			result.Wakes = append(result.Wakes, wake.stamped())
+		}
+		if len(result.Wakes) > 0 {
+			result.Note = appendNote(result.Note, "wakes lists this thread's loops and watches with their next fire, last outcome and missed count; stop one with thread_cancel label.")
+		}
+		if kept, clipped := clipWakeOutputs(result.Wakes, budget); kept {
+			result.Note = appendNote(result.Note, "A watch's last_output is a wake of it that never reached you: read it for the event you missed.")
+			if clipped {
+				result.Note = appendNote(result.Note, fmt.Sprintf("A last_output was longer than its share of max_bytes and is clipped here; raise max_bytes, up to %d, to read more of it.", MaxShowBytes))
+			}
+		}
+	}
 	// A listing carries thirty answers, so each gets a share of the budget
 	// the same way a multi-token read does. Without this one long answer
 	// would spend the whole reply.
@@ -424,11 +319,14 @@ func (c *session) stampRequests(requests []RequestState) {
 type cancelArgs struct {
 	Token      string `json:"token"`
 	ThreadID   string `json:"thread_id"`
+	Label      string `json:"label"`
 	ComputerID string `json:"computer_id"`
 }
 
 type cancelResult struct {
 	Token      string `json:"token,omitempty"`
+	Label      string `json:"label,omitempty"`
+	Kind       string `json:"kind,omitempty"`
 	ThreadID   string `json:"thread_id,omitempty"`
 	ComputerID string `json:"computer_id,omitempty"`
 	Computer   string `json:"computer,omitempty"`
@@ -445,9 +343,18 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := c.checkComputerArg(args.ComputerID); err != nil {
 		return nil, err
 	}
-	token, ref := trim(args.Token), trim(args.ThreadID)
-	if count := countSet(token != "", ref != ""); count != 1 {
-		return nil, invalidf("Pass exactly one of token, to cancel a request you made, or thread_id, to interrupt a thread you started. This call passed %d.", count)
+	token, ref, label := trim(args.Token), trim(args.ThreadID), trim(args.Label)
+	if count := countSet(token != "", ref != "", label != ""); count != 1 {
+		return nil, invalidf("Pass exactly one of token, to cancel a request you made, thread_id, to interrupt a thread you started, or label, to stop one of your loops or watches. This call passed %d.", count)
+	}
+	if label != "" {
+		if Forwarded(ctx) {
+			return nil, invalidf("A loop or watch belongs to the calling thread on its own computer; cancel it there.")
+		}
+		if args.ComputerID != "" {
+			return nil, invalidf("label stops a loop or watch of this thread and takes no computer_id.")
+		}
+		return c.stopWake(ctx, label, "")
 	}
 	call := CancelCall{Token: token}
 	if ref != "" {
@@ -468,7 +375,7 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 	return cancelResult{
 		Token: report.Token, ThreadID: report.ThreadID, ComputerID: id, Computer: name,
 		State: report.State, Effect: report.Effect,
-		Note: cancelNote(report.Effect),
+		Note: cancelNote(report.Effect, report.RemoteRequest),
 	}, nil
 }
 
@@ -512,20 +419,33 @@ func (c *session) remind(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, err
 	}
 	result := c.ack(ack, "remind")
+	result.NextFire = unixMsToRFC3339(due)
 	result.Note = "This thread will wake with that note at " + unixMsToRFC3339(due) + ". End your turn: the reminder starts a new one. Stop it with thread_cancel token " + ack.Token + "."
 	return result, nil
 }
 
 // cancelNote says what the cancel did, in the effect's own words, so a
 // cancel that found nothing running is not reported as an interruption.
-func cancelNote(effect string) string {
+// remoteRequest is CancelReport.RemoteRequest.
+func cancelNote(effect string, remoteRequest bool) string {
 	switch effect {
 	case EffectNothing:
+		if remoteRequest {
+			return "Nothing could be stopped for this request from here; its message may still be read by that thread."
+		}
 		return "Nothing was running or queued for this, so nothing was stopped. The request is settled as reported."
 	case EffectReminderDropped:
 		return "The reminder was dropped; it will not fire."
+	case EffectWakeCancelled:
+		return "It will not fire or run again. A wake it already queued still arrives."
 	case EffectQueuedRemoved:
 		return "The queued message was removed before it ran; nothing was interrupted."
+	case EffectLeftUnread:
+		return "The request was cancelled before the thread read it; the thread may still read and act on the message, and no turn was interrupted."
+	case EffectLeftRunning:
+		return "The request is cancelled and no answer will come, but its message had already reached the thread. The thread keeps working on its current turn, which this request did not start, and may still act on the message; nothing was interrupted."
+	case EffectThreadStopped:
+		return "The thread you spawned was stopped: its session ended; its queued messages, loops, watches, reminders and requests were cancelled; the workflow runs that report to it were paused, to be resumed from the workflows view; and the threads it spawned were stopped the same way. Nothing it did was undone, and no message about it will come. A later message starts it again."
 	default:
 		return "This interrupted the work; it did not undo anything already done."
 	}

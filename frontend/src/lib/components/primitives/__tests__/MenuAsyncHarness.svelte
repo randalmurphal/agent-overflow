@@ -1,8 +1,8 @@
 <!--
   Harness for Menu's async-hydrated-items case. Renders a loading row
   first; when `hydrated` flips to `true`, real MenuItems replace the
-  placeholder. Mirrors how DiscussionsSubmenu and a cold-cache
-  ProviderModelsSubmenu hydrate: the Menu mounts before any items
+  placeholder. Mirrors how a cold-cache ProviderModelsSubmenu
+  hydrates: the Menu mounts before any items
   exist, then items swap in after a binding round-trip.
 -->
 <script lang="ts">

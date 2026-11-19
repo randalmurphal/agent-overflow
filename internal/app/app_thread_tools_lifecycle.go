@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // Stopping a request, and what happens to one when either of its threads
@@ -21,9 +22,55 @@ import (
 // The settlement comes FIRST so the turn observer, which settles only a
 // `running` receipt, cannot race the interrupt and report the interrupted
 // turn as this request's answer. Once it is settled the stop always runs to
-// the end. A repeated cancel of a cancelled receipt stops only what the
-// receipt names: the turn bound to it, or its message while still queued.
+// the end, and a repeated cancel of a cancelled receipt stops whatever the
+// first one did not reach: the turn bound to it, or its message while still
+// queued.
 func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, error) {
+	return a.stopThreadRequestWorkFor(ctx, token, threadRequestSenderCancel)
+}
+
+// Settlement answers of a cancelled request: the sender's own cancel, and a
+// person's Stop in the sender's Agents tray, which the sender's agent is
+// woken with (its notify stays armed) so it knows the stop was not its own.
+const (
+	threadRequestSenderCancel = "The sender cancelled this request."
+	threadRequestUserStop     = "The user stopped it from the Agents tray; you did not cancel it."
+	threadRequestUserWithdrew = "The user withdrew it from the recipient's queue before its agent read it."
+)
+
+// stopFromAgentsTray is the user's Stop of a request in its caller's Agents
+// tray. It is the user's stop, so the stopped thread's timeline says so, and
+// it carries no kill consent: the tray stops the request's turn, not the
+// background agents that turn started.
+func stopFromAgentsTray() turnStop {
+	return turnStop{
+		label: triage.StoppedByUser,
+		cause: threadtools.Cause{Code: threadtools.CauseTrayStop},
+	}
+}
+
+// requestCancelStop is who a request's cancel names as stopping its turn,
+// for any other request that turn was answering: the user for a Stop from
+// the Agents tray, otherwise the thread that sent the request.
+func (a *App) requestCancelStop(receipt store.ThreadRequestReceipt, answer string) turnStop {
+	if answer == threadRequestUserStop {
+		return stopFromAgentsTray()
+	}
+	return a.receiptCanceller(receipt)
+}
+
+// stopThreadRequestWorkFor is stopThreadRequestWork with the answer the
+// cancelled receipt settles with.
+func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string) (string, error) {
+	return a.stopThreadRequestWorkBy(ctx, token, answer, func(receipt store.ThreadRequestReceipt) turnStop {
+		return a.requestCancelStop(receipt, answer)
+	})
+}
+
+// stopThreadRequestWorkBy is stopThreadRequestWorkFor with who stops the
+// request's turn named by stopOf, for a stop of a whole thread that settles
+// requests other threads made of it.
+func (a *App) stopThreadRequestWorkBy(ctx context.Context, token, answer string, stopOf func(store.ThreadRequestReceipt) turnStop) (string, error) {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
 		return "", err
@@ -32,26 +79,26 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		return threadtools.EffectNothing, nil
 	}
 	state := receipt.State
+	if hook := a.cancelReadForTest; hook != nil {
+		hook(token)
+	}
 	repeated := false
+	stop := stopOf(receipt)
 	switch {
 	case slices.Contains(store.ThreadReceiptOpenStates(), state):
-		// The door takes the settle lock for the settlement and releases it
-		// before the queue and provider work below: both take thread locks,
-		// and neither settles anything.
-		//
-		// The sender's report says what happened, so a request of this
-		// computer's own settles with its wake disarmed, in the settlement's
-		// own write: a cancel that fails leaves the wake armed for the work
-		// still running. A paired computer's request disarms on its side
-		// once this cancel answers it.
-		if err := a.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-			State:      store.ThreadReceiptCancelled,
-			Answer:     []byte("The sender cancelled this request."),
-			AnswerKind: store.ThreadAnswerError,
-			DisarmWake: true,
-		}); err != nil {
+		settled, err := a.cancelOpenReceipt(token, answer, stop, &receipt)
+		if err != nil {
 			return "", err
 		}
+		if !settled {
+			// A receipt something else settled first (a reply, a turn end,
+			// an earlier cancel), before the read above or after it, has
+			// nothing left to stop: its turn, still running or not, is no
+			// longer this request's work, and the cancel that settled it
+			// owns what it armed.
+			return threadtools.EffectNothing, nil
+		}
+		state = receipt.State
 	case state == store.ThreadReceiptCancelled:
 		// A turn bound to the receipt means it was running when cancelled,
 		// and that turn is the one to stop. Otherwise its message may still
@@ -65,32 +112,29 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 	default:
 		return threadtools.EffectNothing, nil
 	}
+	if receipt.TargetThreadID == "" {
+		// Settled while the attempt that accepted it was still making its
+		// thread: that attempt's naming write loses and it takes the thread
+		// back, so no message or turn of this request exists to stop.
+		return threadtools.EffectNothing, nil
+	}
 	ctx = context.WithoutCancel(ctx)
 
-	switch state {
-	case store.ThreadReceiptAccepted:
+	if state == store.ThreadReceiptAccepted {
 		// The message was still on the queue when the receipt was read, so
 		// the first thing to try is taking it back.
 		removal, err := a.removeQueuedItem(ctx, receipt.TargetThreadID, threadRequestSendID(token))
+		if err != nil || removal == queueRemovalRemoved {
+			a.disarmRequestCancel(token)
+		}
 		if err != nil {
 			return "", err
 		}
 		if removal == queueRemovalRemoved {
 			return threadtools.EffectQueuedRemoved, nil
 		}
-		if repeated {
-			return threadtools.EffectNothing, nil
-		}
-		// It is not on the queue any more: the dispatch claimed it while the
-		// cancel was running, or it reached the provider before the receipt
-		// moved to `running`. Either way a turn is starting from it, and
-		// stopping that turn is what the cancel promised.
-		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token), a.receiptCanceller(receipt))
-	case store.ThreadReceiptRunning:
-		index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID)
-		if !ok {
-			return threadtools.EffectNothing, nil
-		}
+	}
+	if index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID); ok {
 		turn, found, err := a.store.GetTurnByThreadIndex(receipt.TargetThreadID, index)
 		if err != nil {
 			return "", err
@@ -107,9 +151,65 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		if found && turn.CompletedAt != nil {
 			return threadtools.EffectNothing, nil
 		}
-		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index, a.receiptCanceller(receipt))
+		// A message drained into a turn already running joined a turn the
+		// person or another request started; a token never interrupts it.
+		if !receipt.OwnTurn {
+			return threadtools.EffectLeftRunning, nil
+		}
+		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index, stop)
 	}
-	return threadtools.EffectNothing, nil
+	if repeated {
+		return threadtools.EffectNothing, nil
+	}
+	// No delivery bound it: the dispatch claimed it while the cancel was
+	// running, it reached the provider before the receipt moved to
+	// `running`, or the provider has it and no turn has read it yet.
+	return a.cancelUndeliveredRequest(ctx, token, receipt.TargetThreadID, state, stop)
+}
+
+// cancelOpenReceipt settles an open receipt cancelled and, when no delivery
+// has bound it, arms the cancel for the delivery still to come
+// (armRequestCancel). The receipt it settled from replaces *receipt: read
+// under the token's settle lock, under which every delivery binds, it names
+// the turn a delivery bound, written or kept, and none binds after it. A
+// cancel that does not settle the receipt arms and disarms nothing.
+func (a *App) cancelOpenReceipt(token, answer string, stop turnStop, receipt *store.ThreadRequestReceipt) (bool, error) {
+	var work threadSettlementWork
+	settled, err := func() (bool, error) {
+		unlock := a.threadRequestSettleLock(token)
+		defer unlock()
+		current, found, err := a.deliveredReceiptLocked(token)
+		if err != nil || !found {
+			return false, err
+		}
+		var settled bool
+		// The sender's report says what happened, so a request of this
+		// computer's own that its sender cancelled settles with its wake
+		// disarmed, in the settlement's own write: a cancel that fails
+		// leaves the wake armed for the work still running. A paired
+		// computer's request disarms on its side once this cancel answers
+		// it. A person's Stop from the tray leaves it armed, so the sender's
+		// agent learns the stop was not its own.
+		work, settled, err = a.settleReadReceiptLocked(current, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptCancelled,
+			Answer:     []byte(answer),
+			AnswerKind: store.ThreadAnswerError,
+			DisarmWake: answer == threadRequestSenderCancel,
+		}, dropScratchThread, nil)
+		if err != nil || !settled {
+			return false, err
+		}
+		if current.TurnID == "" && current.TargetThreadID != "" {
+			a.armRequestCancel(token, current.TargetThreadID, stop)
+		}
+		*receipt = current
+		return true, nil
+	}()
+	// The settle lock is released before this and the queue and provider
+	// work the caller does: both take thread locks, and neither settles
+	// anything.
+	a.runThreadSettlementWork(work)
+	return settled, err
 }
 
 // receiptCanceller is the stop of a request cancelled by its own sender.
@@ -123,21 +223,97 @@ func (a *App) receiptCanceller(receipt store.ThreadRequestReceipt) turnStop {
 	return stopByThread(receipt.SourceThreadTitle, receipt.SourceThreadID, computer)
 }
 
-// interruptDispatchedRequest stops the turn a request's message started, for
-// a cancel that found nothing left to take off the queue. The send id names
-// the message, and the row it produced names the turn: without that the
-// cancel would report that there was nothing to stop while the turn it was
-// asked to stop ran on.
-func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID string, stop turnStop) (string, error) {
-	record, found, err := a.findRecordedSend(threadID, sendID)
+// requestCancel is a cancel waiting on the delivery of its request's
+// message: the message is with the provider and no delivery has said which
+// turn reads it. The delivery decides (cancelOnDelivery): a turn that opened
+// for the message is interrupted, and one it was drained into is left
+// running.
+type requestCancel struct {
+	threadID string
+	stop     turnStop
+}
+
+// armRequestCancel holds a cancel for token's delivery. The cancel's
+// settlement arms it, under the settle lock every delivery binds under, so
+// a delivery either bound the receipt first, and the cancel reads its turn,
+// or finds the cancel armed. Caller holds the token's settle lock.
+func (a *App) armRequestCancel(token, threadID string, stop turnStop) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if a.threadRequests.cancels == nil {
+		a.threadRequests.cancels = make(map[string]requestCancel)
+	}
+	a.threadRequests.cancels[token] = requestCancel{threadID: threadID, stop: stop}
+}
+
+// disarmRequestCancel takes back token's held cancel, reporting it.
+func (a *App) disarmRequestCancel(token string) (requestCancel, bool) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	c, ok := a.threadRequests.cancels[token]
+	delete(a.threadRequests.cancels, token)
+	return c, ok
+}
+
+// disarmRequestCancels drops the held cancels of a thread whose session
+// ended: no delivery is coming, and a message given back is a new delivery
+// with nothing to stop.
+func (a *App) disarmRequestCancels(threadID string) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	for token, c := range a.threadRequests.cancels {
+		if c.threadID == threadID {
+			delete(a.threadRequests.cancels, token)
+		}
+	}
+}
+
+// cancelOnDelivery applies the cancel held for token to the delivery its
+// receipt, settled cancelled, could not bind: a turn that opened for the
+// message is interrupted, off the provider read loop this runs on. Caller
+// holds the token's settle lock.
+func (a *App) cancelOnDelivery(token, threadID string, turnIndex int, ownTurn bool) {
+	c, ok := a.disarmRequestCancel(token)
+	if !ok || !ownTurn || c.threadID != threadID {
+		return
+	}
+	a.goThreadRequestSettling(func() {
+		if _, err := a.interruptRequestTurn(a.lifeCtx(), threadID, turnIndex, c.stop); err != nil {
+			log.Printf("thread tools: stop the turn cancelled request %s opened on %s: %v", token, threadID, err)
+		}
+	})
+}
+
+// cancelUndeliveredRequest is a cancel's effect on a request whose message
+// no delivery has bound a turn for. A message never sent, or restored into
+// the composer, has nothing to stop. A message written with no turn running
+// reserved its own (PendingSendOpensTurn). Otherwise the provider has the
+// message and has not said which turn reads it, and the turn running
+// meanwhile is someone else's: the cancel stays armed for the delivery
+// (cancelOnDelivery) and the request is left unread.
+func (a *App) cancelUndeliveredRequest(ctx context.Context, token, threadID string, state string, stop turnStop) (string, error) {
+	record, found, err := a.findRecordedSend(threadID, threadRequestSendID(token))
 	if err != nil {
+		a.disarmRequestCancel(token)
 		return "", err
 	}
 	if !found || !record.dispatched {
-		// The message was never sent, or it was restored into the composer.
-		return threadtools.EffectNothing, nil
+		if state == store.ThreadReceiptAccepted {
+			a.disarmRequestCancel(token)
+			return threadtools.EffectNothing, nil
+		}
+		return threadtools.EffectLeftUnread, nil
 	}
-	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex, stop)
+	// A message written with no turn running reserved its own turn, as the
+	// send that binds it records (requestMessage): once open, that turn is
+	// the request's. Before it opens, its delivery stops it.
+	if a.triage != nil {
+		if turnIndex, opens := a.triage.PendingSendOpensTurn(threadID, record.item.ID); opens && a.triage.OpenTurnIndex(threadID) == turnIndex {
+			a.disarmRequestCancel(token)
+			return a.interruptRequestTurn(ctx, threadID, turnIndex, stop)
+		}
+	}
+	return threadtools.EffectLeftUnread, nil
 }
 
 // interruptRequestTurn interrupts one thread only while the named turn is the
@@ -247,7 +423,7 @@ func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error
 // It runs BEFORE the rows are deleted, because the settlement reads the
 // receipt and the collection writes the caller's row; afterwards there would
 // be nothing to say and nobody to say it to.
-func (a *App) settleReceiptsForThread(threadID, state, reason string) {
+func (a *App) settleReceiptsForThread(threadID string, settlement store.ThreadRequestSettlement) {
 	receipts, err := a.store.ListThreadRequestReceiptsForThread(threadID)
 	if err != nil {
 		log.Printf("thread tools: list receipts for %s: %v", threadID, err)
@@ -262,13 +438,9 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 		// thread's destruction and are running inside it: deleting it again
 		// from the settlement would wait for the thread action lock the
 		// caller already holds, which is nobody's to release.
-		work, err := a.settleThreadReceiptNoScratch(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-			State:      state,
-			Answer:     []byte(reason),
-			AnswerKind: store.ThreadAnswerError,
-		})
+		work, _, err := a.settleThreadReceiptNoScratch(receipt.Token, store.ThreadReceiptOpenStates(), settlement)
 		if err != nil {
-			log.Printf("thread tools: settle receipt %s as %s: %v", receipt.Token, state, err)
+			log.Printf("thread tools: settle receipt %s as %s: %v", receipt.Token, settlement.State, err)
 			continue
 		}
 		works = append(works, work)
@@ -289,7 +461,15 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 // half: the thread is about to stop existing, so it is both a caller whose
 // requests must be cancelled and a target whose receipts must be settled.
 func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID string) (undelivered, err error) {
-	a.settleReceiptsForThread(threadID, store.ThreadReceiptErrored, "The thread was deleted before it answered.")
+	// The delete cascades the rows away whether or not this cancel lands.
+	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was deleted"); err != nil {
+		log.Printf("agent wakes: %v", err)
+	}
+	a.settleReceiptsForThread(threadID, store.ThreadRequestSettlement{
+		State:      store.ThreadReceiptErrored,
+		Answer:     []byte("The thread was deleted before it answered."),
+		AnswerKind: store.ThreadAnswerError,
+	})
 	return a.cancelThreadRequests(ctx, threadID)
 }
 
@@ -298,12 +478,15 @@ func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID s
 // usual; nothing is re-addressed, because the request was made of a thread on
 // this computer and that thread is gone from it.
 func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, destination string) (undelivered, err error) {
-	reason := "The thread was moved to another computer before it answered."
-	if destination != "" {
-		reason = "The thread was moved to " + destination + " before it answered."
+	// Loops and watches are this computer's clock and processes; they do
+	// not travel with the conversation.
+	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer"); err != nil {
+		log.Printf("agent wakes: %v", err)
 	}
-	a.settleReceiptsForThread(threadID, store.ThreadReceiptInterrupted, reason)
-	return a.cancelThreadRequests(ctx, threadID)
+	withdrawErr := a.withdrawCancelledAgentWakes(threadID)
+	a.settleReceiptsForThread(threadID, interruptedSettlement(threadtools.Cause{Code: threadtools.CauseMoved, Arg: destination}, ""))
+	undelivered, err = a.cancelThreadRequests(ctx, threadID)
+	return undelivered, errors.Join(withdrawErr, err)
 }
 
 // threadRequestDestinationName names the computer a moved thread went to, for

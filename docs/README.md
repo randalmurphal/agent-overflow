@@ -38,6 +38,8 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`turn-lifecycle.md`](architecture/turn-lifecycle.md) | The three-lifecycle mental model (tool / task / turn). Read before touching provider, triage, or any turn-state UI. |
 | [`user-message-ordering.md`](architecture/user-message-ordering.md) | Send identity, backend admission, frozen confirmation placement, and recovery without moving prompts below their responses. |
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Current application composition, ownership and Wails wire compatibility. |
+| [`session-runtime-extraction.md`](architecture/session-runtime-extraction.md) | The `sessionruntime.Manager` transaction boundary and the atomic invariants that keep the session registry under one lock. Implemented. |
+| [`provider-account-manager-extraction.md`](architecture/provider-account-manager-extraction.md) | The provider-account Manager extraction and the Wails methods it keeps wire-compatible. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
 | [`forge-transport.md`](architecture/forge-transport.md) | Direct HTTPS to GitHub and GitLab with the user's `gh`/`glab` token: credential holder, hosts, typed errors, rate-limit gates, ETag and Range, the HTTP fake, the merged-PR worktree cleanup's reads. |
@@ -61,7 +63,6 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`claude-tui-provider.md`](architecture/claude-tui-provider.md) | The third provider: the real Claude Code TUI in a PTY, with the event stream reconstructed from outside the process. |
 | [`recovery.md`](architecture/recovery.md) | Session recovery on restart, thread switch, disconnect. |
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and edit-and-resend conversation rollback. |
-| [`discussion-deliberation.md`](architecture/discussion-deliberation.md) | Multi-agent discussion coordination FSM. |
 | [`thread-replica-sync.md`](architecture/thread-replica-sync.md) | The `history_rev`/`history_epoch` stamp pair and the IndexedDB thread-window replica that paints before the sync RPC returns. |
 | [`browser-tools.md`](architecture/browser-tools.md) | Built-in browser MCP product contract, lifecycle, authority boundaries, and provider live-apply behavior. |
 | [`in-app-browser-spike.md`](architecture/in-app-browser-spike.md) | Measured Wails-webview versus shared-Chrome decision evidence behind the built-in browser. |
@@ -70,7 +71,7 @@ How the app works today. Under [`architecture/`](architecture/).
 
 | File | 1-line summary |
 |---|---|
-| [`frontend-scroll.md`](architecture/frontend-scroll.md) | The durable scroll contract for chat and discussion panes. Read before touching `ThreadPane`, `MessageTimeline`, or the virtualizer. |
+| [`frontend-scroll.md`](architecture/frontend-scroll.md) | The durable scroll contract for chat panes. Read before touching `ThreadPane`, `MessageTimeline`, or the virtualizer. |
 | [`scroll-contracts.md`](architecture/scroll-contracts.md) | C1–C27: the user-observable scroll behaviors, each with regression provenance and the test that pins it. |
 | [`activity-runs.md`](architecture/activity-runs.md) | One maximal stretch of activity rows as a single timeline row: the nested scroller, its expansion lease, and collapse. |
 | [`timeline-window-pages.md`](architecture/timeline-window-pages.md) | History pages as prose rows plus per-run stubs and the loaded member span; on-demand members, the composable held-window digest, and screen-height fill. |
@@ -90,7 +91,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | File | 1-line summary |
 |---|---|
 | [`workflow-run-map.md`](architecture/workflow-run-map.md) | The run map: waves, nodes, fans, folding, and the follow/scroll contract. Binding on the run-map renderers. |
-| [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns: the wave shape, review and verification patterns, automation wiring, operating knobs. |
+| [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns: the wave shape, review and verification patterns, steering, operating knobs. |
 
 ### Testing and diagnostics
 
@@ -114,8 +115,11 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`agent-visibility.md`](specs/agent-visibility.md) | How subagent work surfaces in the timeline. Partially implemented; unchecked criteria are the open work. |
 | [`code-review.md`](specs/code-review.md) | The review workflow design, signed off 2026-08-23. Not implemented yet. |
 | [`agent-thread-tools.md`](specs/agent-thread-tools.md) | The `ao-thread-tools` MCP server (thirteen tools: search, show, item, options, spawn, send, ask, reply, status, cancel, update, group, remind) and `/side-chat`, locally and across paired computers. Implemented 2026-09-19; unchecked success criteria name what no test covers. |
+| [`agent-workflow-tools.md`](specs/agent-workflow-tools.md) | The `ao-workflow-tools` MCP server: the tool contract agents use to author, run and steer workflows. Implemented 2026-10-13. |
 | [`composer-shell-commands.md`](specs/composer-shell-commands.md) | `!command` in the composer and Run on a shell code block: the app runs it, streams it, and sends the output as a user message. Implemented 2026-11-10. |
 | [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
+| [`markdown-first-party.md`](specs/markdown-first-party.md) | Promoting the markdown renderer to first-party code (streamdown plus absorbed marked). Approved 2026-08-29. |
+| [`embedded-browser.md`](specs/embedded-browser.md) | The embedded native browser pane that replaced the Chrome screencast: platform drivers, recipes, and serve mode's headless tools-only engine. Implemented. |
 | [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible groups of threads inside a project's sidebar list, shown above the pin blocks; members pin individually. Signed off and implemented 2026-09-02. |
 | [`remote-access.md`](specs/remote-access.md) | Remote transport, pairing, Android, previews, and supervised updates; historical implementation notes and outstanding requirements. |
 | [`connected-computers.md`](specs/connected-computers.md) | Approved multi-computer product contract, ownership, portability, and acceptance matrix; implementation in progress. |
@@ -128,8 +132,11 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`pull-requests.md`](specs/pull-requests.md) | Merge readiness, approve and merge in the review pane; the Pull requests page with attention states, "Open with agent" and pipelines; tools as pane kinds. Phase 1 in progress since 2026-10-20. |
 | [`issues.md`](specs/issues.md) | The Issues tool pane for Jira Cloud and Linear: rulings of 2026-11-15, the facts that bind the design, app constraints, the design of each screen and open questions, with a clickable mockup beside it (`issues-mockup.html`). Not implemented. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
+| [`standing-agents.md`](specs/standing-agents.md) | Assistants the user creates: the record, its home and current thread, New Thread, Same Assistant, wake supervisor (remind, loop, watch), agent sidebar row, assistants above projects, discussions removed, workflows to MCP. Signed off 2026-10-10; built in slices. |
+| [`memory.md`](specs/memory.md) | What the app delivers to a session as memory: home, project and user scopes, typed facts and the built index, the write rules, maintenance warnings for assistants, and the shared and provider memory settings. Agreed 2026-10-21. |
 | [`account-auto-switch.md`](specs/account-auto-switch.md) | Switching a provider's selected account within a per-account pool when usage limits approach or refuse a turn, and continuing threads a usage limit stopped. Implemented 2026-11-13. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |
+| [`codex-app-server-sharing.md`](specs/codex-app-server-sharing.md) | Many Codex threads on one app-server: the provider connection/session split, pool key and drain, End Session, crash, identity, and the resumed-thread developer-instructions fix. Design, not scheduled. |
 
 ## References
 
@@ -146,6 +153,7 @@ External repos and tools we track, and how to use them. Under
 | [`codex-browser-parity.md`](references/codex-browser-parity.md) | Exact map from the bundled Codex browser skill API to AO's built-in browser MCP tools and validation. |
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
+| [`dev-server-proxy.md`](references/dev-server-proxy.md) | What a dev server does with the headers a reverse proxy rewrites, and what the preview gateway must send. Verified against Vite 8.2.2. |
 | [`forge-api-measurements.md`](references/forge-api-measurements.md) | Measured GitHub and GitLab API behavior behind the forge transport: process cost, token handoff, rate-limit headers, ETag and Range. |
 | [`tracker-api-measurements.md`](references/tracker-api-measurements.md) | Jira Cloud, Linear and Tempo API behavior behind the Issues spec, the planning poker add-on's calls as measured, and the SQLite and CSP facts that shape dashboards. |
 | [`voice-dictation.md`](references/voice-dictation.md) | Dictation through ChatGPT's transcribe endpoint, read-aloud in the device's voice or an OpenAI voice, and the other options researched. |

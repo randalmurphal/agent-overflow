@@ -45,7 +45,7 @@ func TestScopedNativeBlocksSurviveSessionReplacement(t *testing.T) {
 			emit("first-answer", "original answer", false)
 			emit("first-thought", "original reasoning", true)
 			r.CleanupThread("t1")
-			r.MarkThreadActive("t1")
+			r.MarkThreadActive("t1", "")
 			emit("second-answer", "later answer", false)
 			emit("second-thought", "later reasoning", true)
 			// Snapshot replay must update the matching native item, not add a row.

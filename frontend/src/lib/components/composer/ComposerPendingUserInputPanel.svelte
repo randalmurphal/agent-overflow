@@ -281,6 +281,7 @@
     try {
       await onResolve(new UserInputResponse({
         requestId: request.requestId,
+        occurrence: request.occurrence,
         decision: 'accept',
         answers: toResponseAnswers(request, answersToSubmit),
       }));

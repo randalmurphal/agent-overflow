@@ -44,6 +44,15 @@ type CreateThreadOptions struct {
 	WorkspaceOverride          string `json:"workspaceOverride,omitempty"`          // empty = project.path
 	WorktreePath               string `json:"worktreePath,omitempty"`               // non-empty = inherit existing worktree, skip git ops
 	Branch                     string `json:"branch,omitempty"`                     // non-empty = use directly, skip currentGitBranch lookup
+	// home and helperOfAgentID place the thread outside every project
+	// (threadapp.CreateOptions.Home, HelperOfAgentID): an assistant's
+	// thread or helper. Never set from the wire.
+	home            string
+	helperOfAgentID string
+	// spawnInstructions and spawnLevel are a thread_spawn's
+	// (threadapp.CreateOptions). Never set from the wire.
+	spawnInstructions string
+	spawnLevel        int
 }
 
 // StartTerminalOptions selects where a new terminal thread is rooted.
@@ -102,9 +111,9 @@ type ThreadTitleGenerationEvent struct {
 // struct carries every knob. Empty chat-bar fields are resolved from the
 // most recently used persisted chat model profile; if no profile exists yet,
 // built-in provider defaults seed the first draft. Mode defaults to chat so
-// every normal new thread starts as a chat thread. "discussion" is rejected
-// as mode values because discussion/workflow threads must come through their
-// owning coordination sagas, which wire channels or phase run records.
+// every normal new thread starts as a chat thread. Workflow modes are
+// rejected because those threads must come through their owning sagas,
+// which wire phase run records.
 //
 // The created row is broadcast as `listed` so a second attached client puts
 // it in its sidebar without a refresh, matching what the creating client does
@@ -171,6 +180,33 @@ func (a *App) createThreadCutting(
 		return store.Thread{}, threadapp.CutWorktree{}, admitErr
 	}
 	defer endWork()
+	thread, made, err := a.createThreadRowCutting(ctx, opts, cut, rememberDefaults)
+	// A new thread with nothing that makes it real (no worktree, no draft
+	// text yet) is not listed, and other screens hear of it from the write
+	// that lists it. The creating screen shows it in its own pane.
+	if thread.ID != "" {
+		if action := a.listedAction(thread.ID); action == triage.ThreadActionListed {
+			a.announceThread(action, thread.ID)
+		}
+	}
+	return thread, made, err
+}
+
+// createThreadRow is createThread without the broadcast or a worktree cut,
+// for a caller that writes more of the row's derived state (an assistant's
+// record) before the sidebar first sees it. The caller holds a work
+// admission from before it until after that broadcast, so no host handoff
+// starts between them.
+func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
+	thread, _, err := a.createThreadRowCutting(ctx, opts, nil, rememberDefaults)
+	return thread, err
+}
+
+// createThreadRowCutting is createThreadRow cutting cut (nil for none), and
+// reports the worktree it cut.
+func (a *App) createThreadRowCutting(
+	ctx context.Context, opts CreateThreadOptions, cut *threadapp.WorktreeCut, rememberDefaults bool,
+) (store.Thread, threadapp.CutWorktree, error) {
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
 	thread, made, err := a.threadApplication().CreateWithWorktree(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
@@ -189,6 +225,10 @@ func (a *App) createThreadCutting(
 		WorkspaceOverride:          opts.WorkspaceOverride,
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
+		Home:                       opts.home,
+		HelperOfAgentID:            opts.helperOfAgentID,
+		SpawnInstructions:          opts.spawnInstructions,
+		SpawnLevel:                 opts.spawnLevel,
 		CreatedByDevice:            creatingDevice(ctx),
 		SettingsBucket:             settingsBucket,
 		SettingsClass:              string(settingsClass),
@@ -204,12 +244,6 @@ func (a *App) createThreadCutting(
 	var profileErr error
 	if rememberDefaults {
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
-	}
-	// A new thread with nothing that makes it real (no worktree, no draft
-	// text yet) is not listed, and other screens hear of it from the write
-	// that lists it. The creating screen shows it in its own pane.
-	if action := a.listedAction(thread.ID); action == triage.ThreadActionListed {
-		a.announceThread(action, thread.ID)
 	}
 	return thread, made, profileErr
 }
@@ -289,8 +323,8 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 // ListThreads backs the frontend sidebar. It lists a never-sent thread only
 // once it is real (store.sidebarListedClause), and the write that makes it
 // real announces the row as listed.
-// Internal callers that need every thread (tests, fork inspection,
-// discussion runtime) go through a.store.ListThreads directly: an answer
+// Internal callers that need every thread (tests, fork inspection) go
+// through a.store.ListThreads directly: an answer
 // here is a client's catalog read, which releases heavy post-boot work.
 //
 //ao:scope threads:read
@@ -331,7 +365,7 @@ func (a *App) RenameThread(id string, title string) error {
 	}
 	defer unlock()
 	if err := a.threadApplication().Rename(id, title); err != nil {
-		return err
+		return refuseTakenAssistantName(err)
 	}
 	a.announceThreadPatch(id, triage.ThreadUpdateEvent{Title: &title})
 	a.syncPeerSessionNameAsync(id)
@@ -357,19 +391,53 @@ func (a *App) RenameThread(id string, title string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) MarkThreadRead(id string) error {
-	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	_, _, err := a.stampThreadRead(id)
+	return err
+}
+
+// MarkThreadsRead is MarkThreadRead for every thread named, in one call: an
+// agent row's or a group's Mark All Read (docs/specs/standing-agents.md
+// ruling 31). Repeated ids count once, and a call names at most
+// store.MarkThreadsReadLimit threads. The stamps are one store transaction
+// that takes no thread lock: each is a single conditional row write whose
+// statement itself skips a thread this computer may not change, which is
+// what MarkThreadRead's lock and CheckMutable guard. Each changed row is
+// announced, and the call returns them; a thread that is gone or not
+// changeable here is an error naming it, after the rest are marked.
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) MarkThreadsRead(ids []string) ([]store.Thread, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
+	defer cancel()
+	rows, refused, err := a.threadApplication().MarkReadMany(ctx, ids)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer unlock()
+	for _, row := range rows {
+		a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, true)
+	}
+	if len(refused) > 0 {
+		return rows, fmt.Errorf("mark threads read: %d not found or not changeable on this computer: %s",
+			len(refused), strings.Join(refused, ", "))
+	}
+	return rows, nil
+}
+
+// stampThreadRead is one thread's stamp with the deadline MarkThreadRead
+// gives it, announcing the row when it moved. It takes no thread lock, as
+// MarkThreadsRead takes none: the stamp's statement itself refuses a thread
+// this computer may not change (store.MarkThreadsReadNow), one rule for
+// both. A refusal is store.ErrThreadReadRefused.
+func (a *App) stampThreadRead(id string) (store.Thread, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
 	row, changed, err := a.threadApplication().MarkRead(ctx, id)
 	if err != nil {
-		return err
+		return store.Thread{}, false, err
 	}
 	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
-	return nil
+	return row, changed, nil
 }
 
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for
@@ -610,37 +678,6 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 		a.announceThread(triage.ThreadActionFull, rows[index].ID)
 	}
 	return rows, nil
-}
-
-// DeleteThread tears down the thread and any child threads. The recursive
-// cascade logic lives in app_thread_delete.go. A delete that finished but
-// could not stop work the thread started elsewhere returns a
-// *threadCleanupError saying the thread was deleted.
-//
-// Every dropped row — the named thread and each of its children — is
-// broadcast as `deleted` so a second attached client drops the same rows and
-// their caches without a refresh. The fan-out rides the delete port's
-// per-row Deleted callback, which is the only place the child ids are known.
-//
-//ao:scope threads:operate
-//ao:route thread
-func (a *App) DeleteThread(id string) error {
-	unlock := a.threadLocks().Lock(id)
-	defer unlock()
-	// A stale thread action must discover its new owner. Only host-local
-	// project/retention cleanup may discard a confirmed move's old cache.
-	if err := a.threadApplication().CheckMutable(id); err != nil {
-		return err
-	}
-	unstopped := threadCleanupError{outcome: "deleted"}
-	err := a.threadApplication().DeleteTree(id, false, a.threadDeletePorts(&unstopped))
-	if err == nil {
-		return unstopped.err()
-	}
-	// The delete itself failed, and its error is the answer: a cause's own
-	// public prose must not stand in for it. The work it could not stop is
-	// in the log (threadDeletePorts).
-	return err
 }
 
 // UpdateThreadContextWindow persists the context window size and

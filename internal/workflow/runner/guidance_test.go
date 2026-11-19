@@ -54,7 +54,7 @@ func TestGuidanceRendersAsALabelledQuotedBlock(t *testing.T) {
 // EVERY value in the block is quoted, the attributed run id included. It is
 // app-minted today, so this is not a live hole — it is the difference between an
 // injection guarantee the renderer holds and one that rests on every future
-// caller of `run guide` minting the id the same way.
+// caller of `run_guide` minting the id the same way.
 func TestGuidanceAttributionQuotesTheRunItNames(t *testing.T) {
 	prompt := guidedPrompt(t, []engine.GuidanceEntry{{
 		Text: "steer", By: engine.GuidanceByPhase,

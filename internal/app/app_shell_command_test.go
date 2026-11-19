@@ -10,11 +10,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/shellrun"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -548,7 +548,7 @@ func TestUserShellPromptBlockUsesTheProvidersOwnRecord(t *testing.T) {
 // every ordinary file line, follows the text.
 func TestPromptTextPutsACommandBlockWhereItWasTyped(t *testing.T) {
 	t.Parallel()
-	separator := usermessage.JoinSeparator
+	separator := agentmeta.JoinSeparator
 	attachments := turnAttachments{files: []promptFile{
 		{text: "[file a]"},
 		{text: "<make>", shell: true, command: "make test"},

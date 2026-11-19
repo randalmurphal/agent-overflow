@@ -13,6 +13,7 @@
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
+  import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
     installPaneLayoutPersistence,
@@ -80,17 +81,18 @@
   import LazyOverlay from './lib/components/primitives/LazyOverlay.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
-  import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
   import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
+  import NewAssistantDialog from './lib/components/sidebar/NewAssistantDialog.svelte';
+  import AssistantProjectsDialog from './lib/components/sidebar/AssistantProjectsDialog.svelte';
+  import PreviousThreadsDialog from './lib/components/sidebar/PreviousThreadsDialog.svelte';
   import ConversationTransferHost from './lib/components/transfers/ConversationTransferHost.svelte';
   import { initConversationTransfers } from './lib/stores/conversationTransfers.svelte';
   import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
 import BackgroundKillConfirmationHost from './lib/components/composer/BackgroundKillConfirmationHost.svelte';
-  import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
@@ -131,7 +133,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import ProviderUpdateNotesHost from './lib/components/settings/ProviderUpdateNotesHost.svelte';
   import { initDevServers } from './lib/stores/devServers.svelte';
 
-  let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
   let appReady = $state(false);
@@ -151,14 +152,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id)),
   );
 
-  function handleStartDiscussion(thread: Thread): void {
-    discussionStartFor = thread;
-  }
-
-  function closeDiscussionStart(): void {
-    discussionStartFor = null;
-  }
-
   // `forPalette`: the palette's own list, whose command runs after it closes.
   function makeAppCommandContext(targetPane = getFocusedPaneOrNull(), forPalette = false) {
     const pickerOpen =
@@ -176,7 +169,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       threadPickerOpen: isThreadPickerOpen(),
       anyPickerOpen: pickerOpen,
       anyModalOpen:
-        discussionStartFor !== null ||
         isSettingsOpen() ||
         isCheatSheetOpen() ||
         isMessageSearchOpen() ||
@@ -493,6 +485,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         // layout restore below: a failed group load must not be read as a
         // failed boot (refreshThreadGroups owns its own error surface).
         void refreshThreadGroups();
+        void refreshAgentWakes();
         await appStorageReady;
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();
@@ -598,7 +591,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         const detail: OpenGitDialogDetail = { paneId, dialog };
         window.dispatchEvent(new CustomEvent(OPEN_GIT_DIALOG_EVENT, { detail }));
       },
-      requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),
       requestThreadJump,
     });
@@ -707,13 +699,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     />
   </div>
 </main>
-<DiscussionStartFlow
-  open={discussionStartFor !== null}
-  thread={discussionStartFor}
-  onClose={closeDiscussionStart}
-/>
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
+<NewAssistantDialog />
+<AssistantProjectsDialog />
+<PreviousThreadsDialog />
 <ConversationTransferHost />
 
 <UnsentMessageConfirmationHost />

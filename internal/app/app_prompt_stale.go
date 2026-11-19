@@ -138,13 +138,6 @@ func (a *App) promptStaleVerdict(threadID string, entry session, snapshot settin
 	thread = a.sanitizeThreadModelSettings(thread)
 	verdict := promptStaleVerdict{provider: entry.Provider, token: entry.Token}
 	launch := entry.LaunchOptions
-	// A feature-owned prompt (a discussion) outranks the override at the
-	// next start just as it did at this one, and it converges through the
-	// config reconciler, so the override cannot make this session stale.
-	if a.featureOwnedSystemPrompt(thread) != "" ||
-		(launch.SystemPrompt != "" && launch.SystemPromptOverrideSource == "") {
-		return verdict, true
-	}
 	// Match skips an entry whose text is empty, which is also what an entry
 	// whose file has a Problem loads as: neither is an override.
 	if matched, ok := promptoverride.Match(snapshot.PromptOverridesForProvider(thread.Provider), thread.Provider, thread.Model); ok {

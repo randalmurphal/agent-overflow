@@ -113,7 +113,7 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 	}
 
 	// Post-flush queue snapshot is empty — triage emptied the queue
-	// and dispatchFlush emits a follow-up queue_state_changed so any
+	// and the flush dispatch emits a follow-up queue_state_changed so any
 	// mirror sees Zone 1 drain.
 	postFlushState := waitForEmptyQueueState(t, rec, thread.ID)
 	if postFlushState.ThreadID != thread.ID {

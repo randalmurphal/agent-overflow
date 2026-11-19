@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -25,6 +26,8 @@ type fakeApp struct {
 	catalog  Catalog
 	// catalogErr fails this computer's own catalog read.
 	catalogErr error
+	// roster is this computer's agent roster.
+	roster Roster
 
 	computers []Computer
 	peers     map[string]Peer
@@ -44,16 +47,24 @@ type fakeApp struct {
 	groupRes  GroupReport
 	export    ExportFile
 
-	spawns  []SpawnCall
-	sends   []SendCall
-	asks    []AskCall
-	replies []ReplyCall
-	states  []StatusCall
-	lists   []ListCall
-	cancels []CancelCall
-	rem     []RemindCall
-	updates []UpdateCall
-	gcalls  []GroupCall
+	// prefixOnly answers resolution as a computer that predates
+	// assistant names: id prefixes of any length.
+	prefixOnly bool
+	spawns     []SpawnCall
+	assistants []NewAssistantCall
+	sends      []SendCall
+	asks       []AskCall
+	replies    []ReplyCall
+	states     []StatusCall
+	lists      []ListCall
+	cancels    []CancelCall
+	rem        []RemindCall
+	attention  []AttentionCall
+	loops      []LoopCall
+	watches    []WatchCall
+	wakes      []WakeState
+	updates    []UpdateCall
+	gcalls     []GroupCall
 
 	searches []SearchQuery
 	catalogs []CatalogQuery
@@ -126,7 +137,14 @@ func (f *fakeApp) ResolveThreadRef(_ context.Context, ref string) (Resolution, e
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if strings.HasPrefix(id, ref) {
+		// The app matches an assistant's name as well as an id prefix, and
+		// only the name below MinPrefixLen; a computer that predates names
+		// (prefixOnly) matches any prefix.
+		if assistant := f.threads[id].Assistant; assistant != nil && !f.prefixOnly && strings.EqualFold(assistant.Name, ref) {
+			matches = append(matches, Candidate{ThreadID: id, Title: f.threads[id].Title, Assistant: assistant.Name})
+			continue
+		}
+		if (f.prefixOnly || len(ref) >= MinPrefixLen) && strings.HasPrefix(id, ref) {
 			matches = append(matches, Candidate{ThreadID: id, Title: f.threads[id].Title})
 		}
 		if len(matches) == MaxResolutionCandidates {
@@ -313,9 +331,19 @@ func (f *fakeApp) Catalog(_ context.Context, q CatalogQuery) (Catalog, error) {
 	return f.catalog, nil
 }
 
+func (f *fakeApp) Roster(context.Context) (Roster, error) { return f.roster, nil }
+
 func (f *fakeApp) Spawn(_ context.Context, _ Caller, call SpawnCall) (RequestAck, error) {
 	f.spawns = append(f.spawns, call)
-	return f.acked(call.Notify), nil
+	ack := f.acked(call.Notify)
+	// A fresh thread stores the call's instructions, as the app's does.
+	ack.Instructions = call.Instructions
+	return ack, nil
+}
+
+func (f *fakeApp) NewAssistant(_ context.Context, _ Caller, call NewAssistantCall) (NewAssistantAck, error) {
+	f.assistants = append(f.assistants, call)
+	return NewAssistantAck{RequestAck: f.acked(true), AssistantID: "agent-1", Name: call.Name, Home: "/home/agents/agent-1"}, nil
 }
 
 func (f *fakeApp) Send(_ context.Context, _ Caller, call SendCall) (RequestAck, error) {
@@ -361,6 +389,36 @@ func (f *fakeApp) Remind(_ context.Context, _ Caller, call RemindCall) (RequestA
 	return f.ack, nil
 }
 
+func (f *fakeApp) FlagAttention(_ context.Context, _ Caller, call AttentionCall) (AttentionAck, error) {
+	f.attention = append(f.attention, call)
+	if call.Kind == AttentionNone {
+		return AttentionAck{}, nil
+	}
+	return AttentionAck(call), nil
+}
+
+func (f *fakeApp) Loop(_ context.Context, _ Caller, call LoopCall) (WakeState, error) {
+	f.loops = append(f.loops, call)
+	return WakeState{Kind: KindLoop, Label: call.Label, State: "armed", Note: call.Note, EverySeconds: int64(call.EverySeconds)}, nil
+}
+
+func (f *fakeApp) Watch(_ context.Context, _ Caller, call WatchCall) (WakeState, error) {
+	f.watches = append(f.watches, call)
+	return WakeState{Kind: KindWatch, Label: call.Label, State: "armed", Command: call.Command, EverySeconds: int64(call.EverySeconds), LongRunning: call.LongRunning}, nil
+}
+
+func (f *fakeApp) ListWakes(context.Context, Caller) ([]WakeState, error) { return f.wakes, nil }
+
+func (f *fakeApp) CancelWake(_ context.Context, _ Caller, label, kind string) (WakeState, bool, error) {
+	for index, wake := range f.wakes {
+		if wake.Label == label && (kind == "" || wake.Kind == kind) && wake.State != "cancelled" {
+			f.wakes[index].State = "cancelled"
+			return wake, true, nil
+		}
+	}
+	return WakeState{}, false, nil
+}
+
 func (f *fakeApp) UpdateThreads(_ context.Context, _ Caller, call UpdateCall) (UpdateReport, error) {
 	f.updates = append(f.updates, call)
 	if f.updated != nil {
@@ -400,13 +458,14 @@ type serverPeer struct {
 	queries  []string
 	invokes  []string
 	fetched  []string
-	resolves int
+	// resolves counts lookups, which one call may run concurrently.
+	resolves atomic.Int32
 }
 
 func (p *serverPeer) Computer() Computer { return p.computer }
 
 func (p *serverPeer) Resolve(ctx context.Context, ref string) (Resolution, error) {
-	p.resolves++
+	p.resolves.Add(1)
 	return p.server.app.ResolveThreadRef(ctx, ref)
 }
 
@@ -418,6 +477,11 @@ func (p *serverPeer) Query(ctx context.Context, name string, args json.RawMessag
 func (p *serverPeer) Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	p.invokes = append(p.invokes, name)
 	return p.run(ctx, name, args)
+}
+
+func (p *serverPeer) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	p.queries = append(p.queries, "thread_status")
+	return p.run(ctx, "thread_status", args)
 }
 
 // FetchExport stands in for the copy a real peer client makes: the
@@ -449,6 +513,9 @@ func (p brokenPeer) Query(context.Context, string, json.RawMessage) (json.RawMes
 	return nil, p.err
 }
 func (p brokenPeer) Invoke(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return nil, p.err
+}
+func (p brokenPeer) Watch(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, p.err
 }
 func (p brokenPeer) FetchExport(context.Context, ExportFile) (ExportFile, error) {

@@ -45,7 +45,7 @@ func TestListTurnUserSummariesSkipsSubagentPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTurnUserSummaries: %v", err)
 	}
-	want := []TurnUserSummary{{TurnIndex: 0, Summary: "refactor the parser"}}
+	want := []TurnUserSummary{{TurnIndex: 0, Summary: "refactor the parser", Meta: "{}"}}
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("summaries = %+v, want %+v", got, want)
 	}

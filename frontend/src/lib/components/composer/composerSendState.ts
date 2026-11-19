@@ -10,6 +10,12 @@ export interface ComposerSendStateInput {
    * session rather than of the pane.
    */
   sendUngranted?: boolean;
+  /**
+   * The thread is the hidden copy an agent's question runs in
+   * (`Thread.askCopy`): it takes no message from a person, and the
+   * backend refuses one.
+   */
+  askCopy?: boolean;
   sending: boolean;
   hasBlockingPrompt: boolean;
   hasUserInputPrompt: boolean;
@@ -52,6 +58,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
       canSend: input.shell === 'ready'
         && !input.isDisabled
         && !input.sendUngranted
+        && !input.askCopy
         && !input.sending
         && !input.sendSuspended
         && !input.hasBlockingPrompt
@@ -72,6 +79,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
     // helper, not just a SendMessage RPC.
     canSend: !input.isDisabled
       && !input.sendUngranted
+      && !input.askCopy
       && !input.sending
       && !input.sendSuspended
       && !input.hasBlockingPrompt

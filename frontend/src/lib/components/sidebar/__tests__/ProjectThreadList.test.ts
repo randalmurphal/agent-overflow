@@ -44,14 +44,17 @@ describe('<ProjectThreadList>', () => {
     resetThreadStatuses();
   });
 
-  it('shows a "+ New Thread" empty-state button when threads is empty', () => {
+  it('shows a "+ New Thread" empty-state button when threads is empty, and no other', () => {
     const pane = createThreadPane();
-    const { getByTestId } = render(ProjectThreadList, {
+    const { getByTestId, container } = render(ProjectThreadList, {
       props: { projectId: 'p1', threads: [], pane },
     });
     expect(normalizedTextContent(getByTestId('project-thread-list-empty'))).toMatch(
       /New thread/i,
     );
+    // New Assistant is on the Assistants header and the project's menu
+    // (docs/specs/standing-agents.md, "Sidebar"), not here.
+    expect([...container.querySelectorAll('button')].map((button) => normalizedTextContent(button))).toEqual(['New Thread']);
   });
 
   it('empty-state button calls onNewThread with the projectId', async () => {
@@ -153,28 +156,6 @@ describe('<ProjectThreadList>', () => {
       pane,
     });
     expect(list.querySelectorAll('[data-testid="thread-section-divider"]')).toHaveLength(0);
-  });
-
-  it('renders a child durable Interrupted status on the collapsed parent row', () => {
-    const pane = createThreadPane();
-    const parent = mkThread('parent', { title: 'Parent' });
-    const child = mkThread('child', {
-      parentThreadId: 'parent',
-      title: 'Child',
-      hasIncompleteTurn: true,
-    });
-    const { getByTestId, queryByText } = render(ProjectThreadList, {
-      props: {
-        projectId: 'p1',
-        threads: [parent, child],
-        pane,
-      },
-    });
-
-    expect(queryByText('Child')).toBeNull();
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('interrupted');
-    expect(dot.getAttribute('aria-label')).toBe('Interrupted');
   });
 
   it('shows 8 threads before the show-more row, then reveals 20 more per click', async () => {
@@ -400,9 +381,8 @@ describe('<ProjectThreadList> thread groups', () => {
 
   it('gives members a pin and the group row none, and sorts the group above pins', () => {
     const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
-    const child = mkThread('m1-child', { projectId: 'p1', groupId: 'g1', parentThreadId: 'm1' });
     const front = mkThread('front', { projectId: 'p1', pinnedAt: 1, updatedAt: 99_000 });
-    const { getByTestId, container } = renderList([front, member, child], [mkGroup()]);
+    const { getByTestId, container } = renderList([front, member], [mkGroup()]);
 
     expect(getByTestId('thread-group-row-shell').querySelector('[data-testid="thread-row-pin"]')).toBeNull();
     const rows = Array.from(container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'));
@@ -412,18 +392,6 @@ describe('<ProjectThreadList> thread groups', () => {
     expect(memberRow.querySelector('[data-testid="thread-row-pin"]')).not.toBeNull();
     // A front-burner member is not a numbered jump target.
     expect(memberRow.hasAttribute('data-sidebar-jump-target')).toBe(false);
-  });
-
-  it('keeps the pin off a member discussion child', async () => {
-    const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
-    const child = mkThread('m1-child', { projectId: 'p1', groupId: 'g1', parentThreadId: 'm1' });
-    const { container, getAllByTestId } = renderList([member, child], [mkGroup()]);
-    await fireEvent.click(getAllByTestId('thread-row-expand')[0]);
-    await tick();
-
-    const childRow = container.querySelector('[data-sidebar-thread-id="m1-child"]') as HTMLElement;
-    expect(childRow).not.toBeNull();
-    expect(childRow.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
   });
 
   it('renders a group row above its members', () => {
@@ -610,6 +578,94 @@ describe('<ProjectThreadList> thread groups', () => {
     expect(queryByTestId('thread-group-row-time')).toBeNull();
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  function memberIds(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll<HTMLElement>('[data-group-member] [data-sidebar-thread-id]'))
+      .map((row) => row.dataset.sidebarThreadId!);
+  }
+
+  it('cuts a group at the preview limit and reveals and hides members like a project', async () => {
+    const members = Array.from({ length: 31 }, (_, i) => mkThread(`m${i}`, {
+      projectId: 'p1', groupId: 'g1', updatedAt: 1000 - i,
+    }));
+    const loose = mkThread('loose', { projectId: 'p1', updatedAt: 1 });
+    const { container, getByTestId, queryByTestId } = renderList([...members, loose], [mkGroup()]);
+
+    expect(memberIds(container)).toEqual(members.slice(0, 8).map((t) => t.id));
+    expect(getByTestId('thread-group-show-more')).toHaveTextContent('Show 20 More (23)');
+    expect(queryByTestId('thread-group-show-less')).toBeNull();
+    // The group takes one project slot, so the loose row is not cut, and
+    // the footer sits between the last member and it.
+    const order = Array.from(container.querySelectorAll<HTMLElement>(
+      '[data-sidebar-thread-id], [data-testid="thread-group-show-more"]',
+    )).map((el) => el.dataset.sidebarThreadId ?? 'footer');
+    expect(order.slice(-3)).toEqual(['m7', 'footer', 'loose']);
+    expect(queryByTestId('project-thread-list-show-more')).toBeNull();
+
+    await fireEvent.click(getByTestId('thread-group-show-more'));
+    expect(memberIds(container)).toHaveLength(28);
+    expect(getByTestId('thread-group-show-more')).toHaveTextContent('Show 3 More');
+    expect(getByTestId('thread-group-show-less')).toBeInTheDocument();
+
+    await fireEvent.click(getByTestId('thread-group-show-more'));
+    expect(memberIds(container)).toHaveLength(31);
+    expect(queryByTestId('thread-group-show-more')).toBeNull();
+
+    await fireEvent.click(getByTestId('thread-group-show-less'));
+    expect(memberIds(container)).toEqual(members.slice(0, 8).map((t) => t.id));
+    expect(queryByTestId('thread-group-show-less')).toBeNull();
+  });
+
+  it('keeps pinned and open members above the group cut', async () => {
+    const pins = Array.from({ length: 3 }, (_, i) => mkThread(`pin${i}`, {
+      projectId: 'p1', groupId: 'g1', pinnedAt: 1, updatedAt: 1,
+    }));
+    const rest = Array.from({ length: 10 }, (_, i) => mkThread(`r${i}`, {
+      projectId: 'p1', groupId: 'g1', updatedAt: 1000 - i,
+    }));
+    const hiddenFailed = mkThread('failed', { projectId: 'p1', groupId: 'g1', updatedAt: 1, hasFailedTurn: true });
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    pane.replaceThread(rest[9]);
+    const { container, getByTestId } = render(ProjectThreadList, {
+      props: { projectId: 'p1', threads: [...pins, ...rest, hiddenFailed], pane, groups: [mkGroup()] },
+    });
+
+    // Failed sorts first among unpinned members, so it is visible; the
+    // pins take three of the eight slots and r9 floats back as open.
+    const ids = memberIds(container);
+    expect(ids.slice(0, 3).sort()).toEqual(['pin0', 'pin1', 'pin2']);
+    expect(ids.slice(3)).toEqual(['failed', 'r0', 'r1', 'r2', 'r3', 'r9']);
+    expect(getByTestId('thread-group-show-more')).toHaveTextContent('Show 5 More');
+  });
+
+  it('collapsing a cut group drops its footer and expanding restores it', async () => {
+    const members = Array.from({ length: 10 }, (_, i) => mkThread(`m${i}`, {
+      projectId: 'p1', groupId: 'g1', updatedAt: 1000 - i,
+    }));
+    const { container, getByTestId, queryByTestId } = renderList(members, [mkGroup()]);
+    expect(getByTestId('thread-group-show-more')).toHaveTextContent('Show 2 More');
+
+    for (const expanded of [false, true, false, true]) {
+      await fireEvent.click(getByTestId('thread-group-row-expand'));
+      expect(queryByTestId('thread-group-show-more') !== null).toBe(expanded);
+      expect(memberIds(container)).toHaveLength(expanded ? 8 : 0);
+    }
+  });
+
+  it('moves a thread dropped on a group footer into that group', async () => {
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const members = Array.from({ length: 10 }, (_, i) => mkThread(`m${i}`, {
+      projectId: 'p1', groupId: 'g1', updatedAt: 1000 - i,
+    }));
+    const loose = mkThread('l1', { projectId: 'p1' });
+    const { getByTestId } = renderList([...members, loose], [mkGroup()]);
+
+    await fireEvent.drop(getByTestId('thread-group-show-more'), dragInit({ threadId: 'l1', projectId: 'p1' }));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(setGroup).toHaveBeenCalledWith(['l1'], 'g1');
   });
 
   it('moves a thread dropped on a member row into that member’s group', async () => {

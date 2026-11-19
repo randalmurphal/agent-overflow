@@ -13,13 +13,42 @@ import (
 // up with the reason recorded.
 
 // threadWakeSendID and threadWakeLateSendID name the two messages one request
-// can deliver (store.ThreadWakeSendID). The store reads them too, to correct
-// the requests whose wake a dropped queue held.
+// can deliver (store.ThreadWakeSendID).
 func threadWakeSendID(token string) string     { return store.ThreadWakeSendID(token, false) }
 func threadWakeLateSendID(token string) string { return store.ThreadWakeSendID(token, true) }
 
 func threadWakeSendIDFor(token string, late bool) string {
 	return store.ThreadWakeSendID(token, late)
+}
+
+// threadWakeFromSendID reads a wake's request token back out of its send id
+// (store.ParseThreadWakeSendID).
+func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
+	return store.ParseThreadWakeSendID(sendID)
+}
+
+// redeliverHandedOffWakes sends the answers or reminders a thread New
+// Thread, Same Assistant superseded gave back (tokens, one message's) on to
+// the assistant's current thread, which the handoff made their requests'
+// caller: armed again, since nothing about the answers changed but where
+// they go, and delivered together so they fold as they did. Any other
+// thread's give-back stays disarmed.
+func (a *App) redeliverHandedOffWakes(threadID string, tokens []string, late bool) {
+	if len(tokens) == 0 {
+		return
+	}
+	if _, ok := a.assistantCurrentThread(threadID); !ok {
+		return
+	}
+	refs := make([]threadWakeRef, 0, len(tokens))
+	for _, token := range tokens {
+		if _, err := a.store.SetThreadRequestNotify(token, true); err != nil {
+			logThreadRequestSweep("arm the handed-off wake of "+token, err)
+			continue
+		}
+		refs = append(refs, threadWakeRef{token: token, late: late})
+	}
+	a.goThreadRequestSettling(func() { a.deliverThreadWakes(refs) })
 }
 
 // threadWakeRef names one of a request's two wakes: its first answer, or the
@@ -119,11 +148,6 @@ func (a *App) threadWakeInFlight(token string, late bool) bool {
 	return a.threadRequests.wakesInFlight[threadWakeSendIDFor(token, late)] > 0
 }
 
-// threadWakeLockTimeout bounds the wait for the caller thread's lock. A wake
-// that cannot have it now is owed just the same, and the retry pass carries
-// it.
-const threadWakeLockTimeout = 10 * time.Second
-
 // failThreadWake records why one wake could not be handed over. The reason
 // is kept on the row, so the retry that gives up can say what stopped it and
 // a person reading the ledger can see the same thing.
@@ -140,8 +164,8 @@ func (a *App) failThreadWake(token, what string, cause error) {
 //
 // A settlement and its wake are two transactions, and the second one has ends
 // that deliver nothing: a crash between them, a caller thread that could not
-// be unarchived or locked in time, a render that failed, a tool call that
-// held the token and whose reply did not carry the answer. Nothing else revisits
+// be unarchived, a render or a queue write that failed, a tool call that held
+// the token and whose reply did not carry the answer. Nothing else revisits
 // those rows, because the pollers read open requests and this one is settled,
 // so the answer would sit in the ledger unread forever. The delivery mark is
 // conditional, so a retry of a wake that did land is a no-op.
@@ -201,7 +225,7 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 // due until the backoff ran out.
 //
 // The attempt is booked before the delivery runs, so a delivery that fails,
-// or that still holds a lock when the next pass comes round, does not bring
+// or that is still in flight when the next pass comes round, does not bring
 // the row back at once.
 func (a *App) claimThreadWakeRetry(row store.ThreadRequest, owed []bool, now time.Time) (claimed []bool, abandon bool) {
 	unlock := a.threadRequestSettleLock(row.Token)

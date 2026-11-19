@@ -47,6 +47,27 @@ func (s *Service) Archive(threadID string) (store.Thread, bool, error) {
 	return database.ArchiveThread(threadID)
 }
 
+// ArchiveWorker archives threadID for ownerID's archive, only while that
+// archive stands (store.ArchiveOwnedWorker).
+func (s *Service) ArchiveWorker(threadID, ownerID string) (store.Thread, bool, error) {
+	database, err := s.database("archive worker")
+	if err != nil {
+		return store.Thread{}, false, err
+	}
+	return database.ArchiveOwnedWorker(threadID, ownerID)
+}
+
+// ArchiveLinkedWorker archives threadID for its owner on a paired computer,
+// only while the link token from deviceID owns it, and takes that owner's
+// operation seq once (store.ArchiveLinkedWorker).
+func (s *Service) ArchiveLinkedWorker(threadID, token, deviceID string, seq int64) (row store.Thread, changed, applied bool, err error) {
+	database, err := s.database("archive linked worker")
+	if err != nil {
+		return store.Thread{}, false, false, err
+	}
+	return database.ArchiveLinkedWorker(threadID, token, deviceID, seq)
+}
+
 func (s *Service) Unarchive(threadID string) (store.Thread, bool, error) {
 	database, err := s.database("unarchive thread")
 	if err != nil {
@@ -84,6 +105,17 @@ func (s *Service) MarkRead(ctx context.Context, threadID string) (store.Thread, 
 		return store.Thread{}, false, err
 	}
 	return database.MarkThreadReadNow(ctx, threadID)
+}
+
+// MarkReadMany is MarkRead for up to store.MarkThreadsReadLimit threads in
+// one transaction; refused names the threads that are gone or that this
+// computer may not change.
+func (s *Service) MarkReadMany(ctx context.Context, threadIDs []string) (changed []store.Thread, refused []string, err error) {
+	database, err := s.database("mark threads read")
+	if err != nil {
+		return nil, nil, err
+	}
+	return database.MarkThreadsReadNow(ctx, threadIDs)
 }
 
 func (s *Service) MarkUnread(threadID string) (store.Thread, bool, error) {

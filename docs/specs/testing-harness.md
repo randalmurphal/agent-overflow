@@ -453,6 +453,15 @@ backend side. `kill -USR1` (goroutine dump) and the pprof listener
 - Windowed boots are NOT in `make e2e` (CI/headless machines have no
   display); a `windowed.manual.spec` + `make harness-window` cover them
   where a display exists.
+- `AO_HARNESS_OLDER_COMPUTER=1` boots a computer that answers as one on
+  v0.0.19 (`olderComputerSurface` in `main_harness.go`): the App methods
+  added since answer `method_not_found`, `ArchiveThread` and `DeleteThread`
+  answer a success with `null`, a settings snapshot names none of the keys
+  added since, `agent_owner_op` is an unknown write, and its hello
+  advertises `thread-tools.v1` without `thread-tools.v2`. It serves this
+  build's code otherwise, so it stands in for the release's answers, not
+  for its binary: a save of a key the release lacks, which v0.0.19 refuses
+  without a step-up and then drops, is taken. Only a harness boot honors it.
 - `make e2e` stays required when touching harness, transport, mock, or
   provider parsing. `ao-harness` gets Go unit tests (client frames,
   registry, db guard, scenario validate) under `make go-test`.

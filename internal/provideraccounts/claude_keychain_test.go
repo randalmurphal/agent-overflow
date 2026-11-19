@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The active slot's Keychain service name is fixed regardless of which
@@ -385,13 +387,7 @@ func TestClaudeKeychainIdentityMirrorsClaudeCodeSanitization(t *testing.T) {
 // developer's real login keychain (incident 2026-08-01). A call added
 // anywhere else would bypass the testing.Testing() guard silently.
 func TestNoSecurityCallsOutsideTheKeychainSeam(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("module root not found at %s: %v", root, err)
-	}
+	root := reporoot.Dir(t)
 	allowedFile := filepath.Join(root, "internal", "provideraccounts", "claude_keychain.go")
 
 	skipDirs := map[string]bool{

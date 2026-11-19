@@ -36,6 +36,12 @@ type SpawnCall struct {
 	// created there when it does not exist. Empty leaves the thread
 	// ungrouped.
 	Group string `json:"group,omitempty"`
+	// Placement is owned, grouped or standalone: whether the new thread has
+	// a sidebar row, and where. Empty when the
+	// call omitted it: the destination resolves it (ResolveSpawnPlacement)
+	// and reads the omission to decide what a fork does with its source's
+	// group.
+	Placement string `json:"placement,omitempty"`
 	// FromThread forks that thread's history at its tail first. The fork
 	// runs on the source thread's computer, in its project and workspace.
 	FromThread         string `json:"from_thread,omitempty"`
@@ -50,6 +56,23 @@ type SpawnCall struct {
 	// run. Notify delivers the answer as a message when the wait did not.
 	WaitSeconds int  `json:"wait_seconds"`
 	Notify      bool `json:"notify"`
+	// Profile is the agent profile the call named, already applied to the
+	// settings above by the tools layer; carried for the record.
+	Profile string `json:"profile,omitempty"`
+	// Instructions are appended to the new thread's system prompt for its
+	// whole life: the profile's, then the call's own. A fork's are its
+	// source's followed by these.
+	Instructions string `json:"instructions,omitempty"`
+	// Level is the sub-thread level the new thread will have, set by the
+	// caller's computer on a spawn it forwards to another, which stores it
+	// with the thread and applies its own limit to it. Zero on a local
+	// spawn, whose level its spawn link answers.
+	Level int `json:"level,omitempty"`
+	// HomeFiles are paths relative to the calling standing agent's home
+	// whose files are prepended to Prompt. They are read and folded into
+	// Prompt on the caller's computer, so a forwarded call never carries
+	// them.
+	HomeFiles []string `json:"home_files,omitempty"`
 }
 
 // SendCall continues an existing thread as if the user had typed it.
@@ -59,6 +82,8 @@ type SendCall struct {
 	Message     string `json:"message"`
 	WaitSeconds int    `json:"wait_seconds"`
 	Notify      bool   `json:"notify"`
+	// HomeFiles is SpawnCall.HomeFiles for Message.
+	HomeFiles []string `json:"home_files,omitempty"`
 }
 
 // AskCall forks the target into a hidden read-only scratch thread.
@@ -68,13 +93,29 @@ type AskCall struct {
 	Question    string `json:"question"`
 	WaitSeconds int    `json:"wait_seconds"`
 	Notify      bool   `json:"notify"`
+	// Level is the sub-thread level of the copy that answers, one below
+	// the asker's, set by the asker's computer on an ask it forwards to
+	// another, which stores it with the copy. Zero on a local ask, whose
+	// level the ask itself answers (SpawnCall.Level).
+	Level int `json:"level,omitempty"`
 }
 
 // ReplyCall settles one request the caller's thread was asked.
 type ReplyCall struct {
 	Token string `json:"token"`
 	Text  string `json:"text"`
+	// Decision and Answers answer a worker's prompt: allow or deny for an
+	// approval, one answer per question for a question with several parts.
+	// Both are empty for an ordinary request.
+	Decision string   `json:"decision,omitempty"`
+	Answers  []string `json:"answers,omitempty"`
 }
+
+// Reply decisions on a worker's approval.
+const (
+	DecisionAllow = "allow"
+	DecisionDeny  = "deny"
+)
 
 // StatusCall re-attaches to requests or watches threads.
 type StatusCall struct {
@@ -120,11 +161,14 @@ type UpdateCall struct {
 	// Group is a group name in the thread's own project, created when it
 	// does not exist. A set pointer to an empty string ungroups.
 	Group *string `json:"group,omitempty"`
+	// Placement is owned, grouped or standalone. Grouped needs Group,
+	// unless the thread is in a group already.
+	Placement *string `json:"placement,omitempty"`
 }
 
 // Patched reports whether the patch changes anything.
 func (c UpdateCall) Patched() bool {
-	return c.Title != nil || c.Archived != nil || c.Pin != nil || c.Group != nil
+	return c.Title != nil || c.Archived != nil || c.Pin != nil || c.Group != nil || c.Placement != nil
 }
 
 // GroupCall renames or deletes one group.
@@ -174,10 +218,24 @@ const (
 // CancelReport.Effect, shared with the App implementation that decides
 // which one happened.
 const (
-	EffectNothing         = "nothing_to_stop"
-	EffectQueuedRemoved   = "queued_message_removed"
-	EffectInterrupted     = "turn_interrupted"
+	EffectNothing       = "nothing_to_stop"
+	EffectQueuedRemoved = "queued_message_removed"
+	EffectInterrupted   = "turn_interrupted"
+	// EffectLeftRunning: the request's message had already reached the
+	// thread in a turn the request did not start, so the cancel settled the
+	// request and left that turn running.
+	EffectLeftRunning = "turn_left_running"
+	// EffectLeftUnread: the request's message was with the provider and no
+	// turn had read it yet, so the cancel settled the request and stopped
+	// nothing; the thread may still read the message.
+	EffectLeftUnread      = "message_left_unread"
 	EffectReminderDropped = "reminder_dropped"
+	EffectWakeCancelled   = "loop_or_watch_cancelled"
+	// EffectThreadStopped: a thread_cancel by thread id of a thread the
+	// caller spawned brought it to rest: its session ended and its queue,
+	// loops, watches, reminders and requests, the workflow runs that report
+	// to it and the threads it spawned were stopped.
+	EffectThreadStopped = "thread_stopped"
 )
 
 // RequestAck is what a spawn, send, ask or remind returns: the request's
@@ -185,6 +243,16 @@ const (
 type RequestAck struct {
 	RequestState
 	Outcome string `json:"outcome"`
+	// Instructions are what a spawn appended to its thread's system prompt
+	// as the thread stores them: a profile's, then the call's, after a
+	// fork's source's. They are read from the request's own record, made
+	// when the spawn named its thread, so the reply and the spawn's row say
+	// the same whatever happens to the thread later.
+	Instructions string `json:"instructions,omitempty"`
+	// Notice is a sentence the reply's note opens with: what the request
+	// came to that the caller did not ask for, such as a computer too old
+	// to keep an owned spawn as the caller's worker.
+	Notice string `json:"-"`
 }
 
 // ReplyAck is what thread_reply returns.
@@ -197,9 +265,14 @@ type ReplyAck struct {
 	Revision int64  `json:"revision"`
 	Late     bool   `json:"late,omitempty"`
 	// Target names the thread the reply answered, so the responder can
-	// see where it went.
-	SourceThreadID string `json:"source_thread_id,omitempty"`
-	SourceComputer string `json:"source_computer,omitempty"`
+	// see where it went: the computer is that thread's, its id as the
+	// replying computer knows it, empty for one here.
+	SourceThreadID   string `json:"source_thread_id,omitempty"`
+	SourceComputer   string `json:"source_computer,omitempty"`
+	SourceComputerID string `json:"source_computer_id,omitempty"`
+	// Prompt is set when the token was a worker's question or approval and
+	// the answer went to that worker's open prompt.
+	Prompt bool `json:"prompt,omitempty"`
 }
 
 // StatusReport answers thread_status.
@@ -241,6 +314,21 @@ type RequestState struct {
 	// to the caller thread, set while the retry runs and kept once it gives
 	// up.
 	WakeIssue string `json:"wake_issue,omitempty"`
+	// WaitingOn is what the thread a spawn made, or a send to a thread
+	// the caller spawned, still waits on after its turn ended: background
+	// work, a loop, watch or reminder, threads it started, or messages
+	// queued for it. The request settles once the thread is at rest.
+	WaitingOn string `json:"waiting_on,omitempty"`
+	// RestUnreported marks a `finished` answer from a paired computer whose
+	// version settles a spawn, and a send to a thread the caller spawned,
+	// when its turn ends: it cannot report whether the thread came to rest,
+	// so what that thread started may still be running.
+	RestUnreported bool `json:"rest_unreported,omitempty"`
+	// LateReplyExpiredAt is when a `thread_reply` reached a `finished`
+	// request on a paired computer after its answer, in Unix milliseconds,
+	// for a reply that computer dropped before this one collected it.
+	// Answer is still the first answer.
+	LateReplyExpiredAt int64 `json:"late_reply_expired_at,omitempty"`
 }
 
 // ThreadState is one watched thread's live state.
@@ -250,9 +338,25 @@ type ThreadState struct {
 	Computer   string `json:"computer,omitempty"`
 	Title      string `json:"title,omitempty"`
 	State      string `json:"state"`
-	// Resting is true when the thread is not running and not blocked on a
-	// person.
+	// Resting is true when the thread is at rest: no turn, nothing queued,
+	// not blocked on a person, and nothing it started still running.
 	Resting bool `json:"resting"`
+	// WaitingOn is what a thread whose turn ended still waits on: background
+	// work, a loop, watch or reminder, threads it started, or messages
+	// queued for it.
+	WaitingOn string `json:"waiting_on,omitempty"`
+	// Error and ErrorCode say why the row's thread could not be read: it
+	// was deleted or moved away, its computer refused the read, or a
+	// computer did not answer its lookup (FailedRow).
+	Error     string `json:"error,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// FailedRow is a thread_status row for a thread that could not be read,
+// with the reason err gives. It reads StateUnavailable.
+func FailedRow(threadID string, err error) ThreadState {
+	code, message := publicMessage(err)
+	return ThreadState{ThreadID: threadID, State: StateUnavailable, Error: message, ErrorCode: code}
 }
 
 // RequestListing is what thread_status returns without tokens or ids.
@@ -270,6 +374,11 @@ type CancelReport struct {
 	State      string `json:"state"`
 	// Effect is one of the Effect constants above.
 	Effect string `json:"effect"`
+	// RemoteRequest marks the cancel of a request another computer holds.
+	// That computer reports a turn it left running and a message it left
+	// unread as nothing_to_stop, because the peer call carries no finer
+	// word, so that effect is noted for all it may stand for.
+	RemoteRequest bool `json:"-"`
 }
 
 // UpdateReport is one computer's per-id result for thread_update.
@@ -289,6 +398,22 @@ type ThreadUpdateResult struct {
 	Updated    bool   `json:"updated"`
 	Error      string `json:"error,omitempty"`
 	ErrorCode  string `json:"error_code,omitempty"`
+	// WorkersNotArchived names each worker an archive of this thread could
+	// not archive, at any depth. It stays open; archiving it, or this
+	// thread again, retries it.
+	WorkersNotArchived []WorkerNotArchived `json:"workers_not_archived,omitempty"`
+}
+
+// WorkerNotArchived is one worker an archive could not archive, and why.
+type WorkerNotArchived struct {
+	ThreadID  string `json:"thread_id"`
+	Error     string `json:"error"`
+	ErrorCode string `json:"error_code,omitempty"`
+	// Computer names the computer of a worker on another computer.
+	Computer string `json:"computer,omitempty"`
+	// Pending is a worker on another computer that has not taken the
+	// archive yet; it is sent again until it does.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // GroupReport is what thread_group returns.

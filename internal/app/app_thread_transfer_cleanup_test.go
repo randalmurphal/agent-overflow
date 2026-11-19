@@ -82,7 +82,7 @@ func TestTransferredWorkspaceCleanupWaitsForConfirmationAndPreservesRetirement(t
 	if _, err := a.GetThread(retired.ID); !errors.As(err, &moved) || !moved.Moved {
 		t.Fatal("public metadata read revived a retired conversation", err)
 	}
-	if err := a.DeleteThread(retired.ID); err == nil {
+	if err := a.deleteThread(retired.ID); err == nil {
 		t.Fatal("stale thread action silently deleted a retired cache")
 	}
 	result, err := a.DeleteProject(project.ID)

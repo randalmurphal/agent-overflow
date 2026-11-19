@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -61,7 +62,7 @@ func (a *App) SendMessage(ctx context.Context, threadID string, content string, 
 		QueueIfActive: true,
 		// Wire entry: this text was typed into a composer (D31). The internal
 		// a.sendMessage helper deliberately does NOT set this — its other
-		// caller (discussion drive) sends app-composed prompts.
+		// callers send app-composed prompts.
 		ExpandComposerCommands: true,
 	})
 	return err
@@ -82,7 +83,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	if err := refusePRDraftSource(opts); err != nil {
 		return store.Thread{}, err
 	}
-	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -227,6 +228,11 @@ func (a *App) markThreadFocused(threadID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
 		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
+		if errors.Is(err, store.ErrThreadReadRefused) {
+			// Focus on a thread this computer may not change (a holder, one
+			// mid-transfer or moved away) leaves its read state alone.
+			return
+		}
 		if err != nil {
 			// Nobody is waiting on this write, so a failure would
 			// otherwise be invisible: the sidebar keeps showing the
@@ -275,7 +281,7 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 	if chatmodel.SameModelFields(thread, sanitized) {
 		return thread, nil
 	}
-	if err := a.store.UpdateThread(sanitized); err != nil {
+	if err := a.store.UpdateThreadModelSettings(threadID, thread.Provider, sanitized.ModelSettings()); err != nil {
 		return store.Thread{}, err
 	}
 	// The model fields changed (SameModelFields above), and clients show them.
@@ -356,11 +362,27 @@ func (a *App) startSession(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	return a.runSessionStart(ctx, threadID, func() error {
-		if a.startSessionFn != nil {
-			return a.startSessionFn(threadID)
+	// No door starts a paused assistant's thread (app_assistants_switch.go),
+	// except a person's operation admitted before the pause, which the pause
+	// stops once it has the action lock.
+	if !personAdmitted(ctx, threadID) {
+		if err := a.refusePausedAssistantThread(threadID); err != nil {
+			return err
 		}
-		return a.startSessionNow(threadID)
+	}
+	return a.runSessionStart(ctx, threadID, func() error {
+		start := a.startSessionNow
+		if a.startSessionFn != nil {
+			start = a.startSessionFn
+		}
+		if err := start(threadID); err != nil {
+			if errors.Is(err, errAssistantSessionGone) {
+				a.recoverAssistantSessionLoss(threadID)
+			}
+			return err
+		}
+		a.noteSessionStarted(threadID)
+		return nil
 	})
 }
 

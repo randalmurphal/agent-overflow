@@ -109,3 +109,19 @@ func TestHubWakesEveryWaiter(t *testing.T) {
 		t.Fatal("a waiter after the wake took the already-closed channel")
 	}
 }
+
+func TestHubHeadIsACursorForWhatComesNext(t *testing.T) {
+	hub := &Hub{}
+	if head := hub.Head(); head == 0 {
+		t.Fatal("an untouched hub's head is the no-cursor sentinel")
+	}
+	recordTransitions(hub, "run-1")
+	head := hub.Head()
+	if transitions, _, gap := hub.Since(head, everything); len(transitions) != 0 || gap {
+		t.Fatalf("since the head: %d transitions (gap=%t), want none", len(transitions), gap)
+	}
+	recordTransitions(hub, "run-2")
+	if transitions, _, _ := hub.Since(head, everything); len(transitions) != 1 || transitions[0].ItemID != "run-2" {
+		t.Fatalf("since the head after one more: %#v", transitions)
+	}
+}

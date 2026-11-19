@@ -100,7 +100,6 @@ import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import { mergeRunStubs } from './activityRunStubs';
-import type { ThreadChannelState } from './threadChannelState.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
 import {
@@ -180,7 +179,6 @@ export interface ThreadSwitchLoadOptions {
   rowUiState: ThreadRowUiState;
   activityRuns: ThreadActivityRuns;
   streamingReveal: ThreadStreamingReveal;
-  channelState: ThreadChannelState;
   pendingInteractiveState: ThreadPendingInteractiveState;
   liveTodoState: LiveTodoState;
   liveStateHydration: ThreadLiveStateHydration;
@@ -738,7 +736,6 @@ export function createThreadSwitchLoad(
       () => options.clearPaneError(),
       () => options.setSendInFlight(false),
       () => options.clearAwaitedSend(),
-      () => options.channelState.clear(),
       // Bottom-drawer state is pane-scoped: opening the terminal on thread
       // A should not spill into thread B.
       () => options.setShowTerminal(false),
@@ -1475,10 +1472,7 @@ export function createThreadSwitchLoad(
       // Draft-placeholder flows (startDraftPlaceholder /
       // adoptMaterializedDraftThread) never call switchThread, so
       // there's nothing to skip here — every switchThread call is a
-      // real cold-load candidate. Discussion-surface threads DO reach
-      // this point but mount no MessageTimeline to fire the warm-edge
-      // mark; their session simply sits open until the next switch
-      // overwrites it (see coldLoadSwitchStart).
+      // real cold-load candidate.
       coldLoadSwitchStart(paneId, newThread.id, cached ? 'cache-restore' : 'fetch');
       armSpinnerThreshold();
       liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);

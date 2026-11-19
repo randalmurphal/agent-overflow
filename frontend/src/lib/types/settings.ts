@@ -22,10 +22,10 @@ export type ReasoningEffort =
 export type ContextWindow = number;
 
 /**
- * ThreadMode mirrors the canonical mode column on thread rows. Discussion
- * is included for symmetry even though it's reached via a separate flow.
+ * ThreadMode is the user-selectable subset of the canonical mode column on
+ * thread rows.
  */
-export type ThreadMode = "chat" | "plan" | "discussion";
+export type ThreadMode = "chat" | "plan";
 
 export type RuntimeMode =
   | "read-only"
@@ -44,6 +44,12 @@ export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 export type CommitMessageStyle = "conventional" | "repo" | "custom";
 /** Preferred order of the auto-switch pool; mirrors internal/settings AccountAutoSwitch*. */
 export type AccountAutoSwitchStrategy = "soonest-reset" | "account-order";
+/**
+ * In which sessions the app turns a provider's own memory off; mirrors
+ * internal/settings OwnMemoryOff*: those that receive Agent Overflow memory,
+ * every one, or none.
+ */
+export type OwnMemoryOff = "agentOverflowMemory" | "always" | "never";
 /** The four readings of "quiet when"; mirrors internal/settings NotifyQuiet*. */
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
@@ -316,6 +322,32 @@ export interface Settings {
    */
   agentGuideEnabled: boolean;
   /**
+   * Show this computer's assistants and let them run. Off hides every
+   * assistant surface in this window, wherever the assistant lives, and
+   * pauses this computer's assistants; nothing is deleted
+   * (docs/specs/standing-agents.md, "Turning assistants off").
+   */
+  assistantsEnabled: boolean;
+  /**
+   * Deliver project and user memory to every thread's sessions, not only to
+   * assistants' (docs/specs/memory.md). Read at spawn.
+   */
+  sharedMemoryEnabled: boolean;
+  /**
+   * The agents a thread chooses among when it opens a sub-thread
+   * (internal/settings/agentroster.go). Seeded once; an edited list is the
+   * person's and never replaced by later seeds.
+   */
+  agentProfiles: AgentProfile[];
+  /** Advice on choosing among the profiles, each shown when its `when` holds. */
+  agentNotes: AgentNote[];
+  /** How many levels of sub-threads may open below a thread the person talks to (1 to 4). */
+  subThreadLevels: number;
+  /** In which of this app's Claude sessions Claude Code's own auto memory is off. */
+  claudeOwnMemoryOff: OwnMemoryOff;
+  /** In which of this app's Codex threads Codex's own memories are off. */
+  codexOwnMemoryOff: OwnMemoryOff;
+  /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never
    * idle-sleeps. Persisted, so it survives restarts. Mirrors
@@ -348,6 +380,8 @@ export interface Settings {
   notifyWorkflowAttention: boolean;
   /** OS notification when an app update did not apply. Default on. */
   notifyAppUpdate: boolean;
+  /** OS notification when a turn ends with its agent's attention flag up. Default on. */
+  notifyThreadAttention: boolean;
   /**
    * Let threads the sidebar does not list (workflow-owned modes, or a thread
    * with no row) raise the per-kind notifications above. Default off: a
@@ -372,13 +406,13 @@ export interface Settings {
    * `notifyQuietWhen` above apply first, so a sound never fires where a
    * banner was suppressed. Master switch and all three events default ON.
    *
-   * Three events, not six kinds: the agent finished, the agent needs you,
+   * Three events, not seven kinds: the agent finished, the agent needs you,
    * something is wrong. Any cue may be chosen for any of them.
    */
   notificationSoundsEnabled: boolean;
   /** Cue when a top-level turn finishes. Default on. */
   notifySoundTurnComplete: boolean;
-  /** Cue when the agent is blocked on your approval. Default on. */
+  /** Cue when the agent is blocked on your approval or flags a thread for you. Default on. */
   notifySoundInputNeeded: boolean;
   /** Cue for a failure, a signed-out provider, a workflow or an update. Default on. */
   notifySoundAttention: boolean;
@@ -698,6 +732,31 @@ export interface NetworkPersistedSettings {
 export interface RetentionPersistedSettings {
   /** Age threshold in days. 0 disables the sweep. */
   days: number;
+}
+
+/**
+ * One agent a thread can spawn by name (settings.AgentProfile). An empty
+ * provider, model, effort or runtime mode inherits the spawning thread's.
+ */
+export interface AgentProfile {
+  name: string;
+  useFor: string;
+  provider: "" | "claude" | "codex";
+  model: string;
+  effort: "" | ReasoningEffort;
+  runtimeMode: "" | RuntimeMode;
+  instructions: string;
+}
+
+/**
+ * When a note on choosing profiles is shown (settings.AgentNote): always,
+ * when profiles of both providers can run, or when they all run on one.
+ */
+export type AgentNoteWhen = "" | "both_providers" | "one_provider";
+
+export interface AgentNote {
+  text: string;
+  when: AgentNoteWhen;
 }
 
 export interface ProviderStatus {

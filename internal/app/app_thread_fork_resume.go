@@ -40,10 +40,10 @@ type forkResumeState struct {
 // including idle sources. This prevents later source turns from entering an unstarted
 // fork's context. Codex materializes its native fork through a temporary
 // app-server; an active tail uses its native interrupted-fork semantics.
-func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (forkResumeState, error) {
+func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut, lineage string) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):
-		ref, err := a.forkCodexThread(ctx, source, atTurnIndex)
+		ref, err := a.forkCodexThread(ctx, source, atTurnIndex, lineage)
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork thread: fork codex provider state: %w", err)
 		}
@@ -66,7 +66,7 @@ func (a *App) resolveMessageForkResumeState(ctx context.Context, source store.Th
 			return forkResumeState{}, nil
 		}
 		lastKeptTurn := anchor.TurnIndex - 1
-		ref, err := a.forkCodexThread(ctx, source, &lastKeptTurn)
+		ref, err := a.forkCodexThread(ctx, source, &lastKeptTurn, "")
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork thread from message: fork codex provider state: %w", err)
 		}

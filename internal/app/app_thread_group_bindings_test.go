@@ -32,8 +32,10 @@ func emittedThreadRows(rec *emitRecorder) []store.Thread {
 		if !ok {
 			continue
 		}
-		if evt.Action != "full" || evt.Thread == nil {
-			panic("thread:updated from a group/pin binding must be a whole-row \"full\" frame")
+		// A group move announces with AnnouncePlaced, `listed` for a row the
+		// sidebar lists; a pin is `full`. Never `unlisted`, which closes panes.
+		if (evt.Action != triage.ThreadActionFull && evt.Action != triage.ThreadActionListed) || evt.Thread == nil {
+			panic("thread:updated from a group/pin binding must be a whole-row \"full\" or \"listed\" frame")
 		}
 		out = append(out, *evt.Thread)
 	}
@@ -97,10 +99,8 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 	if err := app.store.CreateThread(testThread("t-root")); err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	child := testThread("t-child")
-	child.ParentThreadID = "t-root"
-	if err := app.store.CreateThread(child); err != nil {
-		t.Fatalf("create child: %v", err)
+	if err := app.store.CreateThread(testThread("t-other")); err != nil {
+		t.Fatalf("create other: %v", err)
 	}
 
 	group, err := app.CreateThreadGroup(defaultTestProjectID, "Port work")
@@ -113,13 +113,13 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 	}
 
 	rec.reset()
-	moved, err := app.SetThreadGroup([]string{"t-root"}, group.ID)
+	moved, err := app.SetThreadGroup([]string{"t-root", "t-other"}, group.ID)
 	if err != nil {
 		t.Fatalf("SetThreadGroup: %v", err)
 	}
 	rows := emittedThreadRows(rec)
 	if len(rows) != 2 || len(moved) != 2 {
-		t.Fatalf("SetThreadGroup emitted %d rows and returned %d, want the root and its child on both", len(rows), len(moved))
+		t.Fatalf("SetThreadGroup emitted %d rows and returned %d, want both named threads on both", len(rows), len(moved))
 	}
 	for _, row := range rows {
 		if row.GroupID != group.ID {
@@ -129,8 +129,8 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 
 	// A refused move emits nothing: the second client's state was right.
 	rec.reset()
-	if _, err := app.SetThreadGroup([]string{"t-child"}, group.ID); !errors.Is(err, store.ErrThreadNotRoot) {
-		t.Fatalf("grouping a child alone: error = %v, want ErrThreadNotRoot", err)
+	if _, err := app.SetThreadGroup([]string{"t-other"}, "no-such-group"); !errors.Is(err, store.ErrThreadGroupGone) {
+		t.Fatalf("moving into a missing group: error = %v, want ErrThreadGroupGone", err)
 	}
 	if got := rec.snapshot(); len(got) != 0 {
 		t.Fatalf("a refused move emitted %+v", got)
@@ -160,7 +160,7 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 	}
 	rows = emittedThreadRows(rec)
 	if len(rows) != 2 {
-		t.Fatalf("delete emitted thread rows %+v, want the root and its child", rows)
+		t.Fatalf("delete emitted thread rows %+v, want both members", rows)
 	}
 	for _, row := range rows {
 		if row.GroupID != "" || row.PinnedAt != nil || row.PinGroup != nil {
@@ -170,11 +170,11 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 	if calls := rec.snapshot(); calls[len(calls)-1].Channel != eventchan.ThreadGroupUpdated.String() {
 		t.Errorf("the group frame is not last: %+v", calls)
 	}
-	after, err := app.store.GetThread("t-child")
+	after, err := app.store.GetThread("t-other")
 	if err != nil {
-		t.Fatalf("get child: %v", err)
+		t.Fatalf("get member: %v", err)
 	}
 	if after.GroupID != "" {
-		t.Errorf("child still grouped as %q after the group was deleted", after.GroupID)
+		t.Errorf("member still grouped as %q after the group was deleted", after.GroupID)
 	}
 }

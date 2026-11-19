@@ -65,7 +65,7 @@ The staged design keeps each change independently testable and revertible.
   principle; the machinery shrinks because the resolver removes the 1ms
   deferral and its version counters, but keeps a
   "was this scroll layout-correlated" input: layout-induced scroll events
-  also come from browser clamp and ChannelView, not just virtua).
+  also come from browser clamp, not just virtua).
 
 ### File layout (target)
 
@@ -149,15 +149,6 @@ deliberately.
   needs grouped node KEYS, a component-level projection). Merging would
   move a render-flush-timed concern into the store without deleting either
   lifecycle. The single `virtualizerShiftAtHead` derived is the one owner.
-- ChannelView's escape→arm→restore switch dance, controller publication
-  effect, attach effect, composer-RO notify, chip wiring are all duplicated
-  with MessageTimeline. DEFERRED to Stage 4: `restoreToBottom()` as a
-  single-call API absorbs the dance naturally; extracting a shared helper
-  now would be churned again by the API shrink.
-  ChannelView.test.ts covers overflow-anchor, initial-load sync-pin, chip
-  reveal/escape/forceStick, escaped-while-posting, and composer-resize
-  re-pin. The only hole is the switch-dance ordering itself; cover it in
-  Stage 4 alongside the API change.
 - Redundant self-tag pair: `ignoreScrollToTop` exact tag + token FIFO
   (`exactTagged || tokenTagged` at `:1911`) → one expected-value check under
   a single write site. **Stage-2 verdict: DONE. `ignoreScrollToTop`
@@ -334,7 +325,7 @@ this; it would subsume `markProgrammaticScroll`).
 ### Stage 4: API shrink + file split
 
 The §2 target API and file layout. Consumers migrate mechanically
-(matrix shows none need rework; ChannelView shrinks). The `Object.assign`
+(matrix shows none need rework). The `Object.assign`
 handle-widening is replaced by the explicit pane-facing interface.
 Docs (`frontend-scroll.md`, AGENTS.md files) rewritten to the new ownership
 map. The current doc's "do not add another owner" rule becomes "the
@@ -350,7 +341,7 @@ Divergences from the §2 target, each deliberate:
 |---|---|---|
 | `lease()` | `pauseAutoScroll()` keeps its name | Same depth-counted contract (release-at-depth-0 re-pins synchronously, test-pinned); the existing name says what it does and every consumer already used it. Renaming was churn without information. |
 | Restore triple → one idempotent `restoreToBottom()` | Partial fold only: `armRestoreSnap()` absorbed the defensive escape both consumers always paired with it; arm and consume remain separate calls | The arm must run in `$effect.pre` before DOM flush and the snap after, and a user gesture between the two must be able to invalidate the consent (the seq-509 gesture-invalidation window). A single call cannot hold that window open. |
-| `observe(kind)` merging the four notifies | Shipped as specced (`content`, `live-content`, `composer-geometry`, `host-layout`; exhaustive switch) | MessageTimeline's pane adapter intercepts `host-layout` into its listRef retry ladder; ChannelView's composer RO reports `composer-geometry` (was the instant notify), behaviorally identical on a no-animation surface. |
+| `observe(kind)` merging the four notifies | Shipped as specced (`content`, `live-content`, `composer-geometry`, `host-layout`; exhaustive switch) | MessageTimeline's pane adapter intercepts `host-layout` into its listRef retry ladder. |
 | `observers.ts` = "RO/scroll/pointer plumbing → observation events" | `observers.ts` owns the contentRO pipeline only (gather → resolve → apply, in one place); the scroll/pointer/wheel/key/touch handlers live in `intent.ts` | The plan drew the line at event kind; the shipped cut draws it at ownership. The DOM handlers ARE the intent machine's inputs, and a delivery's gather/decide/apply reads as one unit (mirroring the spring owning a chase). A thin observation-events-only layer would split single concerns across files. |
 | Each file <500 lines | `index.svelte.ts` 886, `intent.ts` 699, `observers.ts` 538, `spring.ts` 521, `resolver.ts` 517 | Overages are comment mass (~40% of the controller is load-bearing prose) plus irreducible wiring. The post-task review judged the remaining clean seams (arrival-readback cluster + dev-hook extraction, ~−150 lines from the controller; the token ring, ~−55 from intent) not worth taking now; they are the path back under target if the files grow. |
 
@@ -381,8 +372,7 @@ patch extension bundled into the Stage-5 decision.
 Cleanup candidates carried out of Stage 4 (not commitments: evaluate
 opportunistically or at the Stage-5 gate): folding the controller's
 notify*/pause-release inline decisions into resolver-shaped decision
-values; expressing the resolver's decision shapes as shared types;
-deduplicating ChannelView's thread-switch dance with MessageTimeline's.
+values; expressing the resolver's decision shapes as shared types.
 
 ### Stage 5: Decision gate: bespoke bottom-anchored virtualizer
 
@@ -433,13 +423,12 @@ coupling block, hysteresis-constant inequality, descriptor-restore, sentinel
 with floors), marking-seam tests (die if Stage 5 removes external sync
 writes entirely, per the documented drop rule).
 
-**Coverage holes worth knowing (11 found; the load-bearing four):**
+**Coverage holes worth knowing (11 found; the load-bearing three):**
 (1) nothing tests stick-controller × real virtua × real RO timing
 end-to-end, exactly where the settle-flicker family lived (Stage 0 harness
 closes this); (2) every test registers a single `'main'` pane while
 module-level controller state exists, leaving cross-pane interference
-unexplored; (3) ChannelView has zero scroll tests despite the doc claiming
-the same contracts; (4) escape gestures never run against trusted input in
+unexplored; (3) escape gestures never run against trusted input in
 a real engine (`@vitest/browser` userEvent can close this later).
 
 **Cost note:** the controller suite is 27.2s, the dominant cost of the
@@ -457,5 +446,3 @@ tests; expect the suite to shrink in wall time while growing in coverage.
 3. **Stage-3 patch depth**: routing `$fixScrollJump` only; the
    scheduled-scroll write stays marked + wrapped.
 4. **Stage-5 disposition**: stays a decision gate after Stages 1-4 soak.
-5. **ChannelView test debt**: cover during Stage 1 once the shared
-   switch-dance helper exists.

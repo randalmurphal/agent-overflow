@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/threadmode"
@@ -289,7 +290,7 @@ type WorkItemNode struct {
 // The summary projection cannot serve this. Its phase-progress join parses each
 // row's snapshot SQLite-side to locate the current phase's ordinal, which is a
 // real cost per row and a total waste for a caller that only wants membership:
-// `agent-overflow run watch --tree` re-resolves its watched set on every wake of
+// `run_watch` with `tree` re-resolves its watched set on every wake of
 // a GLOBALLY broadcast loop, so one transition anywhere in the app would
 // otherwise re-parse a forty-run campaign's forty frozen workflows.
 func (s *Store) GetWorkItemNode(id string) (WorkItemNode, error) {
@@ -460,7 +461,7 @@ func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, er
 
 // GetWorkItemSummary is the single-row form of ListWorkItemSummaries: the same
 // projection including phase progress, and the same omission of the snapshot,
-// seeds, and budget payloads. `ao run status` polls this, so it must stay a
+// seeds, and budget payloads. `run_status` polls this, so it must stay a
 // one-row read that never drags a run's snapshot along.
 func (s *Store) GetWorkItemSummary(id string) (WorkItem, error) {
 	item, err := scanWorkItem(s.reader().QueryRow(
@@ -531,10 +532,15 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 
 // UpdateWorkItemState writes the transition result atomically. Transition
 // validity belongs to the workflow engine; the store enforces only schema
-// constraints.
+// constraints. A run that moves to a rest, any state but running, owes
+// that rest's report in the same write (reports_owed), until the rest's
+// wake job ends (SettleWorkItemReport); a root run's owed report holds the
+// thread it is bound to.
 func (s *Store) UpdateWorkItemState(id, state, reason string, endedAt int64) error {
 	result, err := s.db.Exec(
-		`UPDATE work_items SET state = ?, reason = ?, ended_at = ? WHERE id = ?`,
+		`UPDATE work_items SET state = ?1, reason = ?2, ended_at = ?3,
+		        reports_owed = reports_owed + (state <> ?1 AND ?1 <> 'running')
+		  WHERE id = ?4`,
 		state, reason, endedAt, id,
 	)
 	if err != nil {
@@ -674,14 +680,46 @@ func (s *Store) UpdateWorkItemTriageThread(id, threadID string) error {
 // Thread lifetime is deliberately independent, like triage_thread_id: a deleted
 // thread leaves a stale id that the wake path clears when it next resolves it,
 // falling back to the unbound surface rather than losing the wake.
-func (s *Store) UpdateWorkItemOriginThread(id, threadID string) error {
-	result, err := s.db.Exec(
-		`UPDATE work_items SET origin_thread_id = ? WHERE id = ?`, threadID, id,
-	)
+//
+// It reports the thread the run reported to before and the one it reports to
+// now, read and written in one transaction: a running run keeps the thread it
+// reports to from rest, so both threads' rest may have changed.
+func (s *Store) UpdateWorkItemOriginThread(id, threadID string) (WorkItemOriginChange, error) {
+	label := fmt.Sprintf("store: update work item origin thread %s", id)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: update work item origin thread %s: %w", id, err)
+		return WorkItemOriginChange{}, fmt.Errorf("%s: begin: %w", label, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update work item origin thread %s", id))
+	defer func() { _ = tx.Rollback() }()
+	var previous string
+	if err := tx.QueryRow(`SELECT origin_thread_id FROM work_items WHERE id = ?`, id).Scan(&previous); err != nil {
+		return WorkItemOriginChange{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if _, err := tx.Exec(`UPDATE work_items SET origin_thread_id = ? WHERE id = ?`, threadID, id); err != nil {
+		return WorkItemOriginChange{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkItemOriginChange{}, fmt.Errorf("%s: commit: %w", label, err)
+	}
+	return WorkItemOriginChange{ItemID: id, Previous: previous, Current: threadID}, nil
+}
+
+// WorkItemOriginChange is run ItemID's binding moved: the thread it
+// reported to before and the one it reports to now, either empty for none.
+type WorkItemOriginChange struct {
+	ItemID            string
+	Previous, Current string
+}
+
+// Threads lists the threads the change touched, each once.
+func (c WorkItemOriginChange) Threads() []string {
+	var out []string
+	for _, thread := range []string{c.Previous, c.Current} {
+		if thread != "" && !slices.Contains(out, thread) {
+			out = append(out, thread)
+		}
+	}
+	return out
 }
 
 // WorkItemWakeSignature reads the signature of the last wake delivered into
@@ -766,7 +804,7 @@ func (s *Store) WorkItemPendingGuidance(id string) (json.RawMessage, error) {
 }
 
 // SetWorkItemPendingGuidance replaces the slot wholesale: with the appended
-// array when a `run guide` adds an entry, and with nothing when the phase entry
+// array when a `run_guide` adds an entry, and with nothing when the phase entry
 // that delivered it clears it. It is an assignment rather than an append because
 // the read-modify-write happens on the engine's command goroutine, which is what
 // makes "append" a serialized operation rather than a racy one — and because the
@@ -922,9 +960,8 @@ func (s *Store) CreateWorkItemTriageThread(itemID string, thread Thread) error {
 }
 
 // DeleteProjectWorkflowRecords removes every workflow row a project owns: its
-// runs, their phase/unit/effect records, and its automations (whose cursors
-// cascade). One transaction, because a half-deleted run is a run the engine's
-// startup rebuild would try to resume.
+// runs and their phase/unit/effect records. One transaction, because a
+// half-deleted run is a run the engine's startup rebuild would try to resume.
 //
 // App.DeleteProject calls this on every project deletion (decision D25): there
 // is no foreign key from these tables to `projects` to cascade through, so a
@@ -950,7 +987,6 @@ func (s *Store) DeleteProjectWorkflowRecords(projectID string) error {
 		`DELETE FROM work_item_phases WHERE item_id IN (` + owned + `)`,
 		`DELETE FROM work_item_effects WHERE item_id IN (` + owned + `)`,
 		`DELETE FROM work_items WHERE project_id = ?`,
-		`DELETE FROM automations WHERE project_id = ?`,
 	} {
 		if _, err := tx.Exec(statement, projectID); err != nil {
 			return fmt.Errorf("store: delete project %s workflow records: %w", projectID, err)

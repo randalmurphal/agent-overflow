@@ -45,3 +45,9 @@ this. Mark a page or field that only serves other computers `remote: true` in
 `sections.ts` or `fields.ts`, and gate a remote-only block on a page that stays
 on `remoteAccessAvailable()`. Rail, search and deep links read the filtered
 views (`settingsSectionGroups`, `settingsFields`, `settingsSectionAvailable`).
+
+A hint that names assistants carries its wording without them as
+`assistantsOffHint` in `fields.ts`; the page renders `settingsFieldHint`
+with its computer, which reads it while that computer has assistants off.
+`settingsFields`, for rail and search, reads it while no attached computer
+has them on.

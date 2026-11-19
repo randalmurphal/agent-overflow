@@ -36,6 +36,8 @@ import {
   FORK_CHILD_ANSWER,
   FORK_CHILD_PROMPT,
   FORK_SHARED_ANSWER,
+  SCHEDULED_ANSWER,
+  SCHEDULED_PROMPT,
   growLinearClaudeSession,
   MCP_TEXT_HEAD,
   MCP_TEXT_TAIL,
@@ -338,6 +340,29 @@ test('importing a selection creates the threads and renders their history', asyn
   await expect(page.getByText(CODEX_ANSWER)).toBeVisible();
 });
 
+test('a turn the CLI started from a cron job imports with its prompt badged as scheduled', async ({
+  harness,
+  page,
+}) => {
+  const fx = await seedImportFixtures(harness, { withScheduledSession: true });
+  const scheduled = fx.claudeScheduled!;
+  await harness.open(page);
+  await openImportModal(page);
+  const { done } = await importRows(page, harness, [scheduled]);
+  expect(done.completed).toBe(1);
+
+  await threadRow(page, scheduled.title).click();
+  const prompt = page.locator('[data-item-id][data-item-kind="user_text"]').filter({ hasText: SCHEDULED_PROMPT });
+  await expect(prompt).toHaveCount(1);
+  await expect(prompt.getByTestId('user-message-scheduled-origin')).toHaveText('Scheduled');
+  const answer = page.locator('[data-item-id][data-item-kind="assistant_text"]').filter({
+    has: page.getByText(SCHEDULED_ANSWER, { exact: true }),
+  });
+  await expect(answer).toBeVisible();
+  const [promptBox, answerBox] = [await prompt.boundingBox(), await answer.boundingBox()];
+  expect(promptBox!.y).toBeLessThan(answerBox!.y);
+});
+
 // Codex 0.162 shapes from a session started outside Agent Overflow: a thread
 // Codex's app opened from another thread (`create_thread`) has no user
 // message, only a `preview`, and its paginated rollout stores an MCP result
@@ -515,6 +540,15 @@ test('a session that fails to import keeps the surface open with its stamps', as
   const broken = fx.claudeBroken;
   if (!broken) throw new Error('fixture did not write the failing session');
 
+  // The progress frames the page's own sockets received. A strip that never
+  // settles names them, which tells frames the page never got from frames
+  // its store did not fold.
+  const pageFrames: string[] = [];
+  page.on('websocket', (ws) => {
+    ws.on('framereceived', (frame) => {
+      if (typeof frame.payload === 'string' && frame.payload.includes('session-import:progress') && !frame.payload.includes('"hello"')) pageFrames.push(frame.payload);
+    });
+  });
   await harness.open(page);
   await openImportModal(page);
 
@@ -525,7 +559,11 @@ test('a session that fails to import keeps the surface open with its stamps', as
   // Nothing landed, so there is something for the user to look at: the strip
   // stays, the row carries its own outcome, and the primary morphs into a
   // retry over exactly the failures.
-  await expect(page.getByTestId('session-import-progress-headline')).toHaveText('Imported 0 of 1');
+  try {
+    await expect(page.getByTestId('session-import-progress-headline')).toHaveText('Imported 0 of 1');
+  } catch (error) {
+    throw new Error(`the strip did not settle; the page received ${pageFrames.length} progress frame(s): ${pageFrames.join(' ')}\n${String(error)}`, { cause: error });
+  }
   await expect(page.getByTestId('session-import-progress-detail')).toHaveText('1 failed');
   await expect(page.getByTestId(`session-import-outcome-${broken.rowId}`)).toBeVisible();
   await expect(page.getByTestId('session-import-confirm')).toHaveText('Retry failed (1)');

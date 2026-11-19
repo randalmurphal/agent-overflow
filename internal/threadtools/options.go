@@ -35,7 +35,19 @@ type computerOptions struct {
 	// present even when empty, which is an answer about this computer.
 	Providers    []ProviderOption `json:"providers,omitzero"`
 	RuntimeModes []map[string]any `json:"runtime_modes,omitzero"`
-	Projects     []ProjectOption  `json:"projects,omitzero"`
+	// Profiles are the person's agent profiles this computer can run,
+	// resolved against its providers with the caller's own settings.
+	Profiles []ProfileOption `json:"profiles,omitzero"`
+	Projects []ProjectOption `json:"projects,omitzero"`
+	// SpawnInstructions says this computer adds a spawn's instructions to
+	// the thread's system prompt; a computer that predates them leaves it
+	// out, and a spawn carrying instructions there is refused.
+	SpawnInstructions bool `json:"spawn_instructions,omitempty"`
+	// UnlistedModels carries each provider's Unlisted models to a caller
+	// asking through its pairing, keyed by provider: they resolve a
+	// profile there but are never listed. Only a forwarded answer has it,
+	// and peerOptions moves it back into the providers on arrival.
+	UnlistedModels map[string][]ModelOption `json:"unlisted_models,omitempty"`
 }
 
 // The two result shapes. A computer with no pairings inlines the one
@@ -43,13 +55,15 @@ type computerOptions struct {
 // with a row per computer, the caller's own first.
 type optionsSolo struct {
 	computerOptions
-	Note string `json:"note,omitempty"`
+	ProfileNotes []string `json:"profile_notes,omitempty"`
+	Note         string   `json:"note,omitempty"`
 }
 
 type optionsGrouped struct {
-	Computers []computerOptions `json:"computers"`
-	Errors    []errorRow        `json:"errors,omitempty"`
-	Note      string            `json:"note,omitempty"`
+	Computers    []computerOptions `json:"computers"`
+	Errors       []errorRow        `json:"errors,omitempty"`
+	ProfileNotes []string          `json:"profile_notes,omitempty"`
+	Note         string            `json:"note,omitempty"`
 }
 
 // optionsAnswerShape reads either shape, which is what a peer's reply
@@ -80,7 +94,12 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 		targets = []Computer{computer}
 	}
 
-	rows, failures, failure := c.runOptions(ctx, targets, args)
+	roster, err := c.optionsRoster(ctx, args.What)
+	if err != nil {
+		return nil, err
+	}
+	rows, failures, failure := c.runOptions(ctx, targets, args, roster)
+	notes := rosterNotes(roster, rows)
 	if !c.paired() {
 		// One target, this computer: its failure is the call's failure.
 		// Answering {"reachable": false} would describe an unreachable
@@ -88,13 +107,13 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 		if failure != nil {
 			return nil, failure
 		}
-		solo := optionsSolo{}
+		solo := optionsSolo{ProfileNotes: notes}
 		if len(rows) == 1 {
 			solo.computerOptions = rows[0]
 		}
 		return solo, nil
 	}
-	grouped := optionsGrouped{Computers: rows, Errors: failures}
+	grouped := optionsGrouped{Computers: rows, Errors: failures, ProfileNotes: notes}
 	if grouped.Computers == nil {
 		grouped.Computers = []computerOptions{}
 	}
@@ -107,15 +126,21 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 // runOptions answers every target concurrently. The third result is the
 // first failure as its own error, which a single-computer call returns
 // rather than describing this computer as unreachable.
-func (c *session) runOptions(ctx context.Context, targets []Computer, args optionsArgs) ([]computerOptions, []errorRow, error) {
+func (c *session) runOptions(ctx context.Context, targets []Computer, args optionsArgs, roster *optionsRosterView) ([]computerOptions, []errorRow, error) {
 	type answer struct {
 		computer Computer
 		row      computerOptions
 		err      error
 	}
-	answers := eachComputer(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) answer {
+	answers := concurrently(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) answer {
 		_, local, _ := c.computerByID(computer.ID)
 		row, err := c.optionsOne(ctx, computer, local, args)
+		if err == nil && roster != nil && row.Providers != nil {
+			// The roster is the caller's, whichever computer answered: a
+			// peer's own profiles are its person's settings there, so
+			// its row is resolved again against what it offers.
+			row.Profiles = ListProfiles(roster.roster, row.Providers, roster.defaults)
+		}
 		return answer{computer: computer, row: row, err: err}
 	})
 
@@ -160,13 +185,9 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 		if err != nil {
 			return computerOptions{}, err
 		}
-		var result optionsAnswerShape
-		if err := peerResult(answer, &result); err != nil {
+		row, err := peerOptions(answer)
+		if err != nil {
 			return computerOptions{}, err
-		}
-		row := result.computerOptions
-		if len(result.Computers) > 0 {
-			row = result.Computers[0]
 		}
 		row.ComputerID, row.Computer, row.Local, row.Defaults = id, name, false, nil
 		return row, nil
@@ -185,8 +206,12 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 	}
 	if args.What == "" || args.What == OptionsModels {
 		row.Providers, row.RuntimeModes = catalog.Providers, RuntimeModeOptions()
+		row.SpawnInstructions = true
 		if row.Providers == nil {
 			row.Providers = []ProviderOption{}
+		}
+		if Forwarded(ctx) {
+			row.UnlistedModels = unlistedModels(row.Providers)
 		}
 	}
 	if args.What != OptionsModels {
@@ -198,6 +223,81 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 	}
 	row.Defaults = defaults
 	return row, nil
+}
+
+// peerOptions reads a peer's thread_options answer as its own row, with the
+// models it runs but does not list back in its providers, so the caller
+// resolves the person's profiles against everything that computer can run.
+// A peer that predates UnlistedModels resolves against its list alone.
+func peerOptions(raw json.RawMessage) (computerOptions, error) {
+	var answer optionsAnswerShape
+	if err := peerResult(raw, &answer); err != nil {
+		return computerOptions{}, err
+	}
+	row := answer.computerOptions
+	if len(answer.Computers) > 0 {
+		row = answer.Computers[0]
+	}
+	for i := range row.Providers {
+		row.Providers[i].Unlisted = row.UnlistedModels[row.Providers[i].ID]
+	}
+	row.UnlistedModels = nil
+	return row, nil
+}
+
+func unlistedModels(providers []ProviderOption) map[string][]ModelOption {
+	var out map[string][]ModelOption
+	for _, provider := range providers {
+		if len(provider.Unlisted) == 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string][]ModelOption{}
+		}
+		out[provider.ID] = provider.Unlisted
+	}
+	return out
+}
+
+// optionsRosterView is the caller's roster and its own settings, which a
+// profile that leaves a setting empty inherits.
+type optionsRosterView struct {
+	roster   Roster
+	defaults SpawnDefaults
+}
+
+// optionsRoster reads the roster when the answer lists models, the section
+// the profiles belong to; nil otherwise.
+func (c *session) optionsRoster(ctx context.Context, what string) (*optionsRosterView, error) {
+	if what != "" && what != OptionsModels {
+		return nil, nil
+	}
+	roster, err := c.app.Roster(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view := &optionsRosterView{roster: roster}
+	defaults, err := c.callerDefaults(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if defaults != nil {
+		view.defaults = *defaults
+	}
+	return view, nil
+}
+
+// rosterNotes are the notes that apply to the profiles every answering
+// computer lists together: an agent may spawn on any of them.
+func rosterNotes(roster *optionsRosterView, rows []computerOptions) []string {
+	if roster == nil {
+		return nil
+	}
+	var listed []ProfileOption
+	for _, row := range rows {
+		listed = append(listed, row.Profiles...)
+	}
+	return ApplicableNotes(roster.roster.Notes, listed)
 }
 
 // callerDefaults reads the calling thread's own settings. They are what a

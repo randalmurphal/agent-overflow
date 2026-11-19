@@ -7,11 +7,12 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The gate. surfaces.go is an authored list, and an authored list of
@@ -99,18 +100,6 @@ var routeRegistrationNames = map[string]bool{
 	"HandleFunc": true,
 }
 
-// repoRoot resolves the repository root from this file's own path rather
-// than from the working directory, so the gate does not need a TestMain
-// that chdirs the whole package.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file; the scan has no root to walk")
-	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
-}
-
 // scanned is one parsed production source, with the two things the
 // matchers need to resolve names: which local identifiers are imported
 // packages, and which package-level constants hold string literals.
@@ -130,7 +119,7 @@ type scanned struct {
 // roots.
 func scanSources(t *testing.T, fset *token.FileSet) []scanned {
 	t.Helper()
-	root := repoRoot(t)
+	root := reporoot.Dir(t)
 
 	var paths []string
 	for _, sourceRoot := range goSourceRoots {
@@ -521,7 +510,7 @@ func TestEveryRouteHasAnInventoryRow(t *testing.T) {
 // naming the function that used to enforce it would have kept claiming a
 // control that no longer existed.
 func TestEveryRegistryStillMatchesItsTable(t *testing.T) {
-	root := repoRoot(t)
+	root := reporoot.Dir(t)
 	fset := token.NewFileSet()
 
 	for _, registry := range Registries {

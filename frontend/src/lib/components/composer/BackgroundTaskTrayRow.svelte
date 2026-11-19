@@ -15,8 +15,7 @@
   } from '../../utils/backgroundTray';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
-  import { formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
-  import { formatTokens } from '../../utils/format';
+  import { formatAgentTokens, formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { TRAY_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
   import { claudeTaskTailAvailable } from '../../utils/claudeTaskMeta';
@@ -29,6 +28,7 @@
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import BackgroundTaskTrayDigest from './BackgroundTaskTrayDigest.svelte';
+  import AgentMetrics from './AgentMetrics.svelte';
   import RowError from '../chat/RowError.svelte';
 
   interface Props {
@@ -131,9 +131,7 @@
       : null,
   );
   let toolCountLabel = $derived(progress ? formatToolUses(progress.toolUses) : '');
-  let tokensLabel = $derived(
-    progress && progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
-  );
+  let tokensLabel = $derived(formatAgentTokens(progress?.totalTokens ?? null));
   let latestToolSummary = $derived.by(() => {
     if (task.status !== 'running' || agentInfo === null) return '';
     const value = parseJsonObject(task.launch?.meta)?.[TRAY_LATEST_TOOL_META.summary];
@@ -202,23 +200,7 @@
   data-expanded={showDigest ? 'true' : undefined}
 >
   {#snippet metrics()}
-    {#if toolCountLabel}
-      <span
-        class="shrink-0"
-        data-testid="background-task-tray-row-tools"
-      >
-        {toolCountLabel}
-      </span>
-    {/if}
-    {#if toolCountLabel && tokensLabel}<span aria-hidden="true">·</span>{/if}
-    {#if tokensLabel}
-      <span
-        class="shrink-0"
-        data-testid="background-task-tray-row-tokens"
-      >
-        {tokensLabel}
-      </span>
-    {/if}
+    <AgentMetrics toolUses={progress?.toolUses ?? null} tokens={progress?.totalTokens ?? null} testIdPrefix="background-task-tray-row" />
   {/snippet}
   {#snippet activity()}
     <span class="block truncate text-[0.6875rem] text-fg-hint/85" data-testid="background-task-tray-row-activity" title={activityLine}>

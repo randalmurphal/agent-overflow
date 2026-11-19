@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 )
 
@@ -62,7 +63,7 @@ func TestShellInvocationRunsMatchTheSharedVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &vectors); err != nil {
 		t.Fatal(err)
 	}
-	if vectors.Separator != JoinSeparator || vectors.MetaBytes != ShellCommandMetaBytes {
+	if vectors.Separator != agentmeta.JoinSeparator || vectors.MetaBytes != ShellCommandMetaBytes {
 		t.Fatalf("vectors were written for separator %q and %d metadata bytes", vectors.Separator, vectors.MetaBytes)
 	}
 	if len(vectors.Cases) == 0 {
@@ -86,7 +87,7 @@ func TestShellInvocationRunsMatchTheSharedVectors(t *testing.T) {
 			}
 			want = append(want, PartRun{First: run[0], Last: run[1]})
 		}
-		parts := strings.Split(tc.Text, JoinSeparator)
+		parts := strings.Split(tc.Text, agentmeta.JoinSeparator)
 		if got := ShellInvocationRuns(parts, commands); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: runs = %v, want %v", tc.Name, got, want)
 		}

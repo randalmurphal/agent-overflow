@@ -22,6 +22,8 @@ alone does not establish intent.
 - Codex second-opinion reviews are for large changes only (feature waves,
   subsystem reworks, wide refactors); routine fix waves get Claude-owned
   review.
+- Never publish or offer a Claude Artifact (a hosted claude.ai page). A
+  page for the owner to view is a local `.html` file.
 
 ## Performance and memory
 
@@ -145,7 +147,9 @@ Mechanism in
 
 - The sidebar lists a never-sent thread only while it is real: it has draft
   content, a bound worktree or an item (an app notice or error counts), or
-  is a terminal or a fork being prepared (owner ruling 2026-11-15). A screen
+  is a terminal or a fork being prepared (owner ruling 2026-11-15). A thread
+  with a spawn relation is real too: one a spawn made, here or from another
+  computer, and one that spawned a thread. A screen
   opened later and a screen already open list the same threads. A staged
   workspace choice is that screen's own state and lists nothing until the
   worktree is bound. The screen typing into a new thread lists it as soon as
@@ -153,6 +157,14 @@ Mechanism in
   every sidebar and stays in the panes showing it, and empty-draft cleanup
   never deletes a thread the sidebar lists. The rule is `threadRealClause`
   in `internal/store/threads.go`.
+
+- Sidebar status tiers run needs-attention, running, completed (unread),
+  then read (owner ruling 2026-11-16). Completed sits below running so
+  that opening a completed row, which reads it, never moves it past a
+  running row. A pin orders rows and is never a status: a pinned parent
+  shows and sorts by its busiest child. An expanded group cuts its members
+  with the project's preview rules. The order is in
+  `frontend/src/lib/utils/sidebarTree.ts`.
 
 - Multi-computer ownership and UI follow [Connected computers](specs/connected-computers.md): frontend-local preferences, selectable host configuration, portable conversations, optional peer tools, and machine names in the existing metadata row. No additional sidebar attention feed or artifact dashboard.
 
@@ -270,7 +282,9 @@ Mechanism in
   were: order, widths, an agent pane's scope, a side chat's conversation.
   Closing a companion forgets it; deleting or archiving the thread forgets
   all of them and deletes a hidden side chat. Plan, review and agent survive
-  a restart like the layout; take-control and side chats last the session.
+  a restart like the layout; take-control, side chats and agent-thread
+  companions last the session. An agent-thread companion shows a real
+  thread an Agents row opened; closing it never deletes the thread.
   Nothing is shared across clients. The browser pane follows its backend
   state instead (`frontend/src/lib/stores/companionStash.ts`).
 - Any pane (thread, companion, tool) can be promoted to fill the pane
@@ -286,6 +300,78 @@ Mechanism in
   does not demote: in a thread pane it interrupts a turn.
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
+- Assistants (standing agents) are records with a name, a home and one
+  current thread, created by New Assistant or an assistant's
+  `thread_new_assistant` and never promoted; promotion and demotion are
+  gone. New Thread, Same Assistant carries loops, watches, reminders,
+  requests and workers to the successor. The name is the current
+  thread's title, unique per computer case-insensitively; a clash
+  across paired computers shows `<name>-<computer>`, display only.
+  Deleting the current thread deletes the assistant and its home, after
+  one confirm naming the folder; a home outside
+  `<config>/agents/<agent-id>` refuses the delete. Deleting a past thread
+  touches neither. An assistant stays on its computer: its current
+  thread is copied to another computer, never moved, and the copy is an
+  ordinary thread (ruling 2026-10-21). The retention sweep never removes
+  an assistant's current or past threads. A session the provider cleaned
+  up moves the assistant to a new thread on its own, its opening block
+  naming the previous thread (ruling 2026-10-15,
+  [standing agents](specs/standing-agents.md) rulings 22 to 29,
+  "Retention" and "Session loss").
+- Turning assistants off pauses and hides them; it never deletes. Every assistant, thread, home, memory folder, wake
+  registration and draft stays as it was, and turning them on resumes
+  each loop and watch, serving the fires it missed once with their
+  count. The setting is the computer's: its assistants are shown and
+  running, or hidden and paused, in every window, by that computer's
+  setting alone, and Settings changes the computer its picker shows
+  ([standing agents](specs/standing-agents.md), "Turning assistants off").
+- Multi-agent discussions are removed. No thread nests under another in
+  the sidebar; a thread renders flat under its project or group, and a
+  spawned thread is its spawner's worker with no row unless placed
+  ([standing agents](specs/standing-agents.md) rulings 15 and 36).
+- Agent rows and groups (ruling 2026-10-16,
+  [standing agents](specs/standing-agents.md) rulings 4, 5 and 30 to
+  35): a spawned thread's answer to its spawner, an error included,
+  marks it read unless it is pinned; archive is the only done state
+  (the done fold went with nesting, ruling 2026-11-14); a group shows
+  the project's preview limit of members, pinned members exempt; a
+  collapsed group shows its members' bubbled dot, replacing the
+  2026-09-02 rule that a collapsed group renders none of it; every
+  show-more footer (project, group) and a collapsed project's dot rank
+  their hidden rows the same way, so an unread one lights it; running
+  sorts above unread inside a container. Mark All Read on a group marks
+  every member in one call. An assistant is one row holding nothing
+  (ruling 2026-11-14).
+- Owned workers (ruling 2026-11-14, amending 2026-10-17,
+  [standing agents](specs/standing-agents.md) ruling 36): a thread any
+  thread spawns is owned by its spawner, with no sidebar row and no
+  completion notification of its own, unless placed standalone or in a
+  group; the spawner or the user moves it either way later. Archiving a
+  thread archives its owned workers, and deleting it deletes them, down
+  the lineage (ruling 2026-11-16); a worker with a sidebar row is the
+  person's and stays. A delete is one backend operation over the whole
+  family: anything under the thread that refuses refuses it, with
+  nothing stopped or deleted; a family another delete holds is refused.
+  A delete that went ahead never rolls back: what fails after it stays
+  committed and hidden, and deleting again or the next boot finishes
+  it. Threads selected together are one delete per computer. Placement
+  is organization only: the spawn record, the reply path and the read
+  mark on an answer do not change. An assistant row never joins a group.
+- Ownership crosses paired computers (owner rulings 2026-11-17,
+  [standing agents](specs/standing-agents.md#owned-workers)): a worker a
+  thread spawns on another computer is owned there through the receipt's
+  link, with no sidebar row in any window. Its prompts go to the spawner,
+  pulled by the spawner's computer, and reach the person there when the
+  spawner's computer has not said it holds them for two minutes. The
+  spawner's computer owes it the spawner's archive and delete, and that
+  computer admits them through its own archive and delete. An archive or
+  delete that computer refuses or cannot receive stands here, is named as
+  pending there and is retried; an older computer is named once. No new
+  indicator is drawn: "on <computer>" is the only mark, and a window not
+  attached to that computer cannot open or place the worker.
+- Deleting a thread never removes a worktree (owner ruling 2026-11-17):
+  no delete removes, checks or is refused by a worktree, whatever work it
+  holds or whoever else is on it. The worktree stays for Remove Worktree.
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
 - A fork is a snapshot of its source at the cut. Nothing the source does
@@ -373,7 +459,8 @@ Mechanism in
 - Work the Claude CLI starts on its own (a background-task wake, a
   scheduled wakeup, a peer session's message) is a turn of its own, with
   its own timer and Stop and no user row; the completion notice that woke
-  it stays above it. `/effort`, `/fast` and `/rename` open no turn. A
+  it stays above it. A scheduled prompt is the exception: the turn opens
+  with it as a row badged Scheduled. `/effort`, `/fast` and `/rename` open no turn. A
   turn ends when the model's message ends, so a thread waiting on a
   running `local_agent` is idle; it runs again only if the model
   continues that turn (ruling 2026-10-24).
@@ -387,6 +474,92 @@ Mechanism in
   ([claude-wire.md §E9](references/claude-wire.md#e9-forked-skill-skill-tool-context-fork)).
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
+- A standing agent's home: the app reads `instructions.md` and the facts
+  in `memory/` from it and prescribes nothing else
+  ([agent home contents](specs/standing-agents.md#agent-home-contents)).
+  The app ships no skills; what an agent needs to keep memory arrives with
+  its memory (ruling 2026-10-21). A file that cannot be read is a warning
+  row on the thread, not a failed start. A standing agent is named with its role line on the footers it
+  sends and on the wakes of its replies, on either computer: a thread on
+  another computer behaves as a local one does.
+- An assistant's session block depends on its record alone, so a home
+  file edit keeps the provider's prompt cache. Memory reaches the model
+  whole through a SessionStart hook at a start and at each compaction,
+  never at a resume, which would stack another copy per resume (ruling
+  2026-10-18), and an edit reaches a running thread with its next
+  prompt: a UserPromptSubmit hook delivers only what changed since that
+  session last received its memory, from the session's own record,
+  nothing when nothing did, with no version control and no state shared
+  between sessions. Nothing is cut: a delivery past what a provider
+  shows the model whole opens with its size, the agent reads the file
+  the provider saved, and the assistant is warned (rulings 2026-10-21).
+  The app builds each memory index from the facts' frontmatter, so no
+  agent keeps one (ruling 2026-10-21). A fact follows an event and names
+  its evidence, the user's words or a check; what an agent only judged
+  worth remembering is not saved, and a fact whose source is neither
+  form is left out of the index (ruling 2026-11-18). On Codex the thread's config
+  trusts only the hook commands it registers. A delivery that did not
+  arrive is a non-fatal error row, not a failed turn
+  ([memory](specs/memory.md#delivery)).
+- Assistants live above projects: an assistant serves projects it is
+  assigned, runs in its home, keeps helpers to its own work under it
+  and puts project work in the project; deleting it deletes what lives
+  under it, and removing a project only unassigns it
+  ([standing agents](specs/standing-agents.md) rulings 37 to 40).
+- Messages between agents are not the person's messages (ruling
+  2026-10-13). A thread tool's spawn prompt, request or question, the
+  answer that comes back, a loop, watch, outside send or worker wake, a
+  remote job's completion, a workflow run's wake, and a provider's own
+  agent message stay user-role on the wire and
+  `user_text` rows in the store, and render as a folded agent row naming
+  the sender, never as the user bubble; their footer is shown as facts,
+  never raw. They are not navigator ticks, composer recall or send-queue
+  preview entries, and the thread tools label them `agent` with their
+  sender. A Claude join holding the person's composer message stays the
+  person's, and so do a workflow phase prompt, which is a phase thread's
+  only user message, and the messages the person starts from a button
+  (answers, review comments, triage and PR discussion). A person's Stop
+  on a turn a request started reaches the sender as the person's Stop,
+  never as a restart (ruling 2026-10-14). On the wire every such message opens with a line naming
+  its sender and closes with an end mark, and the person's own messages
+  are the only turns without them (ruling 2026-10-21). Mechanism:
+  [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
+- A loop or watch turn that ends cleanly leaves its thread read and in
+  place and notifies nothing; there is no per-assistant switch to make
+  ticks notify. An agent reaches the user from such a turn only with
+  `thread_attention`: its kind and one-line reason show on the row until
+  the user reads the thread, and the turn's notification says the kind,
+  never the agent's reason. Any thread may flag itself (ruling
+  2026-10-22, [standing agents](specs/standing-agents.md) rulings 9 and
+  41, [attention](specs/standing-agents.md#attention)).
+- A watch that keeps failing notifies the person once per failure
+  episode, at once when its process cannot start and otherwise at a
+  failed run five minutes after the episode's first, and its next clean
+  run withdraws it; it never wakes the agent and adds no retry. The
+  assistant instructions say workers implement project changes while the
+  assistant may build tools in its home, that a worker's evidence is
+  checked before work is reported done, that a working procedure is saved
+  and reused, and that the opening settles a first task before any
+  recurring work. An Instructions action on the assistant is declined
+  for now (owner ruling 2026-11-17,
+  [wake supervisor](specs/standing-agents.md#wake-supervisor)).
+- In an assistant's thread, Stop is two actions: Interrupt (stop the
+  turn, keep the session) and End Session (end the process and its
+  background items); a workflow run's Pause keeps its members' sessions
+  and Pause and End Sessions ends them; the Agents row's Stop on a
+  spawned thread is a rest, not one of these (ruling 2026-10-15,
+  [interrupt and end session](specs/standing-agents.md#interrupt-and-end-session)).
+- Requests to other threads and agent messages queued for a thread list
+  in the activity rail's Agents segment, apart from Background, with a
+  user Stop that keeps the caller's wake armed and brings a spawned
+  thread to rest on any computer: its session and everything it waits on
+  or started end, a workflow run that reports to it is paused with its
+  members' sessions ended and stays resumable, and it stays where it was
+  ([at rest](specs/standing-agents.md#at-rest)); settled ones page under Past;
+  incoming agent messages list there instead of the composer's queue
+  (standing agents
+  rulings 20 and 21,
+  [Agents segment](specs/standing-agents.md#agents-segment)).
 
 ## Providers and accounts
 
@@ -519,9 +692,14 @@ Mechanism in
 
 ## Workflows
 
-Decisions D1..D73 are in `docs/specs/workflows-system-decisions.md`. Rulings
+Decisions D1..D77 are in `docs/specs/workflows-system-decisions.md`. Rulings
 and anti-changes that live only here:
 
+- claude-tui hosts `ao-workflow-tools`; thread tools there are a separate
+  decision ([agent workflow tools](specs/agent-workflow-tools.md), D77).
+- Workflows keep no clock. A scheduled or triggered run is started by a
+  standing agent whose loop or watch wakes it
+  ([standing agents](specs/standing-agents.md) ruling 13, D76).
 - Maximum autonomy with full authoring flexibility; intervene only when
   there is no good way to proceed. Free-running default, notify-not-gate at
   wave boundaries, soft-stop is the brake.
@@ -639,6 +817,49 @@ and anti-changes that live only here:
   and permissions). `ao-browser-tools` and `ao-remote-tools` stay denied in
   read-only sessions: both act outside the thread, and read-only is the
   mode for unattended work.
+- Agent profiles (2026-11-16): the person's roster of named agents, each
+  with a use-for line, is how a thread picks another agent. A spawn
+  still inherits by default. The guide names only the profiles this
+  computer runs; use-for lines and choosing notes are in
+  `thread_options`, paid for only by a thread that is choosing. A
+  profile, note or listing never points at a provider the computer does
+  not run: availability is the provider switch plus a binary that
+  resolves, and notes that need both families are conditional notes the
+  person can edit. The seeds are the owner's, ordered by tier within
+  each family, with the comparison across families in a note shown only
+  when both run; an edited roster is never replaced. One resolver
+  decides what a profile runs with for the listing, the settings page
+  and the spawn, so a profile is listed only when it runs as listed.
+  `docs/specs/agent-thread-tools.md`, Agent profiles.
+- Spawn instructions (2026-11-16): `thread_spawn` `instructions`, after a
+  profile's, are appended last to the thread's system prompt for its
+  whole life, stored with the thread, on every provider; a provider or
+  paired computer that cannot carry them refuses the spawn, and one that
+  cannot receive them refuses the transfer, rather than dropping them.
+  The spawn row shows them from the spawn's own reply, never from the
+  live thread. `docs/specs/agent-thread-tools.md`, Spawn instructions.
+- Sub-thread depth is enforced by removing tools, not by refusing calls
+  (2026-11-16): a session at the limit (Settings, 1 to 4, default 2) has
+  no `thread_spawn` and no native subagents, and its guide says so. The
+  tool list is fixed at session start; a spawn that reaches a thread at
+  the limit after a change is refused naming it. The level counts
+  delegation: an owned worker sits below its spawner and an agent's ask
+  copy below its asker. A thread outside an agent's delegation (a
+  sidebar row, including a spawn given one; a person's side chat; a
+  workflow phase, which its definition and engine bound) starts again
+  at 0, and an agent cannot move a thread on its own chain there. The
+  level travels with an owned spawn or ask to a paired computer and
+  ends when that thread leaves the delegation (grouped, made standalone,
+  copied or moved): it counts only while the thread is owned there or
+  is the ask copy, so Remove from Sidebar restores it. `docs/specs/agent-thread-tools.md`, Sub-thread
+  depth.
+- AO tool rows (thread, workflow, browser, remote) present as sentences
+  with structured results, never raw JSON (2026-10-13). The header says
+  what the call did in a person's words, ids read as names, and the body
+  decodes the reply into an outcome, links, facts and folded text; a
+  failed call shows its message and code. Text no decoder reads is
+  reported as undecoded and shown only on request. `docs/specs/agent-thread-tools.md`,
+  How calls surface in the timeline.
 - Phone chat chrome (2026-09-13): header row one is back, title, diff
   badge, menu; row two is the full-width `machine · project · branch ·
   worktree` line with every segment a direct tap into its picker. The
@@ -901,9 +1122,6 @@ and anti-changes that live only here:
   thread lifecycle, `iterations[-1]` context usage, prompt stash, claude.ai
   connectors, app-hosted MCP, classifier-row usage labeling, MCP toggle
   fan-out and per-thread pinning.
-- Proposed skills the owner declined: a commit skill, a standalone light
-  review skill, a standalone unslop skill, handoff riders, a wait-what
-  micro-skill. Artifacts are never offered unprompted.
 
 ## Decisions still required
 

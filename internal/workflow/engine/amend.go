@@ -15,7 +15,7 @@ import (
 // rebuilt from the run ROW at every phase entry (`variableContext`), so the
 // column is live data the run re-reads rather than a definition it froze. That
 // is the whole mechanism an amendment needs — and it is why the boundary rule
-// here reads differently from `--refresh-def`'s (D50) even though both answer
+// here reads differently from `refresh_def`'s (D50) even though both answer
 // "when does an operator's edit reach the run".
 //
 // What an amendment can never do is reach work that already happened. A phase
@@ -40,7 +40,7 @@ const (
 	// resume — a fan-out reopens its blocked units, a call phase re-links the
 	// child it is waiting on — and that attempt runs on the variables it froze.
 	// The new values are read when a phase is next entered fresh, which
-	// `run resume --phase <id>` does deliberately and the run's next phase does
+	// a resume with `phase_id` does deliberately and the run's next phase does
 	// on its own.
 	SeedEffectFreshEntry SeedEffect = "fresh-phase-entry"
 )
@@ -115,7 +115,7 @@ func (e *Engine) amendSeeds(itemID string, values map[string]any) (SeedAmendment
 	for _, name := range names {
 		if _, declared := item.workflow.Inputs[name]; !declared {
 			return SeedAmendment{}, fmt.Errorf(
-				"amend seeds %q: %q is not an input of workflow %q; it declares %s. A definition edited since this run started is not what the run renders — `run resume --refresh-def` re-reads it at a fresh entry",
+				"amend seeds %q: %q is not an input of workflow %q; it declares %s. A definition edited since this run started is not what the run renders; a resume with refresh_def re-reads it at a fresh entry",
 				itemID, name, item.workflow.ID, declaredInputs(item.workflow))
 		}
 		findings = append(findings, def.ValidateInput(item.workflow, name, values[name])...)

@@ -2,6 +2,7 @@ import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { applyDictationSourcesChanged } from './dictation.svelte';
 import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
+import { refreshProviderMemory } from './providerMemory.svelte';
 import { installComputerHydration } from './computerHydration';
 import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './providerUpdates.svelte';
 // Composition root for backend event wiring. `setupEventListeners()` is the
@@ -9,10 +10,7 @@ import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './provider
 // into the domain modules that actually own the reaction:
 //
 //   - eventsThreadRows.ts    — cached Thread row projections (shared leaf)
-//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch,
-//                              incl. the discussion live-tail side-channel
-//                              feed (assistant_text from unmounted
-//                              participant threads → discussionLiveTail.ts)
+//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored, sends pending)
@@ -20,7 +18,6 @@ import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './provider
 //   - eventsDraftRows.ts     — composer-draft convergence across clients
 //   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync
-//   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
 //   - eventsHighlight.ts     — highlight:live / highlight:diff_seed span ingest
 //   - eventsWorktreeSetup.ts — worktree:setup run stream + snapshot resync
@@ -99,7 +96,6 @@ import {
   type BackendSetChangeEvent,
 } from './systems.svelte';
 import { applyNewThreadDefaults, type NewThreadDefaultsChangedEvent } from './newThreadDefaults';
-import { applyDiscussionDefinitionsChanged } from './discussionDefinitions.svelte';
 import { applyProviderAccountsChanged } from './providerAccounts.svelte';
 import { resyncKeybindings } from './keybindings.svelte';
 import { resyncEditorPreference } from './editors.svelte';
@@ -117,6 +113,7 @@ import {
   applyRuntimeModeChanged,
   type RuntimeModeChangedPayload,
 } from './eventsThreadRows';
+import { publishThreadPlacementFrame } from './threadPlacementFrames';
 import {
   applyProjectUpdated,
   type ProjectUpdateEvent,
@@ -169,9 +166,12 @@ import {
   applyCompactingState,
   type CompactingStatePayload,
 } from './compactingState.svelte';
+import { applySessionLive, type SessionLivePayload } from './threadSessionLive.svelte';
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
 import type { BackgroundTaskOutputEvent, BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
+import { applyThreadWakesChanged, type ThreadWakeChange } from './eventsThreadWakes';
+import { applyThreadAgentRowsChanged, type ThreadAgentRowChange } from './eventsThreadAgentRows';
 import { applyBackgroundTaskOutputEvent } from './eventsBackgroundTaskOutput';
 import {
   applyProviderCommands,
@@ -188,12 +188,6 @@ import {
   applyThreadTitleGeneration,
   type ThreadTitleGenerationEvent,
 } from './threadTitleGeneration.svelte';
-import {
-  applyDiscussionMessage,
-  applyDiscussionState,
-  type DiscussionMessageEvent,
-  type DiscussionStateEvent,
-} from './eventsDiscussion';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
 import { setupSessionImportEvents } from './eventsSessionImport';
@@ -202,7 +196,6 @@ import {
   setupHighlightLiveEvents,
   type HighlightDiffSeedEvent,
 } from './eventsHighlight';
-import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import {
   applyNotificationActivated,
@@ -411,6 +404,10 @@ export function setupEventListeners(): () => void {
         applyDictationSourcesChanged(backendKeyForOrigin(origin.backendId));
       }
       if (payload?.keys?.includes('readAloudAPIEnabled')) applyReadAloudSourceChanged(backendKeyForOrigin(origin.backendId));
+      // Whether a provider's own memory is on follows the environment its
+      // sessions get, which these settings carry; any change re-reads a
+      // computer a surface is showing it for.
+      refreshProviderMemory(backendKeyForOrigin(origin.backendId));
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,
@@ -437,14 +434,6 @@ export function setupEventListeners(): () => void {
     invalidateClaudeProbeCommands(backend);
     applyProviderAccountsChanged(backend);
     applyDictationSourcesChanged(backend);
-  });
-  // discussion:definitions-changed — a discussion definition was created,
-  // renamed, edited or deleted. Payload-less, the same shape
-  // workflow:definitions-changed carries: the list is read by SCOPE and a
-  // rename moves a definition between names, so only a re-read can say what
-  // any reader's list now holds.
-  const cancelDiscussionDefinitions = wailsEventOn('discussion:definitions-changed', () => {
-    applyDiscussionDefinitionsChanged();
   });
   // review:comments-changed — one inline review comment SET moved: a plan's
   // (keyed by plan item) or a diff review's (keyed by scope + source key).
@@ -568,6 +557,14 @@ export function setupEventListeners(): () => void {
     applyCompactingState,
   );
 
+  // provider:session_live: whether the thread has a provider session live
+  // or starting, which End Session reads. The snapshot leg is
+  // ListThreadLiveActivity's sessionLive.
+  const cancelSessionLive = wailsEventOn<SessionLivePayload>(
+    'provider:session_live',
+    applySessionLive,
+  );
+
   // provider:subagent_progress — the latest live counters of one running
   // subagent (tool count, tokens, elapsed, activity line). Triage merges
   // each tick over the previous one, so the newest frame is the whole
@@ -587,6 +584,18 @@ export function setupEventListeners(): () => void {
   const cancelBackgroundTray = wailsEventOn<BackgroundTrayEvent>(
     'provider:background_tray',
     applyBackgroundTrayEvent,
+  );
+  // thread:wakes_changed: one loop, watch or reminder of a thread changed,
+  // with the row as it stands (eventsThreadWakes.ts).
+  const cancelThreadWakes = wailsEventOn<Partial<ThreadWakeChange>>(
+    'thread:wakes_changed',
+    (evt, origin) => applyThreadWakesChanged(evt, backendKeyForOrigin(origin.backendId)),
+  );
+  // thread:agent_rows_changed: one request a thread made of another thread
+  // changed, with the row as it stands (eventsThreadAgentRows.ts).
+  const cancelThreadAgentRows = wailsEventOn<Partial<ThreadAgentRowChange>>(
+    'thread:agent_rows_changed',
+    (evt, origin) => applyThreadAgentRowsChanged(evt, backendKeyForOrigin(origin.backendId)),
   );
 
   // provider:background_task_output: the live tail of a running background
@@ -625,6 +634,9 @@ export function setupEventListeners(): () => void {
       if (!noteThread(id, backend, evt.thread ? (evt.thread.ownershipEpoch ?? 0) : undefined)) return;
     }
     applyThreadUpdated(evt);
+    if (id && evt.action !== 'deleted' && typeof evt.thread?.placement === 'string') {
+      publishThreadPlacementFrame(id, evt.thread.placement, backendKeyForOrigin(origin.backendId));
+    }
     // Store removal needs the origin to invalidate that computer's catalog.
     // Forgetting first would make the writer fall back to the home computer.
     if (id && evt.action === 'deleted') forgetThread(id);
@@ -788,19 +800,6 @@ export function setupEventListeners(): () => void {
     applyModeChanged,
   );
 
-  // discussion:message / discussion:state — push-driven replacement for
-  // ChannelView's old 2.5s poll. Routed to every pane whose threadId
-  // matches the event's PARENT thread id (a discussion channel hangs
-  // off the parent, not any one participant child thread). See
-  // eventsDiscussion.ts and docs/architecture/discussion-deliberation.md.
-  const cancelDiscussionMessage = wailsEventOn<DiscussionMessageEvent>(
-    'discussion:message',
-    applyDiscussionMessage,
-  );
-  const cancelDiscussionState = wailsEventOn<DiscussionStateEvent>(
-    'discussion:state',
-    applyDiscussionState,
-  );
   const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
   // The PR pump's CI: pipeline frames under the PR's sequence, and log
   // deltas for the jobs this client follows.
@@ -880,7 +879,6 @@ export function setupEventListeners(): () => void {
     cancelKeybindingsUpdated();
     cancelNewThreadDefaults();
     cancelProviderAccountsChanged();
-    cancelDiscussionDefinitions();
     cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();
@@ -897,8 +895,11 @@ export function setupEventListeners(): () => void {
     cancelCommandLifecycle();
     cancelFastModeState();
     cancelCompactingState();
+    cancelSessionLive();
     cancelSubagentProgress();
     cancelBackgroundTray();
+    cancelThreadWakes();
+    cancelThreadAgentRows();
     cancelBackgroundTaskOutput();
     cancelCodexAgentsReset();
     cancelProviderCommands();
@@ -919,8 +920,6 @@ export function setupEventListeners(): () => void {
     cancelTransportGap();
     cancelModeChanged();
     cancelRuntimeModeChanged();
-    cancelDiscussionMessage();
-    cancelDiscussionState();
     cancelPRUpdated();
     cancelPRCIUpdated();
     cancelPRCILog();
@@ -935,6 +934,5 @@ export function setupEventListeners(): () => void {
     cancelSessionImport();
     cancelHighlightLive();
     cancelHighlightDiffSeed();
-    clearAllDiscussionLiveTail();
   };
 }

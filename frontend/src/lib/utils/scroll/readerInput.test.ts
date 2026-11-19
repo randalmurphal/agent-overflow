@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { setScrollIntentPlatformForTest } from './intent';
 import { watchReaderScrollInput } from './readerInput';
 
 // Which input events on a scroller are the reader scrolling it.
@@ -7,6 +8,7 @@ describe('watchReaderScrollInput', () => {
   afterEach(() => {
     stop();
     document.body.innerHTML = '';
+    setScrollIntentPlatformForTest(null);
   });
 
   function setup() {
@@ -48,6 +50,36 @@ describe('watchReaderScrollInput', () => {
     field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     row.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
     expect(inputs()).toBe(9);
+  });
+
+  it('counts the keys macOS scrolls with when typed into an editor, on macOS only', () => {
+    const { field, inputs } = setup();
+    const type = () => {
+      for (const key of ['PageDown', 'PageUp', 'Home', 'End', 'ArrowDown']) {
+        field.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      }
+    };
+    setScrollIntentPlatformForTest(false);
+    type();
+    expect(inputs()).toBe(0);
+    setScrollIntentPlatformForTest(true);
+    type();
+    expect(inputs()).toBe(4);
+  });
+
+  it('does not count a macOS scroll key the editor it was typed into takes itself', () => {
+    const { field, inputs } = setup();
+    setScrollIntentPlatformForTest(true);
+    field.style.overflowY = 'auto';
+    Object.defineProperty(field, 'scrollHeight', { value: 400, configurable: true });
+    Object.defineProperty(field, 'clientHeight', { value: 100, configurable: true });
+    field.scrollTop = 0;
+    // The field can scroll down and is at its top: End moves the field,
+    // Home has nowhere to go in it and moves the reader's scroller.
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    expect(inputs()).toBe(0);
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    expect(inputs()).toBe(1);
   });
 
   it('counts a touch drag, and not a still finger', () => {

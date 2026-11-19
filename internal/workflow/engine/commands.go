@@ -90,9 +90,13 @@ type pauseStateCommand struct {
 	result *bool
 	reply  chan response
 }
+
+// pauseItemCommand carries the threads of the members the pause reached out
+// through a caller-owned pointer, as amendSeedsCommand carries its answer.
 type pauseItemCommand struct {
-	itemID string
-	reply  chan response
+	itemID  string
+	members *[]string
+	reply   chan response
 }
 type pauseAllActiveCommand struct {
 	reply chan response
@@ -392,7 +396,11 @@ func (e *Engine) loop() {
 		case pauseItemCommand:
 			// Pause only stops work; anything a freed lock releases starts
 			// through startWaiting inside the handler and reports on its own.
-			err = e.pauseItem(command.itemID)
+			members, pauseErr := e.pauseItem(command.itemID)
+			err = pauseErr
+			if command.members != nil {
+				*command.members = members
+			}
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case pauseAllActiveCommand:

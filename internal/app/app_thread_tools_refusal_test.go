@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,9 +50,9 @@ func TestARequestThatCannotStartIsAnsweredByItsOwnCall(t *testing.T) {
 	cause := errors.New("create thread: worktree: git worktree add failed: fatal: 'rb-S1' is already used by worktree at '/work/rb-S1'")
 
 	var token string
-	_, err := adapter.startLocalRequest(t.Context(), f.callerIdentity(), store.ThreadRequest{
+	err := f.startUnconfirmedRequest(t, store.ThreadRequest{
 		Kind: store.ThreadRequestSpawn, Notify: true,
-	}, 0, func(minted string) (string, error) {
+	}, func(minted string) (string, error) {
 		token = minted
 		return "", adapter.failRequest(minted, cause)
 	})
@@ -101,9 +101,9 @@ func TestARefusalWithholdsOnlyADatabaseFailure(t *testing.T) {
 	adapter := f.adapter()
 	cause := fmt.Errorf("accept the request: %w", f.databaseFailure(t))
 	var token string
-	_, err := adapter.startLocalRequest(t.Context(), f.callerIdentity(), store.ThreadRequest{
+	err := f.startUnconfirmedRequest(t, store.ThreadRequest{
 		Kind: store.ThreadRequestSpawn, Notify: true,
-	}, 0, func(minted string) (string, error) {
+	}, func(minted string) (string, error) {
 		token = minted
 		return "", adapter.failRequest(minted, cause)
 	})
@@ -127,8 +127,10 @@ func TestARefusalWithholdsOnlyADatabaseFailure(t *testing.T) {
 	f.nothingOwed(t)
 }
 
-// The real spawn path: a spawn refused after its thread existed, made with
-// notify, leaves nothing owed.
+// A fork whose thread could not keep the spawn's group, its source being
+// outside every project, is refused before its request or thread exists,
+// so a notify spawn leaves nothing owed. A spawn refused after its thread
+// existed is TestASpawnWhoseThreadExistsNamesItInTheRefusal.
 func TestARefusedSpawnWithNotifyQueuesNoMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -147,17 +149,40 @@ func TestARefusedSpawnWithNotifyQueuesNoMessage(t *testing.T) {
 	_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
 		FromThread: source.ID, Prompt: "carry on", Group: "Release", Notify: true,
 	})
-	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest || !strings.Contains(err.Error(), "takes no group or placement") {
 		t.Fatalf("spawn into an impossible group: code = %q, err = %v", code, err)
 	}
 	rows, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 10, 0)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("requests = %+v err %v, want the one refused spawn", rows, err)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("requests = %+v err %v, want none: the refusal comes before the request exists", rows, err)
 	}
-	if rows[0].State != store.ThreadRequestRefused || rows[0].DeliveredHow != store.ThreadWakeInline {
-		t.Fatalf("request = %q delivered %q, want refused and delivered by the call", rows[0].State, rows[0].DeliveredHow)
+	threads, err := f.app.store.ListThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range threads {
+		if thread.ForkedFromThreadID == source.ID {
+			t.Fatalf("the refused fork left thread %s behind", thread.ID)
+		}
 	}
 	f.nothingOwed(t)
+}
+
+// vanishingClaudeAfterTheSpawnIsChecked gives app a Claude binary that a
+// spawn's checks find and that is removed once the spawn's thread exists,
+// before its prompt is sent: the one way a spawn's thread can exist with
+// its provider unable to start.
+func vanishingClaudeAfterTheSpawnIsChecked(t *testing.T, app *App) {
+	t.Helper()
+	binary := createMockBinary(t, "2.1.284 (Claude Code)")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+	app.spawnNamingForTest = func(string) {
+		if err := os.Remove(binary); err != nil {
+			t.Errorf("remove the claude binary: %v", err)
+		}
+	}
 }
 
 // A spawn whose thread was created and whose prompt then could not be sent
@@ -186,10 +211,9 @@ func TestASpawnWhoseThreadExistsNamesItInTheRefusal(t *testing.T) {
 
 	f := newRequestFixture(t)
 	f.holdCallerTurn(t)
-	// No provider to run: the thread is created and its prompt cannot start.
-	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "no-such-claude")}); err != nil {
-		t.Fatalf("set claude binary: %v", err)
-	}
+	// The provider is there when the spawn is checked and gone once its
+	// thread exists, so the prompt cannot start.
+	vanishingClaudeAfterTheSpawnIsChecked(t, f.app)
 	_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "review the branch", Notify: true})
 	_, message, ok := errorsx.PublicDetails(err)
 	if !ok {
@@ -215,40 +239,27 @@ func TestASpawnWhoseThreadExistsNamesItInTheRefusal(t *testing.T) {
 	f.nothingOwed(t)
 }
 
-// What a failed request-minting call establishes depends on which attempt
-// failed. A refusal answering the first attempt means nothing runs under the
-// token. The same refusal answering a retry does not: the reply that was
-// lost may have been an acceptance.
-func TestAPeerRefusalSettlesTheRequestOnlyOnTheFirstAttempt(t *testing.T) {
+// A failed attempt of a request-minting call may have started the request
+// unless the destination answered it with a refusal, which it gives only for
+// a request it did not start. That is what decides whether it is sent again
+// and whether the request can be refused (callThreadPeerRequest); a call the
+// carrier never sent is TestThreadToolsAnUnreachableComputerIsRefusedAtOnce's.
+func TestWhetherAFailedPeerAttemptMayHaveStartedTheRequest(t *testing.T) {
 	t.Parallel()
-	wrote := &rpcclient.Error{Code: threadtools.CodeInvalidRequest, Message: "That request could not be started: not a git repository."}
-	scope := &rpcclient.Error{Code: transport.ErrCodeScopeRequired, Message: "scope missing"}
-	unreadable := &rpcclient.Error{Code: transport.ErrCodeMethodError, Message: "method failed (id: trace)"}
-	neverSent := errorsx.Public("remote_not_paired", "This computer is not paired.", nil)
-	lost := errors.New("the answer was lost on the way back")
-	local := errorsx.Public(threadtools.CodeUnreachable, "Studio answered without a usable result.", nil)
-	last := threadPeerAdmissionAttempts
 	for _, tc := range []struct {
-		name    string
-		attempt int
-		err     error
-		want    threadPeerFailure
-		retry   bool
+		name string
+		err  error
+		ran  bool
 	}{
-		{"the destination refuses the first attempt", 1, wrote, threadPeerRefused, false},
-		{"the destination refuses a retry", 2, wrote, threadPeerUnsettled, false},
-		{"the destination's transport refuses the pairing", 1, scope, threadPeerRefused, false},
-		{"the destination fails in a way this computer cannot read", 1, unreadable, threadPeerUncertain, true},
-		{"the first attempt never reaches it", 1, neverSent, threadPeerRefused, false},
-		{"a retry never reaches it", 2, neverSent, threadPeerUnsettled, false},
-		{"a reply is lost", 1, lost, threadPeerUncertain, true},
-		{"the last reply is lost", last, lost, threadPeerUncertain, false},
-		{"this computer cannot use the answer", 1, local, threadPeerUnsettled, false},
+		{"the destination refuses it", &rpcclient.Error{Code: threadtools.CodeInvalidRequest, Message: "That request could not be started: not a git repository."}, false},
+		{"the destination's transport refuses the pairing", &rpcclient.Error{Code: transport.ErrCodeScopeRequired, Message: "scope missing"}, false},
+		{"the destination fails in a way this computer cannot read", &rpcclient.Error{Code: transport.ErrCodeMethodError, Message: "method failed (id: trace)"}, true},
+		{"the reply is lost", errors.New("the answer was lost on the way back"), true},
+		{"the wait for the reply ends", context.DeadlineExceeded, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			failure, retry := classifyThreadPeerFailure("thread_spawn", tc.attempt, tc.err)
-			if failure != tc.want || retry != tc.retry {
-				t.Fatalf("classify = %d retry %v, want %d retry %v", failure, retry, tc.want, tc.retry)
+			if _, _, ran := threadErrorDetails("thread_spawn", tc.err); ran != tc.ran {
+				t.Fatalf("may have started = %v, want %v", ran, tc.ran)
 			}
 		})
 	}
@@ -327,4 +338,19 @@ func TestASendIntoAFullQueueSaysTheQueueIsFull(t *testing.T) {
 		t.Fatalf("request = %q delivered %q answer %q", rows[0].State, rows[0].DeliveredHow, rows[0].Answer)
 	}
 	f.nothingOwed(t)
+}
+
+// startUnconfirmedRequest writes a request of the caller unconfirmed under a
+// fresh token, as a call does before its destination accepts it, and runs
+// accept with the token: the refusal accept returns is the call's error.
+func (f *requestFixture) startUnconfirmedRequest(t *testing.T, row store.ThreadRequest, accept func(token string) (string, error)) error {
+	t.Helper()
+	row.Token = newThreadRequestToken()
+	row.CallerThreadID = f.caller.ID
+	row.State = store.ThreadRequestUnconfirmed
+	if err := f.app.store.InsertThreadRequest(row); err != nil {
+		t.Fatalf("InsertThreadRequest: %v", err)
+	}
+	_, err := accept(row.Token)
+	return err
 }

@@ -137,9 +137,16 @@ describe('deriveComposerSendState', () => {
   it('keeps every refusal that applies to a send in force for a command', () => {
     for (const refusal of [
       { isDisabled: true }, { sendUngranted: true }, { sending: true }, { sendSuspended: true },
-      { hasBlockingPrompt: true }, { hasUserInputPrompt: true },
+      { hasBlockingPrompt: true }, { hasUserInputPrompt: true }, { askCopy: true },
     ]) {
       expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true, ...refusal })).canSend).toBe(false);
+    }
+  });
+
+  it('sends nothing into an ask copy: a draft or a comment send', () => {
+    for (const draft of [{ hasDraftContent: true }, { hasPlanSource: true, hasDraftPlanComments: true }]) {
+      expect(deriveComposerSendState(input(draft)).canSend).toBe(true);
+      expect(deriveComposerSendState(input({ askCopy: true, ...draft })).canSend).toBe(false);
     }
   });
 });

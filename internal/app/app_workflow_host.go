@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/procutil"
@@ -9,11 +8,13 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/workflow/catalog"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 	"agent-overflow/internal/workflowhost"
+	"agent-overflow/internal/workflowtools"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,7 +87,8 @@ func (h workflowHostAdapter) FindWorktree(project, path string) (gitops.Worktree
 func (h workflowHostAdapter) CutWorktreeFromFreshRef(
 	ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string,
 ) error {
-	return h.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
+	_, err := h.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
+	return err
 }
 
 func (h workflowHostAdapter) DefaultWorktreePath(projectPath, branch string) (string, error) {
@@ -179,16 +181,15 @@ func listWorkflowArtifacts(dataRoot, itemID string) ([]WorkflowArtifact, error) 
 	return artifacts, nil
 }
 
-// The `/workflow` composer context (spec §5, D15/D31). Sending a message that
-// starts with `/workflow` appends a text block telling the agent that the
-// `agent-overflow` command exists, that its credentials are already in the
-// environment, which workflows this project has, and what is already running.
+// The `/workflow` composer context (D31). Sending a message that starts with
+// `/workflow` appends a text block telling the agent which workflow tools its
+// session carries, which workflows this project has, and what is already
+// running.
 //
-// The block's format is owned by internal/aocli (pure, unit-tested); this
-// resolver produces the live data behind it. It is NOT a bound method: the
-// block never reaches the frontend — the send path
-// (app_composer_commands.go) is its only caller, and it appends the block to
-// the provider payload only.
+// The block's format is owned by internal/workflowtools (pure, unit-tested);
+// this resolver produces the live data behind it. It is NOT a bound method: the
+// block never reaches the frontend. The send path (app_composer_commands.go) is
+// its only caller, and it appends the block to the provider payload only.
 
 // workflowComposerBlock renders the `/workflow` block for one thread.
 func (a *App) workflowComposerBlock(threadID string) (string, error) {
@@ -203,12 +204,8 @@ func (a *App) workflowComposerBlock(threadID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	context := aocli.ComposerContext{
-		SessionReady: len(a.sessionAOEnv(threadID)) > 0,
-		// Boot publishes the command under its canonical name and hands the
-		// directory to every session's PATH (D30); an empty cliBinDir means
-		// that failed and the block has to say so.
-		CommandOnPath: a.cliBinDir != "",
+	context := workflowtools.ComposerContext{
+		SessionReady: a.workflowMCPServer().HasThread(threadID),
 	}
 	slug := ""
 	if strings.TrimSpace(thread.ProjectID) != "" {
@@ -218,17 +215,16 @@ func (a *App) workflowComposerBlock(threadID string) (string, error) {
 		}
 		context.ProjectName = projectRow.Name
 		slug = projectRow.Slug
-		context.ProjectSlug = slug
 	}
-	context.SharedDir, context.ProjectDir = aocli.WorkflowSourceDirs(a.workflowDataRoot(), slug)
+	context.SharedDir, context.ProjectDir = catalog.WorkflowSourceDirs(a.workflowDataRoot(), slug)
 
-	resolved, err := aocli.ResolveConfigured(a.workflowDataRoot(), slug)
+	resolved, err := catalog.ResolveConfigured(a.workflowDataRoot(), slug)
 	if err != nil {
 		return "", fmt.Errorf("workflow composer context: %w", err)
 	}
-	context.Workflows = make([]aocli.ComposerWorkflow, 0, len(resolved))
+	context.Workflows = make([]workflowtools.ComposerWorkflow, 0, len(resolved))
 	for _, workflow := range resolved {
-		context.Workflows = append(context.Workflows, aocli.ComposerWorkflow{
+		context.Workflows = append(context.Workflows, workflowtools.ComposerWorkflow{
 			ID: workflow.Workflow.ID, Name: workflow.Workflow.Name, Scope: string(workflow.Scope),
 		})
 	}
@@ -243,15 +239,15 @@ func (a *App) workflowComposerBlock(threadID string) (string, error) {
 		}
 		// Newest first: a composer block is read top-down, and the run someone is
 		// about to ask about is almost always the most recent one.
-		context.Runs = make([]aocli.ComposerRun, 0, len(runs))
+		context.Runs = make([]workflowtools.ComposerRun, 0, len(runs))
 		for i := len(runs) - 1; i >= 0; i-- {
-			context.Runs = append(context.Runs, aocli.ComposerRun{
+			context.Runs = append(context.Runs, workflowtools.ComposerRun{
 				ItemID: runs[i].ID, WorkflowID: runs[i].WorkflowID, State: runs[i].State,
 				Reason: runs[i].Reason, PhaseID: runs[i].CurrentPhaseID,
 			})
 		}
 	}
-	return aocli.RenderComposerContext(context), nil
+	return workflowtools.RenderComposerContext(context), nil
 }
 
 const (

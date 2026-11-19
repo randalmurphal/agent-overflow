@@ -59,18 +59,17 @@ func claudeThinkingOption(thinking settings.ClaudeThinking) provider.ClaudeThink
 
 // promptOverrideResolution is the single decision a spawn makes about the
 // settings-level override, so every downstream consumer reads the same
-// answer from the same settings snapshot. Applied is false when a feature
-// owns the prompt or no entry matched — in which case Entry is the zero
-// value and nothing about the override is in play for this session.
+// answer from the same settings snapshot. Applied is false when no entry
+// matched, in which case Entry is the zero value and nothing about the
+// override is in play for this session.
 type promptOverrideResolution struct {
 	Entry   settings.PromptOverride
 	Applied bool
 }
 
 // applySettingsOwnedAxes stamps the axes Settings owns onto a freshly
-// built options bundle: the system-prompt override (only when no feature
-// already claimed the prompt), the provider's disabled-tool list, the
-// todo-reminder and thinking axes, and the Claude cross-session peer
+// built options bundle: the system-prompt override, the provider's
+// disabled-tool list, the todo-reminder and thinking axes, and the Claude cross-session peer
 // inbox plus the name this thread advertises to peers.
 //
 // SPAWN PATH ONLY — it renders placeholders, which costs a git probe, and
@@ -100,14 +99,6 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 	// one code path rather than two that can disagree.
 	opts.ClaudePeerSessionName = a.peerSessionNameForThread(t)
 
-	// A non-empty prompt at this point means a FEATURE owns it (the
-	// discussion deliberation prompt — see
-	// featureOwnedSystemPrompt, the one definition of that precedence).
-	// Those features already run fully custom prompts and replacing one
-	// would break them.
-	if opts.SystemPrompt != "" {
-		return promptOverrideResolution{}, nil
-	}
 	entry, ok := promptoverride.Match(
 		snapshot.PromptOverridesForProvider(t.Provider),
 		t.Provider,
@@ -140,10 +131,7 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 // change never applies to a running session (docs/decisions.md
 // 2026-10-14): it applies at the thread's next
 // session start, and reconcileStalePromptSessions tells the user which
-// live threads differ. A non-empty opts.SystemPrompt after
-// buildSessionOptions means a feature owns it (currently discussions);
-// that one converges by restart exactly as it always has, so it is left
-// alone. Nothing here matches or renders an override.
+// live threads differ. Nothing here matches or renders an override.
 func (a *App) reconcileSettingsOwnedAxes(t store.Thread, opts *provider.SessionOptions, launch provider.SessionOptions) {
 	opts.DisabledTools = launch.DisabledTools
 	opts.DisableTodoReminders = launch.DisableTodoReminders
@@ -154,10 +142,8 @@ func (a *App) reconcileSettingsOwnedAxes(t store.Thread, opts *provider.SessionO
 	// process that is actually running; the name converges live through
 	// syncPeerSessionName instead.
 	opts.ClaudePeerSessionName = launch.ClaudePeerSessionName
-	if opts.SystemPrompt == "" {
-		opts.SystemPrompt = launch.SystemPrompt
-		opts.SystemPromptOverrideSource = launch.SystemPromptOverrideSource
-	}
+	opts.SystemPrompt = launch.SystemPrompt
+	opts.SystemPromptOverrideSource = launch.SystemPromptOverrideSource
 
 	// Only headless Claude reacts to the remaining axes; Codex and
 	// claude-tui keep their zero values on both paths.
@@ -179,20 +165,6 @@ func (a *App) reconcileSettingsOwnedAxes(t store.Thread, opts *provider.SessionO
 	// DEFERRED restart. Pinning it would make the setting silently never
 	// converge.
 	opts.ClaudeCrossSession = claudeCrossSessionOption(snapshot.ClaudeCrossSessionForProvider(t.Provider))
-}
-
-// featureOwnedSystemPrompt returns the prompt a feature owns for this thread:
-// currently the discussion deliberation prompt. Non-empty means the
-// settings-level override is skipped — those features already run a fully
-// custom prompt and replacing it would break them.
-//
-// The one definition of that precedence rule, and it is evaluated exactly
-// once per build (in buildSessionOptions). Everything downstream reads the
-// answer off opts.SystemPrompt instead: after the build, non-empty means
-// "a feature owns this" and empty means "the settings override may claim
-// it". Re-deriving it later is how the two sides drift.
-func (a *App) featureOwnedSystemPrompt(t store.Thread) string {
-	return a.threadSystemPrompt(t.ID)
 }
 
 // promptOverrideFacts gathers the spawn-time values the placeholders
@@ -360,16 +332,4 @@ func hostOSVersion() string {
 		}
 	})
 	return osVersionValue
-}
-
-func (a *App) threadSystemPrompt(threadID string) string {
-	return a.sessionManager().runtime.ThreadSystemPrompt(threadID)
-}
-
-func (a *App) setThreadSystemPrompt(threadID, prompt string) {
-	a.sessionManager().runtime.SetThreadSystemPrompt(threadID, prompt)
-}
-
-func (a *App) clearThreadSystemPrompt(threadID string) {
-	a.sessionManager().runtime.ClearThreadSystemPrompt(threadID)
 }

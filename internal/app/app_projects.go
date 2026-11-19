@@ -2,11 +2,9 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"slices"
 	"time"
 
@@ -270,7 +268,7 @@ type ProjectDeletionResult struct {
 }
 
 // DeleteProject removes a project from Agent Overflow: every contained thread,
-// every workflow run and automation the project owns, the worktrees the app
+// every workflow run the project owns, the worktrees the app
 // created for those runs, and the project row. A project with active turns or
 // running background tasks is refused: deleting the workspace container must
 // never implicitly interrupt work in one of its threads.
@@ -312,89 +310,22 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if err != nil {
 		return ProjectDeletionResult{}, err
 	}
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
-	threads := make(map[string]store.Thread, len(ids))
-	for _, threadID := range ids {
-		thread, err := a.store.GetThread(threadID)
-		if errors.Is(err, sql.ErrNoRows) {
-			// Deleted since the list (the retention sweep, another client):
-			// nothing left to delete.
-			continue
-		}
-		if err != nil {
-			return ProjectDeletionResult{}, fmt.Errorf("delete project: load thread %s: %w", threadID, err)
-		}
-		threads[threadID] = thread
-	}
-
-	unlocks := make([]func(), 0, len(ids))
-	defer func() {
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
-		}
-	}()
-	for _, threadID := range projectapp.ThreadLockOrder(threads) {
-		unlocks = append(unlocks, a.threadLocks().Lock(threadID))
-	}
-
-	lockedIDs, err := a.store.ListThreadIDsForProject(id)
+	// The project's threads are deleted with what lives under them, a
+	// worker in another project included, by one delete (familyDelete): a
+	// thread it takes that is running, in the project or outside it,
+	// refuses it, read under that thread's lock once its claim fences it.
+	outcome, err := a.deleteThreads(deleteRequest{seeds: ids, cleanup: true, project: id,
+		verified: func(members []store.DeleteMember) error { return a.checkProjectUnchanged(id, members, footprint) }})
 	if err != nil {
 		return ProjectDeletionResult{}, err
 	}
-	slices.Sort(lockedIDs)
-	lockedIDs = slices.Compact(lockedIDs)
-	// A thread removed while these locks were awaited was removed whole by
-	// its deleter, which held the same lock. Only a thread added since the
-	// list escapes this deletion's locks.
-	for _, threadID := range lockedIDs {
-		if _, listed := threads[threadID]; !listed {
-			return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
-		}
-	}
-	maps.DeleteFunc(threads, func(threadID string, _ store.Thread) bool {
-		_, still := slices.BinarySearch(lockedIDs, threadID)
-		return !still
-	})
-	ids = lockedIDs
-	// The same guard for the workflow side: the cleanup above ran unlocked, and a
-	// cron automation firing in that window would start a run this deletion never
-	// described and never cleaned up after.
-	lockedFootprint, err := a.projectApplication().WorkflowFootprint(id)
-	if err != nil {
-		return ProjectDeletionResult{}, err
-	}
-	if !footprint.SameAs(lockedFootprint) {
-		return ProjectDeletionResult{}, fmt.Errorf("delete project: contained workflow work changed during deletion; retry")
-	}
-
-	var deletedLocalIDs []string
-	for _, threadID := range ids {
-		retired, err := a.threadApplication().CheckCleanup(threadID)
-		if err != nil {
-			return ProjectDeletionResult{}, err
-		}
-		if retired {
-			continue
-		}
-		deletedLocalIDs = append(deletedLocalIDs, threadID)
-		reason, err := a.threadActivityBlockReason(threadID)
-		if err != nil {
-			return ProjectDeletionResult{}, fmt.Errorf("delete project: check thread %s activity: %w", threadID, err)
-		}
-		if reason != "" {
-			return ProjectDeletionResult{}, fmt.Errorf("cannot delete project while thread %s is running: %s", threadID, reason)
-		}
-	}
-
-	for _, threadID := range ids {
-		parentID := threads[threadID].ParentThreadID
-		if _, parentIsInProject := threads[parentID]; parentIsInProject {
-			continue
-		}
-		if err := a.deleteThreadTreeWithSubtreeLocksHeld(threadID); err != nil {
-			return ProjectDeletionResult{}, fmt.Errorf("delete project: delete thread %s: %w", threadID, err)
-		}
+	// A thread whose destroy failed keeps the threads above it, and a
+	// project thread kept keeps the project: removing it again finishes
+	// them.
+	if len(outcome.failed) > 0 {
+		failed := a.workerFailures(outcome.failed)
+		return ProjectDeletionResult{}, fmt.Errorf("delete project: thread %s could not be deleted, so the project was not removed; remove it again to finish: %s",
+			failed[0].ThreadID, failed[0].Error)
 	}
 	// The cleanup above frees disk and stops processes; it never touches a row,
 	// because a run record is not litter — it is the history the app is being
@@ -415,11 +346,6 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if err := a.store.DeleteProjectWorkflowRecords(id); err != nil {
 		return ProjectDeletionResult{}, err
 	}
-	// Automations went with those rows; the scheduler still has them armed until
-	// it re-reads.
-	if err := a.refreshWorkflowSchedule(); err != nil {
-		return ProjectDeletionResult{}, fmt.Errorf("delete project %s: refresh automation schedule: %w", id, err)
-	}
 	if err := a.store.DeleteProject(id); err != nil {
 		if errors.Is(err, store.ErrProjectHasThreads) {
 			return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
@@ -429,8 +355,34 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	a.broadcastProjectDeleted(id)
 	// The same ID now belongs to another computer after a move. Returning its
 	// retired cache ID would make the frontend close that computer's live pane.
-	result.ThreadIDs = slicesx.OrEmpty(deletedLocalIDs)
+	result.ThreadIDs = slicesx.OrEmpty(outcome.deleted)
 	return result, nil
+}
+
+// checkProjectUnchanged refuses a project removal whose threads or workflow
+// work changed since it listed them and cleaned up the work: a thread added
+// since is not among the threads its delete claimed, and a run started
+// since was never cleaned up after. It runs once the delete verified every
+// thread, just before its commit; a thread added after it keeps the project
+// row, which DeleteProject then reports.
+func (a *App) checkProjectUnchanged(id string, members []store.DeleteMember, footprint projectapp.WorkflowFootprint) error {
+	ids, err := a.store.ListThreadIDsForProject(id)
+	if err != nil {
+		return err
+	}
+	for _, threadID := range ids {
+		if !slices.ContainsFunc(members, func(member store.DeleteMember) bool { return member.ThreadID == threadID }) {
+			return fmt.Errorf("delete project: contained threads changed during deletion; retry")
+		}
+	}
+	current, err := a.projectApplication().WorkflowFootprint(id)
+	if err != nil {
+		return err
+	}
+	if !footprint.SameAs(current) {
+		return fmt.Errorf("delete project: contained workflow work changed during deletion; retry")
+	}
+	return nil
 }
 
 // ensureProjectForWorkspace resolves workspacePath to its project through

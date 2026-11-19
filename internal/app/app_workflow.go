@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/workflow/catalog"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/aocli"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/project"
@@ -23,7 +23,6 @@ import (
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
-	"agent-overflow/internal/workflow/scheduler"
 	"agent-overflow/internal/workflowapp"
 )
 
@@ -166,7 +165,7 @@ func (s workflowDefinitionSource) resolve(ctx context.Context, projectID, workfl
 	if err != nil {
 		return engine.ResolvedDefinition{}, fmt.Errorf("workflow definition: load project %q: %w", projectID, err)
 	}
-	calls, err := aocli.NewCallResolver(s.configRoot, projectRow.Slug)
+	calls, err := catalog.NewCallResolver(s.configRoot, projectRow.Slug)
 	if err != nil {
 		return engine.ResolvedDefinition{}, err
 	}
@@ -174,7 +173,7 @@ func (s workflowDefinitionSource) resolve(ctx context.Context, projectID, workfl
 	if scope == "" {
 		resolved, err = calls.ResolveCall(workflowID)
 	} else {
-		resolved, err = aocli.ResolveWorkflow(s.configRoot, projectRow.Slug, workflowID, scope)
+		resolved, err = catalog.ResolveWorkflow(s.configRoot, projectRow.Slug, workflowID, scope)
 	}
 	if err != nil {
 		return engine.ResolvedDefinition{}, err
@@ -258,36 +257,22 @@ func (a *App) releaseWorkflowStartsHeldForBoot() error {
 	return nil
 }
 
-// startWorkflowAutomation arms the two things that make a run happen with
-// nobody asking: the self-resume timers and the §11 scheduler.
+// armWorkflowAutoResumes re-arms the self-resume timers, the one thing that
+// makes a run continue with nobody asking.
 //
-// Split out of initWorkflowEngine because those two are the workflow half of
-// the activation gate's set (app_activation.go). Rebuilding engine state from
-// SQLite is what a supervisor trial has to prove; firing a trigger into a
-// backend that may be rolled back in ninety seconds is what it must not do —
-// an auto-resume's boot delay is thirty seconds, comfortably inside a trial's
+// Split out of initWorkflowEngine because it is the workflow half of the
+// activation gate's set (app_activation.go). Rebuilding engine state from
+// SQLite is what a supervisor trial has to prove; resuming a run in a backend
+// that may be rolled back in ninety seconds is what it must not do. An
+// auto-resume's boot delay is thirty seconds, comfortably inside a trial's
 // budget, and what it resumes is a provider turn that spends real tokens and
 // runs real commands.
 //
-// On every ordinary boot this runs inline from Start, in the same order and
-// with the same fatal-on-failure behaviour it had inside initWorkflowEngine.
-func (a *App) startWorkflowAutomation() error {
-	// Self-resume schedules are re-armed over the engine that just rebuilt: a
-	// timer must not be able to fire into a run the rebuild has not decided
-	// about yet, and the rebuild is what parks the runs a crash interrupted.
+// The timers are armed over the engine that just rebuilt: a timer must not be
+// able to fire into a run the rebuild has not decided about yet, and the
+// rebuild is what parks the runs a crash interrupted.
+func (a *App) armWorkflowAutoResumes() {
 	a.workflowApplication().SweepAutoResumes()
-	// The §11 scheduler starts last and over the running engine: a trigger must
-	// never be able to fire into an engine that does not exist yet.
-	if err := a.initWorkflowScheduler(); err != nil {
-		if closeErr := a.workflowApplication().AbortEngine(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close workflow engine: %w", closeErr))
-		}
-		if a.triage != nil {
-			a.triage.SetUsageWorkItemResolver(nil)
-		}
-		return err
-	}
-	return nil
 }
 
 func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
@@ -299,40 +284,6 @@ func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
 		return nil, fmt.Errorf("workflow engine unavailable")
 	}
 	return workflowEngine, nil
-}
-
-// Scheduler ownership lives in workflowapp. These adapters retain the startup,
-// shutdown, and automation-start integration points on App.
-func (a *App) initWorkflowScheduler() error {
-	return a.workflowApplication().StartScheduler(a.startAutomationRun, scheduler.SystemClock())
-}
-
-func (a *App) stopWorkflowScheduler(ctx context.Context) error {
-	return a.workflowApplication().StopScheduler(ctx)
-}
-
-func (a *App) requireWorkflowScheduler() (*scheduler.Scheduler, error) {
-	if a.shuttingDown.Load() {
-		return nil, ErrShuttingDown
-	}
-	workflowScheduler := a.workflowApplication().Scheduler()
-	if workflowScheduler == nil {
-		return nil, fmt.Errorf("workflow scheduler unavailable")
-	}
-	return workflowScheduler, nil
-}
-
-// startAutomationRun is the scheduler's only host port. It deliberately uses
-// the same validated start path as every other producer and stamps provenance.
-func (a *App) startAutomationRun(automation store.Automation, goal string, seeds json.RawMessage) (string, error) {
-	item, err := a.startWorkflowRun(
-		automation.ProjectID, automation.WorkflowID, automation.WorkflowScope, goal, seeds,
-		nil, "", false, scheduler.Source, automation.ID,
-	)
-	if err != nil {
-		return "", err
-	}
-	return item.ID, nil
 }
 
 // WorkflowScheduleResume arms a parked run's resume at an explicit time. This
@@ -435,7 +386,7 @@ func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string
 	normalizedSeeds := append(json.RawMessage(nil), seeds...)
 	// Agent-supplied seeds are untrusted input and are validated against the
 	// workflow's declared inputs before anything starts, whether they came from
-	// a conversation's `ao run start` or a granted phase's. The manual/harness
+	// a conversation's `run_start` or a granted phase's. The manual/harness
 	// contract is preserved as-is: those callers may intentionally let the
 	// workflow runner derive values from Goal.
 	if source == workflowSourceAgent {

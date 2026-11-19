@@ -28,6 +28,7 @@ beforeEach(() => {
 const NO_ROWS_LOADED = {
   getItemById: () => undefined,
   loadedItems: () => [],
+  threadId: () => null,
 };
 
 const SHORT = 'ship it';

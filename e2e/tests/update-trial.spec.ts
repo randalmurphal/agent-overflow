@@ -15,12 +15,11 @@
 // claude, codex, gh and glab first on PATH, which record each call: the
 // refused boot and the parked trial start no provider, and the live boot's
 // provider probes reach the fakes.
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, copyFile, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
+import { execProduct, productBinary } from '../src/product-process.js';
 import { test, expect } from './fixtures.js';
 import {
   buildSandbox,
@@ -35,9 +34,8 @@ import {
   type HeadlessBackend,
   type Sandbox,
 } from './update-launcher-helpers.js';
-import { buildVersion, harnessTool } from './upgrade-corpus-tools.js';
+import { buildVersion } from './upgrade-corpus-tools.js';
 
-const run = promisify(execFile);
 const FIXTURE_VERSION = 118;
 // The launcher's own limits are the release upgrade check's concern; here
 // every wait is a generous test timeout.
@@ -47,8 +45,8 @@ const BOOT_TIMEOUT_MS = 60_000;
 const STOP_TIMEOUT_MS = 30_000;
 
 async function writeFixture(dbPath: string): Promise<void> {
-  await run(harnessTool('ao-store-test'), ['-test.run', '^TestHistoryRepairHarnessFixture$', '-test.count=1'], {
-    env: { ...process.env, AO_TEST_HISTORY_REPAIR_FIXTURE: dbPath },
+  await execProduct(productBinary('ao-store-test'), ['-test.run', '^TestHistoryRepairHarnessFixture$', '-test.count=1'], {
+    env: { AO_TEST_HISTORY_REPAIR_FIXTURE: dbPath },
     timeout: 120_000,
   });
   // The test skips, and exits 0, when it is not handed a path.
@@ -77,7 +75,7 @@ async function schemaVersion(sb: Sandbox): Promise<number> {
       await copyFile(path.join(dir, name), path.join(copy, name));
     }
   }
-  const { stdout } = await run(harnessTool('ao-harness'), ['-o', 'json', 'db', '--file', path.join(copy, 'agent-overflow.db'),
+  const { stdout } = await execProduct(productBinary('ao-harness'), ['-o', 'json', 'db', '--file', path.join(copy, 'agent-overflow.db'),
     'SELECT MAX(version) AS v FROM migration_versions'], { timeout: 30_000 });
   await rm(copy, { recursive: true, force: true });
   return (JSON.parse(stdout) as Array<{ v: number }>)[0].v;

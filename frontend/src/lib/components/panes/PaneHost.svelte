@@ -19,6 +19,7 @@
     getPromotedPaneId,
     isCompanionKind,
     isToolKind,
+    paneItemMinWidthPx,
     type PaneLayoutItem,
   } from '../../stores/paneLayout.svelte';
   import { setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
@@ -454,9 +455,9 @@
   // widths when the window is wider than their sum; shrink-0 in the
   // class list keeps a narrower window as horizontal scroll instead of
   // squeezing below the stored width.
-  function paneSectionStyle(widthPx: number): string {
+  function paneSectionStyle(item: PaneLayoutItem): string {
     if (compact) return 'flex:0 0 100%;min-width:100%';
-    return `flex-grow:${widthPx};flex-basis:${widthPx}px;min-width:${minPaneWidth}px`;
+    return `flex-grow:${item.widthPx};flex-basis:${item.widthPx}px;min-width:${paneItemMinWidthPx(item, minPaneWidth)}px`;
   }
 
   // A promoted section is laid over the strip's visible area: the host's
@@ -464,7 +465,7 @@
   // style above. Above the dividers (z-20), below drop indicators (z-40)
   // and the drag shield.
   function sectionStyle(item: PaneLayoutItem): string {
-    if (shownPromotedId !== item.paneId) return paneSectionStyle(item.widthPx);
+    if (shownPromotedId !== item.paneId) return paneSectionStyle(item);
     return `position:absolute;top:0;bottom:0;left:${promotion.lockedLeft}px;width:100%;z-index:30`;
   }
 
@@ -512,7 +513,7 @@
              reveals read it in place of the section (paneSlotById). -->
         <div
           class="min-h-0 min-w-0 shrink-0"
-          style={paneSectionStyle(item.widthPx)}
+          style={paneSectionStyle(item)}
           data-pane-slot={item.paneId}
           data-testid="pane-promoted-slot"
           aria-hidden="true"
@@ -554,7 +555,7 @@
           ].join(' ')}
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
-          data-pane-min-width={minPaneWidth}
+          data-pane-min-width={paneItemMinWidthPx(item, minPaneWidth)}
           data-pane-width={item.widthPx}
           data-pane-focused={focusedPaneId === item.paneId}
           data-pane-promoted={promoted}
@@ -572,21 +573,22 @@
                  one pane tears down and reports that pane alone, never the
                  strip. -->
             <RenderBoundary label="This panel" testId="pane-render-error">
-              {#if item.kind === 'side-chat'}
-                <!-- A side chat is a companion by lifetime, not by surface: it
-                     hosts an ordinary ChatView over its own scratch thread,
-                     registered in the pane registry under this companion pane
-                     id. -->
-                {@const sideChatPane = getPane(item.paneId)}
-                {#if sideChatPane?.threadId}
-                  <ChatView pane={sideChatPane} />
+              {#if item.kind === 'side-chat' || item.kind === 'agent-thread'}
+                <!-- A side chat and an agent thread companion are companions by
+                     lifetime, not by surface: each hosts an ordinary ChatView,
+                     over a side chat's own scratch thread or over the thread an
+                     Agents row went to, registered in the pane registry under
+                     this companion pane id. -->
+                {@const hostedPane = getPane(item.paneId)}
+                {#if hostedPane?.threadId}
+                  <ChatView pane={hostedPane} />
                 {:else}
                   <div class="flex justify-end gap-1 border-b border-border-subtle p-2">
                     <PanePromoteButton paneId={item.paneId} />
                     <PaneCloseButton paneId={item.paneId} />
                   </div>
-                  <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="side-chat-preparing">
-                    <SteppedSpinner /> Preparing side chat…
+                  <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="{item.kind}-preparing">
+                    <SteppedSpinner /> {item.kind === 'side-chat' ? 'Preparing side chat…' : 'Opening thread…'}
                   </div>
                 {/if}
               {:else if item.kind === 'take-control'}

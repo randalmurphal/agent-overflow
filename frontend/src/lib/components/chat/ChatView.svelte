@@ -3,12 +3,13 @@
   import { threadHasScope } from '../../transport/entityScopes';
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { threadUsesDiscussionSurface } from '../../stores/threadPaneShared';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
+  import { assistantsOffNote, hiddenAssistantThread, threadComputer } from '../../stores/assistants.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ShellRunCard from '../composer/ShellRunCard.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
+  import OwnMemoryBanner from './OwnMemoryBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ThreadPaneFind from './ThreadPaneFind.svelte';
@@ -87,15 +88,31 @@
   //
   // Both also WRITE the thread (ForkThreadFromMessage, the edit's revert
   // and resend) under `threads:operate`, so a session without it is
-  // offered neither: the gate lands here, on the same single point.
+  // offered neither: the gate lands here, on the same single point. An
+  // ask's copy (Thread.askCopy) takes no message from a person, so it is
+  // offered neither, as an agent pane, which passes no actions, is not.
+  const askCopy = $derived(Boolean(pane.thread?.askCopy));
+  // An assistant's thread while its computer has assistants off stays
+  // readable and takes nothing: its composer gives way to a line saying
+  // why, and its messages offer no fork, edit or run. An edit open when
+  // they go off closes, its text kept in the composer's draft.
+  const assistantsOff = $derived(pane.thread ? hiddenAssistantThread(pane.thread) : false);
+  $effect(() => {
+    if (assistantsOff && editResend.stage !== null) editResend.closeKeepingDraft();
+  });
   const supportsMessageAnchorActions = $derived(
-    providerSupports(pane.thread?.provider, 'fork')
+    !askCopy
+      && !assistantsOff
+      && providerSupports(pane.thread?.provider, 'fork')
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   // Run on a shell code block runs a command here and sends its output to the
-  // thread, so it is offered only to a session granted both.
+  // thread, so it is offered only to a session granted both, and never in an
+  // ask's copy, which takes no message.
   const canRunShell = $derived(
-    threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
+    !askCopy
+      && !assistantsOff
+      && threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   // On a phone the edit happens in the composer's slot, where the keyboard
@@ -275,6 +292,7 @@
       thread.id,
       thread.lastReadAt ?? '',
       thread.latestTurnCompletedAt ?? '',
+      thread.attention?.at ?? '',
       thread.hasIncompleteTurn ? 'interrupted' : '',
       thread.hasFailedTurn ? 'failed' : '',
       pane.timelineRevision,
@@ -285,7 +303,7 @@
     // Interrupted and Failed are unseen read-state with no completion
     // of their own to read up to (an orphan error has no turn at all),
     // so they force a stamp at now.
-    const shouldClearAttention = thread.hasIncompleteTurn === true || thread.hasFailedTurn === true;
+    const forceReadNow = thread.hasIncompleteTurn === true || thread.hasFailedTurn === true;
     // Completion knowledge lives in two places that advance
     // independently: the thread row (turn_completed push / sidebar
     // resync) and the pane's settled-turn record (refreshFromBackend).
@@ -293,21 +311,24 @@
     // fresher settled turn left the read target behind a completion the
     // user was looking at, so the sidebar "Completed" pill could never
     // clear after the final turn_completed fell into a transport gap.
+    // An attention flag its agent raised is read the same way, up to the
+    // time it was raised.
     const completions = [
       thread.latestTurnCompletedAt,
       pane.latestSettledTurn?.completedAt,
+      thread.attention?.at,
     ].filter((value): value is number => value !== undefined);
     const readTarget = completions.length > 0
       ? Math.max(...completions)
-      : (shouldClearAttention ? Date.now() : undefined);
+      : (forceReadNow ? Date.now() : undefined);
     if (readTarget === undefined) {
       return;
     }
-    if (!shouldClearAttention && thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
+    if (!forceReadNow && thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
       return;
     }
     const readAt = Math.max(Date.now(), readTarget);
-    const readPatch = shouldClearAttention
+    const readPatch = forceReadNow
       ? { lastReadAt: readAt, hasIncompleteTurn: false, hasFailedTurn: false }
       : { lastReadAt: readAt };
     untrack(() => {
@@ -368,10 +389,9 @@
     scheduleDomUiTrace('chat', 'chat.dom', () => snapshotChatDomForTrace(chatRoot));
   });
 
-  let inDiscussionMode = $derived(threadUsesDiscussionSurface(pane.thread));
   // Terminal threads render a full-pane terminal surface instead of the chat
-  // machinery (composer, timeline) — the same whole-surface swap
-  // discussion mode does. No provider session is ever started for these.
+  // machinery (composer, timeline). No provider session is ever started for
+  // these.
   let inTerminalMode = $derived(
     !!pane.thread && pane.thread.mode === 'terminal',
   );
@@ -470,6 +490,10 @@
       scope={pane.threadId ? { threadId: pane.threadId } : null}
       root={chatColumn ?? null}
     />
+    <!-- A standing warning with no dismissal takes its own row, so it never
+         covers the start of the conversation the way the overlay banners
+         may. -->
+    <OwnMemoryBanner thread={pane.thread} />
 
     <!--
       Single growing region: the timeline takes the entire remaining
@@ -519,7 +543,16 @@
             </div>
           </div>
         {/if}
-        <div class:hidden={editSheetSession !== null}>
+        {#if assistantsOff}
+          <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-4 compact:pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <p class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-3 py-2 text-xs text-fg-muted" data-testid="assistants-off-note">
+              {assistantsOffNote(threadComputer(pane.thread?.id ?? ''))}
+            </p>
+          </div>
+        {/if}
+        <!-- Hidden rather than unmounted, as under the edit sheet: the
+             draft and its prompts survive until assistants are back. -->
+        <div class:hidden={editSheetSession !== null || assistantsOff}>
           <Composer
             {pane}
             {draft}
@@ -532,20 +565,7 @@
   </div>
 {/snippet}
 
-{#if pane.thread && inDiscussionMode}
-  <!-- Lazy for the same reason as TerminalView below: the discussion
-       surface (ChannelView + editor) is mode-gated, so its chunk stays
-       out of the eager startup graph. -->
-  {#await import('../discussion/DiscussionView.svelte')}
-    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading discussion...</div>
-  {:then { default: DiscussionView }}
-    <DiscussionView {pane} />
-  {:catch err}
-    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="discussion-load-error">
-      Failed to load discussion: {err instanceof Error ? err.message : String(err)}
-    </div>
-  {/await}
-{:else if pane.thread && inTerminalMode}
+{#if pane.thread && inTerminalMode}
   <!-- Lazy: TerminalView pulls the xterm stack (terminal-vendor +
        TerminalSurface chunks, ~900KB). A static import here would put
        them back in the eager startup graph that LazyThreadTerminalDrawer

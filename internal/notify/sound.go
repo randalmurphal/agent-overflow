@@ -11,7 +11,7 @@ package notify
 // sound says nothing, so there is nothing here to redact and nothing a
 // listening client could read off the channel that it could not already.
 
-// SoundEvent is the reaction a cue is for. Three, not six: the kinds answer
+// SoundEvent is the reaction a cue is for. Three, not seven: the kinds answer
 // three questions a person acts on differently — the agent finished, the
 // agent needs you, something is wrong — and a cue picker per notify.Kind
 // would be four pickers for a distinction nobody makes by ear.
@@ -39,6 +39,7 @@ var soundEvents = map[Kind]SoundEvent{
 	KindProviderSignedOut: SoundAttention,
 	KindWorkflowAttention: SoundAttention,
 	KindAppUpdate:         SoundAttention,
+	KindThreadAttention:   SoundInputNeeded,
 }
 
 // SoundEventFor answers which cue event a kind belongs to. An undeclared kind

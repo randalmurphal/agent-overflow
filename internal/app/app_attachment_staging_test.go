@@ -83,7 +83,7 @@ func TestUploadRevalidatesOwnerBeforePublication(t *testing.T) {
 			release, done := startPausedAttachment(t, app, ctx)
 			switch change {
 			case "delete":
-				if err := app.DeleteThread("thr-a"); err != nil {
+				if err := app.deleteThread("thr-a"); err != nil {
 					t.Fatal(err)
 				}
 			case "empty-draft-delete":
@@ -135,7 +135,7 @@ func TestUploadRefusesMissingOrTransferringOwnerBeforeReading(t *testing.T) {
 	for _, missing := range []bool{false, true} {
 		app := newAttachmentTestApp(t)
 		if missing {
-			if err := app.DeleteThread("thr-a"); err != nil {
+			if err := app.deleteThread("thr-a"); err != nil {
 				t.Fatal(err)
 			}
 		} else {

@@ -1,17 +1,28 @@
 // The chip on a user row an agent in another thread wrote.
 //
 // `meta.origin = "agent-thread"` with `meta.originThread` is what the thread
-// tools stamp on a spawn's first message, on every thread_send, and on a wake
-// carrying one thread's answer back; a wake that speaks for several threads
-// is an `app` row instead (docs/specs/agent-thread-tools.md, Attribution). The chip says "from <title>", adds "on <computer>" when the
-// source is a different computer than the one showing the row, and opens
-// that thread when this client is attached to its computer and that socket
-// is up. Offline, unpaired or unknown, it reads the same and does nothing:
-// a dead link is worse than a label.
+// tools stamp on a spawn's first message, on every thread_send, and on every
+// wake carrying an answer back (docs/specs/agent-thread-tools.md,
+// Attribution); a wake that lists several threads shows no chip
+// (utils/agentMessage.ts). The chip says "from <title>", adds "on
+// <computer>" when the source is a different computer than the one showing
+// the row, and opens that thread when this client is attached to its
+// computer and that socket is up. Offline, unpaired or unknown, it reads
+// the same and does nothing: a dead link is worse than a label.
 
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
-import { openThreadInPane, findPaneShowingThread, focusPane } from '../../stores/panes.svelte';
+import {
+  findPaneShowingThread,
+  focusPane,
+  getFocusedPaneOrNull,
+  openThreadInPane,
+  PANE_MOVED_ON,
+  paneUnchanged,
+  revealPane,
+  syncThreadReply,
+} from '../../stores/panes.svelte';
+import { threadFramedSince, threadRowFrameMark } from '../../stores/threadRowFrames';
 import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
@@ -44,6 +55,17 @@ function originBackend(computerId: string) {
 }
 
 /**
+ * The attached computer that holds a thread a row shown by `viewer` names
+ * with `computerId`: `viewer` itself for no computer, null when this
+ * client is not attached to that computer, which can then neither open
+ * the thread nor act on it.
+ */
+export function agentThreadBackend(computerId: string, viewer: BackendKey): BackendKey | null {
+  if (computerId === '') return viewer;
+  return originBackend(computerId)?.id ?? null;
+}
+
+/**
  * The chip for one origin, as rendered on a row shown by `viewer`.
  *
  * An origin with no computer, or one that resolves to the computer showing
@@ -54,41 +76,108 @@ function originBackend(computerId: string) {
 export function agentThreadOriginChip(
   origin: UserMessageOriginThread,
   viewer: BackendKey,
+  place?: PlaceThread,
 ): AgentThreadOriginChip {
   const title = origin.title || 'another thread';
-  const entry = originBackend(origin.computerId);
-  const elsewhere = origin.computerId !== '' && entry?.id !== viewer;
-  const computer = entry ? backendDisplayName(entry) : origin.computerName;
-  const label = elsewhere && computer ? `from ${title} on ${computer}` : `from ${title}`;
-  if (!entry && origin.computerId !== '') return { label, open: null };
-  const backend = entry?.id ?? viewer;
-  if (!backendReachable(backend)) return { label, open: null };
-  return { label, open: () => { void openAgentThreadOrigin(origin, backend); } };
+  const { computer, open } = agentThreadOpener(origin, viewer, place);
+  return { label: computer ? `from ${title} on ${computer}` : `from ${title}`, open };
+}
+
+export interface AgentThreadOpener {
+  /** The thread's computer by name when it is not `viewer`, else ''. */
+  computer: string;
+  /** Null when this client cannot reach that computer. */
+  open: (() => void) | null;
+}
+
+/** Puts a thread the person opened on screen. */
+export type ThreadPlacer = (thread: Thread) => Promise<unknown>;
+
+/**
+ * Where an open puts its thread, made when the person clicks: the thread
+ * may need a read first, and the placer refuses a pane that moved on
+ * during it.
+ */
+export type PlaceThread = () => ThreadPlacer;
+
+/**
+ * The focused pane, as it is now. The placement is refused when focus has
+ * moved to another pane, or that pane to another thread, by the time the
+ * thread is placed; with no thread pane focused now, it lands where an
+ * open with no pane named does.
+ */
+function focusedPanePlacer(): ThreadPlacer {
+  const source = getFocusedPaneOrNull();
+  const unchanged = source ? paneUnchanged(source) : null;
+  return async (thread) => {
+    if (source && unchanged && (getFocusedPaneOrNull() !== source || !unchanged())) throw new Error(PANE_MOVED_ON);
+    return openThreadInPane(thread);
+  };
 }
 
 /**
- * Open the source thread in a pane. The row is read from its own computer
+ * How a row shown by `viewer` reaches a thread another agent named: the
+ * computer to name beside it, and the open action when that computer is
+ * attached and up. Shared by the origin chip, the AO tool rows' links and
+ * the Agents tray, which passes `place` to open it in its companion pane.
+ */
+export function agentThreadOpener(
+  origin: UserMessageOriginThread,
+  viewer: BackendKey,
+  place?: PlaceThread,
+): AgentThreadOpener {
+  const entry = originBackend(origin.computerId);
+  const elsewhere = origin.computerId !== '' && entry?.id !== viewer;
+  const computer = elsewhere ? (entry ? backendDisplayName(entry) : origin.computerName) : '';
+  const backend = agentThreadBackend(origin.computerId, viewer);
+  if (backend === null || !backendReachable(backend)) return { computer, open: null };
+  return { computer, open: () => { void openAgentThreadOrigin(origin, backend, place?.()); } };
+}
+
+/**
+ * Open the source thread in a pane, by default the focused one, otherwise
+ * where `place` puts it; either is fixed when this is called, before any
+ * read, and refuses a pane that moved on. The row is read from its own computer
  * when this client does not already hold it, and the read teaches the RPC
  * router which computer owns the id, so the pane's own calls route there.
+ * A thread:updated frame for that row which lands during the read, a whole
+ * row or a patch, reaches nothing (no list or pane holds the row yet), so
+ * the row is read again once the pane holds it, and that read is applied
+ * through the reply guard. The thread is open by then: a failed second read
+ * is reported as a failed refresh, and the pane converges on the next frame.
  */
 export async function openAgentThreadOrigin(
   origin: UserMessageOriginThread,
   backend: BackendKey,
+  place: ThreadPlacer = focusedPanePlacer(),
 ): Promise<void> {
   try {
     const open = findPaneShowingThread(origin.threadId);
     if (open) {
       focusPane(open.paneId);
+      revealPane(open.paneId);
       return;
     }
-    let thread = getThreadById(origin.threadId);
-    if (!thread) {
-      const row = (await withBackendTarget(backend, () => GetThread(origin.threadId))) as Thread | null;
-      if (!row?.id) throw new Error('That thread is no longer on that computer.');
-      noteThread(row.id, backend, row.ownershipEpoch ?? 0);
-      thread = row;
+    const held = getThreadById(origin.threadId);
+    if (held) {
+      await place(held);
+      return;
     }
-    await openThreadInPane(thread);
+    const mark = threadRowFrameMark();
+    const row = (await withBackendTarget(backend, () => GetThread(origin.threadId))) as Thread | null;
+    if (!row?.id) throw new Error('That thread is no longer on that computer.');
+    noteThread(row.id, backend, row.ownershipEpoch ?? 0);
+    await place(row);
+    if (!threadFramedSince(row.id, mark)) return;
+    const again = threadRowFrameMark();
+    let fresh: Thread | null;
+    try {
+      fresh = (await withBackendTarget(backend, () => GetThread(row.id))) as Thread | null;
+    } catch (err) {
+      addErrorToast(`Opened ${origin.title || 'that thread'}, but could not refresh it: ${errString(err)}`, err);
+      return;
+    }
+    if (fresh?.id) syncThreadReply(fresh, again);
   } catch (err) {
     addErrorToast(`Could not open ${origin.title || 'that thread'}: ${errString(err)}`, err);
   }

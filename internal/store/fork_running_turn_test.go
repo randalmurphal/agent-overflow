@@ -58,8 +58,9 @@ func TestPointerForkOwnsTheSourcesUnsettledTurns(t *testing.T) {
 	if got := forkTurns(); !slices.Equal(got, want) {
 		t.Fatalf("the source's settle changed the fork's turns to %+v", got)
 	}
-	if turn, _, err := s.GetTurnByThreadIndex("src", 0); err != nil || turn.CompletedAt == nil || *turn.CompletedAt != 50 {
-		t.Fatalf("source turn 0 = %+v, %v; want settled by the sweep", turn, err)
+	// The sweep ends it at its last recorded activity, u0's write at 1.
+	if turn, _, err := s.GetTurnByThreadIndex("src", 0); err != nil || turn.CompletedAt == nil || *turn.CompletedAt != 1 || turn.StopReason != "interrupted" {
+		t.Fatalf("source turn 0 = %+v, %v; want settled by the sweep at its last activity", turn, err)
 	}
 }
 

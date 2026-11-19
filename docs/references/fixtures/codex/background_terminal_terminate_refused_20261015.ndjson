@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":3,"method":"thread/backgroundTerminals/terminate","params":{"threadId":"01a14034-1a17-7ca0-be4b-7fabb2b27df8"}}
+{"error":{"code":-32600,"message":"Invalid request: missing field `processId`"},"id":3}
+{"jsonrpc":"2.0","id":4,"method":"thread/backgroundTerminals/terminate","params":{"threadId":"01a14034-1a17-7ca0-be4b-7fabb2b27df8","processId":"abc"}}
+{"error":{"code":-32600,"message":"invalid background terminal process id: invalid digit found in string"},"id":4}

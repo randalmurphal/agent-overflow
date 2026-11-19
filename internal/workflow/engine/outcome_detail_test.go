@@ -9,8 +9,8 @@ import (
 )
 
 // A failure the element authored no envelope for used to park with no account
-// at all: the reason said `agent-error` and every surface that renders a cause —
-// `run status`, `run inspect`, the wake — had nothing to show. `Outcome.Detail`
+// at all: the reason said `agent-error` and every surface that renders a cause
+// (`run_status`, `run_inspect`, the wake) had nothing to show. `Outcome.Detail`
 // is the runner's own statement of what it saw (the provider error, the process
 // exit, the schedule that ran out), and `outcomeDetailCause` is the one rule
 // that decides when it becomes the attempt's `park_cause`.

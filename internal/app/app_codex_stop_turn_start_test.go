@@ -91,7 +91,7 @@ func TestCodexStopBeforeTheEchoOfAMessageSentAsAFreshTurnDoesNotResendIt(t *test
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{ID: "queue:fresh-turn", Message: "sent as a fresh turn"}})
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:fresh-turn", Message: "sent as a fresh turn"}})
 	flushed := app.triage.LiveStateSnapshotForThread(thread.ID).FlushedItems
 	if len(flushed) != 1 {
 		t.Fatalf("pending flushed items = %+v, want the fallback send", flushed)

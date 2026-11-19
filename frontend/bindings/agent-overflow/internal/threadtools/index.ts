@@ -4,6 +4,9 @@
 export {
     Caller,
     Candidate,
+    FactsThread,
+    MessageFacts,
     Resolution,
+    Span,
     SpawnDefaults
 } from "./models.js";

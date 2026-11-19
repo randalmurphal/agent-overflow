@@ -169,9 +169,7 @@ func interruptDelete(t *testing.T, app *App, id string) {
 	go func() {
 		returned := false
 		defer func() { stopped <- returned }()
-		unlock := app.threadLocks().Lock(id)
-		defer unlock()
-		_ = app.deleteThreadTreePacedLocked(id, func() { runtime.Goexit() })
+		_ = app.deleteThreadPaced(id, func() { runtime.Goexit() })
 		returned = true
 	}()
 	if <-stopped {
@@ -220,7 +218,7 @@ func TestFailedThreadDeleteIsGoneAndBootCompletesIt(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'injected chunk failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.DeleteThread(id); err == nil || !strings.Contains(err.Error(), "injected chunk failure") {
+	if err := app.deleteThread(id); err == nil || !strings.Contains(err.Error(), "injected chunk failure") {
 		t.Fatalf("DeleteThread = %v, want the injected failure", err)
 	}
 	if _, err := raw.Exec(`DROP TRIGGER fail_second_chunk`); err != nil {

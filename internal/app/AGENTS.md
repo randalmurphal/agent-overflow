@@ -60,8 +60,7 @@ In-process and launch-credential calls have no session principal and remain
 valid unless the operation explicitly requires one. A bound method that sends
 to an existing thread or runs something in it, directly or through a
 service, takes a leading context and reaches `requireAutonomyForThread`
-for every thread it drives; a service that drives threads it resolves
-itself takes a check from the caller (`discussionapp.DriveCheck`).
+for every thread it drives.
 `TestEveryThreadDrivingMethodIsListed` finds those methods on a typed call
 graph of every linked module package and fails until each is in its
 table; its boundary list names the paths it deliberately does not follow.
@@ -123,16 +122,23 @@ operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
 to the composer at boot instead of being dispatched without a user present,
-as is a written message whose row is still unconfirmed in its thread's last
-turn; a marked row a later turn follows is history and stays.
-A teardown empties the queue under the thread mutation lock that every queue
-write takes, so a message queued during it goes with the queue or is queued
-whole after it. The person's Stop of a session and archive drop the queue,
-the rows of written, unconfirmed messages included; a
-stop nobody asked for (a removed worktree, a reconnect) returns it to the
-composer, as a session death does. A caller releases that lock before it tears
-down; the idle reaper, which holds it, uses the HoldingMutations variant. See
-[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
+as is the person's text of a written message whose row is still unconfirmed
+in its thread's last turn; a marked row a later turn follows is history and
+stays. What the app wrote goes back to its owner instead (`giveBackToOwners`).
+A teardown's or a revert's drop holds the thread mutation lock that every queue
+write takes, so a message queued during it is in the queue the drop reads or
+queued whole after it. The person's Stop of a session and archive drop the
+queue, the rows of written, unconfirmed messages included; a stop nobody asked
+for (a removed worktree, a reconnect) returns it to the composer, as a session
+death does. A caller releases that lock before it tears down; the idle reaper,
+which holds it, uses the HoldingMutations variant. See
+[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md). A queued
+message's row is what says it is wanted: a withdrawal deletes it, and every
+dispatch commit point and put-back reads the rows under the same lock
+before it sends or requeues a copy
+([user-message-ordering.md](../../docs/architecture/user-message-ordering.md)).
+Do not add a side set of withdrawn ids; a new path that sends or puts back a
+queued copy reads the rows (`wantedFlushItems`).
 
 Agent thread requests settle once. Every state change on a request or receipt
 is conditional on the state it expects to find, and a change that does not
@@ -140,11 +146,148 @@ apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
 (`app_thread_tools_settle.go`). A request between two threads of this
-computer settles its receipt and its request in one store transaction. A wake (`app_thread_tools_wake.go`,
-`app_thread_tools_wake_message.go`) writes its durable queue row and the
-delivery mark of every request it answers in one store transaction. Settling runs off the provider event
+computer settles its receipt and its request in one store transaction
+(`SettleLocalThreadRequest`). A receipt is bound to the turn its message
+was delivered into, and to whether that turn opened for it (the only turn a
+cancel interrupts), only from triage's send-delivered hook or a send that
+opened its own turn (`bindRequestDelivery`); a message handed to the
+provider waits for that, because Claude can hold it for a turn of its own.
+A message a turn took and never echoed is bound to that turn when its end
+is read (`bindUndeliveredReceiptToTakingTurn`). Triage reports each
+delivery and echo once, so a binding or an owner's confirmation whose write
+fails is kept and written again, every reader of a receipt's turn reads a
+kept binding as that turn (`deliveredReceiptLocked`), and an echoed message
+is never given back meanwhile (`app_thread_tools_bookkeeping.go`). A cancel
+arms its wait for a delivery only inside the settlement it wins. A wake
+(`app_thread_tools_wake.go`, `app_thread_tools_wake_message.go`) writes its
+durable queue row and the delivery mark of every request it answers in one
+store transaction. Every message the app writes into
+a thread for someone else goes through `queueAgentNotice`
+(`app_agent_notice.go`): it is accepted once queued, without the action
+lock, and the session start it needs runs afterwards on joined notice
+work. Nobody watches that start, so its failure notifies, once per run
+of failures, as well as writing the error row, and a later loop or watch
+fire tries it again. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
-worker's queue.
+worker's queue. A decision on rest that cannot be taken back, a held
+request settling `finished` (`heldThreadAtRest`) or the retention sweep
+clearing a spawn (`sweepThreadRequestsBefore`), reads its subtree's own
+sources (`readRest`, `app_thread_rest_assess.go`) and passes the store
+write its guard (`restDecision.guard`), which reads the durable sources
+again inside the write's transaction and compares each reached thread's
+revision. An owner of a source memory holds bumps the thread's revision
+after each change (`noteThreadRestChange`), and one whose durable row
+commits later, such as a turn triage marks opening, bumps at the mark
+under the lock that marks it; a new memory source needs its bump, and
+nothing the guard calls may take a store connection or an owner's lock.
+A durable source belongs in the store's read (`threadRestSourcesSQL`),
+joined there to whatever names its thread, not in a memory copy.
+`liveWorkers` and the `open_below_*` marks only draw rows, frames,
+summaries and Stop All's selection.
+
+Loops and watches run on the same sweep: registration and lifecycle in
+`app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
+the run registry in `app_agent_wake_registry.go`, a watch's script and
+process in `app_agent_watch_process.go`, a watch's failure episode and its
+notice in `app_agent_watch_failure.go`, queueing in
+`app_agent_wake_delivery.go`, rendering in `app_agent_wake_render.go`, what a session end gives back in
+`app_agent_wake_teardown.go` and `app_agent_wake_parts.go`, the give-back
+to owners in `app_agent_give_back.go`, assistant records,
+creation and handoff in `app_standing_agents.go`, and the background tray's reads, Wake now and
+Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or
+reminder row emits `thread:wakes_changed` with that row as it stands
+(`emitAgentWakeChanged`, `emitThreadReminderChanged`); Wake now goes through
+`fireAgentWake` or `fireThreadReminder`, never a delivery of its own. The
+Agents segment's reads, stops and change frames are
+`app_thread_agent_rows*.go` and `app_thread_agent_incoming.go`; a Stop of a
+spawned thread, the person's or its spawner's `thread_cancel`, brings it to
+rest through `restThreadHere` (`app_thread_rest.go`) on whichever computer
+holds it, sharing archive's capture and stop of the thread's work. The
+contract is
+[standing agents](../../docs/specs/standing-agents.md#wake-supervisor). A
+loop or watch wake is data, not something the person wrote: one still queued
+at boot or left unconfirmed by a session that ended never goes to the
+composer, and its row records `not delivered`; an outside `thread send` is
+handled the same way, with a notice in its thread. A request's answer or
+reminder, a remote job's completion and a spawner's answer to its
+worker's async questions that never reached the agent go back to their
+owners through one path (`giveBackToOwners`), from an End
+Session, an archive, a revert, a session end, a failed Codex resend and the
+boot sweep,
+whether still queued or handed to the provider and not confirmed. A
+message taken out of the queue before the agent read it (an Incoming
+withdrawal, a rest, an archive, a handoff, a loop's cancel) goes back to
+its owner through one dispatch keyed by its send id root
+(`withdrawQueuedMessage`); a new root in `appSendIDRoots` needs an owner
+there. The
+provider's echo confirms the owner's delivery mark (`confirmOwnedDeliveries`,
+on triage's `SetFlushSendConsumedHook`), and a completion a session end returned is
+paced on the wake retry ladder (`completionRedelivery`). A message
+Claude joined from a person's text and such parts is split by the lengths
+its dispatch recorded (`agentmeta.JoinedPart`), and only the person's
+text goes back (`agentPartsNotTakenIn`); another thread's request in it
+goes back to its queue, owed again (`giveBackRequest`), from a session
+end, and a teardown does the same before it drops the queue
+(`returnRequestsAtTeardown`). What the app's messages are owed
+is applied once that restore commits (`settleNotTakenIn`): a restore that
+fails requeues them whole. Whether a turn was a tick
+is read from what triage's delivery resolver says the turn took in
+(`SendDelivery.Members`, `noteAgentTurnIntake`), because neither a dispatch
+nor the rows' turn says which turn the provider ran a message in.
+Triage asks whether a turn that ended cleanly was a tick through
+`SetQuietTurnClassifier` (`agentTurnIsTick`), and keeps such a turn out of
+the thread's activity and read state; the marks it reads are kept by
+`tapAgentWakeTurns`, which runs on the emit funnel before the notification
+tap.
+
+A spawned thread's prompts are stamped with their route to its spawner
+by triage (`SetPromptRouter`), delivered and settled in
+`app_worker_prompts.go` and answered in `app_worker_prompts_answering.go`,
+off the emit path on one serial queue so a resolution never overtakes its
+delivery. Triage's `RoutedTo` is the one
+record of a prompt's route, and the registry follows its announcements. A
+prompt whose wake cannot reach the spawner (a failed delivery, a session
+that ended with it unconfirmed, a cleared queue) is rejected
+(`triage.RejectPrompt`): it moves to where the worker's prompts route now,
+or to the user when that is the same spawner. A handoff, an archive or a
+delete reconciles the prompts routed to the thread it changed
+(`reroutePromptsFrom`, `triage.ReroutePrompts`): a route that still holds
+is kept, and the others move on or go to the user; none is left routed to
+nobody. A token names one prompt occurrence (`triage.PromptRef`): it
+answers, settles and releases only that prompt, written only to the session
+that asked it, never a later prompt under the same request id. A Codex
+thread's async questions are prompts on the same registry, but triage's
+live state ends with the session and they do not: their route is kept
+in `app_worker_prompts_async.go`, reconciled from the store on every
+change to them, on every thread frame but a patch, on a move away, and at
+boot. A
+reconcile of a thread asking nothing is one indexed read; a spawn that
+names a fork's thread adopts the questions it carries
+(`adoptAsyncQuestionPrompts`). Shutdown joins the reconcile queue before
+the store closes.
+
+A worker a paired computer's spawn owns routes its prompts to that
+computer's thread. The worker's computer holds each under a lease
+(`app_worker_prompts_peer.go`); the spawner's wait records changes in
+`app_owner_session.go`. Its prompt reader and lease renewal run during ordinary
+reads and recovery. The spawner queues the
+wake to the spawn's caller and forwards its `thread_reply`
+(`app_worker_prompts_remote.go`). Every renewal, answer and return passes
+one binding (`remotePromptFor`), and each delivery has its own wake send
+id. A link that ends hands its prompts back (`handBackLinkPrompts`) through
+`announceReleasedWorkers`, the one place every write that releases a
+link's thread reports it; do not call either part alone. The spawner's
+computer gives a prompt back at once when no thread there can take it
+(`store.RemotePromptHolder`, which applies the assistants pause). Only
+`IsolationConfig.WorkerPromptLease` shortens the lease, for tests and
+harness boots. Listing, renewing, answering and returning a held prompt
+need the calling session to hold `approvals:respond`. A prompt being
+answered is skipped by every other transition, so an answer that does not
+land ends through one exit per side, which reconciles what happened
+meanwhile: `endPromptAnswer` (a hand-back asked for, the link, the lease)
+and `endRemoteAnswer` (the holder, a wake not taken). Forgetting a computer
+closes the prompts its workers put here (`forgetRemotePrompts`) behind the
+recording fence.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
@@ -156,6 +299,26 @@ footprint after unlocked cleanup and before final mutation. Preserve action to
 mutation lock order. Workflow cancellation completes before project deletion
 acquires thread locks. Worktree setup is cancelled and joined before removing
 its path.
+
+Every thread delete is one family delete (`deleteThreads`,
+`app_thread_delete.go`): claim, verify, commit, destroy. Refusals belong to
+verify, before anything stops; after the commit a delete only goes forward.
+A delete never removes, checks or waits for a worktree. What an archive's
+end or a delete's commit owes the paired computers its threads spawned on
+is delivered by `app_thread_owner_ops.go`, and a delete or archive such a
+computer's owner sends for its worker here goes through the same
+`deleteThreads` and `runArchive`, fenced by the spawn's link; never add a
+second delete or archive path for it. A computer that predates owner
+operations is reported once (`threadAgentPeerOlder`);
+`IsolationConfig.OmitOwnerOps` stands one up for tests and harness boots. A door that runs, moves or changes a thread refuses one a delete claimed, through
+`CheckMutable`, `admitWork` or the store write's own check. A claimed thread
+takes app messages into its queue (`LockDeliverable`), and a start the app
+makes for it, a notice's session start or a queue dispatch, waits for the
+delete's decision at its gate (`deleteDecisions`) holding no lock
+([Owned workers](../../docs/specs/standing-agents.md#owned-workers)). Only
+a dispatch worker, notice work or a wake's run may reach a gate; a caller
+that may hold a thread's lock hands such a start to notice work
+(`redeliverMovedAgentWake`).
 
 ## Lifecycle and tests
 

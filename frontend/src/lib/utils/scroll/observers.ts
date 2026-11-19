@@ -7,7 +7,7 @@
 // Two sources feed one pipeline (`processSample`):
 //
 // - ResizeObserver on contentEl (the default) — surfaces without a
-//   virtualizer (discussion's ChannelView) observe their content element
+//   virtualizer (ActivityRun's clip) observe their content element
 //   directly.
 // - Engine-sourced samples (`externalContentGeometry` option) — chat's
 //   TimelineVirtualizer already knows every content-height change

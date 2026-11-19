@@ -59,14 +59,16 @@ import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetDirectSendsForTest } from '../../stores/threadInterrupt.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { applySessionLive } from '../../stores/threadSessionLive.svelte';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import {
   applyShellCommandEvent,
   dismissShellRun,
   getShellRun,
   resetShellRunsForTest,
 } from '../../stores/shellCommands.svelte';
-import { DisconnectedError, TransportError } from '../../transport/wsClient';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { probeReactivity } from '../../../test/helpers/reactivity.svelte';
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -110,6 +112,9 @@ function installDraftMocks() {
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+  setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // The composer toolbar's MCP trigger holds the pane's MCP entity for as
   // long as it is mounted, so every composer render lists once.
@@ -453,6 +458,68 @@ describe('<Composer>', () => {
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(created.id, '[Image #1]', ['dropped'], [], null);
     });
+  });
+
+  it('ends an assistant thread\'s session from the session menu, and offers none on an ordinary thread', async () => {
+    const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+    const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+    const draft = await buildDraft();
+    const view = render(Composer, { props: { pane, draft } });
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'End Session' }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith('thread-1'));
+    view.unmount();
+
+    const plain = await buildPane(makeTestThread({}));
+    const plainView = render(Composer, { props: { pane: plain, draft: await buildDraft() } });
+    expect(plainView.queryByTestId('composer-session-menu')).toBeNull();
+  });
+
+  it('interrupts an assistant thread\'s turn from the session menu, which stays beside Send with Interrupt disabled while no turn runs', async () => {
+    const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+    const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+    const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+    const view = render(Composer, { props: { pane, draft: await buildDraft() } });
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    const idle = await view.findByRole('menuitem', { name: 'Interrupt' });
+    expect(idle).toHaveAttribute('aria-disabled', 'true');
+    expect(view.getByRole('menuitem', { name: 'End Session' })).not.toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(idle);
+    expect(interrupt).not.toHaveBeenCalled();
+
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    await tick();
+    expect(view.getByTestId('composer-interrupt')).toBeInTheDocument();
+    await waitFor(() => expect(view.getByRole('menuitem', { name: 'Interrupt' })).not.toHaveAttribute('aria-disabled', 'true'));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Interrupt' }));
+    expect(interrupt).toHaveBeenCalledWith('thread-1', []);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("follows the computer's session answer: End Session is disabled until a session starts", async () => {
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: ['session-live.v1'], backendId: '', backendName: '',
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
+    try {
+      const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+      const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+      const view = render(Composer, { props: { pane, draft: await buildDraft() } });
+      await fireEvent.click(view.getByTestId('composer-session-menu'));
+      const end = await view.findByRole('menuitem', { name: 'End Session' });
+      expect(end).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(end);
+      expect(stop).not.toHaveBeenCalled();
+
+      applySessionLive({ threadId: 'thread-1', live: true });
+      await waitFor(() => expect(view.getByRole('menuitem', { name: 'End Session' })).not.toHaveAttribute('aria-disabled', 'true'));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'End Session' }));
+      await waitFor(() => expect(stop).toHaveBeenCalledWith('thread-1'));
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
@@ -2833,6 +2900,9 @@ describe('<Composer>', () => {
     // (net composer height unchanged) and lives ABOVE the card so the card
     // itself looks identical whether or not a turn is running.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     const pane = await buildPane();
     const draft = await buildDraft();
 
@@ -2880,6 +2950,9 @@ describe('<Composer>', () => {
     // that still shows todos doesn't stack an extra transparent row above
     // the card.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
     const draft = await buildDraft();
@@ -2964,6 +3037,9 @@ describe('<Composer>', () => {
     setCompactLayoutForTest(true);
     try {
       setBindingMock('ListLiveBackgroundTasks', async () => []);
+      setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+      setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+      setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
       const draft = await buildDraft();
       const sent = await buildPane(makeTestThread());
       setBindingMock('GetUsageStats', async () => [new UsageBucket({
@@ -3142,6 +3218,23 @@ describe('<Composer>', () => {
     // The send quiesces in-flight draft saves before RegisterQueueItem, so
     // the restore lands a few microtasks after Enter, not on the next tick.
     await waitFor(() => expect(draft.content).toBe('restored after session death'));
+  });
+
+  it('leaves a queued text a handoff moved to the assistant\'s new thread out of this composer', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const message = 'Your unsent text moved to Ops; send it from there.';
+    setBindingMock('RegisterQueueItem', async () => { throw new TransportError('assistant_draft_moved', message); });
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'typed note' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => expect(getToasts().some((toast) => toast.message === message)).toBe(true));
+    expect(draft.content).toBe('');
+    expect(pane.generalError).toBeFalsy();
   });
 
   it('enqueues mid-turn when the Send button is clicked', async () => {
@@ -3523,6 +3616,7 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     pane.addUserInput({
       requestId: 'req-input',
+      occurrence: '7',
       threadId: 'thread-1',
       toolName: 'AskUserQuestion',
       title: 'Input requested',
@@ -3546,10 +3640,40 @@ describe('<Composer>', () => {
       'thread-1',
       {
         requestId: 'req-input',
+        occurrence: '7',
         decision: 'accept',
         answers: { name: 'Alex' },
       },
     ]);
+  });
+
+  // A prompt the provider asks again under the same request id is another
+  // prompt: the answer names the one the panel shows, so a late click on the
+  // earlier one is not taken for the later one.
+  it('answers a prompt asked again under its request id as the prompt shown', async () => {
+    const pane = await buildPane();
+    const approval = {
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      kind: 'command' as const,
+      toolName: 'Bash',
+      title: 'Approve command',
+      description: 'make deploy',
+      input: { command: 'make deploy' },
+    };
+    pane.addApproval({ ...approval, occurrence: '1' });
+    const draft = await buildDraft();
+    const respond = setBindingMock('RespondToApproval', async () => {});
+
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('approval-allow'));
+    expect(respond.mock.calls[0]).toMatchObject(['thread-1', { requestId: 'req-1', occurrence: '1' }]);
+
+    pane.addApproval({ ...approval, description: 'make destroy', input: { command: 'make destroy' }, occurrence: '2' });
+    await tick();
+    await fireEvent.click(getByTestId('approval-deny'));
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond.mock.calls[1]).toMatchObject(['thread-1', { requestId: 'req-1', occurrence: '2' }]);
   });
 
   // A prompt can arrive while the picker is open. It refuses new
@@ -4116,6 +4240,32 @@ describe('<Composer>', () => {
       expect(textarea.placeholder).toBe('This device has read-only access');
       expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
     });
+
+    for (const compact of [false, true]) {
+      it(`${compact ? 'under compact, ' : ''}keeps an assistant thread's Interrupt and End Session inert, saying why`, async () => {
+        setCompactLayoutForTest(compact);
+        try {
+          const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+          const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+          const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+          pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+          await pairViewOnly();
+          const view = render(Composer, { props: { pane, draft: await buildDraft() } });
+          await fireEvent.click(view.getByTestId('composer-session-menu'));
+          for (const name of ['Interrupt', 'End Session']) {
+            const item = await view.findByRole('menuitem', { name });
+            expect(item, name).toHaveAttribute('aria-disabled', 'true');
+            expect(item, name).toHaveAttribute('title', 'Not granted to this device');
+            await fireEvent.click(item);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(interrupt).not.toHaveBeenCalled();
+          expect(stop).not.toHaveBeenCalled();
+        } finally {
+          setCompactLayoutForTest(false);
+        }
+      });
+    }
 
     it('refuses a pasted image without a toast', async () => {
       const pane = await buildPane(makeTestThread({ provider: 'claude' }));

@@ -22,7 +22,8 @@ func seedLocalThreadRequest(t *testing.T, s *Store, token, caller, target, compu
 
 // A local settlement writes the receipt, the request and the collection
 // together, and touches no request that names another computer: a receipt
-// carrying that token was minted there.
+// carrying that token was minted there. A sender's cancel disarms the wake in
+// the statement that settles the request.
 func TestSettleLocalThreadRequestWritesBothRowsOrOnlyTheReceipt(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
@@ -30,14 +31,13 @@ func TestSettleLocalThreadRequestWritesBothRowsOrOnlyTheReceipt(t *testing.T) {
 	seedLocalThreadRequest(t, s, "tok-local", "t-caller", "t-target", "")
 	seedLocalThreadRequest(t, s, "tok-outbound", "t-caller", "t-target", "backend-2")
 
-	receipt := ThreadRequestSettlement{State: ThreadReceiptCancelled, Answer: []byte("cancelled"), AnswerKind: ThreadAnswerError}
-	request := ThreadRequestWake{Disarm: true}
-	for token, want := range map[string]LocalThreadRequestSettlement{
-		"tok-local":    {Receipt: true, Request: ThreadRequestCollected{Settled: true}},
-		"tok-outbound": {Receipt: true},
+	receipt := ThreadRequestSettlement{State: ThreadReceiptCancelled, Answer: []byte("cancelled"), AnswerKind: ThreadAnswerError, DisarmWake: true}
+	for token, want := range map[string]LocalSettlement{
+		"tok-local":    {Settled: true, Collected: true},
+		"tok-outbound": {Settled: true, Outbound: true},
 	} {
-		got, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), receipt, request)
-		if err != nil || got != want {
+		got, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), receipt, ThreadRequestCancelled)
+		if err != nil || got.Settled != want.Settled || got.Collected != want.Collected || got.Outbound != want.Outbound || got.Notify {
 			t.Fatalf("settle %s = %+v, %v; want %+v", token, got, err, want)
 		}
 	}
@@ -56,7 +56,7 @@ func TestSettleLocalThreadRequestWritesBothRowsOrOnlyTheReceipt(t *testing.T) {
 	if outbound := mustGetThreadRequest(t, s, "tok-outbound"); outbound.State != ThreadRequestRunning || !outbound.Notify {
 		t.Fatalf("outbound request = %q notify %v, want it untouched", outbound.State, outbound.Notify)
 	}
-	if again, err := s.SettleLocalThreadRequest("tok-local", ThreadReceiptOpenStates(), receipt, request); err != nil || again.Receipt {
+	if again, err := s.SettleLocalThreadRequest("tok-local", ThreadReceiptOpenStates(), receipt, ThreadRequestCancelled); err != nil || again.Settled {
 		t.Fatalf("second settle = %+v, %v; want a lost race", again, err)
 	}
 
@@ -66,15 +66,22 @@ func TestSettleLocalThreadRequestWritesBothRowsOrOnlyTheReceipt(t *testing.T) {
 		WHEN NEW.token = 'tok-both' BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SettleLocalThreadRequest("tok-both", ThreadReceiptOpenStates(), receipt, request); err == nil {
+	if _, err := s.SettleLocalThreadRequest("tok-both", ThreadReceiptOpenStates(), receipt, ThreadRequestCancelled); err == nil {
 		t.Fatal("a settlement whose request could not be written was accepted")
 	}
 	if stored, _, _ := s.GetThreadRequestReceipt("tok-both"); stored.State != ThreadReceiptRunning {
 		t.Fatalf("receipt = %q after its request was refused, want it still running", stored.State)
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-both", ThreadReceiptOpenStates(),
-		ThreadRequestSettlement{State: ThreadReceiptCancelled, DisarmWake: true}); err == nil {
+	// The wake is the request's: a receipt's own settlement refuses it, and a
+	// settlement cannot both arm and disarm it.
+	if _, _, err := settleThreadReceiptRow(s.db, "tok-both", ThreadReceiptOpenStates(),
+		ThreadRequestSettlement{State: ThreadReceiptCancelled, AnswerKind: ThreadAnswerError, DisarmWake: true}); err == nil {
 		t.Fatal("a receipt settlement disarming a wake was accepted")
+	}
+	if _, err := s.SettleLocalThreadRequest("tok-both", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptReplied, Answer: []byte("x"), AnswerKind: ThreadAnswerReply, ArmWake: true, DisarmWake: true,
+	}, ThreadRequestReplied); err == nil {
+		t.Fatal("a settlement that both arms and disarms the wake was accepted")
 	}
 }
 
@@ -86,9 +93,9 @@ func TestStoreLocalThreadRequestLateReplyWritesBothRowsOrOnlyTheReceipt(t *testi
 	mustCreateThread(t, s, "t-target")
 	for token, computer := range map[string]string{"tok-local": "", "tok-outbound": "backend-2"} {
 		seedLocalThreadRequest(t, s, token, "t-caller", "t-target", computer)
-		if _, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		if _, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
 			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal,
-		}); err != nil {
+		}, ThreadRequestFinished); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), ThreadRequestSettlement{
@@ -97,17 +104,22 @@ func TestStoreLocalThreadRequestLateReplyWritesBothRowsOrOnlyTheReceipt(t *testi
 			t.Fatal(err)
 		}
 	}
-	for token, want := range map[string]LocalThreadRequestSettlement{
-		"tok-local":    {Receipt: true, Request: ThreadRequestCollected{LateReply: true}},
-		"tok-outbound": {Receipt: true},
+	for token, want := range map[string]ThreadRequestCollected{
+		"tok-local":    {LateReply: true},
+		"tok-outbound": {},
 	} {
-		got, err := s.StoreLocalThreadRequestLateReply(token, []byte("and one more thing"), 0, true)
-		if err != nil || got != want {
-			t.Fatalf("late reply %s = %+v, %v; want %+v", token, got, err, want)
+		stored, got, err := s.StoreLocalThreadRequestLateReply(token, []byte("and one more thing"), 0, &ThreadAnswerAgent{Role: "Reviewer"}, true)
+		if err != nil || !stored || got != want {
+			t.Fatalf("late reply %s = %v %+v, %v; want stored and %+v", token, stored, got, err, want)
 		}
 	}
-	if row := mustGetThreadRequest(t, s, "tok-local"); string(row.LateReply) != "and one more thing" {
-		t.Fatalf("local late reply = %q", row.LateReply)
+	if row := mustGetThreadRequest(t, s, "tok-local"); string(row.LateReply) != "and one more thing" ||
+		row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Reviewer" || !row.Notify {
+		t.Fatalf("local late reply = %q by %+v, notify %v; want the reply by its agent, armed", row.LateReply, row.LateReplyAgent, row.Notify)
+	}
+	// A retry of the same text is the same reply and stores nothing.
+	if stored, got, err := s.StoreLocalThreadRequestLateReply("tok-local", []byte("and one more thing"), 0, nil, true); err != nil || stored || got.Any() {
+		t.Fatalf("repeated late reply = %v %+v, %v; want nothing stored", stored, got, err)
 	}
 	if receipt, _, _ := s.GetThreadRequestReceipt("tok-local"); receipt.CollectedRevision != receipt.Revision {
 		t.Fatalf("receipt collected %d of %d, want the late reply collected", receipt.CollectedRevision, receipt.Revision)
@@ -150,11 +162,11 @@ func seedOrphanedReceipt(t *testing.T, s *Store, token string, settlement Thread
 	if _, err := s.SetThreadRequestNotify(token, false); err != nil {
 		t.Fatal(err)
 	}
-	if settled, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), settlement); err != nil || !settled {
+	if _, settled, err := settleThreadReceiptRow(s.db, token, ThreadReceiptOpenStates(), settlement); err != nil || !settled {
 		t.Fatalf("settle receipt %s: settled=%v err=%v", token, settled, err)
 	}
 	if late != "" {
-		if stored, err := s.StoreThreadReceiptLateReply(token, []byte(late), 0); err != nil || !stored {
+		if stored, err := s.StoreThreadReceiptLateReply(token, []byte(late), 0, nil); err != nil || !stored {
 			t.Fatalf("late reply on receipt %s: stored=%v err=%v", token, stored, err)
 		}
 	}
@@ -286,9 +298,9 @@ func TestALocalLateReplyCollectsTheAnswerItFollows(t *testing.T) {
 	seedOrphanedReceipt(t, s, "tok-late", ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("original final"), AnswerKind: ThreadAnswerFinal,
 	}, "")
-	got, err := s.StoreLocalThreadRequestLateReply("tok-late", []byte("actual requested reply"), 0, true)
-	if err != nil || got != (LocalThreadRequestSettlement{Receipt: true, Request: ThreadRequestCollected{Settled: true, LateReply: true}}) {
-		t.Fatalf("late reply = %+v, %v; want both parts collected", got, err)
+	stored, got, err := s.StoreLocalThreadRequestLateReply("tok-late", []byte("actual requested reply"), 0, nil, true)
+	if err != nil || !stored || got != (ThreadRequestCollected{Settled: true, LateReply: true}) {
+		t.Fatalf("late reply = %v %+v, %v; want both parts collected", stored, got, err)
 	}
 	row := mustGetThreadRequest(t, s, "tok-late")
 	if string(row.Answer) != "original final" || string(row.LateReply) != "actual requested reply" || !row.Notify {
@@ -312,7 +324,8 @@ func TestCollectThreadRequestWritesTheSettlementAndLateReplyTogether(t *testing.
 	}
 	answer := ThreadReceiptAnswer{
 		Revision: 2, State: ThreadReceiptFinished, Answer: []byte("original final"), AnswerKind: ThreadAnswerFinal,
-		SettledAt: 100, ExpiresAt: 200, LateReply: []byte("actual requested reply"), LateReplyAt: 150,
+		SettledAt: 100, ExpiresAt: 200, Agent: &ThreadAnswerAgent{Role: "Reviewer"},
+		LateReply: []byte("actual requested reply"), LateReplyAt: 150, LateReplyAgent: &ThreadAnswerAgent{},
 	}
 	if _, err := s.db.Exec(`CREATE TRIGGER refuse_late BEFORE UPDATE OF late_reply ON thread_requests
 		BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
@@ -335,6 +348,9 @@ func TestCollectThreadRequestWritesTheSettlementAndLateReplyTogether(t *testing.
 	if row.State != ThreadRequestFinished || string(row.LateReply) != "actual requested reply" || row.LateReplyAt != 150 || row.Revision != 2 {
 		t.Fatalf("request = %+v, want the final and the late reply at revision 2", row)
 	}
+	if row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer" || row.LateReplyAgent == nil || row.LateReplyAgent.Role != "" {
+		t.Fatalf("request agents = %+v and %+v, want each answer's own", row.AnswerAgent, row.LateReplyAgent)
+	}
 	if again, err := s.CollectThreadRequest("tok-remote", answer, ThreadRequestWake{}); err != nil || again.Any() {
 		t.Fatalf("second collect = %+v, %v; want nothing written", again, err)
 	}
@@ -356,5 +372,25 @@ func TestAckThreadRequestReceiptStopsAtTheReceiptsRevision(t *testing.T) {
 	}
 	if acked, err := s.AckThreadRequestReceipt("tok-ack", 5, 0); err != nil || acked {
 		t.Fatalf("repeated ack = %v, %v; want nothing changed", acked, err)
+	}
+}
+
+// A receipt the retention floor reduced to its lineage holds no answer, and
+// a request beside it collects nothing from it.
+func TestCollectLocalThreadReceiptSkipsALineageOnlyReceipt(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	mustCreateThread(t, s, "t-target")
+	seedOrphanedReceipt(t, s, "tok-lineage", ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal,
+	}, "")
+	if _, err := s.db.Exec(`UPDATE thread_request_receipts SET lineage_only = 1, answer = NULL WHERE token = 'tok-lineage'`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.CollectLocalThreadReceipt("tok-lineage", ThreadRequestWake{}); err != nil || got.Any() {
+		t.Fatalf("collect = %+v, %v; want nothing", got, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-lineage"); row.State != ThreadRequestRunning {
+		t.Fatalf("request = %q, want it still running", row.State)
 	}
 }

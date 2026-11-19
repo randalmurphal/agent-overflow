@@ -182,9 +182,7 @@ describe('threadGroupActions', () => {
       // The row comes back unpinned: a thread starts unpinned in its group.
       const mock = setBindingMock('SetThreadGroup', async () => [
         mkThread('root', { groupId: 'g1' }),
-        mkThread('child', { groupId: 'g1', parentThreadId: 'root' }),
       ]);
-      prependThread(mkThread('child', { parentThreadId: 'root' }));
       prependThread(mkThread('root', { pinnedAt: 900, pinGroup: 1 }));
 
       expect(await moveThreadsToGroupAction(['root'], 'g1')).toBe(true);
@@ -192,8 +190,6 @@ describe('threadGroupActions', () => {
       expect(getThreadById('root')?.groupId).toBe('g1');
       expect(getThreadById('root')?.pinnedAt).toBeUndefined();
       expect(getThreadById('root')?.pinGroup).toBeUndefined();
-      // Children follow the root, and the response is what says so.
-      expect(getThreadById('child')?.groupId).toBe('g1');
     });
 
     // The organize thread tool moves threads concurrently with the person:

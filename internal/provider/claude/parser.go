@@ -78,6 +78,22 @@ type Parser struct {
 	// result additionally emits EventWorkspaceChanged so the thread's
 	// workspace follows the process. See parse_worktree.go.
 	worktreeToolUses map[string]worktreeToolUse
+	// cronToolUses holds the in-flight CronCreate / CronList / CronDelete
+	// calls until their acks arrive, and cronJobs the jobs the CLI holds
+	// armed (parse_cron.go). cronJobs is bounded by maxTrackedCronJobs.
+	cronToolUses map[string]cronToolUse
+	cronJobs     map[string]cronJob
+	// commandOrigins maps a CLI-minted command uuid to what positively
+	// started its turn (parse_turn_origin.go noteCommandOrigin), until the
+	// bracket's terminal frame. Bounded by parserTaskMapCap with
+	// wholesale reset.
+	commandOrigins map[string]string
+	// betweenTurns is true from a top-level `result` until the next turn
+	// shows itself (observeTurnWindow).
+	betweenTurns bool
+	// sessionStart follows the delivery of Config.SessionStartHook
+	// (parse_session_start.go); nil when the session has none.
+	sessionStart *provider.SessionStartDelivery
 	// advisorToolUses flags `server_tool_use` IDs (the `srvtoolu_*`
 	// prefix) emitted by Claude's server-side advisor tool. The matching
 	// `advisor_tool_result` content block on a later assistant envelope
@@ -339,6 +355,10 @@ type Parser struct {
 	usageCostMissingByModel map[string]bool
 	usageFlatCostMissing    bool
 	usageProgress           claudeUsageProgress
+	// usageOwnUnaccounted is the thread's own live usage of this process's
+	// turns whose result accounted nothing, which the next accounting
+	// result's cumulative delta covers (takeOwnUsage).
+	usageOwnUnaccounted provider.TokenUsage
 	// usageAccountedCostUSD mirrors usageTotalsByModel for the flat
 	// `total_cost_usd` field — the session-cumulative cost already
 	// attributed to settled turns. Single lifecycle owner:
@@ -491,6 +511,9 @@ func (p *Parser) Close() {
 	p.todoWriteToolUses = nil
 	p.pendingTaskMutations = nil
 	p.worktreeToolUses = nil
+	p.cronToolUses = nil
+	p.cronJobs = nil
+	p.commandOrigins = nil
 	p.advisorToolUses = nil
 	p.advisorMessages = nil
 	p.toolUseParents = nil
@@ -520,6 +543,7 @@ func (p *Parser) Close() {
 	p.usageCostMissingByModel = nil
 	p.usageFlatCostMissing = false
 	p.usageProgress = claudeUsageProgress{}
+	p.usageOwnUnaccounted = provider.TokenUsage{}
 	p.usageAccountedCostUSD = 0
 }
 
@@ -585,6 +609,9 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	}
 
 	now := time.Now()
+	if p != nil {
+		p.observeTurnWindow(msgType, raw)
+	}
 
 	switch msgType {
 	case "system":

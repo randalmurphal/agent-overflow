@@ -1370,8 +1370,7 @@ export class WSClient {
     const next = [...new Set(threadIds)].sort();
     if (next.length > MAX_WATCH_THREADS) {
       // Unreachable by construction: the set is bounded by the number of
-      // open panes and the size of the discussion rosters they mount, both
-      // orders of magnitude below this. If it ever happens, the backend
+      // open thread surfaces, orders of magnitude below this. If it ever happens, the backend
       // would refuse the frame anyway, so report it and leave the previous
       // set standing rather than sending a truncated one — a truncated set
       // silently stops watching a thread that IS open, which is the one

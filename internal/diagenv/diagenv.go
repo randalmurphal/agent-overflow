@@ -27,13 +27,24 @@ const (
 	// variable in a WSL shell on the other side of two WSLENV hops.
 	HarnessRealBrowser = "AO_HARNESS_REAL_BROWSER"
 
-	// HarnessOldPeer makes an isolated boot leave thread-tools.v1 out of
-	// its hello frame, so a paired computer calling it sees the
+	// HarnessOldPeer makes an isolated boot leave every thread-tools
+	// generation out of its hello frame, so a paired computer calling it sees the
 	// thread_unsupported refusal a build older than the agent thread
 	// tools produces. Test isolation only: honored solely by a harness
 	// boot, ignored by every other one, and the only way an end-to-end
 	// test can stand up a destination that does not have the surface.
 	HarnessOldPeer = "AO_HARNESS_OLD_THREAD_TOOLS_PEER"
+
+	// HarnessOlderComputer makes an isolated boot answer as a computer on
+	// v0.0.19: an App method added since answers method_not_found,
+	// ArchiveThread and DeleteThread answer a success with null,
+	// agent_owner_op is an unknown thread tools write call, so a paired
+	// computer archiving or deleting a spawner whose worker is here names
+	// this one as running an older version, and its hello advertises
+	// thread-tools.v1 without thread-tools.v2. Test isolation only: honored
+	// solely by a harness boot, and the only way an end-to-end test can
+	// stand up such a computer.
+	HarnessOlderComputer = "AO_HARNESS_OLDER_COMPUTER"
 
 	// HarnessHoldStartup holds a harness boot before App.Start until the
 	// file it names exists. Meanwhile the backend serves the page and

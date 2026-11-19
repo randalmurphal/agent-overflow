@@ -90,9 +90,9 @@ export function menuPullEnabled(status: GitStatus): boolean {
 /**
  * Removing the pane's own worktree is still a workspace action — the
  * directory is the subject — so it takes the same ref, plus the path being
- * removed. Thread deletes and the plan rollback also remove by path
- * (`removeWorktreeAt`), the one they confirmed or cut, because the thread's
- * attachment can change before the removal runs.
+ * removed. The plan rollback also removes by path (`removeWorktreeAt`),
+ * the one it cut, because the thread's attachment can change before the
+ * removal runs.
  */
 export interface RemoveWorktreeCtx extends GitActionCtx {
   worktreePath: string;

@@ -156,6 +156,8 @@ type Report struct {
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
 	// InjectedItems is set only on ReportInjectedItems reports.
 	InjectedItems []InjectedItem `json:"injectedItems,omitempty"`
+	// SessionStartRun is set only on ReportSessionStartContext reports.
+	SessionStartRun *SessionStartRun `json:"sessionStartRun,omitempty"`
 	// Gate names the waitSignal gate an advance report concerns: the gate
 	// that was RELEASED (ReportAdvanceReleased) or the name the buffered
 	// advance carried (ReportAdvanceBuffered). Empty is a real value on
@@ -164,7 +166,8 @@ type Report struct {
 	Gate string `json:"gate,omitempty"`
 	// Result is the text an mcpCall step's tool returned, or the error
 	// text of a call that could not be made; on ReportMcpTools it is the
-	// listing JSON. Set only on those two. It is the server's own answer,
+	// listing JSON; on ReportApprovalDecided it is the response body the
+	// app answered the approval with. Set only on those three. It is the server's own answer,
 	// never the endpoint, headers or token the mock called it through.
 	Result string `json:"result,omitempty"`
 	// IsError marks a ReportMcpResult or ReportMcpTools whose call failed: a missing
@@ -206,6 +209,10 @@ const (
 	// symptom (a thread id that did or did not change) cannot say
 	// whether a refused revert was even attempted.
 	ReportHistoryCut = "history_cut"
+	// ReportHistoryResumed names one input a Codex thread/resume found in
+	// the thread's history (scenario.CodexOptions.KeepHistory): Input is
+	// the text, SessionRef the thread.
+	ReportHistoryResumed = "history_resumed"
 	// ReportAdvanceReleased is posted when an advance command actually
 	// opens a gate — either because the gate was already open when the
 	// advance arrived, or because a buffered advance was consumed the
@@ -249,7 +256,8 @@ const (
 	// ReportSessionConfig carries the permission/sandbox configuration the
 	// app actually launched this session with. Posted once per mock as soon
 	// as it is observable — for Claude that is argv at boot, for Codex the
-	// thread/start params.
+	// thread/start params, or the thread/resume params of a process that
+	// only resumed.
 	ReportSessionConfig = "session_config"
 	// ReportInjectedItems carries the messages a Codex mock received
 	// through `thread/inject_items`: SessionRef is the thread, and
@@ -257,7 +265,26 @@ const (
 	// answer. It is how a spec sees the developer instructions the app
 	// injects into a resumed thread, which no turn input carries.
 	ReportInjectedItems = "injected_items"
+	// ReportSessionStartContext carries one run of the SessionStart hooks
+	// a mock's session configuration declares, or of its UserPromptSubmit
+	// hooks for one prompt: SessionRef is the session, SessionStartRun the
+	// source the hooks ran for and the context each delivered. Posted
+	// after the run's start frames and before the frames of its outcome
+	// (Claude's hook_response, Codex's hook/completed). It is how a spec
+	// sees what a standing agent's home hooks gave the model, which no
+	// turn input or launch argument carries.
+	ReportSessionStartContext = "session_start_context"
 )
+
+// SessionStartRun is one run of a session's SessionStart hooks, or of its
+// UserPromptSubmit hooks for one prompt: the source they ran for
+// ("startup", "compact", ..., "prompt" for a prompt) and, in configuration
+// order, the context each hook that succeeded delivered to the model.
+// Contexts is empty, never nil, when no hook delivered.
+type SessionStartRun struct {
+	Source   string   `json:"source"`
+	Contexts []string `json:"contexts"`
+}
 
 // InjectedItem is one message item of a `thread/inject_items` request:
 // its role and the text of its content parts, joined.
@@ -306,9 +333,14 @@ type SessionConfig struct {
 	// SystemPromptSnapshot is Claude's --system-prompt-snapshot value ("" when
 	// the flag was omitted, which is what an unknown or old CLI version gets).
 	SystemPromptSnapshot string `json:"systemPromptSnapshot,omitempty"`
-	// DeveloperInstructions is Codex's thread/start `developerInstructions`:
-	// the app guide and the on servers' guides, composed by the app.
+	// DeveloperInstructions is Codex's thread/start or thread/resume
+	// `developerInstructions`: the app guide, a standing agent's home block
+	// and the on servers' guides, composed by the app.
 	DeveloperInstructions string `json:"developerInstructions,omitempty"`
+	// Resumed marks a Codex report taken from thread/resume, which a mock
+	// posts only when no thread/start came first. Claude reports argv, so
+	// its resume is an ordinary report of a process started with --resume.
+	Resumed bool `json:"resumed,omitempty"`
 	// BashMaxTimeoutMs is the BASH_MAX_TIMEOUT_MS a Claude mock was spawned
 	// with ("" when the variable was absent).
 	BashMaxTimeoutMs string `json:"bashMaxTimeoutMs,omitempty"`

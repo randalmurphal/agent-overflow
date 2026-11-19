@@ -56,4 +56,22 @@ func (a *App) settlePriorInstance() {
 		log.Printf("app: returned %d review comments no message delivered to drafts", released)
 	}
 	endPhase()
+	// A delete that claimed threads and never committed stopped and removed
+	// nothing of them, and the process that held the claim is gone: the
+	// threads are released before any client or delete can act on them.
+	// The deletes that committed are finished later
+	// (startPendingThreadDeletes).
+	endPhase = a.bootPhase("app.release_undecided_deletes", "Returning threads whose delete never went ahead")
+	a.releaseUndecidedDeletes()
+	endPhase()
+}
+
+// releaseUndecidedDeletes takes back every delete claim no delete committed
+// (store.ReleaseUndecidedDeleteClaims).
+func (a *App) releaseUndecidedDeletes() {
+	if released, err := a.store.ReleaseUndecidedDeleteClaims(); err != nil {
+		a.bootPhaseFailed(err)
+	} else if released > 0 {
+		log.Printf("app: released %d threads a delete claimed and never committed", released)
+	}
 }

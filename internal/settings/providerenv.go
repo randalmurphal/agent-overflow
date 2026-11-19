@@ -56,8 +56,8 @@ const (
 
 // providerEnvReservedPrefix is the namespace Agent Overflow uses for every
 // variable it injects into a provider process: the `agent-overflow` CLI
-// session contract (AO_ENDPOINT / AO_TOKEN / AO_THREAD_ID / AO_PROJECT /
-// AO_RUN_ID / AO_PHASE_ID, internal/aocli/session.go), the test harness
+// session contract (AO_ENDPOINT / AO_TOKEN / AO_THREAD_ID,
+// internal/aocli/session.go), the test harness
 // control channel (AO_HARNESS_*, internal/harness/control), the mock provider
 // (AO_MOCK_*), and claudetui's hook relay (AO_CLAUDE_HOOK_URL /
 // AO_CLAUDE_HOOK_TOKEN). Denying the whole prefix rather than the current name

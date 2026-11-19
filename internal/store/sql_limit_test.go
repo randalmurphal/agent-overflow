@@ -204,7 +204,15 @@ func TestNonPositiveLimitReadsTheDefaultPage(t *testing.T) {
 				return err
 			}},
 			{"ListOpenThreadRequestsForComputer", "LIMIT 50", func() error {
-				_, err := s.ListOpenThreadRequestsForComputer("c", limit)
+				_, _, err := s.ListOpenThreadRequestsForComputer("c", limit)
+				return err
+			}},
+			{"OwedThreadRequestAcks", "LIMIT 32", func() error {
+				_, err := s.OwedThreadRequestAcks("c", limit)
+				return err
+			}},
+			{"DueThreadRequestAcks", "LIMIT 32", func() error {
+				_, err := s.DueThreadRequestAcks(now, limit)
 				return err
 			}},
 			{"DueThreadReminders", "LIMIT 32", func() error {
@@ -212,7 +220,7 @@ func TestNonPositiveLimitReadsTheDefaultPage(t *testing.T) {
 				return err
 			}},
 			{"DueThreadRequestPolls", "LIMIT 32", func() error {
-				_, err := s.DueThreadRequestPolls(now, limit)
+				_, err := s.DueThreadRequestPolls(now, limit, nil)
 				return err
 			}},
 			{"OpenThreadRequestPollsOn", "LIMIT 32", func() error {
@@ -240,33 +248,6 @@ func TestNonPositiveLimitReadsTheDefaultPage(t *testing.T) {
 			if !found {
 				t.Errorf("%s(%d) ran no statement with %q:\n%s", tc.name, limit, tc.want, strings.Join(ran, "\n"))
 			}
-		}
-	}
-}
-
-// TestChannelMessageLimit pins that ListChannelMessages reads every
-// message, with no LIMIT clause, for a non-positive limit, and renders a
-// positive limit into the text.
-func TestChannelMessageLimit(t *testing.T) {
-	s, counts := openObservedStore(t)
-	for _, tc := range []struct {
-		limit int
-		want  string
-	}{{0, ""}, {-1, ""}, {5, "LIMIT 5"}} {
-		before := counts.snapshot()
-		if _, err := s.ListChannelMessages("ch", -1, tc.limit); err != nil {
-			t.Fatal(err)
-		}
-		ran := statementsSince(counts, before)
-		if len(ran) != 1 {
-			t.Fatalf("limit %d ran %d statements, want 1:\n%s", tc.limit, len(ran), strings.Join(ran, "\n"))
-		}
-		query := ran[0]
-		if tc.want == "" && strings.Contains(query, "LIMIT") {
-			t.Errorf("limit %d rendered a LIMIT clause:\n%s", tc.limit, query)
-		}
-		if tc.want != "" && !strings.HasSuffix(query, tc.want) {
-			t.Errorf("limit %d does not end in %q:\n%s", tc.limit, tc.want, query)
 		}
 	}
 }

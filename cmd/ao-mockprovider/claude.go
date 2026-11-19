@@ -174,7 +174,7 @@ type claudeAdapter struct {
 	sessionMirror bool
 
 	mu      sync.Mutex
-	waiters map[string]chan bool // approval request_id → decision
+	waiters map[string]chan approvalAnswer // approval request_id → decision
 	seq     int
 
 	// leafMu guards leafUUID, which the stdin goroutine reads when it
@@ -201,17 +201,32 @@ type claudeAdapter struct {
 	// permission follows the permission mode and model the process runs
 	// (claude_permission_mode.go).
 	permission *claudePermissionMode
+
+	// sessionStart holds the SessionStart hooks of the --settings the app
+	// spawned this process with, and startSource the source the process
+	// runs them for before its first init (claude_session_start.go). Both
+	// are read-only after construction; startHooks runs them once.
+	sessionStart []sessionStartHook
+	startSource  string
+	startHooks   sync.Once
+	// promptHooks are the UserPromptSubmit hooks of the same --settings,
+	// run for each prompt the process takes.
+	promptHooks []sessionStartHook
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 	a := &claudeAdapter{
 		e:             e,
 		w:             w,
-		waiters:       make(map[string]chan bool),
+		waiters:       make(map[string]chan approvalAnswer),
 		mcpServers:    claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
 		sessionMirror: slices.Contains(args, "--session-mirror"),
 		tasks:         newClaudeTaskLedger(),
 		permission:    newClaudePermissionMode(args),
+		startSource:   claudeStartSource(args),
+	}
+	if !e.sc.SessionStartHooksOff {
+		a.sessionStart, a.promptHooks = claudeSessionStartHooks(args)
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -409,7 +424,13 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		}
 	case "control_response":
 		allow := env.Response.Subtype == "success" && env.Response.Response.Behavior == "allow"
-		a.deliverDecision(env.Response.RequestID, allow)
+		var raw struct {
+			Response struct {
+				Response json.RawMessage `json:"response"`
+			} `json:"response"`
+		}
+		_ = json.Unmarshal(line, &raw)
+		a.deliverDecision(env.Response.RequestID, approvalAnswer{allow: allow, response: string(raw.Response.Response)})
 	case "control_cancel_request":
 		// The app never abandons its own responses this way; log and drop.
 		log.Printf("claude: unexpected control_cancel_request from app (ignored)")
@@ -463,8 +484,8 @@ func (a *claudeAdapter) releaseHeldInput() {
 }
 
 // drainHeldInput consumes every held envelope into the running turn, the
-// CLI's mid-loop drain: `started`, then the replay echo, with no init and
-// no new scenario turn.
+// CLI's mid-loop drain: the replay echo, then `started`, with no init and
+// no new scenario turn (claude-wire.md §Frame order per consumption path).
 func (a *claudeAdapter) drainHeldInput(turn int) {
 	a.heldMu.Lock()
 	held := a.held
@@ -475,8 +496,9 @@ func (a *claudeAdapter) drainHeldInput(turn int) {
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: claudeUserText(line), Detail: "midLoop",
 		})
-		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "started")
+		a.runPromptHooks(a.e.currentVars(), claudeUserText(line))
 		a.echoDrainedEnvelope(line)
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "started")
 	}
 }
 
@@ -494,7 +516,9 @@ func (a *claudeAdapter) cancelHeldInput() {
 }
 
 // pickUpUserEnvelope opens a turn for a user envelope whose `queued` ack is
-// already written: init, replay echo, `started`, and the turn's steps.
+// already written, in the CLI's boundary and idle pickup order: `started`,
+// init, replay echo, and the turn's steps (claude-wire.md §Frame order per
+// consumption path).
 func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 	commandUUID := claudeEnvelopeUUID(line)
 	n, vars := a.e.beginTurn()
@@ -509,11 +533,10 @@ func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 		Kind: control.ReportUserInput, Turn: n,
 		Input: input, SessionRef: vars["SESSION_ID"],
 	})
-	a.writeInit(vars)
-	a.recordUserEnvelope(line)
-	// `started` after the init, so the app classifies this delivery as
-	// a new turn (claude-wire.md §command_lifecycle).
 	a.writeCommandLifecycle(commandUUID, "started")
+	a.writeInit(vars)
+	a.runPromptHooks(vars, input)
+	a.recordUserEnvelope(line)
 	a.e.enqueueTurn(n)
 }
 
@@ -598,9 +621,11 @@ func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
 //
 // This is the frame that tells AO the provider is up (triage opens the
 // logical turn on it), so it is where a scenario's startupDelayMs is
-// spent — once, before the first one.
+// spent, once, before the first one. Print mode awaits the start's
+// SessionStart hooks before its first init, so they run there too.
 func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 	a.e.awaitStartupDelay()
+	a.startHooks.Do(func() { a.runSessionStartHooks(vars, a.startSource) })
 	a.w.writeLine(mustJSON(map[string]any{
 		"type":                "system",
 		"subtype":             "init",
@@ -1013,11 +1038,11 @@ func writeClaudeControlErrorCode(w *lineWriter, requestID, message, code string)
 // a `control_cancel_request` naming the request id, and the CLI never waits
 // for an answer to it. The app clears its pending prompt on that line, so
 // a scenario that is interrupted mid-approval leaves no prompt behind.
-func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
+func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan approvalAnswer, func(bool), error) {
 	a.mu.Lock()
 	a.seq++
 	requestID := fmt.Sprintf("mock-req-%d", a.seq)
-	ch := make(chan bool, 1)
+	ch := make(chan approvalAnswer, 1)
 	a.waiters[requestID] = ch
 	a.mu.Unlock()
 
@@ -1062,7 +1087,7 @@ func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.
 	return ch, cancel, nil
 }
 
-func (a *claudeAdapter) deliverDecision(requestID string, allow bool) {
+func (a *claudeAdapter) deliverDecision(requestID string, answer approvalAnswer) {
 	a.mu.Lock()
 	ch, ok := a.waiters[requestID]
 	if ok {
@@ -1073,7 +1098,7 @@ func (a *claudeAdapter) deliverDecision(requestID string, allow bool) {
 		log.Printf("claude: control_response for unknown request_id %q (ignored)", requestID)
 		return
 	}
-	ch <- allow
+	ch <- answer
 }
 
 // mustJSON marshals a plain value that cannot fail (strings, numbers).

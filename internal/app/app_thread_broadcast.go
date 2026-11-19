@@ -22,7 +22,10 @@ import (
 //   - Every frame leaves through triage.ThreadAnnouncer. A row frame is
 //     announced by thread id and read under the thread's announce lock; a
 //     patch (announceThreadPatch) and a deletion (broadcastThreadDeleted)
-//     are emitted under the same lock after their commit. Frames therefore
+//     are emitted under the same lock after their commit. An assistant
+//     handoff's frame naming the successor (ThreadAnnouncer.AnnounceHandOff)
+//     is read like any row, and its action follows that row: `unlisted`
+//     while archived, `full` if an unarchive landed first. Frames therefore
 //     leave in the order their rows were read, and no frame describing an
 //     earlier state follows one describing a later state.
 //     TestThreadUpdatedFramesComeFromTheAnnouncer (internal/triage) rejects
@@ -40,6 +43,8 @@ func (a *App) threadAnnouncer() *triage.ThreadAnnouncer {
 	a.threadAnnouncerOnce.Do(func() {
 		a.threadRowAnnouncer = triage.NewThreadAnnouncer(func(threadID string) (store.Thread, error) {
 			return a.store.GetThread(threadID)
+		}, func(threadID string) (bool, error) {
+			return a.store.ThreadListed(threadID)
 		})
 	})
 	return a.threadRowAnnouncer
@@ -53,6 +58,31 @@ func (a *App) threadAnnouncer() *triage.ThreadAnnouncer {
 // lacks is dropped.
 func (a *App) announceThread(action, threadID string) {
 	a.threadAnnouncer().Announce(a.emitEvent, action, threadID)
+}
+
+// announcePlaced emits threadID's row after a write that may have given it
+// a sidebar row and returns no listing change (a send's first item, a
+// spawner's delete): `listed` when the store lists it (store.ThreadListed),
+// otherwise `full`, never the archive's pane-closing `unlisted`
+// (triage.ThreadAnnouncer.AnnouncePlaced). A write that returns its
+// listing change announces with announcePlacement.
+func (a *App) announcePlaced(threadID string) {
+	a.threadAnnouncer().AnnouncePlaced(a.emitEvent, threadID)
+}
+
+// announcePlacement announces a write that moved threadID by placement,
+// group or spawn naming, by the listing change the write read inside its
+// transaction (store.ListingChange): `listed` when it put the thread on the
+// list, so a client that lacks the row inserts it, and `full` otherwise,
+// so a client holding it converges in place and drops an owned row from
+// its sidebar. Never the archive's pane-closing `unlisted` nor the draft's
+// `emptied`: a pane on a worker stays open.
+func (a *App) announcePlacement(threadID string, listing store.ListingChange) {
+	action := triage.ThreadActionFull
+	if listing == store.ListingListed {
+		action = triage.ThreadActionListed
+	}
+	a.announceThread(action, threadID)
 }
 
 // announceListing announces a write that moved the thread across the

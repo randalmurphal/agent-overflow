@@ -19,8 +19,8 @@ import (
 )
 
 // projectDeleteFixture is a project that owns real workflow work: a run tree
-// with checkouts and branches of its own, a phase thread, an effect row, an
-// automation, and an ordinary chat thread alongside them. Deleting it is the
+// with checkouts and branches of its own, a phase thread, an effect row, and
+// an ordinary chat thread alongside them. Deleting it is the
 // only way to test a flow whose whole job is tearing that set down.
 type projectDeleteFixture struct {
 	*discardFixture
@@ -28,7 +28,6 @@ type projectDeleteFixture struct {
 	unit       store.WorkItemUnit
 	phaseID    string
 	chatThread store.Thread
-	automation store.Automation
 }
 
 func newProjectDeleteFixture(t *testing.T, itemID string) *projectDeleteFixture {
@@ -73,15 +72,6 @@ func newProjectDeleteFixture(t *testing.T, itemID string) *projectDeleteFixture 
 		t.Fatal(err)
 	}
 
-	fixture.automation = store.Automation{
-		ID: itemID + "-automation", ProjectID: base.project.ID, WorkflowID: "wf",
-		WorkflowScope: "shared", Name: "Nightly", Enabled: true,
-		Trigger:   json.RawMessage(`{"kind":"cron","cron":"0 3 * * *"}`),
-		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
-	}
-	if err := base.app.store.CreateAutomation(fixture.automation); err != nil {
-		t.Fatal(err)
-	}
 	return fixture
 }
 
@@ -131,13 +121,6 @@ func (f *projectDeleteFixture) assertRowsAndThreadsGone(t *testing.T, threadIDs 
 		t.Fatal(err)
 	} else if found {
 		t.Fatal("effect row survived the deletion")
-	}
-	automations, err := f.app.store.ListAutomations(f.project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(automations) != 0 {
-		t.Fatalf("automations = %+v, want none", automations)
 	}
 	if len(threadIDs) != 2 {
 		t.Fatalf("returned thread ids = %v, want the chat thread and the phase thread", threadIDs)
@@ -295,39 +278,6 @@ func TestProjectDeletionTransportClassification(t *testing.T) {
 	}
 }
 
-// An automation on its own is workflow work: the project owns a standing
-// instruction and it goes with the project, checkouts or not.
-func TestDeleteProjectRemovesAutomations(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	project, err := app.CreateProject(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.store.CreateAutomation(store.Automation{
-		ID: "lonely-automation", ProjectID: project.ID, WorkflowID: "wf",
-		WorkflowScope: "shared", Name: "Nightly", Enabled: true,
-		Trigger:   json.RawMessage(`{"kind":"cron","cron":"0 3 * * *"}`),
-		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := app.DeleteProject(project.ID); err != nil {
-		t.Fatalf("DeleteProject with an automation: %v", err)
-	}
-	automations, err := app.store.ListAutomations(project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(automations) != 0 {
-		t.Fatalf("automations = %+v, want them deleted with the project", automations)
-	}
-	if _, err := app.store.GetProject(project.ID); err == nil {
-		t.Fatal("project row survived the deletion")
-	}
-}
-
 // The project's own checkout is never a casualty, even when a run recorded it
 // as its workspace. Removing it, or deleting the branch it holds, is the one
 // mistake here that could not be undone.
@@ -389,9 +339,6 @@ func TestProjectDeletionPreviewDescribesTheCleanupAndMutatesNothing(t *testing.T
 	if len(preview.LiveRunIDs) != 0 {
 		t.Fatalf("live runs = %v, want none", preview.LiveRunIDs)
 	}
-	if preview.AutomationCount != 1 {
-		t.Fatalf("automation count = %d, want 1", preview.AutomationCount)
-	}
 	// Root and callee share one checkout, so it is described once, next to the
 	// fan-out unit's own.
 	if len(preview.Worktrees) != 2 {
@@ -439,7 +386,7 @@ func TestProjectDeletionPreviewReportsNoWorkForAPlainProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.HasWork || preview.RunCount != 0 || preview.AutomationCount != 0 {
+	if preview.HasWork || preview.RunCount != 0 {
 		t.Fatalf("preview = %+v, want an empty report", preview)
 	}
 	if preview.Worktrees == nil || preview.LiveRunIDs == nil {

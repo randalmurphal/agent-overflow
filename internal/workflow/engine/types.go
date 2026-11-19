@@ -121,12 +121,12 @@ func ResumableReason(reason Reason) bool {
 //     bought nothing.
 //
 // Naming a phase is always the fresh entry, including when the phase named is
-// the parked one; that is the whole meaning of `run resume --phase <id>`.
+// the parked one; that is the whole meaning of a resume with `phase_id`.
 //
 // Legacy `retries-exhausted` rows remain continuable because that was their
 // shipped recovery contract and their original cause is not reconstructible.
 // A new `loop-limit-exhausted` park is intentionally not in this set: it has no
-// dead provider turn to continue. Re-entering an earlier phase with `--phase`
+// dead provider turn to continue. Re-entering an earlier phase with `phase_id`
 // is what enters the cycle from outside and refills its bound.
 //
 // It is deliberately NOT what decides whether a resume cascades into a parked
@@ -420,7 +420,7 @@ type GuidanceState struct {
 
 // GuidanceQuarantine describes a pending-guidance slot the engine discarded
 // because it would not decode. It carries facts rather than a sentence: the
-// surfaces that render it (`run guide`'s block, the desktop) write their own
+// surfaces that render it (`run_guide`'s block, the desktop) write their own
 // prose, exactly as they do for where a run reads its guidance.
 type GuidanceQuarantine struct {
 	// Bytes is the size of the discarded column. There is deliberately no entry
@@ -565,7 +565,7 @@ const (
 	LogEventSeedAmend         = "seed-amend"
 	LogEventRebuild           = "rebuild"
 	LogEventCapacity          = "capacity"
-	// LogEventGuide is one `run guide` appending to the pending slot, and
+	// LogEventGuide is one `run_guide` appending to the pending slot, and
 	// LogEventGuidanceDeliver the phase entry that rendered it and cleared it.
 	// Both are logged because the pair is what answers "an operator says they
 	// steered this run — did it ever read it, and where".

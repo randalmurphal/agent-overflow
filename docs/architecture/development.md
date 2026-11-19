@@ -25,6 +25,16 @@ Nothing watches the tree for changes: rerun the target after editing. Use the ro
 commands for completion: the Go Make targets apply platform flags and
 `go-build` also compiles the `nogui` variant.
 
+Every Go command under make runs with `-trimpath` (exported as `GOFLAGS` in
+the Makefile), so worktrees holding the same sources share build cache
+entries. A bare `go build` or `go test` compiles a second copy of every
+package under a different cache key unless its own `GOFLAGS` carries
+`-trimpath`. With `-trimpath`, file paths in stack
+traces and from `runtime.Caller` are module-relative
+(`agent-overflow/internal/...`), so a test finds the checkout with
+`internal/testutil/reporoot`, and a debugger attached to a `make dev` build
+needs that prefix mapped to the checkout.
+
 ## Generated artifacts
 
 - After changing `info` or `fileAssociations` in `build/config.yml`, run
@@ -109,7 +119,9 @@ download site, the npm registry and the Playwright CDN.
 job (`.github/actions/toolchain-image`) resolves it at
 the start of every run, builds and publishes it when it is missing and the
 token may push, and otherwise runs the jobs on the newest `main` image
-while `.github/actions/setup` installs what the change moved past it. A
+while `.github/actions/setup` installs what the change moved past it. Only
+a run on `main` or a rebuild moves the `main` tag; a pull request's build
+publishes only its own tag. A
 fork or Dependabot token cannot publish, so a pin bump from one runs on
 that fallback until it merges. `toolchain-image.yml` publishes on pushes to
 `main` that touch a pin or a manifest and weekly, refreshing the base

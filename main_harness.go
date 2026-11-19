@@ -30,7 +30,6 @@ import (
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessrpc"
-	"agent-overflow/internal/logging"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -119,6 +118,7 @@ func runHarness(flags cliFlags) {
 
 	isolation := isolationOptionsFor(flags)
 	isolation.Timing = timing
+	isolation.OlderComputer = envTruthy(os.Getenv(diagenv.HarnessOlderComputer))
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolation)
 	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
@@ -149,6 +149,7 @@ func runHarness(flags cliFlags) {
 		HarnessMethodsSink:     func(names []string) { harnessrpc.SetWireMethods(h, names) },
 		AllowDevServerAssets:   true,
 		HarnessTiming:          timing,
+		HarnessOlderComputer:   isolation.OlderComputer,
 	})
 	log.Printf("transport: harness mode (data dir %s)", paths.DataDir)
 
@@ -156,9 +157,7 @@ func runHarness(flags cliFlags) {
 	// one parseable line (the harness bootstrap), mirroring the
 	// headless path's stdout-hygiene contract. The real stdout is kept
 	// aside for that single write.
-	bootstrapOut := os.Stdout
-	os.Stdout = os.Stderr
-	log.SetOutput(logging.Output(os.Stderr))
+	bootstrapOut := routeStdoutToStderr()
 
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
@@ -287,9 +286,33 @@ type harnessTiming struct {
 	// before the forge is asked again
 	// (app.IsolationConfig.PRLookupRetryBase).
 	PRLookupRetry time.Duration
+	// IdleReap, IdleReapSweep and WakeupGrace are the idle-session
+	// reaper's inactivity window, sweep cadence and scheduled-wakeup grace
+	// (app.IsolationConfig.IdleReapThreshold / IdleReapInterval /
+	// WakeupReapGrace).
+	IdleReap      time.Duration
+	IdleReapSweep time.Duration
+	WakeupGrace   time.Duration
+	// WakeFloor is the shortest interval a loop or watch may register
+	// (app.IsolationConfig.AgentWakeFloor).
+	WakeFloor time.Duration
+	// WatchFailureWindow is how long a watch keeps failing before the person
+	// is told (app.IsolationConfig.AgentWatchFailureWindow).
+	WatchFailureWindow time.Duration
+	// RemoteWatchPoll is how often the remote-job watcher asks the
+	// destination about a running job (app.IsolationConfig.RemoteWatchPoll).
+	RemoteWatchPoll time.Duration
+	// DrainStall is how long a session stop waits for a thread's provider
+	// event worker to handle its next event
+	// (app.IsolationConfig.ProviderEventDrainStall).
+	DrainStall time.Duration
 	// UsageProbeGap is the shortest gap between two usage probes of one
 	// provider (app.IsolationConfig.UsageProbeGap).
 	UsageProbeGap time.Duration
+	// PromptLease is how long a worker's prompt stays routed to its spawner
+	// on a paired computer without that computer saying it holds it
+	// (app.IsolationConfig.WorkerPromptLease).
+	PromptLease time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -298,18 +321,26 @@ type harnessTiming struct {
 func parseHarnessTiming(value string) (harnessTiming, error) {
 	var timing harnessTiming
 	fields := map[string]*time.Duration{
-		"pairing-probe":   &timing.PairingProbe,
-		"watermark":       &timing.Watermark,
-		"thread-poll":     &timing.ThreadPoll,
-		"transfer-retry":  &timing.TransferRetry,
-		"pr-update":       &timing.PRUpdate,
-		"pr-update-retry": &timing.PRUpdateRetry,
-		"pr-ci-live":      &timing.PRCILive,
-		"pr-ci-follow":    &timing.PRCIFollow,
-		"pr-ci-log-wait":  &timing.PRCILogWait,
-		"merged-pr-poll":  &timing.MergedPRPoll,
-		"pr-lookup-retry": &timing.PRLookupRetry,
-		"usage-probe-gap": &timing.UsageProbeGap,
+		"pairing-probe":        &timing.PairingProbe,
+		"watermark":            &timing.Watermark,
+		"thread-poll":          &timing.ThreadPoll,
+		"transfer-retry":       &timing.TransferRetry,
+		"pr-update":            &timing.PRUpdate,
+		"pr-update-retry":      &timing.PRUpdateRetry,
+		"pr-ci-live":           &timing.PRCILive,
+		"pr-ci-follow":         &timing.PRCIFollow,
+		"pr-ci-log-wait":       &timing.PRCILogWait,
+		"merged-pr-poll":       &timing.MergedPRPoll,
+		"pr-lookup-retry":      &timing.PRLookupRetry,
+		"idle-reap":            &timing.IdleReap,
+		"idle-reap-sweep":      &timing.IdleReapSweep,
+		"wakeup-grace":         &timing.WakeupGrace,
+		"wake-floor":           &timing.WakeFloor,
+		"watch-failure-window": &timing.WatchFailureWindow,
+		"remote-watch-poll":    &timing.RemoteWatchPoll,
+		"drain-stall":          &timing.DrainStall,
+		"usage-probe-gap":      &timing.UsageProbeGap,
+		"prompt-lease":         &timing.PromptLease,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -353,6 +384,61 @@ type isolationOptions struct {
 	// sets it (diagenv.HarnessTiming); the zero value keeps every product
 	// interval.
 	Timing harnessTiming
+	// OlderComputer makes this computer answer as one on v0.0.19: its
+	// window's calls (olderComputerSurface) and a paired spawner's archive
+	// or delete of a worker here. Only a harness boot sets it
+	// (diagenv.HarnessOlderComputer); the zero value is this build.
+	OlderComputer bool
+}
+
+// olderComputerSurface is how v0.0.19 answers this build's window: the
+// App methods added since are absent, so a call answers method_not_found;
+// ArchiveThread and DeleteThread, which returned only an error then,
+// answer a success with null; and a settings snapshot names none of the
+// keys added since. From the generated bindings and internal/settings at
+// the tag and at head. It reproduces the answers, not the release's write
+// path: a save of a key the release lacks is taken here.
+func olderComputerSurface() (absent map[string]bool, reshape map[string]func(json.RawMessage) (json.RawMessage, error)) {
+	absent = map[string]bool{}
+	for _, name := range []string{
+		"CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
+		"GetDeleteDependents", "GetNativeMemoryStatus", "GetStandingAgent",
+		"GetThreadAgentRows", "GetThreadRequestStates", "GetThreadWakeDetail",
+		"GetThreadWorkerSummary", "ListAssistantPastThreads", "ListStandingAgentWakes",
+		"ListThreadAgentRows", "ListThreadPastAgentRows", "ListThreadRecurringJobs",
+		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead",
+		"SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
+		"StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
+		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
+	} {
+		absent[name] = true
+	}
+	answerNull := func(json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`null`), nil }
+	reshape = map[string]func(json.RawMessage) (json.RawMessage, error){
+		"ArchiveThread": answerNull, "DeleteThread": answerNull,
+	}
+	for _, name := range []string{"GetSettings", "UpdateSettings", "SetProviderCustomEnvVar", "DeleteProviderCustomEnvVar"} {
+		reshape[name] = settingsWithoutNewerKeys
+	}
+	return absent, reshape
+}
+
+// settingsAfterV0019 are the Settings keys v0.0.19's Settings does not have.
+var settingsAfterV0019 = []string{
+	"agentNotes", "agentProfiles", "assistantsEnabled", "claudeOwnMemoryOff",
+	"codexOwnMemoryOff", "notifyThreadAttention", "sharedMemoryEnabled", "subThreadLevels",
+}
+
+// settingsWithoutNewerKeys is a settings snapshot as v0.0.19 encodes it.
+func settingsWithoutNewerKeys(answer json.RawMessage) (json.RawMessage, error) {
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(answer, &snapshot); err != nil {
+		return nil, fmt.Errorf("older computer: read settings answer: %w", err)
+	}
+	for _, key := range settingsAfterV0019 {
+		delete(snapshot, key)
+	}
+	return json.Marshal(snapshot)
 }
 
 // isolationOptionsFor is the one mapping from boot flags to isolation
@@ -400,17 +486,26 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		// gh and glab; see internal/git/forge_cli.go.
 		ForgeCLI: paths.MockForge,
 		// Dev-server discovery; see internal/app/app_preview.go.
-		ScanScopePIDs:        opts.ScanScopePIDs,
-		ThreadRequestPoll:    opts.Timing.ThreadPoll,
-		TransferPendingRetry: opts.Timing.TransferRetry,
-		PRUpdateInterval:     opts.Timing.PRUpdate,
-		PRUpdateRetryBase:    opts.Timing.PRUpdateRetry,
-		PRCILiveInterval:     opts.Timing.PRCILive,
-		PRCIFollowInterval:   opts.Timing.PRCIFollow,
-		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
-		MergedPRPollInterval: opts.Timing.MergedPRPoll,
-		PRLookupRetryBase:    opts.Timing.PRLookupRetry,
-		UsageProbeGap:        opts.Timing.UsageProbeGap,
+		ScanScopePIDs:           opts.ScanScopePIDs,
+		ThreadRequestPoll:       opts.Timing.ThreadPoll,
+		TransferPendingRetry:    opts.Timing.TransferRetry,
+		PRUpdateInterval:        opts.Timing.PRUpdate,
+		PRUpdateRetryBase:       opts.Timing.PRUpdateRetry,
+		PRCILiveInterval:        opts.Timing.PRCILive,
+		PRCIFollowInterval:      opts.Timing.PRCIFollow,
+		PRCILogWaitInterval:     opts.Timing.PRCILogWait,
+		MergedPRPollInterval:    opts.Timing.MergedPRPoll,
+		PRLookupRetryBase:       opts.Timing.PRLookupRetry,
+		IdleReapThreshold:       opts.Timing.IdleReap,
+		IdleReapInterval:        opts.Timing.IdleReapSweep,
+		WakeupReapGrace:         opts.Timing.WakeupGrace,
+		AgentWakeFloor:          opts.Timing.WakeFloor,
+		AgentWatchFailureWindow: opts.Timing.WatchFailureWindow,
+		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
+		ProviderEventDrainStall: opts.Timing.DrainStall,
+		UsageProbeGap:           opts.Timing.UsageProbeGap,
+		WorkerPromptLease:       opts.Timing.PromptLease,
+		OmitOwnerOps:            opts.OlderComputer,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

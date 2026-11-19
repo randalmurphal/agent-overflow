@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/wake"
 	"agent-overflow/internal/workflowapp"
+
+	"github.com/google/uuid"
 )
 
 func (a *App) workflowApplication() *workflowapp.Service {
@@ -88,7 +93,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				_, err := a.sendMessageWithOptions(context.Background(), threadID, message, sendMessageOptions{})
 				return err
 			},
-			DeleteThread: a.DeleteThread,
+			DeleteThread: a.deleteThread,
 			Digest: func(item store.WorkItem, phaseID string, output json.RawMessage, check string) workflowapp.Digest {
 				value := workflowTemplateDigest(item, phaseID, output, check)
 				return workflowapp.Digest{WhatHappened: value.WhatHappened, WhatItNeeds: value.WhatItNeeds}
@@ -111,6 +116,10 @@ func (a *App) workflowApplication() *workflowapp.Service {
 			ResumeRun: func(ctx context.Context, itemID string) error {
 				return a.WorkflowResumeItem(ctx, itemID, "", false)
 			},
+			OriginChanged: a.noteWorkflowOriginChange,
+			// The thread the run reports to may rest now that its report
+			// is in its hands, or will not come.
+			ReportSettled: a.noteWorkflowRunChanged,
 			Attention: workflowapp.AttentionPorts{
 				Notify: func(itemID, title, body string) error {
 					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
@@ -136,28 +145,14 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				},
 			},
 			WakeDelivery: workflowapp.WakeDeliveryPorts{
-				HasLiveSession: func(threadID string) bool {
-					_, live := a.sessionManager().get(threadID)
-					return live
-				},
-				QueueMessage: func(threadID, message string, onDurable func()) error {
+				// A run's wake is the workflow's report, not the person's. It
+				// waits for the boot steps a trial defers, so a run the rebuild
+				// resumes reaches a session only once the boot has finished.
+				QueueMessage: func(threadID, workflowID string, composed wake.Message, onDurable func()) error {
 					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
 						return err
 					}
-					_, err := a.registerQueueItem(
-						threadID, message, SendMessageOptions{},
-						injectedQueueOptions{preserveDraft: true, onDurable: onDurable},
-					)
-					return err
-				},
-				SendMessage: func(threadID, message string) error {
-					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
-						return err
-					}
-					_, err := a.sendMessageWithOptions(
-						context.Background(), threadID, message, sendMessageOptions{PreserveDraft: true},
-					)
-					return err
+					return a.queueWorkflowWake(threadID, workflowID, composed, onDurable)
 				},
 			},
 			MemoryTree: func(item store.WorkItem) (workflowapp.MemoryTree, error) {
@@ -335,4 +330,62 @@ func projectWorkflowWatch(value workflowapp.WatchResult) WorkflowAgentWatchResul
 		})
 	}
 	return out
+}
+
+// workflowWakeSendIDRoot opens a workflow run's queued wake's send id, so
+// its incoming row is withdrawn by send id as every other message the app
+// queues for an agent is.
+const workflowWakeSendIDRoot = "workflow-wake:"
+
+// queueWorkflowWake queues a run's wake for the thread's agent, and starts
+// the thread's session for it when it has none, as a notice's start does
+// (startAgentNoticeSession). onDurable runs once the message reaches the
+// provider or the composer. The wake is the workflow's report, so a thread a
+// delete claimed takes it and its start waits for the decision. An archive
+// or a Stop's rest does not refuse it: the engine settles what its wake
+// becomes (workflowapp.resolveWakeThread), and neither starts the thread
+// for it.
+func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Message, onDurable func()) error {
+	var settled func(string)
+	if onDurable != nil {
+		settled = func(string) { onDurable() }
+	}
+	message, err := workflowWakeMessage(workflowID, composed)
+	if err != nil {
+		return err
+	}
+	sendID := workflowWakeSendIDRoot + uuid.NewString()
+	if _, err := a.registerQueueItem(
+		threadID, message.Text(), SendMessageOptions{SendID: sendID},
+		injectedQueueOptions{
+			preserveDraft: true, onDurable: settled, appWritten: true,
+			// The start below is the wake's, as a notice's is: the
+			// dispatcher does not start a second one.
+			noticeStarts: true,
+			origin:       message.Origin(), originWake: message.Attribution().Wake,
+		},
+	); err != nil {
+		return err
+	}
+	if _, live := a.sessionManager().get(threadID); live {
+		return nil
+	}
+	notice := agentNotice{
+		threadID: threadID,
+		sendID:   sendID,
+		startFailed: func(err error) string {
+			return "A workflow run's report is queued for this thread, but the agent could not start: " + err.Error()
+		},
+	}
+	// Refused only once shutdown began: the durable row is the next boot's.
+	a.goAgentNoticeWork(threadID, func() { a.startAgentNoticeSession(a.lifeCtx(), notice, false) })
+	return nil
+}
+
+// workflowWakeMessage is a run's wake (wake.Compose, wake.ComposeProgress),
+// attributed to its workflow: the data notice it was composed with, written
+// for the agent, then what the row shows, headed by its first line, the
+// run's headline.
+func workflowWakeMessage(workflowID string, composed wake.Message) (usermessage.AgentMessage, error) {
+	return usermessage.Report(agentmeta.ReportWorkflow, usermessage.Reporter{Label: workflowID}, composed.Notice, composed.Data, "")
 }

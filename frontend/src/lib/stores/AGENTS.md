@@ -149,10 +149,14 @@ reply applies it. An unsequenced status (an older backend) is never kept and
 applies as it arrives, except a checkout answer, which stands down when any
 status landed during the call.
 
-Live turn, approval, user-input, compacting and sends-pending state is
-backend state, never derived from items or rows. Sends pending
+Live turn, approval, user-input, compacting, sends-pending and session
+state is backend state, never derived from items or rows. Whether a
+thread has a session (`provider:session_live`, capability
+`session-live.v1`) lives in `threadSessionLive.svelte.ts`; a computer
+without the capability gives no answer. Sends pending
 (`provider:sends_pending`, capability `sends-pending.v1`) covers a queued or
-flushed message until its echo, so a thread surface with no pane reads
+flushed message until its echo while the thread has a session live or
+starting, so every thread surface, the pane's own composer included, reads
 running from it rather than from the queue frames. `RegisterQueueItem`
 replies with the thread's answer and the channel sequence it reflects. The
 reply can overtake earlier frames, so a frame at or below an applied answer
@@ -173,9 +177,8 @@ position, so they apply in any order. The contract is in
 [turn-lifecycle.md](../../../../docs/architecture/turn-lifecycle.md).
 
 `watchedThreads.ts` unions registered sources for every thread whose surface
-exists, including child threads with no pane, and for every subagent scope a
-surface reads. Watches never depend on focus, visibility, or `document.hidden`.
-Registering a consumer of an entity-filtered channel also requires contributing
+exists and for every subagent scope a surface reads. Watches never depend on
+focus, visibility, or `document.hidden`. Registering a consumer of an entity-filtered channel also requires contributing
 its thread IDs. A watched thread delivers only root rows on
 `provider:item_event`: a consumer of rows with `parentId` set contributes
 their scope while it exists, or reads anchor-level data instead. Push the

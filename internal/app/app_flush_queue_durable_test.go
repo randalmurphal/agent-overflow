@@ -184,7 +184,7 @@ func TestRequeuedQueueItemKeepsItsDurableRow(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, items)
+	dispatchThroughWorker(app, thread.ID, items)
 
 	rows := durableQueueRows(t, app, thread.ID)
 	if len(rows) != 1 || rows[0].ID != queued.ID {
@@ -681,7 +681,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	holdFlushQueue(app)
 	if _, err := app.registerQueueItem(thread.ID, "injected", SendMessageOptions{}, injectedQueueOptions{
 		preserveDraft: true,
-		onDurable:     func() { settled++ },
+		onDurable:     func(string) { settled++ },
 	}); err != nil {
 		t.Fatalf("registerQueueItem: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("queued items: got %d, want 1", len(items))
 	}
-	app.settleFlushGroup(thread.ID, items)
+	app.settleFlushGroup(thread.ID, items, "")
 
 	if settled != 1 {
 		t.Fatalf("injector settlement ran %d times, want 1", settled)
@@ -699,7 +699,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 		t.Fatalf("durable rows after settling: got %+v, want none", rows)
 	}
 	// sync.Once: the two endpoints can race and the bookkeeping runs once.
-	items[0].Settlement.Settle()
+	items[0].Settlement.Settle("")
 	if settled != 1 {
 		t.Fatalf("injector settlement ran again: %d", settled)
 	}

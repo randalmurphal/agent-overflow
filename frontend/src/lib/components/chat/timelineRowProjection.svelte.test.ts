@@ -290,6 +290,37 @@ describe('quiet queue reservations', () => {
   });
 });
 
+// An agent's message has no composer preview to stand in for it, so the
+// timeline shows it as soon as it is dispatched rather than holding it for the
+// provider's echo; the person's own still waits in the preview. Its Zone 2
+// entry still lasts until the echo, which is what keeps the thread reading as
+// working meanwhile.
+it('shows a dispatched agent message at once and keeps its entry until the echo', async () => {
+  const { markItemsFlushed, getFlushedForThread, clearForThread } = await import('../../stores/sendQueue.svelte');
+  const agent = makeItem({ id: 'user:0:flush:wake', kind: 'user_text', role: 'user', itemIndex: 1,
+    meta: '{"pendingFlush":true,"origin":"agent-thread","originThread":{"threadId":"t-w","kind":"wake"}}' });
+  const person = makeItem({ id: 'user:0:flush:mine', kind: 'user_text', role: 'user', itemIndex: 2, meta: '{"pendingFlush":true}' });
+  const pane = await buildPane(undefined, [agent, person]);
+  markItemsFlushed(pane.threadId!, [
+    { queueItemId: 'q-wake', userItemId: agent.id, message: agent.summary, agentMessage: true },
+    { queueItemId: 'q-mine', userItemId: person.id, message: person.summary },
+  ]);
+  const view = mountProjection(pane);
+  try {
+    expect(view.nodes.map((node) => (node.kind === 'leaf' ? node.item.id : node.kind))).toEqual([agent.id]);
+    pane.syncRenderedFlushRows();
+    expect(getFlushedForThread(pane.threadId!)).toHaveLength(2);
+    pane.applyProviderItemUpserts([{ ...agent, threadId: pane.threadId!,
+      meta: '{"provider_item_id":"echo-1","origin":"agent-thread","originThread":{"threadId":"t-w","kind":"wake"}}' }]);
+    flushSync();
+    expect(getFlushedForThread(pane.threadId!).map((entry) => entry.userItemId)).toEqual([person.id]);
+    expect(view.nodes.map((node) => (node.kind === 'leaf' ? node.item.id : node.kind))).toEqual([agent.id]);
+  } finally {
+    view.dispose();
+    clearForThread(pane.threadId!);
+  }
+});
+
 it('does not hide retained history after the live pending registry is cleared', async () => {
   const { markItemsFlushed, clearForThread } = await import('../../stores/sendQueue.svelte');
   const row = makeItem({ id: 'user:0:flush:lost-session', kind: 'user_text', role: 'user', meta: '{"pendingFlush":true}' });

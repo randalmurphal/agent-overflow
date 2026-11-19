@@ -316,6 +316,9 @@ type benchFaultReceipt struct {
 	EngineNotices  int            `json:"engineNotices"`
 	UIOracle       map[string]int `json:"uiOracle,omitempty"`
 	Sample         []string       `json:"sample,omitempty"`
+	// AppDiagnostics counts records the app caught and reported itself
+	// (reportFrontendDiagnostic); they are evidence, not uncaught errors.
+	AppDiagnostics int `json:"appDiagnostics"`
 }
 
 func collectBenchFaultReceipt(cursors benchEvidenceCursors) (benchFaultReceipt, error) {
@@ -336,6 +339,7 @@ func collectBenchFaultReceiptAt(cursors benchEvidenceCursors) (benchFaultReceipt
 		cursors.FrontendErrors.Start = next
 		scan := scanFrontendErrors(lines)
 		result.FrontendErrors, result.EngineNotices, result.Sample = scan.Faults, scan.Notices, scan.Sample
+		result.AppDiagnostics = scan.Diagnostics
 	}
 	if cursors.UITrace.Path != "" {
 		lines, next, _, err := scanNewLines(cursors.UITrace.Path, cursors.UITrace.Start)

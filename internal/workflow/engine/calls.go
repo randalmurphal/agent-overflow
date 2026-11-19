@@ -14,7 +14,7 @@ import (
 )
 
 // WorkItemSourceCall marks a run that exists because a call phase invoked it.
-// It is the item's provenance, exactly like `manual` or `automation`: nobody
+// It is the item's provenance, exactly like `manual` or `agent`: nobody
 // enqueued this run, a parent phase did.
 const WorkItemSourceCall = "call"
 

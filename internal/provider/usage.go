@@ -208,6 +208,14 @@ type TokenUsage struct {
 	TotalCostUSD             float64 `json:"totalCostUsd,omitempty"`
 }
 
+// Spend is the tokens the usage spent, as a subagent's row counts its
+// agent's (SubagentProgressMeta.TotalTokens): fresh input, cache writes and
+// output. A cached prompt read again is no spend; counting it would grow
+// with each round rather than with the work.
+func (u TokenUsage) Spend() int64 {
+	return int64(u.InputTokens) + int64(u.CacheCreationInputTokens) + int64(u.OutputTokens)
+}
+
 // IsZero reports whether the usage carries no accounting signal at all.
 func (u TokenUsage) IsZero() bool {
 	return u == TokenUsage{}

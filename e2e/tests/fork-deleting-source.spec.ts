@@ -3,11 +3,11 @@
 // store.ErrForkSourceDeleted).
 //
 // The page keeps a deleted thread's sidebar row and pane until its
-// DeleteThread call returns (threadRowActions.ts deleteThreadAction) or
+// delete call returns (threadRowActions.ts deleteThreadAction) or
 // the thread's `deleted` broadcast arrives, and the delete of a large
 // thread drains its items for seconds. Both fork entry points stay
 // reachable in that window: the per-message fork in the open pane and the
-// row's Fork Thread. The spec holds the page's DeleteThread reply and every
+// row's Fork Thread. The spec holds the page's delete reply and every
 // event after it, so the window stays open after the backend's delete has
 // finished, and forks the thread through each entry point.
 //
@@ -19,12 +19,13 @@
 // fork_lineage_test.go). This level shows the refusal crossing the wire and
 // reaching the user from each entry point, with no fork created.
 import { expect, test, type SeedResult } from './fixtures.js';
+import { methodIdByName } from './offhost-helpers.js';
 import { threadRows } from './thread-tools-helpers.js';
 
 const SOURCE_TITLE = 'Deleting source';
 const REFUSAL = 'This thread was deleted, so it cannot be forked.';
-// methodRoutes.ts: DeleteThread.
-const DELETE_THREAD = 1186337974;
+// The sidebar's delete.
+const DELETE_THREAD = methodIdByName('DeleteThreads');
 
 interface ThreadEvent {
   action: string;
@@ -55,7 +56,7 @@ test('a fork from a thread whose delete has begun is refused and creates no thre
   const project = seed.projects[0];
   const sourceId = project.threadIds[0];
 
-  // From the page's DeleteThread call on, the server's frames to the page
+  // From the page's delete call on, the server's frames to the page
   // wait here, except the replies to other calls.
   let deleteCallId: string | undefined;
   const held: Array<string | Buffer> = [];
@@ -64,7 +65,7 @@ test('a fork from a thread whose delete has begun is refused and creates no thre
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
-      if (frame.type === 'rpc' && frame.methodId === DELETE_THREAD && frame.params?.[0] === sourceId) {
+      if (frame.type === 'rpc' && frame.methodId === DELETE_THREAD && frame.params?.[0]?.[0] === sourceId) {
         deleteCallId = frame.id;
         release = () => {
           release = undefined;

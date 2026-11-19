@@ -4,37 +4,27 @@
   import Icon from '../primitives/Icon.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
-  import {
-    DeleteThread,
-    ListArchivedThreads,
-    StopSession,
-    UnarchiveThread,
-  } from '../../stores/bindings';
+  import { ListArchivedThreads, UnarchiveThread } from '../../stores/bindings';
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
-  import {
-    removeWorktreeAt,
-    threadWorktreeOwner,
-    TerminalsClosingNote,
-    terminalsClosingNoteForThreadDelete,
-    withTerminalsNote,
-  } from '../../stores/worktreeRemoval.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { userFacingError } from '../../utils/userFacingError';
-  import { threadCleanupFailure } from '../../transport/threadCleanupFailure';
   import { relativeTime } from '../../utils/format';
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
+  import { ThreadDeleteNote, hiddenAssistantThread, withDeleteNote } from '../../stores/assistants.svelte';
+  import { deleteThread, reportDeleteLeftovers } from '../sidebar/threadRowActions';
 
   let archivedThreads: Thread[] = $state([]);
+  // An archived assistant's threads are not listed while assistants are off.
+  let listedThreads = $derived(archivedThreads.filter((thread) => !hiddenAssistantThread(thread)));
   let loading = $state(true);
   let loadError: string | null = $state(null);
   let deleteTarget: Thread | null = $state(null);
-  const deleteTerminalsNote = new TerminalsClosingNote();
+  const deleteNote = new ThreadDeleteNote();
 
   $effect(() => {
     loading = true;
@@ -67,16 +57,11 @@
 
   async function handleDelete(thread: Thread): Promise<void> {
     try {
-      const worktree = threadWorktreeOwner(thread);
-      await StopSession(thread.id).catch((err) => {
-        console.error('Failed to stop session before delete:', err);
-      });
-      if (worktree) await removeWorktreeAt(worktree);
-      const cleanupFailure = await threadCleanupFailure(DeleteThread(thread.id));
+      const { backend, result } = await deleteThread(thread);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);
-      if (cleanupFailure) addErrorToast(userFacingError(cleanupFailure), cleanupFailure);
-      else addToast('info', `Deleted "${thread.title || 'thread'}".`);
+      if (!result.cleanupError) addToast('info', `Deleted "${thread.title || 'thread'}".`);
+      reportDeleteLeftovers(backend, thread.title || 'thread', result, [thread.id]);
     } catch (err) {
       console.error('Failed to delete archived thread:', err);
       addErrorToast(`Failed to delete: ${errString(err)}`, err);
@@ -85,19 +70,19 @@
 
   function confirmDelete(thread: Thread): void {
     deleteTarget = thread;
-    deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
+    deleteNote.load([thread]);
   }
 
   function cancelDelete(): void {
     deleteTarget = null;
-    deleteTerminalsNote.clear();
+    deleteNote.clear();
   }
 
   function executeDelete(): void {
     if (!deleteTarget) return;
     const target = deleteTarget;
     deleteTarget = null;
-    deleteTerminalsNote.clear();
+    deleteNote.clear();
     void handleDelete(target);
   }
 
@@ -122,14 +107,14 @@
       <p class="text-[0.8125rem] text-fg-subtle">Loading...</p>
     {:else if loadError}
       <p class="text-[0.8125rem] text-error">Failed to load archived threads: {loadError}</p>
-    {:else if archivedThreads.length === 0}
+    {:else if listedThreads.length === 0}
       <p class="text-[0.8125rem] text-fg-subtle">No archived threads.</p>
     {:else}
       <p class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
-        {archivedThreads.length} archived {archivedThreads.length === 1 ? 'thread' : 'threads'}
+        {listedThreads.length} archived {listedThreads.length === 1 ? 'thread' : 'threads'}
       </p>
       <div class="mt-2 flex flex-col gap-px rounded-[var(--radius-field)] border border-border-subtle overflow-hidden">
-        {#each archivedThreads as thread (thread.id)}
+        {#each listedThreads as thread (thread.id)}
           <div class="group flex items-center gap-3 bg-surface-1/50 px-3 py-2.5 hover:bg-surface-2/30 transition-colors">
             <div class="min-w-0 flex-1">
               <p class="truncate text-[0.8125rem] font-medium text-fg">{thread.title || 'Untitled'}</p>
@@ -169,12 +154,13 @@
 
 <ConfirmDialog
   open={deleteTarget !== null}
-  title="Delete Archived Thread"
-  description={withTerminalsNote(
+  title={deleteTarget?.agentId ? 'Delete Archived Assistant' : 'Delete Archived Thread'}
+  description={withDeleteNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
-    deleteTerminalsNote.note,
+    deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={executeDelete}
   onCancel={cancelDelete}

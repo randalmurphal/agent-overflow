@@ -62,12 +62,13 @@ candidate boots on the migrated root and runs `topUp`
 file edits with persisted diffs, Claude and Codex subagents, usage limits, a
 session death, a Codex revert), then forks, a side chat, a draft with image
 and file attachments, pins, a group, an archive, a rename, a favorite,
-threads at every chat-bar setting, a worktree, project settings and an
-archived project, workflow runs (finished, gated, questioned, cancelled,
-fired by an automation), review drafts in every side, scope and status (one
-claimed by the message that sent it, some owned by a pull request with no
-thread), agent `thread_send` and `thread_remind` requests (one wake carrying
-two answers), and the open pull request a worktree thread tracks
+assistants (a handoff, loops and watches, home files a Codex thread
+still owes), threads at every chat-bar setting, a worktree, project settings and an
+archived project, workflow runs (finished, gated, questioned, cancelled),
+review drafts in every side, scope and status (one claimed by the message
+that sent it, some owned by a pull request with no thread), agent
+`thread_send` and `thread_remind` requests (one wake carrying two answers),
+and the open pull request a worktree thread tracks
 (`upgrade-corpus-topup-records.ts`). Those rows are written by the candidate's own code
 paths at its own schema, which is what a corpus handed to the next release
 needs: rows of every feature that existed when they were written. Because
@@ -212,8 +213,13 @@ unconfirmed one and a resend's recovery leave only when their thread's
 booted draft is exactly the draft the boot's restores compose from them
 (`restoredDraftThreads` in the fingerprint mirrors that composition: the
 parts in the restore's order, trimmed as Go trims, joined as
-`composerdraft.MergeParts` joins them, a joined row's member copies and
-provider-confirmed messages adding no text). Stamps follow writes, never
+`composerdraft.MergeParts` joins them, a joined row's member copies,
+provider-confirmed messages and the app's messages adding no text). A
+message the app wrote never reaches the draft: an answer, a reminder or a
+remote completion goes back to its owner (`giveBackToOwners`, whose rules
+clear a request's delivery mark and disarm it, or put a watch back to
+pending), and a joined unconfirmed row splits off the members the app
+wrote by the parts its dispatch recorded. Stamps follow writes, never
 stand alone: a row's
 `rev`, the thread's `history_rev` and `history_epoch`, and a subagent card
 may move only in a thread whose `items` rows the boot changed, removed or
@@ -266,9 +272,10 @@ and the census to the rules it must show. It also proves that a change
 outside each rule, an altered settled row, a deleted settled user row and
 a stamp moved in an unwritten thread fail as the boot's doing, that a
 change the migrated copy also carries fails as the migrations', that an
-exception explains the migrations' change but not the boot's, and that a
+exception explains the migrations' change but not the boot's, that a
 restore whose draft lost the queued text, the old draft or an attachment
-fails. A second case builds a root at a schema older than the rules' columns
+fails, and that a draft holding a wake's text, or a confirmed wake given
+back, fails. A second case builds a root at a schema older than the rules' columns
 and holds its boot's recovery to them.
 
 ## Where it runs
@@ -311,12 +318,15 @@ The previous release's assets are downloaded once to `bin/releases/<tag>/`
 and verified against the release's `SHASUMS256`, so the check runs on
 Linux (a developer's WSL or a CI runner). The migration and store code is
 platform-neutral; the macOS and Windows release legs are covered by their
-own smokes. The sandbox is replaced on every run and needs roughly three
-times the corpus size while the launcher's snapshot exists, and a fourth
-while the fingerprint holds the snapshot migrated alone, which it makes
-only when a row changed (on a real root, always).
-`AO_RELEASE_UPGRADE_KEEP=1` keeps it; the Playwright annotation names the
-path. The candidate is `bin/agent-overflow` from `make harness-build`, or
+own smokes. The sandbox is replaced on every run, removed when the run
+ends (an interrupted check stops the run first), and needs roughly three times the corpus size while the launcher's
+snapshot exists, and a fourth while the fingerprint holds the snapshot
+migrated alone, which it makes only when a row changed (on a real root,
+always). Its root is fixed, so the script holds a lock beside it
+(`ao-upgrade-corpus.lock`) until the run ends: a check started from
+another checkout while one runs waits for it to end.
+`AO_RELEASE_UPGRADE_KEEP=1` (`--keep`) keeps it; the Playwright annotation
+names the path. The candidate is `bin/agent-overflow` from `make harness-build`, or
 `AO_HARNESS_BIN`: the release workflow points it at the release's own
 headless binary.
 

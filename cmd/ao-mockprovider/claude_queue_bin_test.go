@@ -15,7 +15,7 @@ import (
 
 // Queued-message consumption (claude-wire.md §Queued-message consumption).
 // A user envelope that arrives mid-turn is acked `queued` on arrival either
-// way. By default its init, replay echo and `started` follow at once. Under
+// way. By default its `started`, init and replay echo follow at once. Under
 // scenario.ClaudeOptions.HoldQueuedInput a drainQueuedInput step consumes it
 // into the running turn (the CLI's mid-loop flavor); undrained, it is picked
 // up after the running turn's last frame (the CLI's turn-pickup flavor).
@@ -98,21 +98,21 @@ func startHeldTurn(t *testing.T, p *mockProc) {
 	t.Helper()
 	p.send(queuedUserLine("u1", "first"))
 	expectLifecycle(t, p.expectLine(testTimeout), "u1", "queued")
+	expectLifecycle(t, p.expectLine(testTimeout), "u1", "started")
 	p.expectLineContaining(`"subtype":"init"`, testTimeout)
 	p.expectLineContaining(`"isReplay":true`, testTimeout)
-	expectLifecycle(t, p.expectLine(testTimeout), "u1", "started")
 	p.expectLineContaining(`"text_delta","text":"hello turn 1"`, testTimeout)
 	p.expectLineContaining(`"type":"assistant"`, testTimeout)
 }
 
 func expectTurnTwoPickup(t *testing.T, p *mockProc) {
 	t.Helper()
+	expectLifecycle(t, p.expectLine(testTimeout), "u2", "started")
 	p.expectLineContaining(`"subtype":"init"`, testTimeout)
 	echo := p.expectLine(testTimeout)
 	if !strings.Contains(echo, `"isReplay":true`) || !strings.Contains(echo, `"uuid":"u2"`) {
 		t.Fatalf("turn-2 echo = %q", echo)
 	}
-	expectLifecycle(t, p.expectLine(testTimeout), "u2", "started")
 }
 
 func TestClaudeHeldQueuedInputWaitsForTheRunningTurn(t *testing.T) {
@@ -200,15 +200,15 @@ func TestClaudeDrainQueuedInputConsumesHeldInputIntoTheRunningTurn(t *testing.T)
 	}
 	p.expectNoLine(300 * time.Millisecond)
 
-	// The drain writes `started` and the echo for each held message, in
-	// arrival order, inside turn 1 with no init, and turn 1 then finishes.
+	// The drain writes the echo and then `started` for each held message,
+	// in arrival order, inside turn 1 with no init, and turn 1 then finishes.
 	advance("hold")
 	for _, id := range []string{"u2", "u3"} {
-		expectLifecycle(t, p.expectLine(testTimeout), id, "started")
 		echo := p.expectLine(testTimeout)
 		if !strings.Contains(echo, `"isReplay":true`) || !strings.Contains(echo, `"uuid":"`+id+`"`) {
 			t.Fatalf("drain echo for %s = %q", id, echo)
 		}
+		expectLifecycle(t, p.expectLine(testTimeout), id, "started")
 	}
 	if got := p.expectLine(testTimeout); got != claudeResultLine {
 		t.Fatalf("line after the drain = %q, want turn-1 result", got)
@@ -219,9 +219,9 @@ func TestClaudeDrainQueuedInputConsumesHeldInputIntoTheRunningTurn(t *testing.T)
 	// The next message is picked up as turn 2.
 	p.send(queuedUserLine("u4", "next"))
 	expectLifecycle(t, p.expectLine(testTimeout), "u4", "queued")
+	expectLifecycle(t, p.expectLine(testTimeout), "u4", "started")
 	p.expectLineContaining(`"subtype":"init"`, testTimeout)
 	p.expectLineContaining(`"uuid":"u4"`, testTimeout)
-	expectLifecycle(t, p.expectLine(testTimeout), "u4", "started")
 	p.expectLineContaining(`"type":"result"`, testTimeout)
 
 	// The transcript records each drained message as the CLI does: a

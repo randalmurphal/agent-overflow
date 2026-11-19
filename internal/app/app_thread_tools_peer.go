@@ -9,13 +9,14 @@ import (
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
 
 // The destination half of cross-computer thread tools: the five bound
-// methods a paired computer reaches, and the shapes they carry.
+// methods a paired computer reaches. The shapes they carry are in
+// app_thread_tools_peer_wire.go, and a forwarded request's half in
+// app_thread_tools_peer_requests.go.
 //
 // They serve whatever this computer's own thread tools switch says. The
 // switch means "agents on this computer get the tools"; pairing already
@@ -33,111 +34,6 @@ import (
 // computers of its own, so a fan-out, a resolution or a search never crosses
 // back to the computer that asked, and an export writes a file this computer
 // can serve in chunks rather than a path the reader cannot open.
-
-// ThreadPeerCall is one tool call forwarded from a paired computer.
-type ThreadPeerCall struct {
-	// Tool is the tool name, in the same spelling the model uses.
-	Tool string `json:"tool"`
-	// Args are the tool's own arguments for a read or an organize call,
-	// and the marshalled SpawnCall, SendCall, AskCall or CancelCall for a
-	// call that mints a request.
-	Args json.RawMessage `json:"args,omitempty"`
-	// Token is the source's minted request token for spawn, send, ask and
-	// cancel. It is the idempotency key of the receipt, so a retry after a
-	// lost reply returns the existing acceptance rather than starting the
-	// work a second time.
-	Token string `json:"token,omitempty"`
-	// Source is the calling thread as its own computer names it. It is
-	// display and attribution only; the receipt's authorization input is
-	// the authenticated device.
-	Source threadtools.Caller `json:"source"`
-	// UserMessage is the source thread's latest message no agent wrote,
-	// which the request footer quotes and this computer cannot read.
-	UserMessage string `json:"userMessage,omitempty"`
-	// Inherit is what a forwarded spawn takes from the calling thread where
-	// the call overrides nothing. It travels because the calling thread's
-	// row is on the other computer; this computer still validates every
-	// value against its own catalogs.
-	Inherit threadtools.SpawnDefaults `json:"inherit,omitzero"`
-}
-
-// ThreadPeerReply is one forwarded call's answer.
-type ThreadPeerReply struct {
-	// Request is the receipt a spawn, send, ask or cancel now owns here.
-	Request *ThreadPeerRequest `json:"request,omitempty"`
-	// Result is the tool's own JSON for a read or an organize call,
-	// returned unchanged for the caller to stamp its own view onto.
-	Result json.RawMessage `json:"result,omitempty"`
-	// Effect is what a cancel stopped, in the tool's own vocabulary.
-	Effect string `json:"effect,omitempty"`
-}
-
-// ThreadPeerRequest is one request as the computer that accepted it
-// reports it: the receipt's state, and once settled its whole answer.
-//
-// Known separates a receipt this computer holds from a token it has never
-// seen or has swept past the retention floor, which the source settles
-// differently.
-type ThreadPeerRequest struct {
-	Token          string `json:"token"`
-	Known          bool   `json:"known"`
-	Kind           string `json:"kind,omitempty"`
-	TargetThreadID string `json:"targetThreadId,omitempty"`
-	Title          string `json:"title,omitempty"`
-	State          string `json:"state,omitempty"`
-	Answer         string `json:"answer,omitempty"`
-	AnswerKind     string `json:"answerKind,omitempty"`
-	// LateReply is a thread_reply that arrived after the receipt had
-	// already finished. It is a later revision than Answer.
-	LateReply   string `json:"lateReply,omitempty"`
-	LateReplyAt int64  `json:"lateReplyAt,omitempty"`
-	Revision    int64  `json:"revision,omitempty"`
-	// CollectedRevision is the revision the source last acknowledged. A
-	// source holding Revision sends its acknowledgement again while this is
-	// behind it.
-	CollectedRevision int64 `json:"collectedRevision,omitempty"`
-	SettledAt         int64 `json:"settledAt,omitempty"`
-	ExpiresAt         int64 `json:"expiresAt,omitempty"`
-	// Blocked is whether the target is waiting on a person right now. It
-	// is a live property, never stored, and it is what lets a wait on a
-	// remote request end on blocked the way a local one does.
-	Blocked bool `json:"blocked,omitempty"`
-}
-
-// ThreadPeerPoll is one source's whole outstanding set for this computer:
-// the tokens it wants the state of, and the settlements it has durably
-// stored since it last asked.
-type ThreadPeerPoll struct {
-	Tokens []string        `json:"tokens,omitempty"`
-	Ack    []ThreadPeerAck `json:"ack,omitempty"`
-}
-
-// ThreadPeerAck is one collected settlement. The destination may drop an
-// answer only once its latest revision has been acknowledged.
-type ThreadPeerAck struct {
-	Token    string `json:"token"`
-	Revision int64  `json:"revision"`
-}
-
-// ThreadPeerPollReply answers one poll, one entry per requested token.
-type ThreadPeerPollReply struct {
-	Requests []ThreadPeerRequest `json:"requests"`
-}
-
-// threadPeerTokenLimit bounds one poll. The source batches its due rows,
-// and a batch larger than this is a defect rather than work.
-const threadPeerTokenLimit = 256
-
-// ThreadPeerResolve is one forwarded thread reference.
-type ThreadPeerResolve struct {
-	// Ref is the id, or id prefix, to resolve.
-	Ref string `json:"ref"`
-	// Source is the calling thread as its own computer names it. It
-	// decides what the lookup may see: a scratch fork an ask made here is
-	// visible to the thread that asked and to nothing else, and that thread
-	// is on the other computer.
-	Source threadtools.Caller `json:"source"`
-}
 
 // ThreadToolResolve answers one thread reference against this computer's
 // threads. It is typed rather than a tool call so the caller can compare
@@ -157,7 +53,8 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 	if err != nil {
 		return threadtools.Resolution{}, err
 	}
-	return a.threadToolsAdapter().ResolveThreadRef(threadtools.WithCaller(ctx, caller), resolve.Ref)
+	// Forwarded: a refusal names this computer to the caller on its own.
+	return a.threadToolsAdapter().ResolveThreadRef(threadtools.WithForwarded(threadtools.WithCaller(ctx, caller)), resolve.Ref)
 }
 
 // ThreadToolQuery runs one read tool here and returns its JSON result
@@ -169,13 +66,16 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 //ao:route selected
 //ao:budget 1m
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	if _, err := a.remoteCommandOwner(ctx); err != nil {
+	owner, err := a.remoteCommandOwner(ctx)
+	if err != nil {
 		return ThreadPeerReply{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread"); err != nil {
 		return ThreadPeerReply{}, err
 	}
 	switch call.Tool {
+	case threadAgentPeerRows:
+		return a.serveThreadAgentPeer(ctx, owner, call)
 	case "thread_search", "thread_show", "thread_item", "thread_options", "thread_status":
 	default:
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
@@ -206,6 +106,14 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 		return a.runThreadPeerTool(ctx, call)
 	case "thread_spawn", "thread_send", "thread_ask", "thread_cancel":
 		return a.runThreadPeerRequest(ctx, owner, call)
+	case threadAgentPeerStop:
+		return a.serveThreadAgentPeer(ctx, owner, call)
+	case threadOwnerOpTool:
+		if !a.ownerOpsOmitted {
+			return a.serveThreadOwnerOp(ctx, owner, call)
+		}
+	case threadAgentPeerPromptReply, threadAgentPeerPromptReturn:
+		return a.servePeerPrompt(ctx, owner, call)
 	}
 	return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 		fmt.Sprintf("%s is not a thread tools write call.", call.Tool), nil)
@@ -225,9 +133,16 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread request"); err != nil {
 		return ThreadPeerPollReply{}, err
 	}
-	if len(poll.Tokens) > threadPeerTokenLimit || len(poll.Ack) > threadPeerTokenLimit {
+	if len(poll.Tokens) > threadPeerTokenLimit || len(poll.Ack) > threadPeerTokenLimit || len(poll.Held) > threadPeerTokenLimit {
 		return ThreadPeerPollReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("A request poll carries at most %d tokens.", threadPeerTokenLimit), nil)
+	}
+	var links []OwnerLinkState
+	if poll.Launch != "" || len(poll.Links)+len(poll.Contacts)+len(poll.StructuralAck) > 0 {
+		links, err = a.readOwnerWork(ctx, owner, poll)
+		if err != nil {
+			return ThreadPeerPollReply{}, err
+		}
 	}
 	for _, ack := range poll.Ack {
 		receipt, found, err := a.store.GetThreadRequestReceipt(ack.Token)
@@ -244,20 +159,40 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 			return ThreadPeerPollReply{}, err
 		}
 	}
-	reply := ThreadPeerPollReply{Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
+	held := make(map[string]int64, len(poll.Held))
+	for _, h := range poll.Held {
+		held[h.Token] = max(held[h.Token], h.Revision)
+	}
+	reply := ThreadPeerPollReply{Links: links, Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
 	for _, token := range poll.Tokens {
+		// Read before the receipt: a handler that is gone by now wrote any
+		// receipt it admitted before it went, so the read below finds it.
+		admitting := a.peerAdmissions.holds(token)
+		if hook := a.peerStatusReadForTest; hook != nil {
+			hook(token)
+		}
 		state, err := a.threadPeerRequestState(ctx, owner, token)
 		if err != nil {
 			return ThreadPeerPollReply{}, err
 		}
+		if revision, ok := held[token]; ok && state.Known && revision > 0 && state.Revision > 0 {
+			// The source holds the settlement at any revision, and the late
+			// reply too at the receipt's own: it takes neither again, so
+			// only the texts it lacks are sent.
+			state.Answer, state.Cause = "", nil
+			if state.Revision <= revision {
+				state.LateReply = ""
+			}
+		}
+		state.Admitting = admitting && !state.Known
 		reply.Requests = append(reply.Requests, state)
 	}
 	return reply, nil
 }
 
 // ThreadToolExportChunk serves one rendered transcript in transfer-sized
-// pieces, under the same stamp rule a command artifact uses: a file that
-// changed mid-transfer is refused rather than delivered half old.
+// pieces (readThreadExportChunk): a file that changed since its render is
+// refused rather than delivered half old.
 //
 //ao:scope threads:read
 //ao:route selected
@@ -353,6 +288,18 @@ func refuseForeignLedgerRead(ctx context.Context, what string) error {
 			" cannot be read from another computer. Call thread_status on your own computer.", nil)
 }
 
+// refuseForwardedHomeFiles refuses a forwarded spawn or send that still names
+// home_files: the files are read on the caller's computer and folded into the
+// text before it is forwarded, and this computer holds no home of the
+// caller's to read them from.
+func refuseForwardedHomeFiles(files []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		"home_files are read on the sender's computer and cannot be forwarded. Send the files' text in the message.", nil)
+}
+
 // publicThreadToolError keeps an unreviewed cause out of the wire. The
 // code and prose reach the calling model on the other computer, so an
 // internal failure is logged here and answered with a stable refusal.
@@ -363,165 +310,4 @@ func (a *App) publicThreadToolError(tool, threadID string, err error) error {
 	logThreadRequestSweep("serve "+tool+" for "+threadID, err)
 	return errorsx.Public(threadtools.CodeInvalidRequest,
 		"Thread tools could not complete that call on this computer.", err)
-}
-
-// runThreadPeerRequest accepts, or settles, one request a paired computer
-// minted. The token is the source's, so a retry after a lost reply reads
-// the existing receipt back instead of starting a second piece of work.
-func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call ThreadPeerCall) (ThreadPeerReply, error) {
-	token := strings.TrimSpace(call.Token)
-	// Every one of these is written into a receipt and rendered into the
-	// trusted "Agent request" footer of a user message on this computer.
-	// They are ids this app mints, so they are checked for the shape this
-	// app mints them in rather than for being non-empty.
-	if !entityid.Valid(token) {
-		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
-			"A forwarded request must carry the token its source minted.", nil)
-	}
-	source := call.Source
-	source.ThreadID = strings.TrimSpace(source.ThreadID)
-	source.ComputerID = strings.TrimSpace(source.ComputerID)
-	if !entityid.Valid(source.ThreadID) || !entityid.Valid(source.ComputerID) {
-		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
-			"A forwarded request must name the thread and computer it came from.", nil)
-	}
-	source.Title = threadPeerTitle(source.Title)
-	origin := threadRequestOrigin{
-		caller:      source,
-		foreign:     true,
-		ownerDevice: owner,
-		userMessage: call.UserMessage,
-		inherit:     call.Inherit,
-	}
-	if call.Tool == "thread_cancel" {
-		return a.cancelPeerThreadRequest(ctx, origin, token, call)
-	}
-	if err := a.refuseForeignToken(token, owner); err != nil {
-		return ThreadPeerReply{}, err
-	}
-	adapter := a.threadTools()
-	var err error
-	switch call.Tool {
-	case "thread_spawn":
-		var spawn threadtools.SpawnCall
-		if err = json.Unmarshal(call.Args, &spawn); err == nil {
-			spawn.ComputerID = ""
-			_, err = adapter.acceptSpawn(ctx, origin, token, spawn)
-		}
-	case "thread_send":
-		var send threadtools.SendCall
-		if err = json.Unmarshal(call.Args, &send); err == nil {
-			send.ComputerID = ""
-			_, err = adapter.acceptSend(ctx, origin, token, send)
-		}
-	case "thread_ask":
-		var ask threadtools.AskCall
-		if err = json.Unmarshal(call.Args, &ask); err == nil {
-			ask.ComputerID = ""
-			_, err = adapter.acceptAsk(ctx, origin, token, ask)
-		}
-	}
-	if err != nil {
-		return ThreadPeerReply{}, a.publicThreadToolError(call.Tool, call.Source.ThreadID, err)
-	}
-	state, err := a.threadPeerRequestState(ctx, owner, token)
-	if err != nil {
-		return ThreadPeerReply{}, err
-	}
-	return ThreadPeerReply{Request: &state}, nil
-}
-
-// refuseForeignToken rejects a token this device does not own before any
-// work starts. A receipt belongs to the authenticated device that created
-// it: another device of the same computer holds no claim on it, and
-// reusing its token would hand that device another device's answer.
-func (a *App) refuseForeignToken(token, owner string) error {
-	receipt, found, err := a.store.GetThreadRequestReceipt(token)
-	if err != nil {
-		return err
-	}
-	if found && receipt.OwnerDeviceID != owner {
-		return errorsx.Public(threadtools.CodeRequestNotYours,
-			"That token belongs to a request another device made.", nil)
-	}
-	// A token that already names a SOURCE row here belongs to a request one
-	// of this computer's own threads made. A forwarded call carries the
-	// source's token, so its token is never one of ours: accepting it would
-	// let a paired computer answer, or refuse, this computer's own request.
-	if _, exists, err := a.store.GetThreadRequest(token); err != nil {
-		return err
-	} else if exists {
-		return errorsx.Public(threadtools.CodeRequestNotYours,
-			"That token belongs to a request this computer made.", nil)
-	}
-	return nil
-}
-
-// cancelPeerThreadRequest is the destination half of thread_cancel: stop
-// one request by its token, or interrupt a thread this source started
-// here.
-func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestOrigin, token string, call ThreadPeerCall) (ThreadPeerReply, error) {
-	var cancel threadtools.CancelCall
-	if len(call.Args) > 0 {
-		if err := json.Unmarshal(call.Args, &cancel); err != nil {
-			return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
-				"That cancel could not be read on this computer.", err)
-		}
-	}
-	if cancel.ThreadID != "" {
-		report, err := a.threadTools().interruptForeignThread(ctx, origin, cancel.ThreadID)
-		if err != nil {
-			return ThreadPeerReply{}, a.publicThreadToolError("thread_cancel", origin.caller.ThreadID, err)
-		}
-		return ThreadPeerReply{Effect: report}, nil
-	}
-	if err := a.refuseForeignToken(token, origin.ownerDevice); err != nil {
-		return ThreadPeerReply{}, err
-	}
-	effect, err := a.stopThreadRequestWork(ctx, token)
-	if err != nil {
-		return ThreadPeerReply{}, a.publicThreadToolError("thread_cancel", origin.caller.ThreadID, err)
-	}
-	state, err := a.threadPeerRequestState(ctx, origin.ownerDevice, token)
-	if err != nil {
-		return ThreadPeerReply{}, err
-	}
-	return ThreadPeerReply{Request: &state, Effect: effect}, nil
-}
-
-// threadPeerRequestState reads one receipt for the device that owns it.
-// A token this device never created is reported unknown rather than
-// refused: the source settles it, and saying which other device holds it
-// would leak that device's work.
-func (a *App) threadPeerRequestState(ctx context.Context, owner, token string) (ThreadPeerRequest, error) {
-	state := ThreadPeerRequest{Token: token}
-	receipt, found, err := a.store.GetThreadRequestReceipt(token)
-	if err != nil {
-		return ThreadPeerRequest{}, err
-	}
-	if !found || receipt.OwnerDeviceID != owner {
-		return state, nil
-	}
-	state.Known = true
-	state.Kind = receipt.Kind
-	state.TargetThreadID = receipt.TargetThreadID
-	state.State = receipt.State
-	state.Answer = string(receipt.Answer)
-	state.AnswerKind = receipt.AnswerKind
-	state.LateReply = string(receipt.LateReply)
-	state.LateReplyAt = receipt.LateReplyAt
-	state.Revision = receipt.Revision
-	state.CollectedRevision = receipt.CollectedRevision
-	state.SettledAt = receipt.SettledAt
-	state.ExpiresAt = receipt.ExpiresAt
-	if receipt.TargetThreadID != "" {
-		if thread, err := a.store.GetThread(receipt.TargetThreadID); err == nil {
-			state.Title = thread.Title
-		}
-		if receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning {
-			live, err := a.threadToolsAdapter().LiveState(ctx, receipt.TargetThreadID)
-			state.Blocked = err == nil && live.Blocked()
-		}
-	}
-	return state, nil
 }

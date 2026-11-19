@@ -62,6 +62,10 @@ func (s *Store) CommitIncomingThreadTransfer(ctx context.Context, id, digest str
 	if target.ID != row.ThreadID {
 		return ThreadTransfer{}, errors.New("transfer: activation names another conversation")
 	}
+	// A moved or copied thread is a conversation of its own here: the
+	// delegation a paired computer carried to it stays behind
+	// (SubThreadLevel).
+	target.SpawnLevel = 0
 	if row.Phase == "complete" {
 		return row, nil
 	}
@@ -95,13 +99,13 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 	}
 	released := false
 	if existed {
-		if released, err = s.replaceTransferredHistoryTx(ctx, tx, target, history); err != nil {
+		if released, err = s.replaceTransferredHistoryTx(ctx, tx, target, history, row.Kind == "move"); err != nil {
 			return ThreadTransfer{}, err
 		}
 		if _, err := tx.Exec(`UPDATE threads SET history_rev = MAX(history_rev, ?), history_epoch = MAX(history_epoch, ?) WHERE id = ?`, stamp.Rev+1, stamp.Epoch+1, target.ID); err != nil {
 			return ThreadTransfer{}, err
 		}
-	} else if err := s.importThreadHistoryTx(ctx, tx, target, history); err != nil {
+	} else if err := s.importThreadHistoryTx(ctx, tx, target, history, row.Kind == "move"); err != nil {
 		return ThreadTransfer{}, err
 	}
 	row.Phase, row.Error, row.UpdatedAt = "complete", "", nextTransferStamp(row.UpdatedAt)
@@ -118,9 +122,10 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 }
 
 // replaceTransferredHistoryTx replaces a returning thread's history with
-// the one it brings back. It reports whether it removed lineage rows,
+// the one it brings back, and its tallies with the ones it carries
+// (installTransferTalliesTx). It reports whether it removed lineage rows,
 // which can release a holder (holdersMayBeReleased).
-func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, history io.Reader) (bool, error) {
+func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, history io.Reader, move bool) (bool, error) {
 	prepared, lastReadAt, err := prepareThreadForCreate(target)
 	if err != nil {
 		return false, err
@@ -163,7 +168,7 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	var fields []string
 	for _, column := range strings.Split(threadInsertColumns, ",") {
 		column = strings.TrimSpace(column)
-		if column != "id" {
+		if column != "id" && column != "placement" {
 			fields = append(fields, column+"=excluded."+column)
 		}
 	}
@@ -173,18 +178,26 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	// it replaces had begun, or had kept it as a holder its forks read.
 	// The pin is local and stays, unless the row leaves its group: a thread
 	// leaving a group loses its pin (the CASEs read the pre-update row).
+	// An owned row stays owned while it arrives ungrouped: the link that
+	// owns it is this computer's own, and the trigger that ends ownership
+	// with the link already ran if the link is gone.
 	const keepPinInGroup = `,pinned_at=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pinned_at END` +
-		`,pin_group=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pin_group END`
-	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0`); err != nil {
+		`,pin_group=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pin_group END` +
+		`,placement=CASE WHEN excluded.placement = 'standalone' AND threads.placement = 'owned' THEN 'owned' ELSE excluded.placement END`
+	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0,delete_claim=''`); err != nil {
 		return false, err
 	}
-	if err := readTransferHistoryTx(ctx, tx, target, history); err != nil {
+	tallies, err := readTransferHistoryTx(ctx, tx, target, history)
+	if err != nil {
 		return false, err
 	}
 	// The rows were loaded with the triggers' aggregate work suspended and
 	// carry whatever stamps the sending computer wrote; rebuild them from
 	// the rows this thread now holds.
 	if err := s.restampSubagentAggregatesTx(tx, target.ID); err != nil {
+		return false, err
+	}
+	if err := installTransferTalliesTx(tx, target.ID, move, tallies); err != nil {
 		return false, err
 	}
 	return unlinked > 0 || w.levelsDropped, setHistoryBulkLoadTx(tx, target.ID, false, "returning transfer")

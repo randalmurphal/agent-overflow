@@ -230,7 +230,7 @@ func TestUSDBudgetRefusesUnpricedRowsItIsStillInside(t *testing.T) {
 
 // TestUnjudgeableUSDBudgetStillRESOLVES — the refusal above is the ENFORCEMENT's,
 // and it must not take the read surfaces with it. `ResolveBudget` answers with
-// the numbers and the reason they cannot be trusted, so `run status` and the
+// the numbers and the reason they cannot be trusted, so `run_status` and the
 // `{{budget}}` binding still tell the operator what is happening; only
 // `checkBudget` turns that reason into the park. Taking the status read away
 // over a model the rate table has not learned is the worst possible response —
@@ -244,7 +244,7 @@ func TestUnjudgeableUSDBudgetStillResolves(t *testing.T) {
 	item.Budget = json.RawMessage(`{"usd":25}`)
 
 	// ResolveBudget is handed the root row directly, so this is the read exactly
-	// as `run status` performs it — no engine, no resident item.
+	// as `run_status` performs it: no engine, no resident item.
 	view, err := ResolveBudget(t.Context(), h.profiles, h.spend, BudgetSubjectOf(item), time.UnixMilli(1_000))
 	if err != nil {
 		t.Fatalf("a read must answer even when the ceiling cannot be judged: %v", err)

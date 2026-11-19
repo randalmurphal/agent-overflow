@@ -58,6 +58,10 @@ func TestRemoteErrorsNameTheComputerAndTheJobForPeopleAndKeepIDsForTheModel(t *t
 			t.Fatalf("tool error %q lacks %q", text, want)
 		}
 	}
+	replaced := errorsx.Public("remote_pairing_replaced", "This computer was paired again while the call was on its way. Retry it.", nil)
+	if text := remoteErrorText(remoteOperationErrorFor("status", ref, replaced)); !strings.Contains(text, "Keep these IDs") {
+		t.Fatalf("tool error for a replaced pairing %q does not keep the ids", text)
+	}
 	unnamed := remoteErrorText(remoteOperationErrorFor("cancel", remoteRef{ComputerID: computer, RequestID: request}, notPaired))
 	if !strings.HasPrefix(unnamed, "[remote_not_paired] Remote cancel on computer "+computer+" for request "+request+": ") {
 		t.Fatalf("unnamed tool error: %s", unnamed)

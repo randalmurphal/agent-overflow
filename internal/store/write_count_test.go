@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +72,59 @@ func TestWriteCountCountsEachRowWriteStatement(t *testing.T) {
 		}
 		if got := s.WriteCount() - before; got != step.want {
 			t.Errorf("%s counted %d writes, want %d", step.name, got, step.want)
+		}
+	}
+}
+
+// ObserveReads sees each read ReadCount counts on the goroutine that reads,
+// so the reading stack is there to attribute it, and nothing after its stop;
+// a stop that ran late does not end the observer set after it.
+func TestObserveReadsSeesEachCountedReadOnTheReadingGoroutine(t *testing.T) {
+	s := newTestStore(t)
+	var seen int
+	var onReadingStack bool
+	read := func() {
+		if _, _, err := s.ThreadHistoryStamp("none"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := s.ObserveReads(func() {
+		seen++
+		onReadingStack = callerOnStack("store.TestObserveReadsSeesEachCountedReadOnTheReadingGoroutine.func1")
+	})
+	before := s.ReadCount()
+	read()
+	if counted := s.ReadCount() - before; counted != 1 || seen != 1 || !onReadingStack {
+		t.Fatalf("observed %d reads (on the reading stack: %v), ReadCount counted %d", seen, onReadingStack, counted)
+	}
+	stop()
+	read()
+	if seen != 1 {
+		t.Fatalf("observed %d reads, want the stop to end the observer", seen)
+	}
+
+	var newer int
+	stopNewer := s.ObserveReads(func() { newer++ })
+	stop()
+	read()
+	stopNewer()
+	if newer != 1 {
+		t.Fatalf("the newer observer saw %d reads, want an earlier observer's stop to leave it", newer)
+	}
+}
+
+// callerOnStack reports whether fn, a function name with its package's last
+// path element, is on the calling goroutine's stack.
+func callerOnStack(fn string) bool {
+	pcs := make([]uintptr, 64)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(1, pcs)])
+	for {
+		frame, more := frames.Next()
+		if strings.HasSuffix(frame.Function, "/"+fn) {
+			return true
+		}
+		if !more {
+			return false
 		}
 	}
 }

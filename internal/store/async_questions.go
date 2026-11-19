@@ -148,6 +148,180 @@ func (s *Store) ListAsyncQuestions(threadID, itemID string) ([]AsyncQuestion, er
 	return out, rows.Err()
 }
 
+// AsyncQuestionGroup is one item's questions still waiting for an answer,
+// with the item's revision: the highest of its rows', which every change of
+// state of any of them raises (async_question_revision), so two readings
+// with one revision ask the same questions.
+type AsyncQuestionGroup struct {
+	ItemID    string
+	Revision  int64
+	Questions []AsyncQuestion
+}
+
+// UnansweredAsyncQuestions reads threadID's questions still waiting for an
+// answer, by item, oldest first, on idx_async_questions_pending, in one
+// statement: none for a thread this computer does not hold (gone, being
+// deleted or moved away) or that is archived, whose questions ask nobody.
+func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup, error) {
+	rows, err := s.reader().Query(unansweredAsyncQuestionsSQL, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("store: read the unanswered questions of %s: %w", threadID, err)
+	}
+	var out []AsyncQuestionGroup
+	for rows.Next() {
+		var options string
+		var q AsyncQuestion
+		var revision int64
+		if err := rows.Scan(&q.ItemID, &q.Index, &q.Title, &options, &q.CreatedAt, &revision); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if err := json.Unmarshal([]byte(options), &q.Options); err != nil {
+			return nil, errors.Join(fmt.Errorf("decode question options: %w", err), rows.Close())
+		}
+		q.State = "unanswered"
+		if n := len(out); n > 0 && out[n-1].ItemID == q.ItemID {
+			out[n-1].Questions = append(out[n-1].Questions, q)
+			continue
+		}
+		out = append(out, AsyncQuestionGroup{ItemID: q.ItemID, Revision: revision, Questions: []AsyncQuestion{q}})
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read the unanswered questions of %s: %w", threadID, err)
+	}
+	return out, nil
+}
+
+// The state IN term is idx_async_questions_pending's predicate, which lets
+// the plan use the partial index; its order keeps an item's rows together.
+// The revision is read from the item's rows by the primary key, and the
+// thread's row once, by its own.
+const unansweredAsyncQuestionsSQL = `SELECT q.item_id,q.question_index,q.title,q.options,q.created_at,
+ (SELECT MAX(r.revision) FROM async_questions r WHERE r.thread_id=q.thread_id AND r.item_id=q.item_id)
+ FROM async_questions q WHERE q.thread_id=?1 AND q.state IN ('unanswered','submitted','restored') AND q.state='unanswered'
+ AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id=?1 AND t.archived=0)
+ ORDER BY q.created_at,q.item_id,q.question_index`
+
+// asyncQuestionRevision is itemID's revision, 0 when it has no questions.
+func asyncQuestionRevision(db sqlQueryer, threadID, itemID string) (int64, error) {
+	var revision sql.NullInt64
+	err := db.QueryRow(`SELECT MAX(revision) FROM async_questions WHERE thread_id=? AND item_id=?`, threadID, itemID).Scan(&revision)
+	return revision.Int64, err
+}
+
+// ThreadsWithUnansweredAsyncQuestions lists the threads with a question
+// still waiting for an answer, on idx_async_questions_pending.
+func (s *Store) ThreadsWithUnansweredAsyncQuestions() ([]string, error) {
+	rows, err := s.reader().Query(threadsWithUnansweredAsyncQuestionsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the threads with unanswered questions: %w", err)
+	}
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		out = append(out, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: list the threads with unanswered questions: %w", err)
+	}
+	return out, nil
+}
+
+// The state IN term is idx_async_questions_pending's predicate, which lets
+// the plan use the partial index.
+const threadsWithUnansweredAsyncQuestionsSQL = `SELECT DISTINCT thread_id FROM async_questions
+ WHERE state IN ('unanswered','submitted','restored') AND state='unanswered'`
+
+// DismissUnansweredAsyncQuestions dismisses every question of threadID
+// still waiting for an answer and reports how many it dismissed.
+func (s *Store) DismissUnansweredAsyncQuestions(threadID string) (int64, error) {
+	result, err := s.db.Exec(`UPDATE async_questions SET state='dismissed' WHERE thread_id=? AND state='unanswered'`, threadID)
+	if err != nil {
+		return 0, fmt.Errorf("store: dismiss the questions of %s: %w", threadID, err)
+	}
+	return result.RowsAffected()
+}
+
+// ReturnAsyncAnswer takes back an answer the app wrote to threadID's async
+// questions that the provider did not take in: in one transaction it
+// deletes the queue row that carries it, if any is left, and puts the
+// questions it claimed back to unanswered. It returns the revision each
+// item it reopened is at now (AsyncQuestionGroup.Revision): none once the
+// provider took the answer in (its questions read delivered) or it was
+// returned before. reopened, when set, is given those revisions inside the
+// transaction, before any reader can see them.
+func (s *Store) ReturnAsyncAnswer(threadID, sendID string, reopened func(revisions map[string]int64)) (_ map[string]int64, err error) {
+	if threadID == "" || sendID == "" {
+		return nil, fmt.Errorf("store: return an async answer: thread and send id are required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer rollbackTx(tx, "store: return "+sendID, &err)
+	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id=? AND send_id<>'' AND send_id=?`, threadID, sendID); err != nil {
+		return nil, fmt.Errorf("store: return %s: %w", sendID, err)
+	}
+	items, err := queryIDs(tx, `SELECT DISTINCT item_id FROM async_questions
+ WHERE thread_id=? AND send_id<>'' AND send_id=? AND state IN ('submitted','restored')`, threadID, sendID)
+	if err != nil {
+		return nil, fmt.Errorf("store: return %s: %w", sendID, err)
+	}
+	if len(items) == 0 {
+		return nil, tx.Commit()
+	}
+	if _, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
+ WHERE thread_id=? AND send_id<>'' AND send_id=? AND state IN ('submitted','restored')`, threadID, sendID); err != nil {
+		return nil, fmt.Errorf("store: return %s: %w", sendID, err)
+	}
+	revisions := make(map[string]int64, len(items))
+	for _, item := range items {
+		if revisions[item], err = asyncQuestionRevision(tx, threadID, item); err != nil {
+			return nil, fmt.Errorf("store: return %s: %w", sendID, err)
+		}
+	}
+	if reopened != nil {
+		reopened(revisions)
+	}
+	return revisions, tx.Commit()
+}
+
+// ConfirmAsyncAnswer records the provider's echo of an answer the app
+// wrote to threadID's async questions, as the echo's user row does through
+// its triggers once it is written (async_question_answer_insert): in one
+// transaction the questions sendID claimed read delivered, by the user row
+// itemID, and the recovery row the dispatch kept for the answer
+// (DeleteDispatchedFlushQueueItems) goes. It reports whether any question
+// changed: none does once a row write or an earlier confirmation took them,
+// or the answer went back.
+func (s *Store) ConfirmAsyncAnswer(threadID, sendID, itemID string) (_ bool, err error) {
+	if threadID == "" || sendID == "" {
+		return false, fmt.Errorf("store: confirm an async answer: thread and send id are required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer rollbackTx(tx, "store: confirm "+sendID, &err)
+	result, err := tx.Exec(`UPDATE async_questions SET state='delivered',user_item_id=?
+ WHERE thread_id=? AND send_id<>'' AND send_id=? AND state='submitted'`, itemID, threadID, sendID)
+	if err != nil {
+		return false, fmt.Errorf("store: confirm %s: %w", sendID, err)
+	}
+	confirmed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id=? AND send_id<>'' AND send_id=? AND EXISTS (
+ SELECT 1 FROM async_questions q WHERE q.thread_id=flush_queue_items.thread_id AND q.send_id<>''
+ AND q.send_id=flush_queue_items.send_id AND q.state='delivered')`, threadID, sendID); err != nil {
+		return false, fmt.Errorf("store: confirm %s: %w", sendID, err)
+	}
+	return confirmed > 0, tx.Commit()
+}
+
 // AsyncAnswerMessage validates the submitted snapshot and includes each question's text.
 func (s *Store) AsyncAnswerMessage(threadID, sendID string, answers []AsyncQuestionAnswer) (string, bool, error) {
 	return asyncAnswerMessage(s.reader(), threadID, sendID, answers)
@@ -193,8 +367,13 @@ func asyncAnswerMessage(db sqlQueryer, threadID, sendID string, answers []AsyncQ
 	return strings.Join(parts, "\n\n"), already == len(answers), nil
 }
 
-// QueueAsyncAnswers atomically claims every question and admits its one user message.
-func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAnswer) error {
+// QueueAsyncAnswers atomically claims every question and admits its one user
+// message. asked names, by item, the revision the answers were written for
+// (AsyncQuestionGroup.Revision): an item whose revision moved since was
+// answered, dismissed or reopened meanwhile, and the submission is
+// ErrAsyncQuestionHandled. The person's answers name none: they answer what
+// is unanswered when they land.
+func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAnswer, asked map[string]int64) error {
 	if item.SendID == "" || len(answers) == 0 {
 		return fmt.Errorf("question submission requires an identity and answers")
 	}
@@ -203,6 +382,15 @@ func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAn
 		return err
 	}
 	defer tx.Rollback()
+	for itemID, want := range asked {
+		revision, err := asyncQuestionRevision(tx, item.ThreadID, itemID)
+		if err != nil {
+			return err
+		}
+		if revision != want {
+			return ErrAsyncQuestionHandled
+		}
+	}
 	body, already, err := asyncAnswerMessage(tx, item.ThreadID, item.SendID, answers)
 	if err != nil {
 		return err

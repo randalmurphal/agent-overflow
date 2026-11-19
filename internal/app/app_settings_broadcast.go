@@ -56,6 +56,11 @@ func (a *App) registerSettingsBroadcast() {
 		return
 	}
 	a.settings.SetChangeObserver(func(changes []settings.TierChange) {
+		// Message search shows or hides assistants before any client hears
+		// of the change and requeries (app_assistants_switch.go).
+		if _, ok := switchRevision(changes, "assistantsEnabled"); ok && a.store != nil {
+			a.store.HideAssistants(!a.currentSettings().AssistantsEnabled)
+		}
 		promptsMoved := false
 		for _, change := range changes {
 			a.emitEvent(eventchan.SettingsUpdated, SettingsUpdatedEvent{
@@ -90,6 +95,11 @@ func (a *App) registerSettingsBroadcast() {
 		// waiting before this write no longer receive one.
 		if revision, ok := switchRevision(changes, "accountAutoContinue"); ok {
 			a.accountSwitch().RevokeWaitsBefore(revision)
+		}
+		// Assistants turned off pause, and turned on resume
+		// (app_assistants_switch.go).
+		if _, ok := switchRevision(changes, "assistantsEnabled"); ok {
+			a.onAssistantsSettingChanged()
 		}
 	})
 }

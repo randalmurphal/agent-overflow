@@ -4,6 +4,7 @@ import { iterPanes } from './panes.svelte';
 import { threadBackend } from '../transport/entityIndex';
 import { resyncDraftsForBackend } from './eventsDraftRows';
 import { resyncKeybindings } from './keybindings.svelte';
+import { refreshProviderMemory } from './providerMemory.svelte';
 // Refresh computer-owned snapshots on reconnect and first attachment. Each
 // read is pinned; one offline or ungranted computer cannot block the others.
 import { refreshSidebarProjections } from './eventsThreadRows';
@@ -59,6 +60,7 @@ export function installComputerHydration(): () => void {
       }));
     }
     if (backend === HOME_BACKEND && hasScope('settings:read', backend)) void resyncKeybindings();
+    refreshProviderMemory(backend);
     if (isWorkflowOverlayLoaded()) void resyncWorkflowEngineState(backend);
     // Boot's initial read can fail while a computer is offline. Its first
     // successful connection must hydrate it just like a later reconnect.

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,9 +13,9 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// A request's work may start as the last one ends while shutdown or a
-// test waits on threadRequestsWG: the turn observer starts a settlement
-// from whatever goroutine delivered the turn end. The Wait returns at the moment
+// A request's work may start as the last one ends while shutdown, the
+// harness or a test waits on threadRequestsWG: the emit path starts a
+// drain from whatever goroutine emitted. The Wait returns at the moment
 // the count reached zero, and the new member is counted for the next one.
 // With one P the waiter cannot run between the Done and the Add, which is
 // the order a sync.WaitGroup panics on ("WaitGroup is reused before
@@ -156,9 +157,41 @@ func TestRequestWorkAfterTheGroupClosesStartsNothing(t *testing.T) {
 			if !a.beginThreadRequestPoll() {
 				return "the poll slot was taken"
 			}
-			a.startThreadRequestPoll([]store.ThreadRequest{{Token: "t"}})
+			a.startThreadRequestPoll(time.Now(), []store.ThreadRequest{{Token: "t"}}, nil)
 			if !a.beginThreadRequestPoll() {
 				return "the refused poll kept the poll slot"
+			}
+			return ""
+		}},
+		{"wake run", func(a *App) string {
+			ran := false
+			if a.startAgentWakeRun(store.AgentWake{ID: "w", ThreadID: "th"}, func(context.Context, *agentWakeRun) { ran = true }) {
+				return "startAgentWakeRun reported a start"
+			}
+			if _, registered := a.agentWakes.runs["w"]; registered || ran {
+				return "the refused run stayed registered or ran"
+			}
+			return ""
+		}},
+		{"peer rows", func(a *App) string {
+			c := &a.threadAgentPeers
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.queued, c.running, c.perComputer = map[string]bool{"s": true}, map[string]bool{}, map[string]int{}
+			c.waiting = []store.ThreadRequest{{Token: "s", TargetComputerID: "c"}}
+			a.startPeerAgentRowsLocked()
+			if c.inFlight != 0 || len(c.running) != 0 || c.perComputer["c"] != 0 {
+				return fmt.Sprintf("the refused call is counted: inFlight %d running %v", c.inFlight, c.running)
+			}
+			return ""
+		}},
+		{"agent row emits", func(a *App) string {
+			a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.callers["caller"] = struct{}{} })
+			e := &a.threadAgentEmits
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if e.draining {
+				return "the refused drain left the emits marked draining"
 			}
 			return ""
 		}},
@@ -222,7 +255,7 @@ func TestARefusedWakeGivesBackItsSlotAndIsDropped(t *testing.T) {
 		t.Fatalf("%d delivery slots held after the refusal", len(slots))
 	}
 
-	// Cancelled first, it is dropped and holds no slot.
+	// Cancelled first, it is dropped before it takes a slot.
 	cancelled := &App{}
 	cancelled.appCtx, cancelled.appCancel = context.WithCancel(context.Background())
 	cancelled.appCancel()

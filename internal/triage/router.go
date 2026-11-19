@@ -10,12 +10,14 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
+	"agent-overflow/internal/usermessage"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -60,8 +62,20 @@ type Router struct {
 	// app-layer resolution); nil until then. Leaf lock.
 	generatedImageMu       sync.Mutex
 	generatedImageImporter GeneratedImageImporter
-	tracer                 trace.Tracer
-	metrics                TurnMetrics
+	// promptRouter names the spawner a thread's approval and
+	// user-input prompts go to instead of the user, or nil. Installed by
+	// the app (SetPromptRouter); nil until then. Leaf lock.
+	promptRouterMu sync.Mutex
+	promptRouter   func(threadID string) *provider.PromptRoute
+	// promptOccurrences numbers every prompt this router registers
+	// (provider.ApprovalRequest.Occurrence), increasing, never reused.
+	promptOccurrences atomic.Uint64
+	// quietTurn names the top-level turns nobody needs to read
+	// (SetQuietTurnClassifier), or is nil. Leaf lock.
+	quietTurnMu sync.Mutex
+	quietTurn   func(threadID string, turnIndex int) bool
+	tracer      trace.Tracer
+	metrics     TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
 	// directly) called inside the anchored echo section AFTER the pending
 	// entry is popped and BEFORE its row persists — the window
@@ -181,11 +195,16 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
-	// sendConsumed is the app-layer callback told which turn answers a
-	// send the provider has just consumed, named by the send ids its row
-	// carries (send_consumed.go). Called under the thread's flush anchor
-	// lock, like flushUserTextConfirmed, and bound by the same rules.
-	sendConsumed func(threadID string, sendIDs []string, answerTurn int)
+	// flushSendConsumed is the app-layer signal that the provider consumed
+	// flush sends, by the row and the send ids each carries: every
+	// confirmation source (confirmConsumedSend), whether or not the row's
+	// write then succeeds, and a queue-boundary merge, for every member it
+	// folds into the survivor (foldMergedFlushRows), never an interrupt's
+	// anchoring.
+	flushSendConsumed func(threadID string, sends []ConsumedSend)
+	// sendDelivered is the app-layer signal naming the turn a queued send
+	// was delivered into (send_delivery.go).
+	sendDelivered func(threadID string, delivery SendDelivery)
 	// sendUndelivered is the app-layer signal that a thread has sends the
 	// provider cancelled without running (retireUnrunSend). The app drains
 	// them and returns them to the composer. Called under the thread's flush
@@ -196,6 +215,9 @@ type Router struct {
 	// SetSendsPendingObserver before the router serves events; called
 	// under r.mu (see sends_pending.go).
 	sendsPendingChanged func(threadID string)
+	// turnOpening is the app-layer observer told that a thread marked a
+	// turn opening (SetTurnOpeningObserver); called under r.mu.
+	turnOpening func(threadID string)
 	// assistantTextDelta and assistantTextEnd are app-layer observers of
 	// a streaming assistant_text row. Delta receives every piece of text
 	// the row emits, in order, just before it is emitted (possibly on the
@@ -321,6 +343,39 @@ func (r *Router) SetUsageWorkItemResolver(resolve func(threadID string) string) 
 	r.usageResolverMu.Unlock()
 }
 
+// SetPromptRouter installs the lookup that stamps a prompt's RoutedTo. It
+// runs on the provider event worker once per prompt and must not block on
+// anything but a store read.
+func (r *Router) SetPromptRouter(route func(threadID string) *provider.PromptRoute) {
+	r.promptRouterMu.Lock()
+	r.promptRouter = route
+	r.promptRouterMu.Unlock()
+}
+
+// routePrompt answers where a new prompt of threadID goes. Whatever the
+// provider's meta carried is replaced, so only the app can route a prompt.
+func (r *Router) routePrompt(threadID string) *provider.PromptRoute {
+	r.promptRouterMu.Lock()
+	route := r.promptRouter
+	r.promptRouterMu.Unlock()
+	if route == nil {
+		return nil
+	}
+	return route(threadID)
+}
+
+// SetQuietTurnClassifier installs the test of whether a top-level turn is
+// one nobody asked for and nobody needs to read: the app's ticks. A quiet
+// turn that ends cleanly does not move its thread in the sidebar and keeps
+// a read thread read (turnIsQuiet). It runs on the provider event worker
+// once per round that ends a top-level turn and must not block on anything
+// but a store read.
+func (r *Router) SetQuietTurnClassifier(fn func(threadID string, turnIndex int) bool) {
+	r.quietTurnMu.Lock()
+	r.quietTurn = fn
+	r.quietTurnMu.Unlock()
+}
+
 // NewRouter creates a triage router. Telemetry is off by default; wire a
 // tracer and metrics via SetTelemetry to enable spans and counters.
 func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
@@ -355,7 +410,9 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 			usageEmit:            usageEmitMinInterval,
 		},
 	}
-	r.announcer = NewThreadAnnouncer(func(threadID string) (store.Thread, error) { return r.store.GetThread(threadID) })
+	r.announcer = NewThreadAnnouncer(
+		func(threadID string) (store.Thread, error) { return r.store.GetThread(threadID) },
+		func(threadID string) (bool, error) { return r.store.ThreadListed(threadID) })
 	return r
 }
 
@@ -439,22 +496,39 @@ func (r *Router) SetInterruptWaitHook(hook func(threadID string, woke bool)) {
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
 func (r *Router) Handle(evt provider.ProviderEvent) error {
+	_, err := r.HandleSessionFrame(evt)
+	return err
+}
+
+// HandleSessionFrame is Handle for a provider frame the host acts on after
+// triage. current reports whether the frame's session still owned the
+// thread once its handling finished: false for a frame of a session a
+// replacement retired before or while it was handled, which the host must
+// not act on either. The writers of process-bound state refuse such a frame
+// themselves (frameRetiredLocked); current carries the same answer to the
+// host. A stop alone does not retire a session, so a stopped thread's own
+// trailing frames still report true, as the host's teardown needs them.
+func (r *Router) HandleSessionFrame(evt provider.ProviderEvent) (current bool, err error) {
 	r.inflight.Add(1)
 	defer r.inflight.Done()
+	// Deferred before the hook so it runs after it: the final check sees
+	// every replacement committed while the frame was being handled.
+	defer func() { current = evt.SessionToken == "" || r.SessionCurrent(evt.ThreadID, evt.SessionToken) }()
 	defer r.fireEventHook(evt)
 
-	if r.isThreadStopped(evt.ThreadID) {
-		// Drop silently — including EventInit. The readLoop could still
-		// be draining in-flight lines after StopSession returned;
-		// persisting them under the stopped thread would pollute the
-		// timeline (Bug B5). The flag is cleared exclusively by the
-		// host's session-start path (MarkThreadActive), so a stale init
-		// from a torn-down subprocess cannot re-admit its trailing
-		// frames.
+	if refusal := r.frameRefusal(evt); refusal != "" {
+		// Drop, including EventInit. The readLoop could still be
+		// draining in-flight lines after StopSession returned, and a
+		// host drain that stalled can leave a dead session's frames
+		// queued behind a replacement start; persisting them would
+		// pollute the timeline (Bug B5) or hand the replacement the dead
+		// process's state. Only the host's session-start path
+		// (MarkThreadActive) re-admits a thread, and only for the session
+		// it names, so no frame can re-admit itself.
 		if evt.Kind != provider.EventSessionStatus || evt.Content != "disconnected" {
-			log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
+			log.Printf("triage: dropping %s event for thread %s: %s", evt.Kind, evt.ThreadID, refusal)
 		}
-		return nil
+		return false, nil
 	}
 	// A §E6 resume carrier is a LIFECYCLE row, not a transcript root:
 	// the agent's own rows stay parented to the original launch across
@@ -464,7 +538,7 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	if root := r.carrierRootRewrite(evt.ThreadID, evt.ParentToolUseID); root != "" {
 		evt.ParentToolUseID = root
 	}
-	return r.dispatchReportingRefusals(evt)
+	return true, r.dispatchReportingRefusals(evt)
 }
 
 // HandleSynthetic routes a host-synthesized event exactly like Handle
@@ -563,7 +637,7 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		if err := r.handleBackgroundTaskTerminal(evt); err != nil {
 			return err
 		}
-		r.maybeFlushQueueAtBoundary(evt.ThreadID)
+		r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		return nil
 	case provider.EventBackgroundTaskNotification:
 		return r.handleBackgroundTaskNotification(evt)
@@ -575,6 +649,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleCompactionStatus(evt)
 	case provider.EventSessionWakeup:
 		return r.handleSessionWakeup(evt)
+	case provider.EventScheduledJobs:
+		return r.handleScheduledJobs(evt)
 	case provider.EventSubagentNotification:
 		return r.handleSubagentNotification(evt)
 	case provider.EventSubagentStatus:
@@ -749,7 +825,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	}
 	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
 		if handled && err == nil {
-			r.maybeFlushQueueAtBoundary(evt.ThreadID)
+			r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		}
 		return err
 	}
@@ -793,7 +869,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}
-	r.maybeFlushQueueAtBoundary(evt.ThreadID)
+	r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 	return r.emitInline(evt)
 }
 
@@ -959,8 +1035,13 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
-	if err := r.store.UpdateTitle(evt.ThreadID, evt.Content); err != nil {
+	// An assistant's title is its name, which only the user renames.
+	renamed, err := r.store.UpdateProviderTitle(evt.ThreadID, evt.Content)
+	if err != nil {
 		return fmt.Errorf("update thread title: %w", err)
+	}
+	if !renamed {
+		return nil
 	}
 	r.emitThreadPatch(evt.ThreadID, ThreadUpdateEvent{Title: &evt.Content})
 	return nil
@@ -1306,12 +1387,15 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 //
 //   - "full"     the row's current state — converge a row the client already
 //     has. Says nothing about membership, so a client that does
-//     not have the row ignores it.
+//     not have the row ignores it. A row whose placement is owned
+//     has no sidebar row, so a client drops it from its sidebar
+//     and keeps any pane that shows it.
 //   - "patch"    changed fields only, keyed by ID.
 //   - "listed"   the row belongs in the active sidebar now — insert it if
 //     absent (creation of a listed row, fork, terminal start, unarchive,
-//     and the first item, draft content or worktree of a never-sent
-//     thread).
+//     the first item, draft content or worktree of a never-sent thread,
+//     and a placement or group move that gives an owned thread a row).
+//     An owned row is still kept out of the sidebar.
 //   - "unlisted" the row has left the active sidebar but still exists
 //     (archive). Carries the row so open panes converge too, then close.
 //   - "emptied"  a never-sent thread lost what listed it (its draft text,
@@ -1332,6 +1416,12 @@ type ThreadUpdateEvent struct {
 	// cached row: the bump lands in the per-thread live-activity box, not
 	// in the row array (see eventsThreadRows.syncThreadActivity).
 	UpdatedAt *int64 `json:"updatedAt,omitempty"`
+	// HandOffTo, on the frame of an assistant's old thread, names the thread
+	// New Thread, Same Assistant replaced it with: a client moves what showed
+	// the old thread there, whether the frame unlists the row (archived, as
+	// the handoff leaves it) or is `full` (unarchived since). Any other
+	// unlisting closes it.
+	HandOffTo string `json:"handOffTo,omitempty"`
 }
 
 // The Action vocabulary, spelled once so an emit site cannot invent a value
@@ -1455,14 +1545,16 @@ func userTextCountsAsThreadActivity(item store.Item) bool {
 	if strings.TrimSpace(item.Meta) == "" {
 		return true
 	}
-	var meta map[string]any
+	var meta struct {
+		WireOnly bool `json:"wire_only"`
+		usermessage.Meta
+	}
 	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
 		return true
 	}
-	if wireOnly, ok := meta["wire_only"].(bool); ok && wireOnly {
-		return false
-	}
-	return true
+	// A loop's or watch's wake is not the thread's activity either: a tick
+	// that finds nothing leaves the sidebar as it was (turnIsQuiet).
+	return !meta.WireOnly && !usermessage.IsTick(meta.Meta)
 }
 
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {

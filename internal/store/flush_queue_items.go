@@ -87,29 +87,80 @@ func (s *Store) DeleteFlushQueueItem(id string) error {
 	return nil
 }
 
+// FlushQueueItemsPresent reports, in one statement, which of ids are rows of
+// threadID's queue now: a message whose row a withdrawal deleted is no
+// longer wanted, whatever copy of it memory still holds.
+func (s *Store) FlushQueueItemsPresent(threadID string, ids []string) (map[string]bool, error) {
+	present := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return present, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: read flush queue rows of %s: %w", threadID, err)
+	}
+	rows, err := s.db.Query(`SELECT id FROM flush_queue_items
+		WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?))`, threadID, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: read flush queue rows of %s: %w", threadID, err)
+	}
+	scanErr := func() error {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			present[id] = true
+		}
+		return rows.Err()
+	}()
+	if err := errors.Join(scanErr, rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read flush queue rows of %s: %w", threadID, err)
+	}
+	return present, nil
+}
+
 // DeleteDispatchedFlushQueueItems retires the queue rows of the messages one
 // successful provider write carried, in one statement: the members of a
 // joined message lose their rows together, so a crash leaves all of them for
 // the boot restore or none. Async answers retain recovery until a stable
-// user-message echo confirms consumption.
-func (s *Store) DeleteDispatchedFlushQueueItems(ids []string) error {
+// user-message echo confirms consumption. It reports the ids whose rows it
+// deleted, which the write records as retired (triage.Router.NoteFlushRowRetired).
+func (s *Store) DeleteDispatchedFlushQueueItems(ids []string) (map[string]bool, error) {
+	retired := make(map[string]bool, len(ids))
 	if len(ids) == 0 {
-		return nil
+		return retired, nil
 	}
 	encoded, err := json.Marshal(ids)
 	if err != nil {
-		return fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+		return nil, fmt.Errorf("store: delete dispatched flush queue items: %w", err)
 	}
-	if _, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id IN (SELECT value FROM json_each(?)) AND NOT EXISTS (
+	rows, err := s.db.Query(`DELETE FROM flush_queue_items WHERE id IN (SELECT value FROM json_each(?)) AND NOT EXISTS (
  SELECT 1 FROM async_questions q WHERE q.thread_id=flush_queue_items.thread_id
- AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted')`, string(encoded)); err != nil {
-		return fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+ AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted') RETURNING id`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: delete dispatched flush queue items: %w", err)
 	}
-	return nil
+	scanErr := func() error {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			retired[id] = true
+		}
+		return rows.Err()
+	}()
+	if err := errors.Join(scanErr, rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+	}
+	return retired, nil
 }
 
 // QueueDraftRestore is one return of undelivered messages to a thread's
-// composer.
+// composer. It takes the person's messages only: an answer, a reminder or a
+// completion the app wrote for an agent never enters the composer and goes
+// back to its owner instead.
 type QueueDraftRestore struct {
 	// Expected is the composer the restore read; Merged is what it writes
 	// over it. Both name the thread.
@@ -119,10 +170,6 @@ type QueueDraftRestore struct {
 	// RetireItemIDs are unconfirmed user rows the draft takes, taken back as
 	// RetireUndeliveredUserRow does.
 	RetireItemIDs []string
-	// SendIDs are the send ids of every message the draft takes. A thread
-	// request whose wake is among them is marked delivered as a draft
-	// (markThreadWakesRestoredToDraftTx).
-	SendIDs []string
 }
 
 // QueueDraftRestored is what a restore wrote.
@@ -139,11 +186,10 @@ type QueueDraftRestored struct {
 
 // RestoreFlushQueueToDraft puts undelivered messages back in the composer.
 // In one transaction it writes Merged over Expected (when they differ),
-// deletes the queue rows, takes back the unconfirmed user rows and marks the
-// wakes among the messages delivered as a draft. Everything is written or
-// nothing is, so no failure or crash leaves a message both in the composer
-// and in a row a later restore takes back again, or in neither, and no
-// request reads as queued for a message that is in the composer. A retired
+// deletes the queue rows and takes back the unconfirmed user rows.
+// Everything is written or nothing is, so no failure or crash leaves a
+// message both in the composer and in a row a later restore takes back
+// again, or in neither. A retired
 // row still marked pendingFlush that the residue rule calls history
 // (unconfirmedUserRowResidueSQL) refuses the whole restore: its message was
 // shown as sent and a later session ran, so neither the row nor its text may
@@ -198,7 +244,7 @@ func (s *Store) RestoreFlushQueueToDraft(r QueueDraftRestore) (QueueDraftRestore
 			}
 			out.Returned = append(out.Returned, comments...)
 		}
-		return markThreadWakesRestoredToDraftTx(tx, r.SendIDs)
+		return nil
 	})
 	if err != nil {
 		return QueueDraftRestored{}, err
@@ -206,32 +252,54 @@ func (s *Store) RestoreFlushQueueToDraft(r QueueDraftRestore) (QueueDraftRestore
 	return out, nil
 }
 
-// DeleteFlushQueueItemsForThread drops every queued message of one thread.
-// Its callers are the wholesale DROPS — a session teardown whose triage
-// cleanup discards the in-memory queue, and the Codex rollback purge — where
-// leaving rows behind would resurrect at the next boot exactly the messages
-// the user's Stop or revert threw away.
-func (s *Store) DeleteFlushQueueItemsForThread(threadID string) error {
+// DeleteFlushQueueItemsForThread drops every queued message of one thread
+// but those whose send id starts with keepSendIDPrefix (empty keeps none)
+// and the rows keepIDs names. Its callers are the wholesale DROPS — a
+// session teardown whose triage cleanup discards the in-memory queue, and
+// the Codex rollback purge — where leaving rows behind would resurrect at
+// the next boot exactly the messages the user's Stop or revert threw away. A
+// row kept is the caller's to remove (RemoveFlushQueueItem, or its owner's
+// own withdrawal, WithdrawThreadWake for a request's wake), so a dropped
+// answer goes back to its request rather than reading as delivered.
+func (s *Store) DeleteFlushQueueItemsForThread(threadID, keepSendIDPrefix string, keepIDs ...string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return nil
+	}
+	kept, err := json.Marshal(append([]string{}, keepIDs...))
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	dropped := `thread_id = ? AND (? = '' OR substr(send_id, 1, ?) <> ?) AND id NOT IN (SELECT value FROM json_each(?))`
+	args := []any{threadID, keepSendIDPrefix, len(keepSendIDPrefix), keepSendIDPrefix, string(kept)}
 	if _, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
       WHERE thread_id=? AND state='submitted' AND send_id<>'' AND send_id IN
-      (SELECT send_id FROM flush_queue_items WHERE thread_id=? AND send_id<>'')`, threadID, threadID); err != nil {
+      (SELECT send_id FROM flush_queue_items WHERE send_id<>'' AND `+dropped+`)`, append([]any{threadID}, args...)...); err != nil {
 		return err
 	}
-	if err := retractDroppedThreadWakesTx(tx, threadID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id = ?`, threadID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE `+dropped, args...); err != nil {
 		return fmt.Errorf("store: delete flush queue items for thread %s: %w", threadID, err)
 	}
 	return tx.Commit()
+}
+
+// RemoveFlushQueueItem deletes one queued message and reports whether it was
+// still there, so of two callers that both mean to remove it exactly one
+// learns it did.
+func (s *Store) RemoveFlushQueueItem(id string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("store: remove flush queue item %s: %w", id, err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: remove flush queue item %s: rows affected: %w", id, err)
+	}
+	return removed == 1, nil
 }
 
 // ListFlushQueueItems returns one thread's queued messages in queue order.

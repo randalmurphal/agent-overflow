@@ -25,7 +25,7 @@ import (
 	"unicode/utf8"
 )
 
-func TestWorkflowPRReviewCommentsAndDiscussionReuseLinkedThread(t *testing.T) {
+func TestWorkflowPRReviewCommentsAndDiscussPRReuseLinkedThread(t *testing.T) {
 	app, item := newWorkflowPRTestApp(t)
 	installWorkflowPRFakeGitHub(t, app)
 
@@ -71,7 +71,7 @@ func TestWorkflowPRReviewCommentsAndDiscussionReuseLinkedThread(t *testing.T) {
 		t.Fatalf("triage thread association = %q, want %q", stored.TriageThreadID, reviewThread.ID)
 	}
 	if len(sends) != 3 {
-		t.Fatalf("send count = %d, want one intent seed plus review and discussion messages", len(sends))
+		t.Fatalf("send count = %d, want one intent seed plus review and discuss messages", len(sends))
 	}
 	if !strings.Contains(sends[0], "Intent digest:") || !strings.Contains(sends[0], "Newest phase narratives:") {
 		t.Fatalf("first linked-thread message is not the intent seed:\n%s", sends[0])
@@ -81,7 +81,7 @@ func TestWorkflowPRReviewCommentsAndDiscussionReuseLinkedThread(t *testing.T) {
 	}
 	for _, required := range []string{"Harden deployment workflow", `Review decision: "APPROVED"`, "Checks: total=9 success=9", `Run goal: "Discuss the release PR"`} {
 		if !strings.Contains(sends[2], required) {
-			t.Fatalf("discussion message missing %q:\n%s", required, sends[2])
+			t.Fatalf("discuss message missing %q:\n%s", required, sends[2])
 		}
 	}
 	for index, message := range sends[1:] {

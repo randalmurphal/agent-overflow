@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   collapseProject,
+  isSidebarSectionExpanded,
+  toggleSidebarSection,
   expandProject,
   collapseThreadList,
   getCollapsedGroups,
@@ -8,12 +10,9 @@ import {
   getShowProviderIcons,
   setShowProviderIcons,
   getThreadListVisibleLimit,
-  isDiscussionExpanded,
   isGroupExpanded,
   isProjectExpanded,
-  isThreadListExpanded,
   resetSidebarForTest,
-  revealMoreThreadList,
   setThreadListVisibleLimit,
   setProjectSortMode,
   toggleGroup,
@@ -26,6 +25,7 @@ import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import { removeThreadGroup } from './threadGroups.svelte';
 
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
@@ -35,6 +35,36 @@ describe('sidebar store', () => {
     resetBindingMocks();
     resetAppStorageForTest();
     resetSidebarForTest();
+  });
+
+  it('forgets a group\'s paging when the group goes', () => {
+    setThreadListVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    setThreadListVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    removeThreadGroup('group-1');
+    expect(getThreadListVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(getThreadListVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+  });
+
+  describe('sections', () => {
+    it('folds each section on its own and persists the folds', () => {
+      expect(isSidebarSectionExpanded('assistants') && isSidebarSectionExpanded('projects')).toBe(true);
+      toggleSidebarSection('projects');
+      expect(isSidebarSectionExpanded('projects')).toBe(false);
+      expect(isSidebarSectionExpanded('assistants')).toBe(true);
+      expect(JSON.parse(appStorageGet('sidebar:collapsedSections')!)).toEqual(['projects']);
+      toggleSidebarSection('projects');
+      expect(isSidebarSectionExpanded('projects')).toBe(true);
+      expect(JSON.parse(appStorageGet('sidebar:collapsedSections')!)).toEqual([]);
+    });
+
+    it('adopts the folds from storage and forgets them on reset', async () => {
+      setBindingMock('GetUIState', async () => ({ 'sidebar:collapsedSections': JSON.stringify(['assistants']) }));
+      await hydrateAppStorage();
+      syncSidebarFromAppStorage();
+      expect(isSidebarSectionExpanded('assistants')).toBe(false);
+      resetSidebarForTest();
+      expect(isSidebarSectionExpanded('assistants')).toBe(true);
+    });
   });
 
   describe('expansion', () => {
@@ -226,7 +256,6 @@ describe('sidebar store', () => {
     it('adopts hydrated view state from the per-client bucket', async () => {
       setBindingMock('GetUIState', async () => ({
         'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
-        'sidebar:expandedDiscussions': JSON.stringify(['disc-1']),
         'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
         'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
@@ -239,8 +268,6 @@ describe('sidebar store', () => {
       expect(isProjectExpanded('proj-1')).toBe(false);
       expect(isProjectExpanded('proj-2')).toBe(false);
       expect(isProjectExpanded('proj-3')).toBe(true);
-      expect(isDiscussionExpanded('disc-1')).toBe(true);
-      expect(isDiscussionExpanded('disc-2')).toBe(false);
       expect(getThreadListVisibleLimit('proj-1')).toBe(40);
       expect(getThreadListVisibleLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
     });
@@ -272,23 +299,18 @@ describe('sidebar store', () => {
   });
 
   describe('thread list visible limit', () => {
-    it('starts at the preview limit and reveals 20 more per call', () => {
+    it('starts at the preview limit', () => {
       expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(isThreadListExpanded('p1')).toBe(false);
-
-      revealMoreThreadList('p1');
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-      expect(isThreadListExpanded('p1')).toBe(true);
-
-      revealMoreThreadList('p1');
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT * 2);
     });
 
-    it('collapseThreadList resets a project to the preview limit', () => {
-      revealMoreThreadList('p1');
+    it('collapseThreadList resets one list to the preview limit, twice in a row', () => {
+      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+      setThreadListVisibleLimit('g1', 40);
+      collapseThreadList('p1');
       collapseThreadList('p1');
       expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(isThreadListExpanded('p1')).toBe(false);
+      // A group's list is keyed by its own id and keeps its size.
+      expect(getThreadListVisibleLimit('g1')).toBe(40);
     });
 
     it('setThreadListVisibleLimit persists explicit reveal sizes and resets defaults', () => {

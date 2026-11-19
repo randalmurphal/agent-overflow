@@ -46,6 +46,12 @@ import { liveSubagentRunState, replaceSubagentRunStates } from '../../stores/sub
 // terminal state but doesn't linger after the user has read it. Just
 // long enough to register; not long enough to feel sticky.
 const COMPLETION_RETENTION_MS = 200;
+// A settled Agents row (activityRailAgents.svelte.ts) stays far longer: it
+// carries a click target, the answer's wake item or the thread, that a
+// person needs time to reach; a Backgrounded row carries none. Counted from
+// when the pane first saw the row settled, so a connected browser's clock
+// never shortens it.
+export const AGENT_ROW_SETTLED_LINGER_MS = 8_000;
 // The tray pill is an authoritative count read at a glance, and background
 // activity arrives as an unbroken event stream while any pane streams — so the
 // coalescing delay needs an absolute bound behind it. 100ms collapses a burst;

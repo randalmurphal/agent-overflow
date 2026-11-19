@@ -5,8 +5,10 @@
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
-  import { sidebarPinGroup } from '../../utils/sidebarTree';
+  import { isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
+  import { assistantDisplayName } from '../../stores/assistants.svelte';
   import { getShowProviderIcons } from '../../stores/sidebar.svelte';
+  import { getThreadWorkerCounts } from '../../stores/threadWorkerSummaries.svelte';
   import { asProviderID, providerLabel } from '../../providers/catalog';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { getSettings } from '../../stores/settings.svelte';
@@ -14,16 +16,9 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import {
-    attachedBackendEntry,
-    backendDisplayName,
-    hasMultipleBackends,
-    threadMachine,
     threadMachineUnreachable,
     unreachableThreadMachineName,
   } from '../../stores/attachedBackends.svelte';
-  import { backendHasBrowser } from '../../utils/browserTools';
-  import { hasScope } from '../../transport/scopes';
-  import MonitorIcon from '@lucide/svelte/icons/monitor';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import {
     findPaneShowingThread,
@@ -32,19 +27,19 @@
     openThreadInPane,
   } from '../../stores/panes.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import {
-    getEffectiveThreadStatus,
-    type ThreadLiveStatus,
-  } from '../../stores/threadStatuses.svelte';
+  import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
-  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import Terminal from '@lucide/svelte/icons/terminal';
+  import UserRound from '@lucide/svelte/icons/user-round';
+  import SquarePen from '@lucide/svelte/icons/square-pen';
   import Icon from '../primitives/Icon.svelte';
+  import CountBadge from '../primitives/CountBadge.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import AgentStateLine from './AgentStateLine.svelte';
   import ThreadRowActions from './ThreadRowActions.svelte';
-  import ThreadRowBadges from './ThreadRowBadges.svelte';
+  import ThreadRowSublabel from './ThreadRowSublabel.svelte';
+  import ThreadAttentionLine from './ThreadAttentionLine.svelte';
   import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
@@ -54,6 +49,7 @@
   import {
     archiveThreadAction,
     deleteThreadAction,
+    nextAssistantThreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
     pinThreadAction,
@@ -63,18 +59,13 @@
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
-    TerminalsClosingNote,
-    terminalsClosingNoteForThreadDelete,
-    withTerminalsNote,
-  } from '../../stores/worktreeRemoval.svelte';
-  import {
-    hasUnread,
     lastKnownThreadStatusPill,
+    owesRead,
+    pendingAttention,
     resolveThreadStatusPill,
-    type ThreadStatusPill,
   } from '../../utils/threadStatusPill';
-  import { pathBasename } from '../../utils/pathDisplay';
   import { isImeComposingEvent } from '../../utils/imeComposition';
+  import { countNoun } from '../../utils/format';
   import {
     beginThreadRowDrag,
     encodeThreadDragPayload,
@@ -99,12 +90,7 @@
     onSelectClick,
     indent = 0,
     inGroup = false,
-    pinnable = true,
-    hasChildren = false,
-    expanded = false,
-    onToggleExpand,
-    displayLiveStatus,
-    displayStatus,
+    agentProjects = null,
   }: {
     thread: Thread;
     pane: ThreadPane | null;
@@ -117,30 +103,15 @@
      * reserved for opening/focusing a pane.
      */
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
-    /** Visual indent level. 0 = top, 1 = direct child of a discussion parent. */
+    /** Visual indent level. 0 = top, 1 = group member. */
     indent?: number;
     /** Rendered inside a group's rail. Such a row is never a jump target. */
     inGroup?: boolean;
     /**
-     * The row is a pin target: a top-level thread or a group's direct
-     * member. A discussion child pins through its parent, so the owner of
-     * the tree decides; the row cannot tell from its indent alone. Both
-     * sidebar callers pass it; the default is a standalone top-level row.
+     * On an assistant's row (docs/specs/standing-agents.md, "Sidebar"), the
+     * projects it serves, the line under its state line; null when absent.
      */
-    pinnable?: boolean;
-    /** True when this row represents a parent with at least one child below it. */
-    hasChildren?: boolean;
-    /** Controls the chevron direction when hasChildren is true. */
-    expanded?: boolean;
-    /** Fires on chevron click; caller toggles the expansion store. */
-    onToggleExpand?: () => void;
-    /**
-     * Optional discussion-tree rollup status. When present, the row renders
-     * the most important child status while retaining the contributing
-     * child's pill label/color.
-     */
-    displayLiveStatus?: ThreadLiveStatus;
-    displayStatus?: ThreadStatusPill | null;
+    agentProjects?: string | null;
   } = $props();
 
   // isActive: this thread is what the FOCUSED pane shows (the sidebar's
@@ -156,14 +127,15 @@
   let isTerminal = $derived(thread.mode === 'terminal');
   let showProviderIcon = $derived(
     getShowProviderIcons() && !isTerminal
-      && (thread.mode !== 'discussion' || Boolean(thread.parentThreadId))
       && asProviderID(thread.provider) !== null,
   );
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
-  let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
-  let ownPill = $derived(resolveThreadStatusPill(thread, effectiveStatus));
-  let unread = $derived(hasUnread(thread));
+  let ownPill = $derived(resolveThreadStatusPill(thread, liveStatus, getThreadWaitingOn(thread.id)));
+  let attention = $derived(pendingAttention(thread));
+  // A flag its agent raised is unread too: the title is bold until the
+  // user opens the thread.
+  let unread = $derived(owesRead(thread));
 
   let forkParent = $derived.by<Thread | undefined>(() => {
     if (!thread.forkedFromThreadId) return undefined;
@@ -198,6 +170,7 @@
   // title span in place — same pattern as ProjectItem).
   let editing = $state(false);
   let editValue = $state('');
+  let renameError: string | null = $state(null);
   let inputEl: HTMLInputElement | undefined = $state(undefined);
   let saving = $state(false);
 
@@ -208,16 +181,10 @@
   // Delete-confirm dialog for the terminal row-X (shown when
   // settings.confirmDelete is true).
   let showDeleteConfirm = $state(false);
-  const deleteTerminalsNote = new TerminalsClosingNote();
 
   // Context menu anchor + state.
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
-
-  function handleChevronClick(e: MouseEvent): void {
-    e.stopPropagation();
-    onToggleExpand?.();
-  }
 
   function handleClick(e?: MouseEvent) {
     if (editing) return;
@@ -256,16 +223,21 @@
   async function saveRename() {
     if (saving) return;
     saving = true;
+    let refused: string | null = null;
     try {
-      await renameThreadAction(ctx(), editValue);
+      refused = await renameThreadAction(ctx(), editValue);
     } finally {
       saving = false;
-      editing = false;
+      // A refusal keeps the editor open with the reason under it.
+      renameError = refused;
+      if (refused) requestAnimationFrame(() => inputEl?.focus());
+      else editing = false;
     }
   }
 
   function cancelRename() {
     editing = false;
+    renameError = null;
   }
 
   function handleRenameKeydown(e: KeyboardEvent) {
@@ -294,20 +266,46 @@
     e.stopPropagation();
     if (getSettings().confirmDelete) {
       showDeleteConfirm = true;
-      deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
     } else {
       void deleteThreadAction(ctx());
     }
   }
 
-  let isPinned = $derived(thread.pinnedAt != null);
+  // An assistant's row ignores any pin its thread holds (sidebarPinGroup),
+  // so it offers none, the collapsed section's preview of it included. A
+  // person glyph takes the pin's place, and a state line names its soonest
+  // loop or watch.
+  let isAgent = $derived(isStandingAgent(thread));
+  // An assistant's name carries its computer while another attached
+  // computer has an assistant of the same name.
+  let rowTitle = $derived((isAgent ? assistantDisplayName(thread) : thread.title) || 'Untitled');
+  let isPinned = $derived(!isAgent && thread.pinnedAt != null);
   // The pin, archive and delete controls write the row; inert with a reason
   // when the session lacks the grant, the same treatment the context menu
   // gives its rows.
   let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
+  // StartNextAssistantThread rides threads:autonomy.
+  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
   let isJumpTarget = $derived(
-    pinnable && !inGroup && sidebarPinGroup(thread) === 'front',
+    !inGroup && !isAgent && sidebarPinGroup(thread) === 'front',
   );
+  // A standing agent's own row never joins a group: the drag payload says
+  // so, and every group target refuses it. A thread it spawned joins
+  // groups like any other (docs/specs/standing-agents.md ruling 36).
+  let agentBound = $derived(isAgent);
+
+  // The thread's open workers and how many of them wait on the user, as its
+  // Agents list counts them (docs/specs/standing-agents.md, "Sidebar").
+  let workers = $derived(getThreadWorkerCounts(thread.id));
+
+  function handleRowKeydown(e: KeyboardEvent): void {
+    if (editing) return;
+    if (rowKeys.keydown(e)) return;
+    if (e.key === 'F2') {
+      e.preventDefault();
+      startRename();
+    }
+  }
 
   // Jump-hint label for this row when the user holds Cmd/Ctrl. Reactive:
   // The store tracks rendered pin order while the modifier is held.
@@ -333,7 +331,8 @@
     // (transport/backendClock.ts); a row whose owner is not known yet
     // reads as home, which is what every row meant before a second
     // machine could be attached.
-    return sidebarTimeLabel(getThreadLiveActivityAt(thread), threadBackend(thread.id) ?? HOME_BACKEND);
+    const backend = threadBackend(thread.id) ?? HOME_BACKEND;
+    return sidebarTimeLabel(getThreadLiveActivityAt(thread), backend);
   });
 
   function handleContextMenu(e: MouseEvent) {
@@ -354,6 +353,7 @@
       threadId: thread.id,
       projectId: thread.projectId ?? '',
       ...(thread.groupId ? { groupId: thread.groupId } : {}),
+      ...(agentBound ? { agentBound: true } : {}),
     };
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData(THREAD_ROW_DRAG_MIME, encodeThreadDragPayload(payload));
@@ -392,42 +392,14 @@
   // dims in place and stays readable from the replica (spec §10). Home is
   // never dimmed here: its drop is the transport banner's.
   let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
-  let worktreeName = $derived(pathBasename(thread.worktreePath));
-  // Remote-only projects need the same host label as merged projects.
-  // On a client with several hosts and no local backend, every host is named.
-  let machineName = $derived.by(() => {
-    if (!hasMultipleBackends()) return '';
-    const key = threadMachine(thread.id, thread.projectId);
-    if (key === HOME_BACKEND && hasScope('host')) return '';
-    const entry = attachedBackendEntry(key);
-    return entry ? backendDisplayName(entry) : '';
-  });
   // A status from an unreachable computer is its last report: shown, but
-  // still, and labelled as such. A tree's display status (possibly a
-  // child's) already carries its own source's attribution.
+  // still, and labelled as such.
   let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));
   let pill = $derived(
-    displayStatus !== undefined
-      ? displayStatus
-      : unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
-  );
-  // An agent on a machine with no browser tools cannot open a page at all.
-  // Said on the chip that already names the machine rather than on a row of
-  // its own: it is a property of that machine, and the chip is where the
-  // reader is already looking to find out which one this thread is on.
-  let machineTitle = $derived(
-    machineName === ''
-      ? ''
-      : backendHasBrowser(threadMachine(thread.id, thread.projectId))
-        ? `Computer: ${machineName}`
-        : `Computer: ${machineName}. No browser on this computer.`,
-  );
-  let showWorktreeMeta = $derived(
-    !editing && (Boolean(thread.worktreePath && worktreeName) || machineName !== ''),
+    unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
   );
   const WORKTREE_META_OFFSET_PX = 14;
   let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
-  let worktreeRightPaddingPx = $derived(52);
 </script>
 
 <!--
@@ -477,7 +449,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={rowEl}
-    onkeydown={(e) => { if (!editing && rowKeys.keydown(e)) return; if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
+    onkeydown={handleRowKeydown}
     onkeyup={(e) => { if (!editing) rowKeys.keyup(e); }}
     onblur={rowKeys.blur}
     role="button"
@@ -490,18 +462,30 @@
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
     data-sidebar-jump-target={isJumpTarget ? '' : undefined}
-    data-live-status={liveStatus}
-    data-effective-status={effectiveStatus}
+    data-sidebar-agent={isAgent ? '' : undefined}
+    data-effective-status={liveStatus}
     data-machine-unreachable={machineUnreachable || undefined}
   >
-  {#if pinnable}
-    <!--
-      Leading pin slot. Absolutely positioned inside the row's reserved
-      pin gutter (PIN_SLOT_PX of padding-left) so the pin sits in the
-      gap between the project rail and the row content without
-      contributing a flex gap of its own. The wrapper is non-interactive;
-      the button inside opts back in to pointer events when visible.
-    -->
+  <!--
+    Leading pin slot. Absolutely positioned inside the row's reserved
+    pin gutter (PIN_SLOT_PX of padding-left) so the pin sits in the
+    gap between the project rail and the row content without
+    contributing a flex gap of its own. The wrapper is non-interactive;
+    the button inside opts back in to pointer events when visible.
+  -->
+  {#if isAgent}
+    <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
+      <span
+        class="inline-flex items-center text-accent"
+        aria-label="Standing agent"
+        title="Standing agent"
+        role="img"
+        data-testid="thread-row-agent-icon"
+      >
+        <Icon icon={UserRound} size={11} strokeWidth={1.75} />
+      </span>
+    </div>
+  {:else}
     <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
       <ThreadRowPinButton
         {isPinned}
@@ -515,23 +499,6 @@
       />
     </div>
   {/if}
-  {#if hasChildren}
-    <button
-      type="button"
-      onclick={handleChevronClick}
-      data-testid="thread-row-expand"
-      aria-label={expanded ? 'Collapse participants' : 'Expand participants'}
-      aria-expanded={expanded}
-      class="flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg hover:bg-surface-2/30 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-    >
-      <Icon
-        icon={ChevronRight}
-        size={11}
-        strokeWidth={2.5}
-        class={'opacity-80 transition-transform ' + (expanded ? 'rotate-90' : '')}
-      />
-    </button>
-  {/if}
 
   {#if pill}
     <span
@@ -540,7 +507,7 @@
       aria-label={pill.label}
       title={pill.label}
       data-testid="thread-row-status-dot"
-      data-status={effectiveStatus}
+      data-status={liveStatus}
     ></span>
   {/if}
 
@@ -553,6 +520,8 @@
       onblur={saveRename}
       disabled={saving}
       aria-label="Rename Thread"
+      aria-invalid={renameError !== null}
+      oninput={() => { renameError = null; }}
       class="text-xs compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       onclick={(e) => e.stopPropagation()}
     />
@@ -591,14 +560,43 @@
     {/if}
     <span
       data-testid="thread-row-title"
-      class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : ''}"
-      title={thread.title || 'Untitled'}
+      class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : isAgent ? 'font-medium' : ''}"
+      title={rowTitle}
     >
-      {thread.title || 'Untitled'}
+      {rowTitle}
     </span>
-    <ThreadRowBadges {thread} />
+    <CountBadge
+      count={workers.needYou}
+      tone="warning"
+      title={`${countNoun(workers.needYou, 'worker')} waiting on you`}
+      testId="thread-row-workers-need-you"
+    />
+    {#if workers.open > 0}
+      <span
+        class="-ml-0.5 mr-1 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
+        title={countNoun(workers.open, 'open worker')}
+        data-testid="thread-row-workers"
+      >
+        {workers.open}
+      </span>
+    {/if}
 
     <div class="flex items-center gap-1 shrink-0 -ml-0.5" data-testid="thread-row-trailing">
+      {#if isAgent}
+        <!-- New Thread, Same Assistant: on hover, and at rest under the
+             compact layout, which has no hover. -->
+        <button
+          type="button"
+          onclick={(e) => { e.stopPropagation(); void nextAssistantThreadAction(ctx()); }}
+          disabled={nextThreadUngranted}
+          aria-label="New Thread, Same Assistant"
+          title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+          data-testid="thread-row-next-thread"
+          class="flex items-center justify-center h-5 w-5 compact:h-9 compact:w-9 rounded-[var(--radius-field)] shrink-0 cursor-pointer text-fg-subtle hover:text-fg hover:bg-surface-2/40 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto compact:opacity-100 compact:pointer-events-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+        >
+          <Icon icon={SquarePen} size={12} strokeWidth={2} class="opacity-90" />
+        </button>
+      {/if}
       {#if thread.forkedFromThreadId}
         <ThreadRowForkAffordance {forkParent} onJumpToParent={handleJumpToParent} />
       {/if}
@@ -664,39 +662,32 @@
   {/if}
   </div>
 
-  {#if showWorktreeMeta}
-    <div
-      class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
-      style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
-      title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
-      aria-label={worktreeName ? `Worktree ${worktreeName}` : `Computer ${machineName}`}
-      data-testid="thread-row-worktree"
-    >
-      {#if machineName}
-        <span
-          class="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 px-1 py-0 text-fg-hint"
-          data-testid="thread-row-machine"
-          title={machineTitle}
-        >
-          <Icon icon={MonitorIcon} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
-          <span class="min-w-0 truncate text-[0.625rem]" data-testid="thread-row-machine-name">
-            {machineName}
-          </span>
-        </span>
+  {#if editing && renameError}
+    <p role="alert" class="px-2 pb-1 text-[0.625rem] text-error" style="padding-left: {worktreeIndentPx}px" data-testid="thread-row-rename-error">{renameError}</p>
+  {:else}
+    <!-- The lines under the row: the first tucks under the row's own
+         bottom padding, and each later one under the line above it, so
+         any of them may be absent. -->
+    <div class="[&>*+*]:-mt-0.5 [&>*:first-child]:-mt-1.5" data-testid="thread-row-lines">
+      {#if attention && !editing}
+        <ThreadAttentionLine {attention} indentPx={worktreeIndentPx} />
       {/if}
-      {#if worktreeName}
-        <span
-          class="inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
-          data-testid="thread-row-worktree-label"
-        >
-          <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
-          <span
-            class="min-w-0 truncate font-mono text-[0.625rem]"
-            data-testid="thread-row-worktree-name"
+      {#if isAgent}
+        <!-- An assistant's lines start under its title: its glyph sits in
+             the pin column, so nothing stands before the title to clear. -->
+        <AgentStateLine threadId={thread.id} indentPx={rowPaddingLeftPx} />
+        {#if agentProjects != null}
+          <div
+            class="relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
+            style="padding-left: {rowPaddingLeftPx}px"
+            title={agentProjects}
+            data-testid="thread-row-agent-projects"
           >
-            {worktreeName}
-          </span>
-        </span>
+            <span class="min-w-0 truncate">{agentProjects}</span>
+          </div>
+        {/if}
+      {:else if !editing}
+        <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} />
       {/if}
     </div>
   {/if}
@@ -710,6 +701,7 @@
   onClose={closeCtxMenu}
   onRename={startRename}
   {isActive}
+  {agentBound}
 />
 
 <ConfirmDialog
@@ -724,14 +716,11 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete Terminal"
-  description={withTerminalsNote(
-    'This will remove the terminal from the sidebar and close its shell. This cannot be undone.',
-    deleteTerminalsNote.note,
-  )}
+  description="This will remove the terminal from the sidebar and close its shell. This cannot be undone."
   confirmLabel="Delete"
   destructive={true}
-  onConfirm={() => { showDeleteConfirm = false; deleteTerminalsNote.clear(); void deleteThreadAction(ctx()); }}
-  onCancel={() => { showDeleteConfirm = false; deleteTerminalsNote.clear(); }}
+  onConfirm={() => { showDeleteConfirm = false; void deleteThreadAction(ctx()); }}
+  onCancel={() => { showDeleteConfirm = false; }}
 />
 
 {/if}

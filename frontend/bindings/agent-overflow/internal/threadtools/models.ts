@@ -48,6 +48,13 @@ export class Caller {
 export class Candidate {
     "thread_id": string;
     "title"?: string;
+
+    /**
+     * Assistant is the name of the assistant whose current thread this is,
+     * set when the reference matched that name. A computer that predates
+     * assistants never sets it.
+     */
+    "assistant"?: string;
     "computer_id"?: string;
     "computer"?: string;
 
@@ -66,6 +73,188 @@ export class Candidate {
     static createFrom($$source: any = {}): Candidate {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new Candidate($$parsedSource as Partial<Candidate>);
+    }
+}
+
+/**
+ * FactsThread is one thread a digest answer speaks for, as its row names it
+ * and opens it.
+ */
+export class FactsThread {
+    "threadId": string;
+    "title"?: string;
+
+    /**
+     * ComputerID and ComputerName name the thread's computer, empty for the
+     * caller's own: the id a row opens it through, the name it reads as.
+     */
+    "computerId"?: string;
+    "computerName"?: string;
+    "age"?: string;
+    "tokens"?: string[];
+    "role"?: string | null;
+
+    /** Creates a new FactsThread instance. */
+    constructor($$source: Partial<FactsThread> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FactsThread instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FactsThread {
+        const $$createField5_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tokens" in $$parsedSource) {
+            $$parsedSource["tokens"] = $$createField5_0($$parsedSource["tokens"]);
+        }
+        return new FactsThread($$parsedSource as Partial<FactsThread>);
+    }
+}
+
+/**
+ * MessageFacts is what a message the app writes for an agent says, as the
+ * fields a person's view renders: the timeline row reads these, never the
+ * text, which is written for the agent. Each message's text and facts come
+ * from one value through one function (Footer.Message, Wake.Message,
+ * WorkerStopped.Message and the usermessage constructors), so the two cannot
+ * disagree. The row carries them on its attribution
+ * (agentmeta.OriginThread.Facts, agentmeta.OriginWake.Facts), and a
+ * reader takes them only through agentmeta.Describe, which checks them
+ * against the text (Check).
+ */
+export class MessageFacts {
+    /**
+     * Form is what the message is: FormRequest, FormAnswer, FormMessage,
+     * FormReport, or FormWhole for one nothing is known of but its text.
+     */
+    "form": string;
+
+    /**
+     * Bytes is the length in bytes of the text the facts describe. Facts
+     * whose text changed behind their back no longer describe it, and a
+     * reader shows that message whole (Check).
+     */
+    "bytes": number;
+
+    /**
+     * Outcome is what an answer says happened to the requests it answers:
+     * a WakeReply, WakeFinished, WakeErrored, WakeCancelled,
+     * WakeInterrupted (a person's Stop included, told apart by StoppedBy),
+     * WakeExpired or WakeReminder, WakeSettled for a settlement none of
+     * those names, or OutcomeWorkerStopped for the notice that the person
+     * stopped a worker after it answered. Set on an answer only.
+     */
+    "outcome"?: string;
+
+    /**
+     * Body is where the message's own words are in its text: what the
+     * sender wrote, the answer, or the data a wake delivers. The spans are
+     * UTF-8 byte offsets on character boundaries, in order, not empty and
+     * not overlapping, read in order and joined as they are; most bodies
+     * are one span. Empty when the message has none.
+     */
+    "body"?: Span[];
+
+    /**
+     * Headline is what the row's header says the message is about. A
+     * writer sets it when that is not the first line of Body (a loop's
+     * note, a watch's first output line, a remote job's result);
+     * agentmeta.Describe sets it otherwise.
+     */
+    "headline"?: string;
+
+    /**
+     * Waiting, Reachable, UserMessage and RoutesPrompts are a request's
+     * footer: the sender waits for the answer, this computer can reach the
+     * sender's, the sender thread's latest message from the person as the
+     * footer quotes it, and the sender spawned the receiver and answers its
+     * prompts.
+     */
+    "waiting"?: boolean;
+    "reachable"?: boolean;
+    "userMessage"?: string;
+    "routesPrompts"?: boolean;
+
+    /**
+     * Role is the sender's or the answering thread's role line when it is a
+     * standing agent, "" for one with none; nil when it is not one.
+     */
+    "role"?: string | null;
+
+    /**
+     * Tokens are every request an answer answers, oldest first.
+     */
+    "tokens"?: string[];
+
+    /**
+     * Age is how long before the answer was delivered it was written, as
+     * the status line states it (Age); empty under AgeFloor.
+     */
+    "age"?: string;
+
+    /**
+     * StoppedBy is what stopped an interrupted request, in words: a restart
+     * of a computer, the user, the session ending, a move or an interrupt.
+     * Empty when the reason names no stopper, and the reason is the body.
+     */
+    "stoppedBy"?: string;
+
+    /**
+     * Clipped is set when the answer was cut to the preview, so
+     * thread_status with the first token returns the rest.
+     */
+    "clipped"?: boolean;
+
+    /**
+     * MadeIn and Now are the assistant's past thread the requests were made
+     * in and its current thread, when the answer reached the current one
+     * after New Thread, Same Assistant.
+     */
+    "madeIn"?: string;
+    "now"?: string;
+
+    /**
+     * Threads are the threads a digest speaks for, two or more; the
+     * attribution names the first, and a single answer's thread is the
+     * attribution itself.
+     */
+    "threads"?: FactsThread[];
+
+    /** Creates a new MessageFacts instance. */
+    constructor($$source: Partial<MessageFacts> = {}) {
+        if (!("form" in $$source)) {
+            this["form"] = "";
+        }
+        if (!("bytes" in $$source)) {
+            this["bytes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MessageFacts instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MessageFacts {
+        const $$createField3_0 = $$createType2;
+        const $$createField10_0 = $$createType0;
+        const $$createField16_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("body" in $$parsedSource) {
+            $$parsedSource["body"] = $$createField3_0($$parsedSource["body"]);
+        }
+        if ("tokens" in $$parsedSource) {
+            $$parsedSource["tokens"] = $$createField10_0($$parsedSource["tokens"]);
+        }
+        if ("threads" in $$parsedSource) {
+            $$parsedSource["threads"] = $$createField16_0($$parsedSource["threads"]);
+        }
+        return new MessageFacts($$parsedSource as Partial<MessageFacts>);
     }
 }
 
@@ -105,12 +294,40 @@ export class Resolution {
      * Creates a new Resolution instance from a string or object.
      */
     static createFrom($$source: any = {}): Resolution {
-        const $$createField0_0 = $$createType1;
+        const $$createField0_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Matches" in $$parsedSource) {
             $$parsedSource["Matches"] = $$createField0_0($$parsedSource["Matches"]);
         }
         return new Resolution($$parsedSource as Partial<Resolution>);
+    }
+}
+
+/**
+ * Span is a range of a message's text in UTF-8 bytes, End exclusive.
+ */
+export class Span {
+    "start": number;
+    "end": number;
+
+    /** Creates a new Span instance. */
+    constructor($$source: Partial<Span> = {}) {
+        if (!("start" in $$source)) {
+            this["start"] = 0;
+        }
+        if (!("end" in $$source)) {
+            this["end"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Span instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Span {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Span($$parsedSource as Partial<Span>);
     }
 }
 
@@ -155,5 +372,10 @@ export class SpawnDefaults {
 }
 
 // Private type creation functions
-const $$createType0 = Candidate.createFrom;
-const $$createType1 = $Create.Array($$createType0);
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = Span.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = FactsThread.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = Candidate.createFrom;
+const $$createType6 = $Create.Array($$createType5);

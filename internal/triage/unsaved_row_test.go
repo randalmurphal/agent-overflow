@@ -216,7 +216,7 @@ func TestSessionDeathWhoseNoticeIsRefusedIsStillAnnounced(t *testing.T) {
 	}
 
 	// A replacement session's death is its own, even at the same turn.
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	if err := router.Handle(death); err != nil {
 		t.Fatalf("next session's death: %v", err)
 	}

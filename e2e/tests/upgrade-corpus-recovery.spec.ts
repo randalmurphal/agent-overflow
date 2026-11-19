@@ -80,10 +80,14 @@ const SPACED_DRAFT = 'queued text\n\nsecond\n\nold draft';
 const sqlText = (text: string) => `'${text.replaceAll("'", "''")}'`;
 /** The second member of the joined unconfirmed message, whose queue copy outlived the write. */
 const MEMBER = 'A second message joined to the first.';
-/** usermessage.JoinSeparator. */
+/** A request's answer the provider joined between the person's two messages, never confirmed. */
+const JOINED_WAKE = 'An answer joined between them.';
+/** agentmeta.JoinSeparator. */
 const JOIN = '\n\n---\n\n';
 /** The send of a wake whose message the provider confirmed before the crash. */
 const DELIVERED_SEND = 'thread-wake:req-delivered';
+/** The send of a wake the provider echoed in the same row, whose confirmation the crash lost. */
+const ECHOED_SEND = 'thread-wake:req-echoed';
 
 interface Staged {
   threadId: string;
@@ -260,14 +264,18 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
         '${s.codexId}', 'u-pending', 'row'),
              ('drc-retired', '${s.threadId}', 'turn', 'k', 'b.go', 'sent', 'file', 'And this.', ${now}, ${now}, ${now},
         '${s.threadId}', '${queuedRow}', '');
-    -- open-local-requests, open-receipts and queued-wakes-to-draft: an
-    -- agent request still running, a receipt of one, a wake still queued
-    -- and the request that rode with it, and settled twins.
+    -- open-local-requests, open-receipts and wakes-given-back: an agent
+    -- request still running, a receipt of one, a wake still queued and the
+    -- request that rode with it, a wake the provider was handed in the
+    -- joined message below and never confirmed, and settled twins.
     ${request('req-open', s.codexId, 'running')}
     ${request('req-settled', s.codexId, 'finished', ', answer_kind, settled_at', `, 'reply', ${now}`)}
-    ${request('req-wake', s.codexId, 'replied', ', answer, answer_kind, settled_at, delivered_at, delivered_how', `, x'01', 'reply', ${now}, ${now}, 'queued'`)}
-    ${request('req-rider', s.codexId, 'replied', ', answer, answer_kind, settled_at, delivered_at, delivered_how, delivered_with',
-      `, x'01', 'reply', ${now}, ${now}, 'queued', 'req-wake'`)}
+    ${request('req-wake', s.codexId, 'replied', ', answer, answer_kind, settled_at, notify, delivered_at, delivered_how',
+      `, x'01', 'reply', ${now}, 1, ${now}, 'queued'`)}
+    ${request('req-rider', s.codexId, 'replied', ', answer, answer_kind, settled_at, notify, delivered_at, delivered_how, delivered_with',
+      `, x'01', 'reply', ${now}, 1, ${now}, 'queued', 'req-wake'`)}
+    ${request('req-joined', s.threadId, 'replied', ', answer, answer_kind, settled_at, notify, delivered_at, delivered_how',
+      `, x'01', 'reply', ${now}, 1, ${now}, 'queued'`)}
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at)
       VALUES ('rcpt-open', '${local.device}', 'send', '${s.codexId}', 'running', ${now}, ${now}),
              ('rcpt-settled', '${local.device}', 'send', '${s.codexId}', 'finished', ${now}, ${now});
@@ -317,20 +325,32 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
       VALUES ('${s.threadId}', 'pl-queued', 0, 0, CAST('${QUEUED}' AS BLOB), ${now});
     UPDATE items SET payload_id = 'pl-queued' WHERE thread_id = '${s.threadId}' AND id = '${queuedRow}';
     -- The unconfirmed message is a joined one (one provider message carrying
-    -- two queued ones), and its second member's queue copy outlived the
-    -- write: the restore takes the row whole and the copy adds no text.
-    UPDATE items SET summary = summary || '${JOIN}' || '${MEMBER}',
-        meta = json_set(meta, '$.sendId', 'send-joined-first', '$.joinedSendIds', json_array('send-joined-first', 'send-joined-second'))
+    -- two queued ones and, between them, a request's answer), and its
+    -- second member's queue copy outlived the write: the restore takes the
+    -- row, splits the answer off by the parts its dispatch recorded and
+    -- gives it back to its request, and the copy adds no text.
+    UPDATE items SET summary = summary || '${JOIN}' || '${JOINED_WAKE}' || '${JOIN}' || '${MEMBER}',
+        meta = json_set(meta, '$.sendId', 'send-joined-first',
+          '$.joinedSendIds', json_array('send-joined-first', 'thread-wake:req-joined', 'send-joined-second'),
+          '$.joinedParts', json_array(
+            json_object('sendId', 'send-joined-first', 'bytes', length(CAST(summary AS BLOB))),
+            json_object('sendId', 'thread-wake:req-joined', 'bytes', length(CAST('${JOINED_WAKE}' AS BLOB)), 'origin', 'agent-thread'),
+            json_object('sendId', 'send-joined-second', 'bytes', length(CAST('${MEMBER}' AS BLOB)))))
       WHERE thread_id = '${s.threadId}' AND id = '${queuedRow}';
     INSERT INTO flush_queue_items (id, thread_id, send_id, message, enqueued_at)
       VALUES ('fq-joined-copy', '${s.threadId}', 'send-joined-second', '${MEMBER}', ${now});
     -- A wake's queue row whose message the provider had confirmed (its row
-    -- carries the provider's id): the restore drops it with no text and
-    -- leaves the request as delivered.
-    UPDATE items SET meta = json_set(meta, '$.sendId', '${DELIVERED_SEND}', '$.provider_item_id', 'msg-delivered')
+    -- carries the provider's id, and the request its confirmation): the
+    -- restore drops it with no text and leaves the request as delivered;
+    -- nothing is given back. The same row carries a second wake whose
+    -- confirmation the crash lost: the boot confirms it from the row.
+    UPDATE items SET meta = json_set(meta, '$.sendId', '${DELIVERED_SEND}', '$.provider_item_id', 'msg-delivered',
+        '$.joinedSendIds', json_array('${DELIVERED_SEND}', '${ECHOED_SEND}'))
       WHERE thread_id = '${s.quietId}' AND kind = 'user_text' AND parent_id = '';
-    ${request('req-delivered', s.quietId, 'replied', ', answer, answer_kind, settled_at, delivered_at, delivered_how',
-      `, x'01', 'reply', ${now}, ${now}, 'queued'`)}
+    ${request('req-delivered', s.quietId, 'replied', ', answer, answer_kind, settled_at, notify, delivered_at, delivered_how, confirmed_at',
+      `, x'01', 'reply', ${now}, 1, ${now}, 'queued', ${now}`)}
+    ${request('req-echoed', s.quietId, 'replied', ', answer, answer_kind, settled_at, notify, delivered_at, delivered_how',
+      `, x'01', 'reply', ${now}, 1, ${now}, 'queued'`)}
     INSERT INTO flush_queue_items (id, thread_id, send_id, message, enqueued_at)
       VALUES ('fq-delivered', '${s.quietId}', '${DELIVERED_SEND}', 'An answer the provider confirmed.', ${now});
     -- A stale pendingFlush mark on a settled user row a later turn follows:
@@ -398,18 +418,31 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     const clean = await check(rig.dbPath);
     expect(clean.failures).toEqual([]);
     expect(clean.bootUnexplained).toEqual([]);
-    // The restore's draft: the queued message ahead of what the composer held.
+    // A wake goes back to its request, never to the composer: the draft is
+    // as the composer left it, and the wake, its rider and the answer the
+    // joined row carried are owed again, disarmed.
     expect(await dbQuery(rig.dbPath, `SELECT content, attachments FROM thread_drafts WHERE thread_id = '${codexId}'`))
-      .toEqual([{ content: `${QUEUED_WAKE}\n\n${TYPED}`, attachments: '["att-queued","att-typed"]' }]);
-    // The joined row whole, its member's queue copy adding nothing; the
-    // confirmed message's queue row gone with the draft and wake untouched.
+      .toEqual([{ content: TYPED, attachments: '["att-typed"]' }]);
+    expect(await dbQuery(rig.dbPath, `SELECT token, delivered_at AS at, delivered_how AS how, delivered_with AS rode, notify
+        FROM thread_requests WHERE token IN ('req-joined', 'req-rider', 'req-wake') ORDER BY token`))
+      .toEqual(['req-joined', 'req-rider', 'req-wake'].map((token) => ({ token, at: null, how: '', rode: '', notify: 0 })));
+    // The joined row's person's text whole, the answer split off and its
+    // member's queue copy adding nothing; the confirmed message's queue row
+    // gone with the draft untouched, and its wake still delivered and
+    // confirmed, now naming its echo's row.
     expect(await dbQuery(rig.dbPath, `SELECT content FROM thread_drafts WHERE thread_id = '${threadId}'`))
       .toEqual([{ content: `${QUEUED}${JOIN}${MEMBER}` }]);
     expect(await dbQuery(rig.dbPath, `SELECT
         (SELECT COUNT(*) FROM flush_queue_items) AS queued,
         (SELECT content FROM thread_drafts WHERE thread_id = '${quietId}') AS draft,
-        (SELECT delivered_how FROM thread_requests WHERE token = 'req-delivered') AS how`))
-      .toEqual([{ queued: 0, draft: 'kept', how: 'queued' }]);
+        r.delivered_how AS how, r.confirmed_at IS NOT NULL AS confirmed, r.notify AS notify,
+        r.wake_item_id = (SELECT i.id FROM items i WHERE i.thread_id = '${quietId}' AND i.kind = 'user_text' AND i.parent_id = '') AS named
+        FROM thread_requests r WHERE r.token = 'req-delivered'`))
+      .toEqual([{ queued: 0, draft: 'kept', how: 'queued', confirmed: 1, notify: 1, named: 1 }]);
+    // The wake its echo's row proves is confirmed by that row and stays delivered.
+    expect(await dbQuery(rig.dbPath, `SELECT delivered_how AS how, confirmed_at IS NOT NULL AS confirmed, wake_item_id <> '' AS row, notify
+        FROM thread_requests WHERE token = 'req-echoed'`))
+      .toEqual([{ how: 'queued', confirmed: 1, row: 1, notify: 1 }]);
     // MergeParts' composition: a repeated text twice, padding trimmed.
     expect(await dbQuery(rig.dbPath, `SELECT thread_id AS thread, content FROM thread_drafts
         WHERE thread_id IN ('${staged.repeatId}', '${staged.spacedId}') ORDER BY thread_id = '${staged.spacedId}'`))
@@ -417,6 +450,7 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     expect(byRule(clean)).toEqual({
       'crashed-turns turns': 1,
       'crashed-turn-rows items': 1,
+      'crashed-turn-runtime thread_tallies': 1,
       'codex-background-runtime items': 1,
       'claude-background-launches items': 1,
       'claude-agent-rows items': 1,
@@ -428,9 +462,12 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       // The Codex thread's stamps move with its worktree setup's row, which that rule counts.
       'thread-stamps threads': 1,
       'worktree-setups threads': 1,
-      'queued-messages flush_queue_items': 6,
-      'queued-message-drafts thread_drafts': 3,
-      'queued-wakes-to-draft thread_requests': 2,
+      'queued-messages flush_queue_items': 4,
+      'owned-queued-messages flush_queue_items': 2,
+      'queued-message-drafts thread_drafts': 2,
+      'wakes-given-back thread_requests': 3,
+      'echoed-wakes-confirmed thread_requests': 1,
+      'confirmed-wakes-name-their-row thread_requests': 1,
       'retired-message-claims diff_review_comments': 1,
       'unsettled-review-claims diff_review_comments': 1,
       'replacement-draft-recoveries thread_draft_recoveries': 1,
@@ -458,33 +495,39 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     // row it does not select, or a row it removes kept with a change.
     const outside: Array<{ rule: string; table: string; sql: string }> = [
       { rule: 'crashed-turns', table: 'turns', sql: `UPDATE turns SET error_message = 'edited' WHERE thread_id = '${threadId}' AND turn_index = 1` },
+      { rule: 'crashed-turn-runtime', table: 'thread_tallies', sql: `UPDATE thread_tallies SET tool_calls = tool_calls + 1 WHERE thread_id = '${threadId}'` },
+      { rule: 'crashed-turn-runtime: runtime taken back', table: 'thread_tallies', sql: `UPDATE thread_tallies SET turn_ms = 0 WHERE thread_id = '${threadId}'` },
       { rule: 'codex-background-runtime', table: 'items', sql: `UPDATE items SET tool_name = 'other' WHERE thread_id = '${codexId}' AND id = 'codex-bg'` },
       { rule: 'worktree-setups', table: 'threads', sql: `UPDATE threads SET worktree_setup_state = '' WHERE id = '${codexId}'` },
       { rule: 'unsettled-review-claims', table: 'diff_review_comments', sql: `UPDATE diff_review_comments SET body = 'edited' WHERE id = 'drc-unsettled'` },
       { rule: 'retired-message-claims', table: 'diff_review_comments', sql: `UPDATE diff_review_comments SET body = 'edited' WHERE id = 'drc-retired'` },
       { rule: 'open-local-requests', table: 'thread_requests', sql: `UPDATE thread_requests SET issue = 'edited' WHERE token = 'req-settled'` },
       { rule: 'open-receipts', table: 'thread_request_receipts', sql: `UPDATE thread_request_receipts SET source_thread_title = 'edited' WHERE token = 'rcpt-settled'` },
-      { rule: 'queued-wakes-to-draft', table: 'thread_requests', sql: `UPDATE thread_requests SET issue = 'edited' WHERE token = 'req-rider'` },
+      { rule: 'wakes-given-back', table: 'thread_requests', sql: `UPDATE thread_requests SET issue = 'edited' WHERE token = 'req-rider'` },
+      { rule: 'wakes-given-back: the wake left armed', table: 'thread_requests', sql: `UPDATE thread_requests SET notify = 1 WHERE token = 'req-wake'` },
+      { rule: 'wakes-given-back: a confirmed wake given back', table: 'thread_requests',
+        sql: `UPDATE thread_requests SET delivered_at = NULL, delivered_how = '', notify = 0 WHERE token = 'req-delivered'` },
+      { rule: 'echoed-wakes-confirmed: a wake its echo proves given back', table: 'thread_requests',
+        sql: `UPDATE thread_requests SET delivered_at = NULL, delivered_how = '', confirmed_at = NULL, wake_item_id = '', notify = 0 WHERE token = 'req-echoed'` },
+      { rule: 'confirmed-wakes-name-their-row: the confirmation moved', table: 'thread_requests',
+        sql: `UPDATE thread_requests SET confirmed_at = confirmed_at + 1 WHERE token = 'req-delivered'` },
       { rule: 'queued-messages', table: 'flush_queue_items', sql: `INSERT INTO flush_queue_items SELECT id, thread_id, send_id, 'edited', payload, enqueued_at FROM snap.flush_queue_items` },
-      // A restore's destination draft must hold the old draft and every
-      // restored message, text and attachments.
-      { rule: 'queued-messages: draft missing', table: 'flush_queue_items', sql: `DELETE FROM thread_drafts WHERE thread_id = '${codexId}'` },
-      { rule: 'queued-message-drafts: draft holds only the queued message', table: 'thread_drafts',
-        sql: `UPDATE thread_drafts SET content = '${QUEUED_WAKE}', attachments = '["att-queued"]' WHERE thread_id = '${codexId}'` },
-      { rule: 'queued-messages: draft holds only the old draft', table: 'flush_queue_items',
-        sql: `UPDATE thread_drafts SET content = '${TYPED}', attachments = '["att-typed"]' WHERE thread_id = '${codexId}'` },
-      { rule: 'queued-messages: the queued attachment lost', table: 'flush_queue_items',
-        sql: `UPDATE thread_drafts SET attachments = '["att-typed"]' WHERE thread_id = '${codexId}'` },
+      // A wake's give-back leaves its thread's draft as the composer left
+      // it: a draft that took the wake's text or attachment, lost its own,
+      // or went, fails.
+      { rule: 'queued-message-drafts: draft missing', table: 'thread_drafts', sql: `DELETE FROM thread_drafts WHERE thread_id = '${codexId}'` },
+      { rule: 'queued-message-drafts: the wake put in the draft', table: 'thread_drafts',
+        sql: `UPDATE thread_drafts SET content = '${QUEUED_WAKE}\n\n${TYPED}', attachments = '["att-queued","att-typed"]' WHERE thread_id = '${codexId}'` },
       { rule: 'queued-message-drafts: the old attachment lost', table: 'thread_drafts',
-        sql: `UPDATE thread_drafts SET attachments = '["att-queued"]' WHERE thread_id = '${codexId}'` },
+        sql: `UPDATE thread_drafts SET attachments = '[]' WHERE thread_id = '${codexId}'` },
       { rule: 'queued-message-drafts: attachments corrupted', table: 'thread_drafts',
         sql: `UPDATE thread_drafts SET attachments = 'att-queued,att-typed' WHERE thread_id = '${codexId}'` },
+      { rule: 'unconfirmed-queued-messages: the answer the joined row carried put in the draft', table: 'items',
+        sql: `UPDATE thread_drafts SET content = '${QUEUED}${JOIN}${JOINED_WAKE}${JOIN}${MEMBER}' WHERE thread_id = '${threadId}'` },
       { rule: 'unconfirmed-queued-messages: draft missing', table: 'items', sql: `DELETE FROM thread_drafts WHERE thread_id = '${threadId}'` },
       { rule: 'queued-messages: a joined copy gone, the draft holding only its own text', table: 'flush_queue_items',
         sql: `UPDATE thread_drafts SET content = '${MEMBER}' WHERE thread_id = '${threadId}'` },
-      { rule: 'queued-messages: dropped as delivered with no confirmed row and no draft text', table: 'flush_queue_items',
-        sql: `UPDATE items SET meta = json_remove(meta, '$.provider_item_id') WHERE thread_id = '${quietId}' AND json_extract(meta, '$.sendId') = '${DELIVERED_SEND}'` },
-      { rule: 'queued-wakes-to-draft: a confirmed wake marked as restored', table: 'thread_requests',
+      { rule: 'wakes-given-back: a confirmed wake marked as restored', table: 'thread_requests',
         sql: `UPDATE thread_requests SET delivered_how = 'draft' WHERE token = 'req-delivered'` },
       { rule: 'replacement-drafts: draft holds only the old draft', table: 'thread_draft_recoveries',
         sql: `UPDATE thread_drafts SET content = '${TYPED}' WHERE thread_id = '${staged.draftId}'` },

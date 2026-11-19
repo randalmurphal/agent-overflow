@@ -280,7 +280,7 @@ func keyedLookups(th string) []keyedLookup {
 			mustFind[Item](t, "last answer")(s.LastTopLevelTurnItem(th, 1, "assistant_text"))
 		}},
 		{name: "ListThreadLastMessages", turn: true, run: func(t *testing.T, s *Store) {
-			got, err := s.ListThreadLastMessages([]string{th})
+			got, err := s.ListThreadLastMessages([]string{th}, "")
 			if err != nil || got[th].Kind != "assistant_text" {
 				t.Errorf("last message = %#v, %v", got, err)
 			}
@@ -430,8 +430,8 @@ func keyedLookups(th string) []keyedLookup {
 			if err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM proposed_plans WHERE proposed_plans.thread_id = ? AND EXISTS(`+proposedPlanItemSQL()+`))`, th).Scan(&planned); err != nil {
 				t.Error(err)
 			}
-			var completed, started, errorAt, readAt sql.NullInt64
-			if err := s.reader().QueryRow(threadReadStateQuery, th).Scan(&completed, &started, &errorAt, &readAt); err != nil {
+			var completed, started, errorAt, flaggedAt, readAt sql.NullInt64
+			if err := s.reader().QueryRow(threadReadStateQuery, th).Scan(&completed, &started, &errorAt, &flaggedAt, &readAt); err != nil {
 				t.Error(err)
 			}
 		}},

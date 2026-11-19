@@ -58,8 +58,8 @@ func (a *App) callThreadRemoteJob(ctx context.Context, threadID, computerID, req
 	if err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandStatus", &receipt, requestID); err != nil {
 		return err
 	}
-	if receipt.ID != requestID || receipt.SourceThreadID != threadID {
-		return errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read it from the conversation that submitted it.", nil)
+	if _, _, err := a.remoteReceiptOwnedBy(computerID, requestID, threadID, receipt); err != nil {
+		return err
 	}
 	return a.backends.CallAgentPeer(call, computerID, method, result, args...)
 }

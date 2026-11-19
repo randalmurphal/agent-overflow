@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // threadToolsApp implements threadtools.App over this process's store,
@@ -46,6 +47,11 @@ func (t threadToolsApp) localThread(threadID string) (store.Thread, error) {
 	}
 	if err := t.app.store.CheckThreadTransferAccess(threadID); err != nil {
 		var moved *store.ThreadTransferError
+		if errors.As(err, &moved) && moved.Moved {
+			name, id := t.threadToolsBackendName(moved.BackendID)
+			return store.Thread{}, errorsx.Public(threadtools.CodeNotFound,
+				fmt.Sprintf("Thread %s moved to %s.", threadID, threadtools.NameOfComputer(threadtools.Computer{ID: id, Name: name})), nil)
+		}
 		if errors.As(err, &moved) {
 			return store.Thread{}, threadToolsNotFound(threadID)
 		}
@@ -103,6 +109,29 @@ func (p *threadProjector) projectName(projectID string) string {
 	return name
 }
 
+// assistant names the assistant whose current thread this is, with its
+// role line read now. A record or role that cannot be read is logged and
+// left out of the row rather than failing the read.
+func (p *threadProjector) assistant(thread store.Thread) *threadtools.Assistant {
+	if thread.AgentID == "" {
+		return nil
+	}
+	out := &threadtools.Assistant{ID: thread.AgentID, Name: thread.Title}
+	agent, found, err := p.app.store.GetAgent(thread.AgentID)
+	if err != nil || !found {
+		if err != nil {
+			log.Printf("thread tools: read assistant %s: %v", thread.AgentID, err)
+		}
+		return out
+	}
+	role, err := p.app.assistantRoles().Role(agent.Home)
+	if err != nil {
+		log.Printf("thread tools: read the role line of assistant %s from %s: %v", agent.ID, agent.Home, err)
+	}
+	out.Role = role
+	return out
+}
+
 func (p *threadProjector) groupName(groupID string) string {
 	if name, ok := p.groups[groupID]; ok {
 		return name
@@ -133,6 +162,8 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		Archived:      thread.Archived,
 		Unread:        threadUnread(thread),
 		LastActivity:  threadLastActivity(thread),
+		Assistant:     p.assistant(thread),
+		SpawnedBy:     thread.SpawnedByThreadID,
 
 		HasIncompleteTurn:         thread.HasIncompleteTurn,
 		HasFailedTurn:             thread.HasFailedTurn,
@@ -180,23 +211,103 @@ func threadLastActivity(thread store.Thread) int64 {
 	return thread.UpdatedAt
 }
 
-// LiveState projects the triage live snapshot onto the four facts the
-// state derivation reads. A thread with no session yields the zero value.
+// LiveState projects what the thread waits on (threadWaitingOn) onto the
+// four facts the state derivation reads. A thread with no session and no
+// open async question yields the zero value.
 func (t threadToolsApp) LiveState(_ context.Context, threadID string) (threadtools.LiveState, error) {
-	if t.app.triage == nil {
-		return threadtools.LiveState{}, nil
-	}
-	snapshot := t.app.triage.LiveStateSnapshotForThread(threadID)
-	return threadtools.LiveState{
-		ActiveTurn:        snapshot.ActiveTurn != nil,
-		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems) > 0,
-		PendingApprovals:  len(snapshot.Interactive.Approvals),
-		PendingUserInputs: len(snapshot.Interactive.UserInputs),
-	}, nil
+	return t.app.threadWaitingOn(threadID).live, nil
 }
 
-// ResolveThreadRef matches a full id or a prefix against this computer's
-// threads, as the thread that called the tools may see them.
+// threadWaiting is what a thread waits on now, from what the app holds in
+// memory, no store read: the triage snapshot, its live state, and what
+// blocks it on someone, "approval" or "question", with its first line and
+// the route its prompt took, nil when that is the person.
+type threadWaiting struct {
+	snapshot   triage.LiveStateSnapshot
+	live       threadtools.LiveState
+	on, detail string
+	route      *provider.PromptRoute
+}
+
+// routedTo names the thread the prompt it waits on went to, empty when the
+// person owns it.
+func (w threadWaiting) routedTo() string { return promptRouteTitle(w.route) }
+
+// promptRouteTitle names the thread a prompt is routed to, with the paired
+// computer that holds it, empty for the person's.
+func promptRouteTitle(route *provider.PromptRoute) string {
+	switch {
+	case route == nil:
+		return ""
+	case route.ComputerName != "":
+		return route.Title + " on " + route.ComputerName
+	}
+	return route.Title
+}
+
+// threadWaitingOn is the one answer to what a thread waits on, which its
+// Agents row, its worker liveness, thread_status and thread_search, and a
+// paired computer's status answer all read. A session's prompts come first;
+// a Codex async question, which outlives its session, counts as one
+// question to its recipient only while no turn runs and nothing is queued:
+// a turn or a queued message outranks a question asked in the background.
+// A queued message is one anywhere in the queue's handoff chain
+// (queueSnapshotForThread): a batch the dispatcher holds, waiting for the
+// thread's action lock or a delete's decision, has left triage's queue.
+func (a *App) threadWaitingOn(threadID string) threadWaiting {
+	var waiting threadWaiting
+	if a.triage != nil {
+		waiting.snapshot = a.triage.LiveStateSnapshotForThread(threadID)
+	}
+	waiting.live = threadToolsLiveState(waiting.snapshot)
+	if !waiting.live.PendingSends && a.flushQueueHolds(threadID) {
+		waiting.live.PendingSends = true
+	}
+	waiting.on, waiting.detail, waiting.route = threadAgentBlockedOn(waiting.snapshot)
+	if waiting.on != "" || waiting.live.ActiveTurn || waiting.live.PendingSends {
+		return waiting
+	}
+	if detail, route, asking := a.asyncQuestionBlocked(threadID); asking {
+		waiting.live.PendingUserInputs = 1
+		waiting.on, waiting.detail, waiting.route = "question", clipLine(detail), route
+	}
+	return waiting
+}
+
+// routedToAsker names the thread on the asking device's computer that the
+// prompt threadID waits on went to: the thread's link (store.SpawnOwnerOf)
+// names device, and the route names the link's source thread. It is ""
+// for a route to a thread here, a prompt the person owns, and a link of
+// another device. A row is routed to its own caller only when this is the
+// row's caller thread; the row of another thread there names this one.
+func (a *App) routedToAsker(threadID string, route *provider.PromptRoute, device string) (string, error) {
+	if route == nil || device == "" {
+		return "", nil
+	}
+	owner, found, err := a.store.SpawnOwnerOf(threadID)
+	if err != nil {
+		return "", fmt.Errorf("read the owner of thread %s: %w", threadID, err)
+	}
+	if !found || owner.ComputerID == "" || owner.DeviceID != device || owner.ThreadID != route.ThreadID {
+		return "", nil
+	}
+	return owner.ThreadID, nil
+}
+
+// threadToolsLiveState projects one live snapshot, for a reader that also
+// wants the snapshot's prompts.
+func threadToolsLiveState(snapshot triage.LiveStateSnapshot) threadtools.LiveState {
+	return threadtools.LiveState{
+		ActiveTurn:        snapshot.ActiveTurn != nil,
+		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems) > 0 || snapshot.TurnOwed,
+		PendingApprovals:  len(snapshot.Interactive.Approvals),
+		PendingUserInputs: len(snapshot.Interactive.UserInputs),
+	}
+}
+
+// ResolveThreadRef matches a full id, an assistant's name or a prefix
+// against this computer's threads, as the thread that called the tools may
+// see them.
 func (t threadToolsApp) ResolveThreadRef(ctx context.Context, ref string) (threadtools.Resolution, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -220,16 +331,58 @@ func (t threadToolsApp) ResolveThreadRef(ctx context.Context, ref string) (threa
 		if err != nil {
 			return threadtools.Resolution{}, err
 		}
-		if visible {
-			return threadtools.Resolution{Matches: []threadtools.Candidate{{ThreadID: thread.ID, Title: thread.Title}}}, nil
+		if !visible {
+			return threadtools.Resolution{}, nil
 		}
-		return threadtools.Resolution{}, nil
+		// A thread under an assistant is no address while assistants are
+		// off: the caller is told why rather than that nothing matched.
+		if paused, err := t.app.pausedAssistantThread(thread.ID); err != nil {
+			return threadtools.Resolution{}, err
+		} else if paused {
+			return threadtools.Resolution{}, t.app.assistantsOffFor(ctx)
+		}
+		return threadtools.Resolution{Matches: []threadtools.Candidate{{ThreadID: thread.ID, Title: thread.Title}}}, nil
 	}
-	candidates, err := t.prefixCandidates(ref, caller.ThreadID)
+	candidates, err := t.assistantCandidates(ref)
 	if err != nil {
 		return threadtools.Resolution{}, err
 	}
+	if len(candidates) > 0 && t.app.assistantsPaused() {
+		return threadtools.Resolution{}, t.app.assistantsOffFor(ctx)
+	}
+	if len(ref) < threadtools.MinPrefixLen {
+		return threadtools.Resolution{Matches: candidates}, nil
+	}
+	prefixed, err := t.prefixCandidates(ref, caller.ThreadID)
+	if err != nil {
+		return threadtools.Resolution{}, err
+	}
+	for _, candidate := range prefixed {
+		if len(candidates) == threadtools.MaxResolutionCandidates {
+			break
+		}
+		if !slices.ContainsFunc(candidates, func(named threadtools.Candidate) bool { return named.ThreadID == candidate.ThreadID }) {
+			candidates = append(candidates, candidate)
+		}
+	}
 	return threadtools.Resolution{Matches: candidates}, nil
+}
+
+// assistantCandidates are this computer's assistants whose name ref is,
+// each as its current thread. Names are unique per computer, so there is
+// at most one unless a rename raced the check.
+func (t threadToolsApp) assistantCandidates(ref string) ([]threadtools.Candidate, error) {
+	assistants, err := t.app.store.ListAssistants()
+	if err != nil {
+		return nil, err
+	}
+	var out []threadtools.Candidate
+	for _, assistant := range assistants {
+		if store.SameAssistantName(assistant.Name, ref) {
+			out = append(out, threadtools.Candidate{ThreadID: assistant.Agent.ThreadID, Title: assistant.Name, Assistant: assistant.Name})
+		}
+	}
+	return out, nil
 }
 
 // prefixCandidates asks the store for the threads whose id starts with
@@ -252,6 +405,11 @@ func (t threadToolsApp) prefixCandidates(ref, callerThreadID string) ([]threadto
 			return nil, err
 		}
 		if !visible {
+			continue
+		}
+		if paused, err := t.app.pausedAssistantThread(thread.ID); err != nil {
+			return nil, err
+		} else if paused {
 			continue
 		}
 		matches = append(matches, threadtools.Candidate{ThreadID: thread.ID, Title: thread.Title})
@@ -309,11 +467,28 @@ func (t threadToolsApp) threadToolsBackendName(backendID string) (name, id strin
 		}
 		return "", backendID
 	}
-	label := row.Nickname
-	if label == "" {
-		label = row.Name
+	return attachedLabel(row), row.ID
+}
+
+// attachedLabel is what a pairing calls its computer: the person's nickname,
+// else the computer's own name.
+func attachedLabel(row attachedbackends.Attached) string {
+	if row.Nickname != "" {
+		return row.Nickname
 	}
-	return label, row.ID
+	return row.Name
+}
+
+// requestComputerName names the computer a request went to as the person
+// knows it: by its current name while a pairing with it is held, else by the
+// name the request kept, its name at admission or, for a request from before
+// names were kept, its last name, which the end of the pairing wrote.
+func (t threadToolsApp) requestComputerName(row store.ThreadRequest) (name, id string) {
+	held, paired := t.threadToolsPairing(row.TargetComputerID)
+	if !paired {
+		return row.TargetComputerName, row.TargetComputerID
+	}
+	return attachedLabel(held), held.ID
 }
 
 // threadToolsPairing finds the pairing for a computer id, the backend id
@@ -355,6 +530,12 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 		if q.Provider != "" && q.Provider != name {
 			continue
 		}
+		// A provider the person turned off, or whose binary is not on
+		// this computer, is not offered: an agent is never told to spawn
+		// on it, and no profile on it is listed here.
+		if !t.app.providerOffered(name) {
+			continue
+		}
 		option, err := t.providerOption(name)
 		if err != nil {
 			// A provider whose catalog probe failed is still installed;
@@ -377,22 +558,15 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 	return catalog, nil
 }
 
+// providerOption answers thread_options for one provider: the models it
+// offers a new thread, and apart from them (Unlisted) the ones it still runs
+// for a thread already on them, which a spawn resolves against too.
 func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption, error) {
-	option, _, err := t.providerModelOptions(name)
-	return option, err
-}
-
-// providerModelOptions answers thread_options for one provider and also
-// returns every model this computer can resolve, listed or not. The option
-// offers what the provider lists; a spawn or fork naming an unlisted model a
-// thread already runs is still accepted against the full set.
-func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderOption, []threadtools.ModelOption, error) {
 	models, err := t.app.GetModelsForProvider(name)
 	if err != nil {
-		return threadtools.ProviderOption{}, nil, err
+		return threadtools.ProviderOption{}, err
 	}
 	option := threadtools.ProviderOption{ID: name, Name: threadToolsProviderName(name), Models: []threadtools.ModelOption{}}
-	var all []threadtools.ModelOption
 	for _, model := range models.Models {
 		entry := threadtools.ModelOption{Slug: model.Slug, Name: model.Name, Source: string(models.Provenance)}
 		for _, effort := range model.ReasoningEfforts {
@@ -406,12 +580,11 @@ func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderO
 				entry.ContextWindow = window.Tokens
 			}
 		}
-		all = append(all, entry)
-		// An unlisted row only resolves capabilities for threads already on
-		// it; the provider does not offer it to a new one.
-		if !model.Unlisted {
-			option.Models = append(option.Models, entry)
+		if model.Unlisted {
+			option.Unlisted = append(option.Unlisted, entry)
+			continue
 		}
+		option.Models = append(option.Models, entry)
 	}
 	for _, model := range models.Models {
 		if model.IsDefault && !model.Unlisted {
@@ -422,7 +595,7 @@ func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderO
 	if option.DefaultModel == "" && len(option.Models) > 0 {
 		option.DefaultModel = option.Models[0].Slug
 	}
-	return option, all, nil
+	return option, nil
 }
 
 func threadToolsProviderName(name string) string {
@@ -528,7 +701,7 @@ func (t threadToolsApp) attachLastMessages(rows []threadtools.Hit) error {
 			ids = append(ids, row.Thread.ID)
 		}
 	}
-	messages, err := t.app.store.ListThreadLastMessages(ids)
+	messages, err := t.app.store.ListThreadLastMessages(ids, "")
 	if err != nil {
 		return err
 	}
@@ -540,6 +713,9 @@ func (t threadToolsApp) attachLastMessages(rows []threadtools.Hit) error {
 		role := "assistant"
 		if message.Kind == "user_text" {
 			role = "user"
+			if message.Agent {
+				role = "agent"
+			}
 		}
 		rows[index].LastMessage = &threadtools.LastMessage{Role: role, At: message.At, Tail: message.Tail, Clipped: message.Clipped}
 	}
@@ -590,17 +766,25 @@ const (
 // from, which is the same id the receipt on this computer records.
 func (t threadToolsApp) threadToolsFilter(ctx context.Context, q threadtools.SearchQuery) (store.ThreadSearchFilter, error) {
 	caller, _ := threadtools.CallerFrom(ctx)
+	// Assistants turned off are listed to nobody, and asking for them is
+	// refused (app_assistants_switch.go).
+	paused := t.app.assistantsPaused()
+	if paused && q.Agents {
+		return store.ThreadSearchFilter{}, t.app.assistantsOffFor(ctx)
+	}
 	scratch, err := t.app.store.ListCallerScratchThreadIDs(caller.ThreadID)
 	if err != nil {
 		return store.ThreadSearchFilter{}, err
 	}
 	filter := store.ThreadSearchFilter{
-		ProjectID:        q.ProjectID,
-		Provider:         q.Provider,
-		Archived:         q.Archived,
-		SinceUnixMs:      q.SinceUnixMs,
-		SpawnedBy:        q.SpawnedBy,
-		ScratchThreadIDs: scratch,
+		ProjectID:             q.ProjectID,
+		Provider:              q.Provider,
+		Archived:              q.Archived,
+		SinceUnixMs:           q.SinceUnixMs,
+		SpawnedBy:             q.SpawnedBy,
+		Agents:                q.Agents,
+		ExceptUnderAssistants: paused,
+		ScratchThreadIDs:      scratch,
 	}
 	if q.ThreadID != "" {
 		filter.ThreadIDs = []string{q.ThreadID}

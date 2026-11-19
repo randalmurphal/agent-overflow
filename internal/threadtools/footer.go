@@ -22,15 +22,6 @@ import (
 // message.
 const UserMessageQuoteRunes = 300
 
-// WakePreviewBytes caps a wake body. The whole answer stays in the request
-// record and thread_status returns it.
-const WakePreviewBytes = 24 << 10
-
-// AgeFloor is how old an answer has to be before a wake states its age. A
-// wake that lands as soon as the answer was written says nothing about
-// time, which is what "only when they apply" means.
-const AgeFloor = time.Minute
-
 // Footer is the block an agent-written user message ends with.
 type Footer struct {
 	// Title, ThreadID and Computer name the SENDING thread. Computer is
@@ -49,12 +40,51 @@ type Footer struct {
 	// UserMessage is the sender thread's latest user message that no
 	// agent wrote, empty when there is none.
 	UserMessage string
+	// Agent is set when the sender is a standing agent.
+	Agent *SenderAgent
+	// RoutesPrompts is true when the sender is the thread that spawned the
+	// receiving thread on its computer, so the receiver's questions and
+	// approval requests go to the sender rather than to the user. It follows
+	// the standing-agent sentence when there is one and is a line of its own
+	// otherwise.
+	RoutesPrompts bool
 }
 
-// footerMarker opens every footer. The receiver is told the last `---`
+// routesSentence says, after the sender, that the receiver's prompts go to
+// it.
+const routesSentence = "spawned this thread, so your questions and approval requests go to it, not to the user."
+
+// SenderAgent names a standing agent on a footer or a wake.
+type SenderAgent struct {
+	// Role is the agent's role line (agenthome.BoundRole): the first
+	// non-blank line of its instructions.md after a leading frontmatter
+	// block and rule lines, bounded, or empty when it has none. It is the
+	// agent's own text.
+	Role string
+}
+
+// AgentSentence follows the sender or the answering thread on a footer or a
+// wake when it is an assistant's thread.
+const AgentSentence = "is a standing agent."
+
+// sentence says the sender or the answering thread is a standing agent and
+// quotes its role line.
+func (a *SenderAgent) sentence(who string) string {
+	if a.Role == "" {
+		return who + " " + AgentSentence
+	}
+	return fmt.Sprintf("%s %s Its role, in its own words: %q", who, AgentSentence, a.Role)
+}
+
+// FooterMarker opens every footer. The receiver is told the last `---`
 // block of a message is the footer, and a body line that starts this way
 // is quoted before delivery so nothing above the footer reads as one.
-const footerMarker = "Agent request from thread "
+const FooterMarker = "Agent request from thread "
+
+// FooterStart is how a footer opens after the body it ends. A body line
+// that opens like the marker is quoted (QuoteFooterMimics), so the text
+// before FooterStart's first occurrence is the message without its footer.
+const FooterStart = "\n---\n" + FooterMarker
 
 // QuoteFooterMimics quote-prefixes every line of a request body that opens
 // like the footer marker. The body is the sender's own text and carries no
@@ -63,22 +93,70 @@ const footerMarker = "Agent request from thread "
 // left alone: a rule between paragraphs is ordinary Markdown, and only the
 // last block is the footer.
 func QuoteFooterMimics(body string) string {
-	if !strings.Contains(body, footerMarker) {
+	if !strings.Contains(body, FooterMarker) {
 		return body
 	}
 	lines := strings.Split(body, "\n")
 	for index, line := range lines {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), footerMarker) {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), FooterMarker) {
 			lines[index] = "> " + line
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
+// StripFooter returns a request message without its footer: the sender's
+// text, which is what names the work. A text with no footer is returned
+// unchanged. The footer is the last block opening with the marker, which
+// QuoteFooterMimics keeps unique.
+func StripFooter(text string) string {
+	opening := "---\n" + FooterMarker
+	if strings.HasPrefix(text, opening) {
+		return ""
+	}
+	index := strings.LastIndex(text, "\n"+opening)
+	if index < 0 {
+		return text
+	}
+	return strings.TrimRight(text[:index], "\n")
+}
+
+// Message renders a request: the sender's body, its footer-like lines
+// quoted (QuoteFooterMimics), then the footer; and its facts, from the
+// same footer.
+func (f Footer) Message(body string) (string, MessageFacts) {
+	quoted := QuoteFooterMimics(strings.TrimRight(body, "\n"))
+	words := strings.TrimSpace(quoted)
+	lead := strings.Index(quoted, words)
+	var b spanBuilder
+	b.write(quoted[:lead])
+	b.writeBody(words)
+	b.write(quoted[lead+len(words):] + "\n\n" + f.String())
+	return b.done(MessageFacts{
+		Form: FormRequest, Waiting: f.AnswerRequested, Reachable: f.SenderReachable, UserMessage: f.quotedUserMessage(),
+		RoutesPrompts: f.RoutesPrompts, Role: roleOf(f.Agent),
+	})
+}
+
+// quotedUserMessage is the sender's latest message as the footer quotes it.
+func (f Footer) quotedUserMessage() string {
+	return clipRunes(strings.TrimSpace(collapseLines(f.UserMessage)), UserMessageQuoteRunes)
+}
+
 // String renders the footer. It always starts with the "Agent request"
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {
-	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", footerMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
+	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", FooterMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
+	switch {
+	case f.Agent != nil:
+		line := f.Agent.sentence("The sender")
+		if f.RoutesPrompts {
+			line += " It " + routesSentence
+		}
+		lines = append(lines, line)
+	case f.RoutesPrompts:
+		lines = append(lines, "The sender "+routesSentence)
+	}
 	if f.AnswerRequested {
 		body := fmt.Sprintf("It is waiting for your answer. When you are done, call thread_reply with token %s, once. The sender sees only your reply text, so make it self-contained.", f.Token)
 		if f.SenderReachable {
@@ -92,181 +170,10 @@ func (f Footer) String() string {
 		}
 		lines = append(lines, body)
 	}
-	if quote := clipRunes(strings.TrimSpace(collapseLines(f.UserMessage)), UserMessageQuoteRunes); quote != "" {
+	if quote := f.quotedUserMessage(); quote != "" {
 		lines = append(lines, fmt.Sprintf("The user's latest message in that thread: %q", quote))
 	}
 	return strings.Join(lines, "\n")
-}
-
-// Wake kinds, one per way a request reaches its caller.
-const (
-	WakeReply       = "reply"
-	WakeFinished    = "finished"
-	WakeErrored     = "errored"
-	WakeCancelled   = "cancelled"
-	WakeInterrupted = "interrupted"
-	WakeExpired     = "expired"
-	WakeReminder    = "reminder"
-)
-
-// WakeSource is one thread a wake speaks for, with the requests of it the
-// wake answers.
-type WakeSource struct {
-	// Title, ThreadID and Computer name the thread that answered. Computer
-	// is empty when it is the caller's own. All three are empty for a
-	// reminder, which no thread answers.
-	Title    string
-	ThreadID string
-	Computer string
-	// Tokens are the requests this wake answers, oldest first. One turn can
-	// answer several: it consumed several of the caller's messages.
-	Tokens []string
-	// Age is how long ago the answer was written. Stated only past
-	// AgeFloor.
-	Age time.Duration
-}
-
-// Wake is the status line and body of a message delivered to the thread
-// that made a request. It has one source unless several threads gave the
-// caller the same outcome at once (a restart that interrupted them all), in
-// which case one message lists them instead of one message each.
-type Wake struct {
-	Kind    string
-	Sources []WakeSource
-	// Text is the answer, the final message, the error or the note. It is
-	// clipped to WakePreviewBytes with a pointer to thread_status.
-	Text string
-}
-
-// String renders one wake, status line first.
-func (w Wake) String() string {
-	if len(w.Sources) > 1 {
-		return w.digest()
-	}
-	var source WakeSource
-	if len(w.Sources) == 1 {
-		source = w.Sources[0]
-	}
-	who := source.who()
-	token := tokenLabel(source.Tokens)
-	switch w.Kind {
-	case WakeReply:
-		return fmt.Sprintf("Reply from %s%s:\n%s", who, token, w.body())
-	case WakeFinished:
-		return fmt.Sprintf("%s%s finished its turn without calling thread_reply. Its final message:\n%s", who, token, w.body())
-	case WakeErrored:
-		if w.Text == "" {
-			return fmt.Sprintf("%s%s errored.", who, token)
-		}
-		return fmt.Sprintf("%s%s errored: %s", who, token, w.body())
-	case WakeCancelled:
-		return fmt.Sprintf("%s%s was cancelled.", who, token)
-	case WakeInterrupted:
-		// Text is the cause the settling code recorded: a person stopped the
-		// turn, the computer running it restarted, the thread moved. The kind
-		// alone does not say which.
-		if w.Text == "" {
-			return fmt.Sprintf("%s%s was interrupted.", who, token)
-		}
-		return fmt.Sprintf("%s%s was interrupted: %s", who, token, w.body())
-	case WakeExpired:
-		return fmt.Sprintf("%s%s did not answer within a day.", who, token)
-	case WakeReminder:
-		return fmt.Sprintf("Reminder you set%s:\n%s", token, w.body())
-	default:
-		return fmt.Sprintf("%s%s settled.", who, token)
-	}
-}
-
-// digest renders a wake that speaks for several threads: what happened to
-// each of them, one line naming each with its tokens, then the text they
-// share. The text is last so a long one does not bury the list, and the
-// first line says it is the same for each thread, so a cause written about
-// one thread ("the computer running it restarted") reads as it was written.
-func (w Wake) digest() string {
-	count := len(w.Sources)
-	var head string
-	shared := w.Text != ""
-	switch w.Kind {
-	case WakeReply:
-		head, shared = fmt.Sprintf("%d threads sent the same reply:", count), true
-	case WakeFinished:
-		head, shared = fmt.Sprintf("%d threads finished their turns without calling thread_reply, each with the same final message:", count), true
-	case WakeErrored:
-		head = fmt.Sprintf("%d threads errored.", count)
-		if shared {
-			head = fmt.Sprintf("%d threads errored, each with the same error:", count)
-		}
-	case WakeCancelled:
-		head, shared = fmt.Sprintf("%d threads were cancelled.", count), false
-	case WakeInterrupted:
-		head = fmt.Sprintf("%d threads were interrupted.", count)
-		if shared {
-			head = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count)
-		}
-	case WakeExpired:
-		head, shared = fmt.Sprintf("%d threads did not answer within a day.", count), false
-	default:
-		head, shared = fmt.Sprintf("%d threads settled.", count), false
-	}
-	lines := make([]string, 0, count+2)
-	lines = append(lines, head)
-	for _, source := range w.Sources {
-		lines = append(lines, "- "+source.who()+tokenLabel(source.Tokens))
-	}
-	if shared {
-		lines = append(lines, w.body())
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (s WakeSource) who() string {
-	return fmt.Sprintf("%q (%s%s%s)", s.Title, s.ThreadID, onComputer(s.Computer), answered(s.Age))
-}
-
-// tokenLabel names the requests a wake answers for one thread.
-func tokenLabel(tokens []string) string {
-	switch len(tokens) {
-	case 0:
-		return ""
-	case 1:
-		return fmt.Sprintf(" [token %s]", tokens[0])
-	default:
-		return fmt.Sprintf(" [tokens %s]", strings.Join(tokens, ", "))
-	}
-}
-
-// firstToken is the request a clipped body points thread_status at.
-func (w Wake) firstToken() string {
-	for _, source := range w.Sources {
-		if len(source.Tokens) > 0 {
-			return source.Tokens[0]
-		}
-	}
-	return ""
-}
-
-func (w Wake) body() string { return WakeBody(w.Text, w.firstToken()) }
-
-// WakeBody clips a wake body to the preview budget and points at the whole
-// answer. A body inside the budget is returned unchanged.
-func WakeBody(text, token string) string {
-	if len(text) <= WakePreviewBytes {
-		return text
-	}
-	return clipBytes(text, WakePreviewBytes) + "\n" + WakePreviewPointer(token)
-}
-
-// WakePreviewPointer is the notice a clipped wake body ends with.
-func WakePreviewPointer(token string) string {
-	return fmt.Sprintf("[preview; thread_status %s for the whole answer]", token)
-}
-
-func answered(age time.Duration) string {
-	if age < AgeFloor {
-		return ""
-	}
-	return ", answered " + Age(age) + " ago"
 }
 
 func onComputer(name string) string {

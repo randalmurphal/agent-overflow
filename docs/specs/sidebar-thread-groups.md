@@ -3,25 +3,31 @@
 Status: design signed off 2026-09-02, implemented on `main` the same day
 (store v76, bindings, sidebar UI, e2e `sidebar-thread-groups.spec.ts`).
 Revised 2026-09-28: groups are their own section and not pinnable;
-members pin individually (store v139).
+members pin individually (store v139). Revised 2026-10-16: a group
+bounds its members, a collapsed group carries its members' dot, a
+show-more footer's dot counts unread rows, and running members sort
+above unread ones
+([standing agents](standing-agents.md) rulings 31 to 34). Revised
+2026-10-17: a thread a standing agent spawned may be a member, and
+membership is the row's `placement` (store v154, standing agents
+ruling 36).
 
 ## Goal
 
 Let the user gather threads of one project under a named, collapsible
-row in the sidebar. Today the only nesting is the discussion tree, whose
-top row is itself a thread. A group's top row is not a thread: it has a
+row in the sidebar. A group's top row is not a thread: it has a
 name, a chevron, and nothing else of its own; its activity and sort
-position come from its members. It shows no status of its own: a
-running member moves the group up its section, it does not light the
-row.
+position come from its members. Expanded, it shows no status of its
+own: a running member moves the group up its section, it does not light
+the row. Collapsed, it carries its members' bubbled dot.
 
 ## Decisions
 
 - **Groups are their own section, above the pin blocks.** A project's
   groups render together above its front- and back-burner blocks. Inside
   the section a group sorts by its members' bubbled status and latest
-  activity exactly the way a discussion parent does, so a group with a
-  running member rises and a quiet one sinks. A group is not pinnable.
+  activity, so a group with a running member rises and a quiet one
+  sinks. A group is not pinnable.
 - **Section dividers.** The top level has four sections: groups, front
   burner, back burner, unpinned. The same thin divider separates each
   pair of adjacent sections that have rows. Drafts sit above every
@@ -33,32 +39,44 @@ row.
   loses its pin; leaving does not restore a pin it held before it
   joined. Auto-pin on first send never fires for a thread that is
   already in a group. A member's pin is never a numbered jump target;
-  jumps count top-level front-burner threads only. A member's discussion
-  children pin through it, as at the top level.
-- **Collapsed group.** Shows a member count. Its members' status still
-  bubbles for the SORT (the same bubbling a discussion parent uses) but
-  nothing of it renders on the row (ruling 2026-09-02). A group
-  remains collapsed when a member becomes focused. Only the focused
-  thread appears directly beneath it, even if that thread is a nested
-  discussion child. Other open panes do not add rows to this preview.
-  Collapsed discussions follow the same rule. Focus changes replace or
-  remove the preview without changing saved expansion state. Expanding
-  restores the full tree without duplicating the focused row. Groups
-  start expanded.
+  jumps count top-level front-burner threads only.
+- **Collapsed group.** Shows a member count and one status dot: the
+  bubbled status of its members, so an unread member lights it and it
+  goes dark once every member is read and idle (ruling 2026-10-16,
+  replacing the 2026-09-02 rule that nothing of the bubbled status
+  renders on the row). Expanded, the group row shows no dot and each
+  member its own. A group remains collapsed when a member becomes focused.
+  Only the focused member appears directly beneath it. Other open panes
+  do not add rows to this preview. Focus changes replace or remove the
+  preview without changing saved expansion state. Expanding restores
+  every member without duplicating the focused row. Groups start
+  expanded.
 - **Preview cut.** Groups and front- and back-burner pins share the
   project's preview limit with unpinned rows. Groups and pins always
   remain visible when they exceed the limit, leaving no preview slots
   for unpinned rows. Drafts and threads open in panes retain their
-  visibility exceptions. A group takes one slot; its members take none
-  (same as discussion children).
-- **No nesting.** No groups inside groups. A discussion tree moves as a
-  unit: grouping a parent brings its children; a child cannot be grouped
-  on its own. Render depth inside a group goes to three (group, parent,
-  child).
+  visibility exceptions. A group takes one slot; its members take none.
+- **Group preview cut.** An expanded group cuts its members by the same
+  rules against its own limit: the default preview, pinned and open
+  members always visible, then "Show N More" and "Show Less" under the
+  last member, with the hidden members' status dot, ranked as a
+  collapsed group ranks its members, so one unread hidden member lights
+  it and a working or needs-you one outranks it. The project's own
+  show-more footer and a collapsed project's dot rank the same way
+  (ruling 2026-10-16, replacing the rule that only a working or
+  needs-you status lit them). The limit persists per group in the
+  project limits map (`sidebar:threadListVisibleLimits`), keyed by group
+  id, and is dropped when the group is deleted. The footer sits inside
+  the group's rail and takes a thread drop like a member row.
+- **No nesting.** No groups inside groups, and threads do not nest under
+  threads. Render depth inside a group is two (group, member).
 - **One project.** A group belongs to one project and cannot span
   projects. Dropping a thread on a group in another project is a no-op.
 - **Ordering inside a group is the normal comparator** (drafts, front
-  burner, back burner, status tier, activity, id). No manual ordering.
+  burner, back burner, status tier, activity, id), with one split the
+  top level does not make: running members sort above unread ones, so
+  the order is needs-you, running, unread, idle (ruling 2026-10-16).
+  No manual ordering.
   A pinned member orders inside its group; for the group's bubbled
   status and sort, members rank by status alone, so a pinned idle member
   never masks a blocked one.
@@ -74,7 +92,8 @@ row.
   from Group". Multi-select gets the same two when every selected thread
   shares one project. Project header: "New Group…", also a hover-revealed
   folder-plus button beside New Thread. Group row: New Thread, Rename
-  Group, Archive Threads, Ungroup All, Delete Group. A grouped thread
+  Group, Mark All Read (every member in one call), Archive Threads,
+  Ungroup All, Delete Group. A grouped thread
   row keeps the normal pin affordance and pin menu items.
 - **New thread.** The group row's plus button and New Thread menu item open
   the normal draft composer with that group's project and computer. Membership
@@ -87,7 +106,9 @@ row.
   thread; it honors the `confirmDelete` setting. Archiving a member hides it; the group stays
   and the membership survives unarchive. Deleting a project deletes its
   groups. A fork of a grouped thread lands in the same group, unpinned:
-  the source's pin is its own.
+  the source's pin is its own. A standing agent's `thread_spawn` fork
+  takes the spawn's placement instead, and leaves the group unless the
+  spawn names one.
 - **Search.** A group shows when its name matches (all members shown)
   or when any member matches (only matching members shown). A group with
   no match is hidden.
@@ -144,32 +165,38 @@ row.
      SET group_id = ?,
          pinned_at = CASE WHEN group_id IS ? THEN pinned_at END,
          pin_group = CASE WHEN group_id IS ? THEN pin_group END
-   WHERE ((id = ? AND COALESCE(parent_thread_id, '') = '') OR parent_thread_id = ?)
+   WHERE id = ?
      AND project_id = (SELECT project_id FROM thread_groups WHERE id = ?)
-   RETURNING id
   ```
 
   The pin clears only on a row whose group changes: a row already in the
-  destination keeps its pin. The root id must be among the returned rows
-  or the whole call rolls back with a typed refusal: `ErrThreadGroupGone`
-  (deleted or cross-project group), `ErrThreadGone` (deleted thread), or
-  `ErrThreadNotRoot` (a discussion child named alone; a child named
-  beside its own root is carried by the root's disjunct). Empty
-  `groupID` is ungroup: the same WHERE with `SET group_id = NULL` and the
-  pin cleared only where `group_id` was set, because a bulk selection can
-  name never-grouped rows too and their pins are theirs to keep. The
-  touched rows are read back inside the transaction and returned,
-  children included.
+  destination keeps its pin. A named id that matches no row rolls the
+  whole call back with a typed refusal: `ErrThreadGroupGone` (deleted or
+  cross-project group) or `ErrThreadGone` (deleted thread). Empty
+  `groupID` is ungroup: `SET group_id = NULL` with the pin cleared only
+  where `group_id` was set, because a bulk selection can name
+  never-grouped rows too and their pins are theirs to keep. The named
+  rows are read back inside the transaction and returned.
 - `DeleteThreadGroup` clears the members' pins, active and archived, in
   the transaction that deletes the group, and returns the member rows as
   they now stand.
+- Migration v154 adds `threads.placement` (`owned`, `grouped`,
+  `standalone`) with a CHECK that a row is `grouped` exactly when its
+  `group_id` is set. `SetThreadGroup` writes `grouped` with the group;
+  an ungroup writes `standalone` on a row that was grouped and leaves
+  other rows alone. `DeleteThreadGroup` ungroups its members to
+  `standalone` itself before the delete, so the FK's `SET NULL` finds
+  no member left. A thread created into a group (a fork of a grouped
+  thread, a draft in a group) is inserted `grouped`.
 - `ApplyThreadOrganize` (agent `thread_update`) runs the group move
   before the pin, so a patch that sets both lands the pin inside the new
   group.
 - A returning conversation transfer arrives ungrouped; the local row's
   pin survives only if the row was not in a group.
 - Fork copies `group_id` from the source row (all fork paths), never the
-  pin.
+  pin. A `thread_spawn` fork then takes the spawn's placement, which
+  leaves that group unless the spawn names one
+  ([agent thread tools](agent-thread-tools.md)).
 
 ### Backend API
 
@@ -182,7 +209,7 @@ binds:
 | `CreateThreadGroup(projectID, name)` | `store.ThreadGroup` |
 | `RenameThreadGroup(id, name)` | `store.ThreadGroup` |
 | `DeleteThreadGroup(id)` | error |
-| `SetThreadGroup(threadIDs, groupID)` | `[]store.Thread` (every row the call touched, children included) |
+| `SetThreadGroup(threadIDs, groupID)` | `[]store.Thread` (every row the call touched) |
 
 Every one of these is a wire RPC, so each carries a `//ao:scope` and a
 route (`internal/transport/AGENTS.md`). `ListThreadGroups` is
@@ -221,13 +248,12 @@ Names are trimmed and non-empty; a blank rename is rejected.
 - `stores/sidebar.svelte.ts`: `sidebar:collapsedGroups` set (groups
   default expanded, so the persisted set holds the collapsed ids).
 - `utils/sidebarTree.ts` owns the tree, sorting and status rollup.
-  `utils/sidebarTreeView.ts` projects visible rows, applies the preview
-  limit and prunes expansion IDs for discussion rows that became leaves.
-  Collapsed containers project only their focused descendant at one level
-  below the container, with that thread's own status and no nested expansion
-  controls. The preview retains the owning group for drag-and-drop actions.
-  Groups and discussions containing open threads remain above the preview
-  cut. Rendering does not write group collapse state.
+  `utils/sidebarTreeView.ts` projects visible rows and applies the
+  preview limit. A collapsed group projects only its focused member, one
+  level below the group, with that thread's own status. The preview
+  retains the owning group for drag-and-drop actions. Groups containing
+  open threads remain above the preview cut. Rendering does not write
+  group collapse state.
 - Search: `ProjectsSection` buckets threads and groups in ONE derivation,
   because the two filters are coupled — a thread survives when it matches
   or when its group's NAME matched, so a name match pulls the whole
@@ -248,9 +274,8 @@ Names are trimmed and non-empty; a blank rename is rejected.
   rail. Shared row dimensions live in `utils/sidebarRowMetrics.ts`.
   `ThreadRowPinButton` takes its writes as `onToggle` / `onCycleBurner`
   closures; its hover text says that right-click on a pin toggles front
-  and back burner. `flattenSidebarThreadTree` marks pin targets
-  (`isPinTarget`: top-level threads and direct members) and section
-  starts (`startsSection`). A blank inline rename CANCELS rather than round-trips
+  and back burner. Every thread row is a pin target.
+  `flattenSidebarThreadTree` marks section starts (`startsSection`). A blank inline rename CANCELS rather than round-trips
   to be rejected. A brand-new group opens rename on mount through
   `requestGroupRename` / `consumePendingGroupRename` in
   `stores/threadGroups.svelte.ts` — the creator cannot open it, because
@@ -274,6 +299,9 @@ Names are trimmed and non-empty; a blank rename is rejected.
   container outside any group, the container shows a subtle inset
   dashed outline so the ungroup target is visible. Drops from another
   project set `dropEffect = 'none'`.
+- A standing agent's row cannot be grouped. A spawned thread moved into
+  a group is an ordinary member there
+  ([standing agents](standing-agents.md#sidebar) ruling 36).
 - `ThreadRow` keeps the pin affordance and pin menu items on grouped
   rows; `ThreadGroupRow` has none. `ThreadContextMenu` adds the "Move to Group"
   submenu (`MenuSubmenuItem`) and "Remove from Group";
@@ -289,7 +317,7 @@ Names are trimmed and non-empty; a blank rename is rejected.
 ## Verification
 
 - Store tests: cross-project `SetThreadGroup` is refused and rolls
-  back with typed errors (group gone, thread gone, child named as root);
+  back with typed errors (group gone, thread gone);
   joining a group, or moving between groups, strips the pin, a repeat
   move into the same group keeps it, and ungrouping clears the pins of
   rows that left a group but keeps those of never-grouped rows in the
@@ -298,23 +326,24 @@ Names are trimmed and non-empty; a blank rename is rejected.
   group; migration v139 applies over a populated store and leaves every
   schema object but the removed CHECK and group pin columns unchanged;
   `DeleteThreadGroup` nulls `group_id` and clears pins on active and
-  archived members; project delete cascades; children follow the root;
-  fork copies `group_id` and not the pin; a returning transfer of a
+  archived members; project delete cascades; fork copies `group_id` and not the pin; a returning transfer of a
   grouped, pinned thread arrives ungrouped and unpinned.
 - `sidebarTree` / `sidebarTreeView` tests: groups sort above pins and
   among themselves by bubbled status and activity; members order by pin
   block and a pinned idle member does not mask a blocked one; section
-  dividers for every combination of sections, none inside a group; pin
-  targets, including a collapsed group's preview row; groups stay above
+  dividers for every combination of sections, none inside a group;
+  groups stay above
   the preview cut; a group takes one preview slot and its
-  members none; collapsed and expanded flatten shapes; search by group
-  name pulls all members; focused descendants remain visible under
-  collapsed groups and discussions;
-  `sameSidebarVisibleNodes` distinguishes a group from a thread node at
+  members none; an expanded group cuts its members at its own limit,
+  keeps pinned and open members, and ends with a footer only when it
+  hid members or can show less; collapsed and expanded flatten shapes;
+  search by group name pulls all members; a focused member remains
+  visible under its collapsed group;
+  `sameSidebarVisibleRows` distinguishes a group from a thread node at
   the same index.
 - Component tests: group row renders count when collapsed and members
   when expanded; context menus show the right items for top-level,
-  grouped, child, and multi-select rows; a thread drop on a group calls
+  grouped, and multi-select rows; a thread drop on a group calls
   `SetThreadGroup` with that id; an ungroup drop calls it with `""`; a
   cross-project drop calls nothing.
 - Transport: `methods_gen_test` classification passes for the new

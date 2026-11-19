@@ -117,6 +117,11 @@ func (s *Store) CreateThreadTransfer(request ThreadTransfer) (ThreadTransfer, er
 			return ThreadTransfer{}, accessErr
 		}
 	}
+	if request.Direction == "outgoing" && request.Kind == "move" {
+		if err := refuseAssistantMoveTx(tx, request.ThreadID); err != nil {
+			return ThreadTransfer{}, err
+		}
+	}
 	if request.Direction == "outgoing" && accessErr == nil {
 		// A conversation whose delete has begun is gone to a transfer too:
 		// with no transfer in the way, a row owned_threads leaves out is one
@@ -128,6 +133,11 @@ func (s *Store) CreateThreadTransfer(request ThreadTransfer) (ThreadTransfer, er
 		}
 		if gone {
 			return ThreadTransfer{}, fmt.Errorf("transfer: conversation %s: %w", request.ThreadID, sql.ErrNoRows)
+		}
+		// A delete's claim fences it as well: the delete verifies no
+		// transfer is under way before it commits.
+		if err := checkThreadNotDeleting(tx, request.ThreadID); err != nil {
+			return ThreadTransfer{}, fmt.Errorf("transfer: conversation %s: %w", request.ThreadID, err)
 		}
 	}
 	if request.Direction == "incoming" && accessErr == nil {
@@ -281,6 +291,22 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 	}
 	if phase == "complete" {
 		if err := consumeTransferredDraft(tx, row); err != nil {
+			return ThreadTransfer{}, err
+		}
+	}
+	// A move retires the thread here, and an assistant's home stays on this
+	// computer: an assistant's current thread does not move
+	// (ErrAssistantThreadStays, refused at the begin as well), and a past
+	// thread or a helper arrives as an ordinary thread and stops being one
+	// here. Its loops were cancelled when the move began.
+	if phase == "committed" && row.Kind == "move" {
+		if err := refuseAssistantMoveTx(tx, row.ThreadID); err != nil {
+			return ThreadTransfer{}, err
+		}
+		if _, err := tx.Exec(`DELETE FROM agent_past_threads WHERE thread_id = ?`, row.ThreadID); err != nil {
+			return ThreadTransfer{}, err
+		}
+		if _, err := tx.Exec(`DELETE FROM agent_helpers WHERE thread_id = ?`, row.ThreadID); err != nil {
 			return ThreadTransfer{}, err
 		}
 	}

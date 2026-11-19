@@ -7,11 +7,12 @@ import {
   sourceProposedPlanFromUserMessageMeta,
 } from './userMessageMeta';
 
-export function restoredDraftSnapshotFromUserItem(item: Item): ComposerDraftSnapshot {
+/** content replaces the row's text, as when only part of it is the person's. */
+export function restoredDraftSnapshotFromUserItem(item: Item, content = item.summary): ComposerDraftSnapshot {
   const meta = parseUserMessageMeta(item.meta);
   const attachments = restoredDraftSnapshotAttachmentsFromUserItem(item);
   return {
-    content: ensureImagePlaceholders(item.summary, attachments),
+    content: ensureImagePlaceholders(content, attachments),
     attachments,
     terminalChips: [],
     sourceProposedPlan: sourceProposedPlanFromUserMessageMeta(meta.sourceProposedPlan),

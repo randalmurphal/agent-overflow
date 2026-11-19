@@ -102,3 +102,21 @@ func TestBenchEvidenceCursorsOnlyReadLinesAppendedAfterStart(t *testing.T) {
 		t.Fatalf("fault receipt = %+v", faults)
 	}
 }
+
+// A diagnostic the app reported itself is counted apart from uncaught
+// errors, so it cannot invalidate a run as one.
+func TestBenchFaultReceiptCountsAppDiagnosticsApart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "frontend-errors.jsonl")
+	cursors := benchEvidenceCursors{FrontendErrors: newBenchEvidenceCursor(path)}
+	lines := `{"kind":"diagnostic","message":"transport: reconnected after outage","stack":"down 1.2s"}` + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	faults, err := collectBenchFaultReceipt(cursors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if faults.FrontendErrors != 0 || faults.AppDiagnostics != 1 {
+		t.Fatalf("fault receipt = %+v, want 0 uncaught errors and 1 app diagnostic", faults)
+	}
+}

@@ -51,6 +51,43 @@ func TestTimelineNotificationsUseTurnWideIDs(t *testing.T) {
 	}
 }
 
+// A session's end sweeps the notification counter, and the turn's rows stay.
+// A notice written after that, in the same turn, is a new row: it never
+// takes the id of one the turn already holds.
+func TestTimelineNotificationAfterCleanupKeepsEarlierRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	notice := func(content string) {
+		t.Helper()
+		if err := router.HandleSynthetic(provider.ProviderEvent{
+			Kind:      provider.EventNotification,
+			ThreadID:  "t1",
+			Content:   content,
+			Meta:      json.RawMessage(`{"kind":"warning"}`),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("notice %q: %v", content, err)
+		}
+	}
+	notice("The message was not delivered")
+	router.CleanupThread("t1")
+	notice("Discovery failed")
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	got := make(map[string]string, len(notifications))
+	for _, row := range notifications {
+		got[row.ID] = row.Summary
+	}
+	want := map[string]string{
+		"notification:0:0": "The message was not delivered",
+		"notification:0:1": "Discovery failed",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("notifications = %v, want %v", got, want)
+	}
+}
+
 // TestTodoUpdateEmitsWithoutTimelineRow pins the contract: EventTodoUpdate
 // produces a provider:todo_update emission for the frontend live panel and
 // writes no timeline row — a todo list is state about the conversation, not

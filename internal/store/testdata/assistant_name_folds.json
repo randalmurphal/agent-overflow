@@ -1,0 +1,13 @@
+[
+  {"a": "Ops", "b": "  OPS ", "same": true},
+  {"a": "ops", "b": "Opz", "same": false},
+  {"a": "ΟΔΟΣ", "b": "οδος", "same": true},
+  {"a": "οδοσ", "b": "οδος", "same": true},
+  {"a": "Σ", "b": "ς", "same": true},
+  {"a": "straße", "b": "STRASSE", "same": false},
+  {"a": "STRASSE", "b": "strasse", "same": true},
+  {"a": "Kelvin", "b": "kelvin", "same": true},
+  {"a": "ſcout", "b": "Scout", "same": true},
+  {"a": "İstanbul", "b": "istanbul", "same": false},
+  {"a": "Mail", "b": "Mail ", "same": true}
+]

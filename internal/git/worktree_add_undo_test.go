@@ -101,9 +101,9 @@ func TestAttachWorktreeOfAnOriginBranchUndoesAFailedCheckout(t *testing.T) {
 			failCheckoutHook(t, repo)
 		}
 
-		created, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/mr"))
-		if err == nil || created {
-			t.Fatalf("%s: AttachWorktree = created %v, %v; want a failure that made nothing", failure, created, err)
+		madeTip, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/mr"))
+		if err == nil || madeTip != "" {
+			t.Fatalf("%s: AttachWorktree = tip %q, %v; want a failure that made nothing", failure, madeTip, err)
 		}
 		if strings.Contains(err.Error(), "undo") {
 			t.Fatalf("%s: the undo failed: %v", failure, err)
@@ -128,9 +128,9 @@ func TestAttachWorktreeOfALocalBranchKeepsItWhenTheCheckoutFails(t *testing.T) {
 			failCheckoutHook(t, repo)
 		}
 
-		created, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/local"))
-		if err == nil || created {
-			t.Fatalf("%s: AttachWorktree = created %v, %v; want a failure", failure, created, err)
+		madeTip, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/local"))
+		if err == nil || madeTip != "" {
+			t.Fatalf("%s: AttachWorktree = tip %q, %v; want a failure", failure, madeTip, err)
 		}
 		assertAddUndone(t, repo, "feature/local", true)
 	}
@@ -220,9 +220,9 @@ func TestAttachWorktreeUndoesACheckoutItCouldNotUnlock(t *testing.T) {
 	failFirstUnlock(t)
 	path := filepath.Join(t.TempDir(), "held")
 
-	created, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/held"))
-	if err == nil || created || !strings.Contains(err.Error(), "injected unlock failure") {
-		t.Fatalf("AttachWorktree = created %v, %v; want the unlock's failure", created, err)
+	madeTip, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/held"))
+	if err == nil || madeTip != "" || !strings.Contains(err.Error(), "injected unlock failure") {
+		t.Fatalf("AttachWorktree = tip %q, %v; want the unlock's failure", madeTip, err)
 	}
 	if strings.Contains(err.Error(), "undo") {
 		t.Fatalf("the undo failed: %v", err)

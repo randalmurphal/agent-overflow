@@ -15,7 +15,6 @@ describe('cycleMode', () => {
     // Saga-owned and unknown thread types are intentionally outside the cycle.
     // Pressing Shift+Tab on one should return chat rather than crash.
     expect(cycleMode('legacy')).toBe('chat');
-    expect(cycleMode('discussion')).toBe('chat');
     expect(cycleMode('default')).toBe('chat');
     expect(cycleMode('')).toBe('chat');
     expect(cycleMode(undefined)).toBe('chat');

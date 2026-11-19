@@ -25,6 +25,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/stringsx"
 )
 
 // Names are the provider executables poisoned on PATH.
@@ -128,9 +130,8 @@ func Install() (check func() error, err error) {
 // narrows PATH cannot break it; the wait sleeps through /bin/sleep and
 // stops waiting if that is missing.
 func poisonScript(dir string) string {
-	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	return "#!/bin/sh\n" +
-		"dir=" + quote(dir) + "\n" +
+		"dir=" + stringsx.ShellQuote(dir) + "\n" +
 		"line=\"ran $0\"\n" +
 		"for arg in \"$@\"; do line=\"$line $arg\"; done\n" +
 		"# One printf, one append: concurrent attempts do not interleave.\n" +

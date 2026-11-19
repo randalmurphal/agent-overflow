@@ -85,18 +85,20 @@ func (a *App) DeleteThreadGroup(id string) error {
 	if err != nil {
 		return err
 	}
-	for _, thread := range members {
-		a.announceThread(triage.ThreadActionFull, thread.ID)
+	// Grouped and standalone are both sidebar places, so ungrouping moves
+	// no member across the listing.
+	for _, member := range members {
+		a.announceThread(triage.ThreadActionFull, member.ID)
 	}
 	a.emitThreadGroup("delete", group)
 	return nil
 }
 
 // SetThreadGroup moves threads into groupID, or out of any group when it
-// is empty. It returns every row the call touched — the discussion
-// children that travelled with a named root included — and emits one
-// thread:updated "full" frame per row, because a move rewrites the
-// group and clears the pin of a row that changes group.
+// is empty. It returns every row the call touched and emits one
+// thread:updated frame per row, because a move rewrites the group and
+// clears the pin of a row that changes group; an owned thread a move
+// groups joins the sidebar (announceMoves).
 //
 // The client routes this from the thread ids (methodFamilies.ts); home is
 // the single-backend fallback.
@@ -108,8 +110,35 @@ func (a *App) SetThreadGroup(threadIDs []string, groupID string) ([]store.Thread
 	if err != nil {
 		return nil, err
 	}
-	for _, thread := range moved {
-		a.announceThread(triage.ThreadActionFull, thread.ID)
+	a.announceMoves(moved)
+	return store.ThreadMoveRows(moved), nil
+}
+
+// SetThreadPlacement makes threads owned by the thread that spawned them,
+// with no sidebar row, or standalone in their project, out of any group
+// they were in; a move into a group is SetThreadGroup. Show in Sidebar and
+// Remove from Sidebar are its two calls. It returns every row the call
+// touched and emits one thread:updated frame per row: `listed` for a row
+// the sidebar now lists, `full` for an owned one, so a pane showing the
+// thread stays open (docs/specs/standing-agents.md, "Owned workers").
+// Owned is refused for a thread nothing on this computer spawned, and any
+// placement for an assistant's own thread or one outside every project.
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) SetThreadPlacement(threadIDs []string, placement string) ([]store.Thread, error) {
+	placed, err := a.threadApplication().SetPlacement(threadIDs, placement)
+	if err != nil {
+		return nil, err
 	}
-	return moved, nil
+	a.announceMoves(placed)
+	return store.ThreadMoveRows(placed), nil
+}
+
+// announceMoves announces each row a group or placement move wrote, by
+// the listing change its write read (announcePlacement).
+func (a *App) announceMoves(moves []store.ThreadMove) {
+	for _, move := range moves {
+		a.announcePlacement(move.Thread.ID, move.Listing)
+	}
 }

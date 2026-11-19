@@ -6,8 +6,8 @@ import { test, expect } from '@playwright/test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, delimiter, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { productBinary, writeProductScript } from '../src/product-process.js';
 
 test('connects a headless computer through the desktop SSH setup dialog', async ({ page }) => {
   test.setTimeout(90_000);
@@ -18,9 +18,15 @@ test('connects a headless computer through the desktop SSH setup dialog', async 
   try {
     remote = await launchHarness();
     await remote.rpc('HarnessSeed', { projects: [{ name: 'GPU project', repo: { commits: [{ files: { 'README.md': 'GPU project' } }] } }] });
-    const binary = process.env.AO_HARNESS_BIN ?? fileURLToPath(new URL('../../bin/agent-overflow', import.meta.url));
     const sshConfig = process.env.AO_E2E_SSH_CONFIG;
     if (sshConfig && !isAbsolute(sshConfig)) throw new Error('The isolated SSH fixture needs an absolute config path');
+    // The remote command in both modes. Real SSH also exercises the closed
+    // command set and shell quoting: the path has spaces and still pins the
+    // CLI to the owned host.
+    const remoteExecutable = join(fixture, 'remote agent overflow');
+    await writeProductScript(remoteExecutable, productBinary('agent-overflow'), ['--config-root', remote.bootstrap.dataDir], {
+      memoryLimitBytes: 512 * 1024 * 1024,
+    });
     const script = `#!${process.execPath}
 const { spawn } = require('node:child_process');
 const args = process.argv.slice(2);
@@ -28,20 +34,11 @@ if (!args.includes('StrictHostKeyChecking=yes') || !args.includes('BatchMode=yes
 if (!args.at(-1).includes(' pair --json --class desktop --wait 30s')) process.exit(10);
 const child = ${sshConfig
   ? `spawn('/usr/bin/ssh', ['-F', ${JSON.stringify(sshConfig)}, ...args], { stdio: 'inherit' })`
-  : `spawn(${JSON.stringify(binary)}, ['pair', '--json', '--class', 'desktop', '--config-root', ${JSON.stringify(remote.bootstrap.dataDir)}], { stdio: 'inherit' })`};
+  : `spawn(${JSON.stringify(remoteExecutable)}, ['pair', '--json', '--class', 'desktop'], { stdio: 'inherit' })`};
 child.on('error', () => process.exit(11));
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
     await writeFile(join(fixture, 'ssh'), script, { mode: 0o700 });
-    // Real SSH exercises the closed command set and shell quoting too. The
-    // remote executable has spaces and still pins the CLI to the owned host.
-    const remoteExecutable = join(fixture, 'remote agent overflow');
-    if (sshConfig) await writeFile(remoteExecutable, `#!${process.execPath}
-const { spawn } = require('node:child_process');
-const child = spawn(${JSON.stringify(binary)}, [...process.argv.slice(2), '--config-root', ${JSON.stringify(remote.bootstrap.dataDir)}], { stdio: 'inherit' });
-child.on('error', () => process.exit(11));
-child.on('exit', (code) => process.exit(code ?? 1));
-`, { mode: 0o700 });
     home = await launchHarness({ env: { PATH: fixture + delimiter + process.env.PATH } });
     await home.open(page);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();

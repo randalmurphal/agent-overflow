@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // classifyInteractiveResponseError tags a provider-level "this request is no
@@ -36,15 +37,24 @@ func classifyInteractiveResponseError(err error) error {
 	return fmt.Errorf("%w: %w", transport.ErrAlreadyHandled, err)
 }
 
-// releaseInteractiveClaim hands a claimed prompt back when the answer never
-// reached the provider. Every failure path between the claim and a successful
-// write calls it; missing one wedges the prompt open with nobody able to
-// answer it.
-func (a *App) releaseInteractiveClaim(threadID, requestID string) {
+// claimPrompt is triage.Router.ClaimPrompt; with no router every answer
+// passes.
+func (a *App) claimPrompt(threadID, requestID string, occurrence provider.PromptOccurrence) (triage.PromptClaim, bool) {
+	if a.triage == nil {
+		return triage.PromptClaim{Ref: triage.PromptRef{ThreadID: threadID, RequestID: requestID}}, true
+	}
+	return a.triage.ClaimPrompt(threadID, requestID, occurrence)
+}
+
+// releasePrompt hands a claimed prompt back when the answer never reached
+// the provider. Every failure path between the claim and a successful write
+// calls it; missing one wedges the prompt open with nobody able to answer
+// it.
+func (a *App) releasePrompt(claim triage.PromptClaim) {
 	if a.triage == nil {
 		return
 	}
-	a.triage.ReleaseInteractiveResponse(threadID, requestID)
+	a.triage.ReleasePrompt(claim)
 }
 
 // ListPendingInteractiveRequests returns live approval and structured-input
@@ -81,16 +91,29 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 // generated TS bindings strip a leading ctx, so the wire signature is
 // unchanged.
 //
+// The answer is for the prompt response.Occurrence names, the one the
+// client showed (triage.PromptRef), and is written only to the session
+// that asked it: a prompt of a session that no longer holds the thread was
+// handled by that session's end, and a later prompt under the same request
+// id, in that session or a replacement, is not the one answered. Zero, from
+// a client that predates the occurrence, answers the prompt open under
+// response.RequestID.
+//
 //ao:scope approvals:respond
 func (a *App) RespondToApproval(ctx context.Context, threadID string, response provider.ApprovalResponse) error {
 	who := clientOf(ctx)
-	if a.triage != nil && !a.triage.ClaimApprovalResponse(threadID, response.RequestID) {
+	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
+	if !claimed {
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
 	sess, ok := a.sessionManager().get(threadID)
+	if claim.SessionToken != "" && (!ok || sess.Token != claim.SessionToken) {
+		a.releasePrompt(claim)
+		return fmt.Errorf("approval %s of an ended session: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
-		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.releasePrompt(claim)
 		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return err
 	}
@@ -98,7 +121,7 @@ func (a *App) RespondToApproval(ctx context.Context, threadID string, response p
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		err := fmt.Errorf("session has no provider")
-		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.releasePrompt(claim)
 		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return err
 	}
@@ -114,7 +137,7 @@ func (a *App) RespondToApproval(ctx context.Context, threadID string, response p
 	if err := providerSess.RespondToApproval(context.Background(), response); err != nil {
 		// The write never reached the provider, so the prompt is still
 		// open. Give the claim back or no client could ever answer it.
-		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.releasePrompt(claim)
 		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return classifyInteractiveResponseError(err)
 	}
@@ -128,7 +151,7 @@ func (a *App) RespondToApproval(ctx context.Context, threadID string, response p
 	if len(response.UpdatedInput) > 0 {
 		updatedInput = response.UpdatedInput
 	}
-	a.emitApprovalResolution(threadID, response.RequestID, decision, updatedInput)
+	a.emitApprovalResolution(threadID, claim.Ref.Occurrence, response.RequestID, decision, updatedInput)
 	return nil
 }
 
@@ -141,13 +164,18 @@ func (a *App) RespondToApproval(ctx context.Context, threadID string, response p
 //ao:scope approvals:respond
 func (a *App) RespondToUserInput(ctx context.Context, threadID string, response provider.UserInputResponse) error {
 	who := clientOf(ctx)
-	if a.triage != nil && !a.triage.ClaimUserInputResponse(threadID, response.RequestID) {
+	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
+	if !claimed {
 		return fmt.Errorf("user input %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
 	sess, ok := a.sessionManager().get(threadID)
+	if claim.SessionToken != "" && (!ok || sess.Token != claim.SessionToken) {
+		a.releasePrompt(claim)
+		return fmt.Errorf("user input %s of an ended session: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
-		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.releasePrompt(claim)
 		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return err
 	}
@@ -155,7 +183,7 @@ func (a *App) RespondToUserInput(ctx context.Context, threadID string, response 
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		err := fmt.Errorf("session has no provider")
-		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.releasePrompt(claim)
 		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return err
 	}
@@ -165,7 +193,7 @@ func (a *App) RespondToUserInput(ctx context.Context, threadID string, response 
 	// Background for the same reason as RespondToApproval.
 	if err := providerSess.RespondToUserInput(context.Background(), response); err != nil {
 		// The form is still open; hand the claim back (see RespondToApproval).
-		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.releasePrompt(claim)
 		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return classifyInteractiveResponseError(err)
 	}
@@ -174,11 +202,13 @@ func (a *App) RespondToUserInput(ctx context.Context, threadID string, response 
 	if response.Decision == "decline" || response.Decision == "cancel" {
 		decision = "declined"
 	}
-	a.emitUserInputResolution(threadID, response.RequestID, decision, response.Answers)
+	a.emitUserInputResolution(threadID, claim.Ref.Occurrence, response.RequestID, decision, response.Answers)
 	return nil
 }
 
-func (a *App) emitApprovalResolution(threadID, requestID, decision string, updatedInput json.RawMessage) {
+// emitApprovalResolution resolves the prompt occurrence names, or the one
+// open under requestID when it is zero, as answered by this app.
+func (a *App) emitApprovalResolution(threadID string, occurrence provider.PromptOccurrence, requestID, decision string, updatedInput json.RawMessage) {
 	metaFields := map[string]any{
 		"requestId": requestID,
 		"decision":  decision,
@@ -193,6 +223,8 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 		ItemID:    requestID,
 		Meta:      meta,
 		Timestamp: time.Now(),
+
+		PromptOccurrence: occurrence,
 	}
 	// Handle (not HandleSynthetic) is deliberate here and in
 	// emitUserInputResolution: both are reachable only with a live
@@ -205,10 +237,11 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 		}
 	} else {
 		a.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
-			Action:    "resolve",
-			ThreadID:  threadID,
-			RequestID: requestID,
-			Decision:  decision,
+			Action:     "resolve",
+			ThreadID:   threadID,
+			RequestID:  requestID,
+			Decision:   decision,
+			Occurrence: occurrence,
 		})
 	}
 }
@@ -228,7 +261,8 @@ func (a *App) emitApprovalFailure(who transport.ClientIdentity, threadID, reques
 	})
 }
 
-func (a *App) emitUserInputResolution(threadID, requestID, decision string, answers map[string]provider.UserInputAnswer) {
+// emitUserInputResolution is emitApprovalResolution's twin.
+func (a *App) emitUserInputResolution(threadID string, occurrence provider.PromptOccurrence, requestID, decision string, answers map[string]provider.UserInputAnswer) {
 	meta, _ := json.Marshal(map[string]any{
 		"requestId": requestID,
 		"decision":  decision,
@@ -240,6 +274,8 @@ func (a *App) emitUserInputResolution(threadID, requestID, decision string, answ
 		ItemID:    requestID,
 		Meta:      meta,
 		Timestamp: time.Now(),
+
+		PromptOccurrence: occurrence,
 	}
 	if a.triage != nil {
 		if err := a.triage.Handle(evt); err != nil {
@@ -247,10 +283,11 @@ func (a *App) emitUserInputResolution(threadID, requestID, decision string, answ
 		}
 	} else {
 		a.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
-			Action:    "resolve",
-			ThreadID:  threadID,
-			RequestID: requestID,
-			Decision:  decision,
+			Action:     "resolve",
+			ThreadID:   threadID,
+			RequestID:  requestID,
+			Decision:   decision,
+			Occurrence: occurrence,
 		})
 	}
 }

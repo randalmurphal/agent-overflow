@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -53,22 +54,28 @@ func proposedPlanItemSQL() string {
 // cost does not grow with the thread's rows. hasFailedTurn's turn-error
 // half reads the write-time pair thread_turn_error_aggregate.go maintains,
 // and the pending-plan flag finds its row and payload by id
-// (proposedPlanItemSQL).
+// (proposedPlanItemSQL). The agent columns read the assistant records and
+// the local spawn requests (idx_thread_requests_spawn_target for the
+// spawner). An assistant's current thread reads its record once, as one
+// JSON object (threadAgentColumn) that also carries the projects it serves,
+// and any other thread reads NULL there, so only an assistant's row pays
+// for them. The last column, AskCopy, probes scratch_threads by key only
+// for a scratch thread.
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
     pending_fork_resume_at, fork_preparing,
+    CASE WHEN deleting = 1 THEN 2 WHEN delete_claim <> '' THEN 1 ELSE 0 END,
     mode, reasoning_effort, fast_mode, context_window,
     auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
-    COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
     COALESCE(forked_from_thread_id, ''), last_token_usage,
     created_at, updated_at,
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, pin_group,
-    COALESCE(group_id, ''),
+    COALESCE(group_id, ''), placement,
     worktree_setup_state, import_source,
     created_by_device, created_branch, created_head_commit,
 	EXISTS (
@@ -109,7 +116,29 @@ var threadColumns = `id, COALESCE(project_id, ''),
     ),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
-      WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete')`
+      WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete'),
+    (SELECT json_object(
+        'id', agents.id,
+        'allProjects', agents.all_projects,
+        'projectIds', json((SELECT json_group_array(project_id) FROM (
+          SELECT project_id FROM agent_projects WHERE agent_projects.agent_id = agents.id ORDER BY project_id))))
+       FROM agents WHERE agents.thread_id = threads.id),
+    COALESCE((SELECT agent_id FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id), ''),
+    (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
+    COALESCE((SELECT agent_id FROM agent_helpers WHERE agent_helpers.thread_id = threads.id), ''),
+    COALESCE(` + spawnerOfSQL("threads.id") + `, ''), ` + spawnedByComputerSQL("threads.id") + `,
+    attention_kind, attention_reason, attention_at,
+    spawn_instructions, spawn_level,
+    threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
+      WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL)`
+
+// threadAgentColumn is the record column threadColumns reads for an
+// assistant's current thread.
+type threadAgentColumn struct {
+	ID          string   `json:"id"`
+	AllProjects int      `json:"allProjects"`
+	ProjectIDs  []string `json:"projectIds"`
+}
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -207,25 +236,31 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft int
-	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup sql.NullInt64
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, askCopy int
+	var agentRecord sql.NullString
+	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
+	var attentionKind, attentionReason string
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
-		&t.PendingForkResumeAt, &t.ForkPreparing,
+		&t.PendingForkResumeAt, &t.ForkPreparing, &t.Delete,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
-		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
+		&t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
-		&t.GroupID,
+		&t.GroupID, &t.Placement,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
+		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
+		&attentionKind, &attentionReason, &attentionAt,
+		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
 	); err != nil {
 		return Thread{}, err
 	}
 	t.FastMode = fastMode != 0
+	t.AskCopy = askCopy != 0
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
 	t.HasIncompleteTurn = hasIncompleteTurn != 0
@@ -246,6 +281,23 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if pinGroup.Valid {
 		v := int(pinGroup.Int64)
 		t.PinGroup = &v
+	}
+	if agentSupersededAt.Valid {
+		v := agentSupersededAt.Int64
+		t.AgentSupersededAt = &v
+	}
+	if attentionAt.Valid && attentionKind != "" {
+		t.Attention = &ThreadAttention{Kind: attentionKind, Reason: attentionReason, At: attentionAt.Int64}
+	}
+	if agentRecord.Valid {
+		var agent threadAgentColumn
+		if err := json.Unmarshal([]byte(agentRecord.String), &agent); err != nil {
+			return Thread{}, fmt.Errorf("read the assistant of thread %s: %w", t.ID, err)
+		}
+		t.AgentID, t.AgentAllProjects = agent.ID, agent.AllProjects != 0
+		if len(agent.ProjectIDs) > 0 {
+			t.AgentProjectIDs = agent.ProjectIDs
+		}
 	}
 	return t, nil
 }
@@ -276,6 +328,9 @@ func (s *Store) createThread(t Thread, readBack bool) (Thread, error) {
 	}
 	defer tx.Rollback()
 	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
+		return Thread{}, fmt.Errorf("store: create thread: %w", err)
+	}
+	if err := recordAgentHelperTx(tx, prepared); err != nil {
 		return Thread{}, fmt.Errorf("store: create thread: %w", err)
 	}
 	var created Thread
@@ -327,14 +382,58 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 		    pending_fork_resume_at, fork_preparing,
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
-		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
+		    forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source,
 		    created_by_device, created_branch, created_remote_url, created_head_commit,
-		    group_id`
+		    group_id, placement, spawn_instructions, spawn_level`
 
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
+
+// ErrHelperInProject refuses a helper in a project: a helper lives under
+// its assistant, outside every project.
+var ErrHelperInProject = errors.New("store: a helper lives outside every project")
+
+// ErrHelperOfNoAssistant refuses a helper of an assistant that is gone or
+// whose delete committed (CommitDeleteClaim).
+var ErrHelperOfNoAssistant = errors.New("store: the assistant is gone or being deleted")
+
+// recordAgentHelperTx records a new thread as a helper of the assistant
+// t.HelperOfAgentID names, if any. A created thread and a fork take it; a
+// thread another computer sent arrives as no assistant's. The thread must
+// be outside every project, and the assistant here with no delete committed
+// on its current thread. A spawn admitted before a delete claimed the
+// assistant records its helper, which the delete claims when it reads the
+// family again after draining that admission.
+func recordAgentHelperTx(tx *sql.Tx, t Thread) error {
+	if t.HelperOfAgentID == "" {
+		return nil
+	}
+	action := fmt.Sprintf("record %s as a helper of assistant %s", t.ID, t.HelperOfAgentID)
+	result, err := tx.Exec(`INSERT INTO agent_helpers (thread_id, agent_id)
+		SELECT threads.id, agents.id FROM threads, agents JOIN threads AS current ON current.id = agents.thread_id
+		 WHERE threads.id = ?1 AND threads.project_id IS NULL AND agents.id = ?2 AND current.deleting = 0`,
+		t.ID, t.HelperOfAgentID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if inserted == 1 {
+		return nil
+	}
+	var inProject bool
+	if err := tx.QueryRow(`SELECT project_id IS NOT NULL FROM threads WHERE id = ?`, t.ID).Scan(&inProject); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if inProject {
+		return fmt.Errorf("%s: %w", action, ErrHelperInProject)
+	}
+	return fmt.Errorf("%s: %w", action, ErrHelperOfNoAssistant)
+}
 
 func insertThread(tx *sql.Tx, t Thread, lastReadAtArg any) error {
 	return writeThread(tx, t, lastReadAtArg, "")
@@ -350,14 +449,15 @@ func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error
 		t.PendingForkResumeAt, boolToInt(t.ForkPreparing),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
+		nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, t.ImportSource,
 		// The write-once creation facts. They appear here and in
 		// threadColumns, and deliberately NOT in updateThreadSetSQL: a
 		// whole-row UpdateThread carrying a stale copy must not be able to
 		// blank a thread's provenance or its git origin.
 		t.CreatedByDevice, t.Origin.Branch, "", t.Origin.HeadCommit,
-		nilIfEmpty(t.GroupID),
+		nilIfEmpty(t.GroupID), insertedPlacement(t.GroupID),
+		t.SpawnInstructions, t.SpawnLevel,
 		t.GroupID, t.GroupID, t.ProjectID,
 	)
 	if err != nil {
@@ -421,15 +521,25 @@ func (s *Store) GetThreadProviderWorkspace(id string) (provider, workspacePath s
 // thread: its label, and whether the sidebar lists it (Mode, judged by
 // threadmode.IsHidden). Exists is false for a thread that is gone.
 type ThreadNotificationFacts struct {
-	Title  string
-	Mode   string
+	Title string
+	Mode  string
+	// Attention is the kind of the thread's attention flag while it is
+	// pending (Thread.AttentionPending), empty otherwise: one of a few
+	// fixed values, never the agent's reason. AttentionAt is when that
+	// flag was raised.
+	Attention   string
+	AttentionAt int64
+	// Owned is a thread the thread that spawned it owns
+	// (PlacementOwned): it has no sidebar row, and its answer goes to that
+	// thread rather than to the user.
+	Owned  bool
 	Exists bool
 }
 
-// GetThreadNotificationFacts reads only the title and mode columns. It is
-// the narrow read for the OS-notification mapping, which is allowed to say a
-// thread's title and to know whether the thread is on the sidebar, and
-// nothing more about it — and it exists for the same reason
+// GetThreadNotificationFacts reads only the title, mode, placement and
+// pending attention flag. It is the narrow read for the OS-notification mapping,
+// which is allowed to say a thread's title and to know whether the thread
+// is on the sidebar, and nothing more about it — and it exists for the same reason
 // GetThreadProviderWorkspace does: GetThread's projection computes four
 // derived sidebar-state subqueries per call that such a caller would compute
 // and throw away.
@@ -439,13 +549,26 @@ type ThreadNotificationFacts struct {
 // a deleted thread is not a failure to report — it is a thread the sidebar
 // cannot show, which the notification gate treats like any other hidden one.
 func (s *Store) GetThreadNotificationFacts(id string) (ThreadNotificationFacts, error) {
-	var facts ThreadNotificationFacts
-	err := s.reader().QueryRow(`SELECT title, mode FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode)
+	var (
+		facts       ThreadNotificationFacts
+		kind        string
+		attentionAt sql.NullInt64
+		lastReadAt  sql.NullInt64
+	)
+	err := s.reader().QueryRow(`SELECT title, mode, placement = '`+PlacementOwned+`', attention_kind, attention_at, last_read_at
+	  FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode, &facts.Owned, &kind, &attentionAt, &lastReadAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ThreadNotificationFacts{}, nil
 	}
 	if err != nil {
 		return ThreadNotificationFacts{}, fmt.Errorf("store: get thread notification facts %s: %w", id, err)
+	}
+	var marker *int64
+	if lastReadAt.Valid {
+		marker = &lastReadAt.Int64
+	}
+	if attentionAt.Valid && attentionPending(attentionAt.Int64, marker) {
+		facts.Attention, facts.AttentionAt = kind, attentionAt.Int64
 	}
 	facts.Exists = true
 	return facts, nil
@@ -494,7 +617,8 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // or a pending plan implementation) it is visible so the sidebar reflects work
 // the user would otherwise lose track of. Terminal-mode threads are always
 // included: they are first-class sidebar fixtures that never carry items or
-// drafts, so the item/draft gates would otherwise hide them.
+// drafts, so the item/draft gates would otherwise hide them. A hidden-mode
+// or owned thread is never listed (catalogThreadClause).
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	query, args := listThreadsWithItemsQuery()
 	rows, err := s.reader().Query(query, args...)
@@ -514,11 +638,13 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	return threads, rows.Err()
 }
 
-// ListArchivedThreads returns every archived thread, newest-touched first.
-// Used by the settings panel to surface threads that have been hidden from
-// the sidebar so the user can unarchive or permanently delete them.
+// ListArchivedThreads returns every archived thread the sidebar would list
+// unarchived (catalogThreadClause), newest-touched first. Used by the
+// settings panel to surface threads that have been hidden from the sidebar
+// so the user can unarchive or permanently delete them; an archived owned
+// thread is its owner's to show.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	hiddenClause, hiddenArgs := catalogThreadClause("threads")
 	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
@@ -567,6 +693,17 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// catalogThreadClause is the one rule for which threads the sidebar's
+// catalog reads list (ListThreadsWithItems, the project thread counts and
+// ListArchivedThreads), over the threads alias: not a hidden mode, and not
+// owned by the thread that spawned it (thread_placement.go). Search and the
+// thread tools read owned threads like any other and apply
+// hiddenThreadModesClause alone.
+func catalogThreadClause(alias string) (string, []any) {
+	hidden, args := hiddenThreadModesClause(alias + ".mode")
+	return hidden + " AND " + alias + ".placement <> '" + PlacementOwned + "'", args
+}
+
 func hiddenThreadModesClause(column string) (string, []any) {
 	modes := threadmode.HiddenModes()
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(modes)), ",")
@@ -577,88 +714,44 @@ func hiddenThreadModesClause(column string) (string, []any) {
 	return column + " NOT IN (" + placeholders + ")", args
 }
 
-// ListChildThreads returns a parent's child threads ordered by
-// creation. Discussion participant threads are all created with the
-// same CreatedAt millisecond (see BuildParticipantPlans, which stamps
-// every plan with one shared nowMillis), so `ORDER BY created_at ASC`
-// alone is not a deterministic tiebreak under SQL semantics — ties can
-// come back in any order. `rowid ASC` breaks the tie by insert order
-// (these are rowid tables), which matches definition order and keeps
-// the deliberation roster's round-robin sequence stable across reads.
-func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
-	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC, rowid ASC`,
-		parentID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list child threads for %s: %w", parentID, err)
-	}
-	defer rows.Close()
-
-	var threads []Thread
-	for rows.Next() {
-		t, err := scanThread(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan child thread row: %w", err)
-		}
-		threads = append(threads, t)
-	}
-	return threads, rows.Err()
-}
-
-func (s *Store) HasChildThreads(parentID string) (bool, error) {
-	var exists int
-	err := s.reader().QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM threads WHERE parent_thread_id = ? LIMIT 1)`,
-		parentID,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("store: check child threads for %s: %w", parentID, err)
-	}
-	return exists != 0, nil
-}
-
 // ListThreadWorkspaceRefs returns workspace/worktree pointers for all thread
 // rows, including archived ones. Worktree removal uses this to avoid deleting a
 // checkout that an archived thread would reference if restored.
 func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads`,
-	)
+	refs, err := s.queryThreadWorkspaceRefs(`SELECT ` + threadWorkspaceRefColumns + ` FROM threads t`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list thread workspace refs: %w", err)
 	}
-	defer rows.Close()
-
-	var refs []ThreadWorkspaceRef
-	for rows.Next() {
-		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan thread workspace ref: %w", err)
-		}
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
+	return refs, nil
 }
 
 // ListThreadWorkspaceRefsByProject is ListThreadWorkspaceRefs for the rows of
 // one project, archived and hidden rows included: a checkout that vanished
 // under an archived thread must be reattached before the thread is restored.
 func (s *Store) ListThreadWorkspaceRefsByProject(projectID string) ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads WHERE project_id = ?`,
-		projectID,
-	)
+	refs, err := s.queryThreadWorkspaceRefs(`SELECT `+threadWorkspaceRefColumns+` FROM threads t WHERE t.project_id = ?`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list thread workspace refs for project %s: %w", projectID, err)
 	}
-	defer rows.Close()
+	return refs, nil
+}
 
-	var refs []ThreadWorkspaceRef
+// threadWorkspaceRefColumns is a ThreadWorkspaceRef's columns of the
+// threads row aliased t, in queryThreadWorkspaceRefs' scan order.
+const threadWorkspaceRefColumns = `t.id, t.workspace_path, COALESCE(t.worktree_path, '')`
+
+// queryThreadWorkspaceRefs runs a query selecting threadWorkspaceRefColumns
+// and scans its rows.
+func (s *Store) queryThreadWorkspaceRefs(query string, args ...any) (refs []ThreadWorkspaceRef, err error) {
+	rows, err := s.reader().Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var ref ThreadWorkspaceRef
 		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan thread workspace ref: %w", err)
+			return nil, fmt.Errorf("scan: %w", err)
 		}
 		refs = append(refs, ref)
 	}
@@ -727,7 +820,7 @@ const threadBusyPredicateSQL = `(
      )
    )`
 
-const blockedThreadWorkspaceRefsSQL = `SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, '')
+const blockedThreadWorkspaceRefsSQL = `SELECT ` + threadWorkspaceRefColumns + `
   FROM threads t
  WHERE ` + threadBusyPredicateSQL
 
@@ -743,28 +836,18 @@ const blockedThreadWorkspaceRefsSQL = `SELECT t.id, t.workspace_path, COALESCE(t
 // is selective: it is three index probes per thread row and the result set is
 // the handful of threads that are busy right now, not the history.
 func (s *Store) ListBlockedThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(blockedThreadWorkspaceRefsSQL)
+	refs, err := s.queryThreadWorkspaceRefs(blockedThreadWorkspaceRefsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: list blocked thread workspace refs: %w", err)
 	}
-	defer rows.Close()
-
-	var refs []ThreadWorkspaceRef
-	for rows.Next() {
-		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan blocked thread workspace ref: %w", err)
-		}
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
+	return refs, nil
 }
 
-// updateThreadSetSQL is the whole-row thread write every rename, model
-// change, workspace switch, and provider switch issues. It is a hand-kept
-// column list, and what it OMITS is load-bearing: a caller that only meant to
-// rename a thread hands `UpdateThread` a `Thread` struct it read some time
-// ago, so every column in this list is one a stale read can roll back.
+// updateThreadSetSQL is UpdateThread's whole-row thread write. No production
+// writer uses it: each change has a narrow writer (UpdateTitle,
+// UpdateThreadModelSettings, UpdateThreadCheckout, ArchiveThread, ...),
+// because every column in this list is one a stale read can roll back. It
+// is a hand-kept column list, and what it OMITS is load-bearing.
 // Columns owned by a narrow writer, by a trigger, or by the row's own
 // lifecycle are therefore absent — see
 // threadColumnsNotWrittenByUpdateThread (threads_test.go), which names each
@@ -774,8 +857,7 @@ const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?
     workspace_path=?, worktree_path=?, branch=?, session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
     auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
-    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
-    archived=?`
+    forked_from_thread_id=?, last_token_usage=?`
 
 func normalizeThreadForUpdate(t Thread) (Thread, error) {
 	t.Mode = normalizeMode(t.Mode)
@@ -806,11 +888,14 @@ func updateThreadArgs(t Thread) []any {
 		nilIfEmpty(t.SessionRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		boolToInt(t.Archived),
+		nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 	}
 }
 
+// UpdateThread writes the columns updateThreadSetSQL lists from t. It keeps
+// an assistant's invariants as the narrow writers do: the title of its
+// current thread is its name (checkAssistantTitleTx), and that thread stays
+// in its home (ErrAssistantThreadNotInHome).
 func (s *Store) UpdateThread(t Thread) error {
 	t, err := normalizeThreadForUpdate(t)
 	if err != nil {
@@ -822,6 +907,9 @@ func (s *Store) UpdateThread(t Thread) error {
 		return fmt.Errorf("store: begin update thread %s: %w", t.ID, err)
 	}
 	defer tx.Rollback()
+	if err := checkAssistantTitleTx(tx, t.ID, t.Title); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		updateThreadSetSQL+` WHERE id=?`,
 		args...,
@@ -831,6 +919,15 @@ func (s *Store) UpdateThread(t Thread) error {
 	}
 	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
 		return err
+	}
+	var outOfHome bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents JOIN threads ON threads.id = agents.thread_id
+		WHERE agents.thread_id = ? AND NOT (threads.project_id IS NULL AND threads.workspace_path = agents.home
+		  AND COALESCE(threads.worktree_path, '') = '' AND COALESCE(threads.branch, '') = ''))`, t.ID).Scan(&outOfHome); err != nil {
+		return fmt.Errorf("store: update thread %s: read its assistant's home: %w", t.ID, err)
+	}
+	if outOfHome {
+		return fmt.Errorf("store: update thread %s: %w", t.ID, ErrAssistantThreadNotInHome)
 	}
 	// The whole-row update carries the title, so it can rename a thread.
 	if err := indexThreadTitleTx(tx, t.ID, t.Title); err != nil {
@@ -842,35 +939,70 @@ func (s *Store) UpdateThread(t Thread) error {
 	return nil
 }
 
-func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider string) error {
-	t, err := normalizeThreadForUpdate(t)
+// ThreadModelSettings is a thread's model configuration: what a model or
+// provider choice and the sanitation of stored settings write
+// (UpdateThreadModelSettings), and nothing a stale read could use to roll
+// back a rename, a move or an archive.
+type ThreadModelSettings struct {
+	Provider                   string
+	Model                      string
+	ReasoningEffort            string
+	FastMode                   bool
+	ContextWindow              int
+	AutoCompactStandardPercent int
+	AutoCompactExtendedPercent int
+	RuntimeMode                string
+}
+
+// ModelSettings is the thread's model configuration.
+func (t Thread) ModelSettings() ThreadModelSettings {
+	return ThreadModelSettings{
+		Provider: t.Provider, Model: t.Model, ReasoningEffort: t.ReasoningEffort, FastMode: t.FastMode,
+		ContextWindow: t.ContextWindow, AutoCompactStandardPercent: t.AutoCompactStandardPercent,
+		AutoCompactExtendedPercent: t.AutoCompactExtendedPercent, RuntimeMode: t.RuntimeMode,
+	}
+}
+
+// UpdateThreadModelSettings writes a thread's model configuration, provided
+// its provider is still previousProvider. A change of provider is allowed
+// only while the thread has no history (ErrThreadProviderLocked), and
+// discards the previous provider's resume wiring, the session ref and the
+// lazy-fork pin, in the same UPDATE: a second statement would leave a crash
+// window where the switch committed and a pin into the old provider's
+// session files survived it.
+func (s *Store) UpdateThreadModelSettings(threadID, previousProvider string, settings ThreadModelSettings) error {
+	normalized, err := normalizeThreadForUpdate(Thread{
+		Provider: settings.Provider, Model: settings.Model, ReasoningEffort: settings.ReasoningEffort,
+		FastMode: settings.FastMode, ContextWindow: settings.ContextWindow,
+		AutoCompactStandardPercent: settings.AutoCompactStandardPercent,
+		AutoCompactExtendedPercent: settings.AutoCompactExtendedPercent, RuntimeMode: settings.RuntimeMode,
+	})
 	if err != nil {
 		return err
 	}
-	args := append(updateThreadArgs(t), t.ID, previousProvider, t.ID)
-	// A provider switch discards the previous provider's resume wiring, and
-	// the lazy-fork pin is deliberately absent from updateThreadSetSQL (see
-	// SetThreadForkResume), so the clear rides this UPDATE itself: a second
-	// statement would leave a crash window where the switch committed and a
-	// stale pin into the old provider's session files survived it.
-	result, err := s.db.Exec(
-		updateThreadSetSQL+`, pending_fork_session_ref=NULL, pending_fork_resume_at=''
-		 WHERE id=?
-		 AND provider = ?
-		 AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? LIMIT 1)`,
-		args...,
-	)
+	settings = normalized.ModelSettings()
+	query := `UPDATE threads SET provider = ?, model = ?, reasoning_effort = ?, fast_mode = ?, context_window = ?,
+	    auto_compact_standard_percent = ?, auto_compact_extended_percent = ?, runtime_mode = ?`
+	guard := ` WHERE id = ? AND provider = ?`
+	if settings.Provider != previousProvider {
+		query += `, session_ref = NULL, pending_fork_session_ref = NULL, pending_fork_resume_at = ''`
+		guard += ` AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = threads.id LIMIT 1)`
+	}
+	result, err := s.db.Exec(query+guard,
+		settings.Provider, settings.Model, settings.ReasoningEffort, boolToInt(settings.FastMode), settings.ContextWindow,
+		settings.AutoCompactStandardPercent, settings.AutoCompactExtendedPercent, settings.RuntimeMode,
+		threadID, previousProvider)
 	if err != nil {
-		return fmt.Errorf("store: guarded provider switch for thread %s: %w", t.ID, err)
+		return fmt.Errorf("store: update the model settings of thread %s: %w", threadID, err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("store: guarded provider switch for thread %s: rows affected: %w", t.ID, err)
+		return fmt.Errorf("store: update the model settings of thread %s: rows affected: %w", threadID, err)
 	}
 	if rows != 0 {
 		return nil
 	}
-	return s.explainProviderSwitchNoRows(t.ID, previousProvider)
+	return s.explainProviderSwitchNoRows(threadID, previousProvider)
 }
 
 func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) error {
@@ -898,10 +1030,11 @@ func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) e
 // ArchiveThread flips the archived column to 1 and bumps updated_at so the
 // thread leaves the active sidebar. Returns the archived row plus whether the
 // write moved anything: re-archiving an already-archived thread changes
-// nothing, so it must not bump updated_at and must not broadcast. A missing
+// nothing, so it must not bump updated_at and must not broadcast, though
+// its archive is marked unfinished again (setThreadArchivedTx). A missing
 // id is still sql.ErrNoRows.
 func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadArchivedWrite(id, true))
+	return s.setThreadArchived(id, true, workerFence{})
 }
 
 // UnarchiveThread flips the archived column back to 0 for a thread and bumps
@@ -910,24 +1043,7 @@ func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
 // that was already active is a no-op, not a reshuffle. Returns sql.ErrNoRows
 // if no row matches the id.
 func (s *Store) UnarchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadArchivedWrite(id, false))
-}
-
-// threadArchivedWrite is the one definition of the archive flip, shared by
-// the two accessors and by the organize transaction that writes it beside a
-// title, a group and a pin.
-func threadArchivedWrite(id string, archived bool) rowWrite {
-	flag, action := "1", "archive"
-	if !archived {
-		flag, action = "0", "unarchive"
-	}
-	return rowWrite{
-		Action:  fmt.Sprintf("store: %s thread %s", action, id),
-		ID:      id,
-		Set:     "archived = " + flag + ", updated_at = ?",
-		SetArgs: []any{nowMillis()},
-		Change:  "archived IS NOT " + flag,
-	}
+	return s.setThreadArchived(id, false, workerFence{})
 }
 
 // MarkThreadActivity bumps threads.updated_at to `at`. Sidebar sort and
@@ -959,12 +1075,13 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 	return nil
 }
 
-// threadReadStateQuery reads the three timestamps MarkThreadReadNow clamps
-// its stamp to (the newest completed turn, an interrupted newest turn's
-// start, the newest turn error that lights the Failed pill) plus the marker
-// already stored. The error stamp is the column hasFailedTurn compares, so
-// the pill and the read that clears it cannot disagree.
-const threadReadStateQuery = `SELECT
+// threadReadTargetColumns are the four timestamps a read stamp clamps to,
+// over a `threads` row: the newest completed turn, an interrupted newest
+// turn's start, the newest turn error that lights the Failed pill, and the
+// attention flag its agent raised. The error stamp is the column
+// hasFailedTurn compares and the flag shows while the marker is before its
+// time, so a pill and the read that clears it cannot disagree.
+const threadReadTargetColumns = `
     (SELECT MAX(completed_at) FROM turns
       WHERE thread_id = threads.id AND completed_at IS NOT NULL),
     (SELECT CASE WHEN completed_at IS NULL THEN started_at END
@@ -973,24 +1090,76 @@ const threadReadStateQuery = `SELECT
       ORDER BY turns.turn_index DESC
       LIMIT 1),
     newest_turn_error_at,
+    attention_at`
+
+// threadReadStateQuery is the per-row read markThreadsReadSQL makes, as a
+// single-row probe the plan and page-count guards measure.
+const threadReadStateQuery = `SELECT ` + threadReadTargetColumns + `,
     last_read_at
    FROM threads
   WHERE id = ?`
 
+// ErrThreadReadRefused is a read stamp on one thread that is gone or that
+// this computer may not change (MarkThreadsReadNow's refused list). It
+// wraps sql.ErrNoRows.
+var ErrThreadReadRefused = fmt.Errorf("thread is gone or not changeable on this computer: %w", sql.ErrNoRows)
+
+// MarkThreadsReadLimit caps one MarkThreadsReadNow call. A caller with more
+// threads splits them into calls of at most this many.
+const MarkThreadsReadLimit = 500
+
+// markThreadsReadSQL stamps every named thread that is still owed a read,
+// in one statement, and returns the ids it stamped. ?1 is the JSON array of
+// ids, ?2 the current unix-ms. Each stamp is the later of now and the
+// thread's newest read target (threadReadTargetColumns): provider
+// timestamps can run ahead of the wall clock, and a stamp short of the
+// target would leave the pill on. A thread is owed a read unless its marker
+// already covers that target, or, with no target, covers now. Only a thread
+// this computer may change is stamped: not a holder, not mid fork
+// preparation, and not refused by its transfer state
+// (threadTransferReadableExpr), the same rows CheckThreadExecutionAccess
+// passes but for the provider session's native transfer, which governs
+// execution, not read state.
+var markThreadsReadSQL = `UPDATE threads SET last_read_at = MAX(?2, marks.target)
+  FROM (WITH targets(id, marker, completed, started, errored, flagged) AS (
+          SELECT id, last_read_at,` + threadReadTargetColumns + `
+            FROM threads
+           WHERE id IN (SELECT value FROM json_each(?1)) AND ` + threadReadMutableSQL + `
+        )
+        SELECT id, marker, MAX(COALESCE(completed, -1), COALESCE(started, -1), COALESCE(errored, -1), COALESCE(flagged, -1)) AS target
+          FROM targets) AS marks
+ WHERE threads.id = marks.id
+   AND (marks.marker IS NULL OR (marks.target >= 0 AND marks.marker < marks.target) OR (marks.target < 0 AND marks.marker < ?2))
+RETURNING id`
+
+// threadReadMutableSQL is markThreadsReadSQL's predicate for a `threads`
+// row this computer may stamp read.
+var threadReadMutableSQL = `mode <> ` + sqlTextLiteral(threadmode.ModeHolder) + ` AND fork_preparing = 0
+     AND ` + threadTransferReadableExpr("threads.")
+
+// markThreadsReadRefusedSQL lists the ids of ?1 markThreadsReadSQL could
+// not stamp: gone, or failing threadReadMutableSQL.
+var markThreadsReadRefusedSQL = `SELECT value FROM json_each(?1)
+ WHERE value NOT IN (SELECT id FROM threads
+                      WHERE id IN (SELECT value FROM json_each(?1)) AND ` + threadReadMutableSQL + `)
+ ORDER BY value`
+
+// threadRowsByJSONIDsSQL reads the thread rows whose ids are in the JSON
+// array ?1, one statement text for any number of ids.
+var threadRowsByJSONIDsSQL = `SELECT ` + threadColumns + ` FROM threads WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id`
+
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
-// the latest sidebar read target. Completed turns key off completed_at; an
-// interrupted newest turn keys off started_at so opening it clears the
-// durable Interrupted pill just like opening a completed thread clears
-// Completed. The clamp is load-bearing because provider timestamps can
-// occasionally be ahead of wall-clock now when the frontend asks to mark the
-// thread read.
+// the latest sidebar read target (markThreadsReadSQL). Completed turns key
+// off completed_at; an interrupted newest turn keys off started_at so
+// opening it clears the durable Interrupted pill just like opening a
+// completed thread clears Completed.
 //
 // Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
 // mutation, and bumping would thrash the sidebar ordering.
 //
 // The context is required rather than optional. This is a write, so it
 // runs on the single writer connection, and database/sql makes a caller
-// wait for that connection to come free — behind a retention sweep's
+// wait for that connection to come free: behind a retention sweep's
 // delete batch, a streaming flush, or a checkpoint. A context-less
 // Begin waits for that with no ceiling; callers of a bookkeeping write
 // nobody is watching need one.
@@ -998,86 +1167,113 @@ const threadReadStateQuery = `SELECT
 // Returns the stamped row plus whether the stamp moved. Opening a thread
 // whose read marker already covers its newest turn is the common case and
 // changes nothing, so it hands back (zero row, false, nil) and the caller
-// broadcasts nothing.
+// broadcasts nothing. A thread that is gone, or that this computer may not
+// change, is ErrThreadReadRefused.
 func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool, error) {
-	now := nowMillis()
+	rows, refused, err := s.MarkThreadsReadNow(ctx, []string{id})
+	if err != nil {
+		return Thread{}, false, err
+	}
+	if len(refused) > 0 {
+		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, ErrThreadReadRefused)
+	}
+	if len(rows) == 0 {
+		return Thread{}, false, nil
+	}
+	return rows[0], true, nil
+}
+
+// MarkThreadsReadNow is MarkThreadReadNow for up to MarkThreadsReadLimit
+// threads in one transaction of a fixed number of statements: the stamp
+// (markThreadsReadSQL), the changed rows read back, and the ids it could not
+// stamp. Repeated ids count once. It returns the rows it changed, in id
+// order, and refused: each named thread that is gone or that this computer
+// may not change. A thread whose marker was already current is in neither.
+func (s *Store) MarkThreadsReadNow(ctx context.Context, ids []string) (changed []Thread, refused []string, err error) {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	if len(ids) > MarkThreadsReadLimit {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: at most %d in one call", len(ids), MarkThreadsReadLimit)
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: encode ids: %w", len(ids), err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: begin mark thread read %s: %w", id, err)
+		return nil, nil, fmt.Errorf("store: begin mark %d threads read: %w", len(ids), err)
 	}
-	defer tx.Rollback()
-
-	var latestTurnCompletedAt, latestIncompleteStartedAt, latestErrorAt, lastReadAt sql.NullInt64
-	err = tx.QueryRowContext(ctx, threadReadStateQuery, id).
-		Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &latestErrorAt, &lastReadAt)
+	defer func() { _ = tx.Rollback() }()
+	stamped, err := queryStringsTx(tx, markThreadsReadSQL, string(encoded), nowMillis())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
-		}
-		return Thread{}, false, fmt.Errorf("store: read thread read-state %s: %w", id, err)
+		return nil, nil, fmt.Errorf("store: mark %d threads read: %w", len(ids), err)
 	}
+	if len(stamped) > 0 {
+		stampedJSON, err := json.Marshal(stamped)
+		if err != nil {
+			return nil, nil, fmt.Errorf("store: mark %d threads read: encode stamped ids: %w", len(ids), err)
+		}
+		if changed, err = scanThreadQuery(tx, threadRowsByJSONIDsSQL, string(stampedJSON)); err != nil {
+			return nil, nil, fmt.Errorf("store: read back %d threads marked read: %w", len(stamped), err)
+		}
+		if len(changed) != len(stamped) {
+			return nil, nil, fmt.Errorf("store: read back %d threads marked read: %d rows", len(stamped), len(changed))
+		}
+	}
+	if refused, err = queryStringsTx(tx, markThreadsReadRefusedSQL, string(encoded)); err != nil {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: list refused: %w", len(ids), err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("store: commit mark %d threads read: %w", len(ids), err)
+	}
+	return changed, refused, nil
+}
 
-	readTarget := int64(0)
-	hasReadTarget := false
-	if latestTurnCompletedAt.Valid {
-		hasReadTarget = true
-		readTarget = latestTurnCompletedAt.Int64
+// MarkThreadReadThrough stamps last_read_at up to at, a turn's completion,
+// and never backward: the read mark a spawned thread gets when its turn
+// answers its spawner (docs/specs/standing-agents.md ruling 30). Unlike
+// MarkThreadReadNow it reads nothing later than at, so a turn the user
+// caused after the one that answered still shows as unread. A pinned
+// thread keeps its dot, so a pin that lands after the caller decided to
+// mark still wins, and so does a pending attention flag: the thread's
+// agent asked for the user, which the answer reaching its spawner does not
+// settle. A row whose marker already covers at (NULL, "never tracked",
+// included: that reads as read), that is pinned, flagged or gone changes
+// nothing and hands back (zero row, false, nil). The context bounds the
+// wait for the writer connection, as MarkThreadReadNow's does.
+func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) (Thread, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: begin mark thread read through %s: %w", id, err)
 	}
-	if latestIncompleteStartedAt.Valid {
-		hasReadTarget = true
-		if latestIncompleteStartedAt.Int64 > readTarget {
-			readTarget = latestIncompleteStartedAt.Int64
-		}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ? AND pinned_at IS NULL
+		   AND (attention_at IS NULL OR attention_at <= last_read_at)`, at, id, at)
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: mark thread read through %s: %w", id, err)
 	}
-	// The Failed pill is read state too: the stamp must pass the error row
-	// that lit it, or a read after the newest turn completed would be a
-	// no-op that leaves the pill on.
-	if latestErrorAt.Valid {
-		hasReadTarget = true
-		if latestErrorAt.Int64 > readTarget {
-			readTarget = latestErrorAt.Int64
-		}
+	changed, err := rowsChanged(result, fmt.Sprintf("store: mark thread read through %s", id))
+	if err != nil {
+		return Thread{}, false, err
 	}
-
-	if lastReadAt.Valid {
-		if hasReadTarget && lastReadAt.Int64 >= readTarget {
-			if err := tx.Commit(); err != nil {
-				return Thread{}, false, fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
-			}
-			return Thread{}, false, nil
-		}
-	}
-
-	readAt := now
-	if hasReadTarget && readTarget > readAt {
-		readAt = readTarget
-	}
-	if lastReadAt.Valid && lastReadAt.Int64 >= readAt {
+	if !changed {
 		if err := tx.Commit(); err != nil {
-			return Thread{}, false, fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
+			return Thread{}, false, fmt.Errorf("store: commit mark thread read through no-op %s: %w", id, err)
 		}
 		return Thread{}, false, nil
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
-	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: mark thread read %s", id)); err != nil {
-		return Thread{}, false, err
-	}
-	// Read back inside the write's own transaction, like every other
-	// thread-row mutation: the caller broadcasts this row on
-	// `thread:updated`, and the two no-op returns above are what keeps a
-	// re-open of an already-read thread silent.
 	rows, err := listThreadsByIDTx(tx, []string{id})
 	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: read back mark thread read %s: %w", id, err)
+		return Thread{}, false, fmt.Errorf("store: read back mark thread read through %s: %w", id, err)
 	}
 	if len(rows) != 1 {
-		return Thread{}, false, fmt.Errorf("store: read back mark thread read %s: %d rows, want 1", id, len(rows))
+		return Thread{}, false, fmt.Errorf("store: read back mark thread read through %s: %d rows, want 1", id, len(rows))
 	}
 	if err := tx.Commit(); err != nil {
-		return Thread{}, false, fmt.Errorf("store: commit mark thread read %s: %w", id, err)
+		return Thread{}, false, fmt.Errorf("store: commit mark thread read through %s: %w", id, err)
 	}
 	return rows[0], true, nil
 }
@@ -1291,6 +1487,11 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 // updateTitleTx writes the display name and its search index entry inside
 // the caller's transaction. The two always move together.
 func updateTitleTx(tx *sql.Tx, threadID, title string) error {
+	// An assistant's current thread's title is its name (docs/specs/
+	// standing-agents.md, "Standing agent"), unique on this computer.
+	if err := checkAssistantTitleTx(tx, threadID, title); err != nil {
+		return err
+	}
 	result, err := tx.Exec(`UPDATE threads SET title = ? WHERE id = ?`,
 		title, threadID)
 	if err != nil {
@@ -1300,6 +1501,30 @@ func updateTitleTx(tx *sql.Tx, threadID, title string) error {
 		return err
 	}
 	return indexThreadTitleTx(tx, threadID, title)
+}
+
+// UpdateProviderTitle writes a title a provider reported for its thread,
+// and reports whether it did: a provider never renames an assistant.
+func (s *Store) UpdateProviderTitle(threadID, title string) (_ bool, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("store: begin provider title for %s: %w", threadID, err)
+	}
+	defer rollbackAgentWakeTx(tx, "store: provider title for "+threadID, &err)
+	var assistant bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?)`, threadID).Scan(&assistant); err != nil {
+		return false, fmt.Errorf("store: read the assistant of %s: %w", threadID, err)
+	}
+	if assistant {
+		return false, nil
+	}
+	if err := updateTitleTx(tx, threadID, title); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store: commit provider title for %s: %w", threadID, err)
+	}
+	return true, nil
 }
 
 func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {
@@ -1316,7 +1541,9 @@ func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (b
 		return false, err
 	}
 	result, err := tx.Exec(
-		`UPDATE threads SET title = ? WHERE id = ? AND title = ?`,
+		// A generated title never renames an assistant.
+		`UPDATE threads SET title = ? WHERE id = ? AND title = ?
+		   AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id)`,
 		newTitle, threadID, currentTitle,
 	)
 	if err != nil {
@@ -1420,8 +1647,8 @@ func (s *Store) UpdateProvider(threadID, prov string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
 }
 
-// UpdateMode overwrites the thread's mode (chat, plan, discussion,
-// terminal, or a workflow-owned mode). Empty strings are normalized to "chat" to
+// UpdateMode overwrites the thread's mode (chat, plan, terminal, or a
+// workflow-owned mode). Empty strings are normalized to "chat" to
 // match CreateThread/UpdateThread. This is the permissive store
 // primitive; user-driven toggles route through threadmode.ValidateSet,
 // which restricts the reachable set to chat/plan.
@@ -1480,7 +1707,7 @@ func (s *Store) UpdateFastMode(threadID string, on bool) (Thread, bool, error) {
 func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings, error) {
 	var settings ThreadContextSettings
 	err := s.reader().QueryRow(
-		`SELECT provider, model, project_id, context_window,
+		`SELECT provider, model, COALESCE(project_id, ''), context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent
 		   FROM threads
 		  WHERE id = ?`,
@@ -1646,6 +1873,26 @@ func (s *Store) UpdateBranchForWorkspace(spellings []string, branch string) ([]T
 // listThreadsByIDTx reads the full thread projection for an explicit id set,
 // inside the caller's transaction. Only used by writers that have to hand
 // back exactly the rows they touched.
+// scanThreadQuery runs a threadColumns query in tx and scans its rows.
+func scanThreadQuery(tx *sql.Tx, query string, args ...any) ([]Thread, error) {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var threads []Thread
+	for rows.Next() {
+		thread, err := scanThread(rows)
+		if err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		threads = append(threads, thread)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return threads, nil
+}
+
 func listThreadsByIDTx(tx *sql.Tx, ids []string) ([]Thread, error) {
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))
@@ -1847,16 +2094,24 @@ func listThreadsWithItemsQuery() (string, []any) {
 // product rule in docs/decisions.md, "Sidebar, threads, drafts"). A thread is
 // real once it holds something a person would lose with it: an item, a draft
 // with content, a draft recovery, a bound worktree (the thread is how the
-// person reaches the checkout), a fork being prepared, or a terminal. A
-// never-sent thread with none of them is not listed, and the empty-draft
-// cleanup may delete it (emptyDraftThreadSQL). Draft and checkout writes
-// report a move across the rule as a ListingChange from inside their
-// transaction; the app announces it, and checks the rows it posts itself
-// (App.writeAppRow).
-const threadRealClause = `(
+// person reaches the checkout), a fork being prepared, a terminal, or an
+// assistant's record naming it as its current thread, which a new assistant
+// or a handoff's successor holds before its opening message lands (its
+// delete goes through deleteAgentRecordTx), or a spawn relation: a thread
+// an agent spawned is real from the write that names it as the spawn's
+// thread (its local spawn link, or the receipt of a paired computer's
+// spawn), and a thread that spawned or owns others is real for as long as
+// a link names it the spawner (agentSpawnLinkSQL). A never-sent thread
+// with none of them is not listed, and the empty-draft cleanup may delete
+// it (emptyDraftThreadSQL). Draft, checkout, spawn naming, group and
+// placement writes report a move across the rule as a ListingChange from
+// inside their transaction; the app announces it, and checks the rows it
+// posts itself (App.writeAppRow).
+var threadRealClause = `(
 		       threads.fork_preparing = 1
 		    OR threads.mode = 'terminal'
 		    OR COALESCE(threads.worktree_path, '') <> ''
+		    OR EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id)
 		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
 		    OR EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
 		    OR EXISTS (
@@ -1864,13 +2119,20 @@ const threadRealClause = `(
 		          WHERE thread_drafts.thread_id = threads.id
 		            AND thread_drafts.has_content = 1
 		       )
+		    OR EXISTS (SELECT 1 FROM thread_requests AS link
+		                WHERE ` + agentSpawnLinkSQL("link") + ` AND link.target_thread_id = threads.id)
+		    OR EXISTS (SELECT 1 FROM thread_requests AS link
+		                WHERE ` + agentSpawnLinkSQL("link") + ` AND link.caller_thread_id = threads.id)
+		    OR EXISTS (SELECT 1 FROM thread_request_receipts AS receipt
+		                WHERE receipt.target_thread_id = threads.id AND receipt.kind = 'spawn')
 		   )`
 
 // sidebarListedClause is the condition, on a row of owned_threads aliased
 // `threads`, for the thread to be listed in the sidebar
-// (ListThreadsWithItems): visible (not archived, not a hidden mode) and real.
+// (ListThreadsWithItems): visible (not archived, not a hidden mode, not an
+// owned worker; catalogThreadClause) and real.
 func sidebarListedClause() (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("threads.mode")
+	hiddenClause, hiddenArgs := catalogThreadClause("threads")
 	return `threads.archived = 0 AND ` + hiddenClause + `
 		   AND ` + threadRealClause, hiddenArgs
 }

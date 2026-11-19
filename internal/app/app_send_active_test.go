@@ -97,7 +97,7 @@ func TestComposerSendActiveCodexEchoKeepsActualTurn(t *testing.T) {
 			if err := a.triage.PersistItem(store.Item{ID: "response", ThreadID: thread.ID, TurnIndex: 3, ItemIndex: 9, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "before follow-up"}, nil); err != nil {
 				t.Fatal(err)
 			}
-			a.triage.SetFlushDispatcher(a.dispatchFlush)
+			a.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) { dispatchThroughWorker(a, threadID, items) })
 			a.triage.FlushQueuedItems(thread.ID)
 			expectedTurn := 3
 			if outcome == "no-active-turn" {

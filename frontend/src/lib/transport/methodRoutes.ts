@@ -63,6 +63,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2562316972: 'selected', // CancelSessionImport
 	378941854: 'thread', // CancelThreadRemoteCommand
 	930267104: 'thread', // CancelThreadTransfer
+	2490904523: 'thread', // CancelThreadWake
+	3008083046: 'home', // CheckAgentProfiles
 	2347956003: 'home', // CheckForUpdate
 	987486764: 'selected', // CheckProviderUpdates
 	2932719708: 'thread', // CheckThreadImportUpdates
@@ -75,12 +77,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1705768020: 'thread', // CloseThreadTerminals
 	4090329093: 'thread', // CompactCodexThread
 	2151872702: 'home', // ComputerPairingStatus
-	4019739936: 'selected', // ConcludeDiscussion
 	3813775159: 'home', // ConfirmDevicePairing
 	2052844871: 'home', // ConfirmSSHConnection
 	2617952423: 'thread', // CountRunningBackgroundTasks
+	3231487239: 'selected', // CreateAssistant
 	565306783: 'thread', // CreateDiffReviewComment
-	757689265: 'selected', // CreateDiscussion
 	1066081365: 'selected', // CreatePRDiffReviewComment
 	969543070: 'selected', // CreateProject
 	617214578: 'selected', // CreateProjectCheckout
@@ -90,7 +91,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2485293844: 'selected', // CreateThreadTransferOffer
 	2428457759: 'thread', // DeleteAttachment
 	1303317790: 'thread', // DeleteDiffReviewComment
-	302062730: 'selected', // DeleteDiscussion
 	3876094070: 'thread', // DeleteEmptyDraftThread
 	559991881: 'selected', // DeletePRComment
 	4163354052: 'selected', // DeletePRDiffReviewComment
@@ -101,6 +101,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
+	362983967: 'home', // DeleteThreads
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources
 	1061100039: 'selected', // DisallowPreviewPort
@@ -127,8 +128,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
 	3414107538: 'thread', // GetAttachmentThumbnail
-	3595031866: 'selected', // GetChannelMessages
-	3664812883: 'selected', // GetChannelState
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
 	1092327307: 'home', // GetClaudeTranscriptRetention
@@ -137,10 +136,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	3307838728: 'thread', // GetConversationMutationState
+	1944158988: 'home', // GetDeleteDependents
 	139818238: 'selected', // GetDevServers
 	1370118726: 'home', // GetDeviceName
 	1590634674: 'workspace', // GetDiffContextLines
-	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft
 	949275134: 'thread', // GetEditDiffContextLines
 	711021853: 'thread', // GetEditDiffImage
@@ -153,6 +152,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4139359668: 'home', // GetMcpServerStatus
 	3176695009: 'workspace', // GetMergeConflictFile
 	1632984917: 'selected', // GetModelsForProvider
+	709651497: 'selected', // GetNativeMemoryStatus
 	652617244: 'home', // GetNativeNetworkConfig
 	1026796858: 'home', // GetNetworkSettings
 	3742557566: 'home', // GetObservabilityTracing
@@ -180,14 +180,17 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2554697378: 'home', // GetSettings
 	3138117849: 'home', // GetSoundFiles
 	2622552651: 'home', // GetSpinnerFiles
+	634025932: 'thread', // GetStandingAgent
 	2329592604: 'home', // GetTerminalReplay
 	2000462111: 'home', // GetThemeFiles
 	1098302047: 'thread', // GetThread
+	2599465033: 'thread', // GetThreadAgentRows
 	3852033265: 'thread', // GetThreadContextUsage
 	3362481473: 'selected', // GetThreadDefaults
 	1969869112: 'thread', // GetThreadItem
 	1848576136: 'thread', // GetThreadItemProjectionSource
 	70226550: 'thread', // GetThreadLiveState
+	2127058226: 'thread', // GetThreadRequestStates
 	2573491630: 'thread', // GetThreadRuntimeMode
 	1598034249: 'thread', // GetThreadShellCommands
 	183380121: 'selected', // GetThreadTransferDestinationProject
@@ -198,6 +201,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2312582214: 'thread', // GetThreadUnsavedRows
 	3340938325: 'thread', // GetThreadUserMessageHistory
 	556088547: 'thread', // GetThreadUserMessageTicks
+	3375683118: 'thread', // GetThreadWakeDetail
+	2442730827: 'thread', // GetThreadWorkerSummary
 	49371251: 'thread', // GetThreadWorktreeSetup
 	3815301456: 'thread', // GetTimelineUserMessageTicks
 	1009213933: 'home', // GetUIRenderTracePath
@@ -242,6 +247,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
 	2451527188: 'all', // ListArchivedThreads
+	727823420: 'home', // ListAssistantPastThreads
 	3128666716: 'thread', // ListAsyncQuestions
 	1730798413: 'thread', // ListAttachments
 	2556802234: 'selected', // ListAvailableEditors
@@ -250,8 +256,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2114948965: 'home', // ListChatBarFavorites
 	4062094959: 'workspace', // ListCommitFiles
 	3057473088: 'thread', // ListDiffReviewComments
-	942288562: 'selected', // ListDiscussions
-	2502562885: 'thread', // ListDiscussionsForThread
 	3779338822: 'selected', // ListForgeProjects
 	99668597: 'selected', // ListImportableSessions
 	2158085763: 'thread', // ListItems
@@ -274,15 +278,21 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	397986043: 'home', // ListReleases
 	3808352241: 'all', // ListRunningBackgroundWork
 	4211718354: 'selected', // ListServiceReleases
+	2939129659: 'all', // ListStandingAgentWakes
 	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
+	2323998099: 'thread', // ListThreadAgentRows
 	2243533007: 'thread', // ListThreadEditDiffs
 	2176447381: 'all', // ListThreadGroups
 	2177219062: 'all', // ListThreadLiveActivity
 	245278513: 'thread', // ListThreadMcpServers
+	1683641211: 'thread', // ListThreadPastAgentRows
 	2485050629: 'thread', // ListThreadProposedPlans
+	3375390768: 'thread', // ListThreadRecurringJobs
 	1165681857: 'thread', // ListThreadRemoteCommands
 	4176102096: 'thread', // ListThreadSliceAround
+	1646300658: 'thread', // ListThreadWakes
+	3558464261: 'all', // ListThreadWorkerSummaries
 	1090132042: 'all', // ListThreads
 	1924357569: 'selected', // ListThreadsOnPR
 	3507874115: 'all', // ListUnsettledFlushes
@@ -293,6 +303,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	404041677: 'selected', // MarkPRReady
 	1480646012: 'thread', // MarkThreadRead
 	236597375: 'thread', // MarkThreadUnread
+	1726279585: 'home', // MarkThreadsRead
 	3922935373: 'selected', // MergePR
 	3197504008: 'thread', // MintAttachmentDownloadTicket
 	1857144453: 'thread', // MintAttachmentUploadTicket
@@ -326,7 +337,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3436727647: 'selected', // PairAgentComputer
 	3277517862: 'home', // ParseCommentSuggestions
 	1748405812: 'thread', // PinThread
-	1315440605: 'selected', // PostChannelMessage
 	3141095494: 'selected', // PostPRComment
 	1583250136: 'selected', // PostPRLineComment
 	2870364785: 'thread', // PrepareThreadWorktree
@@ -425,12 +435,14 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1822896830: 'thread', // SearchTimelineItems
 	3852272821: 'workspace', // SearchWorkspaceFiles
 	2317109106: 'thread', // SendDiffReviewComments
+	2956817699: 'thread', // SendExternalThreadMessage
 	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
 	2605216420: 'selected', // SendPRDiffReviewComments
 	1407159655: 'thread', // SendPlanRevisionComments
 	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
+	2249378563: 'thread', // SetAssistantProjects
 	4291273674: 'thread', // SetAsyncQuestionDismissed
 	2813580982: 'home', // SetChatBarFavorite
 	2755315818: 'home', // SetDeviceName
@@ -454,14 +466,14 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2514763466: 'home', // SetThreadGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
+	2294583674: 'home', // SetThreadPlacement
 	3978807241: 'home', // SetWSLDistroPreference
 	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend
 	1913732562: 'thread', // StartCodexReview
-	3188309099: 'thread', // StartDiscussion
-	2336869067: 'thread', // StartDiscussionByID
+	4173453878: 'thread', // StartNextAssistantThread
 	1484798083: 'home', // StartProviderLogin
 	531852766: 'home', // StartSSHComputer
 	2623175319: 'home', // StartSSHConnection
@@ -472,6 +484,9 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	536320598: 'thread', // StopClaudeTask
 	4232843083: 'thread', // StopCodexSubagent
 	3838500111: 'thread', // StopSession
+	860377738: 'thread', // StopThreadAgentIncoming
+	2507523326: 'thread', // StopThreadAgentRow
+	3580127735: 'thread', // StopThreadAgentRows
 	2155771620: 'thread', // StopThreadBackgroundWork
 	212331826: 'thread', // StopThreadShellCommand
 	1219107798: 'thread', // SubmitAsyncAnswers
@@ -485,11 +500,14 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1289411773: 'home', // SyncOwnDevices
 	3841902986: 'thread', // SyncThreadWindow
 	870653875: 'thread', // TerminateCodexBackgroundTerminal
+	3558393553: 'selected', // ThreadOwnerChanges
+	3143780103: 'selected', // ThreadOwnerRecovery
 	894716875: 'selected', // ThreadToolCall
 	1295284198: 'selected', // ThreadToolExportChunk
 	2624544009: 'selected', // ThreadToolQuery
 	4150382574: 'selected', // ThreadToolRequestStatus
 	1018082581: 'selected', // ThreadToolResolve
+	515024442: 'selected', // ThreadToolWatch
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2161888729: 'selected', // UnapprovePR
@@ -504,7 +522,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3406073706: 'home', // UpdateClientDeviceName
 	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment
-	1706395020: 'selected', // UpdateDiscussion
 	3490094229: 'home', // UpdateKeybindings
 	595194384: 'home', // UpdateNewThreadDefaults
 	3913890634: 'selected', // UpdatePRBranch
@@ -526,28 +543,13 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2139261008: 'home', // VerifyBrowserUnlock
 	3907724148: 'thread', // VerifyEditDiffs
 	2431199839: 'home', // Version
+	777755931: 'thread', // WakeThreadWakeNow
 	2263729048: 'thread', // WatchBackgroundTaskOutput
-	4000394635: 'home', // WorkflowAgentAddMemory
-	4273669366: 'home', // WorkflowAgentAmendSeeds
-	864025136: 'home', // WorkflowAgentGetNotes
-	76499272: 'home', // WorkflowAgentGuideRun
-	1146143060: 'home', // WorkflowAgentInspectRun
-	1978122086: 'home', // WorkflowAgentListMemory
-	717593283: 'home', // WorkflowAgentListRuns
-	3748461612: 'home', // WorkflowAgentRunNarrative
-	315193175: 'home', // WorkflowAgentRunOutput
-	49502656: 'home', // WorkflowAgentRunStatus
-	3469145856: 'home', // WorkflowAgentSchedule
-	8517788: 'home', // WorkflowAgentSetNotes
-	1060823172: 'home', // WorkflowAgentStartRun
-	2308429865: 'home', // WorkflowAgentWatchRun
 	4150249282: 'home', // WorkflowAnswerQuestion
 	1931806823: 'home', // WorkflowBindThread
 	4158962817: 'home', // WorkflowCancelItem
 	3393508470: 'home', // WorkflowCompleteTakeover
-	3011758347: 'home', // WorkflowCreateAutomation
 	1792283305: 'home', // WorkflowCreateItemPR
-	1133480652: 'home', // WorkflowDeleteAutomation
 	2163033761: 'home', // WorkflowDiscardItem
 	2659721862: 'home', // WorkflowDiscardPreview
 	1236472344: 'home', // WorkflowDiscussPR
@@ -555,31 +557,26 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	819019128: 'home', // WorkflowFetchPRReviewComments
 	2130001947: 'home', // WorkflowGetEngineState
 	70120675: 'home', // WorkflowGetItem
-	3798011060: 'home', // WorkflowGetJobNotes
 	4156752389: 'home', // WorkflowGetRunMap
-	2319799628: 'project', // WorkflowListAutomations
 	2064216126: 'project', // WorkflowListDefinitions
 	1544440599: 'project', // WorkflowListItemCosts
 	3037887964: 'project', // WorkflowListItems
 	3613211765: 'project', // WorkflowListUnresolvedItems
 	3006532931: 'home', // WorkflowMergeItem
 	3764767257: 'home', // WorkflowPauseItem
+	124764894: 'home', // WorkflowPauseItemAndEndSessions
 	2570221545: 'home', // WorkflowRequestSoftStop
 	1986594501: 'home', // WorkflowRerunItem
 	3348479803: 'home', // WorkflowResolveGate
 	3138507556: 'home', // WorkflowResumeItem
 	2846965054: 'home', // WorkflowRetryFailedUnits
 	1648002260: 'home', // WorkflowRetryUnit
-	2615697354: 'home', // WorkflowRunAutomationNow
 	658224978: 'home', // WorkflowScheduleResume
 	1172404443: 'home', // WorkflowSendPRReviewCommentsToThread
-	642610548: 'home', // WorkflowSetAutomationEnabled
 	774492663: 'home', // WorkflowSetGlobalPause
-	1934298592: 'home', // WorkflowSetJobNotes
 	1009082601: 'project', // WorkflowStartRun
 	1931942299: 'home', // WorkflowTakeOverUnit
 	2006703348: 'home', // WorkflowUnbindThread
-	536579134: 'home', // WorkflowUpdateAutomation
 	146795716: 'home', // WriteTerminal
 	1859440887: 'workspace', // WriteWorkspaceFile
 };
@@ -622,8 +619,10 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
 	2692607191: 600000, // SubmitPRReview
+	3558393553: 60000, // ThreadOwnerChanges
 	894716875: 780000, // ThreadToolCall
 	2624544009: 60000, // ThreadToolQuery
+	515024442: 60000, // ThreadToolWatch
 	1291217507: 90000, // TriggerMcpAuth
 	417766274: 90000, // TriggerWorkspaceMcpAuth
 	1792283305: 1320000, // WorkflowCreateItemPR

@@ -130,7 +130,7 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 
 			const message = "stop me before I start"
 			if tc.queued {
-				app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{ID: "queue:stop-before", Message: message}})
+				dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:stop-before", Message: message}})
 			} else if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}

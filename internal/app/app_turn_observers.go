@@ -1,9 +1,6 @@
 package app
 
 import (
-	"fmt"
-	"log"
-
 	"agent-overflow/internal/provider"
 )
 
@@ -89,23 +86,4 @@ func (a *App) dispatchTurnObservers(threadID string, evt provider.ProviderEvent)
 	for _, observer := range observers {
 		observer(threadID, evt)
 	}
-}
-
-func (a *App) installDiscussionTurnObserver() {
-	a.turnObservers.discussionOnce.Do(func() {
-		a.subscribeGlobalTurnObserver(func(threadID string, evt provider.ProviderEvent) {
-			if evt.Kind != provider.EventTurnComplete {
-				return
-			}
-			if err := a.discussionService().SyncTurn(threadID); err != nil {
-				log.Printf("discussion runtime: %v", err)
-				// Emit an error event so the UI knows the discussion sync
-				// failed. The turn-complete event still propagates (we can't
-				// block it), but the error should be visible. Wire variant:
-				// this fires on the event worker in response to a wire frame,
-				// so it must drop with the rest of a stopped thread's tail.
-				a.emitWireErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
-			}
-		})
-	})
 }

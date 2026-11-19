@@ -6,6 +6,7 @@
 
 export class ApprovalResponse {
   requestId: string;
+  occurrence?: string;
   decision: string;
   decisionValue?: unknown;
   input: unknown;
@@ -16,6 +17,7 @@ export class ApprovalResponse {
   updatedPermissions?: unknown;
   constructor(data: Partial<ApprovalResponse> = {}) {
     this.requestId = data.requestId ?? '';
+    this.occurrence = data.occurrence;
     this.decision = data.decision ?? '';
     this.decisionValue = data.decisionValue;
     this.input = data.input ?? undefined;
@@ -29,10 +31,12 @@ export class ApprovalResponse {
 
 export class UserInputResponse {
   requestId: string;
+  occurrence?: string;
   decision: string;
   answers?: Record<string, unknown>;
   constructor(data: Partial<UserInputResponse> = {}) {
     this.requestId = data.requestId ?? '';
+    this.occurrence = data.occurrence;
     this.decision = data.decision ?? '';
     this.answers = data.answers;
   }

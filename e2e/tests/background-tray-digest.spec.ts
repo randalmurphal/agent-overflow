@@ -14,6 +14,7 @@ import {
   AGENT, FIRST_BATCH, RESULT_LINE, SECOND_BATCH, childResult, childTools, childUse,
   launchLines, mainProseFiller, openTrayDigest, twoTurnScenario,
 } from './background-tray-digest-helpers.js';
+import { awaitTurnCompleted } from './thread-tools-helpers.js';
 
 test('a many-row agent digest virtualizes, follows its tail and scrolls independently', async ({ harness, page }) => {
   await harness.rpc('HarnessSetScenario', {
@@ -34,7 +35,7 @@ test('a many-row agent digest virtualizes, follows its tail and scrolls independ
   await page.getByText('Digest load').click();
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'read it all', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, threadId);
 
   const { row, digest, clip, child } = await openTrayDigest(page);
 
@@ -130,7 +131,7 @@ test('an open digest loads an out-of-window launch and keeps its rows through se
   await page.getByText('Digest retention').click();
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'read it all', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, threadId);
 
   // Reopen from persistence: the thread comes back on its tail page and
   // the prose filler keeps the viewport full, so the launch stays out of
@@ -170,7 +171,7 @@ test('an open digest loads an out-of-window launch and keeps its rows through se
   await child(LATE).evaluate((el) => { el.setAttribute('data-e2e-mark', 'kept'); });
   await waitForGate(harness, 'settle-late');
   await advance(harness, mockId, 'settle-late');
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, threadId);
   await expect(child(LATE).getByTestId('tool-call-card-status')).toHaveCount(0);
   await expect(child(LATE)).toHaveAttribute('data-e2e-mark', 'kept');
   await expect(digest.getByTestId('subagent-group-loading')).toHaveCount(0);

@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 const (
@@ -60,10 +62,8 @@ var channelForwarders = map[string]string{
 // frame describing a later state, which undoes that state on every client.
 func TestThreadUpdatedFramesComeFromTheAnnouncer(t *testing.T) {
 	t.Parallel()
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
+	reporoot.ObserveGoSources(t)
+	root := reporoot.Dir(t)
 	pkgs, err := listPackagesWithExports(root)
 	if err != nil {
 		t.Fatal(err)

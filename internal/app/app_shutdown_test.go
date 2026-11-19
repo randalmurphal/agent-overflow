@@ -17,9 +17,12 @@ import (
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/workflow/engine"
 )
 
 // TestRunParallelClosersRunsEveryCloserConcurrently pins that shutdown
@@ -163,6 +166,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// and it joins the other reactor drains because the events it
 		// reacts to stop arriving once triage has drained.
 		"drain notifications",
+		// "drain worker prompts" MUST appear before "close store" — triage
+		// feeds it the same way, and a delivery or settle reads and writes
+		// the agent's queue rows in SQLite.
+		"drain worker prompts",
 		// "drain push" MUST follow "drain notifications" and precede
 		// "close store" — the notification queue is what FEEDS it, and a
 		// fan-out job reads the live registrations out of SQLite.
@@ -172,7 +179,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"stop idle session reaper",
 		// "stop retention cleanup" MUST appear between
 		// "stop idle session reaper" and "close provider sessions" —
-		// the sweep calls deleteThreadTreeLocked which mutates
+		// the sweep deletes threads, which mutates
 		// a.sessions via stopSession; running it concurrently with
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
@@ -233,6 +240,12 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// the boot-time FTS build writes straight into SQLite.
 		"stop thread search index",
 		"close thread MCP server",
+		"close workflow MCP server",
+		// "drain workflow wakes" MUST follow "close workflow MCP server" and
+		// precede "close store": a tool call's wait releases its hold on the
+		// wake queue after its response, and that server's close joins the
+		// calls; the wake work reads and writes the run rows.
+		"drain workflow wakes",
 		"close logger",
 		"close store",
 	}
@@ -245,6 +258,61 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("step[%d] = %q, want %q\n got: %v\nwant: %v", i, got[i], want[i], got, want)
 		}
+	}
+}
+
+// Wake work a workflow tool call queues as its response goes out, after the
+// engine's drain, still finishes before the store closes. Here the call
+// ended without the rest a hold kept back, so its release goes to wake the
+// thread, which the shutting-down app refuses and reports.
+func TestShutdownFinishesWakeWorkQueuedByAWorkflowToolCall(t *testing.T) {
+	app, rec := newFullyWiredTestApp(t)
+	thread := store.Thread{
+		ID: "waiting-thread", ProjectID: defaultTestProjectID, ProjectPath: "/tmp/project",
+		Title: "waiting", Provider: string(provider.Claude), Model: "sonnet",
+		Mode: threadmode.ModeChat, CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	item := store.WorkItem{
+		ID: "held-run", ProjectID: defaultTestProjectID, Goal: "Ship it", WorkflowID: "build",
+		WorkflowScope: "shared", State: string(engine.StateDone), Source: "manual", CreatedAt: 1, StartedAt: 1,
+		OriginThreadID: thread.ID,
+	}
+	if err := app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	var settled atomic.Bool
+	app.testEmitHook = func(name string, _ any) {
+		if name == string(eventchan.WorkflowError) {
+			time.Sleep(100 * time.Millisecond)
+			settled.Store(true)
+		}
+	}
+	workflows := app.workflowApplication()
+	hold := workflows.HoldRestWake(item.ID, thread.ID)
+	workflows.AfterStateEvent(engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone})
+	workflows.WaitWake()
+	if settled.Load() {
+		t.Fatal("the rest went to wake the thread while the hold stood")
+	}
+	settledAtStoreClose := make(chan bool, 1)
+	app.shutdownStepFn = func(step string, err error) {
+		rec.record(step, err)
+		switch step {
+		case "close thread MCP server":
+			// The last moment a workflow tool call can still be answering.
+			hold.Release(nil)
+		case "close store":
+			settledAtStoreClose <- settled.Load()
+		}
+	}
+	if err := app.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if !<-settledAtStoreClose {
+		t.Fatal("wake work queued by a workflow tool call ran past the store's close")
 	}
 }
 
@@ -516,9 +584,9 @@ func TestShutdownStepFnObservesErrorsPerStep(t *testing.T) {
 }
 
 // Once shutdown has joined the request work, a settlement is refused
-// rather than run past the join and the store's close: a turn end, a
-// detached settlement or a wake that won its slot after their own checks
-// start nothing. Serial: the fixture sets the environment.
+// rather than run past the join and the store's close: an idle close, a
+// handed-off wake or a wake that won its slot after their own checks
+// start nothing.
 func TestASettlementAfterShutdownIsRefused(t *testing.T) {
 	app, _ := newFullyWiredTestApp(t)
 	if err := app.Shutdown(context.Background()); err != nil {
@@ -537,7 +605,7 @@ func TestASettlementAfterShutdownIsRefused(t *testing.T) {
 	if !dropped {
 		t.Error("a wake refused at shutdown was not dropped")
 	}
-	app.threadRequestsWG.Wait()
+	app.threadRequestSettling.Wait()
 	if ran.Load() {
 		t.Fatal("work ran after shutdown")
 	}

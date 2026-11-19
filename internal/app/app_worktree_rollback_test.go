@@ -2,6 +2,8 @@ package app
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/testutil"
@@ -63,6 +65,47 @@ func TestCutRollbackByPathSparesTheWorktreeTheChildMovedTo(t *testing.T) {
 	}
 }
 
+// A move into a fresh worktree that fails after it carried the thread's
+// local changes there keeps that checkout and its branch: the changes are
+// in it and nowhere else. The failure says what was kept and why.
+func TestAFailedWorktreeMoveKeepsTheChangesItCarried(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	repo := initMainGitRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := testThread("carry-then-fail")
+	thread.ProjectID, thread.WorkspacePath, thread.Branch = project.ID, repo, "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scratch.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	execOnStore(t, dbPath, `CREATE TRIGGER refuse_checkout BEFORE UPDATE OF worktree_path ON threads
+		BEGIN SELECT RAISE(ABORT, 'injected checkout write failure'); END`)
+
+	const branch = "feature/carried"
+	_, err = app.PrepareThreadWorktree(thread.ID, "main", branch, true)
+	if err == nil || !strings.Contains(err.Error(), "injected checkout write failure") {
+		t.Fatalf("PrepareThreadWorktree = %v, want the checkout write's failure", err)
+	}
+	checkout := worktreeOfBranch(t, repo, branch)
+	if checkout == "" {
+		t.Fatalf("the checkout holding the carried changes was removed: %v", err)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(checkout, "scratch.txt")); readErr != nil || string(got) != "mine\n" {
+		t.Fatalf("the carried file = %q, %v; want it kept", got, readErr)
+	}
+	for _, want := range []string{"was kept", "1 uncommitted or untracked file", branch} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("PrepareThreadWorktree = %q, want it to say %q", err, want)
+		}
+	}
+}
+
 // Deleting an archived thread whose project is archived too removes its
 // worktree through the project root, then the thread.
 func TestRemoveWorktreeOfArchivedThreadInArchivedProject(t *testing.T) {
@@ -83,7 +126,7 @@ func TestRemoveWorktreeOfArchivedThreadInArchivedProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("archive thread: %v", err)
 	}
 	if err := app.ArchiveProject(project.ID); err != nil {
@@ -96,7 +139,7 @@ func TestRemoveWorktreeOfArchivedThreadInArchivedProject(t *testing.T) {
 	if _, err := os.Stat(attached.WorktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree %s survived: %v", attached.WorktreePath, err)
 	}
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("delete thread: %v", err)
 	}
 }

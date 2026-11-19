@@ -476,7 +476,7 @@ func TestFlushDispatch_CodexSteersTheMessageIntoTheRunningTurn(t *testing.T) {
 		t.Errorf("turn index = %d, want 7 (the running turn)", got)
 	}
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:steered", Message: "steered", Payload: json.RawMessage(`{}`)},
 	})
 
@@ -558,7 +558,7 @@ func TestFlushDispatch_ANonSteerableTurnKeepsTheMessageQueued(t *testing.T) {
 		Provider: string(provider.Codex), Codex: codexSess, Token: "not-steerable",
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:held", Message: "held for the review", Payload: json.RawMessage(`{}`)},
 	})
 

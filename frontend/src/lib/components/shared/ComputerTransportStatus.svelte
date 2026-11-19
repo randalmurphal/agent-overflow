@@ -72,6 +72,8 @@
   // the bundle notice: it is about the data this backend serves now.
   import { dismissBootFailureNotice, getBootFailureNotice } from '../../stores/bootFailureNotice.svelte';
   import { isBackendResyncing, onBackendRecovery } from '../../stores/transportRecovery';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { installTapHold } from '../../utils/tapHold';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -337,6 +339,37 @@
     openSettingsOverlay('systems');
   }
 
+  // Compact holds the banner in the layout, so a fade-out would keep its
+  // row for the length of the fade after the state it showed has ended. The
+  // content under it is live by then: a sync ends as the sidebar's rows
+  // arrive, and the late collapse moved a row out from under a tap already
+  // pressed on it. Compact shows and drops the row at once; the desktop
+  // overlay moves nothing and keeps its fade.
+  function bannerFade(node: Element) {
+    return isCompactLayout() ? {} : fade(node, { duration: 150 });
+  }
+
+  // The state can also end during a tap: between the press and the click,
+  // which the engine hit-tests against the layout as it is by then. A press
+  // on what the row's collapse would move (the compact list, the compact
+  // thread header: `data-transport-tap-hold`) keeps the row at its height
+  // until the tap completes or cannot (utils/tapHold.ts).
+  let bannerRow: HTMLElement | null = $state(null);
+  let heldHeight = $state(0);
+  $effect(() => {
+    if (!isCompactLayout()) return;
+    const stop = installTapHold(
+      (target) => bannerRow !== null && target.closest('[data-transport-tap-hold]') !== null,
+      (held) => {
+        heldHeight = held && bannerRow ? bannerRow.offsetHeight : 0;
+      },
+    );
+    return () => {
+      stop();
+      heldHeight = 0;
+    };
+  });
+
   async function handleSignIn(): Promise<void> {
     if (signingIn) return;
     signingIn = true;
@@ -363,7 +396,8 @@
 {#if visible}
   <!-- An opaque ground keeps the tint readable over desktop pane content. -->
   <div
-    transition:fade={{ duration: 150 }}
+    bind:this={bannerRow}
+    transition:bannerFade
     class="absolute inset-x-0 top-0 z-30 bg-surface-1 compact:static compact:shrink-0"
   >
   <div
@@ -434,4 +468,6 @@
     {/if}
   </div>
   </div>
+{:else if heldHeight}
+  <div aria-hidden="true" data-testid="transport-status-held-row" class="shrink-0 bg-surface-1" style:height="{heldHeight}px"></div>
 {/if}

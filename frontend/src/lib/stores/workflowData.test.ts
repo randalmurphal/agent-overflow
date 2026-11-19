@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkItem, WorkflowAutomationView, WorkflowDefinitionListing, WorkflowResolvedReceipt } from '../types/workflow';
+import type { WorkItem, WorkflowDefinitionListing, WorkflowResolvedReceipt } from '../types/workflow';
 import { findNeedle } from '../utils/findMatch';
 import {
   formatWorkflowCost,
@@ -13,7 +13,6 @@ import {
   workflowAge,
   workflowAttentionCount,
   workflowChainSummary,
-  workflowCountdown,
   workflowDefinitionMeta,
   workflowHomeGroups,
   workflowHomeRowCount,
@@ -180,15 +179,6 @@ describe('workflow copy helpers', () => {
     expect(workflowAge(now - 3 * 86_400_000)).toBe('3d');
   });
 
-  it('counts down to an automation fire', () => {
-    const now = 1_000_000;
-    expect(workflowCountdown(now + 45_000, now)).toBe('in 45s');
-    expect(workflowCountdown(now + 5 * 60_000, now)).toBe('in 5m');
-    expect(workflowCountdown(now + 3 * 3_600_000 + 40 * 60_000, now)).toBe('in 3h 40m');
-    expect(workflowCountdown(now + 4 * 3_600_000, now)).toBe('in 4h');
-    expect(workflowCountdown(now - 1, now)).toBe('in 0s');
-  });
-
   it('drops empty fragments from a `·` meta line and hides a zero cost', () => {
     expect(workflowMetaLine(['phase 1/3', '', undefined, null, '  ', '$1.00'])).toBe('phase 1/3 · $1.00');
     expect(formatWorkflowCost(0)).toBe('');
@@ -220,27 +210,22 @@ describe('home groups and the list find needle', () => {
   const definitions: Record<string, WorkflowDefinitionListing[]> = {
     p1: [{ id: 'port', name: 'Port a module', scope: 'project', phaseCount: 2, phases: [{ id: 'plan' }, { id: 'merge' }] } as WorkflowDefinitionListing],
   };
-  const automations: Record<string, WorkflowAutomationView[]> = {
-    p1: [{ id: 'a1', name: 'Weekly sweep', workflowId: 'port' } as WorkflowAutomationView],
-  };
   const source = {
     runs,
     projectNames: names,
     projectFilter: '',
     definitionsOf: (projectId: string) => definitions[projectId] ?? [],
-    automationsOf: (projectId: string) => automations[projectId] ?? [],
   };
   const ids = (query: string, projectFilter = '') => workflowHomeGroups({ ...source, projectFilter }, findNeedle(query)).map((group) => [
     group.projectId,
     [...group.attention, ...group.running, ...group.recent].map((run) => run.id),
-    group.definitions.map((entry) => entry.definition.id),
+    group.definitions.map((definition) => definition.id),
   ]);
 
   it('lists every project with rows, and none without, while the query is blank', () => {
     expect(ids('')).toEqual([['p2', ['r4', 'r3'], []], ['p1', ['r1', 'r2'], ['port']]]);
     const groups = workflowHomeGroups(source);
     expect(workflowHomeRowCount(groups)).toBe(5);
-    expect(groups.find((group) => group.projectId === 'p1')!.definitions[0].automations.map((a) => a.id)).toEqual(['a1']);
   });
 
   it('matches a run on its title, workflow, state word and project', () => {
@@ -253,10 +238,9 @@ describe('home groups and the list find needle', () => {
     expect(ids('RÉTENTION')).toEqual([['p2', ['r3'], []]]);
   });
 
-  it('matches a definition on its name, id, chain and automations', () => {
+  it('matches a definition on its name, id and chain', () => {
     expect(ids('port a')).toEqual([['p1', [], ['port']]]);
     expect(ids('plan → merge')).toEqual([['p1', [], ['port']]]);
-    expect(ids('weekly')).toEqual([['p1', [], ['port']]]);
     // The id matches the definition and the runs of it.
     expect(ids('port')).toEqual([['p2', ['r3'], []], ['p1', ['r1'], ['port']]]);
   });

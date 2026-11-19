@@ -10,6 +10,8 @@ import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { noteThread } from '../../transport/entityIndex';
 
 const SHA = '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432';
 
@@ -56,6 +58,28 @@ describe('<ChatHeaderFactsLine> branch segment', () => {
     expect(segment.dataset.checkoutKind).toBe('tag');
     expect(segment.getAttribute('title')).toBe('Tag: v2.4.0');
     expect(segment.querySelector('.lucide-tag')).not.toBeNull();
+  });
+
+  it('offers no machine, branch or worktree segment on an ask copy', async () => {
+    // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
+    // a checkout or a move would act on the workspace it shares.
+    stageBackend();
+    noteThread('thread-1', '');
+    try {
+      setBindingMock('ListLiveBackgroundTasks', async () => []);
+      setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+      const pane = await buildRegisteredPane(makeThread({
+        workspacePath: '/repo', projectPath: '/repo', projectId: 'project-1', branch: 'main', askCopy: true,
+      }));
+      const view = render(ChatHeaderFactsLine, { props: { pane } });
+      await tick();
+      expect(view.getByTestId('chat-header-facts')).toBeInTheDocument();
+      for (const id of ['chat-header-machine', 'chat-header-branch', 'chat-header-worktree']) {
+        expect(view.queryByTestId(id), id).toBeNull();
+      }
+    } finally {
+      resetStagedBackends();
+    }
   });
 
   it('names a branch with the branch icon', async () => {

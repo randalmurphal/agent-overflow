@@ -56,6 +56,9 @@ func (a *App) initIdentity(backendID string) error {
 	if err != nil {
 		return fmt.Errorf("identity: initialize session core: %w", err)
 	}
+	// A paired computer's workers whose links a session end released have
+	// their sidebar rows from here on, announced to every window.
+	sessions.OnLinksReleased(a.announceReleasedWorkers)
 	if err := sessions.RecoverOwnAdmissions(); err != nil {
 		return fmt.Errorf("identity: recover own devices: %w", err)
 	}

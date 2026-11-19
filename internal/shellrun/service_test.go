@@ -598,7 +598,10 @@ func TestAFailedRunDoesNotRemoveAnotherRunsCapture(t *testing.T) {
 	t.Parallel()
 	rec := &recorder{}
 	service := newService(t, rec, nil)
-	first := shellRequest(t, "run-shared", "echo first; sleep 1; echo done")
+	// The first run ends only once the second has started, however slow
+	// the machine is.
+	release := filepath.Join(t.TempDir(), "release")
+	first := shellRequest(t, "run-shared", "echo first; until [ -e "+release+" ]; do sleep 0.05; done; echo done")
 	if _, err := service.Start(first); err != nil {
 		t.Fatal(err)
 	}
@@ -606,6 +609,9 @@ func TestAFailedRunDoesNotRemoveAnotherRunsCapture(t *testing.T) {
 	second := shellRequest(t, "run-shared", "echo second")
 	second.ThreadID = "thread-2"
 	if _, err := service.Start(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(15 * time.Second)

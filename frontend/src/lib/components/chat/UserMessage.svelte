@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { parseJsonObject } from '../../utils/parseJsonObject';
   import File from '@lucide/svelte/icons/file';
   import Pencil from '@lucide/svelte/icons/pencil';
   import GitFork from '@lucide/svelte/icons/git-fork';
@@ -26,10 +25,11 @@
     parseUserMessageAttachments,
     parseUserMessageMeta,
     userMessageCommandRanges,
+    agentWakeOriginLabel,
     userMessageVisibleText,
-    peerSessionOriginLabel,
     userMessageOrigin,
     userMessageOriginThread,
+    userMessageOriginWake,
   } from '../../utils/userMessageMeta';
   import { agentThreadOriginChip } from './agentThreadOrigin';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
@@ -51,36 +51,33 @@
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
   // A message that reached this thread from outside Agent Overflow keeps the
-  // user bubble — it IS user-role content and the model answered it — but says
+  // user bubble: it IS user-role content and the model answered it, but says
   // so, because attributing someone else's `codex queue` write to the reader
   // is how a transcript starts lying about who asked for what.
   //
-  // A peer-session message — another Claude session on this machine sending
-  // into this thread — is the same reasoning with a stronger case: the author
-  // is not just another window, it is another model, and the reply the user is
-  // about to read was addressed to IT.
+  // A message an agent wrote (another thread, a wake, a peer Claude session,
+  // a Codex collab agent) renders as an agent-message row instead
+  // (TimelineLeaf, utils/agentMessage.ts). The agent-thread and agent-wake
+  // chips below remain for the one row that reaches here with that origin:
+  // headless Claude's join of the person's queued message after an agent's,
+  // which is the person's and keeps the bubble (isAgentMessageMeta).
   //
-  // One badge, two origins. The markup was byte-identical between them, so the
+  // One badge, several origins. The markup is identical between them, so the
   // only per-origin facts are the testid and the label; keeping them as data
-  // means a third origin is one entry here rather than a third copy of the
+  // means another origin is one entry here rather than another copy of the
   // row.
   const messageOrigin = $derived(userMessageOrigin(userMeta));
   const originBadge = $derived.by<{ testid: string; label: string; open?: (() => void) | null } | null>(() => {
-    const delivery = parseJsonObject(item.meta)?.agent_message as Record<string, unknown> | undefined;
-    if (typeof delivery?.sender === 'string') return {
-      testid: 'user-message-agent-origin',
-      label: `From ${delivery.sender === '/root' ? 'main agent' : delivery.sender}`,
-    };
     switch (messageOrigin) {
       case 'external-queue':
         return {
           testid: 'user-message-external-origin',
           label: 'Queued from outside Agent Overflow',
         };
-      case 'peer-session':
+      case 'scheduled':
         return {
-          testid: 'user-message-peer-origin',
-          label: peerSessionOriginLabel(userMeta),
+          testid: 'user-message-scheduled-origin',
+          label: 'Scheduled',
         };
       case 'codex-delegation':
         return {
@@ -88,13 +85,15 @@
           label: 'From another Codex thread',
         };
       case 'agent-thread': {
-        // An agent in another thread wrote this row. The chip carries that
-        // thread through: its title, the computer when that is a different
-        // one, and a way in when this client can reach it.
         const origin = userMessageOriginThread(userMeta);
         if (!origin) return null;
         const chip = agentThreadOriginChip(origin, threadMachine(item.threadId, null));
         return { testid: 'user-message-thread-origin', label: chip.label, open: chip.open };
+      }
+      case 'agent-wake': {
+        const wake = userMessageOriginWake(userMeta);
+        if (!wake) return null;
+        return { testid: 'user-message-wake-origin', label: agentWakeOriginLabel(wake) };
       }
       case 'app':
         return { testid: 'user-message-app-origin', label: 'Agent Overflow' };
@@ -165,8 +164,14 @@
     () => attachments,
     { cache },
   );
+  // A wake quotes its data escaped for the agent; the person reads it
+  // decoded. A wake expands no composer command and runs no shell command,
+  // so it has no command ranges or blocks to keep in step with the decoded
+  // text.
+  const isWake = $derived(messageOrigin === 'agent-wake');
   // The typed `!command` a shell output stands for is shown by its block.
-  const visibleSummary = $derived(userMessageVisibleText(item.summary, attachments));
+  // A wake's quoted data is shown decoded (userMessageVisibleText).
+  const visibleSummary = $derived(userMessageVisibleText(item.summary, attachments, messageOrigin));
   // A message that is nothing but commands is drawn as the blocks themselves,
   // without the message bubble around them.
   const commandsOnly = $derived(
@@ -176,7 +181,7 @@
   // transcript — the block it added is never stored — and every occurrence
   // renders in the accent colour, exactly as the composer showed them while
   // typing.
-  const commandRanges = $derived(userMessageCommandRanges(item.meta, visibleSummary));
+  const commandRanges = $derived(isWake ? [] : userMessageCommandRanges(item.meta, visibleSummary));
   const summarySegments = $derived(
     commandRanges.length > 0 ? commandSegments(visibleSummary, commandRanges) : [],
   );

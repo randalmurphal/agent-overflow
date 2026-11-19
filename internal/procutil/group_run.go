@@ -29,6 +29,10 @@ type GroupCommand struct {
 	// the command left behind writes until the sweep stops it. It is written
 	// from one goroutine, and never after Wait returns.
 	Output io.Writer
+	// Stderr, when set, receives stderr instead of Output, from a pipe of
+	// its own that the Group owns, drains and settles as it does Output's.
+	// It is written from one goroutine, and never after Wait returns.
+	Stderr io.Writer
 	// TerminateGrace is how long the group gets between SIGTERM and SIGKILL on
 	// cancellation and on the leftover sweep. Zero means DefaultTerminateGrace.
 	TerminateGrace time.Duration
@@ -58,13 +62,13 @@ type GroupOutcome struct {
 	// signaled. An exit status is then the command's answer to the signal,
 	// not its result.
 	Stopped bool
-	// OutputHeld reports that the output pipe was still open when the drain
+	// OutputHeld reports that an output pipe was still open when the drain
 	// grace ended: a kept leftover, or a process that left the group, holds
 	// it. What that process writes later is lost.
 	OutputHeld bool
-	// PipeErr is a failure of the output path: Output refused a write, or the
-	// pipe did not close. The command still ran; what Output holds may be
-	// incomplete.
+	// PipeErr is a failure of the output path: Output or Stderr refused a
+	// write, or a pipe did not close. The command still ran; what Output and
+	// Stderr hold may be incomplete.
 	PipeErr error
 }
 
@@ -116,11 +120,14 @@ type Group struct {
 	keepLeftovers bool
 	kill          func(*exec.Cmd) error
 
-	reader  *os.File
+	// readers are the read ends of the output pipes: Output's, then
+	// Stderr's when the command has one.
+	readers []*os.File
 	pipeErr error
-	// drained closes when the copy into Output has ended; copyErr is set
-	// before that.
+	// drained closes when every copy into Output and Stderr has ended;
+	// copyErr is set before that.
 	drained chan struct{}
+	copyMu  sync.Mutex
 	copyErr error
 
 	once    sync.Once
@@ -133,9 +140,9 @@ type Group struct {
 // starts nothing and its error is returned; otherwise the error is the start
 // failure.
 //
-// The output pipe belongs to the Group, not to os/exec: a child the command
-// left behind keeps writing into Output, which is drained from the moment the
-// command starts.
+// The output pipes belong to the Group, not to os/exec: a child the command
+// left behind keeps writing into Output and Stderr, which are drained from the
+// moment the command starts.
 func StartGroup(ctx context.Context, reaper Reaper, command GroupCommand) (*Group, error) {
 	if reaper == nil {
 		return nil, ErrNoReaper
@@ -173,29 +180,68 @@ func StartGroup(ctx context.Context, reaper Reaper, command GroupCommand) (*Grou
 	if command.Terminal != nil {
 		command.Terminal.attach(cmd)
 	}
-	reader, writer, err := os.Pipe()
+	sinks := []io.Writer{command.Output}
+	if command.Stderr != nil {
+		sinks = append(sinks, command.Stderr)
+	}
+	readers, writers, err := outputPipes(len(sinks))
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stdout, cmd.Stderr = writer, writer
+	cmd.Stdout, cmd.Stderr = writers[0], writers[len(writers)-1]
 	if err := cmd.Start(); err != nil {
-		return nil, errors.Join(err, reader.Close(), writer.Close())
+		return nil, errors.Join(err, closeFiles(readers), closeFiles(writers))
 	}
-	group.cmd, group.reader = cmd, reader
-	// The children hold the write end now. This copy would keep the drain
-	// open until the grace in Wait.
-	group.pipeErr = writer.Close()
+	group.cmd, group.readers = cmd, readers
+	// The children hold the write ends now. These copies would keep the
+	// drain open until the grace in Wait.
+	group.pipeErr = closeFiles(writers)
+	var copies sync.WaitGroup
+	for i, reader := range readers {
+		copies.Add(1)
+		go func() {
+			defer copies.Done()
+			group.copyOutput(sinks[i], reader)
+		}()
+	}
 	go func() {
-		defer close(group.drained)
-		if _, err := io.Copy(command.Output, reader); err != nil && !errors.Is(err, os.ErrClosed) {
-			group.copyErr = err
-			// Keep reading: a full pipe would stall the command on its next
-			// write.
-			_, _ = io.Copy(io.Discard, reader)
-		}
+		copies.Wait()
+		close(group.drained)
 	}()
 	reaper.Watch(cmd.Process.Pid)
 	return group, nil
+}
+
+// outputPipes opens n pipes and returns their read and write ends in order.
+func outputPipes(n int) (readers, writers []*os.File, err error) {
+	for range n {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			return nil, nil, errors.Join(err, closeFiles(readers), closeFiles(writers))
+		}
+		readers, writers = append(readers, reader), append(writers, writer)
+	}
+	return readers, writers, nil
+}
+
+func closeFiles(files []*os.File) error {
+	var err error
+	for _, file := range files {
+		err = errors.Join(err, file.Close())
+	}
+	return err
+}
+
+// copyOutput copies one pipe into its sink until the pipe ends.
+func (g *Group) copyOutput(sink io.Writer, reader *os.File) {
+	if _, err := io.Copy(sink, reader); err != nil && !errors.Is(err, os.ErrClosed) {
+		g.copyMu.Lock()
+		g.copyErr = errors.Join(g.copyErr, err)
+		g.copyMu.Unlock()
+		// Keep reading: a full pipe would stall the command on its next
+		// write.
+		_, _ = io.Copy(io.Discard, reader)
+	}
 }
 
 // Wait returns once the whole group is gone and its output has settled. The
@@ -271,10 +317,10 @@ func (g *Group) handOffKeptLeftovers() {
 	g.reaper.Release(g.cmd.Process.Pid)
 }
 
-// settle closes the read end, which also ends a drain that a process outside
+// settle closes the read ends, which also ends a drain that a process outside
 // the sweep still feeds, and reports the output path's failures.
 func (g *Group) settle() error {
-	err := errors.Join(g.pipeErr, g.reader.Close())
+	err := errors.Join(g.pipeErr, closeFiles(g.readers))
 	<-g.drained
 	return errors.Join(err, g.copyErr)
 }

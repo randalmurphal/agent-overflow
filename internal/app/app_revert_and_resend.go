@@ -118,7 +118,7 @@ func (a *App) RevertConversationAndResendMessage(
 		return result, errors.New("revert and resend: edited message content is required")
 	}
 
-	releaseAdmission, admissionErr := a.lockSendAdmission(context.WithoutCancel(ctx), threadID, opts.SendID)
+	releaseAdmission, admissionErr := a.lockClientSendAdmission(context.WithoutCancel(ctx), threadID, opts.SendID)
 	if admissionErr != nil {
 		return result, admissionErr
 	}
@@ -133,6 +133,10 @@ func (a *App) RevertConversationAndResendMessage(
 		return result, lookupErr
 	} else if found {
 		return result, nil
+	}
+	admitted, err := a.admitPersonOperation(context.WithoutCancel(ctx), threadID)
+	if err != nil {
+		return result, err
 	}
 	thread, item, err := a.resolveRevertAndResendTarget(threadID, userItemID, opts.KillRunningBackgroundTasks)
 	if err != nil {
@@ -210,7 +214,7 @@ func (a *App) RevertConversationAndResendMessage(
 	// truncation and the replacement.
 	//
 	// PreserveDraft leaves composer work untouched on successful replacement.
-	if _, sendErr := a.sendMessageLocked(context.Background(), threadID, opts.Content, sendMessageOptions{
+	if _, sendErr := a.sendMessageLocked(admitted, threadID, opts.Content, sendMessageOptions{
 		SendID:                 opts.SendID,
 		AttachmentIDs:          opts.AttachmentIDs,
 		ExpandComposerCommands: true,

@@ -40,7 +40,7 @@ func TestThreadMCPHandshakeListsEveryToolAndTheGuide(t *testing.T) {
 	if handshake.ServerInfo.Name != threadMCPName {
 		t.Errorf("server name = %q, want %q", handshake.ServerInfo.Name, threadMCPName)
 	}
-	if handshake.Instructions != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) {
+	if handshake.Instructions != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID, subThreadPlace{})) {
 		t.Error("initialize did not carry the thread tools guide as its instructions")
 	}
 
@@ -211,6 +211,9 @@ func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
 	// The turn stays open, which is what lets the answer be a reply rather
 	// than the turn's last words.
 	f.mockClaudeHoldingTheTurn(t, "counting")
+	// The spawn call holds its token until its response is flushed, and the
+	// reply can settle before that release runs; the wake is then the sweep's.
+	f.runSweeps()
 	callerToken := uuid.NewString()
 	f.app.sessionManager().put(f.caller.ID, session{Token: callerToken, Provider: string(provider.Claude)})
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })

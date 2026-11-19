@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/terminal"
 )
 
@@ -118,6 +119,15 @@ func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, ga
 		args = append(args, "--disallowedTools", tool)
 	}
 
+	if mcpJSON, ok := claude.MCPConfigJSON(cfg.MCPServers); ok {
+		// The same flag and payload as the headless buildArgs; one binary
+		// reads it the same way in both modes.
+		args = append(args, "--mcp-config", mcpJSON)
+	}
+	for _, tool := range claude.SanitizeAllowedTools(cfg.AllowedTools) {
+		args = append(args, "--allowedTools", tool)
+	}
+
 	// The hook block and cfg.Retention's cleanupPeriodDays share the one
 	// `--settings` flag; the transcript sweep covers the whole config home,
 	// whichever surface runs it (claude/retention.go).
@@ -146,23 +156,33 @@ var observeHookEvents = []string{
 	"PostCompact",
 }
 
-// hookSettingsJSON renders the --settings flag payload: the AO relay
-// subcommand registered for every captured event, plus the cross-session
-// inbound policy. The flag is the flagSettings layer, which merges with (does
-// not clobber) the user's own hooks.
+// observedHooks is a copy of the hook groups hooks holds for event.
+func observedHooks(hooks map[string]any, event string) []any {
+	groups, _ := hooks[event].([]any)
+	return append([]any{}, groups...)
+}
+
+// hookSettingsJSON renders the --settings flag payload, the flagSettings
+// layer, which merges with (does not clobber) the user's own settings and
+// hooks. It registers the AO relay subcommand for every captured event, and
+// mirrors the parts of the headless block the app owns on every Claude
+// surface: the cross-session inbound policy, the native-memory switch, the
+// memory SessionStart and UserPromptSubmit hooks and the additional
+// directories
+// (docs/specs/memory.md).
 //
 // crossSessionInbound is here for the reason the headless block states it
 // (claude/options.go §claudeCrossSessionInbound): the peer registry is
 // machine-wide, AO's env gate is not the only thing that can bind the inbox,
-// and an ABSENT key is the CLI's mode-parity path — which, with the two remote
+// and an ABSENT key is the CLI's mode-parity path, which, with the two remote
 // GrowthBook flags live, auto-delivers a peer's message as a user turn in a
 // session whose user never opted in. "Off means off" is not a headless-only
 // property, so the refusal is stated on this surface too.
 //
-// The REST of the headless block (fastMode, outputStyle, the env map) is
+// The rest of the headless block (fastMode, outputStyle, the env map) is
 // deliberately not mirrored: those axes are spawn options the app resolves for
-// a headless session, and the interactive TUI is the user's own CLI — it keeps
-// its own settings-file resolution for them.
+// a headless session, and the interactive TUI is the user's own CLI, which
+// keeps its own settings-file resolution for them.
 func hookSettingsJSON(cfg Config) (string, error) {
 	cmd, err := hookCommand(cfg)
 	if err != nil {
@@ -183,10 +203,24 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	for _, ev := range observeHookEvents {
 		hooks[ev] = observeEntry
 	}
+	// The memory hook joins whatever observes the same event.
+	if hook := cfg.SessionStartHook; hook != nil {
+		hooks["SessionStart"] = append(observedHooks(hooks, "SessionStart"), claude.SessionStartHookGroup(*hook))
+		if prompt := claude.UserPromptSubmitHookGroup(*hook); prompt != nil {
+			hooks["UserPromptSubmit"] = append(observedHooks(hooks, "UserPromptSubmit"), prompt)
+		}
+	}
 
 	block := map[string]any{"hooks": hooks}
 	if inbound := strings.TrimSpace(cfg.CrossSessionInbound); inbound != "" {
 		block["crossSessionInbound"] = inbound
+	}
+	if cfg.NativeMemoryOff {
+		block["autoMemoryEnabled"] = false
+		block["env"] = claude.NativeMemoryOffEnv(true)
+	}
+	if permissions := claude.AccessPermissions(cfg.AccessDirs); permissions != nil {
+		block["permissions"] = permissions
 	}
 
 	data, err := json.Marshal(block)
@@ -208,7 +242,7 @@ func hookCommand(cfg Config) (string, error) {
 			return "", fmt.Errorf("claudetui: resolve AO executable for hook: %w", err)
 		}
 	}
-	return shellQuote(exe) + " " + HookSubcommand, nil
+	return stringsx.ShellQuote(exe) + " " + HookSubcommand, nil
 }
 
 // BaseURLEnv is the variable that points Claude Code at an API endpoint. This
@@ -298,10 +332,4 @@ func buildEnv(unset []string, cfg Config, gatewayURL, hookURL, hookToken string)
 		out = append(out, todoReminderModeEnvVar+"=off")
 	}
 	return out
-}
-
-// shellQuote wraps s in single quotes, escaping any embedded single quotes,
-// so it survives Claude Code running the hook command through a shell.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

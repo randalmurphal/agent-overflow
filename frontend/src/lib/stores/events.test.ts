@@ -13,6 +13,8 @@ import {
 import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
+import { hasUnread } from '../utils/threadStatusPill';
+import { sidebarListsThread } from '../components/sidebar/sidebarBuckets';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
@@ -2046,6 +2048,152 @@ describe('setupEventListeners', () => {
       expect(getThreads()).toEqual([]);
     });
 
+    it("moves a pane showing an assistant's old thread to the one its handoff listed", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
+      });
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+    });
+
+    it("moves a pane on a handoff whose old thread was unarchived first, and keeps that row listed", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      emitWailsEvent('thread:updated', {
+        action: 'full',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: false, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
+      });
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+      expect(getThreads().map((t) => t.id).sort()).toEqual(['thread-1', 'thread-2']);
+      expect(getThreads().find((t) => t.id === 'thread-1')?.pastAgentId).toBe('agent-1');
+    });
+
+    it("moves a pane on a handoff whose frame was lost, from the catalog naming the assistant's new thread", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      // No frame: the next catalog lists the new thread and not the old one.
+      setBindingMock('ListThreads', async () => [successor]);
+      await refreshThreads();
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+    });
+
+    it("moves a pane on a handoff whose unlisted frame was lost after the new thread's listed frame", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      setBindingMock('ListThreads', async () => [successor]);
+      await refreshThreads();
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+    });
+
+    it('moves a pane to the new thread from a catalog read while the handoff ran, listing both as current', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      // The list holds the new thread as current and the old one as past.
+      setBindingMock('ListThreads', async () => [successor, makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+
+      expect(getThreads().find((t) => t.id === 'thread-1')?.pastAgentId).toBe('agent-1');
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+    });
+
+    it('keeps a pane a live handoff moved when a catalog read from before the handoff lands', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+      let answer!: (rows: unknown[]) => void;
+      setBindingMock('ListThreads', () => new Promise((resolve) => { answer = resolve; }));
+      const read = refreshThreads();
+      await vi.waitFor(() => expect(answer).toBeDefined());
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
+      });
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+      answer([makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await read;
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+      expect(pane.threadId).toBe('thread-2');
+    });
+
+    it("leaves a pane opened on an assistant's past thread where it is when the catalog lands", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
+        makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
+      ]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
+
+      await refreshThreads();
+
+      expect(pane.threadId).toBe('thread-1');
+      expect(findPaneShowingThread('thread-2')).toBeNull();
+    });
+
+    it("closes the pane of an assistant's past thread archived again, which no handoff names", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
+        makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
+      ]);
+      await refreshThreads();
+      await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
+
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+      });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+      expect(findPaneShowingThread('thread-2')).toBeNull();
+    });
+
+    it('closes the pane of an archived thread that no handoff replaced', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', agentId: 'agent-1' })]);
+      await refreshThreads();
+      await buildPane(makeThread({ id: 'thread-1', agentId: 'agent-1' }));
+
+      emitWailsEvent('thread:updated', { action: 'unlisted', thread: makeThread({ id: 'thread-1', archived: true, agentId: 'agent-1' }) });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
     it('closes a pane whose thread was deleted elsewhere', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1' }));
       expect(pane.threadId).toBe('thread-1');
@@ -2073,6 +2221,40 @@ describe('setupEventListeners', () => {
 
       emitWailsEvent('thread:updated', { action: 'listed', thread: { ...thread, title: 'Renamed' } });
       expect(getThreads().map((t) => t.id)).toEqual(['thread-1', 'thread-2']);
+      stopObserving();
+    });
+
+    it('keeps an owned worker off the sidebar whatever frame announces it, and a pane on it open', async () => {
+      const worker = makeThread({ id: 'worker', placement: 'standalone' });
+      setBindingMock('ListThreads', async () => [worker, makeThread({ id: 'thread-2' })]);
+      await refreshThreads();
+      const pane = await buildPane(worker);
+      const removed: string[] = [];
+      const stopObserving = addThreadRemovedObserver((id) => removed.push(id));
+      const sidebar = () => getThreads().filter(sidebarListsThread).map((t) => t.id);
+      expect(sidebar()).toEqual(['worker', 'thread-2']);
+
+      // A placement write that makes it owned announces it `full`: the
+      // sidebar drops it, the pane stays and follows the row.
+      emitWailsEvent('thread:updated', { action: 'full', thread: { ...worker, placement: 'owned', title: 'Owned' } });
+      expect(sidebar()).toEqual(['thread-2']);
+      expect(findPaneShowingThread('worker')).toBe(pane);
+      expect(pane.thread?.placement).toBe('owned');
+
+      // A draft or worktree write that takes it off the listing.
+      emitWailsEvent('thread:updated', { action: 'emptied', thread: { ...worker, placement: 'owned' } });
+      expect(sidebar()).toEqual(['thread-2']);
+      expect(findPaneShowingThread('worker')).toBe(pane);
+
+      // A listing frame never makes an owned worker a sidebar row.
+      emitWailsEvent('thread:updated', { action: 'listed', thread: { ...worker, placement: 'owned' } });
+      expect(sidebar()).toEqual(['thread-2']);
+      expect(findPaneShowingThread('worker')).toBe(pane);
+      expect(removed).toEqual([]);
+
+      // Show in Sidebar lists it again.
+      emitWailsEvent('thread:updated', { action: 'listed', thread: { ...worker, placement: 'standalone' } });
+      expect(sidebar()).toEqual(['worker', 'thread-2']);
       stopObserving();
     });
 
@@ -2236,6 +2418,36 @@ describe('setupEventListeners', () => {
     expect(liveThreadActivity('thread-stale')).toBe(100);
     expect(pane.thread?.updatedAt).toBe(100);
     expect(liveProjectActivity('project-stale')).toBe(100);
+  });
+
+  it('bumps a spawned thread\'s own project, and no project for an assistant or its helper', async () => {
+    // Project work lists in its own project under the assistant's row
+    // there; the assistant and its helpers live outside every project.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'agent', projectId: '', agentId: 'ops', updatedAt: 100 }),
+      makeThread({ id: 'helper', projectId: '', helperOfAgentId: 'ops', spawnedByThreadId: 'agent', updatedAt: 100 }),
+      makeThread({ id: 'child', projectId: 'project-child', spawnedByThreadId: 'agent', updatedAt: 100 }),
+      makeThread({ id: 'plain', projectId: 'project-other', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-child', 100),
+      projectWithCounts('project-other', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+    const complete = (threadId: string, completedAt: number) => emitWailsEvent('provider:turn_completed', {
+      threadId, turnId: 'turn-1', turnIndex: 0, startedAt: 150,
+      completedAt, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
+    });
+
+    complete('child', 5000);
+    expect(liveProjectActivity('project-child')).toBe(5000);
+    complete('agent', 6000);
+    complete('helper', 7000);
+    expect(liveProjectActivity('project-child')).toBe(5000);
+    expect(liveProjectActivity('project-other')).toBe(100);
+    complete('plain', 8000);
+    expect(liveProjectActivity('project-other')).toBe(8000);
   });
 
   it('does NOT bump cached project activity from item_event deltas', async () => {
@@ -2425,6 +2637,41 @@ describe('setupEventListeners', () => {
     expect(liveThreadActivity('thread-stale')).toBe(100);
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
     expect(liveProjectActivity('project-stale')).toBe(100);
+  });
+
+  it('keeps a quiet tick from moving the thread, and its row from lighting Completed', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-tick', projectId: 'project-tick', updatedAt: 100, lastReadAt: 150, latestTurnCompletedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-tick', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    // The row triage sent before the event: the read marker it kept past
+    // the tick's completion.
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-tick', projectId: 'project-tick', updatedAt: 100, lastReadAt: 12_000, latestTurnCompletedAt: 12_000 }),
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-tick',
+      turnId: 'turn-2',
+      turnIndex: 1,
+      startedAt: 11_000,
+      completedAt: 12_000,
+      stopReason: 'end_turn',
+      countsAsActivity: true,
+      quiet: true,
+    });
+    await nextFrame();
+
+    expect(liveThreadActivity('thread-tick')).toBe(100);
+    expect(liveProjectActivity('project-tick')).toBe(100);
+    const row = getThreads().find((thread) => thread.id === 'thread-tick');
+    expect(row?.latestTurnCompletedAt).toBe(12_000);
+    expect(hasUnread(row!)).toBe(false);
   });
 
   it('bumps cached project activity on provider:approval request', async () => {

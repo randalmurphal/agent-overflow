@@ -157,8 +157,8 @@
   //
   // `externalContentGeometry` is deliberately unset. There is no
   // virtualizer inside a run, so the controller's own contentEl
-  // ResizeObserver is the right geometry source (the ChannelView
-  // precedent); the timeline leaves it set because its engine reports
+  // ResizeObserver is the right geometry source; the timeline leaves it
+  // set because its engine reports
   // geometry the RO would otherwise have to re-derive.
   //
   // `$state.raw` because the controller is compared by identity: a plain

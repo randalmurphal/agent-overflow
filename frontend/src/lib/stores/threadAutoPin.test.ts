@@ -35,11 +35,10 @@ describe('shouldAutoPinFirstSend', () => {
   });
 
 
-  it('still refuses imports, children, hidden modes, and non-drafts', () => {
+  it('still refuses imports, hidden modes, and non-drafts', () => {
     expect(shouldAutoPinFirstSend(undefined)).toBe(false);
     expect(shouldAutoPinFirstSend(mkThread({ isDraft: false }))).toBe(false);
     expect(shouldAutoPinFirstSend(mkThread({ importSource: 'claude' }))).toBe(false);
-    expect(shouldAutoPinFirstSend(mkThread({ parentThreadId: 'root' }))).toBe(false);
     expect(shouldAutoPinFirstSend(mkThread({ mode: 'workflow' }))).toBe(false);
   });
 
@@ -53,7 +52,7 @@ describe('shouldAutoPinFirstSend', () => {
 describe('autoPinNewThread', () => {
   beforeEach(async () => {
     resetBindingMocks();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('GetSettings', async () => makeSettings({ autoPinNewThreads: true }));
     await loadSettings();
   });

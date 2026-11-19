@@ -16,13 +16,12 @@ function validated(value: unknown): ChatBarFavorite[] {
   if (!Array.isArray(value)) return [];
   const rows = new Map<string, ChatBarFavorite>();
   for (const raw of value.slice(0, LIMIT)) {
-    if (!raw || typeof raw !== 'object' || (raw.kind !== 'model' && raw.kind !== 'discussion')
+    if (!raw || typeof raw !== 'object' || raw.kind !== 'model'
       || typeof raw.value !== 'string' || !raw.value || raw.value.length > 4096
       || typeof raw.label !== 'string' || raw.label.length > 1024
-      || (raw.kind === 'model' && !isProviderID(raw.provider))) continue;
-    const row: ChatBarFavorite = { kind: raw.kind, value: raw.value, label: raw.label,
+      || !isProviderID(raw.provider)) continue;
+    const row: ChatBarFavorite = { kind: raw.kind, provider: raw.provider, value: raw.value, label: raw.label,
       createdAt: Number.isSafeInteger(raw.createdAt) && raw.createdAt >= 0 ? raw.createdAt : 0 };
-    if (row.kind === 'model') row.provider = raw.provider;
     rows.set(identity(row), row);
   }
   return [...rows.values()];

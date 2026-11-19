@@ -166,7 +166,7 @@ func TestAuthoredWorkspaceReturnsToThreadRowForReplacementProcess(t *testing.T) 
 		t.Fatalf("after the move: authored workspace = %q, want %q", got, worktree)
 	}
 
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 
 	replaced := settleProse(t, router, st, "t1", "Replacement: ![c](shots/c.png)")
 	if got, _ := authoredWorkspaceFromMeta(t, replaced.Meta); got != root {

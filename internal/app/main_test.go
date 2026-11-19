@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/wsldistro"
@@ -16,6 +17,12 @@ import (
 // contract after relocating the package, then run against the shared migrated
 // store template so the suite does not replay every migration per fixture.
 func TestMain(m *testing.M) {
+	// A session that receives memory runs this binary as its SessionStart
+	// hook (os.Executable in readSessionMemory), as main() handles in the
+	// shipped binary.
+	if len(os.Args) > 1 && os.Args[1] == memory.HookSubcommand {
+		os.Exit(memory.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	packageDir, err := os.Getwd()
 	if err != nil {
 		panic(err)
