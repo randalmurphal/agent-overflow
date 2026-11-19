@@ -354,6 +354,78 @@ func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
 	}
 }
 
+// A reopen whose closed tab a clear, a jar switch or the thread's close
+// forgets after the reopen took it opens nothing: the forgotten address does
+// not load in the new profile, however far the reopen's tab got by then.
+func TestAReopenedTabForgottenAfterItsPopOpensNothing(t *testing.T) {
+	forgets := []struct {
+		name string
+		run  func(t *testing.T, m *Manager, access Access)
+	}{
+		{"clear site data", func(t *testing.T, m *Manager, _ Access) {
+			if err := m.ClearSiteData(context.Background()); err != nil {
+				t.Error(err)
+			}
+		}},
+		{"its jar switch", func(t *testing.T, m *Manager, access Access) {
+			if err := m.SetJar(access, JarProject); err != nil {
+				t.Error(err)
+			}
+		}},
+		{"its close", func(t *testing.T, m *Manager, access Access) {
+			if err := m.CloseThread(context.Background(), access.ThreadID); err != nil {
+				t.Error(err)
+			}
+		}},
+		// The forget lands while the reopen's tab waits for its page: a
+		// clear forgets in the engine-start hold the creation waits for.
+		{"a forget while its page waits", func(t *testing.T, m *Manager, access Access) {
+			m.startMu.Lock()
+			go func() {
+				defer m.startMu.Unlock()
+				for {
+					m.mu.Lock()
+					waiting := len(m.pending) > 0
+					if waiting {
+						m.forgetBrowsingLocked(access.ThreadID)
+					}
+					m.mu.Unlock()
+					if waiting {
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}()
+		}},
+	}
+	for _, forget := range forgets {
+		t.Run(forget.name, func(t *testing.T) {
+			m, access, ids := newTabsManager(t, addr("keep"), addr("x"))
+			if err := m.CloseCompanionPage(t.Context(), access, ids[1]); err != nil {
+				t.Fatal(err)
+			}
+			m.reopenPopped = func() { forget.run(t, m, access) }
+			if err := m.ReopenClosedTab(t.Context(), access); err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			for _, tab := range m.CompanionState(access).Pages {
+				if tab.URL == addr("x") {
+					t.Fatalf("the forgotten tab was reopened: %+v", tab)
+				}
+			}
+			m.mu.Lock()
+			pending := len(m.pending)
+			m.mu.Unlock()
+			if pending != 0 {
+				t.Fatalf("%d creations are left", pending)
+			}
+			if got := closedCount(t, m, access); got != 0 {
+				t.Fatalf("ClosedTabs = %d", got)
+			}
+		})
+	}
+}
+
 // Clearing site data and deleting the thread forget the closed tabs; a
 // reopen that cannot open a tab keeps its entry.
 func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {

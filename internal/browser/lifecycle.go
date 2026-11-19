@@ -128,14 +128,22 @@ func (m *Manager) goLife(fn func()) bool {
 
 type pageAdmissionKey struct{}
 
-// WithPageAdmission returns ctx carrying the caller's own condition for a
-// page it opens: a page creation under ctx runs admit in the m.mu hold that
-// adds its tab and opens nothing when admit fails, answering its error. A
-// CloseThread that runs after admit starts failing closes every tab added
-// before, so a caller whose admit fails once the thread's pages are closed
-// leaves no page behind. admit must not call the Manager.
+// WithPageAdmission returns ctx carrying a condition of the caller's for the
+// pages it opens, after any ctx already carries. A page creation under ctx
+// runs every condition in the m.mu hold that adds its tab, and again in the
+// startMu hold that creates and lists its page; one failing opens nothing,
+// leaves no tab and answers its error. A CloseThread that runs after admit
+// starts failing closes every tab added before, so a caller whose admit fails
+// once the thread's pages are closed leaves no page behind. admit must not
+// call the Manager.
 func WithPageAdmission(ctx context.Context, admit func() error) context.Context {
-	return context.WithValue(ctx, pageAdmissionKey{}, admit)
+	prev := pageAdmissionOf(ctx)
+	return context.WithValue(ctx, pageAdmissionKey{}, func() error {
+		if err := prev(); err != nil {
+			return err
+		}
+		return admit()
+	})
 }
 
 func pageAdmissionOf(ctx context.Context) func() error {
@@ -144,6 +152,12 @@ func pageAdmissionOf(ctx context.Context) func() error {
 	}
 	return func() error { return nil }
 }
+
+// admissionRefused is a creation a WithPageAdmission condition refused.
+type admissionRefused struct{ err error }
+
+func (e *admissionRefused) Error() string { return e.err.Error() }
+func (e *admissionRefused) Unwrap() error { return e.err }
 
 // createPage creates a page for access's thread. Its tab appears at once,
 // creating, and the call returns once the engine page exists. A tab closed
@@ -170,8 +184,15 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	defer close(pending.done)
 	owner := access.ThreadID
 
+	callerAdmits := pageAdmissionOf(ctx)
+	admit := func() error {
+		if err := callerAdmits(); err != nil {
+			return &admissionRefused{err: err}
+		}
+		return nil
+	}
 	m.mu.Lock()
-	if err := pageAdmissionOf(ctx)(); err != nil {
+	if err := callerAdmits(); err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
@@ -216,9 +237,12 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	var scope *jarScope
 	var err error
 	var closed bool
+	var refused *admissionRefused
 	for {
 		m.startMu.Lock()
-		scope, err = m.openPageLocked(createCtx, access, p, nil)
+		scope, err = m.openPageLocked(createCtx, access, p, admit)
+		refused = nil
+		errors.As(err, &refused)
 		// One m.mu hold settles the creation against its close flag and its
 		// thread's jar as they are now, so neither a close nor a jar switch can
 		// land between reading them and acting on it.
@@ -239,7 +263,7 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 			delete(m.pending, p.id)
 			delete(scope.creating, p)
 			m.listPageLocked(scope, p)
-		case err != nil && (closed || !user):
+		case err != nil && (closed || !user || refused != nil):
 			delete(m.pending, p.id)
 		case err != nil:
 			pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
@@ -277,10 +301,12 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	m.repairActivePage(owner)
 	m.emitThreadState(owner)
 	m.syncPanePresentation(owner)
-	if closed {
+	switch {
+	case closed:
 		return nil, errClosedWhileCreating
-	}
-	if user {
+	case refused != nil:
+		return nil, refused.err
+	case user:
 		return nil, &shownOnTab{err: err}
 	}
 	return nil, err

@@ -103,6 +103,10 @@ func (s *closedTabs) push(tab closedTab) {
 	}
 }
 
+// errReopenForgotten refuses a reopened tab whose closed-tab history was
+// forgotten after its entry was taken.
+var errReopenForgotten = errors.New("browser: the closed tab was forgotten")
+
 // ReopenClosedTab reopens the thread's most recently closed tab at its
 // position, selected, and loads its address as the address bar would. With
 // none to reopen, or with ctx's numbered selection passed or its pane
@@ -125,7 +129,22 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 	if m.reopenPopped != nil {
 		m.reopenPopped()
 	}
-	info, err := m.openUserTab(ctx, access, turn, tab.url, tab.label, tab.index)
+	// A forget of the thread's browsing history after the pop (a clear, a
+	// jar switch, the thread's close) took the tab with it: the page is
+	// admitted only while the history it came from is still the thread's,
+	// checked again where its page is created, which a clear's close and
+	// forget exclude.
+	admitted := WithPageAdmission(ctx, func() error {
+		if m.closedTabs[access.ThreadID] != stack {
+			return errReopenForgotten
+		}
+		return nil
+	})
+	info, err := m.openUserTab(admitted, access, turn, tab.url, tab.label, tab.index)
+	if errors.Is(err, errReopenForgotten) {
+		m.emitThreadState(access.ThreadID)
+		return nil
+	}
 	passed := errors.Is(err, errSelectionPassed)
 	if err != nil && info.ID == "" {
 		if m.reopenRefused != nil && !passed {
