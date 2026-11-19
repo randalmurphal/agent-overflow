@@ -41,6 +41,12 @@ type jarEngine struct {
 	// lastPage is the handle of the page NewPage created last.
 	lastPage string
 	cleared  atomic.Int64
+	// clearGate, when set, holds the engine's site-data clear, signalling
+	// clearing first; profileInClear records a profile created during it.
+	clearGate      chan struct{}
+	clearing       chan struct{}
+	inClear        atomic.Bool
+	profileInClear atomic.Bool
 }
 
 type jarProfile struct {
@@ -77,6 +83,9 @@ func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engine
 		e.profiling <- struct{}{}
 		<-gate
 	}
+	if e.inClear.Load() {
+		e.profileInClear.Store(true)
+	}
 	profile, err := e.fakeEngine.NewProfile(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -89,6 +98,15 @@ func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engine
 }
 
 func (e *jarEngine) ClearSiteData(context.Context) error {
+	e.inClear.Store(true)
+	defer e.inClear.Store(false)
+	e.mu.Lock()
+	gate := e.clearGate
+	e.mu.Unlock()
+	if gate != nil {
+		e.clearing <- struct{}{}
+		<-gate
+	}
 	e.cleared.Add(1)
 	return nil
 }

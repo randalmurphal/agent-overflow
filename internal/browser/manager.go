@@ -519,7 +519,7 @@ func (m *Manager) Reconfigure(config Config) error {
 		// disabled browser keeps no browser state, and a page restored into
 		// the other site-data mode would not be the page that was open. The
 		// threads' jar settings stay unless the browser is off.
-		return m.forgetAllPages(context.Background(), config.Enabled)
+		return m.forgetAllPages(context.Background(), config.Enabled, nil)
 	}
 	return nil
 }
