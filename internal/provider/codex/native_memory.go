@@ -16,13 +16,12 @@ func (s *Session) disableResumedThreadMemories(ctx context.Context) error {
 	if !s.nativeMemoryOff {
 		return nil
 	}
-	if _, err := s.sendRequest(ctx, "thread/memoryMode/set", map[string]any{
+	// The request's error names the call.
+	_, err := s.sendRequest(ctx, "thread/memoryMode/set", map[string]any{
 		"threadId": s.rootThreadID(),
 		"mode":     "disabled",
-	}); err != nil {
-		return fmt.Errorf("codex: thread/memoryMode/set: %w", err)
-	}
-	return nil
+	})
+	return err
 }
 
 // reportResumedThreadMemoriesFailure tells the user the thread may still be

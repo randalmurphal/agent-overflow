@@ -99,7 +99,7 @@ func TestResumeExcludesTheThreadFromMemories(t *testing.T) {
 			if len(errs) != tc.wantErrors {
 				t.Fatalf("errors = %v, want %d", errs, tc.wantErrors)
 			}
-			if tc.wantErrors == 1 && !strings.Contains(errs[0], "Codex can still learn from it") {
+			if tc.wantErrors == 1 && (!strings.Contains(errs[0], "Codex can still learn from it") || strings.Count(errs[0], "codex: thread/memoryMode/set:") != 1) {
 				t.Fatalf("error = %q", errs[0])
 			}
 		})
