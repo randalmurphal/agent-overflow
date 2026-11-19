@@ -1,7 +1,9 @@
 // When the browser pane reports its native view shown, in real Chromium with
 // the real pane strip: a report waits for the pane's mount, and the first
 // one goes out when the mount appears, even when the pane's state arrived
-// before it and nothing moved since. The engines show and hide the native
+// before it and nothing moved since; and the view reads hidden while the
+// compact thread list is the screen shown, though the strip keeps its
+// bounds under it. The engines show and hide the native
 // view from exactly these reports (internal/browser `paneCanShow`).
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -16,10 +18,11 @@ vi.mock('../chat/ChatView.svelte', async () => ({
 import PaneHost from '../panes/PaneHost.svelte';
 // Loaded up front, so the companion's lazy import of it resolves at once.
 import './BrowserPane.svelte';
-import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { createPane, resetPanesForTest, revealPane } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
 import { resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
@@ -73,6 +76,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   answerAttach();
+  setCompactLayoutForTest(false);
   if (app) await unmount(app);
   app = null;
   host.remove();
@@ -98,4 +102,25 @@ it('reports the rect when the mount arrives after the pane already had its state
   answerAttach();
   await waitFor(() => reports.length > 0, 'a rect reported for the mount');
   expect(reports.at(-1)).toMatchObject({ mount: 'mount-1', visible: true });
+});
+
+it('reports the view hidden while the compact thread list is shown over the strip', async () => {
+  answerAttach();
+  await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown');
+  // Compact, with the strip resting on the browser pane.
+  setCompactLayoutForTest(true);
+  revealPane('browser-main');
+  await waitFor(() => getCompactScreen() === 'thread' && reports.at(-1)?.visible === true, 'the browser view shown on the thread screen');
+
+  showCompactList();
+  await waitFor(() => reports.at(-1)?.visible === false, 'the browser view hidden on the list screen');
+  // The strip is hidden by visibility, so it keeps its box.
+  const hostRect = host.querySelector<HTMLElement>('[data-testid="browser-pane-host-rect"]')!;
+  expect(getComputedStyle(hostRect).visibility).toBe('hidden');
+  expect(hostRect.getBoundingClientRect().width).toBeGreaterThan(0);
+  for (let i = 0; i < 4; i += 1) await raf();
+  expect(reports.at(-1)!.visible).toBe(false);
+
+  showCompactThread();
+  await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown again on the thread screen');
 });
