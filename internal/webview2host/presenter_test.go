@@ -204,7 +204,8 @@ var (
 
 // placedAt is the placement of a page both of whose writes to b succeeded.
 func placedAt(b paneBounds) appliedPlacement {
-	placed, err := commitPlacement(b)
+	moved := func() error { return nil }
+	placed, err := commitPlacement(b, clippedBy(writeNative(moved)), writeNative(moved))
 	if err != nil {
 		panic(err)
 	}
@@ -478,32 +479,41 @@ func TestNextPresentStepMovesBeforeShowingAndNeverMovesHidden(t *testing.T) {
 	}
 }
 
-// A placement exists only when every write succeeded: the first failure
-// stops the writes after it and leaves no known place.
+// A placement exists only when every write the page needs ran and
+// succeeded: its controller's, and its clip container's where it has one.
+// No write, a failed one, or a clip neither parented nor written leaves
+// no known place.
 func TestAPlacementIsCommittedOnlyByEveryWrite(t *testing.T) {
 	at := paneBounds{X: 4, W: 10, H: 10}
 	failed := errors.New("SetWindowPos")
-	for _, fail := range []int{0, 1, -1} {
-		var made []int
-		write := func(i int) func() error {
-			return func() error {
-				made = append(made, i)
-				if i == fail {
-					return failed
-				}
-				return nil
+	ok := writeNative(func() error { return nil })
+	refused := writeNative(func() error { return failed })
+	for _, tc := range []struct {
+		name       string
+		clip       clipWrite
+		controller nativeWrite
+		known      bool
+		err        error
+	}{
+		{"parented, controller moved", directlyParented(), ok, true, nil},
+		{"clipped, both moved", clippedBy(ok), ok, true, nil},
+		{"parented, controller refused", directlyParented(), refused, false, failed},
+		{"clipped, clip refused", clippedBy(refused), nativeWrite{}, false, failed},
+		{"clipped, controller refused", clippedBy(ok), refused, false, failed},
+		{"parented, controller not written", directlyParented(), nativeWrite{}, false, nil},
+		{"clipped, controller not written", clippedBy(ok), nativeWrite{}, false, nil},
+		{"clipped, clip not written", clippedBy(nativeWrite{}), ok, false, nil},
+		{"no clip at all", clipWrite{}, ok, false, nil},
+	} {
+		placed, err := commitPlacement(at, tc.clip, tc.controller)
+		if tc.known {
+			if err != nil || !placed.at(at) {
+				t.Errorf("%s: %+v, %v, want placed at %+v", tc.name, placed, err, at)
 			}
+			continue
 		}
-		placed, err := commitPlacement(at, write(0), write(1))
-		switch fail {
-		case -1:
-			if err != nil || !placed.at(at) || len(made) != 2 {
-				t.Fatalf("both writes: %+v, %v, writes %v", placed, err, made)
-			}
-		default:
-			if !errors.Is(err, failed) || placed.known || placed.at(at) || len(made) != fail+1 {
-				t.Fatalf("write %d failed: %+v, %v, writes %v", fail, placed, err, made)
-			}
+		if err == nil || placed.known || placed.at(at) || (tc.err != nil && !errors.Is(err, tc.err)) {
+			t.Errorf("%s: %+v, %v, want no known place and an error", tc.name, placed, err)
 		}
 	}
 	if (appliedPlacement{}).at(paneBounds{}) {

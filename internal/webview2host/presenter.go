@@ -1,6 +1,11 @@
 package webview2host
 
-import "agent-overflow/internal/paneplace"
+import (
+	"errors"
+	"fmt"
+
+	"agent-overflow/internal/paneplace"
+)
 
 // pagePresentation is what the launcher knows about one page's presentation
 // from the backend: its last bounds directive (the placement, the mount it
@@ -91,14 +96,72 @@ type appliedPlacement struct {
 // at reports whether the page is known to stand at b.
 func (p appliedPlacement) at(b paneBounds) bool { return p.known && p.bounds == b }
 
-// commitPlacement makes the writes that move a page to b, in order, and
-// answers the placement at b only when all of them succeeded. The first
-// failure stops the rest and answers no known place, with its error.
-func commitPlacement(b paneBounds, writes ...func() error) (appliedPlacement, error) {
-	for _, write := range writes {
-		if err := write(); err != nil {
+// nativeWrite is the result of one native write that moves a page: its
+// controller's bounds, or its clip container's position. Only writeNative
+// makes one, by running the write; the zero value is no write.
+type nativeWrite struct {
+	written bool
+	err     error
+}
+
+// writeNative runs write and answers its result.
+func writeNative(write func() error) nativeWrite {
+	return nativeWrite{written: true, err: write()}
+}
+
+// done answers nil for a write that ran and succeeded, else why not.
+func (w nativeWrite) done(what string) error {
+	switch {
+	case !w.written:
+		return fmt.Errorf("%s was not written", what)
+	case w.err != nil:
+		return fmt.Errorf("%s: %w", what, w.err)
+	}
+	return nil
+}
+
+// clipWrite is what a placement needs of the page's clip container: no
+// write for a controller parented directly to the host window
+// (directlyParented), the container's own write otherwise (clippedBy). The
+// zero value is neither, and commits nothing.
+type clipWrite struct {
+	kind  clipKind
+	write nativeWrite
+}
+
+// clipKind is how a page's controller is clipped.
+type clipKind int
+
+const (
+	// clipParent: the controller is a direct child of the host window.
+	clipParent clipKind = iota + 1
+	// clipContainer: the controller is inside the page's clip container.
+	clipContainer
+)
+
+// directlyParented is the clip of a controller with no clip container.
+func directlyParented() clipWrite { return clipWrite{kind: clipParent} }
+
+// clippedBy is the clip of a controller inside a clip container, which
+// write moved.
+func clippedBy(write nativeWrite) clipWrite { return clipWrite{kind: clipContainer, write: write} }
+
+// commitPlacement answers the placement at b that the page's writes made:
+// its controller's (controller), and before it its clip container's where
+// it has one (clip). It is known only when every write the page needs ran
+// and succeeded; otherwise it is no known place, with why.
+func commitPlacement(b paneBounds, clip clipWrite, controller nativeWrite) (appliedPlacement, error) {
+	switch clip.kind {
+	case clipContainer:
+		if err := clip.write.done("clip bounds"); err != nil {
 			return appliedPlacement{}, err
 		}
+	case clipParent:
+	default:
+		return appliedPlacement{}, errors.New("the page's clip is unknown")
+	}
+	if err := controller.done("controller bounds"); err != nil {
+		return appliedPlacement{}, err
 	}
 	return appliedPlacement{bounds: b, known: true}, nil
 }

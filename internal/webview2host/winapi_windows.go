@@ -26,6 +26,14 @@ var (
 	procSetFocus       = user32.NewProc("SetFocus")
 	procGUIThreadInfo  = user32.NewProc("GetGUIThreadInfo")
 	procIsChild        = user32.NewProc("IsChild")
+	// procGetWindowLongPtr reads a window's style (styleVisible).
+	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
+)
+
+const (
+	// gwlStyle is GWL_STYLE and wsVisible WS_VISIBLE.
+	gwlStyle  int32 = -16
+	wsVisible       = 0x10000000
 )
 
 // guiThreadInfo is GUITHREADINFO.
@@ -325,16 +333,31 @@ func moveWindow(hwnd uintptr, r rect) error {
 	return nil
 }
 
-// showWindow shows or hides a window without activating it.
-func showWindow(hwnd uintptr, visible bool) {
+// showWindow shows or hides a window without activating it, and answers
+// an error unless the window's own style then says it is shown or hidden
+// as asked: ShowWindow's result is the window's previous state, not
+// whether it did anything.
+func showWindow(hwnd uintptr, visible bool) error {
 	if hwnd == 0 {
-		return
+		return errors.New("ShowWindow: no window")
 	}
 	cmd := uintptr(swHide)
 	if visible {
 		cmd = swShowNA
 	}
 	_, _, _ = procShowWindow.Call(hwnd, cmd)
+	if styleVisible(hwnd) != visible {
+		return fmt.Errorf("ShowWindow(%d) left the window's visibility unchanged", cmd)
+	}
+	return nil
+}
+
+// styleVisible reports whether a window's own style is shown, whatever its
+// parent's.
+func styleVisible(hwnd uintptr) bool {
+	index := gwlStyle
+	style, _, _ := procGetWindowLongPtr.Call(hwnd, uintptr(index))
+	return style&wsVisible != 0
 }
 
 // destroyWindow tears a container down. A leaked container is invisible

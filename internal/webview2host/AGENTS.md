@@ -48,9 +48,13 @@ report with `paneplace.Fit` and shows only while the backend shows it and
 the report is visible, unless the directive's `Seq` (the SPA's number for
 the report the backend placed from) is newer than the report's; then, and
 without a local report, the directive's rect stands. A page is at a
-known place only once both its clip container and its controller moved
-(`commitPlacement`); a move that fails hides it, its focus intent
-pending, until a later move succeeds. Only backend
+known place only once its controller, and its clip container where it has
+one, moved: `commitPlacement` takes each write's result (`writeNative`),
+never a placement without them. A move that fails hides it, its focus
+intent pending, until a later move succeeds. Shown or hidden is the host's
+view only once the native show or hide succeeded, on the clipped and the
+directly parented path alike, so a refused hide is retried by the next
+present. Only backend
 directives bind a page to a mount. Raw reports have their own validation:
 an empty clip on either axis is a hidden pane, not an error. The mailbox
 keeps the newest report per mount, drops older sequences, and has at most
