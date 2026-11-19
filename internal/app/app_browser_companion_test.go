@@ -150,8 +150,9 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 	}
 }
 
-// Every kind that selects a tab carries its mount and number to the Manager,
-// which admits each number once: a number already admitted does nothing.
+// Every kind that selects a tab or acts on the active one carries its mount
+// and number to the Manager, which admits each number once: a number
+// already admitted does nothing.
 func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -185,6 +186,7 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "duplicate", PageID: second},
 		{Kind: "reopen"},
 		{Kind: "download-open", DownloadID: "none"},
+		{Kind: "close-active"},
 	} {
 		late.Mount, late.Select = mount.ID, 1
 		state := do(late)

@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// The tab strip's actions on whole tabs: close one or several, reopen the
-// last closed, duplicate, reload.
+// The tab strip's actions on whole tabs, and the keyboard's on the active
+// one: close one or several, reopen the last closed, duplicate, reload.
 //
 // The Manager keeps, per thread and in memory only, the last maxClosedTabs
 // tabs the user closed (address, label, position). A tab an agent closes is
@@ -64,6 +64,60 @@ func reopenable(rawURL string) bool {
 // "teardown" event. The tab can be reopened (ReopenClosedTab).
 func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID string) error {
 	return m.closePage(ctx, access, pageID, false, true)
+}
+
+// CloseActiveCompanionPage is the keyboard's close of the active tab. It
+// names no tab: in ctx's numbered selection's turn (selection.go), in the
+// m.mu hold that ends the turn, it takes the tab active then out of the tab
+// set and picks the next active one, so it closes the tab the user's
+// earlier selections and closes leave active, and the next turn sees the
+// result. A tab still opening or restoring closes at once; its page work,
+// and the teardown, never delay the next turn. With no tab, or with the
+// turn passed, it closes nothing.
+func (m *Manager) CloseActiveCompanionPage(ctx context.Context, access Access) error {
+	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
+	if err != nil || turn.passed {
+		return err
+	}
+	defer m.releaseSelectionTurn(turn)
+	m.mu.Lock()
+	finish := m.closeActiveLocked(access, turn)
+	m.mu.Unlock()
+	return finish(ctx, false)
+}
+
+// closeActiveLocked is CloseActiveCompanionPage's commit: it ends turn and
+// takes the active tab out of the tab set with the next active tab picked,
+// both before the next turn can look, and answers the rest of the close
+// (closeTabLocked). The caller holds m.mu.
+func (m *Manager) closeActiveLocked(access Access, turn *selectionTurn) func(ctx context.Context, wait bool) error {
+	pageID := ""
+	if m.commitSelectionLocked(turn) {
+		pageID = m.shownTabLocked(access.ThreadID)
+	}
+	if pageID == "" {
+		return func(context.Context, bool) error { return nil }
+	}
+	finish := m.closeTabLocked(access, pageID, true)
+	m.repairActivePageLocked(access.ThreadID)
+	return finish
+}
+
+// shownTabLocked is the tab the pane shows: the active tab, or with none
+// the first in strip order; "" when the thread has no tab. The caller holds
+// m.mu.
+func (m *Manager) shownTabLocked(threadID string) string {
+	tabs := m.companionTabsLocked(threadID)
+	active := m.sessionLocked(threadID).ActivePageID
+	for _, tab := range tabs {
+		if tab.id == active {
+			return active
+		}
+	}
+	if len(tabs) > 0 {
+		return tabs[0].id
+	}
+	return ""
 }
 
 // recordUserCloseLocked keeps the thread's tab pageID as the user's most

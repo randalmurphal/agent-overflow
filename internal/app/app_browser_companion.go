@@ -30,8 +30,9 @@ type BrowserCompanionAction struct {
 	Intent uint64 `json:"intent,omitempty"`
 	// Select numbers a user's tab selection made in Mount ("activate",
 	// "step", and the "new", "reopen", "duplicate" and "download-open" that
-	// select the tab they open), consecutive from 1 in each mount in the
-	// order the user acted. The Manager admits a mount's selections in that
+	// select the tab they open) and a keyboard command on the active tab
+	// ("close-active"), consecutive from 1 in each mount in the order the
+	// user acted. The Manager admits a mount's selections in that
 	// order (internal/browser/selection.go). Zero, from an older client,
 	// applies in arrival order.
 	Select uint64 `json:"select,omitempty"`
@@ -221,6 +222,10 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		// Answers once the tab is gone; a teardown failure after it is a
 		// "teardown" event.
 		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
+	case "close-active":
+		// The keyboard's close: the tab active at its turn in the user's
+		// order, which the Manager resolves.
+		err = a.browser.manager.CloseActiveCompanionPage(ctx, access)
 	case "close-others":
 		err = a.browser.manager.CloseCompanionTabs(ctx, access, action.PageID, appbrowser.CloseOtherTabs)
 	case "close-right":

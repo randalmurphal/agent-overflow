@@ -11,7 +11,9 @@ import (
 // own goroutine, so two selections made in a row can reach the Manager in
 // either order. A pane's selecting actions (a tab chosen, a step, and the
 // new, reopen, duplicate and download-open that select the tab they open)
-// carry the pane's mount and a number the client gave when the user acted,
+// and the keyboard's commands on the active tab, which name no tab and act
+// on the one active at their commit (CloseActiveCompanionPage), carry the
+// pane's mount and a number the client gave when the user acted,
 // consecutive from 1 in each mount (Selection). The Manager admits them in
 // that order, so each does what it says and nothing is replayed or skipped
 // by rule:
@@ -44,7 +46,7 @@ import (
 // A selection with no number (an older client) or no mount, an agent's
 // browser_select_page, the chat header's show, the pane's restore of the
 // tab it shows (RestoreActiveCompanionPage), which selects nothing, and
-// closing the active tab, which reselects only when the active tab is gone
+// closing a tab by its id, which reselects only when the active tab is gone
 // (repairActivePage), keep arrival order and never wait for a numbered one.
 
 // Selection is a user's tab selection, numbered in the pane mount it was
@@ -57,8 +59,9 @@ type Selection struct {
 type selectionKey struct{}
 
 // WithSelection returns ctx carrying the user's numbered selection, which
-// every Manager call that selects a tab for the user reads
-// (ActivateCompanionPage, StepCompanionPage, and the user's tab openings).
+// every Manager call that selects a tab for the user or acts on the active
+// one for the keyboard reads (ActivateCompanionPage, StepCompanionPage, the
+// user's tab openings and CloseActiveCompanionPage).
 func WithSelection(ctx context.Context, sel Selection) context.Context {
 	return context.WithValue(ctx, selectionKey{}, sel)
 }

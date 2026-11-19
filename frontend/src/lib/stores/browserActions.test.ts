@@ -93,68 +93,33 @@ describe('pane.close on a browser companion', () => {
     focusPane('browser-main');
 
     expect(closeFocusedBrowserTab()).toBe(true);
-    expect(calls).toEqual([['thread-browser', 'close', 'page-1']]);
+    // The backend picks the tab: the close names none.
+    expect(calls).toEqual([['thread-browser', 'close-active', '']]);
     // Still open: the pane follows the backend's answer, not the keystroke.
     expect(companionForSource('main', 'browser')).not.toBeNull();
     await vi.waitFor(() => expect(companionForSource('main', 'browser')).toBeNull());
   });
 
-  // The backend moved to another tab while this client was away: the
-  // reattach's answer is what the pane shows and what the chord closes.
-  it('closes the tab the reattached pane shows after the backend changed tabs', async () => {
-    const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
-    applyBrowserCompanionState({
-      kind: 'state', threadId: 'thread-browser', activePageId: 'page-1', visible: true, seq: 1,
-      pages: [tab('page-1'), tab('page-2')],
-    });
-    setBindingMock('BrowserCompanionPaneAttach', async () => ({
-      id: 'mount-1',
-      state: {
-        kind: 'state', threadId: 'thread-browser', activePageId: 'page-2', visible: true, seq: 2,
-        pages: [tab('page-1'), tab('page-2')],
-      },
-    }));
-    setBindingMock('BrowserCompanionPaneDetach', async () => {});
-    const closes: string[] = [];
-    setBindingMock('BrowserCompanionDo', async (threadId: string, action: { kind: string; pageId: string }) => {
-      closes.push(action.pageId);
-      return { kind: 'state', threadId, activePageId: 'page-1', visible: true, seq: 3, pages: [tab('page-1')] };
-    });
-    const attachment = attachBrowserCompanion('thread-browser');
-    await vi.waitFor(() => expect(attachment.current?.state.activePageId).toBe('page-2'));
-    focusPane('browser-main');
-    expect(closeFocusedBrowserTab()).toBe(true);
-    await vi.waitFor(() => expect(closes).toEqual(['page-2']));
-    attachment.release();
-  });
-
+  // The keyboard's close takes its place in the mount's order at the
+  // keypress and is sent at once; the backend closes the tab active at its
+  // turn, so nothing here waits for an earlier answer.
   describe('right after a tab selection or another close', () => {
     const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
-    const state = (active: string, ids: string[], seq: number) => ({
-      kind: 'state', threadId: 'thread-browser', activePageId: active, visible: true, seq, pages: ids.map(tab),
-    });
-    let sent: Array<{ kind: string; pageId: string }>;
+    let sent: Array<{ kind: string; pageId: string; mount?: string; select?: number }>;
     let answers: Array<() => void>;
 
     beforeEach(() => {
-      applyBrowserCompanionState(state('a', ['a', 'b', 'c'], 1));
+      applyBrowserCompanionState({
+        kind: 'state', threadId: 'thread-browser', activePageId: 'a', visible: true, seq: 1, pages: ['a', 'b', 'c'].map(tab),
+      });
       setBrowserPaneMountForTest('thread-browser', 'mount-1');
       sent = [];
       answers = [];
-      // The backend applies each action as it arrives and answers when the
-      // test lets it.
-      let current = state('a', ['a', 'b', 'c'], 1);
-      setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string; pageId: string }) => {
-        sent.push({ kind: action.kind, pageId: action.pageId });
-        const ids = current.pages.map((page) => page.id);
-        if (action.kind === 'activate') current = state(action.pageId, ids, current.seq + 1);
-        if (action.kind === 'close') {
-          const left = ids.filter((id) => id !== action.pageId);
-          current = state(current.activePageId === action.pageId ? left[0] ?? '' : current.activePageId, left, current.seq + 1);
-        }
-        const answer = current;
+      // The backend answers only when the test lets it.
+      setBindingMock('BrowserCompanionDo', vi.fn(async (threadId: string, action: { kind: string; pageId: string; mount?: string; select?: number }) => {
+        sent.push({ kind: action.kind, pageId: action.pageId, mount: action.mount, select: action.select });
         await new Promise<void>((resolve) => answers.push(resolve));
-        return answer;
+        return { kind: 'state', threadId, activePageId: 'a', visible: true, seq: 1, pages: ['a', 'b', 'c'].map(tab) };
       }));
       focusPane('browser-main');
     });
@@ -162,34 +127,33 @@ describe('pane.close on a browser companion', () => {
       for (const answer of answers.splice(0)) answer();
     });
 
-    const answerAll = async (): Promise<void> => {
-      while (answers.length > 0) {
-        for (const answer of answers.splice(0)) answer();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    };
-
-    it('closes the tab the user just selected, not the one the last state named', async () => {
+    it('sends the close at once, numbered after the selection the user made first', () => {
       void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'b' });
       expect(closeFocusedBrowserTab()).toBe(true);
-      // Nothing is closed before the selection has answered.
-      expect(sent).toEqual([{ kind: 'activate', pageId: 'b' }]);
-      await answerAll();
-      expect(sent).toEqual([{ kind: 'activate', pageId: 'b' }, { kind: 'close', pageId: 'b' }]);
+      void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'c' });
+      expect(sent).toEqual([
+        { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
+        { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
+        { kind: 'activate', pageId: 'c', mount: 'mount-1', select: 3 },
+      ]);
     });
 
-    it('closes one tab per press when presses come faster than the answers', async () => {
+    it('sends one numbered close per press when presses come faster than the answers', () => {
       expect(closeFocusedBrowserTab()).toBe(true);
       expect(closeFocusedBrowserTab()).toBe(true);
-      await answerAll();
-      expect(sent).toEqual([{ kind: 'close', pageId: 'a' }, { kind: 'close', pageId: 'b' }]);
+      expect(sent).toEqual([
+        { kind: 'close-active', pageId: '', mount: 'mount-1', select: 1 },
+        { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
+      ]);
     });
 
-    it('leaves a close from the tab menu on the tab it names, at once', async () => {
+    it('leaves a close from the tab menu on the tab it names, unnumbered', () => {
       void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'b' });
       void browserCompanionAct('thread-browser', { kind: 'close', pageId: 'c' });
-      expect(sent).toEqual([{ kind: 'activate', pageId: 'b' }, { kind: 'close', pageId: 'c' }]);
-      await answerAll();
+      expect(sent).toEqual([
+        { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
+        { kind: 'close', pageId: 'c', mount: undefined, select: undefined },
+      ]);
     });
   });
 

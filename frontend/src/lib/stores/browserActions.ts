@@ -18,8 +18,8 @@ import { addErrorToast } from './toast.svelte';
 // header's button, the keyboard's tab close and the page focus requests. Each
 // answer is a state and lands through applyBrowserCompanionState; a refusal
 // lands in the pane's banner (noteBrowserActionError). The per-mount
-// selection numbers and the in-flight selections are kept here and follow the
-// pane mount through observeBrowserCompanion.
+// selection numbers are kept here and follow the pane mount through
+// observeBrowserCompanion.
 
 // Chrome actions started per thread, so a focus refusal that arrives after a
 // newer action knows it is older than that action's banner.
@@ -82,10 +82,11 @@ export function sendBrowserPageFocus(
   return BrowserCompanionDo(threadId, new BrowserCompanionAction({ kind, pageId, address: '', index: 0, mount, intent }));
 }
 
-// The action kinds that select a tab: the user's selections, which the
-// backend admits per pane mount in the user's order
-// (internal/browser/selection.go).
-const SELECTING_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open']);
+// The action kinds the backend admits per pane mount in the user's order
+// (internal/browser/selection.go): the user's tab selections, and the
+// keyboard's commands on the active tab, which name no tab and act on the
+// one active at their turn.
+const ORDERED_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open', 'close-active']);
 
 // The last selection number given in each live mount. The backend counts
 // a mount from 1 and waits for every number in turn, so the numbers are
@@ -93,14 +94,14 @@ const SELECTING_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate
 const selectionSeqs = new Map<string, number>();
 
 /**
- * The mount and number of a selecting action, taken when the user acted:
- * actions run concurrently on the backend, which admits a mount's
- * selections in this order. With no mount the selection carries neither
- * and applies in arrival order.
+ * The mount and number of an ordered action, taken when the user acted:
+ * actions run concurrently on the backend, which admits a mount's ordered
+ * actions in this order. With no mount the action carries neither and
+ * applies in arrival order.
  */
 function selectionOrder(threadId: string, kind: string): { mount: string; select: number } | null {
   const mount = browserPaneMountId(threadId);
-  if (!mount || !SELECTING_KINDS.has(kind)) return null;
+  if (!mount || !ORDERED_KINDS.has(kind)) return null;
   const select = (selectionSeqs.get(mount) ?? 0) + 1;
   selectionSeqs.set(mount, select);
   return { mount, select };
@@ -110,12 +111,7 @@ function runBrowserAction(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar; downloadId?: string },
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
-  const order = selectionOrder(threadId, action.kind);
-  if (SELECTING_KINDS.has(action.kind)) {
-    // A keyboard close made meanwhile waits for this selection's answer.
-    return trackOrdered(threadId, sendBrowserAction(threadId, action, order));
-  }
-  return sendBrowserAction(threadId, action, order);
+  return sendBrowserAction(threadId, action, selectionOrder(threadId, action.kind));
 }
 
 async function sendBrowserAction(
@@ -171,30 +167,6 @@ export async function openBrowserTab(
   return failure;
 }
 
-// The user's tab selections in flight per thread, with the keyboard closes
-// queued behind them (closeFocusedBrowserTab).
-const orderedActions = new Map<string, Set<Promise<unknown>>>();
-
-function trackOrdered<T>(threadId: string, action: Promise<T>): Promise<T> {
-  let set = orderedActions.get(threadId);
-  if (!set) {
-    set = new Set();
-    orderedActions.set(threadId, set);
-  }
-  set.add(action);
-  const settle = (): void => {
-    const current = orderedActions.get(threadId);
-    current?.delete(action);
-    if (current?.size === 0) orderedActions.delete(threadId);
-  };
-  action.then(settle, settle);
-  return action;
-}
-
-function activeTabOf(state: BrowserCompanionEvent | null): string {
-  return state?.activePageId || state?.pages?.[0]?.id || '';
-}
-
 /**
  * `pane.close` on a focused browser companion closes its ACTIVE TAB; the pane
  * goes only with its last tab (the zero-page state push closes the companion
@@ -202,30 +174,18 @@ function activeTabOf(state: BrowserCompanionEvent | null): string {
  * handler on the pane: on WebKit a click on the tab strip moves no DOM focus,
  * so a pane-scoped handler missed the chord and the window-level `pane.close`
  * destroyed the whole pane instead. Returns false when nothing browser-shaped
- * holds focus, and the command falls through to its pane close.
+ * holds focus, or the pane shows no tab, and the command falls through to
+ * its pane close.
  *
- * The active tab is the one the user's earlier actions leave active: with a
- * selection (or an earlier keyboard close) still on its way, the close waits
- * for their answers and then closes the tab active by then, so selecting B
- * and pressing Mod+W at once closes B, not the A the last state named. A
- * close from the tab menu names its own tab and does not wait.
+ * The close names no tab: it takes its number in the mount's order at the
+ * keypress, and the backend closes the tab active at its turn, after the
+ * user's earlier selections and closes and never after their page work. A
+ * close from the tab menu names its own tab.
  */
 export function closeFocusedBrowserTab(): boolean {
   const focused = focusedBrowser();
-  if (!focused) return false;
-  const threadId = focused.threadId;
-  const before = [...(orderedActions.get(threadId) ?? [])];
-  if (before.length === 0) {
-    const pageId = activeTabOf(focused.state);
-    if (!pageId) return false;
-    void trackOrdered(threadId, browserCompanionAct(threadId, { kind: 'close', pageId }));
-    return true;
-  }
-  void trackOrdered(threadId, (async () => {
-    await Promise.allSettled(before);
-    const pageId = activeTabOf(browserCompanionState(threadId));
-    if (pageId) await browserCompanionAct(threadId, { kind: 'close', pageId });
-  })());
+  if (!focused || (focused.state?.pages?.length ?? 0) === 0) return false;
+  void browserCompanionAct(focused.threadId, { kind: 'close-active' });
   return true;
 }
 
@@ -279,6 +239,5 @@ observeBrowserCompanion({
   resetForTest: () => {
     browserActionCounts.clear();
     selectionSeqs.clear();
-    orderedActions.clear();
   },
 });

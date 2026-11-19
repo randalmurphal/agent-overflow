@@ -263,6 +263,12 @@ func (m *Manager) setActivePage(threadID, pageID string) {
 // tab, and a thread with none hides its companion.
 func (m *Manager) repairActivePage(threadID string) {
 	m.mu.Lock()
+	m.repairActivePageLocked(threadID)
+	m.mu.Unlock()
+}
+
+// repairActivePageLocked is repairActivePage's hold. The caller holds m.mu.
+func (m *Manager) repairActivePageLocked(threadID string) {
 	info := m.sessionLocked(threadID)
 	var replacement *threadTab
 	activeExists := false
@@ -285,5 +291,4 @@ func (m *Manager) repairActivePage(threadID string) {
 		info.UpdatedAt = time.Now()
 		m.sessions[threadID] = info
 	}
-	m.mu.Unlock()
 }

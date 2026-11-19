@@ -348,31 +348,42 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 func (m *Manager) closePage(ctx context.Context, access Access, pageID string, wait, byUser bool) error {
 	pageID = strings.TrimSpace(pageID)
 	m.mu.Lock()
+	finish := m.closeTabLocked(access, pageID, byUser)
+	m.mu.Unlock()
+	return finish(ctx, wait)
+}
+
+// closeTabLocked is closePage's m.mu hold: it takes the caller's tab pageID
+// out of the tab set and answers the rest of the close, which the caller
+// runs after releasing m.mu. The rest publishes the close and, with wait,
+// waits for the teardown; it answers errPageNotFound when pageID was no
+// tab of the caller's.
+func (m *Manager) closeTabLocked(access Access, pageID string, byUser bool) func(ctx context.Context, wait bool) error {
 	if m.forgetRecordLocked(access.ThreadID, pageID, byUser) {
-		m.mu.Unlock()
-		return m.recordForgotten(access.ThreadID)
+		return func(context.Context, bool) error { return m.recordForgotten(access.ThreadID) }
 	}
-	c, started, err := m.beginCloseLiveLocked(access, pageID, byUser)
-	if err == nil {
-		m.mu.Unlock()
-		if started != nil {
-			m.startClose(started, c)
+	if c, started, err := m.beginCloseLiveLocked(access, pageID, byUser); err == nil {
+		return func(ctx context.Context, wait bool) error {
+			if started != nil {
+				m.startClose(started, c)
+			}
+			if !wait {
+				return nil
+			}
+			return c.wait(ctx)
 		}
+	}
+	pending, ok := m.closePendingLocked(access, pageID)
+	if !ok {
+		return func(context.Context, bool) error { return errPageNotFound }
+	}
+	return func(ctx context.Context, wait bool) error {
+		m.pendingClosed(access.ThreadID)
 		if !wait {
 			return nil
 		}
-		return c.wait(ctx)
+		return pending.wait(ctx)
 	}
-	pending, ok := m.closePendingLocked(access, pageID)
-	m.mu.Unlock()
-	if !ok {
-		return errPageNotFound
-	}
-	m.pendingClosed(access.ThreadID)
-	if !wait {
-		return nil
-	}
-	return pending.wait(ctx)
 }
 
 // closeLivePage closes a live page and waits for its teardown. It answers

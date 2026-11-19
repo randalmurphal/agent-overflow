@@ -123,10 +123,12 @@ per-platform no-op.
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
-  the companion closes when its last tab does. With a tab selection or an
-  earlier Mod+W of the pane still unanswered, the close waits for those
-  answers and closes the tab active then, so it closes the tab the user just
-  picked and one tab per press. Closing the companion any other
+  the companion closes when its last tab does. The close names no tab: it
+  takes its place in the pane's order of selections at the keypress
+  (`close-active`), and the Manager closes the tab active at its turn and
+  picks the next active tab in the same lock hold, so it closes the tab the
+  user just picked and one tab per press, and a tab still opening or
+  restoring closes at once. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
 - A tab the user closes is kept on the thread's in-memory closed-tab stack
   (`internal/browser/companion_tabs.go`): its address, label and position,
@@ -157,7 +159,9 @@ per-platform no-op.
   (`selection.go`), though the transport runs each call on its own
   goroutine. Every pane action that selects a tab (`activate`, `step`, and
   the `new`, `reopen`, `duplicate` and `download-open` that select the tab
-  they open) carries the pane's mount and a number the client takes when
+  they open) and every keyboard command on the active tab (`close-active`),
+  which acts on the tab active at its turn, carries the pane's mount and a
+  number the client takes when
   the user acts, consecutive from 1 in each mount; a re-attach is a new
   mount and starts again at 1. The Manager admits a mount's numbers in
   order: the next one selects at once, a later one waits for its
@@ -175,8 +179,8 @@ per-platform no-op.
   again, is treated as never sent. A selection with no number (an older
   client) or no mount, an
   agent's `browser_select_page` and the chat header's show apply in
-  arrival order and never wait. Closing the active tab reselects only when
-  that tab is gone.
+  arrival order and never wait. Closing a tab by its id reselects only when
+  that tab was the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
   `loading`). When a load stops, an engine with a pane reads the favicon in
