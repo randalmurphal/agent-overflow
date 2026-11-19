@@ -264,16 +264,27 @@ export function focusedBrowser(): { threadId: string; state: BrowserCompanionEve
   return { threadId, state: browserCompanionState(threadId) };
 }
 
+// The header's open operations in flight, one per thread: a press while the
+// button still shows the browser closed joins the open under way.
+const headerOpens = new Map<string, Promise<void>>();
+
 /**
  * The chat header's browser button. What a press does is what the button
  * showed when pressed: pressed (the thread's pane is in this layout,
- * browserPaneShown) hides the pane; otherwise it opens the browser.
+ * browserPaneShown) hides the pane; otherwise it opens the browser, and a
+ * press while that open is under way joins it rather than sending another.
  * A refusal, or a read that fails, reaches a toast, since a hidden pane has
  * no banner.
  */
 export function toggleBrowserFromHeader(threadId: string): Promise<void> {
   if (browserPaneShown(threadId)) return hideBrowserFromHeader(threadId);
-  return openBrowserFromHeader(threadId);
+  const pending = headerOpens.get(threadId);
+  if (pending) return pending;
+  const open = openBrowserFromHeader(threadId).finally(() => {
+    if (headerOpens.get(threadId) === open) headerOpens.delete(threadId);
+  });
+  headerOpens.set(threadId, open);
+  return open;
 }
 
 async function hideBrowserFromHeader(threadId: string): Promise<void> {
@@ -315,5 +326,6 @@ observeBrowserCompanion({
     browserActionCounts.clear();
     selectionSeqs.clear();
     orderedActions.clear();
+    headerOpens.clear();
   },
 });

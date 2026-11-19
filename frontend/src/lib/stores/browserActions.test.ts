@@ -66,6 +66,25 @@ describe('the chat header browser button', () => {
     expect(act).not.toHaveBeenCalled();
   });
 
+  // Both presses saw the button closed; each would send `new` once the
+  // read found no tab, before either answer arrived.
+  it('the header button pressed twice during one open makes one tab', async () => {
+    let answer: (state: unknown) => void = () => {};
+    setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+    let reply: (state: unknown) => void = () => {};
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const first = toggleBrowserFromHeader('thread-browser');
+    const second = toggleBrowserFromHeader('thread-browser');
+    answer(none(1));
+    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    expect(toggleBrowserFromHeader('thread-browser')).toBe(first);
+    reply({ ...hidden(2), visible: true });
+    await Promise.all([first, second]);
+    expect(act).toHaveBeenCalledTimes(1);
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+  });
+
   it('the header button pressed while its pane is shown hides it without reading', async () => {
     applyBrowserCompanionState({ ...hidden(1), visible: true } as never);
     expect(companionForSource('main', 'browser')).not.toBeNull();
