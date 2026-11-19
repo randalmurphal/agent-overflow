@@ -14,13 +14,15 @@
 // runs and the node is where collapse state lives.
 //
 // Membership is rail participation (`timelineRail.ts`), read against the
-// CURRENT item so a late-arriving payloadKind is honored. Prose, user
-// messages, errors, notifications, and every other non-rail kind break runs.
+// CURRENT item so a late-arriving payloadKind is honored, plus the bells and
+// agent messages an open run absorbs (`isAbsorbedRow`). Prose, the person's
+// messages, errors, and every other kind break runs.
 //
-// That read needs no reactivity gate of its own: rail participation is part of
-// `itemTimelineStructureKey`, so a row leaving the rail bumps
-// `timelineRevision` like any other structure change and the projection
-// rebuilds through the same path an appended row takes.
+// That read needs no reactivity gate of its own: rail participation and
+// whether a user row is an agent's are part of `itemTimelineStructureKey`, so
+// a row changing either bumps `timelineRevision` like any other structure
+// change and the projection rebuilds through the same path an appended row
+// takes.
 //
 // Pure: fresh array out, no mutation of `nodes`. Identity is the one piece
 // it cannot derive alone — see `ActivityRunIdentity`.
@@ -35,6 +37,7 @@ import {
 import { completionEndsLaunch } from './parkedStop';
 import { isPotentialSubagentLaunch } from './subagentLaunch';
 import { timelineNodeHasRail } from './timelineRail';
+import { isActivityRunAbsorbedRow } from './activityRunSpans';
 
 /** What the registry resolves for one run, per projection pass. */
 export interface ActivityRunResolution {
@@ -103,7 +106,7 @@ export function activityRunSummaryFieldsChanged(previous: Item, next: Item): boo
  * so entries no longer present can be swept.
  */
 export interface ActivityRunIdentity {
-  /** Membership supplied by a history page, including leading notifications. */
+  /** Membership supplied by a history page, including leading absorbed rows. */
   isLoadedMember(itemId: string): boolean;
   beginPass(): void;
   /**
@@ -204,41 +207,47 @@ function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefin
   // node list that has none.
   if (node.kind === 'activity_run') return false;
   const item = currentLeafItem(node, getItem);
-  return timelineNodeHasRail(node, item)
-    || (item?.kind === 'notification' && identity.isLoadedMember(item.id));
+  if (timelineNodeHasRail(node, item)) return true;
+  // A leading absorbed row whose member predecessor a history page did not
+  // ship: the page says it belongs to the run.
+  return item !== null && identity.isLoadedMember(item.id) && isActivityRunAbsorbedRow(item);
 }
 
 /**
- * A notification bell is ABSORBED into a run that is already open — it joins
- * the run when a rail member precedes it, and stays standalone otherwise.
+ * A notification bell or an agent message is ABSORBED into a run that is
+ * already open (`isActivityRunAbsorbedRow`): it joins the run when a member
+ * precedes it, and stays standalone otherwise.
  *
- * Bells are activity-shaped interim history (a Monitor ping, a background
- * launch), and they land at the CURRENT WRITE HEAD (`internal/triage/
- * tool_lifecycle.go` `backgroundCompletionTurnIndex`) — which during a turn is
- * inside the live run. Before absorption every such bell CUT the run: the head
- * kept the id, the rows after minted a fresh one, and the reader watched the
- * clip they were following restart from a one-row unfaded clip on every ping
- * (~30s under a Monitor — the 2026-08-22 fade-flap investigation). Absorbed
- * bells keep the run whole and its identity, controller, and scroll state
- * intact.
+ * Both land at the CURRENT WRITE HEAD, which during agent work is inside the
+ * live run. A bell is activity-shaped interim history (a Monitor ping, a
+ * background launch; `internal/triage/tool_lifecycle.go`
+ * `backgroundCompletionTurnIndex`). An agent message is what the app wrote
+ * into the thread for an agent: another thread's reply, a wake, a reminder,
+ * a loop or a watch, often opening the provider turn that continues the
+ * same work. Breaking at either cut the stretch of work the reader was
+ * following: the head kept the id, the rows after minted a fresh one and
+ * restarted from a one-row unfaded clip (for bells, every ~30s under a
+ * Monitor: the 2026-08-22 fade-flap investigation). Absorbed rows keep the
+ * run whole and its identity, controller, and scroll state intact.
  *
- * Absorption is one-directional and stable: a TRAILING bell (nothing after it
- * yet — the live-tail case this exists for) stays absorbed even once prose
- * settles the run, so membership never churns when the next node arrives. A
- * bell with no rail member before it (idle-time ping after prose) is not a
- * run and renders standalone, as before.
+ * Absorption is one-directional and stable: a TRAILING absorbed row (nothing
+ * after it yet, the live-tail case) stays absorbed even once prose settles
+ * the run, so membership never churns when the next node arrives. One with
+ * no member before it (an idle-time ping or a wake after prose, or right
+ * after the person's message) is not a run and renders standalone. The
+ * person's own messages are never absorbed.
  *
  * The abandoned-blocks record is a bell too: it lands right after the rows
  * Claude discarded, so it joins the run of discarded thinking or tool rows
  * and stands alone after discarded prose. The store applies the same rule
- * (`isBell`, internal/store/activity_runs.go).
+ * (`isAbsorbed`, internal/store/activity_runs.go).
  */
-function isAbsorbedNotification(
+function isAbsorbedRow(
   node: TimelineNode,
   getItem: (id: string) => Item | undefined,
 ): boolean {
   const item = currentLeafItem(node, getItem);
-  return item !== null && item.kind === 'notification';
+  return item !== null && isActivityRunAbsorbedRow(item);
 }
 
 /** Every positional identity item one run row represents. */
@@ -604,7 +613,7 @@ export function groupActivityRuns(
     while (
       j < nodes.length
       && (isRunMember(nodes[j], options.getItem, options.identity)
-        || isAbsorbedNotification(nodes[j], options.getItem))
+        || isAbsorbedRow(nodes[j], options.getItem))
     ) j += 1;
     // Checked against the slice bounds BEFORE slicing, so a hit allocates
     // only the fresh run node.
@@ -631,10 +640,11 @@ export function groupActivityRuns(
   // is the tail, and it is not loaded.
   const tail = out[out.length - 1];
   if (tail?.kind === 'activity_run' && options.windowReachesTail) {
-    // An absorbable bell behind the gate joins this very run when revealed,
-    // same as withheld activity — it must not read as closing prose.
+    // An absorbable bell or agent message behind the gate joins this very
+    // run when revealed, same as withheld activity: it must not read as
+    // closing prose.
     tail.live = options.withheld.every((node) =>
-      isRunMember(node, options.getItem, options.identity) || isAbsorbedNotification(node, options.getItem));
+      isRunMember(node, options.getItem, options.identity) || isAbsorbedRow(node, options.getItem));
     // Tail-ness is the wider, reader-facing fact: this run is the newest
     // node ON SCREEN, whatever the wire holds behind the gate. It is what
     // collapse resolution keys on, and what the row's scroll controller

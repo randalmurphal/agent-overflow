@@ -371,13 +371,29 @@ function fromProvider(text: string, meta: UserMessageMeta & { agent_message?: un
   return sourced(source('message', sender, null), firstLineOf(text), [{ body: text, footer: null, wake: null }]);
 }
 
+// isAgentMessageItem's answer per row object, for as long as the row
+// carries the same meta string: activity-run grouping asks it of rows on
+// every projection pass, and a meta parse each time would be per-pass work
+// on rows that did not change.
+const agentMessageRows = new WeakMap<Pick<Item, 'kind' | 'meta'>, { meta: string | undefined; agent: boolean }>();
+
 /**
  * Whether a user_text row renders as an agent message: the meta test
- * agentMessageFromItem keys on, without reading the text.
+ * agentMessageFromItem keys on, without reading the text. Such a row joins
+ * the activity run open before it (`isActivityRunAbsorbedRow`); the store's
+ * twin of this test for that rule is `agentMessageRowExpr`.
  */
 export function isAgentMessageItem(item: Pick<Item, 'kind' | 'meta'>): boolean {
   if (item.kind !== 'user_text') return false;
-  const meta = parseUserMessageMeta(item.meta) as UserMessageMeta & { agent_message?: unknown };
+  const cached = agentMessageRows.get(item);
+  if (cached !== undefined && cached.meta === item.meta) return cached.agent;
+  const agent = readsAsAgentMessage(item.meta);
+  agentMessageRows.set(item, { meta: item.meta, agent });
+  return agent;
+}
+
+function readsAsAgentMessage(rawMeta: string | undefined): boolean {
+  const meta = parseUserMessageMeta(rawMeta) as UserMessageMeta & { agent_message?: unknown };
   if (isAgentMessageMeta(meta)) return true;
   const delivery = meta.agent_message;
   if (delivery && typeof delivery === 'object' && typeof (delivery as Record<string, unknown>).sender === 'string') return true;

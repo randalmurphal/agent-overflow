@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"agent-overflow/internal/provider/claude"
 )
 
 func TestActivityRunScanGrowsChunksWithoutLosingMembers(t *testing.T) {
@@ -55,5 +57,13 @@ func TestActivityRunScanGrowsChunksWithoutLosingMembers(t *testing.T) {
 		answer.Stub.LastItemID != fmt.Sprintf("row-%d", members) ||
 		len(answer.Items) != 25 || answer.Items[0].ID != fmt.Sprintf("row-%d", members-24) {
 		t.Fatalf("chunked run was truncated: stub=%+v shipped=%d", answer.Stub, len(answer.Items))
+	}
+}
+
+// The store reads a Claude peer session's message as an agent's by this
+// origin, and the frontend reads it by the same string.
+func TestPeerSessionOriginMatchesTheProviderConstant(t *testing.T) {
+	if peerSessionOrigin != claude.PeerTurnOrigin {
+		t.Fatalf("store origin %q != claude.PeerTurnOrigin %q", peerSessionOrigin, claude.PeerTurnOrigin)
 	}
 }

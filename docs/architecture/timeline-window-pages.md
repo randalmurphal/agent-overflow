@@ -33,8 +33,10 @@ cannot drift.
 A row is a **rail row** when `kind` is `tool_call`, `tool_completion`,
 `terminal_interaction` or `thinking` and its payload kind is not
 `proposed_plan`. A run is a maximal consecutive stretch of rows that are
-rail rows, or `notification` rows with a run member immediately before
-them (absorbed bells). Any other row ends the run. Payload kind is only
+rail rows, or absorbed rows with a run member immediately before them: a
+`notification`, or an agent message (a `user_text` row an agent wrote, not
+the person; `agentMessageRowExpr`, the reading of the client's
+`isAgentMessageItem`). Any other row ends the run. Payload kind is only
 known after the payload join, so classification happens in Go over a
 narrow scan, never in SQL alone.
 
@@ -145,8 +147,9 @@ page) composes the same way:
    `MaxActivityRunWindowRows`, 200).
 3. The scan reads a narrow projection through `timelineArms` in chunks:
    `id, turn_index, item_index, kind, tool_name, status, completion_of,
-   rev, payload kind, json_extract(meta,'$.mcp')`, and the file-row
-   expressions of §4. No `summary`, no full `meta`, no payload body. The
+   rev, payload kind, json_extract(meta,'$.mcp')`, the file-row
+   expressions of §4, and whether a `user_text` row is an agent message
+   (§1). No `summary`, no full `meta`, no payload body. The
    chunks stream, but a run's scan rows stay in memory for the length of
    one composition (the pairing rule needs the whole membership). A run longer than `maxActivityRunScanRows`
    (100,000) is an error, not a truncated stub.
@@ -326,7 +329,7 @@ Rules:
   the pane refreshes it (`ListActivityRunMembers` with `Limit` 0,
   debounced per run). A run also grows past the newer edge its stub read:
   while the stub counts members after the loaded span, a pushed rail row
-  or bell past that edge is a new member unless a row that ends a run
+  or absorbed row past that edge is a new member unless a row that ends a run
   lies between the edge and it, among the rows the pane holds and the
   rows of the same batch. It is refused the same way; prose there ends
   the run and appends. A page stub for a run the pane already holds whose

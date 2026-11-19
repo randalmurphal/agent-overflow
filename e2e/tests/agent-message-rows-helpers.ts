@@ -511,6 +511,86 @@ export async function runQueuedRequest(harness: HarnessApp, tag: string): Promis
   };
 }
 
+export const REVIEWER = 'Rule 5 lookup review';
+export const REVIEW_LEAD = 'Review lead';
+export const REVIEW_PROMPT = 'Review the rule 5 lookup.';
+export const REVIEW_ANSWER = 'No findings.';
+export const REVIEW_SUMMARY = 'The review found nothing to fix.';
+
+/**
+ * Work, a spawned thread's reply, more work: the lead's first turn spawns a
+ * reviewer and ends on that tool call with no prose, the reviewer answers
+ * with thread_reply once the lead is at rest, and the reply opens the lead's
+ * next turn, which calls another tool before it answers. The reply lands
+ * right after an activity run's member, so it joins that run.
+ */
+export async function runReplyMidWork(harness: HarnessApp, provider: ProviderName, tag: string): Promise<{ lead: string }> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: `${tag}-lead`, repo: {}, threads: [{ title: REVIEW_LEAD, provider }] },
+      { name: `${tag}-review`, repo: {}, threads: [] },
+    ],
+  });
+  const [leadProject, reviewProject] = seed.projects;
+  const lead = leadProject.threadIds[0];
+  await setScenario(
+    harness,
+    reviewProject.path,
+    threadToolsScenario({
+      name: `${tag}-review-script`,
+      provider,
+      turns: [{
+        steps: [
+          // Held until the lead's spawning turn has ended, so the reply
+          // opens a turn of its own instead of riding into that one.
+          { gate: 'hold-review' },
+          { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+          { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: REVIEW_ANSWER } } },
+        ],
+        text: 'Replied.',
+      }],
+      afterTurns: 'silent',
+    }),
+  );
+  await setScenario(
+    harness,
+    leadProject.path,
+    threadToolsScenario({
+      name: `${tag}-lead-script`,
+      provider,
+      echoUserMessage: true,
+      turns: [
+        {
+          steps: [{
+            call: {
+              tool: 'thread_spawn',
+              args: { prompt: REVIEW_PROMPT, title: REVIEWER, project_id: reviewProject.projectId, wait_seconds: 0 },
+            },
+          }],
+        },
+        { steps: [{ call: { tool: 'thread_status', args: {} } }], text: REVIEW_SUMMARY },
+      ],
+      afterTurns: 'silent',
+    }),
+  );
+
+  await harness.rpc('StartSession', lead);
+  const spawned = awaitTurnCompleted(harness, lead);
+  await harness.rpc('SendMessage', lead, 'have a thread review the rule 5 lookup', null);
+  const spawn = await awaitToolAnswer(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  await spawned;
+  const review = await awaitGate(harness, 'hold-review', reviewProject.path);
+  const answered = awaitTurnCompleted(harness, lead);
+  await advanceGate(harness, review.mockId, 'hold-review');
+  const reply = await awaitToolAnswer(harness, { tool: 'thread_reply', timeoutMs: 60_000 });
+  expect(reply.isError, reply.text).toBe(false);
+  await answered;
+  const items = await harness.rpc<TimelineItem[]>('ListItems', lead, true);
+  expect(items.some((item) => (item.summary ?? '').includes(REVIEW_SUMMARY))).toBe(true);
+  return { lead };
+}
+
 export const BUILDER = 'Builder';
 export const BUILD_ASK = 'run the nightly build on the build box';
 export const BUILD_OUTPUT = 'build 812 finished: green';

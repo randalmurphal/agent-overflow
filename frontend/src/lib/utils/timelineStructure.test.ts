@@ -143,6 +143,21 @@ describe('itemTimelineStructureChanged', () => {
     ).toBe(false);
   });
 
+  // An agent message joins the activity run open before it and the person's
+  // message ends it, so a user row turning from one into the other changes
+  // which top-level rows exist. A meta patch that leaves it an agent's
+  // (its facts served again) does not.
+  it("a user row's agent-or-person bit is structure, its other meta is not", () => {
+    const user = (meta: Record<string, unknown>) => baseItem({ kind: 'user_text', status: 'completed', meta: JSON.stringify(meta) });
+    const agent = user({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review' } });
+    const agentRefacted = user({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', facts: { form: 'message' } } });
+    const persons = user({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review' }, expandComposerCommands: true });
+
+    expect(itemTimelineStructureChanged(agent, persons)).toBe(true);
+    expect(itemTimelineStructureChanged(persons, agent)).toBe(true);
+    expect(itemTimelineStructureChanged(agent, agentRefacted)).toBe(false);
+  });
+
   it('rail-exempt payload kinds compare by the bit, not the kind', () => {
     const kinds = [...RAIL_EXEMPT_PAYLOAD_KINDS];
     if (kinds.length >= 2) {

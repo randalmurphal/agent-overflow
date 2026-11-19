@@ -44,7 +44,7 @@ const (
 )
 
 // isRailRow reports rail participation, the run-membership predicate for
-// every row except an absorbed notification.
+// every row except an absorbed one.
 func (r activityScanRow) isRailRow() bool {
 	if _, ok := railRowKinds[r.Kind]; !ok {
 		return false
@@ -52,13 +52,19 @@ func (r activityScanRow) isRailRow() bool {
 	return r.PayloadKind != railExemptPayloadKind
 }
 
-// isBell reports a notification, which an activity run absorbs when a
-// member immediately precedes it. The abandoned-blocks record
-// (discarded_rows.go) is one: it lands right after the rows it names, so it
-// joins the run of discarded thinking or tool rows and stands alone after
-// discarded prose, which has already ended the run.
-func (r activityScanRow) isBell() bool {
-	return r.Kind == notificationKind
+// isAbsorbed reports a row an activity run absorbs when a member
+// immediately precedes it, and that stands alone otherwise: a notification,
+// or an agent message (AgentMessage, a message the app wrote into the
+// thread for an agent). Both land at the write head, inside the run of the
+// work around them; the person's own messages end a run. The client's twin
+// is isActivityRunAbsorbedRow (frontend/src/lib/utils/activityRunSpans.ts).
+//
+// The abandoned-blocks record (discarded_rows.go) is a notification: it
+// lands right after the rows it names, so it joins the run of discarded
+// thinking or tool rows and stands alone after discarded prose, which has
+// already ended the run.
+func (r activityScanRow) isAbsorbed() bool {
+	return r.Kind == notificationKind || r.AgentMessage
 }
 
 // isFailedStatus and isRunningStatus are §4's status rules.

@@ -18,7 +18,9 @@
 // stays out of the send-queue preview and puts no tick on the navigator.
 // A digest answering for a thread on a paired computer opens that thread
 // there. The review pane's Edits selector names a request's turn by its
-// sender and first line, never its footer.
+// sender and first line, never its footer. A spawned thread's reply that
+// lands right after the lead's tool row joins that activity run with the
+// next turn's work, counted in the run's header and operable inside it.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
@@ -45,8 +47,13 @@ import {
   REMOTE_LEXER,
   REPLY,
   REQUEST,
+  REVIEW_ANSWER,
+  REVIEW_LEAD,
+  REVIEW_SUMMARY,
+  REVIEWER,
   SPAWN_PROMPT,
   runAgentFlow,
+  runReplyMidWork,
   runQueuedRequest,
   runRemoteCompletion,
   seedInbox,
@@ -229,6 +236,44 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(joinedBody.getByTestId('agent-message-text')).toHaveText(['Ship it.', 'Do the task.']);
     await expect(fact(joinedBody.getByTestId('agent-message-part').nth(1), 'Role')).toHaveText('Keeps the "plan" honest.');
     await keep(page, `${provider}-joined-senders-expanded.png`, joined);
+  });
+}
+
+for (const provider of ['claude', 'codex'] as const) {
+  test(`${provider}: a reply that lands between tool rows joins their activity run`, async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    await runReplyMidWork(harness, provider, `amr-midwork-${provider}`);
+    await harness.open(page);
+    await openThread(page, REVIEW_LEAD);
+
+    // One run holds the spawn, the reply and the next turn's tool row;
+    // nothing of it stands outside, and the header counts the reply.
+    const runs = page.getByTestId('activity-run');
+    await expect(runs).toHaveCount(1);
+    const run = runs.first();
+    await expect(run.getByTestId('activity-run-header-counts')).toContainText('1 agent message');
+    if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
+    await expect(run).toHaveAttribute('data-collapsed', 'false');
+    await expect(agentRows(page)).toHaveCount(1);
+    const reply = run.locator('[data-testid="agent-message-row"][data-agent-message-kind="reply"]');
+    await expect(reply.getByTestId('agent-message-kind')).toHaveText('Reply');
+    await expect(reply.getByTestId('agent-message-sender')).toHaveText(REVIEWER);
+    await expect(reply.getByTestId('agent-message-first-line')).toHaveText(REVIEW_ANSWER);
+    const members = await run.locator('[data-run-child] [data-item-kind]').evaluateAll((rows) =>
+      rows.filter((row) => row.parentElement?.closest('[data-item-kind]') === null).map((row) => row.getAttribute('data-item-kind')));
+    expect(members).toEqual(['tool_call', 'user_text', 'tool_call']);
+    await keep(page, `${provider}-reply-mid-work.png`, run);
+    const body = await expand(reply);
+    await expect(body.getByTestId('agent-message-text')).toHaveText(REVIEW_ANSWER);
+    await keep(page, `${provider}-reply-mid-work-expanded.png`, run);
+
+    // The person's own message stays outside the run, and so does the prose
+    // that ends it.
+    await expect(run.getByTestId('user-message-bubble')).toHaveCount(0);
+    await expect(run).not.toContainText(REVIEW_SUMMARY);
+
+    await reply.getByTestId('agent-message-sender').click();
+    await expect(page.getByTestId('chat-header-title').filter({ hasText: REVIEWER })).toBeVisible();
   });
 }
 

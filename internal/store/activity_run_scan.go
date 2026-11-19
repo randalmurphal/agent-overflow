@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"agent-overflow/internal/agentmeta"
 )
 
 // The narrow scan behind run classification and stub aggregation
@@ -12,7 +14,7 @@ import (
 //
 // A page that ships 30 members of a 5,000-member run still has to know
 // what the other 4,970 add up to, so the scan must be able to walk a
-// whole run cheaply. It reads ten columns and no row body: no
+// whole run cheaply. It reads narrow columns and no row body: no
 // `summary`, no full `meta`, no payload data. Ids and coordinates come
 // from timelineArms (ordered, limited, one index walk per physical arm);
 // the columns that need the payload join come from a narrow sibling of
@@ -71,6 +73,9 @@ type activityScanRow struct {
 	// DisplayRows is the row's §4 display-row count, already resolved
 	// from the three file-change sources.
 	DisplayRows int
+	// AgentMessage is true for a user_text row an agent wrote rather than
+	// the person (agentMessageRowExpr), which an open run absorbs.
+	AgentMessage bool
 }
 
 func (r activityScanRow) cursor() TimelineCursor {
@@ -106,8 +111,36 @@ func activityScanColumns(payloadKind, payloadMeta, rev string) string {
     COALESCE(` + jsonFieldExpr("items.meta", "$.mcp") + `, ''),
     ` + fileChange(inlineDiffTotalFilesExpr(payloadMeta)) + `,
     ` + fileChange(inlineDiffFilesLengthExpr(payloadMeta)) + `,
-    ` + fileChange(inputFilePathCountExpr("items.meta"))
+    ` + fileChange(inputFilePathCountExpr("items.meta")) + `,
+    ` + agentMessageRowExpr("items.meta")
 }
+
+// agentMessageRowExpr is 1 for a user_text row the timeline renders as an
+// agent message, not the person's message, and 0 for any other row. It is
+// the SQL reading of the frontend's isAgentMessageItem
+// (frontend/src/lib/utils/agentMessage.ts), which decides the same rows'
+// run membership on the client: AgentMessageFilterFor's two origins, plus
+// the provider's own agent messages, a Claude peer session's
+// (`peer-session`) and a Codex collab agent's (`agent_message.sender`).
+// The composer's `expandComposerCommands` makes a row the person's, except
+// on a Codex collab message, as the client reads it. The shared
+// activity-run vectors hold the two readings to each other.
+func agentMessageRowExpr(itemMeta string) string {
+	origin := "trim(CASE WHEN json_type(" + itemMeta + ", '$.origin') = 'text' THEN json_extract(" + itemMeta + ", '$.origin') END)"
+	composer := "COALESCE(json_type(" + itemMeta + ", '$.expandComposerCommands') = 'true', 0)"
+	sender := "COALESCE(json_type(" + itemMeta + ", '$.agent_message.sender') = 'text', 0)"
+	return "CASE WHEN items.kind = 'user_text' AND json_valid(" + itemMeta + ") THEN" +
+		" ((NOT " + composer + " AND COALESCE(" + origin + " IN ('" +
+		agentmeta.OriginAgentThread + "', '" + agentmeta.OriginAgentWake + "', '" + peerSessionOrigin + "'), 0))" +
+		" OR " + sender + ")" +
+		" ELSE 0 END"
+}
+
+// peerSessionOrigin mirrors claude.PeerTurnOrigin, the origin a Claude peer
+// session's message carries. Duplicated rather than imported because the
+// store does not reach into a provider package; pinned by
+// TestPeerSessionOriginMatchesTheProviderConstant.
+const peerSessionOrigin = "peer-session"
 
 // inlineDiffTotalFilesExpr is the client's `positiveInteger` test: a
 // non-numeric `totalFiles` is not a count, and reading it as one would
@@ -184,6 +217,7 @@ func queryActivityScanRows(
 		&row.Kind, &row.ToolName, &row.Status, &row.CompletionOf,
 		&row.Rev, &row.PayloadKind, &row.MCP,
 		&totalFiles, &diffFiles, &inputFiles,
+		&row.AgentMessage,
 	}
 	for rows.Next() {
 		row = activityScanRow{}

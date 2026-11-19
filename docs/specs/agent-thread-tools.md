@@ -1740,7 +1740,12 @@ The timeline renders such a row folded, in the register of a tool row
 (`AgentMessageRow.svelte`): an icon and a gutter label for the kind,
 then one header line naming the sender (with `on <computer>` when
 remote, a button opening its thread in a pane when this client reaches
-it), a standing agent's role line, and the message's first line. It
+it), a standing agent's role line, and the message's first line. A row
+that lands right after an activity run's member joins that run, as a
+notification does: it renders inside the run, folds with it, and the
+run's header counts it as an agent message; after prose or the person's
+message it stands alone
+([activity runs](../architecture/activity-runs.md#shape)). It
 renders from the row's facts, never from its text. Every read and push
 of the row (`itemwire.Project`, a meta patch) serves its meta as
 `agentmeta.Describe` reads it, the one reading the Edits selector and

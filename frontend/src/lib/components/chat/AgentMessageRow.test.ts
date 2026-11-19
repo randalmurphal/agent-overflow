@@ -10,6 +10,7 @@ import { stageBackend, resetStagedBackends } from '../../../test/helpers/backend
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { Item } from '../../types/models';
 import TimelineLeaf from './TimelineLeaf.svelte';
+import MessageTimeline from './MessageTimeline.svelte';
 
 const openThreadInPane = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/panes.svelte', async (importOriginal) => ({
@@ -412,5 +413,69 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     });
     expect(mixed.getByTestId('user-message-bubble')).toBeTruthy();
     expect(mixed.getByTestId('user-message-wake-origin').textContent).toContain('Loop · x');
+  });
+});
+
+// An agent message that lands with an activity run open before it joins that
+// run (utils/activityRunGrouping.ts): it renders inside the run's clip, folds
+// with it, and stays readable and operable there.
+describe('<AgentMessageRow> inside an activity run', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    openThreadInPane.mockClear();
+    stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
+  });
+  afterEach(() => resetStagedBackends());
+
+  /** The person asks, a tool runs, the worker's reply opens the next turn, the work goes on. */
+  function workAroundReply(): Item[] {
+    const reply = agentRow(text('reply'), { origin: 'agent-thread', originThread: withFacts('reply', { threadId: 't-work', title: 'Worker', kind: 'wake' }) });
+    return [
+      makeItem({ id: 'ask', itemIndex: 0, kind: 'user_text', role: 'user', summary: 'have a worker look' }),
+      makeItem({ id: 'spawn', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', summary: 'Bash: ls' }),
+      { ...reply, turnIndex: 1, itemIndex: 0 },
+      makeItem({ id: 'think', turnIndex: 1, itemIndex: 1, kind: 'thinking', summary: 'reading it' }),
+      makeItem({ id: 'bash', turnIndex: 1, itemIndex: 2, kind: 'tool_call', toolName: 'Bash', summary: 'Bash: pwd' }),
+      makeItem({ id: 'done', turnIndex: 1, itemIndex: 3, kind: 'assistant_text', summary: 'Nothing to fix.' }),
+    ];
+  }
+
+  it('collapsed, the run header counts the reply and the run holds the work on both sides', async () => {
+    const pane = await buildPane(makeThread(), workAroundReply());
+    const view = render(MessageTimeline, { props: { pane } });
+
+    await vi.waitFor(() => expect(view.getAllByTestId('activity-run')).toHaveLength(1));
+    expect(view.getByTestId('activity-run').dataset.collapsed).toBe('true');
+    expect(view.getByTestId('activity-run-header-counts').textContent).toBe('2 Bash, 1 agent message, 1 thinking');
+    // Folded with the run: no standalone agent row anywhere in the timeline.
+    expect(view.queryByTestId('agent-message-row')).toBeNull();
+  });
+
+  it('expanded, the reply shows its label, sender and text, and its sender opens', async () => {
+    const pane = await buildPane(makeThread(), workAroundReply());
+    const view = render(MessageTimeline, { props: { pane } });
+    await vi.waitFor(() => expect(view.getAllByTestId('activity-run')).toHaveLength(1));
+    await fireEvent.click(view.getByTestId('activity-run-header'));
+
+    const row = await vi.waitFor(() => view.getByTestId('agent-message-row'));
+    const clip = view.getByTestId('activity-run-clip');
+    expect(clip.contains(row)).toBe(true);
+    const members = Array.from(clip.querySelectorAll<HTMLElement>('[data-item-id]')).map((el) => el.dataset.itemId);
+    expect(members).toEqual(['spawn', 'msg-1', 'think', 'bash']);
+    const inRow = (testId: string) => row.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    expect(inRow('agent-message-kind')?.textContent).toBe('Reply');
+    expect(inRow('agent-message-sender')?.textContent).toBe('Worker');
+    expect(inRow('agent-message-first-line')?.textContent).toBe('All green.');
+
+    await fireEvent.click(inRow('agent-message-toggle')!);
+    await vi.waitFor(() => expect(inRow('agent-message-text')?.textContent).toBe('All green.\nSecond line.'));
+    // Its body is a disclosure body inside the clip, which is how an
+    // expanded body lifts the run's cap (utils/activityRunClip.ts).
+    const toggle = inRow('agent-message-toggle')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(clip.querySelector(`#${CSS.escape(toggle.getAttribute('aria-controls')!)}`)).toBe(inRow('agent-message-body'));
+
+    await fireEvent.click(inRow('agent-message-sender')!);
+    await vi.waitFor(() => expect(openThreadInPane).toHaveBeenCalledWith(expect.objectContaining({ id: 't-work' })));
   });
 });

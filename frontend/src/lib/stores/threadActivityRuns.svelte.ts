@@ -43,6 +43,7 @@ import type {
 import {
   groupActivityRunSpans,
   isActivityRailRow,
+  isActivityRunAbsorbedRow,
   type ActivityRunSpan,
 } from '../utils/activityRunSpans';
 import {
@@ -94,10 +95,11 @@ function firstIndexAfter(rows: readonly Item[], cursor: RunCoordinate): number {
 
 /**
  * Whether a windowed row continues a run it follows: a rail row, or a
- * bell the run absorbs (`groupActivityRunSpans`). Any other row ends it.
+ * bell or agent message the run absorbs (`isActivityRunAbsorbedRow`). Any
+ * other row ends it.
  */
 function continuesRun(item: Item): boolean {
-  return isActivityRailRow(item) || item.kind === 'notification';
+  return isActivityRailRow(item) || isActivityRunAbsorbedRow(item);
 }
 
 /** Where a record's run starts: its stub's first member. */

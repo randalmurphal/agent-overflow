@@ -556,6 +556,27 @@ it('retains a leading notification as a member when the page omitted its predece
   expect(f.runs.snapshotStubs()).toEqual([activityRunStub()]);
 });
 
+it('retains a leading agent message as a member when the page omitted its predecessor', () => {
+  const reply = {
+    ...activityRunRow('b', 2),
+    kind: 'user_text',
+    role: 'user',
+    meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', kind: 'wake' } }),
+  };
+  const items = [activityRunProse('before', 0), reply, activityRunRow('c', 3), activityRunRow('d', 4)];
+  const f = fixture(items);
+  f.runs.syncRunSpans(items, [activityRunStub()]);
+  expect(f.runs.isLoadedMember('b')).toBe(true);
+  expect(f.runs.snapshotStubs()).toEqual([activityRunStub()]);
+
+  // The person's message in the same place is never one: it ends the run.
+  const own = { ...reply, meta: '{}' };
+  const ownItems = [activityRunProse('before', 0), own, activityRunRow('c', 3), activityRunRow('d', 4)];
+  const g = fixture(ownItems);
+  g.runs.syncRunSpans(ownItems, [activityRunStub()]);
+  expect(g.runs.isLoadedMember('b')).toBe(false);
+});
+
 it('does not overwrite a live append with the span of an older refresh response', async () => {
   const { f, runId } = heldRun();
   let answer!: (value: unknown) => void;

@@ -14,6 +14,7 @@
 import type { Item } from '../types/models';
 import { isWindowedTimelineRow } from '../stores/threadWindowDigest';
 import { RAIL_EXEMPT_PAYLOAD_KINDS, RAIL_LEAF_KINDS } from './timelineRail';
+import { isAgentMessageItem } from './agentMessage';
 
 /**
  * A rail row: the kinds that sit on the activity rail, minus the payload
@@ -24,6 +25,19 @@ import { RAIL_EXEMPT_PAYLOAD_KINDS, RAIL_LEAF_KINDS } from './timelineRail';
 export function isActivityRailRow(item: Item): boolean {
   return RAIL_LEAF_KINDS.has(item.kind)
     && !RAIL_EXEMPT_PAYLOAD_KINDS.has(item.payloadKind ?? '');
+}
+
+/**
+ * A row an open run absorbs: it joins the run when a member sits right
+ * before it, and stands alone otherwise. A `notification` bell, and an
+ * agent message (`isAgentMessageItem`: a message the app wrote into the
+ * thread for an agent, a wake, a reminder, a loop or a watch). Both land at
+ * the write head, inside the run of the work around them; the person's own
+ * messages are not one and end the run. The store's twin is
+ * `activityScanRow.isAbsorbed`.
+ */
+export function isActivityRunAbsorbedRow(item: Item): boolean {
+  return item.kind === 'notification' || isAgentMessageItem(item);
 }
 
 /**
@@ -41,9 +55,10 @@ export interface ActivityRunSpan {
 /**
  * Group visible top-level rows into maximal activity runs.
  *
- * A run is a maximal consecutive stretch of rail rows, plus `notification`
- * rows with a run member immediately before them (absorbed bells — see
- * `isAbsorbedNotification` in `activityRunGrouping.ts`). Anything else
+ * A run is a maximal consecutive stretch of rail rows, plus absorbed rows
+ * (`isActivityRunAbsorbedRow`) with a run member immediately before them.
+ * `knownMember` admits an absorbed row a history page says is a member
+ * though the row before it is not loaded. Anything else
  * ends the run. Rows a history page would not return (subagent children,
  * `plan_update` notifications) are skipped without breaking a run: they
  * are not part of any page's range, so they cannot split one.
@@ -60,7 +75,7 @@ export function groupActivityRunSpans(
   let open: ActivityRunSpan | null = null;
   for (const item of items) {
     if (!includes(item)) continue;
-    if (isActivityRailRow(item) || (item.kind === 'notification' && knownMember(item))) {
+    if (isActivityRailRow(item) || (knownMember(item) && isActivityRunAbsorbedRow(item))) {
       if (open === null) {
         open = { firstItemId: item.id, lastItemId: item.id, items: [item] };
         spans.push(open);
@@ -70,7 +85,7 @@ export function groupActivityRunSpans(
       }
       continue;
     }
-    if (open !== null && item.kind === 'notification') {
+    if (open !== null && isActivityRunAbsorbedRow(item)) {
       open.items.push(item);
       open.lastItemId = item.id;
       continue;
