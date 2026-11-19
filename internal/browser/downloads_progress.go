@@ -117,15 +117,21 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			}
 			if !pathInside(scope.downloadDir, source) {
 				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
-			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
+			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
 				entry.State, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
 			}
 		}
 		if entry.State == downloadStateCompleted {
-			// The kept file holds its size of the quotas from here.
-			quota.Take(&entry.reservation).Settle(entry.Bytes)
+			// The kept file holds its size on disk of the quotas from here,
+			// whatever the engine reported receiving.
+			kept := entry.Bytes
+			if entry.file != nil {
+				kept = entry.file.Size()
+				entry.Bytes = kept
+			}
+			quota.Take(&entry.reservation).Settle(kept)
 		} else {
 			// Nothing is kept: the engine's file goes with its reservation.
 			m.releaseDownloadLocked(p, entry)
@@ -148,9 +154,10 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			}
 		}
 		m.releaseDownloadLocked(p, entry)
-		// A staged download that stopped, canceled or failed, leaves nothing
-		// but its staged file, which goes.
-		removePartial = removePartial || saving == downloadsStaged
+		// A download that stopped, canceled or failed, leaves nothing but
+		// the file AO had the engine write, staged or an artifact, which
+		// goes.
+		removePartial = true
 	}
 	note := m.noteDownloadLocked(p, entry)
 	held.release()
@@ -164,14 +171,18 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // placeArtifact moves a finished artifact download from the file its engine
 // wrote into dir under the first free variant of name, never replacing a
 // file: the downloads of a workspace's jars finish on their own engine
-// streams into one directory (placeNoReplace).
-func placeArtifact(source, dir, name string) (string, os.FileInfo, error) {
+// streams into one directory (placeNoReplace). A file over limit bytes on
+// disk is refused, whatever the engine reported.
+func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, error) {
 	info, err := os.Lstat(source)
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", source)
+	}
+	if info.Size() > limit {
+		return "", nil, fmt.Errorf("download exceeds %d bytes", limit)
 	}
 	path, file, err := placeNoReplace(source, info, dir, "the download directory", artifactNames(name))
 	if err != nil {
