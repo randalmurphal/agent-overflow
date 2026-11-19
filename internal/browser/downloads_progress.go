@@ -37,14 +37,20 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	// A settled download takes no further report: AO stopped it (a quota,
 	// its size, the user, its page closing) or the engine already ended it.
 	// One being published has had its finish.
-	if entry == nil || entry.State != downloadStateRunning || entry.publishing {
+	if entry == nil || !entry.takesReports() {
 		held.release()
 		return
 	}
 	if event.State == downloadCancelRefused {
 		// The engine refused the cancel after taking it: the download runs
-		// on, listed with the refusal, and the user may cancel again.
-		entry.cancelRequested = false
+		// on, listed with the refusal, and the user may cancel again. A
+		// refusal of a cancel CancelThreadDownload already withdrew finds
+		// the row running, as it stays.
+		if entry.phase == rowCancelRequested {
+			if err := entry.advance(rowRunning); err != nil {
+				log.Printf("browser: %v", err)
+			}
+		}
 		entry.Error = event.Error
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
@@ -65,7 +71,9 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	// download listed only at its finish can be (popup_adoption.go), its
 	// file goes all the same.
 	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && !event.State.stopped() {
-		entry.State = downloadStateCanceled
+		if err := entry.settle(downloadStateCanceled); err != nil {
+			log.Printf("browser: %v", err)
+		}
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		discard := entry.discard()
 		note := m.noteDownloadLocked(p, entry)
@@ -90,9 +98,11 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	// keep is false for an end that keeps no file: what the engine wrote,
 	// staged or an artifact, is a partial file, which goes.
 	keep := true
+	// end is the State the row settles as, none while it runs.
+	end := ""
 	switch event.State {
 	case downloadCompleted:
-		entry.State = downloadStateCompleted
+		end = downloadStateCompleted
 		if saving == downloadsSavedByEngine {
 			// The engine saved it in the user's Downloads folder, where it
 			// stays. Only the regular file the engine reported, as it is
@@ -119,14 +129,14 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 				source = entry.source.path
 			}
 			if !pathInside(filepath.Dir(entry.source.path), source) {
-				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
+				end, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
 			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
-				entry.State, entry.Error = downloadStateFailed, moveErr.Error()
+				end, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
 			}
 		}
-		if entry.State == downloadStateCompleted {
+		if end == downloadStateCompleted {
 			// The kept file holds its size on disk of the quotas from here,
 			// whatever the engine reported receiving.
 			kept := entry.Bytes
@@ -141,18 +151,23 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		}
 	case downloadCanceled:
 		// The cancel the user asked for, which needs no reason.
-		entry.State = downloadStateCanceled
+		end = downloadStateCanceled
 	case downloadPageGone:
 		// The cancel its page's end made, which says why.
-		entry.State, entry.Error = downloadStateCanceled, event.Error
+		end, entry.Error = downloadStateCanceled, event.Error
 	case downloadFailed, downloadUntracked:
 		// The engine's own end, or one it no longer follows, a cancel
 		// pending or not: listed failed, with the engine's reason.
-		entry.State, entry.Error = downloadStateFailed, event.Error
+		end, entry.Error = downloadStateFailed, event.Error
 		if entry.Error == "" {
 			entry.Error = "the download stopped before it finished"
 		}
 	case downloadInProgress, downloadCancelRefused:
+	}
+	if end != "" {
+		if err := entry.settle(end); err != nil {
+			log.Printf("browser: %v", err)
+		}
 	}
 	if event.State.stopped() {
 		keep = false
@@ -216,7 +231,10 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 		failure = "browser returned a download path other than the staged file it was given"
 	}
 	if failure != "" {
-		entry.State, entry.Error = downloadStateFailed, failure
+		if err := entry.settle(downloadStateFailed); err != nil {
+			log.Printf("browser: %v", err)
+		}
+		entry.Error = failure
 		discard := entry.discard()
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
@@ -224,7 +242,12 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 		m.publishDownloads(note)
 		return
 	}
-	entry.publishing = true
+	if err := entry.advance(rowPublishing); err != nil {
+		// The caller checked it takes reports, which a publish begins from.
+		log.Printf("browser: %v", err)
+		held.release()
+		return
+	}
 	name := entry.SuggestedName
 	m.beginPublish()
 	held.release()
@@ -236,13 +259,16 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 	// A running entry is never trimmed, so it is still there.
 	entry = held.entry(event.ID)
 	if entry != nil {
-		entry.publishing = false
 		// Its staged file is released, published or not.
 		entry.source = downloadFile{}
+		end := downloadStateCompleted
 		if err != nil {
-			entry.State, entry.Error = downloadStateFailed, err.Error()
+			end, entry.Error = downloadStateFailed, err.Error()
 		} else {
-			entry.State, entry.Path, entry.file = downloadStateCompleted, path, file
+			entry.Path, entry.file = path, file
+		}
+		if settleErr := entry.settle(end); settleErr != nil {
+			log.Printf("browser: %v", settleErr)
 		}
 	}
 	var note downloadNote

@@ -3,6 +3,7 @@ package browser
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -78,7 +79,10 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 		reservation, err := m.reserveDownload(authority)
 		if err != nil {
 			// Refused: its engine cancels it and removes its file.
-			entry.State, entry.Error = downloadStateCanceled, err.Error()
+			if settleErr := entry.settle(downloadStateCanceled); settleErr != nil {
+				log.Printf("browser: %v", settleErr)
+			}
+			entry.Error = err.Error()
 		} else {
 			entry.source = file
 		}

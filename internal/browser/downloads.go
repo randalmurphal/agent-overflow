@@ -142,10 +142,14 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 	for _, entry := range held.running() {
 		// One being published settles when its file is in place
 		// (publishFinishedDownload).
-		if entry.publishing {
+		if !entry.takesReports() {
 			continue
 		}
-		entry.State, entry.Error = downloadStateCanceled, reason
+		if err := entry.settle(downloadStateCanceled); err != nil {
+			log.Printf("browser: %v", err)
+			continue
+		}
+		entry.Error = reason
 		ended.notes = append(ended.notes, m.noteDownloadLocked(p, entry))
 		ended.discards = append(ended.discards, entry.discard())
 	}

@@ -397,12 +397,9 @@ type DownloadInfo struct {
 	source downloadFile
 	// key is the download's entry in its thread's list (downloads_thread.go).
 	key string
-	// cancelRequested is set while the user's cancel is with the engine, so
-	// the engine's report of it reads as canceled rather than failed.
-	cancelRequested bool
-	// publishing is set while a staged download's finished file moves into
-	// the user's Downloads folder (publishFinishedDownload).
-	publishing bool
+	// phase is where the download is in its life (downloads_phase.go),
+	// written only by advance and settle.
+	phase downloadRowPhase
 	// file is the finished file as it was when the download settled, so a
 	// later Open or Show in folder acts on that file and no other.
 	file os.FileInfo

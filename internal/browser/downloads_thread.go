@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -258,11 +259,10 @@ func (m *Manager) noteChangeLocked(p *managedPage, entry *DownloadInfo, started 
 	}
 	note := downloadNote{threadID: p.owner}
 	// The user's own cancel is not announced; a finish that beat it is.
-	userCanceled := item.State == downloadStateCanceled && entry.cancelRequested
 	switch {
 	case !started && item.State == downloadStateRunning:
 		note.progress = true
-	case item.State != downloadStateRunning && wasRunning && !userCanceled:
+	case item.State != downloadStateRunning && wasRunning && entry.phase != rowUserCanceled:
 		announced := item.ThreadDownload
 		note.announce = &announced
 	}
@@ -384,13 +384,14 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	}
 	held := p.downloads.hold()
 	entry := held.entry(item.engineID)
-	if entry == nil || entry.State != downloadStateRunning || entry.cancelRequested {
-		// A cancel already with the engine stays its request: only its own
-		// refusal withdraws it, never a later request's answer.
+	if entry == nil || entry.advance(rowCancelRequested) != nil {
+		// Only a running row is canceled: a cancel already with the engine
+		// stays its request, which only its own refusal withdraws, never a
+		// later request's answer, and a finished file being published, or
+		// an ended download, has its end.
 		held.release()
 		return nil
 	}
-	entry.cancelRequested = true
 	// A refusal of an earlier cancel no longer stands.
 	entry.Error = ""
 	held.release()
@@ -399,8 +400,12 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 		return nil
 	}
 	held = p.downloads.hold()
-	if entry := held.entry(item.engineID); entry != nil {
-		entry.cancelRequested = false
+	if entry := held.entry(item.engineID); entry != nil && entry.phase == rowCancelRequested {
+		// Withdrawn, unless the download moved on meanwhile: its finish is
+		// being published, or it ended.
+		if advanceErr := entry.advance(rowRunning); advanceErr != nil {
+			log.Printf("browser: %v", advanceErr)
+		}
 	}
 	held.release()
 	if errors.Is(err, errDownloadEnded) {
