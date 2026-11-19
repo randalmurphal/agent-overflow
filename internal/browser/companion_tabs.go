@@ -272,6 +272,37 @@ func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID,
 	return errors.Join(errs...)
 }
 
+// ReloadActiveCompanionPage is the keyboard's reload of the active tab. It
+// names no tab: the m.mu hold that ends ctx's numbered selection's turn
+// (selection.go) reads the tab active then, after the user's earlier
+// selections, and that tab is reloaded as ReloadCompanionPage reloads it,
+// after the turn, so the load never delays the next one. With no tab, with
+// the turn passed, or with that tab closed before its reload ran, it
+// reloads nothing.
+func (m *Manager) ReloadActiveCompanionPage(ctx context.Context, access Access) error {
+	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
+	if err != nil || turn.passed {
+		return err
+	}
+	defer m.releaseSelectionTurn(turn)
+	m.mu.Lock()
+	pageID := ""
+	if m.commitSelectionLocked(turn) {
+		pageID = m.shownTabLocked(access.ThreadID)
+	}
+	m.mu.Unlock()
+	if pageID == "" {
+		return nil
+	}
+	err = m.ReloadCompanionPage(ctx, access, pageID)
+	if err != nil && !m.hasTab(access.ThreadID, pageID) {
+		// The tab closed after the turn (a Mod+W pressed next): the reload
+		// has nothing left to do, and it never moves to another tab.
+		return nil
+	}
+	return err
+}
+
 // ReloadCompanionPage is the user's reload. A suspended tab, a crashed one
 // included, is restored at its address, which is its reload; a live page
 // reloads.

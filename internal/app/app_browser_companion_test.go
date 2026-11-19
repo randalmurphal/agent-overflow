@@ -187,6 +187,7 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "reopen"},
 		{Kind: "download-open", DownloadID: "none"},
 		{Kind: "close-active"},
+		{Kind: "reload-active"},
 	} {
 		late.Mount, late.Select = mount.ID, 1
 		state := do(late)

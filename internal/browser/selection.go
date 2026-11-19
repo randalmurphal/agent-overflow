@@ -12,11 +12,11 @@ import (
 // either order. A pane's selecting actions (a tab chosen, a step, and the
 // new, reopen, duplicate and download-open that select the tab they open)
 // and the keyboard's commands on the active tab, which name no tab and act
-// on the one active at their commit (CloseActiveCompanionPage), carry the
-// pane's mount and a number the client gave when the user acted,
-// consecutive from 1 in each mount (Selection). The Manager admits them in
-// that order, so each does what it says and nothing is replayed or skipped
-// by rule:
+// on the one active at their commit (CloseActiveCompanionPage,
+// ReloadActiveCompanionPage), carry the pane's mount and a number the
+// client gave when the user acted, consecutive from 1 in each mount
+// (Selection). The Manager admits them in that order, so each does what it
+// says and nothing is replayed or skipped by rule:
 //
 //   - The next number takes its turn at once. Its commit (the m.mu hold
 //     that picks and records the active tab, or for an opening the hold
@@ -61,7 +61,8 @@ type selectionKey struct{}
 // WithSelection returns ctx carrying the user's numbered selection, which
 // every Manager call that selects a tab for the user or acts on the active
 // one for the keyboard reads (ActivateCompanionPage, StepCompanionPage, the
-// user's tab openings and CloseActiveCompanionPage).
+// user's tab openings, CloseActiveCompanionPage and
+// ReloadActiveCompanionPage).
 func WithSelection(ctx context.Context, sel Selection) context.Context {
 	return context.WithValue(ctx, selectionKey{}, sel)
 }

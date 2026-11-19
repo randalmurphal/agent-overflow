@@ -132,7 +132,7 @@ describe('shell chords', () => {
     focusPane('browser-main');
     flushSync();
     routedChord();
-    expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'p1' }));
+    expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active' }));
     expect(posted).not.toContain(reloadAppMessage(1));
   });
 
@@ -158,7 +158,7 @@ describe('shell chords', () => {
     expect(routes().at(-1)).toBe('1:true');
     routedChord();
     expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
-    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload' }));
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active' }));
   });
 
   it('hands a routed chord back when nothing runs it', () => {

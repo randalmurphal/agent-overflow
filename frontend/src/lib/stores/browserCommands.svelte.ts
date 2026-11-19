@@ -57,10 +57,11 @@ export function registerBrowserCommands(): void {
     icon: '↻',
     when: WHEN,
     editableReachable: true,
+    // Names no tab: the backend reloads the tab active at this press's turn
+    // in the user's order, after a tab switch still on its way.
     run: () => {
       const focused = focusedBrowser();
-      const pageId = focused?.state?.activePageId;
-      if (focused && pageId) void browserCompanionAct(focused.threadId, { kind: 'reload', pageId });
+      if (focused) void browserCompanionAct(focused.threadId, { kind: 'reload-active' });
     },
   });
 

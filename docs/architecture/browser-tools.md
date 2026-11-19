@@ -159,8 +159,8 @@ per-platform no-op.
   (`selection.go`), though the transport runs each call on its own
   goroutine. Every pane action that selects a tab (`activate`, `step`, and
   the `new`, `reopen`, `duplicate` and `download-open` that select the tab
-  they open) and every keyboard command on the active tab (`close-active`),
-  which acts on the tab active at its turn, carries the pane's mount and a
+  they open) and every keyboard command on the active tab (`close-active`,
+  `reload-active`), which acts on the tab active at its turn, carries the pane's mount and a
   number the client takes when
   the user acts, consecutive from 1 in each mount; a re-attach is a new
   mount and starts again at 1. The Manager admits a mount's numbers in
@@ -474,7 +474,10 @@ behave as a desktop browser's:
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
   its own order and selection (`StepCompanionPage`), so presses faster than
-  the state push each move one tab.
+  the state push each move one tab. Reload sends `reload-active`, which
+  names no tab: the Manager reloads the tab active at its turn, after a tab
+  switch still on its way, and nothing when that tab closes first. The tab
+  menu's and the address bar's reload name their tab.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
   before the SPA sees the key. While the browser pane is focused and the
   effective keybindings run a command for `mod+r` there, the SPA asks over

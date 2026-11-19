@@ -86,7 +86,7 @@ export function sendBrowserPageFocus(
 // (internal/browser/selection.go): the user's tab selections, and the
 // keyboard's commands on the active tab, which name no tab and act on the
 // one active at their turn.
-const ORDERED_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open', 'close-active']);
+const ORDERED_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open', 'close-active', 'reload-active']);
 
 // The last selection number given in each live mount. The backend counts
 // a mount from 1 and waits for every number in turn, so the numbers are

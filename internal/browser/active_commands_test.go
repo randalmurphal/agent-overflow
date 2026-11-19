@@ -145,3 +145,60 @@ func TestAPassedKeyboardCloseClosesNothing(t *testing.T) {
 		t.Fatalf("a close with no tab answered %v", err)
 	}
 }
+
+// The keyboard's reload names no tab: the user steps from d to a and
+// presses Mod+R, the reload arrives first, and a is reloaded, not d.
+func TestAKeyboardReloadReloadsTheTabItsTurnLeavesActive(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	loads := func(id string) uint64 { return livePage(t, m, access, id).docEpoch.Load() }
+	beforeA, beforeD := loads(ids[0]), loads(ids[3])
+	reloading := deliver(func() error {
+		return m.ReloadActiveCompanionPage(numbered(context.Background(), mount, 2), access)
+	})
+	awaitWaiting(t, m, mount, 1)
+	if err := m.StepCompanionPage(numbered(t.Context(), mount, 1), access, 1); err != nil {
+		t.Fatal(err)
+	}
+	mustDeliver(t, reloading, "the keyboard reload")
+	if got := activeTab(m, access); got != ids[0] {
+		t.Fatalf("active %s, want a (%s)", got, ids[0])
+	}
+	if a, d := loads(ids[0])-beforeA, loads(ids[3])-beforeD; a != 1 || d != 0 {
+		t.Fatalf("a loaded %d times and d %d, want a reloaded once and d not", a, d)
+	}
+	// A passed one reloads nothing.
+	for _, ctx := range []context.Context{numbered(t.Context(), mount, 2), numbered(t.Context(), "gone", 1)} {
+		if err := m.ReloadActiveCompanionPage(ctx, access); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if a := loads(ids[0]) - beforeA; a != 1 {
+		t.Fatalf("a passed reload loaded a again: %d loads", a)
+	}
+}
+
+// A keyboard reload whose tab closes while it runs (Mod+R, then Mod+W)
+// answers success and reloads no other tab.
+func TestAKeyboardReloadOfATabClosedMeanwhileDoesNothing(t *testing.T) {
+	m, engine, access, a, b, mount := newSuspendedPair(t)
+	m.setActivePage(access.ThreadID, a.ID)
+	release := engine.hold(&engine.navGate)
+	defer release()
+	reloading := deliver(func() error {
+		return m.ReloadActiveCompanionPage(numbered(context.Background(), mount, 1), access)
+	})
+	receive(t, engine.navigating, "a's restore")
+	if err := m.CloseCompanionPage(t.Context(), access, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := await(t, reloading, "the keyboard reload"); err != nil {
+		t.Fatalf("the reload of a closed tab answered %v", err)
+	}
+	if tab, _ := findTab(m, access, b.ID); !tab.Suspended || tab.Restoring {
+		t.Fatalf("the reload moved to b: %+v", tab)
+	}
+	if got := tabIDs(m, access); !slices.Equal(got, []string{b.ID}) {
+		t.Fatalf("tabs %v, want b alone", got)
+	}
+}

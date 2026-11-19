@@ -109,10 +109,18 @@ describe('browser commands', () => {
     ]);
   });
 
-  it('reload reloads the active tab', () => {
+  // The press names no tab and takes its number after the tab switch made
+  // before it, so the backend reloads the tab that switch selects, not the
+  // one the last state named.
+  it('reload reloads the tab active at its turn, after a tab switch still on its way', () => {
+    setBrowserPaneMountForTest(THREAD, 'mount-1');
     focusPane('browser-main');
+    runCommand('browser.nextTab', ctx());
     runCommand('browser.reload', ctx());
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+    expect(act.mock.calls.map(([, action]) => [action.kind, action.pageId, action.mount, action.select])).toEqual([
+      ['step', '', 'mount-1', 1],
+      ['reload-active', '', 'mount-1', 2],
+    ]);
   });
 
   it('reopen asks the backend for the last closed tab, from the chord too', () => {
@@ -159,7 +167,7 @@ describe('browser commands', () => {
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: -1 }));
     expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active', pageId: '' }));
     expect(dispatchKey(key({ key: 'r', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(dispatchKey(key({ key: 't', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));

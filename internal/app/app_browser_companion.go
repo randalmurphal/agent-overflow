@@ -31,10 +31,10 @@ type BrowserCompanionAction struct {
 	// Select numbers a user's tab selection made in Mount ("activate",
 	// "step", and the "new", "reopen", "duplicate" and "download-open" that
 	// select the tab they open) and a keyboard command on the active tab
-	// ("close-active"), consecutive from 1 in each mount in the order the
-	// user acted. The Manager admits a mount's selections in that
-	// order (internal/browser/selection.go). Zero, from an older client,
-	// applies in arrival order.
+	// ("close-active", "reload-active"), consecutive from 1 in each mount in
+	// the order the user acted. The Manager admits a mount's selections in
+	// that order (internal/browser/selection.go). Zero, from an older
+	// client, applies in arrival order.
 	Select uint64 `json:"select,omitempty"`
 	// DownloadID names one of the thread's downloads (ThreadDownload.ID)
 	// for "download-cancel", "download-reveal" and "download-open".
@@ -196,6 +196,10 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case "reload":
 		// A suspended or crashed tab is restored at its address.
 		err = a.browser.manager.ReloadCompanionPage(ctx, access, action.PageID)
+	case "reload-active":
+		// The keyboard's reload: the tab active at its turn in the user's
+		// order, which the Manager resolves.
+		err = a.browser.manager.ReloadActiveCompanionPage(ctx, access)
 	case "stop":
 		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
 	case "activate":
