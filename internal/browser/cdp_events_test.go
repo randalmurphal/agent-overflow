@@ -11,6 +11,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	jsonv2 "github.com/chromedp/cdproto/cdp/jsonv2"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -144,6 +145,14 @@ func TestFrameTrackerSettlesInAnyOrder(t *testing.T) {
 	detach := func(tr *frameTracker) eventStep {
 		return eventStep{"detached", func() { tr.detached(frame) }}
 	}
+	// The frame tree read once the page subscribed names the frame.
+	seed := func(tr *frameTracker) eventStep {
+		tree := &page.FrameTree{
+			Frame:       &cdp.Frame{ID: "main"},
+			ChildFrames: []*page.FrameTree{{Frame: &cdp.Frame{ID: frame, ParentID: "main"}}},
+		}
+		return eventStep{"seeded", func() { tr.seed(tree) }}
+	}
 	cases := []struct {
 		name     string
 		streams  func(tr *frameTracker) [][]eventStep
@@ -164,6 +173,21 @@ func TestFrameTrackerSettlesInAnyOrder(t *testing.T) {
 		{"a frame swapped out and back", func(tr *frameTracker) [][]eventStep {
 			return [][]eventStep{{attach(tr), attach(tr)}, {}, {detach(tr)}}
 		}, true},
+		{"a frame in the frame tree", func(tr *frameTracker) [][]eventStep {
+			return [][]eventStep{{}, {seed(tr)}, {}}
+		}, true},
+		{"a frame in the frame tree, then detached", func(tr *frameTracker) [][]eventStep {
+			return [][]eventStep{{}, {seed(tr)}, {detach(tr)}}
+		}, false},
+		{"a frame in the frame tree, swapped out and back", func(tr *frameTracker) [][]eventStep {
+			return [][]eventStep{{attach(tr)}, {seed(tr)}, {detach(tr)}}
+		}, true},
+		{"a frame in the frame tree, swapped out and back, navigated", func(tr *frameTracker) [][]eventStep {
+			return [][]eventStep{{attach(tr)}, {seed(tr), navigate(tr)}, {detach(tr)}}
+		}, true},
+		{"a frame in the frame tree, swapped twice, then removed", func(tr *frameTracker) [][]eventStep {
+			return [][]eventStep{{attach(tr), attach(tr)}, {seed(tr)}, {detach(tr), detach(tr), detach(tr)}}
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

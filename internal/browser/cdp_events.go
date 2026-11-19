@@ -268,7 +268,14 @@ func (t *cdpLoadTracker) answerLocked() (bool, uint64) {
 // to another process and back is attached twice), so once every event is
 // handled the frame is live exactly when it has more attaches than
 // detaches, in whatever order they were handled. A navigation stands in for
-// the attach of a frame that attached before the page subscribed.
+// the attach of a frame that attached before the page subscribed until an
+// attach is handled. The frame tree read once the page subscribed (seed)
+// counts as that unseen attach for every frame it names, alongside the
+// frame's own attaches handled before or after it, so a frame that was
+// there before the page subscribed and is swapped out and back stays live.
+// A frame attached between the subscriptions and the tree read has its
+// attach counted twice and stays live after it detaches; its id names no
+// other frame, and only the frames of that one round trip are kept so.
 //
 // A live frame is kept until it detaches; the page's own frames bound that.
 // A frame that is not live keeps its counts in gone to absorb its late
@@ -284,11 +291,16 @@ type frameTracker struct {
 type frameEvents struct {
 	attaches, detaches int
 	navigated          bool
+	// seeded says the frame tree named it (frameTracker.seed).
+	seeded bool
 }
 
 func (f frameEvents) live() bool {
 	attaches := f.attaches
-	if attaches == 0 && f.navigated {
+	switch {
+	case f.seeded:
+		attaches++
+	case attaches == 0 && f.navigated:
 		attaches = 1
 	}
 	return attaches > f.detaches
@@ -311,14 +323,13 @@ func (t *frameTracker) detached(id cdp.FrameID) {
 }
 
 // seed records the frames of tree, read after the page subscribed, as
-// navigated: that stands in for an attach no handler saw, and a frame's
-// own attach or detach handled before or after counts as it would.
+// attached before it subscribed (frameTracker).
 func (t *frameTracker) seed(tree *page.FrameTree) {
 	if tree == nil {
 		return
 	}
 	if tree.Frame != nil {
-		t.navigated(tree.Frame.ID)
+		t.record(tree.Frame.ID, func(f *frameEvents) { f.seeded = true })
 	}
 	for _, child := range tree.ChildFrames {
 		t.seed(child)
