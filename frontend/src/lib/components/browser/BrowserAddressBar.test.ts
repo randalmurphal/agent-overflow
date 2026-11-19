@@ -115,6 +115,22 @@ describe('<BrowserAddressBar>', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it('puts the page address back when the field loses focus with an edit, on a settled tab and after a switch', async () => {
+    const { view, input } = mount();
+    input.focus();
+    await fireEvent.input(input, { target: { value: 'half typed' } });
+    input.blur();
+    await tick();
+    expect(input.value).toBe(URL_A);
+
+    await view.rerender({ activePage: page({ id: 'b', url: 'https://example.test/b' }) as never });
+    input.focus();
+    await fireEvent.input(input, { target: { value: 'typed for b' } });
+    input.blur();
+    await tick();
+    expect(input.value).toBe('https://example.test/b');
+  });
+
   it('turns reload into stop while the page loads, and back', async () => {
     const { view, onAct } = mount(page({ loading: true }));
     expect(view.queryByRole('button', { name: 'Reload' })).toBeNull();
