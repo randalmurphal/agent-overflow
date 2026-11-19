@@ -514,74 +514,10 @@ func TestTheStagingDirectoryIsPrivateAndGoesWhenEmpty(t *testing.T) {
 	}
 }
 
-// A staged file another run left behind never collides with a new
-// download's (staged names carry a token of their process), an old one is
-// removed when the first download of the process uses the directory, a
-// recent one stays, and a running download's file is never removed.
-func TestStagedLeftoversNeverCollideAndOldOnesGo(t *testing.T) {
-	manager, _, access, page := newDownloadManager(t)
-	staging := filepath.Join(os.Getenv("HOME"), "Downloads", stagingDirName)
-	if err := os.Mkdir(staging, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-2 * stagedLeftoverAge)
-	stale, recent := filepath.Join(staging, "dl-2"), filepath.Join(staging, "dl-1")
-	for _, path := range []string{stale, recent} {
-		if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Chtimes(stale, old, old); err != nil {
-		t.Fatal(err)
-	}
-	startDownload(t, manager, access, page, "first.bin", 10)
-	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCompleted {
-		t.Fatalf("the first download after a leftover lists as %+v", got)
-	}
-	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the old leftover is still there: %v", err)
-	}
-	if got, err := os.ReadFile(recent); err != nil || string(got) != "partial" {
-		t.Fatalf("the recent leftover reads %q, %v", got, err)
-	}
-
-	// The prune spares a file a running download owns, however old.
-	startDownload(t, manager, access, page, "running.bin", 10, "hold")
-	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
-	running := manager.stagedPath(item.engineID)
-	// WebKitGTK writes beside the staged file until the download finishes.
-	companion := running + ".wkdownload"
-	if err := os.WriteFile(companion, []byte("partial"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{running, companion} {
-		if err := os.Chtimes(path, old, old); err != nil {
-			t.Fatal(err)
-		}
-	}
-	stagingPrune(t, filepath.Dir(running))
-	for _, path := range []string{running, companion} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("the running download's file was pruned: %v", err)
-		}
-	}
-	// Its cancel takes the companion with the staged file.
-	if err := manager.CancelThreadDownload(access, item.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{running, companion} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("after the cancel %s is still there: %v", path, err)
-		}
-	}
-	if got, _ := os.ReadFile(recent); string(got) != "partial" {
-		t.Fatal("the recent leftover was pruned")
-	}
-}
-
 // A staged download the Manager refuses gives up its staged file, and the
 // staging folder goes once no download stages in it, even one whose engine
-// has not created its file yet; a staged name carries its process's token.
+// has not created its file yet; a staged file is in its process's run
+// directory.
 func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	manager, _, _, _ := newDownloadManager(t)
 	downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
@@ -592,8 +528,8 @@ func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`^dl-[0-9a-f]{12}-[0-9]+$`).MatchString(filepath.Base(staged)) {
-		t.Fatalf("the staged name %s carries no process token", staged)
+	if !regexp.MustCompile(`^run-[0-9a-f]{12}$`).MatchString(filepath.Base(filepath.Dir(staged))) {
+		t.Fatalf("the staged file %s is in no run directory of its process", staged)
 	}
 	if err := os.WriteFile(staged, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
@@ -604,37 +540,12 @@ func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	if names := folderNames(t, downloads); !slices.Equal(names, []string{stagingDirName}) {
 		t.Fatalf("with a download still staging the Downloads folder holds %q", names)
 	}
-	if names := folderNames(t, filepath.Join(downloads, stagingDirName)); len(names) != 0 {
-		t.Fatalf("after the refusal the staging folder holds %q", names)
+	if names := folderNames(t, filepath.Dir(staged)); !slices.Equal(names, []string{runLockName}) {
+		t.Fatalf("after the refusal the run directory holds %q", names)
 	}
 	manager.releaseStagedDownload("unwritten")
 	if names := folderNames(t, downloads); len(names) != 0 {
 		t.Fatalf("after the refusal the Downloads folder holds %q", names)
-	}
-}
-
-// The prune removes only names AO stages under, exactly, and their engine's
-// sidecars: an old file of the user's or another program's in the staging
-// folder stays, a name that merely starts like a staged one included.
-func TestTheStagingPruneLeavesFilesAONeverStaged(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), stagingDirName)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-2 * stagedLeftoverAge)
-	names := []string{"notes.txt", "dl-report", "dl-2", "dl-0123456789ab-7", "dl-0123456789ab-8.wkdownload", "dl-p42-3", "dl-2.user-notes.txt", "dl-3.wkdownload.bak"}
-	for _, name := range names {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(path, old, old); err != nil {
-			t.Fatal(err)
-		}
-	}
-	stagingPrune(t, dir)
-	if got := folderNames(t, dir); !slices.Equal(got, []string{"dl-2.user-notes.txt", "dl-3.wkdownload.bak", "dl-report", "notes.txt"}) {
-		t.Fatalf("after the prune the staging folder holds %q, want only the files AO never staged", got)
 	}
 }
 
@@ -652,17 +563,12 @@ func TestReleasingAStagedFileRemovesOnlyItAndItsSidecar(t *testing.T) {
 		}
 	}
 	releaseStaged(staged)
-	if got := folderNames(t, filepath.Join(downloads, stagingDirName)); !slices.Equal(got, []string{filepath.Base(staged) + ".user-notes.txt"}) {
-		t.Fatalf("after the release the staging folder holds %q, want only the file AO never staged", got)
+	if got := folderNames(t, filepath.Dir(staged)); !slices.Equal(got, []string{filepath.Base(staged) + ".user-notes.txt"}) {
+		t.Fatalf("after the release the run directory holds %q, want only the file AO never staged", got)
 	}
-}
-
-// stagingPrune runs the staging directory's prune as its first use does.
-func stagingPrune(t *testing.T, dir string) {
-	t.Helper()
-	staging.mu.Lock()
-	defer staging.mu.Unlock()
-	pruneStagingLocked(dir, time.Now())
+	if got := folderNames(t, filepath.Join(downloads, stagingDirName)); len(got) != 1 {
+		t.Fatalf("the staging folder holds %q, want the run directory the file AO never staged keeps", got)
+	}
 }
 
 // A Downloads folder relocated while a profile lives takes the next
@@ -846,7 +752,7 @@ func TestACanceledOrFailedDownloadLeavesDownloadsAsItWas(t *testing.T) {
 			want := []string{stagingDirName, "neighbor.bin"}
 			if mode.saving == downloadsSavedByEngine {
 				want = []string{"held.bin", "neighbor.bin"}
-			} else if filepath.Dir(partial) != filepath.Join(downloads, stagingDirName) {
+			} else if filepath.Dir(filepath.Dir(partial)) != filepath.Join(downloads, stagingDirName) {
 				t.Fatalf("the running download writes %s", partial)
 			}
 			if names := folderNames(t, downloads); !slices.Equal(names, want) {

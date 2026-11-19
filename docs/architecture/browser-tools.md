@@ -903,13 +903,19 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   with the reason and opens nothing.
 - WebKitGTK and WKWebView write each download only into the app's
   private staging folder in the Downloads folder,
-  `.agent-overflow-downloads` (mode 0700), under a name the Manager gives
-  as the engine asks for the destination: `dl-<process token>-<n>`, so a
-  file another run left never collides
-  (`internal/browser/download_staging.go`). The folder is resolved per
-  download, created on demand with a missing Downloads folder, checked to
-  be a real folder and not a link before every use, and removed once no
-  download stages in it and it is empty. The Manager publishes a finished
+  `.agent-overflow-downloads` (mode 0700), in a run folder of the
+  process's own, `run-<process token>`, under a name the Manager gives as
+  the engine asks for the destination, `dl-<n>`, so a file another run
+  left never collides (`internal/browser/download_staging.go`). The
+  process opens its run folder once and holds it, with an exclusive lock
+  on its `.lock` file, until its last staged download ends: every removal
+  it makes there goes through that handle, so a run folder moved aside or
+  replaced never loses a file of the replacement, and a publish takes the
+  staged file only while its path still names the file in the held
+  folder. The folder is resolved per download, created on demand with a
+  missing Downloads folder, checked to be a real folder and not a link
+  before every use, and the run folder and the staging folder are removed
+  once no download stages in them and they are empty. The Manager publishes a finished
   file into the Downloads folder beside it
   (`internal/browser/user_downloads.go`): it hard-links the staged file to
   the sanitized suggested name, or that name with ` (1)`, ` (2)` and on,
@@ -936,13 +942,14 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   pruning and never deletes or replaces a file it did not put there. A
   canceled or failed download leaves the folder as it was: WebView2
   removes its own partial file, and the other desktop engines remove
-  their staged file and the emptied staging folder. A staged file left
-  by a run that ended mid-download is removed when a download of a later
-  run first uses the staging folder, once it is 24 hours old; a file
-  there without a staged name is never removed, and a running
-  download's file never is. A download another app process lets stall
-  for 24 hours can lose its staged file that way and fails at its
-  publish. Nothing that deletes a thread, clears site data, turns the
+  their staged file and the emptied staging folder. The staged files of
+  a run that ended mid-download are removed when a later run first uses
+  the staging folder, and only on positive evidence that the run ended:
+  the later run takes that run folder's lock. A live run's folder, a run
+  folder with no lock file, a file without a staged name, and the files
+  releases that staged without run folders left directly in the staging
+  folder (no evidence tells a dead one from a live one) are never
+  removed. Nothing that deletes a thread, clears site data, turns the
   browser off or prunes artifacts deletes a file in the Downloads
   folder.
 - Headless Chromium in serve mode alone keeps downloads as AO artifacts:

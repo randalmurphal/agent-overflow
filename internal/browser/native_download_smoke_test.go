@@ -26,7 +26,9 @@ func smokeStagingDir() string {
 	return filepath.Join(os.Getenv("HOME"), "Downloads", stagingDirName)
 }
 
-// smokeStagedNames lists the staging directory, empty while it is absent.
+// smokeStagedNames lists the staging directory, empty while it is absent:
+// a file in it by its name, and the files in a run directory but its lock
+// as "<run>/<name>".
 func smokeStagedNames(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(smokeStagingDir())
@@ -38,7 +40,19 @@ func smokeStagedNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, entry := range entries {
-		names = append(names, entry.Name())
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
+			continue
+		}
+		inRun, err := os.ReadDir(filepath.Join(smokeStagingDir(), entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range inRun {
+			if file.Name() != runLockName {
+				names = append(names, entry.Name()+"/"+file.Name())
+			}
+		}
 	}
 	return names
 }
@@ -228,34 +242,30 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("staged files an earlier run left never fail a download, and old ones go", func(t *testing.T) {
+	t.Run("staged files an earlier run left never fail a download, and an ended run's go", func(t *testing.T) {
 		staging := smokeStagingDir()
 		if names := smokeStagedNames(t); len(names) != 0 {
 			t.Fatalf("with no download running the staging folder holds %q", names)
 		}
-		if err := os.Mkdir(staging, 0o700); err != nil {
+		// An ended run's directory, its lock free, and a file an earlier
+		// release staged without run directories.
+		ended := filepath.Join(staging, "run-000000000000")
+		if err := os.MkdirAll(ended, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		// dl-1 is the name the first download of a run took before staged
-		// names carried their process's token.
-		recent, stale := filepath.Join(staging, "dl-1"), filepath.Join(staging, "dl-2")
-		for _, path := range []string{recent, stale} {
+		for _, path := range []string{filepath.Join(ended, runLockName), filepath.Join(ended, "dl-1"), filepath.Join(staging, "dl-1")} {
 			if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}
-		old := time.Now().Add(-2 * stagedLeftoverAge)
-		if err := os.Chtimes(stale, old, old); err != nil {
-			t.Fatal(err)
 		}
 		item := settled(download("/file.bin").ID, notRunning)
 		if item.State != downloadStateCompleted || item.Name != "file (2).bin" {
 			t.Fatalf("the download after the leftovers settled as %+v", item)
 		}
 		if names := smokeStagedNames(t); !slices.Equal(names, []string{"dl-1"}) {
-			t.Fatalf("the staging folder holds %q, want only the recent leftover", names)
+			t.Fatalf("the staging folder holds %q, want only the earlier release's file", names)
 		}
-		if err := os.Remove(recent); err != nil {
+		if err := os.Remove(filepath.Join(staging, "dl-1")); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Remove(staging); err != nil {
@@ -278,9 +288,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		// until the download finishes.
 		names := smokeStagedNames(t)
 		if len(names) == 0 || slices.ContainsFunc(names, func(name string) bool {
-			staged, ok := stagedFileOf(name)
-			first, _ := stagedFileOf(names[0])
-			return !ok || staged != first
+			return !stagedName(filepath.Base(name)) || strings.TrimSuffix(name, ".wkdownload") != names[0]
 		}) {
 			t.Fatalf("while the download runs the staging folder holds %q", names)
 		}

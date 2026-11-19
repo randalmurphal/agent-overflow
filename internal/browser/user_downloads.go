@@ -177,24 +177,14 @@ var errNoReplaceRename = errors.New("this platform has no rename that refuses to
 // (releaseStaged) removes a linked file's staged name. Where the filesystem
 // has neither, the download fails with the reason.
 func publishDownload(staged, suggested string) (path string, file os.FileInfo, err error) {
-	stagingDir, err := stagingDirOf(staged)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil, fmt.Errorf("browser: the downloaded file is gone from %s, which was moved or removed: %w", filepath.Dir(staged), err)
-	}
+	info, downloads, err := stagedFileOf(staged)
 	if err != nil {
 		return "", nil, err
-	}
-	info, err := os.Lstat(staged)
-	if err != nil {
-		return "", nil, fmt.Errorf("browser: the downloaded file is gone from %s: %w", stagingDir, err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", staged)
 	}
 	name := safeArtifactName(suggested, "download")
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	return placeNoReplace(staged, info, filepath.Dir(stagingDir), "the Downloads folder", func(i int) string {
+	return placeNoReplace(staged, info, downloads, "the Downloads folder", func(i int) string {
 		if i == 0 {
 			return name
 		}
