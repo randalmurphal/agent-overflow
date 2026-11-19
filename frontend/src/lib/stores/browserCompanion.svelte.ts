@@ -81,7 +81,12 @@ export function observeBrowserCompanion(observer: BrowserCompanionObserver): voi
 // Last state event per thread with live pages, reactive per key so the chat
 // header's browser chip re-evaluates only when ITS thread's pages change.
 const liveStates = createKeyedSignalRegistry<BrowserCompanionEvent | null>(null);
-const hydratedThreads = new Set<string>();
+// The threads whose state this connection has seen, by a push or a read:
+// for one of them, no live state means no tab. A connection edge forgets
+// them all (refreshBrowserCompanionStates). The reads in flight, one per
+// thread.
+const knownThreads = new Set<string>();
+const stateReads = new Map<string, Promise<void>>();
 
 // A thread's state arrives as pushes and as the answers of attach, action
 // and hydrate calls, and the transport can write a push published after a
@@ -234,7 +239,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
   if (event.kind !== 'state') return;
   if (!admitState(event)) return;
   for (const observer of observers) observer.stateAdmitted?.(event);
-  hydratedThreads.add(event.threadId);
+  knownThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
   else liveStates.drop(event.threadId);
   // Closing runs on every client: a companion opened on the desktop survives
@@ -532,34 +537,87 @@ export function focusedBrowser(): { threadId: string; state: BrowserCompanionEve
 }
 
 // The `browser:companion-state` channel is ephemeral (no replay), so a
-// freshly loaded UI cannot know a thread already has live pages. One
-// backend read per thread fills that in; every later change arrives as a
-// push. A push newer than the read's answer, whenever it landed, wins by
-// its number (`admitState`).
-export function hydrateBrowserCompanionState(threadId: string): void {
-  if (!threadId || hydratedThreads.has(threadId)) return;
+// freshly loaded UI cannot know a thread already has live pages, and a
+// reconnected one cannot know what changed while it was away. One backend
+// read per thread per connection fills that in; every later change arrives
+// as a push. A push newer than the read's answer, whenever it landed, wins
+// by its number (`admitState`).
+function readThreadState(threadId: string): Promise<void> {
   // The read rides `host`, and it runs on every pane thread mount, so a
   // session off the host would spend one refusal per thread open on a
   // surface it cannot use anyway: the pane is a NATIVE view this machine
   // paints, which no remote client renders, and no grant can ever open
-  // it. The scope read comes BEFORE the thread is marked hydrated: the
+  // it. The scope read comes BEFORE the thread is marked known: the
   // caller is an $effect, host presence lands with the bootstrap manifest
   // after the first pane mounts, and pinning the thread on the placeholder
-  // answer would leave it unhydrated for the life of the page.
-  if (!canUseNativeBrowser(threadId)) return;
-  hydratedThreads.add(threadId);
-  void (async () => {
-    // The async wrapper folds a SYNCHRONOUS throw from the binding into the
-    // same failure path as a rejection: callers run this from $effect bodies,
-    // where an escaping throw tears down the component's effects.
-    try {
-      applyBrowserCompanionState(await BrowserCompanionThreadState(threadId));
-    } catch {
-      // A failed read (backend restarting, thread gone) must not pin the
-      // thread as hydrated forever; the next mount retries.
-      hydratedThreads.delete(threadId);
-    }
-  })();
+  // answer would leave it unread for the life of the page.
+  if (knownThreads.has(threadId) || !canUseNativeBrowser(threadId)) return Promise.resolve();
+  const pending = stateReads.get(threadId);
+  if (pending) return pending;
+  // The async wrapper folds a SYNCHRONOUS throw from the binding into the
+  // same failure path as a rejection.
+  const read = (async () => {
+    applyBrowserCompanionState(await BrowserCompanionThreadState(threadId));
+    // Not admitted, the answer is older than a state already applied.
+    knownThreads.add(threadId);
+  })().finally(() => {
+    // A failed read (backend restarting, thread gone) leaves the thread
+    // unknown; the next mount or click reads again.
+    if (stateReads.get(threadId) === read) stateReads.delete(threadId);
+  });
+  stateReads.set(threadId, read);
+  return read;
+}
+
+/** Reads the thread's state unless this connection has seen it; never throws. */
+export function hydrateBrowserCompanionState(threadId: string): void {
+  if (!threadId) return;
+  // Callers run this from $effect bodies, where an escaping throw tears
+  // down the component's effects; a failure is retried by the next caller.
+  readThreadState(threadId).catch(() => {});
+}
+
+/**
+ * A connection edge of the home backend: pushes made while this window was
+ * away are lost, so no thread's state is known any more. The threads with a
+ * pane are read again now (the chat header's button reads their state);
+ * any other is read when a pane shows it.
+ */
+export function refreshBrowserCompanionStates(): void {
+  knownThreads.clear();
+  stateReads.clear();
+  for (const [, pane] of getAllPanes()) {
+    if (pane.threadId) hydrateBrowserCompanionState(pane.threadId);
+  }
+}
+
+/**
+ * The chat header's browser button. With tabs it shows or hides the pane;
+ * with none it opens the pane on a new tab with its address focused. Which
+ * it is comes from a state this connection has seen: an unknown one is read
+ * first, so a thread whose tabs opened while this window was away is shown
+ * rather than given another tab. A refusal, or a read that fails, reaches a
+ * toast, since a hidden pane has no banner.
+ */
+export async function toggleBrowserFromHeader(threadId: string): Promise<void> {
+  try {
+    await readThreadState(threadId);
+  } catch (err) {
+    addErrorToast(`The browser's tabs could not be read: ${errString(err)}`, err);
+    return;
+  }
+  const state = liveStates.get(threadId);
+  if (!state) {
+    // A refusal reaches a toast there (openBrowserTab).
+    await openBrowserTab(threadId, { focusAddress: true });
+    return;
+  }
+  const visible = state.visible === true;
+  const failure = await browserCompanionAct(threadId, {
+    kind: visible ? 'hide' : 'show',
+    pageId: visible ? '' : (state.activePageId ?? ''),
+  });
+  if (failure) addErrorToast(failure.error, failure.cause);
 }
 
 export function reconcileBrowserCompanionForPane(paneId: string, threadId: string): void {
@@ -579,7 +637,8 @@ export function resetBrowserCompanionForTest(): void {
   liveStates.reset();
   findCleanupErrors.reset();
   resetBrowserAddressFocusForTest();
-  hydratedThreads.clear();
+  knownThreads.clear();
+  stateReads.clear();
   store.suspend();
   store.resetAll();
 }

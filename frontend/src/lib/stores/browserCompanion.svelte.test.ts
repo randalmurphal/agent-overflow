@@ -9,8 +9,10 @@ import {
   hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
+  refreshBrowserCompanionStates,
   resetBrowserCompanionForTest,
   setBrowserPaneMountForTest,
+  toggleBrowserFromHeader,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, takeAddressFocus } from './browserAddressFocus.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
@@ -29,6 +31,7 @@ import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { getToasts, resetToastsForTest } from './toast.svelte';
+import { browserCompanionState } from './browserCompanion.svelte';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -358,6 +361,59 @@ describe('browser companion state routing', () => {
       applyBrowserCompanionState(closed(8));
       expect(attachment.current?.state.pages).toEqual([]);
       attachment.release();
+    });
+  });
+
+  // The state channel has no replay: tabs opened while this window was
+  // away are known only from a read on the new connection.
+  describe('across a connection edge', () => {
+    const tab = { id: 'page-1', url: 'https://example.com/', title: 'Example', canGoBack: false, canGoForward: false };
+    const none = (seq: number) => ({ kind: 'state', threadId: 'thread-browser', pages: [], seq });
+    const hidden = (seq: number) => ({ kind: 'state', threadId: 'thread-browser', activePageId: 'page-1', visible: false, pages: [tab], seq });
+
+    it('reads a thread with a pane again, and finds the tab an agent opened meanwhile', async () => {
+      const answers = [none(1), hidden(2)];
+      const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => answers.shift()));
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+      hydrateBrowserCompanionState('thread-browser');
+      expect(read).toHaveBeenCalledTimes(1);
+
+      refreshBrowserCompanionStates();
+      await vi.waitFor(() => expect(browserCompanionState('thread-browser')?.pages).toHaveLength(1));
+      expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    it('the header button reads a state it does not know before it opens a tab', async () => {
+      let answer: (state: unknown) => void = () => {};
+      setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string }) => (
+        action.kind === 'show' ? { ...hidden(3), visible: true } : none(3)
+      )));
+      const toggled = toggleBrowserFromHeader('thread-browser');
+      await Promise.resolve();
+      expect(act).not.toHaveBeenCalled();
+      answer(hidden(2));
+      await toggled;
+      expect(act).toHaveBeenCalledTimes(1);
+      expect(act.mock.calls[0][1]).toMatchObject({ kind: 'show', pageId: 'page-1' });
+    });
+
+    it('the header button opens a tab once the state is known to have none', async () => {
+      setBindingMock('BrowserCompanionThreadState', async () => none(1));
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
+      await toggleBrowserFromHeader('thread-browser');
+      expect(act).toHaveBeenCalledTimes(1);
+      expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
+    });
+
+    it('the header button opens nothing when the state cannot be read, and says so', async () => {
+      resetToastsForTest();
+      setBindingMock('BrowserCompanionThreadState', async () => { throw new Error('backend restarting'); });
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
+      await toggleBrowserFromHeader('thread-browser');
+      expect(act).not.toHaveBeenCalled();
+      expect(getToasts().map((toast) => toast.message)).toContain("The browser's tabs could not be read: backend restarting");
     });
   });
 

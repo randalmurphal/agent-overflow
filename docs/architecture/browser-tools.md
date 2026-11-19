@@ -234,7 +234,11 @@ per-platform no-op.
   tab, as a mod-clicked link does on a tab at the link. Both ask one
   question (`canPresentNativeBrowser`): the window hosts the thread's view,
   the home backend has an engine, the browser is on, and the layout is not
-  compact. A mod-click that fails it opens the link the ordinary way. A new tab the user
+  compact. A mod-click that fails it opens the link the ordinary way. The
+  state channel has no replay, so the client reads the state of each thread
+  it shows once per connection of the home backend, and the button decides
+  between showing the pane and opening a tab only from a state read or
+  pushed on the current connection, reading one first when it has none. A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted
