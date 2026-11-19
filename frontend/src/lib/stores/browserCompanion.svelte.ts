@@ -124,6 +124,17 @@ export function canOpenNativeBrowser(threadId: string): boolean {
 }
 
 /**
+ * Whether a gesture here can open a tab of the thread's browser and show
+ * it: the browser can be opened (canOpenNativeBrowser) and the layout shows
+ * a browser pane, which compact never does (openBrowserCompanion). The
+ * header's open button and a mod-clicked link ask this, so neither makes a
+ * tab nobody sees; a link falls back to the ordinary opener.
+ */
+export function canPresentNativeBrowser(threadId: string): boolean {
+  return !isCompactLayout() && canOpenNativeBrowser(threadId);
+}
+
+/**
  * The only opener of a browser companion. The state push and the pane
  * reconcile on a thread mount call it, and through the push so do the
  * chip's show, a mod-clicked link and startup hydration. Browser

@@ -54,7 +54,7 @@
   import {
     browserCompanionAct,
     browserCompanionState,
-    canOpenNativeBrowser,
+    canPresentNativeBrowser,
     canUseNativeBrowser,
     hydrateBrowserCompanionState,
     openBrowserTab,
@@ -169,13 +169,14 @@
   }
 
   // The browser chip renders wherever this page can open the thread's
-  // browser (canOpenNativeBrowser), tabs or not. With tabs it shows and
-  // hides the companion, which closing never strands; with none it opens the
-  // pane on a new tab with its address bar focused. The state read is
+  // browser and show it (canPresentNativeBrowser), tabs or not, and for a
+  // thread with tabs. With tabs it shows and hides the companion, which
+  // closing never strands; with none it opens the pane on a new tab with
+  // its address bar focused. The state read is
   // per-key reactive, and the hydration read fills in what the ephemeral
   // `browser:companion-state` channel cannot replay to a fresh UI.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserAvailable = $derived(threadIdForBrowser !== '' && canOpenNativeBrowser(threadIdForBrowser));
+  let browserAvailable = $derived(threadIdForBrowser !== '' && canPresentNativeBrowser(threadIdForBrowser));
   let browserState = $derived(
     threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser) ? browserCompanionState(threadIdForBrowser) : null,
   );
@@ -430,7 +431,7 @@
     </Button>
   {/if}
 
-  {#if browserState || (browserAvailable && !compact)}
+  {#if browserState || browserAvailable}
     <!-- Browser companion toggle. With tabs it shows and hides the pane
          (closing the pane never closes the pages); with none it opens the
          pane on a new tab, which a compact screen never shows, so there it
