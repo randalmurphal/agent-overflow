@@ -112,6 +112,8 @@ type fakeController struct {
 	view   *fakeView
 	bounds rect
 	put    []rect
+	// putErr fails PutBounds.
+	putErr uintptr
 	closed int
 	keys   []*comObject
 }
@@ -128,6 +130,9 @@ var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
 		return 0
 	}),
 	PutBounds: newComProc(func(this *fakeController, bounds *rect) uintptr {
+		if this.putErr != 0 {
+			return this.putErr
+		}
 		this.bounds = *bounds
 		this.put = append(this.put, *bounds)
 		return 0
