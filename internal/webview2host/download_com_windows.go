@@ -4,6 +4,7 @@ package webview2host
 
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -210,16 +211,22 @@ func (o *iCoreWebView2DownloadOperation) bytesReceived() int64 {
 	return max(value, 0)
 }
 
-func (o *iCoreWebView2DownloadOperation) state() uint32 {
-	value := uint32(downloadStateInProgress)
-	_, _, _ = o.vtbl.GetState.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
-	return value
+func (o *iCoreWebView2DownloadOperation) state() (uint32, error) {
+	var value uint32
+	hr, _, _ := o.vtbl.GetState.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read its state: %w", err)
+	}
+	return value, nil
 }
 
-func (o *iCoreWebView2DownloadOperation) interruptReason() uint32 {
+func (o *iCoreWebView2DownloadOperation) interruptReason() (uint32, error) {
 	var value uint32
-	_, _, _ = o.vtbl.GetInterruptReason.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
-	return value
+	hr, _, _ := o.vtbl.GetInterruptReason.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read its interrupt reason: %w", err)
+	}
+	return value, nil
 }
 
 func (o *iCoreWebView2DownloadOperation) cancel() error {

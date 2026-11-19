@@ -34,6 +34,8 @@ type fakeOp struct {
 	path      string
 	uri       string
 	canceled  int
+	// refuseStateSub fails AddStateChanged; stateErr fails GetState.
+	refuseStateSub, stateErr bool
 }
 
 func fakeHandlerAddRef(h *iDownloadEventHandler) {
@@ -70,6 +72,9 @@ var fakeOpVtbl = iCoreWebView2DownloadOperationVtbl{
 	AddBytesReceivedChanged:    newComProc(fakeSubscribe),
 	RemoveBytesReceivedChanged: newComProc(fakeUnsubscribe),
 	AddStateChanged: newComProc(func(this *fakeOp, handler *iDownloadEventHandler, token *eventRegistrationToken) uintptr {
+		if this.refuseStateSub {
+			return 0x80004005 // E_FAIL
+		}
 		hr := fakeSubscribe(this, handler, token)
 		this.stateSubs[token.value] = true
 		return hr
@@ -85,8 +90,14 @@ var fakeOpVtbl = iCoreWebView2DownloadOperationVtbl{
 	}),
 	GetTotalBytesToReceive: newComProc(func(this *fakeOp, out *int64) uintptr { *out = this.total; return 0 }),
 	GetBytesReceived:       newComProc(func(this *fakeOp, out *int64) uintptr { *out = this.received; return 0 }),
-	GetState:               newComProc(func(this *fakeOp, out *uint32) uintptr { *out = this.st; return 0 }),
-	GetInterruptReason:     newComProc(func(this *fakeOp, out *uint32) uintptr { *out = this.reason; return 0 }),
+	GetState: newComProc(func(this *fakeOp, out *uint32) uintptr {
+		if this.stateErr {
+			return 0x80004005 // E_FAIL
+		}
+		*out = this.st
+		return 0
+	}),
+	GetInterruptReason: newComProc(func(this *fakeOp, out *uint32) uintptr { *out = this.reason; return 0 }),
 	Cancel: newComProc(func(this *fakeOp) uintptr {
 		this.canceled++
 		return 0
@@ -309,6 +320,73 @@ func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 	r.host.answerDownload(r.page, "dl-t-9", true)
 	if got := r.take(); len(got) != 1 || got[0] != (DownloadReport{ID: "dl-t-9", State: DownloadUnknown, Reason: DownloadUnknownReason, Answer: true}) {
 		t.Fatalf("an unknown id answers %+v", got)
+	}
+	r.done(t, op)
+}
+
+// A download whose state subscription failed still ends: a status
+// directive reads its state, and one that completed with no state change
+// raised ends completed, its terminal snapshot the answer. A state that
+// cannot be read keeps it running.
+func TestAStatusReconcilesADownloadWithNoStateCallback(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	op.refuseStateSub = true
+	start(t, r.page, op)
+	r.take()
+	op.stateErr = true
+	r.host.answerDownload(r.page, "dl-t-1", false)
+	if got := r.take(); states(got) != "dl-t-1:running" || !got[0].Answer {
+		t.Fatalf("an unreadable state answers %+v", got)
+	}
+	op.stateErr = false
+	op.received = 100
+	op.st = downloadStateCompleted
+	r.host.answerDownload(r.page, "dl-t-1", false)
+	got := r.take()
+	if states(got) != "dl-t-1:completed" || got[0].Received != 100 {
+		t.Fatalf("a completed download with no callback answers %+v", got)
+	}
+	if r.page.downloads["dl-t-1"] != nil || op.refs != 1 {
+		t.Fatalf("the reconciled download is still tracked (%d refs)", op.refs-1)
+	}
+	r.host.answerDownload(r.page, "dl-t-1", false)
+	if again := r.take(); len(again) != 1 || !again[0].Answer || again[0].State != DownloadCompleted {
+		t.Fatalf("after the reconciled end: %+v", again)
+	}
+	r.done(t, op)
+}
+
+// A page asking to close while its one download completed unseen closes:
+// the close reads the download's state.
+func TestACloseRequestReconcilesItsDownloads(t *testing.T) {
+	r := newDownloadRig(t)
+	var posted []func()
+	r.host.config.Post = func(fn func()) { posted = append(posted, fn) }
+	op := newFakeOp(`C:\D\f.bin`)
+	op.refuseStateSub = true
+	start(t, r.page, op)
+	r.take()
+	op.st = downloadStateCompleted
+	downloads := r.host.config.Report
+	var closed int
+	r.host.config.Report = func(pageID string, kind ReportKind, detail string) {
+		if kind == ReportClosed && pageID == "p" {
+			closed++
+			return
+		}
+		downloads(pageID, kind, detail)
+	}
+	r.host.closeAsked(r.page)
+	if len(posted) != 1 {
+		t.Fatalf("%d turns posted", len(posted))
+	}
+	posted[0]()
+	if got := states(r.take()); got != "dl-t-1:completed" {
+		t.Fatalf("the close reconciled %q", got)
+	}
+	if r.page.closeAfterDownloads || r.host.pages["p"] != nil || closed != 1 {
+		t.Fatalf("the page waits for a download that ended (closeAfterDownloads %v, closed %d)", r.page.closeAfterDownloads, closed)
 	}
 	r.done(t, op)
 }

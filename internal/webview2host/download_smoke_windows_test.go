@@ -288,8 +288,14 @@ func stallBesideAResumed(t *testing.T, s *downloadSmoke) (a, b, own *smokeDownlo
 	}
 	s.ui.do(func() {
 		d := s.page().downloads[b.id]
-		if d == nil || d.op == nil || len(d.stale) != 0 || d.op.state() != downloadStateInProgress || d.op.interruptReason() == 0 {
+		if d == nil || d.op == nil || len(d.stale) != 0 {
 			t.Errorf("b does not read as dropped and unreplaced: %+v", d)
+			return
+		}
+		state, stateErr := d.op.state()
+		reason, reasonErr := d.op.interruptReason()
+		if stateErr != nil || reasonErr != nil || state != downloadStateInProgress || reason == 0 {
+			t.Errorf("b does not read as dropped: state %d (%v), reason %d (%v)", state, stateErr, reason, reasonErr)
 		}
 	})
 	return a, b, own

@@ -69,7 +69,7 @@ thread alone owns the page registry: membership, admission (`admit`, one
 check whose `MaxHostPages` counts every page) and teardown (`closeTaken`)
 run in `Config.OnMain` turns, which run inline on the UI thread; work for a
 later turn goes through `Config.Post`. A close a page asks for itself is
-posted and rereads the page's downloads when it runs. A page whose
+posted and rereads the page's downloads and their states when it runs. A page whose
 required handlers (downloads, the download dialog, new windows) cannot be
 subscribed, or whose dialog state cannot be read, is not created.
 Creation is `host_create_windows.go`, close and teardown
@@ -118,7 +118,9 @@ each `DownloadStarting`, so WebView2's dialog does not open for it, keeps the
 snapshot (`ReportDownload`, `download.go`), progress throttled, each
 numbered (`Seq`) in the order taken so the backend applies only newer
 ones. A directive naming a download (`OpCancelDownload`,
-`OpDownloadStatus`) is answered with a snapshot marked `Answer`, which the
+`OpDownloadStatus`) reads the download's state first, so one whose state
+change never arrived ends then, and is answered with a snapshot marked
+`Answer`, which the
 backend never creates a row from: a running one's, an ended one's kept
 terminal snapshot under its own number (up to `MaxEndedDownloads` per page
 while the page lives), or `DownloadUnknown` for an id with no record. A

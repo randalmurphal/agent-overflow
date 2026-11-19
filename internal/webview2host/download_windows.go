@@ -113,7 +113,12 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		return
 	}
 	path, uri := args.resultFilePath(), op.uri()
-	if reason := op.interruptReason(); reason != 0 {
+	reason, err := op.interruptReason()
+	if err != nil {
+		// Read as no resume: a download of its own, nothing running touched.
+		h.config.Logf("browser host: page %s: a starting download: %v", page.id, err)
+	}
+	if reason != 0 {
 		if d := page.resumedDownload(uri); d != nil {
 			h.resumeDownload(d, args, op, path, reason)
 			return
@@ -149,11 +154,23 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 // download left as it is. Several read so when two downloads from one
 // address dropped at once, or when one dropped beside a download that
 // already resumed once, whose operation (a resume's) reads its reason for
-// good, dropped or not.
+// good, dropped or not. An operation from uri whose state cannot be read
+// makes the answer as uncertain, so it is nil too.
 func (p *hostPage) resumedDownload(uri string) *hostDownload {
 	var dropped *hostDownload
 	for _, d := range p.downloads {
-		if d.op == nil || d.uri != uri || d.op.state() != downloadStateInProgress || d.op.interruptReason() == 0 {
+		if d.op == nil || d.uri != uri {
+			continue
+		}
+		state, err := d.op.state()
+		if err != nil {
+			return nil
+		}
+		reason, err := d.op.interruptReason()
+		if err != nil {
+			return nil
+		}
+		if state != downloadStateInProgress || reason == 0 {
 			continue
 		}
 		if dropped != nil {
@@ -280,18 +297,32 @@ func (h *Host) downloadBytes(d *hostDownload) {
 // length mismatch (24), at the end of WebView2's own retries, and the
 // user's cancel; FILE_TOO_SHORT, FILE_HASH_MISMATCH and SERVER_NO_RANGE,
 // which WebView2 documents as resumed by itself, never did.
+//
+// It also reconciles: a directive naming the download and a page asking to
+// close read the state again, so a download whose state subscription
+// failed, or whose change WebView2 never raised, still ends. A state that
+// cannot be read leaves the download running.
 func (h *Host) downloadStateChanged(d *hostDownload) {
 	if d.op == nil {
 		return
 	}
-	switch d.op.state() {
+	state, err := d.op.state()
+	if err != nil {
+		h.config.Logf("browser host: download %s: %v", d.id, err)
+		return
+	}
+	switch state {
 	case downloadStateCompleted:
 		if path := d.op.resultFilePath(); path != "" {
 			d.path = path
 		}
 		h.endDownload(d, d.snapshot(DownloadCompleted, ""))
 	case downloadStateInterrupted:
-		reason := d.op.interruptReason()
+		reason, err := d.op.interruptReason()
+		if err != nil {
+			// Its end is known; its cause is not.
+			h.config.Logf("browser host: download %s: %v", d.id, err)
+		}
 		terminal := d.snapshot(DownloadInterrupted, downloadInterruptReason(reason))
 		// Nothing WebView2 might continue on this operation runs unobserved
 		// once it is let go. On the real runtime the cancel of an
@@ -343,15 +374,20 @@ func (h *Host) releaseOperations(d *hostDownload) {
 }
 
 // answerDownload answers a directive naming one of the page's downloads
-// with its snapshot, marked as an answer. A cancel cancels a running
-// download first, and its end follows from the operation's state change,
-// or from settleCancel when WebView2 reports none. An ended download's
-// answer is its terminal snapshot again; an id with no record gets
-// DownloadUnknown.
+// with its snapshot, marked as an answer. The download's state is read
+// first, and one that ended since its last report ends now, its terminal
+// snapshot the answer. A cancel cancels a running download, and its end
+// follows from the operation's state change, or from settleCancel when
+// WebView2 reports none. An ended download's answer is its terminal
+// snapshot again; an id with no record gets DownloadUnknown.
 func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	d := page.downloads[id]
 	if d == nil {
 		h.report(page, page.ended.answer(id))
+		return
+	}
+	h.downloadStateChanged(d)
+	if page.downloads[id] != d {
 		return
 	}
 	if cancel && d.op != nil {
