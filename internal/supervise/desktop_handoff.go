@@ -9,8 +9,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"agent-overflow/internal/selfupdate"
 
 	"golang.org/x/mod/semver"
 )
@@ -53,9 +54,9 @@ type DesktopHandoff struct {
 }
 
 // frameworkDownloadPrefix names the folder the Wails updater downloads a
-// release into: os.MkdirTemp("", "wails-update-*"). The framework removes it
-// in its own Restart, which a handoff replaces.
-const frameworkDownloadPrefix = "wails-update-"
+// release into. The framework removes it in its own Restart, which a
+// handoff replaces.
+const frameworkDownloadPrefix = selfupdate.FrameworkDownloadPrefix
 
 // Check reports whether the downloaded release at downloaded, of version,
 // takes the trial, or why it cannot be installed now. The same version,
@@ -195,29 +196,13 @@ func (h DesktopHandoff) removeFrameworkDownload(downloaded string) {
 	if tempDir == "" {
 		tempDir = os.TempDir()
 	}
-	folder, ok := frameworkDownloadFolder(downloaded, tempDir)
+	folder, ok := selfupdate.FrameworkDownloadFolder(downloaded, tempDir)
 	if !ok {
 		h.logf("updater: %s is not in a download folder of the updater under %s; its folder is left as it is", downloaded, tempDir)
 		return
 	}
 	if err := os.RemoveAll(folder); err != nil {
 		h.logf("updater: remove the download folder %s: %v", folder, err)
-	}
-}
-
-// frameworkDownloadFolder is the ancestor of downloaded directly under
-// tempDir, when the framework named it (frameworkDownloadPrefix).
-func frameworkDownloadFolder(downloaded, tempDir string) (string, bool) {
-	tempDir = filepath.Clean(tempDir)
-	for dir := filepath.Dir(filepath.Clean(downloaded)); ; {
-		parent := filepath.Dir(dir)
-		if parent == tempDir {
-			return dir, strings.HasPrefix(filepath.Base(dir), frameworkDownloadPrefix)
-		}
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
 	}
 }
 

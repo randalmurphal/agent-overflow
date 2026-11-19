@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -312,6 +313,10 @@ func (a *Service) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 	if src == "" {
 		return a.failWSLStaging(errors.New("updater: the download reported success but staged no file"))
 	}
+	// The launcher installs the staged copy and ends this backend without
+	// the framework's Restart, which is what removes the download
+	// otherwise. A failed copy is retried by a new download.
+	defer removeFrameworkDownload(src)
 
 	// One staged artifact at a time. The directive names a bare filename the
 	// launcher resolves inside this directory, so a previous download's .exe
@@ -339,6 +344,20 @@ func (a *Service) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 	// EventUpdateReady, because it means the same thing to the frontend: the
 	// bytes are in place and the only step left is the user's restart.
 	return func() { a.emit(updaterReadyChannel, rel) }
+}
+
+// removeFrameworkDownload removes the folder the framework downloaded src
+// into. Only a folder the framework named, directly under the temp
+// directory, is removed.
+func removeFrameworkDownload(src string) {
+	folder, ok := selfupdate.FrameworkDownloadFolder(src, os.TempDir())
+	if !ok {
+		log.Printf("updater: %s is not in a download folder of the updater; its folder is left as it is", src)
+		return
+	}
+	if err := os.RemoveAll(folder); err != nil {
+		log.Printf("updater: remove the download folder %s: %v", folder, err)
+	}
 }
 
 // failWSLStaging records a staging failure and returns the terminal event that

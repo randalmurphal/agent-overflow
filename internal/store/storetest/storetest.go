@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/store"
 )
 
@@ -17,12 +18,18 @@ import (
 // plain package var.
 var templatePath atomic.Pointer[string]
 
+// templatePrefix names the template directories, one per test process.
+const templatePrefix = "agent-overflow-storetest-template-"
+
 // Run builds one migrated template database, runs the package's tests against
-// it, and removes the template directory. Use it as the whole body of TestMain:
+// it, and removes the template directory, and those of test processes that
+// exited without removing theirs (ownedtemp): killed, timed out, or a helper
+// process that ended in os.Exit. Use it as the whole body of TestMain:
 //
 //	func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
 func Run(m *testing.M) int {
-	dir, err := os.MkdirTemp("", "agent-overflow-storetest-template-")
+	sweepTemplates()
+	dir, release, err := ownedtemp.Make("", templatePrefix)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "storetest: create template directory: %v\n", err)
 		return 1
@@ -30,7 +37,7 @@ func Run(m *testing.M) int {
 	path := filepath.Join(dir, "template.sqlite")
 	if err := buildTemplate(path); err != nil {
 		fmt.Fprintf(os.Stderr, "storetest: build template: %v\n", err)
-		if removeErr := os.RemoveAll(dir); removeErr != nil {
+		if removeErr := release(); removeErr != nil {
 			fmt.Fprintf(os.Stderr, "storetest: remove failed template: %v\n", removeErr)
 		}
 		return 1
@@ -40,13 +47,23 @@ func Run(m *testing.M) int {
 	code := m.Run()
 
 	templatePath.Store(nil)
-	if err := os.RemoveAll(dir); err != nil {
+	if err := release(); err != nil {
 		fmt.Fprintf(os.Stderr, "storetest: remove template: %v\n", err)
 		if code == 0 {
 			code = 1
 		}
 	}
+	sweepTemplates()
 	return code
+}
+
+// sweepTemplates removes the template directories of exited test
+// processes. A failure leaves a directory, not a wrong result, so it is
+// reported rather than failing the run.
+func sweepTemplates() {
+	if err := ownedtemp.Sweep("", templatePrefix); err != nil {
+		fmt.Fprintf(os.Stderr, "storetest: remove the templates of exited test processes: %v\n", err)
+	}
 }
 
 // buildTemplate opens a store at path (which applies the migration chain) and

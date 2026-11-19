@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/testutil/providerpath"
 )
 
@@ -23,7 +24,8 @@ const defaultTestProjectID = "default-test-project"
 var testStoreTemplatePath string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "agent-overflow-store-template-")
+	sweepStoreTemplates()
+	dir, release, err := ownedtemp.Make("", storeTemplatePrefix)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create store test template directory: %v\n", err)
 		os.Exit(1)
@@ -44,7 +46,7 @@ func TestMain(m *testing.M) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build store test template: %v\n", err)
-		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+		if cleanupErr := release(); cleanupErr != nil {
 			fmt.Fprintf(os.Stderr, "remove failed store test template: %v\n", cleanupErr)
 		}
 		os.Exit(1)
@@ -57,13 +59,26 @@ func TestMain(m *testing.M) {
 			code = 1
 		}
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if err := release(); err != nil {
 		fmt.Fprintf(os.Stderr, "remove store test template: %v\n", err)
 		if code == 0 {
 			code = 1
 		}
 	}
+	sweepStoreTemplates()
 	os.Exit(code)
+}
+
+// storeTemplatePrefix names the template directories, one per test process.
+const storeTemplatePrefix = "agent-overflow-store-template-"
+
+// sweepStoreTemplates removes the template directories of test processes
+// that exited without removing theirs: killed, timed out, or a helper that
+// ended in os.Exit.
+func sweepStoreTemplates() {
+	if err := ownedtemp.Sweep("", storeTemplatePrefix); err != nil {
+		fmt.Fprintf(os.Stderr, "remove the store test templates of exited test processes: %v\n", err)
+	}
 }
 
 func newTestStore(t *testing.T) *Store {

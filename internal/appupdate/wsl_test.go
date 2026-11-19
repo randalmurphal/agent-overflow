@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -286,6 +287,14 @@ func TestWSLUpdateFlowStagesAndHandsOff(t *testing.T) {
 	}
 	if a.busySnapshot() {
 		t.Fatal("the download fence must be released once the artifact is staged")
+	}
+	// The framework's download is not needed once staged: the launcher
+	// ends this backend without the framework's Restart, which would
+	// remove it.
+	if folder, ok := selfupdate.FrameworkDownloadFolder(a.updater.handle.DownloadedPath(), os.TempDir()); !ok {
+		t.Fatalf("download %s is not in a framework download folder", a.updater.handle.DownloadedPath())
+	} else if _, err := os.Stat(folder); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("framework download folder %s outlived the staging: %v", folder, err)
 	}
 
 	// Hand off.
