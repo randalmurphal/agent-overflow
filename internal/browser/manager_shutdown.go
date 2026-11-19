@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/browser/threadlife"
 )
 
 // CloseThread closes every page the thread owns, including a popup one of
@@ -27,6 +29,9 @@ import (
 // them.
 func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	m.mu.Lock()
+	// Before anything closes: a pane action bound to the thread opens
+	// nothing from here (thread_life.go).
+	m.lives.Retire(threadlife.ThreadID(threadID))
 	if info, ok := m.sessions[threadID]; ok {
 		info.Jar = JarWorktree
 		m.sessions[threadID] = info

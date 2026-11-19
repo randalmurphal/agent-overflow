@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/threadlife"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -103,6 +104,9 @@ type Manager struct {
 	// began before its browser was turned off or its site data cleared
 	// records nothing. Guarded by mu.
 	recordsCleared uint64
+	// lives holds the thread lifetimes pane actions are bound to
+	// (thread_life.go); retired in a hold of mu.
+	lives threadlife.Registry
 	// pending holds the pages being created, and the failed creations of
 	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
 	pending map[string]*pendingPage
@@ -230,10 +234,6 @@ type Manager struct {
 	// infoRead is a test seam: called between a read of a page's info (or
 	// history state) and its commit. Production leaves it nil.
 	infoRead func(p *managedPage)
-	// reopenRefused is a test seam: called between a reopen's refused open
-	// and its putting the closed tab back (ReopenClosedTab). Production
-	// leaves it nil.
-	reopenRefused func()
 	// selectionGapTimer starts one wait of a selection for its predecessors
 	// (awaitSelectionTurn) and answers its expiry and stop. A test seam;
 	// production uses newSelectionGapTimer.
@@ -241,9 +241,10 @@ type Manager struct {
 	// selectionAdmitted is a test seam run between a selection's admission
 	// and its commit (awaitSelectionTurn). Production leaves it nil.
 	selectionAdmitted func(sel Selection)
-	// reopenPopped is a test seam run between a reopen's pop of its closed
-	// tab and the tab's add (ReopenClosedTab). Production leaves it nil.
-	reopenPopped func()
+	// reopenRead is a test seam run between a reopen's read of its closed
+	// tab and the tab's admission (ReopenClosedTab). Production leaves it
+	// nil.
+	reopenRead func()
 	// switchWritten is a test seam run between a jar switch's write of its
 	// saved copy and its commit (SetJar). Production leaves it nil.
 	switchWritten func()

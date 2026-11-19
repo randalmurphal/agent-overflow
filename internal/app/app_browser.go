@@ -161,10 +161,8 @@ func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) erro
 // conversation owns, suspended ones included. Its browser tools calls finish
 // first, so none opens a page after the close; the caller's thread lock keeps
 // a session start from registering the thread again meanwhile. A companion
-// action begun before the close opens no page after it
-// (beginCompanionAction).
+// action bound before the close opens no page after it (Manager.BindThread).
 func (a *App) closeThreadBrowserPages(threadID string) error {
-	a.retireCompanionActions(threadID)
 	if a.closeBrowserPagesFn != nil {
 		return a.closeBrowserPagesFn(threadID)
 	}

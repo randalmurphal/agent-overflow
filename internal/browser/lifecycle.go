@@ -126,34 +126,35 @@ func (m *Manager) goLife(fn func()) bool {
 	return true
 }
 
-type pageAdmissionKey struct{}
-
-// WithPageAdmission returns ctx carrying a condition of the caller's for the
-// pages it opens, after any ctx already carries. A page creation under ctx
-// runs every condition in the m.mu hold that adds its tab, and again in the
-// startMu hold that creates and lists its page; one failing opens nothing,
-// leaves no tab and answers its error. A CloseThread that runs after admit
-// starts failing closes every tab added before, so a caller whose admit fails
-// once the thread's pages are closed leaves no page behind. admit must not
-// call the Manager.
-func WithPageAdmission(ctx context.Context, admit func() error) context.Context {
-	prev := pageAdmissionOf(ctx)
-	return context.WithValue(ctx, pageAdmissionKey{}, func() error {
-		if err := prev(); err != nil {
-			return err
-		}
-		return admit()
-	})
+// tabClaim is what a new tab takes besides its slot: a closed tab it
+// reopens (ReopenClosedTab), taken off the thread's closed-tab history in the
+// hold that adds the tab.
+type tabClaim struct {
+	stack *closedTabs
+	tab   closedTab
 }
 
-func pageAdmissionOf(ctx context.Context) func() error {
-	if admit, ok := ctx.Value(pageAdmissionKey{}).(func() error); ok {
-		return admit
+// errReopenForgotten refuses a reopened tab whose closed-tab history was
+// forgotten, or whose entry another reopen took, after the reopen read it.
+var errReopenForgotten = errors.New("browser: the closed tab was forgotten")
+
+// admitTabLocked is a new tab's admission in the hold that adds it and
+// again in the startMu hold that creates its page: the thread lifetime ctx
+// is bound to still holds (BindThread), and a reopened tab's history is
+// still the thread's, which a clear's forget, a jar switch and the thread's
+// close replace. The caller holds m.mu.
+func (m *Manager) admitTabLocked(ctx context.Context, owner string, claim *tabClaim) error {
+	if err := m.lifeAdmitsLocked(ctx, owner); err != nil {
+		return err
 	}
-	return func() error { return nil }
+	if claim != nil && m.closedTabs[owner] != claim.stack {
+		return errReopenForgotten
+	}
+	return nil
 }
 
-// admissionRefused is a creation a WithPageAdmission condition refused.
+// admissionRefused is a tab admitTabLocked refused where its page is
+// created.
 type admissionRefused struct{ err error }
 
 func (e *admissionRefused) Error() string { return e.err.Error() }
@@ -164,7 +165,7 @@ func (e *admissionRefused) Unwrap() error { return e.err }
 // meanwhile answers errClosedWhileCreating. This is an agent's tab, opened
 // behind the selection; the user's go through createPageAt.
 func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
-	return m.createPageAt(ctx, access, nil, -1)
+	return m.createPageAt(ctx, access, nil, -1, nil)
 }
 
 // createPageAt is createPage with the new tab placed at index in the
@@ -173,8 +174,9 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 // is selected and its companion shown before the engine is asked, in the
 // hold that adds the tab and commits the turn, and a failure stays on the
 // tab. A turn whose pane detached meanwhile opens nothing and answers
-// errSelectionPassed. An agent's tab has no turn.
-func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int) (*managedPage, error) {
+// errSelectionPassed. An agent's tab has no turn. claim, when set, is taken in
+// the hold that adds the tab (admitTabLocked).
+func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int, claim *tabClaim) (*managedPage, error) {
 	user := turn != nil
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
@@ -184,17 +186,23 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	defer close(pending.done)
 	owner := access.ThreadID
 
-	callerAdmits := pageAdmissionOf(ctx)
 	admit := func() error {
-		if err := callerAdmits(); err != nil {
+		if err := m.admitTabLocked(ctx, owner, claim); err != nil {
 			return &admissionRefused{err: err}
 		}
 		return nil
 	}
 	m.mu.Lock()
-	if err := callerAdmits(); err != nil {
+	if err := m.admitTabLocked(ctx, owner, claim); err != nil {
 		m.mu.Unlock()
 		return nil, err
+	}
+	if claim != nil {
+		if stack := claim.stack; len(stack.tabs) == 0 || stack.tabs[len(stack.tabs)-1] != claim.tab {
+			// Another reopen took it.
+			m.mu.Unlock()
+			return nil, errReopenForgotten
+		}
 	}
 	if user && !m.commitSelectionLocked(turn) {
 		m.mu.Unlock()
@@ -203,6 +211,9 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	if err := m.admitThreadPageLocked(owner); err != nil {
 		m.mu.Unlock()
 		return nil, err
+	}
+	if claim != nil {
+		claim.stack.tabs = claim.stack.tabs[:len(claim.stack.tabs)-1]
 	}
 	if m.pending == nil {
 		m.pending = make(map[string]*pendingPage)

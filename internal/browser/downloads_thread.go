@@ -403,7 +403,7 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if !downloadOpensInPage(item.path) {
 		return PageInfo{}, fmt.Errorf("browser: a browser tab does not show %s; use Show in folder", item.Name)
 	}
-	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1)
+	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1, nil)
 	if errors.Is(err, errSelectionPassed) {
 		return PageInfo{}, nil
 	}

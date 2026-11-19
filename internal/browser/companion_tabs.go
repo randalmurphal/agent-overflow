@@ -103,14 +103,14 @@ func (s *closedTabs) push(tab closedTab) {
 	}
 }
 
-// errReopenForgotten refuses a reopened tab whose closed-tab history was
-// forgotten after its entry was taken.
-var errReopenForgotten = errors.New("browser: the closed tab was forgotten")
-
 // ReopenClosedTab reopens the thread's most recently closed tab at its
-// position, selected, and loads its address as the address bar would. With
-// none to reopen, or with ctx's numbered selection passed or its pane
-// detached (selection.go), it does nothing and the closed tab stays.
+// position, selected, and loads its address as the address bar would. The
+// tab and its entry's removal from the closed tabs are one admission
+// (createPageAt), so an entry is never off the history without its tab, and
+// a forget of the history after it (a clear, a jar switch, the thread's
+// close) leaves the tab nothing to load. With none to reopen, or with ctx's
+// numbered selection passed or its pane detached (selection.go), or a tab
+// refused, it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
 	if err != nil || turn.passed {
@@ -123,45 +123,13 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 		m.mu.Unlock()
 		return nil
 	}
-	tab := stack.tabs[len(stack.tabs)-1]
-	stack.tabs = stack.tabs[:len(stack.tabs)-1]
+	claim := &tabClaim{stack: stack, tab: stack.tabs[len(stack.tabs)-1]}
 	m.mu.Unlock()
-	if m.reopenPopped != nil {
-		m.reopenPopped()
+	if m.reopenRead != nil {
+		m.reopenRead()
 	}
-	// A forget of the thread's browsing history after the pop (a clear, a
-	// jar switch, the thread's close) took the tab with it: the page is
-	// admitted only while the history it came from is still the thread's,
-	// checked again where its page is created, which a clear's close and
-	// forget exclude.
-	admitted := WithPageAdmission(ctx, func() error {
-		if m.closedTabs[access.ThreadID] != stack {
-			return errReopenForgotten
-		}
-		return nil
-	})
-	info, err := m.openUserTab(admitted, access, turn, tab.url, tab.label, tab.index)
-	if errors.Is(err, errReopenForgotten) {
-		m.emitThreadState(access.ThreadID)
-		return nil
-	}
-	passed := errors.Is(err, errSelectionPassed)
-	if err != nil && info.ID == "" {
-		if m.reopenRefused != nil && !passed {
-			m.reopenRefused()
-		}
-		// No tab opened (the thread's page limit, or the pane detached
-		// since the pop): it can be reopened, unless a forget of this
-		// thread's browsing history ran since the pop and took the history
-		// it came from.
-		m.mu.Lock()
-		if m.closedTabs[access.ThreadID] == stack {
-			stack.push(tab)
-		}
-		m.mu.Unlock()
-		m.emitThreadState(access.ThreadID)
-	}
-	if passed {
+	_, err = m.openUserTab(ctx, access, turn, claim.tab.url, claim.tab.label, claim.tab.index, claim)
+	if errors.Is(err, errSelectionPassed) || errors.Is(err, errReopenForgotten) {
 		return nil
 	}
 	return err
@@ -192,7 +160,7 @@ func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pag
 	if index < 0 {
 		return errPageNotFound
 	}
-	if _, err = m.openUserTab(ctx, access, turn, address, "", index); errors.Is(err, errSelectionPassed) {
+	if _, err = m.openUserTab(ctx, access, turn, address, "", index, nil); errors.Is(err, errSelectionPassed) {
 		return nil
 	}
 	return err
