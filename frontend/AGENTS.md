@@ -75,6 +75,10 @@ mode. Every component must work in desktop and compact layouts.
   `triggerClasses`, `activityRailClasses`, `settings/styles.ts`). Size a
   control there, not per call site. Text controls take `compact:select-none`
   so a long press opens the menu instead of selecting the label.
+- A keyboard command that acts on the focused pane never acts on one the
+  screen hides: it gates on `focusedPaneHidden`
+  (`stores/paneLayout.svelte#isPaneHiddenOnCompact`), since compact keeps
+  focus on a pane the list screen, or another shown pane, covers.
 - A browser's Back runs the same ladder through the history sentinel in
   `utils/compactHistoryBack.svelte.ts`. "Away from root" is the layout
   store's screen plus the airspace registry; do not add a second surface list.

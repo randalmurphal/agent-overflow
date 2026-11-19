@@ -44,7 +44,7 @@ import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserActions';
 import { isReplayingBrowserPageChord } from './browserCompanion.svelte';
-import { isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
+import { isPaneHiddenOnCompact, isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
@@ -297,7 +297,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.close',
     label: 'Pane: Close Focused',
     icon: '×',
-    when: '!terminalFocus',
+    // Compact closes nothing the screen hides: on the list, or a focused
+    // pane the thread screen does not show.
+    when: '!terminalFocus && !focusedPaneHidden',
     editableReachable: true,
     run: () => {
       // A focused browser companion closes a TAB; the pane goes with its last
@@ -1203,6 +1205,11 @@ export function overlayBesidePalette(): boolean {
   return airspaceSurfaces().length > (isPaletteOpen() ? 1 : 0);
 }
 
+function isFocusedPaneHidden(): boolean {
+  const focusedId = getFocusedPaneId();
+  return focusedId !== null && isPaneHiddenOnCompact(focusedId);
+}
+
 function documentHasFocus(): boolean {
   return typeof document !== 'undefined' && document.hasFocus();
 }
@@ -1264,6 +1271,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // (settings, a dialog) leaves them to the overlay.
     workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
+    focusedPaneHidden: isFocusedPaneHidden(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

@@ -12,7 +12,7 @@ import {
   setSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
-import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
+import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
 import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { stepBack } from '../utils/stepBack';
 import { resetAppStorageForTest } from './appStorage';
@@ -2919,6 +2919,28 @@ describe('compact-gated commands', () => {
     // The single-pane siblings stay available.
     expect(isCommandEnabled('thread.new', compact)).toBe(true);
     expect(isCommandEnabled('sidebar.cursor.open', compact)).toBe(true);
+  });
+
+  // The list screen shows no pane, and the thread screen only the one its
+  // strip shows: a focused pane off screen is not the keyboard's to close.
+  it('closes the focused pane only while compact shows it', () => {
+    const pane = readyPane();
+    registerPaneForTest(pane.paneId, pane);
+    focusPane(pane.paneId);
+    expect(getFocusedPaneId()).toBe(pane.paneId);
+    expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+
+    setCompactLayoutForTest(true);
+    expect(getCompactScreen()).toBe('list');
+    const onList = makeCommandContext(pane, {}) as CommandContext;
+    expect(onList.flags.focusedPaneHidden).toBe(true);
+    expect(isCommandEnabled('pane.close', onList)).toBe(false);
+
+    showCompactThread();
+    noteCompactPaneShown('another-pane');
+    expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(false);
+    noteCompactPaneShown(pane.paneId);
+    expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
   });
 });
 

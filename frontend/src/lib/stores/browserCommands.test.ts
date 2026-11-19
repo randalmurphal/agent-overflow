@@ -15,6 +15,8 @@ import { makeCommandContext } from './builtinCommands.svelte';
 import { evaluateWhen, parseWhen } from './keybindingParser';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { closeFocusedBrowserTab } from './browserActions';
+import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactThread } from './layoutMode.svelte';
 import { makeThread } from '../../test/helpers/chat';
 
 const THREAD = 'thread-browser';
@@ -163,6 +165,34 @@ describe('browser commands', () => {
     expect(dispatchKey(key({ key: 'r', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(dispatchKey(key({ key: 't', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
+  });
+
+  // A browser focused on the desktop keeps logical focus through a switch
+  // to compact and back to the list, where geometry hides its page.
+  it('take no command for a focused browser pane compact hides', () => {
+    focusPane('browser-main');
+    setCompactLayoutForTest(true);
+    try {
+      expect(getCompactScreen()).toBe('list');
+      expect(isBrowserPaneFocused()).toBe(false);
+      expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(false);
+      expect(dispatchKey(key({ key: 'Tab', ctrlKey: true }), ctx(), { isMac: false })).toBe(false);
+      expect(closeFocusedBrowserTab()).toBe(false);
+      expect(act).not.toHaveBeenCalled();
+
+      showCompactThread();
+      noteCompactPaneShown('main');
+      expect(isBrowserPaneFocused()).toBe(false);
+      expect(closeFocusedBrowserTab()).toBe(false);
+
+      noteCompactPaneShown('browser-main');
+      expect(isBrowserPaneFocused()).toBe(true);
+      expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
+      expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+    expect(isBrowserPaneFocused()).toBe(true);
   });
 
   it('a chord pressed in the page focuses the browser pane and runs there', () => {

@@ -464,8 +464,8 @@ behave as a desktop browser's:
   download ends, and opens its own download dialog over the opener, which
   nothing a host sets prevents; the launcher closes it as it opens, so it
   shows for about 0.2 s and nothing on it can be used.
-- Chords, live while the browser pane is the focused pane
-  (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
+- Chords, live while the browser pane is the focused pane and, under
+  compact, the one on screen (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
