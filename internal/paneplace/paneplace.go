@@ -81,20 +81,24 @@ type HostLayout struct {
 // Layout scales a fitted rect (Fit's answer) by sx/sy into host pixels and
 // snaps it. Both rects snap by edge from the same scaled coordinates, and the
 // clip is cropped to the snapped fitted rect, so rounding can never let the
-// clip box overhang the page. A clip that rounds away to nothing, or that the
-// caller left empty, means unclipped: an empty intersection is the placement's
-// to withhold (Fit's ok), never a host's to invent.
-func Layout(fitted Rect, sx, sy float64) HostLayout {
+// clip box overhang the page. A clip the caller left empty (no width or no
+// height) means unclipped. ok is false when no host pixel is left to show:
+// a clip that rounds away to nothing at this scale, which Fit's whole CSS
+// pixel can be, is to be hidden, never shown unclipped.
+func Layout(fitted Rect, sx, sy float64) (layout HostLayout, ok bool) {
 	page := snapRect(fitted.X, fitted.Y, fitted.W, fitted.H, sx, sy)
-	clip := snapRect(fitted.ClipX, fitted.ClipY, fitted.ClipW, fitted.ClipH, sx, sy)
-	clip.Left = max(clip.Left, page.Left)
-	clip.Top = max(clip.Top, page.Top)
-	clip.Right = min(clip.Right, page.Right)
-	clip.Bottom = min(clip.Bottom, page.Bottom)
-	if clip.Empty() {
-		clip = page
+	clip := page
+	if fitted.ClipW > 0 && fitted.ClipH > 0 {
+		clip = snapRect(fitted.ClipX, fitted.ClipY, fitted.ClipW, fitted.ClipH, sx, sy)
+		clip.Left = max(clip.Left, page.Left)
+		clip.Top = max(clip.Top, page.Top)
+		clip.Right = min(clip.Right, page.Right)
+		clip.Bottom = min(clip.Bottom, page.Bottom)
 	}
-	return HostLayout{Clip: clip, OffsetX: page.Left - clip.Left, OffsetY: page.Top - clip.Top}
+	if clip.Empty() {
+		return HostLayout{}, false
+	}
+	return HostLayout{Clip: clip, OffsetX: page.Left - clip.Left, OffsetY: page.Top - clip.Top}, true
 }
 
 func snapRect(x, y, w, h, sx, sy float64) Edges {

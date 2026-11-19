@@ -371,3 +371,20 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 		t.Fatalf("after a detach during a presentation pass the page's last call is %q, want it hidden", last)
 	}
 }
+
+// A placement whose one visible CSS pixel rounds away in the overlay's
+// pixels (the SPA at 50% zoom) shows nothing in the overlay, where an
+// unclipped view would cover the pane.
+func TestAnOverlayPlacementWithNoPixelLeftIsHidden(t *testing.T) {
+	placement := PanePlacement{
+		Rect: PaneRect{
+			X: 0, Y: 0, Width: 400, Height: 300,
+			ClipX: 1, ClipY: 0, ClipWidth: 1, ClipHeight: 300,
+			ViewportWidth: 1280, ViewportHeight: 720,
+		},
+		Scale: 1,
+	}
+	if layout, _, ok := overlayPaneLayout(placement, 640, 360); ok {
+		t.Fatalf("a placement with no overlay pixel lays out as %+v", layout)
+	}
+}

@@ -211,8 +211,8 @@ func TestOverlayPaneLayoutSnapsEdges(t *testing.T) {
 		},
 		Scale: 1,
 	}
-	layout, scale := overlayPaneLayout(placement, 1920, 1080)
-	if scale != 1.5 {
+	layout, scale, ok := overlayPaneLayout(placement, 1920, 1080)
+	if !ok || scale != 1.5 {
 		t.Fatalf("scale = %v, want the overlay proportion 1.5", scale)
 	}
 	// Page left -8.7 -> -9 (truncating -8.7 + 0.5 gave -8); page right
@@ -226,7 +226,7 @@ func TestOverlayPaneLayoutSnapsEdges(t *testing.T) {
 	// No viewport: the rect is already in overlay pixels.
 	placement.Rect.ViewportWidth, placement.Rect.ViewportHeight = 0, 0
 	placement.Scale = 0.5
-	if _, scale := overlayPaneLayout(placement, 1920, 1080); scale != 0.5 {
+	if _, scale, _ := overlayPaneLayout(placement, 1920, 1080); scale != 0.5 {
 		t.Fatalf("unscaled overlay scale = %v, want the placement's 0.5", scale)
 	}
 }

@@ -476,18 +476,27 @@ func webkitParkView(view unsafe.Pointer) {
 
 // webkitPresentView shows the view at its placement: the fitted rect, its
 // clip, and the scale the page is drawn at. The page's own size was set by
-// SetViewport and is not touched here.
+// SetViewport and is not touched here. A placement with no overlay pixel
+// left to show hides the view, as webkitHideView does.
 func webkitPresentView(view webkitView, placement PanePlacement) error {
-	return view.do(func(view unsafe.Pointer) {
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) {
 		var overlayW, overlayH C.int
 		if C.ao_wk_overlay_size(&overlayW, &overlayH) == 0 {
 			return
 		}
-		layout, scale := overlayPaneLayout(placement, int(overlayW), int(overlayH))
+		layout, scale, ok := overlayPaneLayout(placement, int(overlayW), int(overlayH))
+		if !ok {
+			released = int(C.ao_wk_host_hide(view))
+			return
+		}
 		C.ao_wk_host_present(view, C.int(layout.Clip.Left), C.int(layout.Clip.Top),
 			C.int(layout.Clip.Right), C.int(layout.Clip.Bottom),
 			C.int(layout.OffsetX), C.int(layout.OffsetY), C.double(scale))
-	})
+	}); err != nil {
+		return err
+	}
+	return focusReleaseError(released)
 }
 
 // webkitSetViewBackground paints the page's base (pageBase) underneath the
