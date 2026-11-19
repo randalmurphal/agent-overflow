@@ -172,3 +172,32 @@ func TestDownloadInterruptReasonNamesEveryKind(t *testing.T) {
 		t.Fatalf("an unknown reason = %q", got)
 	}
 }
+
+// A running snapshot names a reason only as the answer to a refused cancel.
+func TestARunningReasonIsARefusedCancelsAnswer(t *testing.T) {
+	refused := DownloadReport{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Reason: DownloadCancelRefusedReason}
+	detail, err := refused.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseDownloadReport(detail)
+	if err != nil || !parsed.CancelRefused() {
+		t.Fatalf("a refused cancel's answer parses as %+v, %v", parsed, err)
+	}
+	refused.Answer = false
+	detail, err = refused.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseDownloadReport(detail); err == nil {
+		t.Fatal("an unasked running snapshot with a reason parsed")
+	}
+	for _, r := range []DownloadReport{
+		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true},
+		{ID: "dl-1", Seq: 2, State: DownloadInterrupted, Answer: true, Reason: "the network failed"},
+	} {
+		if r.CancelRefused() {
+			t.Fatalf("%+v reads as a refused cancel", r)
+		}
+	}
+}

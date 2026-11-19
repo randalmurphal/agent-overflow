@@ -41,7 +41,9 @@ type hostDownload struct {
 	uri, path       string
 	received, total int64
 	// cancelRequested is the backend's cancel, applied to a resume too.
+	// cancelBound numbers the cancels that started a bound (settleCancel).
 	cancelRequested bool
+	cancelBound     uint64
 	// snapshots counts the snapshots taken, numbering each (Seq).
 	snapshots uint64
 	// stale holds the operations resumes replaced (retireOperation).
@@ -197,10 +199,8 @@ func (h *Host) resumeDownload(d *hostDownload, args *iDownloadStartingEventArgs,
 	}
 	h.retireOperation(d)
 	h.attachOperation(d, op)
-	if d.cancelRequested {
-		if err := op.cancel(); err != nil {
-			h.config.Logf("browser host: cancel download %s: %v", d.id, err)
-		}
+	if d.cancelRequested && !h.cancelDownload(d) {
+		return
 	}
 	h.downloadStateChanged(d)
 }
@@ -376,10 +376,10 @@ func (h *Host) releaseOperations(d *hostDownload) {
 // answerDownload answers a directive naming one of the page's downloads
 // with its snapshot, marked as an answer. The download's state is read
 // first, and one that ended since its last report ends now, its terminal
-// snapshot the answer. A cancel cancels a running download, and its end
-// follows from the operation's state change, or from settleCancel when
-// WebView2 reports none. An ended download's answer is its terminal
-// snapshot again; an id with no record gets DownloadUnknown.
+// snapshot the answer. A cancel cancels a running download (cancelDownload),
+// and its end follows from the operation's state change, or from
+// settleCancel when WebView2 reports none. An ended download's answer is
+// its terminal snapshot again; an id with no record gets DownloadUnknown.
 func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	d := page.downloads[id]
 	if d == nil {
@@ -390,26 +390,40 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	if page.downloads[id] != d {
 		return
 	}
-	if cancel && d.op != nil {
-		first := !d.cancelRequested
-		// Kept for a resume that replaces the operation.
-		d.cancelRequested = true
-		if err := d.op.cancel(); err != nil {
-			h.config.Logf("browser host: cancel download %s: %v", id, err)
-		}
-		if first {
-			h.settleCancelAfter(d)
-		}
+	if cancel && d.op != nil && !h.cancelDownload(d) {
+		return
 	}
 	answer := d.snapshot(DownloadRunning, "")
 	answer.Answer = true
 	h.report(page, answer)
 }
 
-// settleCancelAfter ends a canceled download as canceled once
-// downloadCancelBound passes with no end from WebView2 (settleCancel).
-func (h *Host) settleCancelAfter(d *hostDownload) {
-	h.after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d) }) })
+// cancelDownload cancels d's operation for the backend's cancel, kept for a
+// resume that replaces the operation, and starts the bound on the first
+// (settleCancel). A cancel WebView2 refuses withdraws the request, so no
+// bound ends a download that runs on as canceled: d's state is read again,
+// and one still running is answered with the refusal
+// (DownloadCancelRefusedReason). It answers whether WebView2 took the
+// cancel.
+func (h *Host) cancelDownload(d *hostDownload) bool {
+	if err := d.op.cancel(); err != nil {
+		h.config.Logf("browser host: cancel download %s: %v", d.id, err)
+		d.cancelRequested = false
+		h.downloadStateChanged(d)
+		if d.page.downloads[d.id] == d {
+			refused := d.snapshot(DownloadRunning, DownloadCancelRefusedReason+": "+err.Error())
+			refused.Answer = true
+			h.report(d.page, refused)
+		}
+		return false
+	}
+	if !d.cancelRequested {
+		d.cancelRequested = true
+		d.cancelBound++
+		bound := d.cancelBound
+		h.after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d, bound) }) })
+	}
+	return true
 }
 
 // settleCancel ends a download the backend canceled that WebView2 has not
@@ -419,12 +433,20 @@ func (h *Host) settleCancelAfter(d *hostDownload) {
 // on the real runtime: the old operation and its resume are one download in
 // WebView2, so this cancel ends that resume too, at once and by WebView2's
 // own report, and once the resume finished the cancel and the release
-// leave its file as it is. The cost: a download that really finishes after
-// the bound is listed canceled, and its file stays in the Downloads folder,
-// listed nowhere; its late state change reaches no handler.
-func (h *Host) settleCancel(d *hostDownload) {
+// leave its file as it is. Its state is read first, so one that ended
+// unreported ends as it did. The cost: a download that really finishes
+// after the bound is listed canceled, and its file stays in the Downloads
+// folder, listed nowhere; its late state change reaches no handler. bound
+// is the cancel that started this bound: one whose cancel was refused
+// since, or that a later cancel restarted, is not settled by it.
+func (h *Host) settleCancel(d *hostDownload, bound uint64) {
+	if d.page.downloads[d.id] != d || !d.cancelRequested || d.cancelBound != bound {
+		// Ended by WebView2's own report, its page went, or its cancel was
+		// refused.
+		return
+	}
+	h.downloadStateChanged(d)
 	if d.page.downloads[d.id] != d {
-		// Ended by WebView2's own report, or its page went.
 		return
 	}
 	h.config.Logf("browser host: download %s: WebView2 did not end it within %v of its cancel; it ends canceled here", d.id, downloadCancelBound)

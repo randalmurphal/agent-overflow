@@ -55,6 +55,11 @@ const MaxEndedDownloads = 64
 // DownloadUnknownReason is the reason a DownloadUnknown answer carries.
 const DownloadUnknownReason = "the browser host has no record of this download"
 
+// DownloadCancelRefusedReason begins the reason of a running snapshot that
+// answers a cancel WebView2 refused: the download runs on, and its cancel
+// is no longer requested.
+const DownloadCancelRefusedReason = "the browser refused to cancel the download"
+
 // DownloadPathTooLongReason is a completed snapshot's reason when the
 // file's path does not fit a report: the file is saved, and the backend
 // cannot name it.
@@ -68,7 +73,8 @@ const DownloadPathTooLongReason = "the saved file's path is too long to report, 
 // Path the file as Windows names it, from the first snapshot on; URI its
 // address, shortened or left out so the report fits; Reason an interrupted
 // download's cause, why a completed one's file is not reported
-// (DownloadPathTooLongReason), or DownloadUnknownReason.
+// (DownloadPathTooLongReason), why a running one's cancel was refused (an
+// answer only, DownloadCancelRefusedReason), or DownloadUnknownReason.
 type DownloadReport struct {
 	ID       string `json:"id"`
 	Seq      uint64 `json:"seq,omitempty"`
@@ -155,10 +161,19 @@ func ParseDownloadReport(detail string) (DownloadReport, error) {
 	if r.Received < 0 || r.Total < 0 {
 		return DownloadReport{}, errors.New("download report has negative bytes")
 	}
+	if r.State == DownloadRunning && r.Reason != "" && !r.Answer {
+		return DownloadReport{}, errors.New("a running download report carries a reason only as an answer to a refused cancel")
+	}
 	if r.State == DownloadCompleted && r.Path == "" && r.Reason == "" {
 		return DownloadReport{}, errors.New("a completed download report names no file and says no reason")
 	}
 	return r, nil
+}
+
+// CancelRefused reports whether the snapshot answers a cancel WebView2
+// refused (DownloadCancelRefusedReason).
+func (r DownloadReport) CancelRefused() bool {
+	return r.State == DownloadRunning && r.Answer && r.Reason != ""
 }
 
 // Terminal reports whether the snapshot is the download's last state.

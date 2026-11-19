@@ -49,10 +49,13 @@ export function downloadProgressStep(downloads: BrowserDownload[]): number | nul
 /** The download's status line under its name. */
 export function downloadStatus(download: BrowserDownload): string {
   switch (download.state) {
-    case 'in_progress':
-      return download.totalBytes
+    case 'in_progress': {
+      const bytes = download.totalBytes
         ? `${formatBytes(download.receivedBytes)} of ${formatBytes(download.totalBytes)}`
         : formatBytes(download.receivedBytes);
+      // A running download's error is a refused cancel's reason.
+      return download.error ? `${bytes} · ${download.error}` : bytes;
+    }
     case 'completed':
       // A completed download with an error saved a file AO does not open.
       return download.error ? `${formatBytes(download.receivedBytes)} · ${download.error}` : formatBytes(download.receivedBytes);

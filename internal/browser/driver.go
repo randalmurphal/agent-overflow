@@ -522,14 +522,18 @@ var errDownloadEnded = errors.New("browser: the download already ended")
 // PageGone marks a cancel the engine made because the page the download
 // began in went before the Manager listed it; the Manager lists it as
 // canceled, with Error, as it does a download of a listed page that goes.
+// CancelRefused marks a running download whose engine refused the cancel
+// the Manager asked for after CancelDownload returned, Error its reason:
+// the download runs on and its cancel is withdrawn.
 type downloadProgress struct {
-	ID       string
-	Received float64
-	Total    float64
-	State    string
-	FilePath string
-	Error    string
-	PageGone bool
+	ID            string
+	Received      float64
+	Total         float64
+	State         string
+	FilePath      string
+	Error         string
+	PageGone      bool
+	CancelRefused bool
 }
 
 // The states downloadProgress.State may carry.

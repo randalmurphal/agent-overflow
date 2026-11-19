@@ -34,8 +34,9 @@ type fakeOp struct {
 	path      string
 	uri       string
 	canceled  int
-	// refuseStateSub fails AddStateChanged; stateErr fails GetState.
-	refuseStateSub, stateErr bool
+	// refuseStateSub fails AddStateChanged; stateErr fails GetState;
+	// refuseCancel fails Cancel.
+	refuseStateSub, stateErr, refuseCancel bool
 }
 
 func fakeHandlerAddRef(h *iDownloadEventHandler) {
@@ -100,6 +101,9 @@ var fakeOpVtbl = iCoreWebView2DownloadOperationVtbl{
 	GetInterruptReason: newComProc(func(this *fakeOp, out *uint32) uintptr { *out = this.reason; return 0 }),
 	Cancel: newComProc(func(this *fakeOp) uintptr {
 		this.canceled++
+		if this.refuseCancel {
+			return 0x80004005 // E_FAIL
+		}
 		return 0
 	}),
 }
@@ -709,6 +713,68 @@ func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {
 	r.host.answerDownload(r.page, "dl-t-1", false)
 	if got := r.take(); len(got) != 1 || !got[0].Answer || got[0].State != DownloadInterrupted {
 		t.Fatalf("after the settled end: %+v", got)
+	}
+	r.done(t, op)
+}
+
+// A cancel WebView2 refuses is answered with the refusal and starts no
+// bound: the download runs on, is not ended as canceled, and its own end
+// is reported. A later cancel WebView2 takes starts the bound.
+func TestARefusedCancelKeepsTheDownloadRunning(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	r.take()
+	op.refuseCancel = true
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	got := r.take()
+	if states(got) != "dl-t-1:running" || !got[0].CancelRefused() ||
+		!strings.HasPrefix(got[0].Reason, DownloadCancelRefusedReason) || len(r.timers) != 0 {
+		t.Fatalf("a refused cancel answered %+v and started %d bounds", got, len(r.timers))
+	}
+	if d := r.page.downloads["dl-t-1"]; d == nil || d.cancelRequested {
+		t.Fatal("a refused cancel is still requested or the download is gone")
+	}
+	op.refuseCancel = false
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	if got := r.take(); states(got) != "dl-t-1:running" || got[0].CancelRefused() || len(r.timers) != 1 {
+		t.Fatalf("a cancel taken answered %+v and started %d bounds", got, len(r.timers))
+	}
+	op.refuseCancel = true
+	// A resume of a canceled download whose cancel is refused withdraws it,
+	// and the bound the first cancel started ends nothing.
+	drop(op)
+	ofOp := newFakeOp(`C:\D\f (1).bin`)
+	ofOp.refuseCancel = true
+	resume(t, r.page, ofOp)
+	if got := r.take(); states(got) != "dl-t-1:running" || !got[0].CancelRefused() {
+		t.Fatalf("a resume whose cancel was refused reported %+v", got)
+	}
+	r.timers[0]()
+	if got := r.take(); len(got) != 0 {
+		t.Fatalf("the bound of a withdrawn cancel ended the download: %+v", got)
+	}
+	ofOp.received = 100
+	ofOp.set(downloadStateCompleted, 0)
+	if got := r.take(); states(got) != "dl-t-1:completed" {
+		t.Fatalf("the download that ran on ended %+v", got)
+	}
+	r.done(t, op, ofOp)
+}
+
+// A canceled download that completed with no state change raised ends as
+// it did when the bound passes, not as canceled.
+func TestACancelBoundReadsTheDownloadsState(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.take()
+	op.received = 100
+	op.st = downloadStateCompleted
+	r.timers[0]()
+	if got := r.take(); states(got) != "dl-t-1:completed" || got[0].Received != 100 {
+		t.Fatalf("at the bound the download ended %+v", got)
 	}
 	r.done(t, op)
 }

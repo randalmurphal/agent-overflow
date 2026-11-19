@@ -423,13 +423,17 @@ behave as a desktop browser's:
   that never resumed reads none). Otherwise, with two dropped at once or
   one dropped beside a download that already resumed, the resume is a row
   of its own saving where WebView2 chose, and the dropped download's row
-  stays running until the user cancels it. A cancel always settles: by
-  WebView2's report, within milliseconds when it comes, or by the
-  launcher after five seconds, since a dropped download's operation never
-  ends. In WebView2 that dropped download and its resume are one, so the
-  cancel ends the resume's row too if it still runs. A download that
-  really finishes after the five seconds is listed canceled, and its file
-  stays in the Downloads folder, listed nowhere. A second download a
+  stays running until the user cancels it. A cancel WebView2 takes always
+  settles: by WebView2's report, within milliseconds when it comes, or by
+  the launcher after five seconds, since a dropped download's operation
+  never ends; the launcher reads the download's state first, so one that
+  ended unreported ends as it did. In WebView2 that dropped download and
+  its resume are one, so the cancel ends the resume's row too if it still
+  runs. A download that really finishes after the five seconds is listed
+  canceled, and its file stays in the Downloads folder, listed nowhere. A
+  cancel WebView2 refuses is answered with the refusal: the row stays
+  running with the reason under it, the cancel is withdrawn so its later
+  end reads as its own, and the user can cancel again. A second download a
   script starts with no user gesture gets WebView2's own "download
   multiple files" prompt in
   the page and has no row until it is allowed. A popup's downloads are

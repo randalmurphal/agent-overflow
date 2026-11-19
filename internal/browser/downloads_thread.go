@@ -268,6 +268,8 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 		return nil
 	}
 	entry.cancelRequested = true
+	// A refusal of an earlier cancel no longer stands.
+	entry.Error = ""
 	p.downloadMu.Unlock()
 	err = scope.profile.CancelDownload(item.engineID)
 	if err == nil {

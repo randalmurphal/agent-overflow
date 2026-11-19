@@ -35,6 +35,22 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		p.downloadMu.Unlock()
 		return
 	}
+	if event.CancelRefused {
+		// The engine refused the cancel after taking it: the download runs
+		// on, listed with the refusal, and the user may cancel again. A
+		// later end reads as the engine's own, not the user's cancel.
+		entry.cancelRequested = false
+		entry.Error = event.Error
+		note := m.noteDownloadLocked(p, entry, "")
+		p.downloadMu.Unlock()
+		m.publishDownloads(note)
+		return
+	}
+	if event.State != downloadInProgress {
+		// A running row carries only a refused cancel's reason, which its
+		// end replaces.
+		entry.Error = ""
+	}
 	entry.Bytes = int64(event.Received)
 	if event.Total > 0 {
 		entry.TotalBytes = int64(event.Total)
