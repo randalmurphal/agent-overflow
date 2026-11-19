@@ -122,7 +122,7 @@ per-platform no-op.
   it. Hidden pages keep rendering, so screenshots and
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
-- `pane.close` (Mod+W) on a focused browser companion closes the active tab;
+- `pane.close` (Mod+W) on the keyboard's browser companion closes the active tab;
   the companion closes when its last tab does. With a tab selection or an
   earlier Mod+W of the pane still unanswered, the close waits for those
   answers and closes the tab active then, so it closes the tab the user just
@@ -468,8 +468,9 @@ behave as a desktop browser's:
   download ends, and opens its own download dialog over the opener, which
   nothing a host sets prevents; the launcher closes it as it opens, so it
   shows for about 0.2 s and nothing on it can be used.
-- Chords, live while the browser pane is the focused pane and, under
-  compact, the one on screen (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
+- Chords, live while the browser pane is the keyboard's pane
+  (`paneCommandTarget`: the focused or promoted pane, under compact the one
+  on screen; `browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to

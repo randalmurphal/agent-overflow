@@ -35,7 +35,8 @@ import { registerAirspaceSurface, resetAirspaceForTest } from '../utils/paneAirs
 import { closePalette, openPalette } from './palette.svelte';
 import { focusPane, getFocusedPaneId, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
-import { getPromotedPaneId, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { getPaneLayoutItems, getPromotedPaneId, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest } from './browserCompanion.svelte';
 import {
   closeMessageSearch,
   isMessageSearchOpen,
@@ -1517,15 +1518,7 @@ describe('find.in-pane over pane regions', () => {
     focusPane(PULLS);
     setCompactLayoutForTest(true);
     showCompactThread();
-    const strip = document.createElement('div');
-    strip.className = 'compact-screen-thread';
-    const rect = { left: 0, right: 412, top: 0, bottom: 800, width: 412, height: 800, x: 0, y: 0, toJSON: () => ({}) };
-    strip.getBoundingClientRect = () => rect;
-    const section = document.createElement('section');
-    section.dataset.paneId = PULLS;
-    section.getBoundingClientRect = () => rect;
-    strip.appendChild(section);
-    document.body.appendChild(strip);
+    noteCompactPaneShown(PULLS);
 
     // The reader last touched the detail, but the list is on screen.
     activatePaneFindRegion(paneFindDetailKey(PULLS));
@@ -1566,6 +1559,8 @@ describe('pane find under compact', () => {
       strip.appendChild(section);
     }
     document.body.appendChild(strip);
+    // PaneHost's report of the strip's centre, which the keyboard targets.
+    noteCompactPaneShown(onScreen);
   }
 
   beforeEach(() => {
@@ -1667,6 +1662,7 @@ describe('pane find under compact', () => {
       sections.set(paneId, section);
     }
     document.body.appendChild(strip);
+    noteCompactPaneShown(onScreen);
     render(PaneFindBar, { target: sections.get('a')!, props: { paneId: 'a', title: 'A', fallbackFocus: () => null } });
 
     // App.svelte's window handler, reduced to its dispatch rules.
@@ -1689,6 +1685,7 @@ describe('pane find under compact', () => {
     // Keyboard navigation reveals the plan; DOM focus stays in A's input.
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, bubbles: true, cancelable: true }));
     onScreen = plan.paneId;
+    noteCompactPaneShown(onScreen);
     expect(document.activeElement).toBe(input);
 
     // Back closes the plan on screen; A's bar, off screen, stays open.
@@ -2898,6 +2895,10 @@ describe('sound.toggleMute command', () => {
 // Compact shows one thread pane. The two commands that open a second one
 // are disabled there, so Back from a thread always reaches the list.
 describe('compact-gated commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    registerBuiltinCommands(makeBuiltinHooks());
+  });
   afterEach(() => {
     setCompactLayoutForTest(false);
     resetSidebarCursorStore();
@@ -2922,25 +2923,77 @@ describe('compact-gated commands', () => {
   });
 
   // The list screen shows no pane, and the thread screen only the one its
-  // strip shows: a focused pane off screen is not the keyboard's to close.
-  it('closes the focused pane only while compact shows it', () => {
+  // strip shows: pane.close closes that one, whichever pane holds focus.
+  it('closes the pane the screen shows, and none on the compact list', () => {
+    installCompanionPanes();
     const pane = readyPane();
-    registerPaneForTest(pane.paneId, pane);
-    focusPane(pane.paneId);
-    expect(getFocusedPaneId()).toBe(pane.paneId);
+    registerPaneForTest('a', pane);
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const plan = openCompanion('a', 'plan')!;
+    focusPane('a');
     expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
 
     setCompactLayoutForTest(true);
     expect(getCompactScreen()).toBe('list');
     const onList = makeCommandContext(pane, {}) as CommandContext;
-    expect(onList.flags.focusedPaneHidden).toBe(true);
+    expect(onList.flags.noPaneTarget).toBe(true);
     expect(isCommandEnabled('pane.close', onList)).toBe(false);
+    expect(isCompanionOpen('a', 'plan')).toBe(true);
 
+    // Focus stays on the source; the screen shows the plan.
     showCompactThread();
-    noteCompactPaneShown('another-pane');
-    expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(false);
-    noteCompactPaneShown(pane.paneId);
-    expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    noteCompactPaneShown(plan.paneId);
+    expect(runCommand('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a']);
+    resetCompanionPanesForTest();
+  });
+
+  // Focus a browser on the desktop, then the compact list covers it: the
+  // close chord is not the browser's, nor any pane's.
+  it('sends neither a tab close nor a pane close from the compact list while a browser holds focus', () => {
+    installCompanionPanes();
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const browser = openCompanion('a', 'browser')!;
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
+      pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
+    });
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
+    const close = () => dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    focusPane(browser.paneId);
+
+    setCompactLayoutForTest(true);
+    expect(close()).toBe(false);
+    expect(act).not.toHaveBeenCalled();
+    expect(isCompanionOpen('a', 'browser')).toBe(true);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a', browser.paneId]);
+
+    // The same chord on the desktop closes the browser's tab.
+    setCompactLayoutForTest(false);
+    expect(close()).toBe(true);
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1' }));
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetKeybindingsStore();
+  });
+
+  // A promoted pane covers the strip: the keyboard's pane is the one shown.
+  it('closes the promoted pane on the desktop while focus is on one it covers', () => {
+    installCompanionPanes();
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const plan = openCompanion('a', 'plan')!;
+    expect(promotePane(plan.paneId)).toBe(true);
+    focusPane('a');
+    expect(runCommand('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a']);
+    resetCompanionPanesForTest();
   });
 });
 

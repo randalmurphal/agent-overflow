@@ -1,6 +1,7 @@
 // The browser pane's chrome commands: new tab, focus the address, reload,
-// next and previous tab, reopen the last closed tab. Each acts on the focused browser pane's thread and
-// is live only while that pane is focused (`browserPaneFocused`), so the
+// next and previous tab, reopen the last closed tab. Each acts on the browser pane's thread and
+// is live only while that pane is the keyboard's (`browserPaneFocused`,
+// panes.svelte#paneCommandTarget), so the
 // chords keep their meaning elsewhere. A chord pressed in the native page
 // arrives as a replay after the pane was focused (browserCompanion.svelte.ts
 // replayBrowserAccelerator). Closing a tab is `pane.close`.

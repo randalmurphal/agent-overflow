@@ -1,4 +1,4 @@
-import { showCompactList, showCompactThread } from './layoutMode.svelte';
+import { compactShownPaneId, getCompactScreen, isCompactLayout, showCompactList, showCompactThread } from './layoutMode.svelte';
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import {
@@ -318,6 +318,21 @@ export function getFocusedPaneId(): string | null {
 }
 
 /**
+ * The pane a keyboard command acts on, null for none (reactive). Find, the
+ * browser chords, the shell's reload route and `pane.close` all ask this,
+ * so none acts on a pane the screen does not show:
+ * - desktop: the focused pane, or the promoted pane while focus is on one
+ *   the promotion covers;
+ * - compact: the pane the thread screen shows, whichever pane holds focus
+ *   (opening a companion leaves focus on its source), and none on the
+ *   list screen.
+ */
+export function paneCommandTarget(): string | null {
+  if (isCompactLayout()) return getCompactScreen() === 'thread' ? compactShownPaneId() : null;
+  return getPromotedPaneId() ?? focusedPaneId;
+}
+
+/**
  * The header button, title double-click and `pane.togglePromoted`: demote
  * the promoted pane, or focus and promote this one. Focus comes first
  * because focus moving to another pane demotes (PaneHost).
@@ -514,19 +529,6 @@ export function closeDraftPlaceholderPanes(
     if (opts.computerDetached) pane.dropDraftPlaceholderTerminals();
     destroyPane(pane.paneId);
   }
-}
-
-/**
- * Destroy the focused THREAD pane. A focused companion resolves to its
- * source thread pane here (via getFocusedPaneOrNull), so this closes the
- * thread — callers that want "close whatever holds focus, companion
- * included" must route through
- * companionPanes.svelte#closeFocusedPaneOrCompanion instead.
- */
-export function closeFocusedPane(): void {
-  const pane = getFocusedPaneOrNull();
-  if (!pane) return;
-  destroyPane(pane.paneId);
 }
 
 export function getPaneActivation(id: string): PaneActivation {

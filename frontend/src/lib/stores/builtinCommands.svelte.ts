@@ -29,6 +29,7 @@ import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   focusAdjacentPane,
   getFocusedPaneId,
+  paneCommandTarget,
   getFocusedThreadPaneId,
   getPane,
   moveFocusedPane,
@@ -41,10 +42,10 @@ import {
 import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
-import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
+import { closePaneById } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserActions';
 import { isReplayingBrowserPageChord } from './browserCompanion.svelte';
-import { isPaneHiddenOnCompact, isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
+import { isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
@@ -110,7 +111,7 @@ import {
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
-import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
@@ -297,15 +298,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.close',
     label: 'Pane: Close Focused',
     icon: '×',
-    // Compact closes nothing the screen hides: on the list, or a focused
-    // pane the thread screen does not show.
-    when: '!terminalFocus && !focusedPaneHidden',
+    // It closes the pane the screen shows (paneCommandTarget), and nothing
+    // on the compact list.
+    when: '!terminalFocus && !noPaneTarget',
     editableReachable: true,
     run: () => {
-      // A focused browser companion closes a TAB; the pane goes with its last
-      // tab (browserCompanion.svelte.ts). Focus stays where it is.
+      // A browser companion closes a TAB; the pane goes with its last tab
+      // (browserCompanion.svelte.ts). Focus stays where it is.
       if (closeFocusedBrowserTab()) return;
-      closeFocusedPaneOrCompanion();
+      const target = paneCommandTarget();
+      if (!target) return;
+      closePaneById(target);
       const nextFocused = getFocusedThreadPaneId();
       if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
     },
@@ -742,7 +745,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   // The target pane's own find bar, or its target region's
-  // (stores/paneFind.svelte.ts; target: `paneFindTargetId`, then
+  // (stores/paneFind.svelte.ts; target: `paneCommandTarget`, then
   // `paneFindTarget`). A pane kind with no provider, or a pane under an
   // overlay, leaves the command disabled.
   registerCommand({
@@ -754,7 +757,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
     run: () => {
-      const key = paneFindTarget(paneFindTargetId());
+      const key = paneFindTarget(paneCommandTarget());
       if (!key || !hasPaneFindProvider(key)) return;
       const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
       const active = typeof document === 'undefined' ? null : document.activeElement;
@@ -774,7 +777,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'paneFindOpen && !overlayOpen',
     editableReachable: true,
     run: () => {
-      const key = paneFindTarget(paneFindTargetId());
+      const key = paneFindTarget(paneCommandTarget());
       if (key) closePaneFind(key);
     },
   });
@@ -1188,26 +1191,11 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 }
 
 /**
- * The pane find commands act on: the focused pane, or under compact the
- * pane on the thread screen, since opening a companion leaves focus on its
- * source thread. The compact list screen shows no pane.
- */
-function paneFindTargetId(): string | null {
-  if (!isCompactLayout()) return getFocusedPaneId();
-  return getCompactScreen() === 'thread' ? onScreenCompactPaneId() : null;
-}
-
-/**
  * `overlayOpen` for the palette's own list: a command picked there runs
  * after the palette closes, so only another overlay above the panes counts.
  */
 export function overlayBesidePalette(): boolean {
   return airspaceSurfaces().length > (isPaletteOpen() ? 1 : 0);
-}
-
-function isFocusedPaneHidden(): boolean {
-  const focusedId = getFocusedPaneId();
-  return focusedId !== null && isPaneHiddenOnCompact(focusedId);
 }
 
 function documentHasFocus(): boolean {
@@ -1221,7 +1209,7 @@ function documentHasFocus(): boolean {
 export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
   const thread = pane?.thread ?? null;
   const overlayOpen = extra.overlayOpen ?? airspaceSurfaces().length > 0;
-  const findTarget = paneFindTarget(paneFindTargetId());
+  const findTarget = paneFindTarget(paneCommandTarget());
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
@@ -1271,7 +1259,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // (settings, a dialog) leaves them to the overlay.
     workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
-    focusedPaneHidden: isFocusedPaneHidden(),
+    noPaneTarget: paneCommandTarget() === null,
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

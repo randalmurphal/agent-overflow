@@ -18,8 +18,7 @@ import {
 } from './browserCompanion.svelte';
 import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelte';
 import { getCompanionPane } from './companionPanes.svelte';
-import { getFocusedPaneId, getPane } from './panes.svelte';
-import { isPaneHiddenOnCompact } from './paneLayout.svelte';
+import { getPane, paneCommandTarget } from './panes.svelte';
 import { errString } from '../utils/errors';
 import { addErrorToast } from './toast.svelte';
 
@@ -256,15 +255,15 @@ export function closeFocusedBrowserTab(): boolean {
 }
 
 /**
- * The thread of the focused pane when it is a browser companion, with its
- * last state (null before any). Null when another pane, or none, is focused,
- * and when compact hides the focused pane, so a browser the screen does not
+ * The thread of the keyboard's target pane (paneCommandTarget) when it is
+ * a browser companion, with its last state (null before any). Null when
+ * the target is another pane or none, so a browser the screen does not
  * show never takes the keyboard's commands. Reactive.
  */
-export function focusedBrowser(): { threadId: string; state: BrowserCompanionEvent | null } | null {
-  const focusedId = getFocusedPaneId();
-  if (!focusedId || isPaneHiddenOnCompact(focusedId)) return null;
-  const companion = getCompanionPane(focusedId);
+export function focusedBrowser(): { threadId: string; state: Readonly<BrowserCompanionEvent> | null } | null {
+  const targetId = paneCommandTarget();
+  if (!targetId) return null;
+  const companion = getCompanionPane(targetId);
   if (companion?.kind !== 'browser') return null;
   const threadId = getPane(companion.sourcePaneId)?.threadId;
   if (!threadId) return null;

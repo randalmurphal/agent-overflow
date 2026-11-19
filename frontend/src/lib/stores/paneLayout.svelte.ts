@@ -169,16 +169,6 @@ export function isPaneOnScreen(paneId: string): boolean {
   return promotedPaneId === null || promotedPaneId === paneId;
 }
 
-/**
- * Reactive: whether compact hides `paneId`, so the keyboard's pane
- * commands (`pane.close`, the browser's chords) must not act on it even
- * while it holds focus: the list screen shows no pane, and the thread
- * screen only the one its strip shows. Always false on the desktop.
- */
-export function isPaneHiddenOnCompact(paneId: string): boolean {
-  return isCompactLayout() && !isPaneOnScreen(paneId);
-}
-
 function replaceLayoutItems(next: PaneLayoutItem[]): void {
   const previous = layoutItems;
   layoutItems = next;

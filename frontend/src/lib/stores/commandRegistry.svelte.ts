@@ -95,13 +95,12 @@ export interface CommandFlags {
    */
   compactLayout: boolean;
   /**
-   * True under compact while the focused pane is not the one on screen
-   * (`paneLayout.svelte#isPaneHiddenOnCompact`): the list screen shows no
-   * pane. A command that acts on the focused pane gates on it, so it never
-   * acts on a pane the person cannot see. Negative so a context built
-   * without it leaves those commands enabled, as on the desktop.
+   * True when no pane takes the keyboard's pane commands
+   * (`panes.svelte#paneCommandTarget` is null): the compact list screen,
+   * or no pane focused. A command that acts on that pane gates on it.
+   * Negative so a context built without it leaves those commands enabled.
    */
-  focusedPaneHidden: boolean;
+  noPaneTarget: boolean;
   /**
    * Whether this session holds `access:admin` (`transport/scopes.ts`), which
    * covers the device list and the provider-account surface. A command whose
