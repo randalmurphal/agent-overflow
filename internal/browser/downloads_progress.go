@@ -106,16 +106,9 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
 				break
 			}
-			destination, renameErr := uniqueArtifactPath(p.authority.downloadDir, entry.SuggestedName)
-			if renameErr == nil {
-				renameErr = os.Rename(source, destination)
-			}
-			var file os.FileInfo
-			if renameErr == nil {
-				file, renameErr = os.Stat(destination)
-			}
-			if renameErr != nil {
-				entry.State, entry.Error = downloadStateFailed, renameErr.Error()
+			destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName)
+			if moveErr != nil {
+				entry.State, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
 			}
@@ -149,6 +142,29 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		m.removePartialDownload(scope, event.ID)
 	}
 	m.publishDownloads(note)
+}
+
+// placeArtifact moves a finished artifact download from the file its engine
+// wrote into dir under the first free variant of name, never replacing a
+// file: the downloads of a workspace's jars finish on their own engine
+// streams into one directory (placeNoReplace).
+func placeArtifact(source, dir, name string) (string, os.FileInfo, error) {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", source)
+	}
+	path, file, err := placeNoReplace(source, info, dir, "the download directory", artifactNames(name))
+	if err != nil {
+		return "", nil, err
+	}
+	// A link leaves the engine's name for the file, which goes.
+	if err := os.Remove(source); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("browser: remove the download's engine file %s: %v", source, err)
+	}
+	return path, file, nil
 }
 
 // removePartialDownload removes the file an engine writing into AO's

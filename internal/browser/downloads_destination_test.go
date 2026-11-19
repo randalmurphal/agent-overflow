@@ -270,6 +270,44 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 	}
 }
 
+// A finished artifact download takes its name in the workspace's download
+// directory without replacing a file: another jar's download of the same
+// name, finishing on its own engine stream, can take the name first, and
+// keeps it.
+func TestAnArtifactDownloadNeverReplacesAFileTakingItsName(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	workspace, err := canonicalRoot(access.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := manager.workspaceDownloadDir(workspace)
+	var theirs string
+	linkDownload = func(source, candidate string) error {
+		if theirs == "" {
+			theirs = candidate
+			if err := os.WriteFile(candidate, []byte("theirs"), 0o600); err != nil {
+				t.Errorf("take %s: %v", candidate, err)
+			}
+		}
+		return os.Link(source, candidate)
+	}
+	t.Cleanup(func() { linkDownload = os.Link })
+	startDownload(t, manager, access, page, "report.pdf", 10)
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if item.State != downloadStateCompleted || item.path != filepath.Join(dir, "report-1.pdf") {
+		t.Fatalf("the download lists as %+v at %q, want completed at report-1.pdf", item.ThreadDownload, item.path)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "report.pdf")); string(got) != "theirs" || theirs != filepath.Join(dir, "report.pdf") {
+		t.Fatalf("the file put at the name reads %q (taken %q)", got, theirs)
+	}
+	if got, _ := os.ReadFile(item.path); len(got) != 10 {
+		t.Fatalf("the download's file holds %d bytes, want 10", len(got))
+	}
+	if names := folderNames(t, dir); len(names) != 2 {
+		t.Fatalf("the download directory holds %q, want the two files and not the engine's", names)
+	}
+}
+
 // With neither hard links nor a no-replace rename, or a staging directory
 // on another filesystem, the download fails on its row with the reason:
 // nothing is copied, nothing appears in Downloads, and the staged file goes.
