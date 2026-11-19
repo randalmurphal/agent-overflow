@@ -324,7 +324,7 @@ func TestHostedEngineRefusesACreatedReportNamingAnotherPagesTarget(t *testing.T)
 			t.Fatalf("a create naming %s's target: %v, want it refused", tc.owner, err)
 		}
 		sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-		if owner, _ := engine.pageForTarget(tc.target); owner != ids.PageHandle(tc.owner) {
+		if owner, _ := engine.pageForTarget(target.ID(tc.target)); owner != ids.PageHandle(tc.owner) {
 			t.Fatalf("target %s is page %q's after the refusal, want %s's", tc.target, owner, tc.owner)
 		}
 	}
@@ -1127,7 +1127,7 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 }
 
 // bindTestPage binds a page on no browser connection, one that never ends.
-func bindTestPage(t *testing.T, engine *hostedEngine, pageID ids.PageHandle, targetID string) {
+func bindTestPage(t *testing.T, engine *hostedEngine, pageID ids.PageHandle, targetID target.ID) {
 	t.Helper()
 	if err := engine.bind(pageID, targetID, context.Background()); err != nil {
 		t.Fatal(err)
@@ -1137,7 +1137,7 @@ func bindTestPage(t *testing.T, engine *hostedEngine, pageID ids.PageHandle, tar
 // pendingTestPopup records popup as the launcher's report of it does
 // (popupReported): opened by opener, in its profile, admitting downloads, and
 // not yet attached or listed.
-func pendingTestPopup(engine *hostedEngine, popup ids.PageHandle, targetID string, opener ids.PageHandle) {
+func pendingTestPopup(engine *hostedEngine, popup ids.PageHandle, targetID target.ID, opener ids.PageHandle) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	profile := engine.pageProfile[opener]
@@ -1211,7 +1211,7 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ensureBrowser: %v", err)
 			}
-			for i, target := range []string{"TARGET-1", "TARGET-2"} {
+			for i, target := range []target.ID{"TARGET-1", "TARGET-2"} {
 				if err := engine.bind(ids.PageHandle(fmt.Sprintf("page%d", i+1)), target, connA); err != nil {
 					t.Fatal(err)
 				}

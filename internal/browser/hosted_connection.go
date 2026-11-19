@@ -227,14 +227,14 @@ func (e *hostedEngine) subscribe(browserCtx context.Context, targets *cdpTargets
 // finds no live page. It runs after the page's reports already accepted
 // (acceptCrash), so it overtakes no download's end.
 func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
-	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
+	if pageID, ok := e.pageForTarget(event.TargetID); ok {
 		e.acceptCrash(pageID, cdpCrashReason(event))
 	}
 }
 
 func (e *hostedEngine) targetDestroyed(targets *cdpTargets, event target.EventTargetDestroyed) {
 	targets.destroyed(event.TargetID, nil)
-	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
+	if pageID, ok := e.pageForTarget(event.TargetID); ok {
 		e.awaitLauncherClose(pageID)
 	}
 }
@@ -280,7 +280,7 @@ func (e *hostedEngine) targetInfoChanged(targets *cdpTargets, event target.Event
 	var pageID ids.PageHandle
 	order, ok := targets.changed(info, func() bool {
 		var found bool
-		pageID, found = e.pageForTarget(string(info.TargetID))
+		pageID, found = e.pageForTarget(info.TargetID)
 		return found
 	})
 	if ok {
@@ -290,8 +290,8 @@ func (e *hostedEngine) targetInfoChanged(targets *cdpTargets, event target.Event
 
 // takeTargetInfo delivers the info held for targetID to pageID, a page that
 // has just come to answer to it.
-func (e *hostedEngine) takeTargetInfo(pageID ids.PageHandle, targetID string) {
-	if info, order, ok := e.currentTargets().takeHeld(target.ID(targetID)); ok {
+func (e *hostedEngine) takeTargetInfo(pageID ids.PageHandle, targetID target.ID) {
+	if info, order, ok := e.currentTargets().takeHeld(targetID); ok {
 		e.events.PageInfoChanged(pageID, info.URL, info.Title, order)
 	}
 }

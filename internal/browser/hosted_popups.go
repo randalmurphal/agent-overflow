@@ -60,7 +60,7 @@ const (
 // hostedPopup is a popup the launcher reported, from its report until its
 // page goes: its lineage and its attach.
 type hostedPopup struct {
-	target  string
+	target  target.ID
 	profile string
 	// opener is the page id of the page that opened it.
 	opener ids.PageHandle
@@ -106,13 +106,13 @@ func (e *hostedEngine) popupReported(pageID ids.PageHandle, detail string) {
 		e.closePage(pageID)
 		return
 	}
-	opener := ids.PageHandle(report.Opener)
+	opener, targetID := ids.PageHandle(report.Opener), target.ID(report.Target)
 	e.mu.Lock()
 	profile, known := e.pageProfile[opener]
 	// An opener whose close or discard was received opens nothing more.
 	known = known && e.pages.admits(opener)
 	_, taken = e.pageProfile[pageID]
-	_, claimed := e.targetPageLocked(report.Target)
+	_, claimed := e.targetPageLocked(targetID)
 	conn := e.pageConn[opener]
 	if pending := e.popups[opener]; pending != nil {
 		conn = pending.conn
@@ -134,7 +134,7 @@ func (e *hostedEngine) popupReported(pageID ids.PageHandle, detail string) {
 		// keeps pages.
 		e.closePage(pageID)
 		return
-	case report.Target != "" && (conn == nil || conn.Err() != nil):
+	case targetID != "" && (conn == nil || conn.Err() != nil):
 		e.mu.Unlock()
 		// Its target is on its opener's connection, which has ended.
 		e.logf("browser: pane host reported popup %s of %s, which has no connection", pageID, report.Opener)
@@ -146,18 +146,18 @@ func (e *hostedEngine) popupReported(pageID ids.PageHandle, detail string) {
 		e.logf("browser: pane host reported popup %s, a page it already has", pageID)
 		return
 	}
-	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: opener, conn: conn}
-	if report.Target != "" {
-		e.popupByTarget[report.Target] = pageID
+	e.popups[pageID] = &hostedPopup{target: targetID, profile: profile, opener: opener, conn: conn}
+	if targetID != "" {
+		e.popupByTarget[targetID] = pageID
 	}
 	e.pageProfile[pageID] = profile
 	e.mu.Unlock()
-	if report.Target == "" {
+	if targetID == "" {
 		// Nothing to attach: it stays the owner of its downloads until its
 		// close (retirePage).
 		return
 	}
-	e.takeTargetInfo(pageID, report.Target)
+	e.takeTargetInfo(pageID, targetID)
 	// Before any later report of the page, its close among them: the
 	// Manager records it at once and adopts it on a goroutine of its own.
 	e.events.PopupOpened(enginePopup{Profile: profile, Opener: opener, Handle: pageID, URL: report.URL})
@@ -168,7 +168,7 @@ func (e *hostedEngine) popupReported(pageID ids.PageHandle, detail string) {
 func (e *hostedEngine) attachPopup(profile *hostedProfile, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	e.mu.Lock()
 	popup := e.popups[handle]
-	var targetID string
+	var targetID target.ID
 	var browserCtx context.Context
 	if popup != nil && popup.profile == profile.id {
 		targetID, browserCtx = popup.target, popup.conn
@@ -180,7 +180,7 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle ids.PageHandle
 	case browserCtx.Err() != nil:
 		return nil, fmt.Errorf("browser: popup %s: its opener's connection to the pane browser was lost", handle)
 	}
-	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
+	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
 	// The attach is bounded on its own clock, and the popup's close or
 	// discard cancels it (takeAttachCancelLocked); its downloads are settled
 	// by that close, not by the attach.
@@ -287,7 +287,7 @@ func (e *hostedEngine) allowRequest(targets *cdpTargets, frame frameID, rawURL s
 func (e *hostedEngine) reportedOpenersLocked(owners []frameID) []frameID {
 	// Each step adds a page not in owners yet, so the chain ends.
 	for {
-		popupID, ok := e.popupByTarget[string(owners[len(owners)-1])]
+		popupID, ok := e.popupByTarget[target.ID(owners[len(owners)-1])]
 		if !ok {
 			return owners
 		}
@@ -307,7 +307,7 @@ func (e *hostedEngine) reportedOpenersLocked(owners []frameID) []frameID {
 // target it is, a pending popup's, or the page that reported it as one of
 // its frames. The caller holds e.mu.
 func (e *hostedEngine) ownerPageLocked(frame frameID) (ids.PageHandle, bool) {
-	if pageID, ok := e.targetPageLocked(string(frame)); ok {
+	if pageID, ok := e.targetPageLocked(target.ID(frame)); ok {
 		return pageID, true
 	}
 	for pageID, driver := range e.drivers {

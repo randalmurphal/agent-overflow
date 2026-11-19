@@ -47,7 +47,7 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.mu.Unlock()
 		return nil, fmt.Errorf("browser: pane host reported %s: %s", report.kind, report.detail)
 	}
-	targetID := strings.TrimSpace(report.detail)
+	targetID := target.ID(strings.TrimSpace(report.detail))
 	if targetID == "" {
 		e.closePage(pageID)
 		return nil, errors.New("browser: pane host reported a page with no CDP target")
@@ -63,7 +63,7 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.closePage(pageID)
 		return nil, err
 	}
-	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
+	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
 	setup, release := e.setups.begin(ctx, e.attachTimeout)
 	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
 	release()
@@ -239,7 +239,7 @@ func (e *hostedEngine) deliver(pageID ids.PageHandle, report hostReport) bool {
 // claimTarget pairs a page the engine is creating with the CDP target the
 // launcher reported for it, unless another page, bound or a popup, has
 // that target. Its close forgets the pair (forgetPageLocked).
-func (e *hostedEngine) claimTarget(pageID ids.PageHandle, targetID string) error {
+func (e *hostedEngine) claimTarget(pageID ids.PageHandle, targetID target.ID) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if owner, claimed := e.targetPageLocked(targetID); claimed {
@@ -255,7 +255,7 @@ func (e *hostedEngine) claimTarget(pageID ids.PageHandle, targetID string) error
 // which it admits downloads. It refuses a connection that has ended: that
 // connection's retirement may already have claimed its pages, and a later
 // one would never report this page.
-func (e *hostedEngine) bind(pageID ids.PageHandle, targetID string, conn context.Context) error {
+func (e *hostedEngine) bind(pageID ids.PageHandle, targetID target.ID, conn context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if conn.Err() != nil {
@@ -269,13 +269,13 @@ func (e *hostedEngine) bind(pageID ids.PageHandle, targetID string, conn context
 // bindLocked is bind's pairing for a caller that holds e.mu and has
 // checked conn. It changes no page's record: a popup's opened at its
 // report.
-func (e *hostedEngine) bindLocked(pageID ids.PageHandle, targetID string, conn context.Context) {
+func (e *hostedEngine) bindLocked(pageID ids.PageHandle, targetID target.ID, conn context.Context) {
 	e.targetByPage[pageID] = targetID
 	e.pageByTarget[targetID] = pageID
 	e.pageConn[pageID] = conn
 }
 
-func (e *hostedEngine) pageForTarget(targetID string) (ids.PageHandle, bool) {
+func (e *hostedEngine) pageForTarget(targetID target.ID) (ids.PageHandle, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.targetPageLocked(targetID)
@@ -283,7 +283,7 @@ func (e *hostedEngine) pageForTarget(targetID string) (ids.PageHandle, bool) {
 
 // targetPageLocked answers the page whose CDP target targetID is: a bound
 // page's, or a popup's the Manager has not listed. The caller holds e.mu.
-func (e *hostedEngine) targetPageLocked(targetID string) (ids.PageHandle, bool) {
+func (e *hostedEngine) targetPageLocked(targetID target.ID) (ids.PageHandle, bool) {
 	if pageID, ok := e.pageByTarget[targetID]; ok {
 		return pageID, true
 	}

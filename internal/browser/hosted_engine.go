@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
+
+	"github.com/chromedp/cdproto/target"
 )
 
 // The hosted engine: the Windows/WSL implementation of the driver.go seam.
@@ -130,8 +132,8 @@ type hostedEngine struct {
 	browserCancel context.CancelFunc
 	attachCancel  context.CancelFunc
 	pending       map[ids.PageHandle]chan hostReport
-	pageByTarget  map[string]ids.PageHandle
-	targetByPage  map[ids.PageHandle]string
+	pageByTarget  map[target.ID]ids.PageHandle
+	targetByPage  map[ids.PageHandle]target.ID
 	// pageConn is the browser connection each bound page's session runs on
 	// (bind), until the page leaves or that connection's retirement claims
 	// it (claimLostLocked).
@@ -165,7 +167,7 @@ type hostedEngine struct {
 	// popups are the popups the launcher reported whose pages have not
 	// gone (hostedPopup), and popupByTarget their pages by CDP target.
 	popups        map[ids.PageHandle]*hostedPopup
-	popupByTarget map[string]ids.PageHandle
+	popupByTarget map[target.ID]ids.PageHandle
 	// targets is the current connection's record of its targets
 	// (cdp_targets.go): the info of a target no page answers to yet, and
 	// the target that opened each popup target, as the browser reports it.
@@ -205,8 +207,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		closeFallback: hostClosedFallback,
 
 		pending:      make(map[ids.PageHandle]chan hostReport),
-		pageByTarget: make(map[string]ids.PageHandle),
-		targetByPage: make(map[ids.PageHandle]string),
+		pageByTarget: make(map[target.ID]ids.PageHandle),
+		targetByPage: make(map[ids.PageHandle]target.ID),
 		pageConn:     make(map[ids.PageHandle]context.Context),
 		shown:        make(map[ids.PageHandle]bool),
 		bounds:       make(map[ids.PageHandle]PanePlacement),
@@ -218,7 +220,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		pageProfile:   make(map[ids.PageHandle]string),
 		policies:      make(map[string]func([]frameID, string) (bool, bool)),
 		popups:        make(map[ids.PageHandle]*hostedPopup),
-		popupByTarget: make(map[string]ids.PageHandle),
+		popupByTarget: make(map[target.ID]ids.PageHandle),
 
 		closeFallbacks: make(map[ids.PageHandle]*time.Timer),
 
@@ -303,8 +305,8 @@ func (e *hostedEngine) Stop() {
 	browserCancel, allocCancel := e.browserCancel, e.allocCancel
 	e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
 	e.started = false
-	e.pageByTarget = make(map[string]ids.PageHandle)
-	e.targetByPage = make(map[ids.PageHandle]string)
+	e.pageByTarget = make(map[target.ID]ids.PageHandle)
+	e.targetByPage = make(map[ids.PageHandle]target.ID)
 	e.pageConn = make(map[ids.PageHandle]context.Context)
 	e.shown = make(map[ids.PageHandle]bool)
 	e.bounds = make(map[ids.PageHandle]PanePlacement)
@@ -318,7 +320,7 @@ func (e *hostedEngine) Stop() {
 		cancelAttaches = append(cancelAttaches, popup.takeAttachCancelLocked())
 	}
 	e.popups = make(map[ids.PageHandle]*hostedPopup)
-	e.popupByTarget = make(map[string]ids.PageHandle)
+	e.popupByTarget = make(map[target.ID]ids.PageHandle)
 	for pageID := range e.closeFallbacks {
 		e.endCloseFallbackLocked(pageID)
 	}

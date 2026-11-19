@@ -27,7 +27,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 	if got := l.tabInfo(p); got.URL != "https://example.test/popup" {
 		t.Errorf("the popup's tab is at %q", got.URL)
 	}
-	if got, ok := l.engine.pageForTarget(targetID); !ok || got != ids.PageHandle(popupID) {
+	if got, ok := l.engine.pageForTarget(target.ID(targetID)); !ok || got != ids.PageHandle(popupID) {
 		t.Errorf("target %s answers page %q, want %s", targetID, got, popupID)
 	}
 	l.settledEngine()
@@ -216,7 +216,7 @@ func TestHostedPopupReportValidation(t *testing.T) {
 			t.Fatalf("a popup claiming %s was answered with %+v, want close", claimed, d)
 		}
 	}
-	for target, want := range map[string]string{"T-b": "popup-b", "T-opener": "opener"} {
+	for target, want := range map[target.ID]string{"T-b": "popup-b", "T-opener": "opener"} {
 		if got, _ := engine.pageForTarget(target); got != ids.PageHandle(want) {
 			t.Errorf("target %s belongs to %q, want %q", target, got, want)
 		}

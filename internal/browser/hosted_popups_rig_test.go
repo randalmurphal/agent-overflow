@@ -255,7 +255,7 @@ func (l *popupLauncher) settledEngine() {
 		}
 		for target, id := range l.engine.popupByTarget {
 			if popup := l.engine.popups[id]; popup == nil || popup.target != target {
-				stale = append(stale, target)
+				stale = append(stale, string(target))
 			}
 		}
 		l.engine.mu.Unlock()
