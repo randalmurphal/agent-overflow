@@ -188,6 +188,30 @@ type webviewShell struct {
 	// chords routes Ctrl/Cmd+R to the SPA while it asks for the chord
 	// (uikeys.PageChords); run sets it.
 	chords *uikeys.PageChords
+	// navigated is the page URL the window last navigated to, the origin
+	// its raw messages must come from; run sets it.
+	navigated *navigatedPage
+}
+
+// navigatedPage is the page URL a window last navigated to. It is taken
+// when the window navigates (its first page, each reload), so checking a
+// raw message's origin calls no pageURL: the existing-backend desktop's
+// reads the rendezvous and mints a window ticket over HTTP.
+type navigatedPage struct {
+	mu  sync.Mutex
+	url string
+}
+
+func (p *navigatedPage) set(url string) {
+	p.mu.Lock()
+	p.url = url
+	p.mu.Unlock()
+}
+
+func (p *navigatedPage) get() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.url
 }
 
 // run opens the window and blocks until the app loop exits, returning
@@ -210,6 +234,7 @@ func (s webviewShell) run() error {
 	}
 	appOpts := desktopApplicationOptions(s.title)
 	s.chords = uikeys.NewPageChords()
+	s.navigated = &navigatedPage{}
 	appOpts.RawMessageHandler = s.rawMessageHandler(getWindow)
 	if s.singleInstance {
 		appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
@@ -301,7 +326,13 @@ func (s webviewShell) windowOptions() (application.WebviewWindowOptions, error) 
 	// frontend's browser-cached fallback identity.
 	clientID := ensureClientID()
 	withClientID := func(pageURL string) string { return appURLWithClientID(pageURL, clientID) }
-	reloadURL := func() string { return withClientID(s.pageURL()) }
+	navigate := func(pageURL string) string {
+		if s.navigated != nil {
+			s.navigated.set(pageURL)
+		}
+		return withClientID(pageURL)
+	}
+	reloadURL := func() string { return navigate(s.pageURL()) }
 
 	// Context-menu policy lives in the frontend guard
 	// (browserHistoryGuard.ts): native menu allowed in editable fields
@@ -310,7 +341,7 @@ func (s webviewShell) windowOptions() (application.WebviewWindowOptions, error) 
 	// menus below the JS layer (on the platforms where it does
 	// anything at all). F12 devtools is a compiled no-op in production
 	// builds, so WithDevTools is safe unconditionally here.
-	opts.URL = withClientID(appURL)
+	opts.URL = navigate(appURL)
 	opts.KeyBindings = uikeys.WithDevTools(uikeys.BrowserWithReload(reloadURL))
 	if s.chords != nil {
 		opts.KeyBindings = s.chords.Bindings(opts.KeyBindings)
@@ -319,11 +350,13 @@ func (s webviewShell) windowOptions() (application.WebviewWindowOptions, error) 
 }
 
 // rawMessageHandler is Options.RawMessageHandler: the SPA's browser pane
-// focus reports, accepted only from this window's page on its origin.
+// focus reports, accepted only from this window's page on the origin the
+// window last navigated to.
 func (s webviewShell) rawMessageHandler(getWindow func() *application.WebviewWindow) func(application.Window, string, *application.OriginInfo) {
 	return func(from application.Window, message string, origin *application.OriginInfo) {
 		own := getWindow()
-		if s.chords == nil || own == nil || from == nil || from.ID() != own.ID() || !uikeys.TrustedPage(origin, s.pageURL()) {
+		if s.chords == nil || s.navigated == nil || own == nil || from == nil || from.ID() != own.ID() ||
+			!uikeys.TrustedPage(origin, s.navigated.get()) {
 			log.Printf("desktop: ignore raw webview message from an untrusted document")
 			return
 		}
