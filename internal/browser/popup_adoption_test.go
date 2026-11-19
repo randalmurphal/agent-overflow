@@ -940,6 +940,50 @@ func TestAPopupBeingAdoptedHoldsItsProfile(t *testing.T) {
 	}
 }
 
+// A popup being adopted when its opener, the thread's last private tab,
+// closes can no longer be listed, so it keeps the closed tab's private jar
+// from no new tab: the thread's next private tab opens a new jar, and the
+// old profile stays until the adoption ends.
+func TestAPopupBeingAdoptedKeepsNoPrivateJarForANewTab(t *testing.T) {
+	manager, engine, access, _ := newAdoptionManager(t)
+	setJar(t, manager, access, JarPrivate)
+	first := openPage(t, manager, access, "https://example.test/private")
+	old := pageJar(t, manager, first.ID)
+	manager.mu.Lock()
+	oldScope := manager.scopes[old]
+	manager.mu.Unlock()
+	release := engine.gate("popup")
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		manager.adoptPopup(engine.popup(paneHandle(manager, access, first.ID), "popup"))
+		close(done)
+	}()
+	engine.awaitAttach(t, "popup")
+	if err := manager.ClosePage(t.Context(), access, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/next").ID)
+	if next == old {
+		t.Fatalf("a private tab opened while a popup of the closed one was adopted reuses its jar %q", old)
+	}
+	if oldScope.profile.(*adoptionProfile).isDisposed() {
+		t.Fatal("the old private jar was disposed while a popup was being attached in it")
+	}
+	release()
+	<-done
+	if listed(manager, "popup") {
+		t.Fatal("a popup whose opener closed was listed")
+	}
+	eventually(t, "the old private jar is disposed", oldScope.profile.(*adoptionProfile).isDisposed)
+}
+
+func (p *adoptionProfile) isDisposed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.disposed
+}
+
 // Popups being adopted count against the caps from their admission: a
 // burst of them past the thread's cap is refused at once rather than
 // attached and dropped at its listing.

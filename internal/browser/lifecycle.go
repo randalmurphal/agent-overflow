@@ -584,18 +584,36 @@ func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
 	return true
 }
 
-// retirePrivateJarLocked ends the thread's use of a private jar once no page
+// retirePrivateJarLocked ends the thread's use of a private jar once no tab
 // of it is live or being created: the thread's next private page opens a new
-// jar, while pages still closing finish in the old one, under its own key.
+// jar, while pages still closing, and popups still being adopted, finish in
+// the old one, under its own key. A popup is listed only while its opener is
+// a tab of the jar (adoptPopup), so one being adopted keeps no tab coming.
 // The caller holds m.mu.
 func (m *Manager) retirePrivateJarLocked(scope *jarScope) {
-	if scope.jar.private == "" || len(scope.pages) > 0 || len(scope.creating) > 0 {
+	if scope.jar.private == "" || len(scope.pages) > 0 {
 		return
+	}
+	for p := range scope.creating {
+		if !m.adoptingLocked(p) {
+			return
+		}
 	}
 	if info, ok := m.sessions[scope.jar.thread]; ok && info.privateJar == scope.jar.private {
 		info.privateJar = ""
 		m.sessions[scope.jar.thread] = info
 	}
+}
+
+// adoptingLocked reports whether p is the page a popup's adoption reserves.
+// The caller holds m.mu.
+func (m *Manager) adoptingLocked(p *managedPage) bool {
+	for _, adopted := range m.adopting {
+		if adopted == p {
+			return true
+		}
+	}
+	return false
 }
 
 // disposeScope disposes a scope releaseScopeLocked unregistered, frees its
