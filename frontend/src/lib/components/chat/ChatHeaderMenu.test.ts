@@ -1,4 +1,4 @@
-// The Thread actions menu on desktop: the terminal rows, message search,
+// The Thread actions menu on desktop: the terminal rows, find in thread,
 // title regeneration and the editor rows. Its compact-only rows are covered in
 // ChatHeaderActions.test.ts, and the spinner a regeneration shows beside
 // the title in ChatHeader.test.ts.
@@ -10,8 +10,17 @@ import ChatHeaderMenu from './ChatHeaderMenu.svelte';
 import { ensureEditorsLoaded, resetEditorsForTest } from '../../stores/editors.svelte';
 import { resetKeybindingsStore, setKeybindingsForTest } from '../../stores/keybindings.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from '../../stores/messageSearch.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { isMessageSearchOpen } from '../../stores/messageSearch.svelte';
+import {
+  closePaneFind,
+  getPaneFind,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+  takePaneFindReturnFocus,
+  type PaneFindProvider,
+} from '../../stores/paneFind.svelte';
+import { focusPane, getFocusedPaneId, resetPanesForTest } from '../../stores/panes.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
 import {
@@ -72,8 +81,14 @@ async function flush(n = 6): Promise<void> {
   for (let i = 0; i < n; i += 1) await tick();
 }
 
-async function renderOpen(thread: Thread = makeThread()) {
+// The find ChatView registers for its pane's timeline (ThreadPaneFind).
+function findProvider(): PaneFindProvider {
+  return { noun: 'thread', result: { count: 0, current: -1, pending: false }, search: vi.fn(), clear: vi.fn() };
+}
+
+async function renderOpen(thread: Thread = makeThread(), { find = false } = {}) {
   const pane = await buildPane(thread);
+  if (find) registerPaneFindProvider(pane.paneId, findProvider());
   const view = render(ChatHeaderMenu, { props: { pane } });
   await flush();
   await fireEvent.click(view.getByTestId('chat-header-more'));
@@ -99,6 +114,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
     resetProjectsForTest();
     resetEditorsForTest();
     resetThreadTitleGenerationForTest();
+    resetPaneFindForTest();
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     vi.mocked(openTerminalThread).mockClear();
@@ -107,26 +123,125 @@ describe('<ChatHeaderMenu> on desktop', () => {
   afterEach(() => {
     setCompactLayoutForTest(false);
     resetKeybindingsStore();
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
     resetToLocalPage();
   });
 
-  it('lists the terminal rows, search, title regeneration and the editor, and none of the compact rows', async () => {
+  it('lists the terminal rows, find, title regeneration and the editor, and none of the compact rows', async () => {
     addProject();
-    await renderOpen();
-    expect(rows()).toEqual(['Terminal', 'New terminal pane', 'Search messages', 'Regenerate title', 'Open in editor']);
+    await renderOpen(makeThread(), { find: true });
+    expect(rows()).toEqual(['Terminal', 'New terminal pane', 'Find in thread', 'Regenerate title', 'Open in editor']);
   });
 
-  it('Search messages opens message search for this pane', async () => {
-    const { pane } = await renderOpen();
+  it('Find in thread opens this pane\'s find bar, not the search across every thread', async () => {
+    const view = await renderOpen(makeThread(), { find: true });
+    const { pane } = view;
+    // The row acts on its own pane, not on the focused one as the chord
+    // does: another pane holds focus here, and its find stays shut.
+    setPaneLayoutItemsForTest([
+      { id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 600 },
+      { id: 'other-pane', paneId: 'other-pane', kind: 'thread', widthPx: 600 },
+    ]);
+    registerPaneFindProvider('other-pane', findProvider());
+    focusPane('other-pane');
+    expect(getFocusedPaneId()).toBe('other-pane');
+    await fireEvent.click(row('Find in thread'));
+    await flush();
+    expect(getPaneFind(pane.paneId)?.open).toBe(true);
+    expect(getPaneFind('other-pane')).toBeNull();
+    expect(isMessageSearchOpen()).toBe(false);
+    expect(queryRow('Find in thread')).toBeNull();
+    // Closing the bar hands focus back to the menu button it was opened from.
+    expect(takePaneFindReturnFocus(pane.paneId)).toBe(view.getByTestId('chat-header-more'));
+  });
+
+  it('seeds the find with the composer selection held when the button was pressed, and never a stale one', async () => {
+    const pane = await buildPane(makeThread());
+    registerPaneFindProvider(pane.paneId, findProvider());
+    const view = render(ChatHeaderMenu, { props: { pane } });
+    const section = document.createElement('section');
+    section.dataset.paneId = pane.paneId;
+    const composer = document.createElement('textarea');
+    composer.value = 'find the needle here';
+    section.append(composer);
+    document.body.append(section);
     try {
-      await fireEvent.click(row('Search messages'));
       await flush();
-      expect(isMessageSearchOpen()).toBe(true);
-      expect(getMessageSearchTargetPaneId()).toBe(pane.paneId);
-      expect(queryRow('Search messages')).toBeNull();
+      const button = view.getByTestId('chat-header-more');
+      const pressDown = async (): Promise<void> => {
+        composer.focus();
+        composer.setSelectionRange(9, 15);
+        await fireEvent.pointerDown(button);
+        // The press moves focus to the button before any click lands.
+        button.focus();
+      };
+      // A pointer's click counts its presses; a keyboard activation is a
+      // click with none.
+      const pointerClick = async (): Promise<void> => {
+        await fireEvent.click(button, { detail: 1 });
+        await flush();
+      };
+      const keyboardClick = async (): Promise<void> => {
+        await fireEvent.click(button, { detail: 0 });
+        await flush();
+      };
+      const findQuery = async (): Promise<string | undefined> => {
+        await fireEvent.click(row('Find in thread'));
+        await flush();
+        const query = getPaneFind(pane.paneId)?.query;
+        closePaneFind(pane.paneId);
+        return query;
+      };
+
+      // A press whose menu closes without a pick leaves nothing behind: the
+      // next open, from the keyboard, reads the selection as it is then.
+      await pressDown();
+      await pointerClick();
+      await fireEvent.keyDown(row('Find in thread'), { key: 'Escape' });
+      await flush();
+      await keyboardClick();
+      expect(await findQuery()).toBe('');
+
+      // Nor does a press dragged off the button, which never became a click.
+      await pressDown();
+      await keyboardClick();
+      expect(await findQuery()).toBe('');
+
+      await pressDown();
+      await pointerClick();
+      expect(await findQuery()).toBe('needle');
     } finally {
-      closeMessageSearch();
+      section.remove();
     }
+  });
+
+  it('has no Find in thread row for a pane with no find, and gains it when the find registers', async () => {
+    const view = await renderOpen();
+    expect(queryRow('Find in thread')).toBeNull();
+    const release = registerPaneFindProvider(view.pane.paneId, findProvider());
+    await flush();
+    expect(row('Find in thread')).toBeInTheDocument();
+    release();
+    await flush();
+    expect(queryRow('Find in thread')).toBeNull();
+  });
+
+  it('keeps the search across every thread off the desktop menu and on the compact one', async () => {
+    const view = await renderOpen(makeThread(), { find: true });
+    expect(queryRow('Search messages')).toBeNull();
+    view.unmount();
+
+    setCompactLayoutForTest(true);
+    await renderOpen(makeThread(), { find: true });
+    const compactRows = rows();
+    expect(compactRows.slice(compactRows.indexOf('Terminal'))).toEqual([
+      'Terminal',
+      'New terminal pane',
+      'Find in thread',
+      'Search messages',
+      'Regenerate title',
+    ]);
   });
 
   it('is a menu button that says whether its menu is open', async () => {
@@ -201,21 +316,23 @@ describe('<ChatHeaderMenu> on desktop', () => {
     setKeybindingsForTest([
       { key: 'ctrl+`', command: 'terminal.toggle' },
       { key: 'ctrl+shift+n', command: 'terminal.newPane' },
+      { key: 'ctrl+f', command: 'find.in-pane' },
       { key: 'ctrl+shift+f', command: 'search.messages' },
     ]);
-    const view = await renderOpen();
+    const view = await renderOpen(makeThread(), { find: true });
     expect(row('Terminal').textContent).toContain('Ctrl+`');
     expect(row('New terminal pane').textContent).toContain('Ctrl+Shift+N');
-    expect(row('Search messages').textContent).toContain('Ctrl+Shift+F');
+    expect(row('Find in thread').textContent).toContain('Ctrl+F');
+    expect(row('Find in thread').textContent).not.toContain('Shift');
     // A row whose command is unbound names no chord.
     expect(row('Regenerate title').textContent?.trim()).toBe('Regenerate title');
     view.unmount();
 
     setCompactLayoutForTest(true);
-    await renderOpen();
-    expect(row('Terminal').textContent).not.toContain('Ctrl+`');
-    expect(row('New terminal pane').textContent).not.toContain('Ctrl+Shift+N');
-    expect(row('Search messages').textContent).not.toContain('Ctrl+Shift+F');
+    await renderOpen(makeThread(), { find: true });
+    for (const name of ['Terminal', 'New terminal pane', 'Find in thread', 'Search messages']) {
+      expect(row(name).textContent?.trim(), name).toBe(name);
+    }
   });
 
   it('renders both terminal rows inert with the reason without terminal:operate', async () => {
@@ -279,7 +396,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
     await seedEditors([ed('code', 'Visual Studio Code'), ed('cursor', 'Cursor'), ed('zed', 'Zed')], 'cursor');
     const open = setBindingMock('OpenInEditor', async () => undefined);
     await renderOpen();
-    expect(rows().slice(4)).toEqual(['Open in Cursor', 'Open in Visual Studio Code', 'Open in Zed']);
+    expect(rows().slice(3)).toEqual(['Open in Cursor', 'Open in Visual Studio Code', 'Open in Zed']);
     await fireEvent.click(row('Open in Zed'));
     await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'zed']);

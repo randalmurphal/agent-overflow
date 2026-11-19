@@ -38,8 +38,8 @@ import {
   syncThreadReply,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
-import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
-import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
+import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, paneFindTarget } from './paneFind.svelte';
+import { openPaneFindForReader } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab, isReplayingBrowserPageChord } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
@@ -733,13 +733,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     editableReachable: true,
     run: () => {
       const key = paneFindTarget(paneFindTargetId());
-      if (!key || !hasPaneFindProvider(key)) return;
-      const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
-      const active = typeof document === 'undefined' ? null : document.activeElement;
-      openPaneFind(key, {
-        seed: root ? findSeedIn(root) : '',
-        returnFocus: active instanceof HTMLElement && !isInFindBar(active) ? active : null,
-      });
+      if (key) openPaneFindForReader(key);
     },
   });
 

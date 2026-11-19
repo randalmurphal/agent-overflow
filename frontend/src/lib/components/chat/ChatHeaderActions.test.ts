@@ -408,7 +408,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
     expect(desktop.getByTestId('take-control-toggle')).toBeInTheDocument();
     await fireEvent.click(desktop.getByTestId('chat-header-more'));
     await flush();
-    expect(menuRows()).toEqual(['Terminal', 'New terminal pane', 'Search messages', 'Regenerate title']);
+    expect(menuRows()).toEqual(['Terminal', 'New terminal pane', 'Regenerate title']);
     desktop.unmount();
 
     setCompactLayoutForTest(true);
@@ -445,7 +445,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
     expect(pane.showTerminal).toBe(true);
   });
 
-  it('offers message search as a row under compact too, where there is no chord for it', async () => {
+  it('offers message search as a row: the phone has no chord for it', async () => {
     installSubscribeMock(status({}));
     const pane = await buildPane();
     setCompactLayoutForTest(true);

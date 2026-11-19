@@ -1,12 +1,13 @@
 <script lang="ts">
   // The chat header's Thread actions menu: the last control of the cluster
   // on desktop and under compact. It holds the actions that need no
-  // standing button: the drawer terminal, a fresh terminal pane, message
-  // search, title regeneration and opening the project in an editor.
+  // standing button: the drawer terminal, a fresh terminal pane, find in
+  // this thread, title regeneration and opening the project in an editor.
   //
   // Under compact it also carries the rows for the controls the phone
-  // header has no room for (review, the PR, take-control, git); every other
-  // row is the same on both layouts. The git rows are GitActionsControl's
+  // header has no room for (review, the PR, take-control, git) and the
+  // search across every thread, which the phone has no chord for; every
+  // other row is the same on both layouts. The git rows are GitActionsControl's
   // own menu, opened from here (`openMenu`): the control mounts beside the
   // button without its split trigger, so its dialogs live outside this menu
   // and survive its close, and it still shows its status error and sign-in
@@ -20,6 +21,7 @@
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { openMessageSearch } from '../../stores/messageSearch.svelte';
+  import { hasPaneFindProvider } from '../../stores/paneFind.svelte';
   import { openInEditor } from '../../stores/openInEditor';
   import { isCompanionOpen } from '../../stores/companionPanes.svelte';
   import { getProject } from '../../stores/projects.svelte';
@@ -31,6 +33,7 @@
   import { hasScope } from '../../transport/scopes';
   import { errString } from '../../utils/errors';
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
+  import { openPaneFindForReader, paneFindSeed } from '../../utils/paneFindSeed';
   import { forgeLabels } from '../../utils/forgeLabels';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import GitActionsControl from '../git/GitActionsControl.svelte';
@@ -56,6 +59,19 @@
   function close(reason?: PopoverCloseReason): void {
     open = false;
     restorePickerFocus(reason, { triggerEl });
+  }
+
+  function toggle(event: MouseEvent): void {
+    // A keyboard activation is a click with no press behind it (detail 0),
+    // so a snapshot left by a press that never became a click is not its.
+    const seed = event.detail > 0 ? pressSeed : undefined;
+    pressSeed = undefined;
+    if (open) {
+      close();
+      return;
+    }
+    openSeed = seed;
+    open = true;
   }
 
   // A pick closes the menu the way Escape does, handing focus back to the
@@ -84,6 +100,25 @@
       projectId: pane.thread?.projectId,
       cwd: pane.thread?.workspacePath,
     });
+  }
+
+  // This pane's own find bar, the one ChatView registers for its timeline
+  // (ThreadPaneFind) and `find.in-pane` opens for the focused pane. A thread
+  // with no find (a draft, a host that predates the find contract) has no
+  // row.
+  let findAvailable = $derived(hasPaneFindProvider(pane.paneId));
+
+  // The find's seed is the reader's selection, and a press on the button
+  // takes focus from a composer selection before a row could read it. So
+  // the press reads it (`pressSeed`) and the click that press ends in hands
+  // it to the menu it opens (`openSeed`, set on every open). A menu opened
+  // from the keyboard has none and reads the selection when the row runs.
+  let pressSeed: string | undefined;
+  let openSeed: string | undefined;
+
+  function findInThread(): void {
+    const seed = openSeed;
+    pick(() => openPaneFindForReader(pane.paneId, seed));
   }
 
   // Pending is thread-entity state (stores/threadTitleGeneration): the run
@@ -171,7 +206,8 @@
   aria-haspopup="menu"
   aria-expanded={open}
   title="Thread actions"
-  onclick={() => (open = !open)}
+  onpointerdown={() => (pressSeed = paneFindSeed(pane.paneId))}
+  onclick={toggle}
   data-testid="chat-header-more"
   class={buttonClasses({ variant: 'secondary', size: 'xs', pressed: open, class: 'shrink-0 w-6 compact:w-9 px-0' })}
 >
@@ -224,11 +260,16 @@
            the host, which the compact screen never shows
            (docs/specs/remote-access.md, "Hidden on the phone"), and the
            store never opens it there. -->
-      <MenuItem
-        label="Search messages"
-        kbd={chordFor('search.messages')}
-        onSelect={() => pick(() => openMessageSearch(pane.paneId))}
-      />
+      {#if findAvailable}
+        <MenuItem
+          label="Find in thread"
+          kbd={chordFor('find.in-pane')}
+          onSelect={findInThread}
+        />
+      {/if}
+      {#if compact}
+        <MenuItem label="Search messages" onSelect={() => pick(() => openMessageSearch(pane.paneId))} />
+      {/if}
       <MenuItem
         label="Regenerate title"
         disabled={regeneratePending || regenerateUngranted}

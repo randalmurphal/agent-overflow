@@ -374,8 +374,12 @@ test('the chat header rolls its actions into one dropdown at the button', async 
   expect(menuBox!.y).toBeGreaterThanOrEqual(buttonBox!.y + buttonBox!.height - 1);
   expect(menuBox!.y).toBeLessThan(buttonBox!.y + buttonBox!.height + 16);
   expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
-  // Title regeneration is a row of this menu on the phone.
+  // Title regeneration is a row of this menu on the phone, and so are both
+  // searches, which it has no chords for: this thread's find and the search
+  // across every thread.
   await expect(menu.getByRole('menuitem', { name: 'Regenerate title' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Find in thread' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Search messages' })).toBeVisible();
   await menu.getByRole('menuitem', { name: /Review changes/ }).tap();
   await expect(menu).toHaveCount(0);
   await expect(page.locator('section[data-pane-kind="review"]')).toBeVisible();
