@@ -147,9 +147,13 @@ const store = createEntityStore<BrowserCompanionView, void>({
   // Native views and their mounts belong to this window's local execution host.
   backendForKey: () => HOME_BACKEND,
   rawValue: true,
-  source: async ({ key, apply }) => {
+  source: async ({ key, apply, signal }) => {
     if (!canUseNativeBrowser(key)) throw new Error('A native browser pane is unavailable for this conversation on this device.');
     const result = await BrowserCompanionPaneAttach(key);
+    // An attach superseded while it was in flight (the pane closed, or
+    // closed and opened again) owns nothing here: the mount the thread has
+    // now is a later attach's, so this one only detaches its own.
+    if (signal.aborted) return () => BrowserCompanionPaneDetach(result.id);
     paneIds.set(key, result.id);
     // A push that landed during the attach is newer than its answer.
     const held = store.snapshot(key)?.state;

@@ -3,6 +3,7 @@ import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
   browserCompanionAct,
+  browserPaneMountId,
   openBrowserTab,
   canUseNativeBrowser,
   hydrateBrowserCompanionState,
@@ -325,6 +326,27 @@ describe('browser companion state routing', () => {
       await vi.waitFor(() => expect(attachment.current).not.toBeNull());
       expect(attachment.current?.state.pages).toEqual([]);
       attachment.release();
+    });
+
+    it('keeps the current mount when a superseded attach answers last', async () => {
+      const replies: Array<(mount: string) => void> = [];
+      setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
+        replies.push((mount) => resolve({ id: mount, state: open(6) }));
+      }));
+      const detach = setBindingMock('BrowserCompanionPaneDetach', vi.fn(async () => {}));
+      // The pane closes and opens again while its first attach is pending.
+      attachBrowserCompanion('thread-browser').release();
+      const second = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(replies).toHaveLength(2));
+      replies[1]('mount-2');
+      await vi.waitFor(() => expect(second.current).not.toBeNull());
+      replies[0]('mount-1');
+      await vi.waitFor(() => expect(detach).toHaveBeenCalledWith('mount-1'));
+      expect(browserPaneMountId('thread-browser')).toBe('mount-2');
+      expect(detach).toHaveBeenCalledTimes(1);
+      second.release();
+      await vi.waitFor(() => expect(detach).toHaveBeenLastCalledWith('mount-2'));
+      expect(browserPaneMountId('thread-browser')).toBeNull();
     });
 
     it('takes the attach answer when no newer frame arrived', async () => {
