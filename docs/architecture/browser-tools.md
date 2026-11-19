@@ -122,7 +122,10 @@ per-platform no-op.
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
-  the companion closes when its last tab does. Closing the companion any other
+  the companion closes when its last tab does. With a tab selection or an
+  earlier Mod+W of the pane still unanswered, the close waits for those
+  answers and closes the tab active then, so it closes the tab the user just
+  picked and one tab per press. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
 - A tab the user closes is kept on the thread's in-memory closed-tab stack
   (`internal/browser/companion_tabs.go`): its address, label and position,
