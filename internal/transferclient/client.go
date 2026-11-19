@@ -31,6 +31,11 @@ type Offer struct {
 	Endpoint        string `json:"endpoint"`
 	CertFingerprint string `json:"certFingerprint,omitempty"`
 	Grant           string `json:"grant"`
+	// SpawnInstructions says the destination keeps the instructions a
+	// spawn appended to a thread's system prompt. A destination from
+	// before them leaves it false, and the source refuses to send it a
+	// thread that has any rather than lose them.
+	SpawnInstructions bool `json:"spawnInstructions,omitempty"`
 }
 
 type Client struct {

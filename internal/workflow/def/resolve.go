@@ -30,7 +30,7 @@ type SkippedDir struct {
 // SkippedDirs reports those directories, in source order and sorted by name
 // within each source. It is a separate read rather than a second return value of
 // Resolve because the engine resolves definitions on every run start and has
-// nothing to do with the answer, while the two CLI surfaces that render it pay
+// nothing to do with the answer, while the surfaces that render it pay
 // one extra directory listing only when a human is asking.
 //
 // Pure: it returns what it found and never writes to a log or a stream, so the

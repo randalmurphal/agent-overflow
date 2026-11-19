@@ -170,7 +170,9 @@ test('a wake that quotes the tag reaches an idle thread and settles it', async (
   await awaitTurnCompleted(harness, threadId);
   await awaitTurnCompleted(harness, threadId);
 
-  await expect(page.getByTestId('user-message-bubble').filter({ hasText: note })).toBeVisible();
+  // The reminder is the thread's own agent writing to itself: an agent row.
+  const reminder = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="reminder"]');
+  await expect(reminder.getByTestId('agent-message-first-line')).toHaveText(note);
   await expect(page.getByText('Every block carries its task id.')).toBeVisible();
   await expectIdle(page);
   await capture(page, testInfo, 'unechoed-wake.png');

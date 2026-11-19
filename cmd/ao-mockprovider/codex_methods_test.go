@@ -73,8 +73,6 @@ func TestCodexUnimplementedMethodIsMethodNotFound(t *testing.T) {
 		"config/batchWrite",
 		"config/mcpServer/reload",
 		"mcpServer/oauth/login",
-		"thread/backgroundTerminals/terminate",
-		"thread/backgroundTerminals/clean",
 	}
 	var buf bytes.Buffer
 	a := newCodexUnitAdapter(t, &buf, nil)
@@ -192,6 +190,13 @@ func TestCodexReadMethodsAnswerDecodableShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("thread/memoryMode/set", func(t *testing.T) {
+		frame := codexRequest(t, a, &buf, "thread/memoryMode/set", `{"threadId":"th-unit","mode":"disabled"}`)
+		if frame.Error != nil {
+			t.Fatalf("thread/memoryMode/set = %+v", frame.Error)
+		}
+	})
+
 	t.Run("skills/list", func(t *testing.T) {
 		frame := codexRequest(t, a, &buf, "skills/list", `{"cwds":["/ws"]}`)
 		if frame.Error != nil {
@@ -246,6 +251,24 @@ func TestCodexReadMethodsAnswerDecodableShapes(t *testing.T) {
 		}
 		if decoded.NextCursor != nil {
 			t.Fatalf("nextCursor = %v, want null so the paging walk stops", *decoded.NextCursor)
+		}
+	})
+
+	// A resumed session's descendant discovery: no children, one page.
+	t.Run("thread/list", func(t *testing.T) {
+		frame := codexRequest(t, a, &buf, "thread/list", `{"ancestorThreadId":"th-unit","sourceKinds":["subAgent"],"limit":64,"useStateDbOnly":true}`)
+		if frame.Error != nil {
+			t.Fatalf("thread/list = %+v", frame.Error)
+		}
+		var decoded struct {
+			Data       []json.RawMessage `json:"data"`
+			NextCursor *string           `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(frame.Result, &decoded); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(decoded.Data) != 0 || decoded.NextCursor != nil {
+			t.Fatalf("thread/list = %s, want no children and a null cursor", frame.Result)
 		}
 	})
 }

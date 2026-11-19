@@ -59,14 +59,17 @@ const schemaVersionKey = "$schemaVersion"
 // map, so a new setting cannot ship without a tier decision.
 var tierByKey = map[string]Tier{
 	// ---- host: what this backend machine is and what it may do ----------
-	"network":                      TierHost,
-	"claudeBinaryPath":             TierHost,
-	"codexBinaryPath":              TierHost,
-	"claudeCustomEnv":              TierHost,
-	"codexCustomEnv":               TierHost,
-	"claudeEnabled":                TierHost,
-	"codexEnabled":                 TierHost,
-	"claudeTuiEnabled":             TierHost,
+	"network":          TierHost,
+	"claudeBinaryPath": TierHost,
+	"codexBinaryPath":  TierHost,
+	"claudeCustomEnv":  TierHost,
+	"codexCustomEnv":   TierHost,
+	"claudeEnabled":    TierHost,
+	"codexEnabled":     TierHost,
+	"claudeTuiEnabled": TierHost,
+	// Shared memory makes the memory folders writable roots of every
+	// session: an authority granted to a provider session.
+	"sharedMemoryEnabled":          TierHost,
 	"retention":                    TierHost,
 	"observabilityEventLogEnabled": TierHost,
 	"observabilityOtlpEndpoint":    TierHost,
@@ -141,6 +144,18 @@ var tierByKey = map[string]Tier{
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
 	"agentGuideEnabled":           TierUser,
+	// Assistants on or off is the person's choice of how they work, like
+	// the guide and the profiles beside it. Backend behavior reads it (the
+	// wake supervisor's pause), so it is not device tier.
+	"assistantsEnabled": TierUser,
+	"agentProfiles":     TierUser,
+	"agentNotes":        TierUser,
+	"subThreadLevels":   TierUser,
+	// The providers' own memory is a spawn-time preference of the same
+	// kind; shared memory is host tier, since it grants write access
+	// outside the workspace.
+	"claudeOwnMemoryOff": TierUser,
+	"codexOwnMemoryOff":  TierUser,
 	// The command timeout ceiling is the same kind of preference.
 	"claudeMaxCommandTimeoutHours": TierUser,
 	// Account auto-switch applies to every provider and travels with the
@@ -206,6 +221,7 @@ var tierByKey = map[string]Tier{
 	"notifyProviderSignedOut": TierDevice,
 	"notifyWorkflowAttention": TierDevice,
 	"notifyAppUpdate":         TierDevice,
+	"notifyThreadAttention":   TierDevice,
 	"notifyHiddenThreads":     TierDevice,
 	// The "quiet when" key is the same tier for the same reason, one step
 	// further in: it does not ask which moments matter, it asks whether

@@ -190,7 +190,7 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("fire: returned false, expected true")
 	}
 	calls := rec.waitForAtLeastCalls(t, 1)
@@ -205,6 +205,46 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	}
 	if router.HasQueuedFlushItems("t1") {
 		t.Errorf("queue should be empty after fire")
+	}
+}
+
+// Every handoff carries the generation it was made in, which an advance
+// leaves behind; a dropping advance marks that generation and every earlier
+// one dropped, and a recovering advance marks none.
+func TestAHandoffsGenerationAndWhetherItWasDropped(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:held", "held"))
+	generation := router.FlushDispatchGeneration("t1")
+	if !router.FlushQueuedItems("t1") {
+		t.Fatal("FlushQueuedItems returned false")
+	}
+	calls := rec.waitForAtLeastCalls(t, 1)
+	for _, item := range calls[0].Items {
+		if item.DispatchGeneration != generation {
+			t.Fatalf("handed out %+v, want generation %d", item, generation)
+		}
+	}
+	recovered := router.AdvanceFlushDispatchGeneration("t1", false)
+	if recovered == generation || router.FlushDispatchGeneration("t1") != recovered {
+		t.Fatalf("advance from %d = %d, read back %d", generation, recovered, router.FlushDispatchGeneration("t1"))
+	}
+	if router.FlushGenerationDropped("t1", generation) {
+		t.Fatal("a recovery marked its generation dropped")
+	}
+	dropped := router.AdvanceFlushDispatchGeneration("t1", true)
+	for _, g := range []uint64{generation, recovered} {
+		if !router.FlushGenerationDropped("t1", g) {
+			t.Fatalf("generation %d, ended at or before a drop, is not dropped", g)
+		}
+	}
+	if router.FlushGenerationDropped("t1", dropped) {
+		t.Fatal("the generation after the drop is dropped")
+	}
+	if router.FlushGenerationDropped("t2", 0) {
+		t.Fatal("an unknown thread reports a drop")
 	}
 }
 
@@ -244,7 +284,7 @@ func TestTryFlushQueue_SecondCallWithNewItems_FiresAgain(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("first fire: returned false")
 	}
 
@@ -254,7 +294,7 @@ func TestTryFlushQueue_SecondCallWithNewItems_FiresAgain(t *testing.T) {
 	// round (the production bug).
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("second fire (new items, same round): returned false — per-round suppression regressed")
 	}
 	calls := rec.waitForAtLeastCalls(t, 2)
@@ -282,14 +322,14 @@ func TestTryFlushQueue_SecondCallEmptyQueue_NoOp(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("first fire: returned false")
 	}
 
 	// No new items — the second call sees an empty queue and no-ops.
 	// This is the natural idempotency the queue-empty check provides;
 	// the previous per-round marker was redundant for this case.
-	if router.tryFlushQueue("t1") {
+	if router.tryFlushQueue("t1", "") {
 		t.Errorf("second fire (empty queue): returned true, want false")
 	}
 	if len(rec.waitForAtLeastCalls(t, 1)) != 1 {
@@ -302,7 +342,7 @@ func TestTryFlushQueue_EmptyQueue_NoOp(t *testing.T) {
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
-	if router.tryFlushQueue("t1") {
+	if router.tryFlushQueue("t1", "") {
 		t.Errorf("fire on empty queue: returned true, want false")
 	}
 	if len(rec.snapshot()) != 0 {
@@ -316,7 +356,7 @@ func TestTryFlushQueue_NilDispatcher_DoesNotConsume(t *testing.T) {
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
 
-	if router.tryFlushQueue("t1") {
+	if router.tryFlushQueue("t1", "") {
 		t.Errorf("fire with nil dispatcher: returned true, want false")
 	}
 	// Items must remain queued — without a dispatcher there's no one
@@ -335,7 +375,7 @@ func TestMaybeFlushQueueAtBoundary_BlocksOnLiveCodexSubagent(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 	router.RegisterQueueItem("t-codex", makeQueueItem("queue:0", "wait for subagent"))
 
-	if router.maybeFlushQueueAtBoundary("t-codex") {
+	if router.maybeFlushQueueAtBoundary("t-codex", "") {
 		t.Fatal("maybeFlushQueueAtBoundary flushed despite live Codex subagent")
 	}
 	if !router.HasQueuedFlushItems("t-codex") {
@@ -377,7 +417,7 @@ func TestTryFlushQueue_RejectsEmptyThreadID(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
 
-	if router.tryFlushQueue("") {
+	if router.tryFlushQueue("", "") {
 		t.Errorf("empty threadID: returned true")
 	}
 	if !router.HasQueuedFlushItems("t1") {
@@ -392,7 +432,7 @@ func TestCleanupThread_SweepsQueue(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	router.tryFlushQueue("t1")
+	router.tryFlushQueue("t1", "")
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "y"))
 
 	if !router.HasQueuedFlushItems("t1") {
@@ -408,7 +448,7 @@ func TestCleanupThread_SweepsQueue(t *testing.T) {
 	// A fresh registration after cleanup must drain normally — no
 	// stale state from the prior session blocks the new flush.
 	router.RegisterQueueItem("t1", makeQueueItem("queue:2", "z"))
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Errorf("fire after CleanupThread: returned false")
 	}
 }
@@ -465,8 +505,9 @@ func TestTryFlushQueue_BatchStaysCountedAcrossHandoff(t *testing.T) {
 
 func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 	var leftCount, rightCount atomic.Int32
-	left := NewFlushSettlement(func() { leftCount.Add(1) })
-	right := NewFlushSettlement(func() { rightCount.Add(1) })
+	var leftSession, rightSession atomic.Value
+	left := NewFlushSettlement(func(session string) { leftCount.Add(1); leftSession.Store(session) })
+	right := NewFlushSettlement(func(session string) { rightCount.Add(1); rightSession.Store(session) })
 	combined := CombineFlushSettlements(left, right)
 
 	var callers sync.WaitGroup
@@ -474,7 +515,7 @@ func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 		callers.Add(1)
 		go func() {
 			defer callers.Done()
-			combined.Settle()
+			combined.Settle("sess-b")
 		}()
 	}
 	callers.Wait()
@@ -484,11 +525,15 @@ func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 	if got := rightCount.Load(); got != 1 {
 		t.Fatalf("right settlement fired %d times, want 1", got)
 	}
+	// Each member is told the session the joined message was written to.
+	if left, right := leftSession.Load(), rightSession.Load(); left != "sess-b" || right != "sess-b" {
+		t.Fatalf("settled sessions = %v, %v, want sess-b for both", left, right)
+	}
 
 	// Nil and zero values are legitimate for ordinary user-authored queue
 	// items and must remain safe at unconditional settlement call sites.
-	(*FlushSettlement)(nil).Settle()
-	new(FlushSettlement).Settle()
+	(*FlushSettlement)(nil).Settle("")
+	new(FlushSettlement).Settle("")
 }
 
 // TestNextFlushSequence_SerializesWithDeferredEchoPersist pins the
@@ -626,7 +671,7 @@ func TestRemoveQueuedFlushItem_TakesBackOnlyWhatIsStillWaiting(t *testing.T) {
 		close(entered)
 		<-release
 	})
-	go router.tryFlushQueue("t1")
+	go router.tryFlushQueue("t1", "")
 	<-entered
 	if _, ok := router.RemoveQueuedFlushItem("t1", "queue:1"); ok {
 		t.Error("a claimed message was removed from under the dispatcher")

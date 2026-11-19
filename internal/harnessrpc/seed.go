@@ -70,15 +70,32 @@ type HarnessSeedThread struct {
 	RuntimeMode string `json:"runtimeMode,omitempty"`
 	// SessionRef pre-binds a provider session cursor (pair with a
 	// seeded ~/.claude session file to exercise resume flows).
-	SessionRef string            `json:"sessionRef,omitempty"`
-	Archived   bool              `json:"archived,omitempty"`
-	Turns      []HarnessSeedTurn `json:"turns,omitempty"`
+	SessionRef string `json:"sessionRef,omitempty"`
+	Archived   bool   `json:"archived,omitempty"`
+	// SpawnedBy is the title of a thread seeded earlier in this project.
+	// The thread is recorded as that thread's thread_spawn, through a
+	// finished spawn request row, owned by its spawner as a spawn with the
+	// default placement leaves it, so the sidebar lists no row for it.
+	SpawnedBy string `json:"spawnedBy,omitempty"`
+	// SpawnedByID is the id of a thread seeded before, in any project: the
+	// spawner of a thread an agent spawned into another project. At most
+	// one of SpawnedBy and SpawnedByID.
+	SpawnedByID string `json:"spawnedById,omitempty"`
+	// Assistant makes the thread an assistant's current thread, its title
+	// the name, with the record and home New Assistant makes and no opening
+	// message. The thread moves into the home, out of its project, and the
+	// assistant serves that project.
+	Assistant bool              `json:"assistant,omitempty"`
+	Turns     []HarnessSeedTurn `json:"turns,omitempty"`
 }
 
 // HarnessSeedTurn is one completed exchange: the user message plus the
 // assistant-side items that followed it.
 type HarnessSeedTurn struct {
-	UserText string            `json:"userText"`
+	UserText string `json:"userText"`
+	// UserMeta is the user message's meta, such as the origin of a
+	// message another agent wrote.
+	UserMeta json.RawMessage   `json:"userMeta,omitempty"`
 	Items    []HarnessSeedItem `json:"items,omitempty"`
 	// Repeat seeds this turn that many times in a row (default 1), each
 	// at its own turn index and minute. It is how a fixture describes a
@@ -288,12 +305,31 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 	}
 	out := HarnessSeedProjectResult{ProjectID: projectRow.ID, Path: projectRow.Path}
 
+	seededByTitle := map[string]string{}
 	for ti, threadSpec := range spec.Threads {
-		threadID, err := h.seedThread(projectRow.ID, threadSpec)
+		spawner := threadSpec.SpawnedByID
+		if threadSpec.SpawnedBy != "" && spawner != "" {
+			return out, fmt.Errorf("thread %d: spawnedBy and spawnedById are exclusive", ti+1)
+		}
+		if spawner != "" {
+			if _, err := database.GetThread(spawner); err != nil {
+				return out, fmt.Errorf("thread %d: spawnedById %q: %w", ti+1, spawner, err)
+			}
+		}
+		if threadSpec.SpawnedBy != "" {
+			var ok bool
+			if spawner, ok = seededByTitle[threadSpec.SpawnedBy]; !ok {
+				return out, fmt.Errorf("thread %d: spawnedBy %q names no thread seeded earlier in this project", ti+1, threadSpec.SpawnedBy)
+			}
+		}
+		threadID, err := h.seedThread(projectRow.ID, threadSpec, spawner)
 		if err != nil {
 			return out, fmt.Errorf("thread %d: %w", ti+1, err)
 		}
 		out.ThreadIDs = append(out.ThreadIDs, threadID)
+		if threadSpec.Title != "" {
+			seededByTitle[threadSpec.Title] = threadID
+		}
 	}
 	if spec.Workflows != nil {
 		if err := h.seedProjectWorkflowFiles(projectRow, *spec.Workflows); err != nil {
@@ -303,7 +339,9 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 	return out, nil
 }
 
-func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, error) {
+// seedThread creates one thread; spawnerID, when set, is the seeded thread
+// recorded as having spawned it.
+func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID string) (string, error) {
 	providerName := spec.Provider
 	if providerName == "" {
 		providerName = "claude"
@@ -345,10 +383,33 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, 
 	if err := h.seedHistory(thread.ID, spec.Turns); err != nil {
 		return thread.ID, err
 	}
-	if spec.SessionRef != "" || len(spec.Turns) > 0 {
-		// CreateThread announced an item-less row (IsDraft=true). The
-		// history and session cursor above went in behind the store, so a
-		// page that is already open would keep the draft row until reload.
+	if spawnerID != "" {
+		// The record a real thread_spawn leaves once it has answered: a
+		// finished local spawn request from the spawner naming this thread.
+		now := h.config.Now().UnixMilli()
+		if err := h.store().InsertThreadRequest(store.ThreadRequest{
+			Token: uuid.NewString(), CallerThreadID: spawnerID, Kind: store.ThreadRequestSpawn,
+			TargetThreadID: thread.ID, State: store.ThreadRequestFinished,
+			Answer: []byte("seeded"), AnswerKind: store.ThreadAnswerFinal,
+			SettledAt: now, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return thread.ID, fmt.Errorf("record spawner: %w", err)
+		}
+		// Owned, as a spawn with the default placement leaves it.
+		if _, err := h.store().SetThreadPlacement([]string{thread.ID}, store.PlacementOwned); err != nil {
+			return thread.ID, fmt.Errorf("own by spawner: %w", err)
+		}
+	}
+	if spec.Assistant {
+		if _, err := h.config.Host.MakeAssistant(thread.ID); err != nil {
+			return thread.ID, fmt.Errorf("make assistant: %w", err)
+		}
+	}
+	if spec.SessionRef != "" || len(spec.Turns) > 0 || spawnerID != "" || spec.Assistant {
+		// CreateThread announced an item-less row (IsDraft=true) with no
+		// spawner. The history, session cursor and spawn record above went
+		// in behind the store, so a page that is already open would keep
+		// the first row until reload.
 		h.config.Host.BroadcastThreadRow(thread.ID)
 	}
 	if spec.Archived {
@@ -430,6 +491,7 @@ func appendSeedTurn(batch *store.ThreadHistoryBatch, threadID string, turnIndex 
 		Kind:      "user_text",
 		Role:      "user",
 		Summary:   spec.UserText,
+		Meta:      string(spec.UserMeta),
 		CreatedAt: at,
 		UpdatedAt: at,
 	}})
@@ -561,6 +623,38 @@ func appendSeedPad(out []byte, side string, bytes int) []byte {
 // DB rows. Recorded bundles survive: they are captured artifacts, not
 // test state. The caller reloads the page afterwards; DB-derived
 // frontend state rebuilds from zero.
+// stopPasses bounds how many times stopAllSessions stops the sessions the
+// previous stops' work started. Each pass follows one hop of requests from
+// a stopped thread back to the thread that asked; a chain longer than this
+// is a defect, reported rather than waited out.
+const stopPasses = 5
+
+// stopAllSessions stops every thread's session, then the sessions that work
+// those stops set off has started: a stop settles the requests other threads
+// made of the stopped one, and each answer wakes its caller, which starts
+// that caller's session again. stopFailed decides what one failed stop does;
+// a non-nil return ends the stop.
+func (h *Harness) stopAllSessions(threads []store.Thread, stopFailed func(threadID string, err error) error) error {
+	ids := make([]string, 0, len(threads))
+	for _, t := range threads {
+		ids = append(ids, t.ID)
+	}
+	for pass := 0; len(ids) > 0; pass++ {
+		if pass == stopPasses {
+			return fmt.Errorf("sessions still starting after %d stop passes: %v", stopPasses, ids)
+		}
+		for _, threadID := range ids {
+			if err := h.config.Host.StopSession(threadID); err != nil {
+				if err := stopFailed(threadID, err); err != nil {
+					return err
+				}
+			}
+		}
+		ids = h.config.Host.AwaitSessionEndWork()
+	}
+	return nil
+}
+
 func (h *Harness) HarnessReset() (err error) {
 	// See Harness.mutate: two resets would both list the same projects and
 	// double-cascade them, and a concurrent seed would leave a project row
@@ -628,12 +722,13 @@ func (h *Harness) HarnessReset() (err error) {
 	if err != nil {
 		return fmt.Errorf("list threads: %w", err)
 	}
-	for _, t := range threads {
-		if err := h.config.Host.StopSession(t.ID); err != nil {
-			// Keep going: a half-dead session must not wedge the reset;
-			// the delete cascade below is the authoritative cleanup.
-			log.Printf("harness: reset: stop session %s: %v", t.ID, err)
-		}
+	if err := h.stopAllSessions(threads, func(threadID string, err error) error {
+		// Keep going: a half-dead session must not wedge the reset;
+		// the delete cascade below is the authoritative cleanup.
+		log.Printf("harness: reset: stop session %s: %v", threadID, err)
+		return nil
+	}); err != nil {
+		return err
 	}
 	if err := h.config.Host.RecoverCrashedTurns(); err != nil {
 		return fmt.Errorf("settle in-flight turns: %w", err)
@@ -669,6 +764,27 @@ func (h *Harness) HarnessReset() (err error) {
 		}
 		if err := h.config.Host.DeleteProject(p.Project.ID); err != nil {
 			return fmt.Errorf("delete project %s: %w", p.Project.ID, err)
+		}
+	}
+	// Threads outside every project (an assistant's own, past and helper
+	// threads, a terminal thread) are no project's, so the cascade above
+	// leaves them. An assistant's delete takes its past threads, helpers
+	// and home with it, so assistants go first and a thread already gone
+	// is passed over.
+	outside, err := database.ThreadIDsOutsideProjects()
+	if err != nil {
+		return err
+	}
+	for _, id := range outside {
+		exists, err := database.ThreadExists(id)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err := h.config.Host.DeleteThread(id); err != nil {
+			return fmt.Errorf("delete thread %s: %w", id, err)
 		}
 	}
 	// Persisted UI view state names entity ids — the workflows overlay
@@ -741,6 +857,13 @@ func (h *Harness) HarnessReset() (err error) {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove workflow harness state %q: %w", dir, err)
 		}
+	}
+	// The user and project memory scopes outlive every thread: left in
+	// place, one test's facts would reach the next test's sessions, and a
+	// project folder's .project-path would claim the key of a project the
+	// next test seeds at the same path.
+	if err := os.RemoveAll(filepath.Join(h.config.DataDir, "memory")); err != nil {
+		return fmt.Errorf("remove the memory scopes: %w", err)
 	}
 	// Provider trees under the harness-owned home: seeded providerHome
 	// fixtures AND the transcripts mock providers wrote during the test

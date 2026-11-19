@@ -30,17 +30,23 @@ func workflowAgentRunView(item store.WorkItem) RunView {
 }
 
 // RunStatus returns the persisted single-run projection authorized by the
-// caller scope carried on ctx.
+// caller scope carried on ctx, with the watch cursor it was read after.
 func (s *Service) RunStatus(ctx context.Context, itemID string) (RunView, error) {
 	scope, err := requireCallerScope(ctx)
 	if err != nil {
 		return RunView{}, err
 	}
+	cursor := s.watch.Head()
 	item, err := s.scopedRun(scope, itemID, "workflow run status", true)
 	if err != nil {
 		return RunView{}, err
 	}
-	return s.runDetail(ctx, item)
+	view, err := s.runDetail(ctx, item)
+	if err != nil {
+		return RunView{}, err
+	}
+	view.WatchCursor = cursor
+	return view, nil
 }
 
 func (s *Service) runDetail(ctx context.Context, summary store.WorkItem) (RunView, error) {

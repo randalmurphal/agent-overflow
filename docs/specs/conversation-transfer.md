@@ -67,7 +67,11 @@ A transfer contains native resumable files, AO conversation metadata and history
 attachment metadata/bytes, and the workspace changes selected by the user.
 History rendering caches can be recomputed. Credentials, provider accounts,
 host settings, active processes and approval handles never travel with a thread.
-The destination chooses its own account and execution configuration. Before it
+The destination chooses its own account and execution configuration. A thread's
+spawn instructions travel with it; a destination whose transfer offer does not
+say it carries them is refused before preparation with a message to update it
+first. A sub-thread level carried from a paired computer does not travel: the
+transferred thread is no longer anyone's delegate. Before it
 acknowledges preparation, it checks the selected provider binary and fresh native
 account availability. A failed check keeps the source unretired; fixing the
 account and retrying finishes the same accepted operation. Claude credential
@@ -83,7 +87,11 @@ Validate repository identity and destination workspace before mutation. Preserve
 historical text; change only structured workspace/file references understood by
 the owning provider adapter. Snapshot at a quiescent boundary under the existing
 thread-operation lock. An idle provider process must relinquish the session
-before a move can change execution ownership.
+before a move can change execution ownership. Relinquishing ends the recurring
+jobs a Claude session holds (`CronCreate`, claude-wire.md §E11), so they never
+refuse a transfer; the dialog names them before the user commits. A pending
+ScheduleWakeup or one-shot job is a turn the session still owes and refuses the
+transfer until it fires.
 
 Archives stream with bounded buffers and explicit file/total limits. Extraction
 refuses absolute paths, traversal, duplicate members, and escaping links. A

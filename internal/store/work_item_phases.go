@@ -96,7 +96,7 @@ type WorkItemPhaseProvenance struct {
 	GateTrace json.RawMessage
 	// ParkCause is why the engine parked this attempt. It is the one envelope-
 	// adjacent field this projection carries, and it earns the bytes: without
-	// it `ao run status` can name a park reason but never its cause.
+	// it `run_status` can name a park reason but never its cause.
 	ParkCause string
 }
 

@@ -45,6 +45,9 @@ in `MessageTimeline`. Generic measurement and windowing belong to
   duplicate entity keys remain reportable defects.
 - New row families need settled, streaming, error, expansion, and remount
   coverage when those states apply.
+- AO tool rows present through `aoTools.ts` (the header table) and
+  `aoToolResults.ts` (one reply decoder per server); the contract is
+  [How calls surface in the timeline](../../../../../docs/specs/agent-thread-tools.md#how-calls-surface-in-the-timeline).
 
 Activity runs are a single transcript row with one summary/header owner. Their
 collapse and height changes must preserve reader position and transfer tail

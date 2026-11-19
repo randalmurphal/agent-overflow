@@ -214,6 +214,7 @@ func (s *Service) recoverWorkflowUsageAttention(recovery store.WorkflowProviderU
 }
 
 func (s *Service) surfaceRecoveredWorkflowUsageAttention(itemID string, claim store.WorkflowProviderUsageAttentionClaim) UsageAttentionSurface {
+	restAt := s.watch.Head()
 	item, err := s.deps.Store.GetWorkItem(itemID)
 	if err != nil {
 		s.deps.Logf("workflow usage attention boot recovery: reload candidate %s: %v", itemID, err)
@@ -241,7 +242,7 @@ func (s *Service) surfaceRecoveredWorkflowUsageAttention(itemID string, claim st
 	if item.ParentItemID != "" {
 		return s.surfaceResolvedDescendantPark(item, chain, usage)
 	}
-	return s.surfaceRootRestingWorkflowItem(item, usage)
+	return s.surfaceRootRestingWorkflowItem(item, usage, restAt)
 }
 
 func (s *Service) ReleaseUsageAttentionForThread(threadID string) {

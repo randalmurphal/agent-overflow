@@ -977,6 +977,34 @@ func TestRepositorySSHIdentityThroughTheFake(t *testing.T) {
 	}
 }
 
+// TestGitLabReplyLandsInTheThread drives the app's GitLab reply against
+// the discussion note route: the note joins the thread the next read
+// returns.
+func TestGitLabReplyLandsInTheThread(t *testing.T) {
+	fixture := gitlabFixture()
+	fixture.Repos[0].Pulls[0].Threads[0].ID = strings.Repeat("ab", 20)
+	r := newRig(t, fixture)
+	mr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
+	if err := r.core.ReplyToThread(t.Context(), mr, strings.Repeat("ab", 20), 0, "Thanks, fixed"); err != nil {
+		t.Fatalf("ReplyToThread: %v", err)
+	}
+	read, err := r.core.ReadPR(t.Context(), mr, gitops.PRReadParts{Threads: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR: %v", err)
+	}
+	for _, thread := range read.Threads {
+		if thread.ID != strings.Repeat("ab", 20) {
+			continue
+		}
+		last := thread.Comments[len(thread.Comments)-1]
+		if len(thread.Comments) != 3 || last.Body != "Thanks, fixed" || last.AuthorLogin != "ao-viewer" {
+			t.Fatalf("thread after reply = %+v", thread.Comments)
+		}
+		return
+	}
+	t.Fatalf("thread missing from %+v", read.Threads)
+}
+
 // mergeRead reads ref's detail, events and threads through the app's
 // ReadPR, failing the test on an error.
 func mergeRead(t *testing.T, r *rig, ref gitops.PRReference) gitops.PRRead {

@@ -19,12 +19,15 @@ var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]*`)
 
 // resultVocabulary is the words the guide quotes that are values a RESULT
 // carries rather than parameters or enums of a schema: request states,
-// answer kinds, call outcomes and the two search result flags. Every other
-// backticked word must be a tool name, a parameter or an enum value.
+// answer kinds, call outcomes, the two search result flags, a loop or
+// watch's last outcome and a watch's undelivered output, what a held
+// request waits on and an older paired computer's unreported rest. Every
+// other backticked word must be a tool name, a parameter or an enum value.
 var resultVocabulary = []string{
 	"errors", "indexing", "last_message", "self",
 	"reply", "final",
 	"backgrounded", "blocked", "unconfirmed",
+	"last_outcome", "last_output", "waiting_on", "rest_unreported",
 }
 
 func schemaVocabulary(t *testing.T, shape Shape) (names, properties, enums []string) {
@@ -59,7 +62,9 @@ func enumValues(raw any) []string {
 // that shape's schemas. A parameter dropped from a schema and left in the
 // text would send an agent to a tool call that cannot be made.
 func TestInstructionsOnlyNameThingsThatExist(t *testing.T) {
-	for _, shape := range []Shape{soloShape(), pairedShape()} {
+	atLimit := soloShape()
+	atLimit.Spawn = SpawnShape{Level: 1, Limit: 1}
+	for _, shape := range []Shape{soloShape(), pairedShape(), atLimit} {
 		names, properties, enums := schemaVocabulary(t, shape)
 		text := instructionsFor(shape)
 		for _, match := range backticked.FindAllStringSubmatch(text, -1) {
@@ -114,15 +119,114 @@ func TestPairedInstructionsCarryTheOtherComputersParagraph(t *testing.T) {
 	}
 }
 
-// TestInstructionsKeepTheDefaultsParagraphVerbatim: amendment 11's wording
-// is the point of the paragraph. Agents given a choice deliberate over it,
-// and this is the text that forbids the deliberation and names read-only
-// as the exception that blocks commands, not the cautious default.
-func TestInstructionsKeepTheDefaultsParagraphVerbatim(t *testing.T) {
-	want := "Defaults. A spawn inherits your provider, model, effort, and runtime mode. Keep them unless the task needs something else, such as a different provider or model for a second opinion. `read-only` is the exception, not the safe choice: it blocks every shell command on Claude Code, so no git, build, test or grep, and sandboxes commands on Codex. Choose it only when the work needs nothing but reading files; a review that runs tests, a thread that commits or a thread that searches with a command needs the inherited mode. A read-only thread that turns out to need a command fails at it and tells you so. `thread_ask` is always read-only and needs no choice. `thread_options` lists what a computer offers when you need something you do not have."
+// TestTheDefaultsParagraphKeepsInheritingAndTheReadOnlyWarning: inheriting
+// is still the default, so an agent does not deliberate over a choice the
+// task does not need, and read-only is still named as the exception that
+// blocks commands, not the cautious default.
+func TestTheDefaultsParagraphKeepsInheritingAndTheReadOnlyWarning(t *testing.T) {
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
-		if !strings.Contains(instructionsFor(shape), want) {
-			t.Errorf("paired=%v: the Defaults paragraph is not the amendment 11 text", shape.Paired())
+		text := instructionsDefaults(shape)
+		for _, want := range []string{
+			"Defaults. A spawn inherits your provider, model, effort, and runtime mode; keep them unless the task suits another agent.",
+			"`read-only` is the exception, not the safe choice:",
+			"Choose it only when the work needs nothing but reading files",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("paired=%v: the Defaults paragraph is missing %q:\n%s", shape.Paired(), want, text)
+			}
+		}
+	}
+}
+
+// The profiles this computer can run are named in the guide by name, with
+// how to spawn as one; their use-for lines stay in thread_options.
+func TestTheDefaultsParagraphNamesTheProfilesThisComputerRuns(t *testing.T) {
+	shape := soloShape()
+	shape.Spawn = SpawnShape{Level: 0, Limit: 2, Providers: []string{"claude", "codex"}, Profiles: []string{"Opus", "Sol"}}
+	text := instructionsFor(shape)
+	for _, want := range []string{"pass `profile` with one of Opus and Sol", "`thread_options` lists each one's"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the guide is missing %q", want)
+		}
+	}
+	shape.Spawn.Profiles = nil
+	if text := instructionsFor(shape); strings.Contains(text, "`profile`") {
+		t.Error("a computer that runs no profile still sends the agent to profile")
+	}
+}
+
+// A computer with one provider never suggests another, and names what
+// read-only does on its own provider alone; a paired one may offer the
+// other, so it says where to find it.
+func TestTheGuideReadsCorrectlyWithOneProvider(t *testing.T) {
+	both := soloShape()
+	both.Spawn = SpawnShape{Limit: 2, Providers: []string{"claude", "codex"}}
+	if text := instructionsFor(both); !strings.Contains(text, "another provider or model suits the work better") {
+		t.Error("with both providers the guide does not say another provider may suit the work")
+	}
+	for _, only := range []string{"claude", "codex"} {
+		shape := soloShape()
+		shape.Spawn = SpawnShape{Limit: 2, Providers: []string{only}}
+		text := instructionsFor(shape)
+		for _, forbidden := range []string{"another provider", "provider or model", "on Codex", "on Claude Code"} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s only: the guide says %q", only, forbidden)
+			}
+		}
+		if !strings.Contains(text, "another model suits the work better") {
+			t.Errorf("%s only: the guide does not say another model may suit the work", only)
+		}
+		paired := pairedShape()
+		paired.Spawn = shape.Spawn
+		if text := instructionsFor(paired); !strings.Contains(text, "a provider another computer offers") {
+			t.Errorf("%s only, paired: the guide does not say another computer may offer a provider", only)
+		}
+	}
+}
+
+// A session at the sub-thread limit has no thread_spawn, and its guide says
+// nothing about spawning: no Defaults paragraph, a Starting paragraph that
+// says why, no Waiting sentences on when a spawn ends, and no backticked
+// name of a tool it lacks.
+// One level is counted in the singular, as the limit of 1 makes every
+// worker's guide say it.
+func TestTheGuideCountsOneLevelInTheSingular(t *testing.T) {
+	shape := soloShape()
+	shape.Spawn = SpawnShape{Level: 1, Limit: 1, Providers: []string{"codex"}}
+	if text := instructionsFor(shape); !strings.Contains(text, "You are 1 level of sub-threads below the thread the user talks to, the deepest allowed") {
+		t.Fatalf("the guide at level 1 reads %q", text)
+	}
+}
+
+// spawnEnds opens the Waiting paragraph's sentences on when a spawn ends,
+// which only a session that can spawn reads.
+const spawnEnds = "A thread you spawned, and a send to it, end only when it has nothing left running"
+
+func TestASessionAtTheLimitHasNoSpawnAndReadsNoWordOfIt(t *testing.T) {
+	for _, base := range []Shape{soloShape(), pairedShape()} {
+		shape := base
+		shape.Spawn = SpawnShape{Level: 2, Limit: 2, Providers: []string{"claude"}}
+		if _, ok := toolsByName(t, shape)["thread_spawn"]; ok {
+			t.Fatalf("paired=%v: a session at the limit lists thread_spawn", shape.Paired())
+		}
+		text := instructionsFor(shape)
+		for _, forbidden := range []string{"`thread_spawn`", "Defaults.", "`profile`", "`instructions`", "`from_thread`", spawnEnds} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("paired=%v: the guide at the limit says %q", shape.Paired(), forbidden)
+			}
+		}
+		if !strings.Contains(text, "You are 2 levels of sub-threads below the thread the user talks to, the deepest allowed") {
+			t.Errorf("paired=%v: the guide at the limit does not say why it cannot spawn", shape.Paired())
+		}
+		shape.Spawn.Level = 1
+		if _, ok := toolsByName(t, shape)["thread_spawn"]; !ok {
+			t.Fatalf("paired=%v: a session one level above the limit has no thread_spawn", shape.Paired())
+		}
+		if !strings.Contains(instructionsFor(shape), "A thread you spawn is at the deepest level of sub-threads allowed") {
+			t.Errorf("paired=%v: the spawner of the last level is not told its workers cannot spawn", shape.Paired())
+		}
+		if !strings.Contains(instructionsFor(shape), spawnEnds) {
+			t.Errorf("paired=%v: a session that can spawn is not told when a spawn ends", shape.Paired())
 		}
 	}
 }
@@ -132,8 +236,8 @@ func TestInstructionsKeepTheDefaultsParagraphVerbatim(t *testing.T) {
 func TestInstructionsAreParagraphs(t *testing.T) {
 	solo := strings.Split(instructionsFor(soloShape()), "\n\n")
 	paired := strings.Split(instructionsFor(pairedShape()), "\n\n")
-	if len(solo) != 9 {
-		t.Errorf("single-computer instructions have %d paragraphs, want 9", len(solo))
+	if len(solo) != 10 {
+		t.Errorf("single-computer instructions have %d paragraphs, want 10", len(solo))
 	}
 	if len(paired) != len(solo)+1 {
 		t.Errorf("paired instructions have %d paragraphs, want one more than %d", len(paired), len(solo))
@@ -171,7 +275,10 @@ func jsLength(s string) int {
 // sections at the end silently stop reaching the model.
 func TestInstructionsFitClaudesMCPDescriptionCap(t *testing.T) {
 	limit := provider.ClaudeMCPDescriptionLengthLimit
-	for _, shape := range []Shape{soloShape(), pairedShape()} {
+	withProfiles := pairedShape()
+	withProfiles.Spawn = SpawnShape{Level: 1, Limit: 2, Providers: []string{"claude", "codex"},
+		Profiles: []string{"Astra", "Fable", "Sol", "Opus", "Sonnet", "Terra", "Haiku", "Luna"}}
+	for _, shape := range []Shape{soloShape(), pairedShape(), withProfiles} {
 		text := New(newFakeApp("laptop")).Instructions(shape)
 		t.Logf("paired=%v: guide is %d characters", shape.Paired(), jsLength(text))
 		if n := jsLength(text); n > limit {

@@ -344,14 +344,16 @@ func newAppWithReportedTerminalExitsAt(t *testing.T) (*App, <-chan string, strin
 
 // execOnStore runs statement on the database at path through its own
 // connection, as the tests that inject a failed delete do.
-func execOnStore(t *testing.T, path, statement string) {
+func execOnStore(t *testing.T, path, statement string, args ...any) {
 	t.Helper()
-	raw, err := sql.Open("sqlite", path)
+	// The app may hold the write lock when this runs; wait it out as the
+	// store's own connections do.
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer raw.Close()
-	if _, err := raw.Exec(statement); err != nil {
+	if _, err := raw.Exec(statement, args...); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -7,7 +7,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 func TestMarshalReturnsEmptyForZeroInputs(t *testing.T) {
@@ -404,6 +406,59 @@ func TestMarshalProjectsAttachmentKind(t *testing.T) {
 	}
 }
 
+func TestIsAgentMessage(t *testing.T) {
+	for _, tc := range []struct {
+		meta Meta
+		want bool
+	}{
+		{Meta{}, false},
+		{Meta{Origin: "external-queue"}, false},
+		{Meta{Origin: "peer-session"}, false},
+		{Meta{Origin: agentmeta.OriginAgentThread}, true},
+		{Meta{Origin: agentmeta.OriginAgentWake}, true},
+		// The person's composer message Claude joined after an agent's.
+		{Meta{Origin: agentmeta.OriginAgentWake, ExpandComposerCommands: true}, false},
+		{Meta{Origin: agentmeta.OriginAgentThread, ExpandComposerCommands: true}, false},
+	} {
+		if got := agentmeta.IsAgentMessage(tc.meta.Agent()); got != tc.want {
+			t.Errorf("IsAgentMessage(%+v) = %v, want %v", tc.meta, got, tc.want)
+		}
+	}
+}
+
+// The attribution part of a row's meta (agentmeta.Meta) is the fields of
+// Meta of the same names, types and JSON keys, and Agent copies each: a
+// reader of either decodes the same attribution from the same row.
+func TestAgentIsTheAttributionPartOfMeta(t *testing.T) {
+	agentType, metaType := reflect.TypeFor[agentmeta.Meta](), reflect.TypeFor[Meta]()
+	var meta Meta
+	for i := range agentType.NumField() {
+		field := agentType.Field(i)
+		own, ok := metaType.FieldByName(field.Name)
+		if !ok || own.Type != field.Type || own.Tag.Get("json") != field.Tag.Get("json") {
+			t.Fatalf("agentmeta.Meta.%s %s %q has no twin in Meta (%+v)", field.Name, field.Type, field.Tag.Get("json"), own)
+		}
+		reflect.ValueOf(&meta).Elem().FieldByIndex(own.Index).Set(nonZeroValue(t, field.Type))
+	}
+	agent := meta.Agent()
+	for i := range agentType.NumField() {
+		if reflect.ValueOf(agent).Field(i).IsZero() {
+			t.Errorf("Agent does not copy %s", agentType.Field(i).Name)
+		}
+	}
+	encoded, err := MarshalMeta(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded agentmeta.Meta
+	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded, agent) {
+		t.Fatalf("a row's meta decodes as %+v, Agent reads %+v", decoded, agent)
+	}
+}
+
 func TestProjectionCarriesBoundedShellMetadata(t *testing.T) {
 	t.Parallel()
 	shell := store.AttachmentShell{
@@ -442,5 +497,70 @@ func TestProjectionCarriesBoundedShellMetadata(t *testing.T) {
 	decoded, err := FromItem(store.Item{Meta: encoded})
 	if err != nil || decoded.Attachments[0].Shell == nil || decoded.Attachments[0].Shell.Command != "ls" {
 		t.Fatalf("round trip: %+v %v", decoded.Attachments, err)
+	}
+}
+
+// A row is a tick only when every message in it is a wake: a person's
+// message joined to one, which only the recorded parts name, makes it not.
+func TestIsTickNeedsEveryMemberToBeAWake(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		meta Meta
+		want bool
+	}{
+		{"a wake", Meta{SendID: "agent-wake:w1:1"}, true},
+		{"a person's", Meta{}, false},
+		{"joined wakes", Meta{JoinedSendIDs: []string{"agent-wake:w1:1", "agent-wake:w2:1"}}, true},
+		{"a person joined to a wake", Meta{
+			JoinedSendIDs: []string{"agent-wake:w1:1"},
+			JoinedParts:   []agentmeta.JoinedPart{{Bytes: 5}, {SendID: "agent-wake:w1:1", Bytes: 5}},
+		}, false},
+		{"a request joined to a wake", Meta{JoinedSendIDs: []string{"agent-wake:w1:1", "thread-request:t"}}, false},
+	} {
+		if got := IsTick(tc.meta); got != tc.want {
+			t.Errorf("%s: IsTick = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if AllTicks(nil) {
+		t.Error("AllTicks(nil) = true, want false: no message is no tick")
+	}
+}
+
+// A client receives a row's meta with each message's facts as
+// agentmeta.Describe read them, a report's descriptor, and every other key
+// as stored; a row that is the person's is sent as it is.
+func TestProjectRowMetaKeepsWhatItDoesNotDescribe(t *testing.T) {
+	message := built(t)(Report(agentmeta.ReportLoop, Reporter{Label: "l"}, "Loop fired.", "note: \"x\"", "x"))
+	attribution := message.Attribution()
+	stored, err := MarshalMeta(Meta{Origin: attribution.Origin, OriginWake: attribution.Wake, SendID: "agent-wake:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err = MergeProviderIDs(stored, "provider-1", "parent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := ProjectRowMeta(message.Text(), stored)
+	decoded, err := FromItem(store.Item{Meta: served})
+	if err != nil || ReadProviderItemID(served) != "provider-1" || ReadProviderParentUUID(served) != "parent-1" ||
+		!reflect.DeepEqual(decoded.OriginWake.Facts, attribution.Wake.Facts) || decoded.OriginWake.Report == nil ||
+		decoded.OriginWake.Report.Sender != "l" || decoded.SendID != "agent-wake:1" {
+		t.Fatalf("a report whose facts hold served as %s", served)
+	}
+	if got := ProjectRowMeta("mine", `{"sendId":"s","provider_item_id":"p"}`); got != `{"sendId":"s","provider_item_id":"p"}` {
+		t.Fatalf("the person's row changed: %s", got)
+	}
+	edited := ProjectRowMeta(message.Text()+"!", stored)
+	decoded, err = FromItem(store.Item{Meta: edited})
+	if err != nil || ReadProviderItemID(edited) != "provider-1" || ReadProviderParentUUID(edited) != "parent-1" ||
+		decoded.OriginWake.Facts.Form != threadtools.FormWhole || decoded.SendID != "agent-wake:1" {
+		t.Fatalf("projected %s", edited)
+	}
+	// main's request gets the facts its text holds.
+	main := "Do it.\n\n---\nAgent request from thread \"L\" (t-l).\nIt is not waiting for an answer. If it should hear something back, call thread_reply with token a, once: the reply reaches it as a message, and it sees only your reply text."
+	projected := ProjectRowMeta(main, `{"origin":"agent-thread","originThread":{"threadId":"t-l","title":"L","token":"a"},"sendId":"thread-request:a"}`)
+	decoded, err = FromItem(store.Item{Meta: projected})
+	if err != nil || decoded.OriginThread.Facts == nil || decoded.OriginThread.Facts.Form != threadtools.FormRequest || decoded.OriginThread.Facts.Headline != "Do it." {
+		t.Fatalf("main's request projected %s", projected)
 	}
 }

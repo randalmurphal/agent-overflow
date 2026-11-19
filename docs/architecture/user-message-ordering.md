@@ -79,8 +79,8 @@ preserve the thread's draft and stamp `usermessage.Meta.Origin` =
 `agent-thread` with the sending thread's identity, on the immediate row and on
 the queued payload alike, so a message the app wrote on an agent's behalf is
 never mistaken for one a person typed. One wake can answer several requests;
-it is admitted under the oldest request's id, and when it speaks for several
-threads its origin is `app` with no single sending thread.
+it is admitted under the oldest request's id and attributed to that request's
+thread, and when it speaks for several threads its text names them all.
 
 ## Confirmation and placement
 
@@ -105,6 +105,40 @@ failure on any member sends nothing and requeues the whole group in order.
 Codex and claude-tui keep one message per queued item. See
 `internal/app/app_flush_dispatch_join.go` and
 [claude-wire.md](../references/claude-wire.md).
+
+A queued message's durable row is what says it is still wanted. Withdrawing
+it deletes the row; the dispatch reads its group's rows under the thread's
+mutation lock right before writing the group (`commitFlushGroup`), drops the
+messages whose rows are gone, and marks the rest as being written. A
+withdrawal under the same lock either removes the message before that read or
+finds it dispatched, never both. The row stays until the provider write
+settles, so a crash at any point before it leaves the message to the boot
+sweep. A failed write's requeue and a session end's restore keep only
+messages whose rows stand. A message is rowless (`QueuedFlushItem.NoRow`),
+and passes those checks, only when its write is known to have retired its
+row and the row is not written again, or it had none: the write records
+that on its pending send for each queued message it carried
+(`FlushQueueMember`, `NoteFlushRowRetired`), and an interrupted Codex
+message's resend or a requeued send that still has its timeline row
+carries it. An unconfirmed send a failed restore requeues gets its row
+again (`requeueUnconfirmedFlushItemsLocked`). Any other message whose row
+is gone was withdrawn, and is dropped; an answer keeps its row until its
+echo. A joined message decides for each message it carries: a withdrawn
+one is cut out of its text and the rest kept, and a requeue puts each one
+that still has its row back as its own queue item, the rest as one, so a
+later withdrawal takes it alone; the dispatch joins them again. One whose
+parts do not describe its text, or whose row does not decode, cannot be cut
+where either has to: it goes to the composer whole, as any join that does
+not split, and is not queued or sent again (`withoutQueueMembers`,
+`writeFlushDraft`); a failed composer write is a thread error. A dropped
+copy takes with it the timeline row an earlier dispatch left
+(`QueuedFlushItem.StaleUserItemID`). Every handoff carries the dispatch generation it was made in
+(`QueuedFlushItem.DispatchGeneration`): one a recovery overtook goes where
+that recovery took the rest of the queue, unless a Stop's teardown or a
+revert dropped its generation by the time that restore holds the mutation
+lock the drops take, and then it is dropped too, rowless messages included
+(`FlushGenerationDropped`). Neither goes to a replacement session. A
+claimed thread's dispatch waits for the delete's decision holding its batch.
 
 A quiet row is persisted without a `provider:item_event`, so a connected
 client keeps showing the message above its composer until the echo emits one.
@@ -155,14 +189,20 @@ teardown takes the registry's unconfirmed sends before the triage cleanup
 sweeps it (`settleQueueForTeardown`): a death, a removed worktree or a
 reconnect returns them to the composer, and a Stop drops them with the queue,
 deleting their rows (`queue_restored`, reason `dropped`). A send the provider
-did consume is confirmed instead.
+did consume is confirmed instead. Only the person's text ever returns to the
+composer: what the app wrote in a send (an answer, a reminder, a completion, a
+wake, an outside send) goes back to its owner or is recorded as not delivered
+(`agentPartsNotTakenIn`), and a joined send gives up those members by the
+parts its dispatch recorded (`agentmeta.JoinedPart`).
 A crash runs no teardown: the boot restore (`restoreDurableFlushQueueAtBoot`)
 takes back each main-timeline user row still marked `pendingFlush` that is
-residue, in its thread's last turn and written by that thread, and returns its
-text to the composer whole. A queue row that survived beside it as a copy of
-a message it carries adds no text: a joined row cannot be split back into its
-members, so it is the unit. A queue row whose message a row the provider
-confirmed carries was delivered and is dropped. A dispatch deletes the queue
+residue, in its thread's last turn and written by that thread, retires it and
+returns the person's text in it to the composer (`unconfirmedRowAtBoot`). A
+joined row that carries the app's messages splits by its recorded parts, and
+one whose parts no longer describe its text is restored whole. A queue row
+that survived beside it as a copy of a message it carries adds no text: the
+row is the unit of the person's text. A queue row whose message a row the
+provider confirmed carries was delivered and is dropped. A dispatch deletes the queue
 rows of every message it carried in one statement. A marked row a
 later turn follows is history a later session ran with: the boot leaves it
 and the composer alone, and the store refuses to retire it

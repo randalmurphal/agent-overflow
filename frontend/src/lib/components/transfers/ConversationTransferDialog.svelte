@@ -18,8 +18,15 @@
   let { request }: { request: TransferRequest } = $props();
   let computers = $derived(getAttachedBackends().filter((entry) => entry.id !== request.source));
   let destination = $state<BackendKey>(untrack(() => request.destination ?? computers.find((entry) => backendReachable(entry.id) && supportsConversationTransfer(entry.id) && hasScope('threads:operate', entry.id))?.id ?? ''));
-  let kind = $state<TransferKind>(untrack(() => request.kind ?? 'move'));
-  let includeWorkspace = $state(untrack(() => request.includeWorkspace ?? true));
+  // An assistant stays on its computer with its home, so its current
+  // thread is only copied; the source refuses a move as well.
+  let moveRefused = $derived(request.standingAgent ?? Boolean(request.thread.agentId));
+  let chosen = $state<TransferKind>(untrack(() => request.kind ?? 'move'));
+  let kind = $derived<TransferKind>(moveRefused ? 'copy' : chosen);
+  // A thread outside every project runs in its assistant's home, which
+  // stays on this computer: there is no workspace to carry.
+  let hasWorkspace = $derived(Boolean(request.thread.projectId));
+  let includeWorkspace = $state(untrack(() => Boolean(request.thread.projectId) && (request.includeWorkspace ?? true)));
   let projectID = $state(untrack(() => request.projectID ?? sibling(destination)));
   let adding = $state(false);
   let projects = $derived(getProjects().filter((entry) => projectBackend(entry.project.id) === destination));
@@ -52,14 +59,30 @@
     {:else}
       <fieldset class="grid grid-cols-2 gap-2" disabled={locked}>
         <legend class="sr-only">Transfer type</legend>
-        {#each ['move', 'copy'] as option}
-          <label class={['flex cursor-pointer items-center gap-2 rounded-[var(--radius-field)] border px-3 py-2', kind === option ? 'border-accent bg-accent/10' : 'border-border-subtle', locked ? 'cursor-default' : ''].join(' ')}>
-            <input type="radio" name="transfer-kind" value={option} bind:group={kind} class="accent-accent" />
+        {#each ['move', 'copy'] as const as option}
+          {@const refused = option === 'move' && moveRefused}
+          <label class={['flex cursor-pointer items-center gap-2 rounded-[var(--radius-field)] border px-3 py-2', kind === option ? 'border-accent bg-accent/10' : 'border-border-subtle', locked || refused ? 'cursor-default' : '', refused ? 'text-fg-muted' : ''].join(' ')}>
+            <input type="radio" name="transfer-kind" value={option} checked={kind === option} disabled={refused} onchange={() => { chosen = option; }} class="accent-accent" />
             {option === 'move' ? 'Move' : 'Copy / fork'}
           </label>
         {/each}
       </fieldset>
       <p class="text-xs text-fg-muted">{kind === 'move' ? 'Continue the same conversation on another computer. It stays in your sidebar and follows its new home.' : 'Create an independent conversation on another computer. Keep using the original here.'}</p>
+      {#if request.recurringJobs?.length}
+        <p class="break-words text-xs text-warning" data-testid="transfer-recurring-jobs">
+          The transfer stops this conversation’s running session, which ends {request.recurringJobs.length === 1 ? 'its recurring job' : `its ${request.recurringJobs.length} recurring jobs`}: {request.recurringJobs.map((job) => `${job.cron} (${job.id})`).join(', ')}.
+        </p>
+      {:else if request.recurringJobsError}
+        <p class="break-words text-xs text-warning">Could not check this conversation’s recurring jobs: {request.recurringJobsError}</p>
+      {/if}
+      {#if moveRefused}
+        <p class="text-xs text-warning" data-testid="transfer-standing-agent">
+          This conversation is the assistant "{request.thread.title}", which stays on this computer with its home, memory, loops and watches, so it can only be copied. The copy is an ordinary conversation.
+        </p>
+      {/if}
+      {#if request.standingAgentError}
+        <p class="break-words text-xs text-warning">Could not check whether this conversation is a standing agent: {request.standingAgentError}</p>
+      {/if}
       <label class="flex flex-col gap-1.5 text-xs text-fg-muted">
         Computer
         <select class={fieldClass} value={destination} disabled={locked} onchange={(event) => selectDestination(event.currentTarget.value)}>
@@ -86,10 +109,12 @@
       {#if !request.submitted && destination && hasScope('git:operate', destination)}
         <div><Button variant="ghost" size="xs" disabled={!backendReachable(destination)} onclick={() => { adding = true; }}>Add an existing project…</Button></div>
       {/if}
-      <label class="flex items-start gap-2 text-xs text-fg">
-        <input type="checkbox" bind:checked={includeWorkspace} disabled={locked} class="mt-0.5 accent-accent" />
-        <span>Include workspace changes<span class="mt-1 block text-fg-muted">Creates a separate worktree with commits, staged changes and untracked files. Ignored files stay on this computer.</span></span>
-      </label>
+      {#if hasWorkspace}
+        <label class="flex items-start gap-2 text-xs text-fg">
+          <input type="checkbox" bind:checked={includeWorkspace} disabled={locked} class="mt-0.5 accent-accent" />
+          <span>Include workspace changes<span class="mt-1 block text-fg-muted">Creates a separate worktree with commits, staged changes and untracked files. Ignored files stay on this computer.</span></span>
+        </label>
+      {/if}
       {#if !includeWorkspace}<p class="text-xs text-fg-muted">The conversation will use the destination project’s existing checkout.</p>{/if}
       {#if includeWorkspace && destination && !hasScope('git:operate', destination)}<p class="text-xs text-warning">Workspace access is needed on the destination to include these changes.</p>{/if}
       {#if !backendReachable(request.source) || (destination && !backendReachable(destination))}<p role="status" class="text-xs text-warning">Reconnect both computers to finish setup.</p>{/if}

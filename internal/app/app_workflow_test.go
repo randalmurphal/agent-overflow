@@ -1262,6 +1262,51 @@ func TestWorkflowReliabilityTransientDeathRetriesThenExhausts(t *testing.T) {
 	}
 }
 
+// A workflow attempt folds a session death it observed even when the dead
+// session's disconnect reaches the host only after another start committed
+// the thread: the death's "error" was handled while the session was current,
+// and the disconnect is the only signal that folds it into the ladder. Each
+// death here commits the thread elsewhere the moment its "error" is handled,
+// so every disconnect arrives from a retired session.
+func TestWorkflowDeathFoldsWhenItsDisconnectArrivesRetired(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	configRoot := t.TempDir()
+	writeReliabilityWorkflow(t, configRoot, `
+  - id: run
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: run.md
+    gate:
+      routes:
+        - to: done`)
+	counterPath := filepath.Join(t.TempDir(), "starts")
+	binary := writeDyingWorkflowClaude(t, counterPath)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	unsubscribe := app.subscribeGlobalTurnObserver(func(threadID string, evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
+			// What a replacement start does before it spawns: take the
+			// dead session out of the registry and commit the thread.
+			app.sessionManager().take(threadID)
+			app.triage.MarkThreadActive(threadID, "another-start")
+		}
+	})
+	t.Cleanup(unsubscribe)
+	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
+	projectRow = mustReloadProject(t, app.store, projectRow.ID)
+	writeReliabilityProfile(t, configRoot, projectRow.Slug, "watchdog: 1h\n  backoff: [50ms, 50ms]\n")
+	startWorkflowEngineForTest(t, app, configRoot)
+
+	item, err := app.WorkflowStartRun(projectRow.ID, "reliability-flow", "shared", "retired deaths", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonProviderRetriesExhausted)
+}
+
 func TestWorkflowReliabilityAttributedTokenBudgetTripsAtBoundary(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -1366,27 +1411,21 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 }
 
 // startWorkflowEngineForTest boots the workflow runtime the way Start does:
-// the engine, then the automation that runs over it. The two are separate
-// functions in production because the automation half is behind the
-// activation gate (app_activation.go) and the engine half is not; a fixture
-// that took only the first would have no scheduler, which is a state no boot
+// the engine, then the self-resume timers that run over it. The two are
+// separate functions in production because the timers are behind the
+// activation gate (app_activation.go) and the engine is not; a fixture that
+// took only the first would have no armed resumes, which is a state no boot
 // ever produces.
 func startWorkflowEngineForTest(t *testing.T, app *App, configRoot string) {
 	t.Helper()
 	if err := app.initWorkflowEngine(configRoot); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.startWorkflowAutomation(); err != nil {
-		t.Fatal(err)
-	}
+	app.armWorkflowAutoResumes()
 	t.Cleanup(func() {
-		// The scheduler stops first for the same reason it does in production: a
-		// trigger must not be able to fire into an engine that is closing.
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.stopWorkflowScheduler(stopCtx); err != nil {
-			t.Errorf("stop workflow scheduler: %v", err)
-		}
+		// The timers stop first for the same reason they do in production: a
+		// resume must not be able to fire into an engine that is closing.
+		app.workflowApplication().StopAutoResumes()
 		if app.workflowApplication().Engine() != nil {
 			_ = app.workflowApplication().Engine().Close()
 		}

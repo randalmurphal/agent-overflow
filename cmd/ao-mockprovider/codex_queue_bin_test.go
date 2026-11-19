@@ -48,21 +48,41 @@ func queueScenario() *scenario.Scenario {
 // unbounded, non-flaky amount of wall time.
 func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string, extraEnv ...string) (*mockProc, func(name string)) {
 	t.Helper()
+	mockIDCh := make(chan string, 1)
+	p, srv := startMockOnControl(t, sc, args, func(info control.MockInfo, _ control.Report) {
+		select {
+		case mockIDCh <- info.MockID:
+		default:
+		}
+	}, extraEnv...)
+
+	var mockID string
+	select {
+	case mockID = <-mockIDCh:
+	case <-time.After(testTimeout):
+		t.Fatal("mock id never observed")
+	}
+	return p, func(name string) {
+		t.Helper()
+		if err := srv.Command(mockID, control.Command{Type: control.CommandAdvance, Name: name}); err != nil {
+			t.Fatalf("advance %q: %v", name, err)
+		}
+	}
+}
+
+// startMockOnControl boots the real binary on a live control channel that
+// assigns it sc and hands each report it posts to onReport.
+func startMockOnControl(t *testing.T, sc *scenario.Scenario, args []string, onReport func(control.MockInfo, control.Report), extraEnv ...string) (*mockProc, *control.Server) {
+	t.Helper()
 	scenarioJSON, err := json.Marshal(sc)
 	if err != nil {
 		t.Fatalf("marshal scenario: %v", err)
 	}
-	mockIDCh := make(chan string, 1)
 	srv, err := control.NewServer(control.ServerConfig{
 		Resolve: func(control.Registration) (control.Assignment, error) {
 			return control.Assignment{ScenarioName: sc.Name, ScenarioJSON: scenarioJSON}, nil
 		},
-		OnReport: func(info control.MockInfo, _ control.Report) {
-			select {
-			case mockIDCh <- info.MockID:
-			default:
-			}
-		},
+		OnReport: onReport,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -80,19 +100,7 @@ func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string, ext
 		control.EnvAddr + "=" + srv.Addr(),
 		control.EnvToken + "=" + srv.Token(),
 	}, extraEnv...), t.TempDir())
-
-	var mockID string
-	select {
-	case mockID = <-mockIDCh:
-	case <-time.After(testTimeout):
-		t.Fatal("mock id never observed")
-	}
-	return p, func(name string) {
-		t.Helper()
-		if err := srv.Command(mockID, control.Command{Type: control.CommandAdvance, Name: name}); err != nil {
-			t.Fatalf("advance %q: %v", name, err)
-		}
-	}
+	return p, srv
 }
 
 // TestCodexInitializeReportsAVersion pins the handshake field every codex
@@ -205,6 +213,49 @@ func TestCodexSteerEchoesTheClientMessageID(t *testing.T) {
 	second := p.expectLineContaining(`"type":"userMessage"`, testTimeout)
 	if firstID, secondID := userMessageItemID(t, echo), userMessageItemID(t, second); firstID == secondID {
 		t.Fatalf("two steers in one turn shared the item id %q", firstID)
+	}
+}
+
+// TestCodexSteerWithNoTurnIsRefused pins upstream's NoActiveTurn refusal: a
+// steer that reaches the server after its turn ended is an error the app
+// recovers from with a fresh turn, never a message echoed into no turn.
+func TestCodexSteerWithNoTurnIsRefused(t *testing.T) {
+	// The first turn lingers after its turn/completed, so the mock is still
+	// running it when the late steer arrives.
+	sc := queueScenario()
+	sc.Turns[0].Steps = append(sc.Turns[0].Steps, scenario.Step{WaitSignal: &scenario.WaitSignalStep{Name: "linger"}})
+	p, advance := startControlledMock(t, sc, []string{"app-server"})
+	defer advance("linger")
+
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	p.expectLine(testTimeout)
+	p.send(`{"jsonrpc":"2.0","method":"initialized"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
+	p.expectLine(testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"late"}],"clientUserMessageId":"user:0"}}`)
+	got := p.expectLineContaining(`"id":3`, testTimeout)
+	if !strings.Contains(got, `"code":-32600`) || !strings.Contains(got, "no active turn to steer") {
+		t.Fatalf("steer with no turn = %s, want the -32600 no active turn refusal", got)
+	}
+
+	// A turn that has begun takes a steer again.
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"threadId":"th-q","input":[{"type":"text","text":"first"}],"clientUserMessageId":"user:1"}}`)
+	p.expectLine(testTimeout)
+	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"steered"}],"clientUserMessageId":"user:1:flush:1"}}`)
+	if echo := p.expectLineContaining(`"type":"userMessage"`, testTimeout); !strings.Contains(echo, `"steered"`) {
+		t.Fatalf("steer echo = %s, want the steered text", echo)
+	}
+
+	// Once the turn's turn/completed is on the wire the turn has ended, even
+	// while the mock is still running its steps: a steer naming it is
+	// refused, never echoed after the completion.
+	advance("hold")
+	p.expectLineContaining(`"method":"turn/completed"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":6,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"too late"}],"clientUserMessageId":"user:1:flush:2"}}`)
+	if got := p.expectLineContaining(`"id":6`, testTimeout); !strings.Contains(got, "no active turn to steer") {
+		t.Fatalf("steer after turn/completed = %s, want the no active turn refusal", got)
 	}
 }
 

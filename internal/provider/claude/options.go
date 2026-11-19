@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -615,6 +616,31 @@ type cliInlineSettings struct {
 	// mechanism.
 	OutputStyle string            `json:"outputStyle,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	// Hooks carries Config.SessionStartHook. The flagSettings layer's hooks
+	// merge with the user's own and run beside them.
+	Hooks map[string]any `json:"hooks,omitempty"`
+	// AutoMemoryEnabled is false for Config.NativeMemoryOff and nil, so
+	// omitted, otherwise: the CLI then neither reads nor writes its
+	// auto-memory directory.
+	AutoMemoryEnabled *bool `json:"autoMemoryEnabled,omitempty"`
+	// Permissions carries Config.AccessDirs.
+	Permissions *InlinePermissions `json:"permissions,omitempty"`
+}
+
+// InlinePermissions is the permissions block of an inline `--settings`
+// payload. The flagSettings layer's additionalDirectories join the user's
+// own as working directories of the session.
+type InlinePermissions struct {
+	AdditionalDirectories []string `json:"additionalDirectories"`
+}
+
+// AccessPermissions is the permissions block that grants dirs, nil for
+// none.
+func AccessPermissions(dirs []string) *InlinePermissions {
+	if len(dirs) == 0 {
+		return nil
+	}
+	return &InlinePermissions{AdditionalDirectories: slices.Clone(dirs)}
 }
 
 // inlineSettingsForCLI builds the JSON payload for the `--settings` CLI
@@ -628,17 +654,27 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		CrossSessionInbound: strings.TrimSpace(cfg.CrossSessionInbound),
 		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
 		Env:                 inlineSettingsEnvForCLI(cfg),
+		Hooks:               inlineSettingsHooksForCLI(cfg),
+		Permissions:         AccessPermissions(cfg.AccessDirs),
+	}
+	if cfg.NativeMemoryOff {
+		off := false
+		settings.AutoMemoryEnabled = &off
 	}
 	if !settings.FastMode &&
 		settings.CrossSessionInbound == "" &&
 		settings.OutputStyle == "" &&
-		len(settings.Env) == 0 {
+		len(settings.Env) == 0 &&
+		len(settings.Hooks) == 0 &&
+		settings.AutoMemoryEnabled == nil &&
+		settings.Permissions == nil {
 		return "", false
 	}
 	data, err := json.Marshal(settings)
 	if err != nil {
-		// `cliInlineSettings` is bools + strings + map[string]string with
-		// no custom marshalers, so json.Marshal cannot fail in practice.
+		// `cliInlineSettings` is bools, strings and maps of strings, ints
+		// and slices with no custom marshalers, so json.Marshal cannot fail
+		// in practice.
 		// Panic loudly if it ever does — silently dropping the flag would
 		// mean the user's autocompact / fastMode / output-style /
 		// cross-session / subagent-limit settings are quietly ignored,
@@ -647,6 +683,59 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		panic(fmt.Sprintf("claude: cliInlineSettings marshal failed (unreachable): %v", err))
 	}
 	return string(data), true
+}
+
+// SessionStartHookGroup is the SessionStart matcher group that registers
+// hook in a settings block, one command handler per part, for its sources
+// (provider.SessionStartHookSources). Claude Code runs it beside the user's
+// own SessionStart hooks, and bounds each handler's output on its own.
+// Shared with claude-tui, which drives the same binary.
+func SessionStartHookGroup(hook provider.SessionStartHook) map[string]any {
+	handlers := make([]any, len(hook.Parts))
+	for i, part := range hook.Parts {
+		handlers[i] = commandHandler(part.Command)
+	}
+	return map[string]any{"matcher": provider.SessionStartHookSources, "hooks": handlers}
+}
+
+// UserPromptSubmitHookGroup is the UserPromptSubmit group that registers
+// the PromptCommand of each of hook's parts, which Claude Code runs beside
+// the user's own UserPromptSubmit hooks, at every prompt, a queued one
+// included; nil when no part has one. Shared with claude-tui.
+func UserPromptSubmitHookGroup(hook provider.SessionStartHook) map[string]any {
+	var handlers []any
+	for _, part := range hook.Parts {
+		if part.PromptCommand != "" {
+			handlers = append(handlers, commandHandler(part.PromptCommand))
+		}
+	}
+	if len(handlers) == 0 {
+		return nil
+	}
+	return map[string]any{"hooks": handlers}
+}
+
+// commandHandler is a command hook handler running command.
+func commandHandler(command string) map[string]any {
+	return map[string]any{
+		"type":    "command",
+		"command": command,
+		"timeout": provider.SessionStartHookTimeoutSeconds,
+	}
+}
+
+// inlineSettingsHooksForCLI is the block's `hooks` value; nil without a
+// hook.
+func inlineSettingsHooksForCLI(cfg Config) map[string]any {
+	hook := cfg.SessionStartHook
+	if hook == nil {
+		return nil
+	}
+	hooks := map[string]any{"SessionStart": []any{SessionStartHookGroup(*hook)}}
+	if prompt := UserPromptSubmitHookGroup(*hook); prompt != nil {
+		hooks["UserPromptSubmit"] = []any{prompt}
+	}
+	return hooks
 }
 
 // inlineSettingsEnvForCLI builds the `env` half of the block. Returns nil
@@ -709,6 +798,9 @@ func inlineSettingsEnvForCLI(cfg Config) map[string]string {
 	if limit := strings.TrimSpace(cfg.ToolMemoryLimit); limit != "" {
 		env[claudeToolMemoryLimitEnv] = limit
 	}
+	// With Claude's own memory off, the variable that would force it back
+	// on is the app's to state.
+	maps.Copy(env, NativeMemoryOffEnv(cfg.NativeMemoryOff))
 	if len(env) == 0 {
 		return nil
 	}
@@ -730,11 +822,18 @@ func inlineSettingsEnvForCLI(cfg Config) map[string]string {
 // pass through any spec that already carries one. Stdio specs (those
 // with a "command") get backfilled to "stdio".
 func mcpConfigForCLI(cfg Config) (string, bool) {
-	if len(cfg.MCPServers) == 0 {
+	return MCPConfigJSON(cfg.MCPServers)
+}
+
+// MCPConfigJSON is mcpConfigForCLI over a bare server map, for the
+// interactive provider, which drives the same binary and passes the same
+// flag.
+func MCPConfigJSON(mcpServers map[string]any) (string, bool) {
+	if len(mcpServers) == 0 {
 		return "", false
 	}
-	servers := make(map[string]any, len(cfg.MCPServers))
-	for name, spec := range cfg.MCPServers {
+	servers := make(map[string]any, len(mcpServers))
+	for name, spec := range mcpServers {
 		servers[name] = withClaudeTransportType(spec)
 	}
 	payload := map[string]any{"mcpServers": servers}
@@ -743,7 +842,7 @@ func mcpConfigForCLI(cfg Config) (string, bool) {
 		// Same reasoning as inlineSettingsForCLI: nested maps with no
 		// custom marshalers can't fail in practice. Panic loudly to
 		// satisfy the "errors must never silently fail" rule.
-		panic(fmt.Sprintf("claude: mcpConfigForCLI marshal failed (unreachable): %v", err))
+		panic(fmt.Sprintf("claude: MCPConfigJSON marshal failed (unreachable): %v", err))
 	}
 	return string(data), true
 }

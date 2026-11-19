@@ -1,6 +1,8 @@
 package triage
 
 import (
+	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"sync"
 	"testing"
 )
@@ -11,10 +13,10 @@ import (
 func TestOnlyTheFirstAnswerToAPromptIsForwarded(t *testing.T) {
 	r, _, _ := newTestRouter(t)
 
-	if !r.ClaimApprovalResponse("thr-1", "req-1") {
+	if !claimed(r.ClaimPrompt("thr-1", "req-1", 0)) {
 		t.Fatal("the first answer was refused")
 	}
-	if r.ClaimApprovalResponse("thr-1", "req-1") {
+	if claimed(r.ClaimPrompt("thr-1", "req-1", 0)) {
 		t.Fatal("a second answer to the same prompt was forwarded")
 	}
 }
@@ -23,15 +25,15 @@ func TestOnlyTheFirstAnswerToAPromptIsForwarded(t *testing.T) {
 // unrelated prompt.
 func TestAnswerRecordsAreScopedToTheirRequest(t *testing.T) {
 	r, _, _ := newTestRouter(t)
-	r.ClaimApprovalResponse("thr-1", "req-1")
+	r.ClaimPrompt("thr-1", "req-1", 0)
 
-	if !r.ClaimApprovalResponse("thr-1", "req-2") {
+	if !claimed(r.ClaimPrompt("thr-1", "req-2", 0)) {
 		t.Error("a different prompt on the same thread was refused")
 	}
-	if !r.ClaimApprovalResponse("thr-2", "req-1") {
+	if !claimed(r.ClaimPrompt("thr-2", "req-1", 0)) {
 		t.Error("the same request id on a different thread was refused")
 	}
-	if !r.ClaimUserInputResponse("thr-1", "req-3") {
+	if !claimed(r.ClaimPrompt("thr-1", "req-3", 0)) {
 		t.Error("a structured-input form was refused")
 	}
 }
@@ -44,7 +46,7 @@ func TestAnswerRecordsAreScopedToTheirRequest(t *testing.T) {
 func TestAnUnknownRequestIsPassedThroughRatherThanRefused(t *testing.T) {
 	r, _, _ := newTestRouter(t)
 
-	if !r.ClaimApprovalResponse("thr-never-seen", "req-never-seen") {
+	if !claimed(r.ClaimPrompt("thr-never-seen", "req-never-seen", 0)) {
 		t.Fatal("a request the router has no record of was refused")
 	}
 }
@@ -54,17 +56,17 @@ func TestAnUnknownRequestIsPassedThroughRatherThanRefused(t *testing.T) {
 func TestAClaimWithNoRequestIdIsNotArbitrated(t *testing.T) {
 	r, _, _ := newTestRouter(t)
 
-	if !r.ClaimApprovalResponse("thr-1", "") {
+	if !claimed(r.ClaimPrompt("thr-1", "", 0)) {
 		t.Error("an empty request id was refused")
 	}
-	if !r.ClaimApprovalResponse("", "req-1") {
+	if !claimed(r.ClaimPrompt("", "req-1", 0)) {
 		t.Error("an empty thread id was refused")
 	}
 	var nilRouter *Router
-	if !nilRouter.ClaimApprovalResponse("thr-1", "req-1") {
+	if !claimed(nilRouter.ClaimPrompt("thr-1", "req-1", 0)) {
 		t.Error("a nil router refused a claim")
 	}
-	nilRouter.ReleaseInteractiveResponse("thr-1", "req-1")
+	nilRouter.ReleasePrompt(PromptClaim{Ref: PromptRef{ThreadID: "thr-1", RequestID: "req-1"}})
 }
 
 // A write that never reached the provider leaves the prompt open. If the
@@ -73,17 +75,17 @@ func TestAClaimWithNoRequestIdIsNotArbitrated(t *testing.T) {
 // refused as already handled.
 func TestAReleasedClaimCanBeRetried(t *testing.T) {
 	r, _, _ := newTestRouter(t)
-	r.ClaimApprovalResponse("thr-1", "req-1")
+	claim, _ := r.ClaimPrompt("thr-1", "req-1", 0)
 
-	r.ReleaseInteractiveResponse("thr-1", "req-1")
+	r.ReleasePrompt(claim)
 
-	if !r.ClaimApprovalResponse("thr-1", "req-1") {
+	if !claimed(r.ClaimPrompt("thr-1", "req-1", 0)) {
 		t.Fatal("a retry after a failed write was refused")
 	}
 	// Idempotent: a release for something never claimed is not an error and
 	// must not create state.
-	r.ReleaseInteractiveResponse("thr-1", "req-unknown")
-	r.ReleaseInteractiveResponse("thr-never-seen", "req-1")
+	r.ReleasePrompt(PromptClaim{Ref: PromptRef{ThreadID: "thr-1", RequestID: "req-unknown"}})
+	r.ReleasePrompt(PromptClaim{Ref: PromptRef{ThreadID: "thr-never-seen", RequestID: "req-1"}})
 }
 
 // The records must not outlive the prompts they arbitrate, or a later request
@@ -93,11 +95,11 @@ func TestAReleasedClaimCanBeRetried(t *testing.T) {
 // thread teardown, which drops the whole threadState.
 func TestAnswerRecordsDoNotOutliveTheirThread(t *testing.T) {
 	r, _, _ := newTestRouter(t)
-	r.ClaimApprovalResponse("thr-1", "req-1")
+	r.ClaimPrompt("thr-1", "req-1", 0)
 
 	r.CleanupThread("thr-1")
 
-	if !r.ClaimApprovalResponse("thr-1", "req-1") {
+	if !claimed(r.ClaimPrompt("thr-1", "req-1", 0)) {
 		t.Fatal("the id stayed refused after its thread was torn down")
 	}
 }
@@ -118,7 +120,7 @@ func TestConcurrentAnswersProduceExactlyOneWinner(t *testing.T) {
 		go func() {
 			defer done.Done()
 			start.Wait()
-			won[i] = r.ClaimApprovalResponse("thr-1", "req-1")
+			won[i] = claimed(r.ClaimPrompt("thr-1", "req-1", 0))
 		}()
 	}
 	start.Done()
@@ -132,5 +134,109 @@ func TestConcurrentAnswersProduceExactlyOneWinner(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Fatalf("%d callers were told to forward the answer, want exactly 1", winners)
+	}
+}
+
+func claimed(_ PromptClaim, ok bool) bool { return ok }
+
+// A claim names the prompt occurrence its caller was shown. Once the session
+// asks again under the same request id, a claim for the earlier prompt is
+// refused, and the release of a claim the earlier prompt took leaves the
+// later prompt's claim in place.
+func TestAClaimAnswersOnlyTheOccurrenceItNames(t *testing.T) {
+	t.Parallel()
+	f := newPromptRouteFixture(t)
+	f.router.MarkThreadActive("worker", "s1")
+	f.approval(t, "worker", "req", "s1")
+	first := f.open(t, "worker", "req")
+	early, ok := f.router.ClaimPrompt("worker", "req", first.Occurrence)
+	if !ok || early.Ref != first || early.SessionToken != "s1" {
+		t.Fatalf("claim of the open prompt = %+v %v, want %+v in s1", early, ok, first)
+	}
+	f.router.MarkThreadActive("worker", "s2")
+	f.approval(t, "worker", "req", "s2")
+	second := f.open(t, "worker", "req")
+
+	if claimed(f.router.ClaimPrompt("worker", "req", first.Occurrence)) {
+		t.Fatal("a claim for the earlier prompt was let through to the later one")
+	}
+	late, ok := f.router.ClaimPrompt("worker", "req", 0)
+	if !ok || late.Ref != second || late.SessionToken != "s2" {
+		t.Fatalf("claim of the prompt open now = %+v %v, want %+v in s2", late, ok, second)
+	}
+	f.router.ReleasePrompt(early)
+	if claimed(f.router.ClaimPrompt("worker", "req", second.Occurrence)) {
+		t.Fatal("the earlier prompt's release dropped the later prompt's claim")
+	}
+	f.router.ReleasePrompt(late)
+	if !claimed(f.router.ClaimPrompt("worker", "req", second.Occurrence)) {
+		t.Fatal("the later prompt's own release did not hand it back")
+	}
+}
+
+// This app's resolution of a prompt that ended leaves the prompt asked since
+// under the same request id open and unannounced; one that names the open
+// prompt resolves it. Approvals and questions alike.
+func TestAResolutionOfAnEndedPromptLeavesTheOneAskedSince(t *testing.T) {
+	t.Parallel()
+	for _, family := range []struct {
+		name    string
+		channel eventchan.Channel
+		resolve provider.EventKind
+		ask     func(t *testing.T, r *Router, toolUseID string)
+		open    func(r *Router) []provider.PromptOccurrence
+	}{
+		{
+			name: "approval", channel: eventchan.ProviderApproval, resolve: provider.EventApprovalResolved,
+			ask: func(t *testing.T, r *Router, toolUseID string) { agentApproval(t, r, "t1", "req", toolUseID, "") },
+			open: func(r *Router) (out []provider.PromptOccurrence) {
+				for _, request := range r.PendingInteractiveRequests("t1").Approvals {
+					out = append(out, request.Occurrence)
+				}
+				return out
+			},
+		},
+		{
+			name: "question", channel: eventchan.ProviderUserInput, resolve: provider.EventUserInputResolved,
+			ask: func(t *testing.T, r *Router, toolUseID string) { agentQuestion(t, r, "t1", "req", toolUseID, "") },
+			open: func(r *Router) (out []provider.PromptOccurrence) {
+				for _, request := range r.PendingInteractiveRequests("t1").UserInputs {
+					out = append(out, request.Occurrence)
+				}
+				return out
+			},
+		},
+	} {
+		t.Run(family.name, func(t *testing.T) {
+			t.Parallel()
+			r, st, emits := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			resolve := func(occurrence provider.PromptOccurrence) {
+				t.Helper()
+				parkHandle(t, r, provider.ProviderEvent{
+					Kind: family.resolve, ThreadID: "t1", ItemID: "req",
+					Meta: parkMeta(t, map[string]any{"requestId": "req", "decision": "approved"}), PromptOccurrence: occurrence,
+				})
+			}
+			announced := func() int { return len(filterEmissions(emits.snapshot(), family.channel.String())) }
+			family.ask(t, r, "tu-1")
+			first := family.open(r)[0]
+			resolve(0)
+			family.ask(t, r, "tu-2")
+			second := family.open(r)[0]
+			before := announced()
+
+			resolve(first)
+			if open := family.open(r); len(open) != 1 || open[0] != second {
+				t.Fatalf("the ended prompt's resolution closed the one asked since: open %v", open)
+			}
+			if got := announced(); got != before {
+				t.Fatalf("the ended prompt's resolution announced %d events", got-before)
+			}
+			resolve(second)
+			if open := family.open(r); len(open) != 0 {
+				t.Fatalf("the open prompt's resolution left it open: %v", open)
+			}
+		})
 	}
 }

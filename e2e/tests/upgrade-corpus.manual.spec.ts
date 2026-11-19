@@ -38,6 +38,7 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { productBinary } from '../src/product-process.js';
 import {
   BOOT_PROBE_DEADLINE_MS,
   TRIAL_CEILING_MS,
@@ -78,7 +79,7 @@ import {
   type Cadence,
   type HeadlessBackend,
 } from './update-launcher-helpers.js';
-import { buildVersion, harnessTool, prepareRig, timed } from './upgrade-corpus-tools.js';
+import { buildVersion, prepareRig, timed } from './upgrade-corpus-tools.js';
 import { topUp } from './upgrade-corpus-topup.js';
 
 const previousBinary = process.env.AO_RELEASE_UPGRADE_PREVIOUS_BIN;
@@ -175,7 +176,7 @@ test('the candidate migrates a large previous-release database and boots on it',
       const boot = await timed(() => launchHarness({
         binary: previousBinary,
         savedRelease: true,
-        mockProvider: harnessTool('ao-mockprovider'),
+        mockProvider: productBinary('ao-mockprovider'),
         mockForge: '',
         dataDir: rig.dataRoot,
         timeoutMs: 2 * MINUTE,
@@ -303,7 +304,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     expect(migrated.schemaVersion).toBe(buildSchemaVersion);
 
     // 5. The candidate boots on the migrated root and answers the reads.
-    const boot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: harnessTool('ao-mockprovider'), mockForge: harnessTool('ao-mockforge'), timeoutMs: 30 * MINUTE }));
+    const boot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: productBinary('ao-mockprovider'), mockForge: productBinary('ao-mockforge'), timeoutMs: 30 * MINUTE }));
     candidate = boot.value;
     durations.candidateBootMs = boot.ms;
     const atBoot = await candidate.rpc<StoreStatus>('HarnessStoreStatus');
@@ -377,7 +378,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     // 10. The top-up: the candidate writes its own slice of use into the
     // migrated store, natively at its schema, so the corpus the next
     // release inherits carries rows of everything this release writes.
-    const reboot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: harnessTool('ao-mockprovider'), mockForge: harnessTool('ao-mockforge'), timeoutMs: 30 * MINUTE }));
+    const reboot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: productBinary('ao-mockprovider'), mockForge: productBinary('ao-mockforge'), timeoutMs: 30 * MINUTE }));
     candidate = reboot.value;
     durations.topUpBootMs = reboot.ms;
     const topped = await timed(() => topUp(candidate!, candidateVersion));

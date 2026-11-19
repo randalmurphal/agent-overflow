@@ -15,8 +15,12 @@
   //    toggle is `pane.activityRailTodosOpen` so it survives thread
   //    switches in-session.
   //  - Background segment: visible when there are tray-eligible
-  //    background items. Toggle expands an inline body listing the
-  //    rows with provider-aware stop affordances.
+  //    background items or the thread has loops, watches or reminders.
+  //    Toggle expands an inline body listing the rows with
+  //    provider-aware stop affordances, then the schedule's rows.
+  //  - Agents segment: visible when the thread is waiting on other threads
+  //    it spawned, sent to or asked, or other agents queued messages for
+  //    it. Toggle expands the Agents body (ActivityRailAgentsBody).
   //
   // Visibility is the HOST's call: Composer mounts the rail iff any
   // sub-state is active (`railVisible`) and renders its transparent
@@ -54,11 +58,16 @@
   import type { UsageStats } from '../../stores/usageQuery.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import type { BackgroundController } from './activityRailBackground.svelte';
+  import type { WakeController } from './activityRailWakes.svelte';
+  import type { AgentController } from './activityRailAgents.svelte';
+  import ActivityRailAgentsBody from './ActivityRailAgentsBody.svelte';
   import { stableTurnKey } from '../../spinners/pick';
   import WorkingChip from './WorkingChip.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
-  import ActivityRailBackgroundToggle from './ActivityRailBackgroundToggle.svelte';
+  import ActivityRailSegmentToggle from './ActivityRailSegmentToggle.svelte';
+  import SendToBack from '@lucide/svelte/icons/send-to-back';
+  import UsersRound from '@lucide/svelte/icons/users-round';
   import Icon from '../primitives/Icon.svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -68,6 +77,10 @@
     pane: ThreadPane;
     /** Composer-owned background-tasks controller (mounted there). */
     bg: BackgroundController;
+    /** Composer-owned loops, watches and reminders of the thread. */
+    wakes?: WakeController;
+    /** Composer-owned Agents rows of the thread. */
+    agents?: AgentController;
     /** Composer-owned shared 1Hz clock for elapsed labels + retention. */
     clock: SharedNowClock;
     /** Composer-owned lifetime usage for the compact usage chip. */
@@ -84,6 +97,8 @@
   let {
     pane,
     bg,
+    wakes,
+    agents,
     clock,
     usage,
     inputRequest = null,
@@ -116,6 +131,8 @@
   let liveTodo = $derived(pane.liveTodo);
   let todosOpen = $derived(pane.activityRailTodosOpen);
   let backgroundOpen = $derived(pane.activityRailBackgroundOpen);
+  let agentsOpen = $derived(pane.activityRailAgentsOpen);
+  let agentsShown = $derived((agents?.shown ?? 0) > 0);
 
   // The whole badge as one string, not a count beside a `liveTodo.steps`
   // read: as two template expressions the merged text run carried both
@@ -149,6 +166,11 @@
   // working hairline/LEDs/timer are suppressed and only the "Input requested"
   // chip shows. `showWorking` gates every working-segment render below.
   let showWorking = $derived(isWorking && inputRequest === null);
+
+  // The tray lists background work and the thread's schedule together.
+  let backgroundCount = $derived(bg.count + (wakes?.count ?? 0));
+  let backgroundRunning = $derived(bg.runningCount + (wakes?.runningCount ?? 0));
+  let backgroundRunningRows = $derived(bg.runningCount + (wakes?.runningRowCount ?? 0));
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let density = $state<ActivityRailDensity>('full');
@@ -248,16 +270,35 @@
       </button>
     {/if}
 
-    {#if bg.count > 0}
+    {#if backgroundCount > 0}
       {#if inputRequest || showWorking || liveTodo}
         <span class="shrink-0 select-none text-fg-hint/60" data-activity-rail-separator aria-hidden="true">·</span>
       {/if}
-      <ActivityRailBackgroundToggle
-        count={bg.count}
-        running={bg.runningCount > 0}
+      <ActivityRailSegmentToggle
+        icon={SendToBack}
+        name="Background"
+        segment="background"
+        count={backgroundCount}
+        running={backgroundRunning > 0}
         open={backgroundOpen}
         onToggle={() => pane.toggleActivityRailBackground()}
         controls="activity-rail-background-body"
+      />
+    {/if}
+
+    {#if agents && agentsShown}
+      {#if inputRequest || showWorking || liveTodo || backgroundCount > 0}
+        <span class="shrink-0 select-none text-fg-hint/60" data-activity-rail-separator aria-hidden="true">·</span>
+      {/if}
+      <ActivityRailSegmentToggle
+        icon={UsersRound}
+        name="Agents"
+        segment="agents"
+        count={agents.count}
+        running={agents.runningCount > 0}
+        open={agentsOpen}
+        onToggle={() => pane.toggleActivityRailAgents()}
+        controls="activity-rail-agents-body"
       />
     {/if}
 
@@ -272,14 +313,20 @@
     <ActivityRailTodosBody {liveTodo} {pane} />
   {/if}
 
-  {#if backgroundOpen && bg.count > 0}
+  {#if backgroundOpen && backgroundCount > 0}
     <ActivityRailBackgroundBody
       tasks={bg.tasks}
       provider={bg.provider}
       threadId={bg.threadId}
       {pane}
-      runningCount={bg.runningCount}
+      runningCount={backgroundRunningRows}
+      {wakes}
+      now={clock.now}
     />
+  {/if}
+
+  {#if agents && agentsOpen && agentsShown}
+    <ActivityRailAgentsBody {agents} {pane} now={clock.now} />
   {/if}
 </div>
 
@@ -302,5 +349,18 @@
   }
   :global([data-activity-rail-row]:is([data-density='minimal'], [data-compact])) {
     column-gap: 0.25rem;
+  }
+  /* The densest rung: the running pulse goes (the body says what runs),
+     and the segments and the row's edges close up. */
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-pulse]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-separator]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-name]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-preview]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-verb]) {
+    display: none;
+  }
+  :global([data-activity-rail-row][data-density='tight']) {
+    column-gap: 0.125rem;
+    padding-inline: 0.375rem;
   }
 </style>

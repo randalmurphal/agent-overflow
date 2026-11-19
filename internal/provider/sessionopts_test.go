@@ -53,7 +53,7 @@ func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 		sessionRef:                 "session-abc",
 	}
 
-	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, "system prompt", false)
+	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, false)
 
 	if opts.Provider != "claude" {
 		t.Errorf("Provider = %q, want claude", opts.Provider)
@@ -91,9 +91,6 @@ func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	if opts.ForkSession {
 		t.Error("ForkSession = true, want false")
 	}
-	if opts.SystemPrompt != "system prompt" {
-		t.Errorf("SystemPrompt = %q, want %q", opts.SystemPrompt, "system prompt")
-	}
 }
 
 func TestSessionOptionsFromThreadForkPrefersPendingRef(t *testing.T) {
@@ -103,7 +100,7 @@ func TestSessionOptionsFromThreadForkPrefersPendingRef(t *testing.T) {
 		pendingForkRef: "pending-fork",
 	}
 
-	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, "", true)
+	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, true)
 	if opts.Resume != "pending-fork" {
 		t.Errorf("Resume = %q, want pending-fork (fork should consume PendingForkRef)", opts.Resume)
 	}
@@ -119,7 +116,7 @@ func TestSessionOptionsFromThreadForkFallsBackToSessionRef(t *testing.T) {
 		// PendingForkRef intentionally empty.
 	}
 
-	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, "", true)
+	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, true)
 	if opts.Resume != "live-session" {
 		t.Errorf("Resume = %q, want live-session (no pending fork ref)", opts.Resume)
 	}
@@ -133,7 +130,7 @@ func TestSessionOptionsFromThreadNormalizesInvalidEnums(t *testing.T) {
 		runtimeMode:     "unknown",
 	}
 
-	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, "", false)
+	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, false)
 	if opts.ReasoningEffort != DefaultReasoningEffort {
 		t.Errorf("ReasoningEffort = %q, want default %q", opts.ReasoningEffort, DefaultReasoningEffort)
 	}

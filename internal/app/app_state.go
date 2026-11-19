@@ -59,13 +59,12 @@ type appFlushDispatchState struct {
 	// both claim the same message, and on requeue the triage queue has
 	// taken the item back before it does.
 	//
-	// Deliberately NOT `current`: that one is the session-death drain's
-	// view and must keep the whole batch (dedupeUnconfirmedFlushItems
-	// resolves its overlap with the pending-send drain).
+	// Deliberately NOT `current`: that one is the batch as the worker and
+	// a session-death drain see it, the messages it has not finished
+	// writing, whose groups leave it as they settle or go back to the queue.
 	dispatching   map[string][]triage.QueuedFlushItem
 	running       map[string]bool
 	inflightItems map[string]int
-	generation    map[string]uint64
 	// flushUnsettled holds each thread with a `queue_flushed` that no
 	// provider:sends_pending frame reading nothing pending has covered yet.
 	// publishSendsPending emits that frame for a listed thread even when
@@ -208,14 +207,12 @@ type appBrowserState struct {
 // appTurnObserverState fans provider events out to internal App features after
 // triage handling has been attempted.
 type appTurnObserverState struct {
-	// Each registration lives until its returned unsubscribe function runs;
-	// the built-in discussion observer lives for the App lifetime. mu is
-	// deliberately independent of sessionruntime so callbacks can safely enter other
-	// App coordination paths.
-	mu             sync.RWMutex
-	byThread       map[string]map[uint64]turnObserver
-	nextID         uint64
-	discussionOnce sync.Once
+	// Each registration lives until its returned unsubscribe function runs.
+	// mu is deliberately independent of sessionruntime so callbacks can
+	// safely enter other App coordination paths.
+	mu       sync.RWMutex
+	byThread map[string]map[uint64]turnObserver
+	nextID   uint64
 }
 
 // appMarkThreadReadState joins the background thread read-state stamps
@@ -229,4 +226,31 @@ type appMarkThreadReadState struct {
 	mu      sync.Mutex
 	stopped bool
 	wg      sync.WaitGroup
+}
+
+// appAgentNoticeWorkState joins what a notice runs after it is accepted
+// (`app_agent_notice.go`). stopped is set under mu, which is also where the
+// work registers, so none can register after Shutdown began its join.
+// appMemoryReportsState joins the reads of a thread's memory for its
+// warning rows that run off a session start or the provider event worker
+// (goMemoryReport).
+type appMemoryReportsState struct {
+	mu      sync.Mutex
+	stopped bool
+	wg      sync.WaitGroup
+}
+
+type appAgentNoticeWorkState struct {
+	mu      sync.Mutex
+	stopped bool
+	wg      sync.WaitGroup
+	// failing is the threads whose last notice start failed and that have
+	// not started since, with when that start was tried. Each holds the
+	// start-failure notification. The store keeps the same set
+	// (session_start_failures), and boot loads it, so a start after a
+	// restart withdraws a notification raised before it.
+	failing map[string]time.Time
+	// running counts the work in flight, which a test tells apart from the
+	// work waiting at a delete's gate (deleteDecisions.waiting).
+	running int
 }

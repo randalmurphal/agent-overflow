@@ -113,6 +113,7 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreads', async () => []);
   // Sidebar boot loads thread groups beside the threads they contain.
   setBindingMock('ListThreadGroups', async () => []);
+  setBindingMock('ListStandingAgentWakes', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
   // Provider CLI update state, read on every hello this session administers.
@@ -270,6 +271,9 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+  setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
 }

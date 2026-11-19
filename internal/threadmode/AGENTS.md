@@ -7,8 +7,8 @@ runtime-mode axes. Persistence, events, and active-session restarts belong to
 ## Contracts
 
 - Public create and update validators accept only manually selectable
-  interaction modes. Discussion and workflow modes are saga-owned because their
-  creation requires corresponding channel or run state.
+  interaction modes. Workflow modes are saga-owned because their creation
+  requires corresponding run state.
 - Keep saga-owned modes legal for persistence and hidden from ordinary thread
   listings and pickers. Do not make them publicly creatable to simplify a
   caller.

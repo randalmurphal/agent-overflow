@@ -4,20 +4,47 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // Presentation uses saved profiles only; naming a result never probes a peer.
 func (a *App) remoteComputerNames() map[string]string {
 	names := map[string]string{}
+	for id, profile := range a.remoteComputers() {
+		names[id] = remoteProfileName(profile)
+	}
+	return names
+}
+
+// remoteComputers reads the pairings held now, by computer id.
+func (a *App) remoteComputers() map[string]attachedbackends.Attached {
+	held := map[string]attachedbackends.Attached{}
 	if a.backends != nil {
 		if profiles, err := a.backends.List(); err == nil {
 			for _, profile := range profiles {
-				names[profile.ID] = strings.Join(strings.Fields(profile.Name), " ")
+				held[profile.ID] = profile
 			}
 		}
 	}
-	return names
+	return held
+}
+
+func remoteProfileName(profile attachedbackends.Attached) string {
+	return strings.Join(strings.Fields(profile.Name), " ")
+}
+
+// remoteWatchComputerName names a command's computer as the person knows it:
+// by its current name while a pairing with it is held, else by the name the
+// command kept, its name at admission or, for a command from before names
+// were kept, its last name, which the end of the pairing wrote.
+func remoteWatchComputerName(computers map[string]attachedbackends.Attached, w store.RemoteWatch) string {
+	if held, paired := computers[w.ComputerID]; paired {
+		return remoteProfileName(held)
+	}
+	return w.ComputerName
 }
 
 // RemoteJobRecord is one of a conversation's tracked remote jobs as the
@@ -69,17 +96,25 @@ type remoteCompletionOutput struct {
 	Unavailable bool
 }
 
+// remoteJobWakeHeader opens a remote job's completion.
+const remoteJobWakeHeader = "Remote job finished on "
+
 // Notifications retain a small useful excerpt even when the tool reply was
 // lost. General instructions belong in tool descriptions, not every message.
-func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) string {
+//
+// The message names the job and its computer on its first line, and its
+// row leads with the result; both are the report's own attribution
+// (usermessage.Report).
+func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) (usermessage.AgentMessage, error) {
 	if computerName == "" {
 		computerName = w.ComputerID
 	}
 	r := w.Receipt
-	message := fmt.Sprintf("Remote job finished on %s: %s\ncomputer_id: %s\nrequest_id: %s\nWorkspace: %s\nResult: %s", computerName, w.Label, w.ComputerID, w.RequestID, r.Workspace, r.State)
+	result := r.State
 	if r.ExitCode >= 0 {
-		message += fmt.Sprintf("; exit code: %d", r.ExitCode)
+		result += fmt.Sprintf("; exit code: %d", r.ExitCode)
 	}
+	message := fmt.Sprintf("computer_id: %s\nrequest_id: %s\nWorkspace: %s\nResult: %s", w.ComputerID, w.RequestID, r.Workspace, result)
 	if r.Error != "" {
 		message += "\n" + r.Error
 	}
@@ -103,5 +138,7 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, output re
 	} else if output.Omitted || output.Truncated || len(head) < len(output.Head) || len(tail) < len(output.Tail) {
 		message += "\nOutput omitted. Use remote_read_log or remote_search_log with the IDs above, or remote_fetch_log for the whole log."
 	}
-	return message
+	return usermessage.Report(
+		agentmeta.ReportCompletion, usermessage.Reporter{Label: w.Label, Computer: computerName},
+		fmt.Sprintf("%s%s: %s", remoteJobWakeHeader, computerName, w.Label), message, result)
 }

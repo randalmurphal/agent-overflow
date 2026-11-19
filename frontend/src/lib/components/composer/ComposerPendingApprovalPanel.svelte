@@ -30,6 +30,9 @@
   async function resolve(response: ApprovalResponse): Promise<void> {
     if (responding || ungranted) return;
     responding = true;
+    // The answer is for the prompt shown here, not whichever is open under
+    // its request id when it lands.
+    response.occurrence = approval.occurrence;
     try {
       await onResolve(response);
     } catch (err) {

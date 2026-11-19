@@ -10,9 +10,11 @@
 
   import { onDestroy, onMount, tick } from 'svelte';
   import GripVertical from '@lucide/svelte/icons/grip-vertical';
+  import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
   import ProviderLoginFlow from '../accounts/ProviderLoginFlow.svelte';
@@ -68,6 +70,18 @@
   let login = $derived(getProviderLogin(provider, backend));
   let showLoginFlow = $derived(
     isProviderLoginActive(provider, backend) || login.phase === 'failed',
+  );
+
+  // The section's sign-in action is the labeled button wherever its one
+  // line fits the column, and an icon button named for the action where it
+  // cannot (a phone at a large text size): buttons never wrap (styles.ts).
+  // No CSS condition compares a text's rendered width with its container,
+  // so both widths are observed; until they are, the label shows.
+  let loginLabel = $derived(actions.loggingIn ? 'Signing in…' : 'Log in to another account');
+  let accountsBox = $state<DOMRectReadOnly | undefined>(undefined);
+  let loginLabelBox = $state<ResizeObserverSize[] | undefined>(undefined);
+  let loginLabelFits = $derived(
+    !accountsBox || !loginLabelBox?.[0] || loginLabelBox[0].inlineSize <= accountsBox.width,
   );
 
   onMount(() => {
@@ -308,20 +322,41 @@
   data-testid="provider-accounts-{provider}"
   data-settings-field={providerFieldId(provider, 'accounts')}
   data-settings-label="Accounts"
+  bind:contentRect={accountsBox}
 >
   <SettingsHeader title="Accounts" description="Saved native logins and their last-known limits.">
     {#snippet badge()}
-      <button
-        type="button"
-        class={PRIMARY_BUTTON_CLASS}
-        disabled={credentialOpInFlight || !admin}
-        title={ungrantedTitle}
-        onclick={() => void startProviderLogin(provider, backend)}
-      >
-        {actions.loggingIn ? 'Signing in…' : 'Log in to another account'}
-      </button>
+      {#if loginLabelFits}
+        <button
+          type="button"
+          class={PRIMARY_BUTTON_CLASS}
+          disabled={credentialOpInFlight || !admin}
+          title={ungrantedTitle}
+          onclick={() => void startProviderLogin(provider, backend)}
+          data-testid="provider-accounts-login-{provider}"
+        >
+          {loginLabel}
+        </button>
+      {:else}
+        <IconButton
+          label={loginLabel}
+          title={ungrantedTitle}
+          disabled={credentialOpInFlight || !admin}
+          onClick={() => void startProviderLogin(provider, backend)}
+          size="sm"
+          variant="subtle"
+          testId="provider-accounts-login-icon-{provider}"
+        >
+          <Icon icon={UserRoundPlus} size={14} strokeWidth={2} />
+        </IconButton>
+      {/if}
     {/snippet}
   </SettingsHeader>
+  <!-- The labeled button's one-line width, measured where nothing sees it
+       (hidden, clipped to no size) so it is known while the icon shows. -->
+  <span class="pointer-events-none invisible absolute h-0 w-0 overflow-hidden" aria-hidden="true">
+    <span class="{PRIMARY_BUTTON_CLASS} absolute" bind:borderBoxSize={loginLabelBox}>{loginLabel}</span>
+  </span>
 
   {#if showLoginFlow}
     <ProviderLoginFlow {backend} {provider} {login} />
@@ -335,7 +370,10 @@
     </p>
   {:else}
     <p class="sr-only" aria-live="polite">{reorderNotice}</p>
-    <div class="flex flex-col gap-2" bind:this={listEl}>
+    <!-- A narrow list (a phone) gives each card's name the full width it
+         needs to be told apart, and the controls a row of their own that
+         wraps within the card at large text sizes. -->
+    <div class="@container/accounts flex flex-col gap-2" bind:this={listEl}>
       {#each accounts as account, index (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id, backend)}
         {@const orgLabel = providerAccountOrgLabel(account)}
@@ -356,7 +394,7 @@
           data-testid="provider-account-{account.id}"
           data-account-card={account.id}
         >
-          <div class="flex items-start justify-between gap-3">
+          <div class="flex items-start justify-between gap-3 @max-lg/accounts:flex-wrap @max-lg/accounts:gap-y-1">
             {#if canReorder}
               <button
                 type="button"
@@ -386,24 +424,32 @@
               onclick={cardAction(account)}
               aria-label={providerAccountActionLabel(account)}
             >
-              <span class="flex items-center gap-2">
-                <span
-                  class="h-2 w-2 shrink-0 rounded-full border {account.needsLogin
-                    ? 'border-warning'
-                    : account.active
-                      ? 'border-accent bg-accent'
-                      : 'border-fg-hint'}"
-                  aria-hidden="true"
-                ></span>
-                <span
-                  class="truncate text-[0.75rem] font-medium {account.needsLogin
-                    ? 'text-fg-muted'
-                    : 'text-fg'}"
-                >
-                  {providerAccountName(account)}
+              <!-- "Active" drops below the name, in line with its text, when
+                   staying beside it would leave the name under 6em (the
+                   dot, name and pill outgrow a phone card at large text
+                   sizes). The name's group starts at 6em and grows to its
+                   whole width; the row's padding is where the dot sits. -->
+              <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-4">
+                <span class="-ml-4 flex min-w-0 max-w-max grow basis-[calc(1rem+6em)] items-center gap-2 text-[0.75rem]">
+                  <span
+                    class="h-2 w-2 shrink-0 rounded-full border {account.needsLogin
+                      ? 'border-warning'
+                      : account.active
+                        ? 'border-accent bg-accent'
+                        : 'border-fg-hint'}"
+                    aria-hidden="true"
+                  ></span>
+                  <span
+                    class="truncate font-medium {account.needsLogin
+                      ? 'text-fg-muted'
+                      : 'text-fg'}"
+                    data-testid="provider-account-name-{account.id}"
+                  >
+                    {providerAccountName(account)}
+                  </span>
                 </span>
                 {#if account.active}
-                  <span class="rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">
+                  <span class="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">
                     Active
                   </span>
                 {/if}
@@ -432,7 +478,9 @@
               {/if}
             </button>
 
-            <div class="flex shrink-0 items-center gap-1">
+            <div
+              class="flex shrink-0 items-center gap-1 @max-lg/accounts:basis-full @max-lg/accounts:flex-wrap @max-lg/accounts:justify-end"
+              data-testid="provider-account-controls-{account.id}">
               <label
                 class="flex cursor-pointer items-center gap-1.5 whitespace-nowrap px-1 text-[0.71875rem] text-fg-muted has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 compact:select-none"
                 title={ungrantedTitle ?? 'Let Agent Overflow switch to and from this account when a usage limit is near'}
@@ -470,33 +518,37 @@
                   Sign in again
                 </button>
               {/if}
-              <button
-                type="button"
-                class={GHOST_BUTTON_CLASS}
-                disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight || !admin}
-                onclick={() => void refreshProviderAccountUsage(provider, account, backend)}
-                title={ungrantedTitle ?? (account.needsLogin
-                  ? 'Sign in again to refresh usage limits'
-                  : 'Refresh usage limits')}
-                aria-label={`Refresh usage for ${providerAccountName(account)}`}
-              >
-                <Icon
-                  icon={RefreshCw}
-                  size={12}
-                  strokeWidth={1.75}
-                  class={actions.refreshingID === account.id ? 'animate-spin' : ''}
-                />
-              </button>
-              <button
-                type="button"
-                class="{GHOST_BUTTON_CLASS} hover:text-error"
-                disabled={credentialOpInFlight || !admin}
-                onclick={() => requestRemoval(account)}
-                title={ungrantedTitle ?? 'Remove saved account'}
-                aria-label={`Remove ${providerAccountName(account)}`}
-              >
-                <Icon icon={Trash2} size={12} strokeWidth={1.75} />
-              </button>
+              <!-- The icon actions wrap as a pair, never leaving one alone on
+                   a line. -->
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  class={GHOST_BUTTON_CLASS}
+                  disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight || !admin}
+                  onclick={() => void refreshProviderAccountUsage(provider, account, backend)}
+                  title={ungrantedTitle ?? (account.needsLogin
+                    ? 'Sign in again to refresh usage limits'
+                    : 'Refresh usage limits')}
+                  aria-label={`Refresh usage for ${providerAccountName(account)}`}
+                >
+                  <Icon
+                    icon={RefreshCw}
+                    size={12}
+                    strokeWidth={1.75}
+                    class={actions.refreshingID === account.id ? 'animate-spin' : ''}
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="{GHOST_BUTTON_CLASS} hover:text-error"
+                  disabled={credentialOpInFlight || !admin}
+                  onclick={() => requestRemoval(account)}
+                  title={ungrantedTitle ?? 'Remove saved account'}
+                  aria-label={`Remove ${providerAccountName(account)}`}
+                >
+                  <Icon icon={Trash2} size={12} strokeWidth={1.75} />
+                </button>
+              </div>
             </div>
           </div>
 

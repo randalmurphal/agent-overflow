@@ -283,8 +283,8 @@ func TestThreadToolsAdapterReadsAThreadRow(t *testing.T) {
 func TestThreadToolsAdapterResolvesRefs(t *testing.T) {
 	t.Parallel()
 	f := newThreadToolsFixture(t)
-	first := f.thread(t, "abcd1111-one")
-	second := f.thread(t, "abcd2222-two")
+	first := f.thread(t, "abcdef11-one")
+	second := f.thread(t, "abcdef22-two")
 	f.thread(t, "ffff0000-other")
 
 	// A full id resolves to exactly itself.
@@ -298,12 +298,17 @@ func TestThreadToolsAdapterResolvesRefs(t *testing.T) {
 
 	// A prefix both threads share comes back as both candidates, in id
 	// order, so the refusal can list them.
-	res, err = f.adapter.ResolveThreadRef(t.Context(), "abcd")
+	res, err = f.adapter.ResolveThreadRef(t.Context(), "abcdef")
 	if err != nil {
 		t.Fatalf("ResolveThreadRef(prefix): %v", err)
 	}
 	if len(res.Matches) != 2 || res.Matches[0].ThreadID != first.ID || res.Matches[1].ThreadID != second.ID {
 		t.Fatalf("ambiguous prefix = %#v", res.Matches)
+	}
+	// A ref shorter than threadtools.MinPrefixLen names an assistant or
+	// nothing: it is never an id prefix.
+	if res, err = f.adapter.ResolveThreadRef(t.Context(), "abcd"); err != nil || len(res.Matches) != 0 {
+		t.Fatalf("short prefix = %#v, %v", res.Matches, err)
 	}
 
 	// No match is an empty resolution, not an error.

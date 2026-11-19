@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -9,7 +10,7 @@ import (
 // joinedFlushSeparator is the visible rule between the parts of a JOINED
 // queued message, shared with the triage-side fold of a merge the CLI made
 // across separate drains so the two produce the same row.
-const joinedFlushSeparator = usermessage.JoinSeparator
+const joinedFlushSeparator = agentmeta.JoinSeparator
 
 // flushMember is one queued item resolved up to the last fallible step before
 // anything durable happens. A joined group resolves EVERY member first, so an
@@ -42,6 +43,10 @@ type joinedFlushMessage struct {
 	// opaque id every member's acknowledgement resolves to) and stays on
 	// `$.sendId`; the rest ride Meta.JoinedSendIDs.
 	sendID string
+	// parts are the members as they appear in content, which a session-death
+	// restore splits the message by (agentmeta.JoinedPart); nil for one
+	// message, or when a member is a joined message whose parts are unknown.
+	parts []agentmeta.JoinedPart
 	// guardSlashCommand comes from the FIRST member alone: Claude's command
 	// router tests the first character of the assembled message, so only the
 	// leading member's text can enter it.
@@ -93,11 +98,11 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 		sendID:            first.payload.SendID,
 		guardSlashCommand: !first.payload.ExpandComposerCommands || first.resolved.command != "",
 	}
-	// One member with no inherited ids is its own message already: reuse the
-	// meta resolveUserMessageEnvelope built. A member that inherited a joined
-	// row's ids (session-death requeue) still goes through joinFlushMeta so
-	// those ids survive the re-dispatch.
-	if len(members) == 1 && len(first.payload.JoinedSendIDs) == 0 {
+	// One member that is not itself joined is its own message already: reuse
+	// the meta resolveUserMessageEnvelope built. A member that inherited a
+	// joined row's ids and parts (session-death requeue) still goes through
+	// joinFlushMeta so they survive the re-dispatch.
+	if len(members) == 1 && len(first.payload.JoinedSendIDs) == 0 && len(first.payload.JoinedParts) == 0 {
 		joined.content = first.resolved.content
 		joined.providerContent = first.resolved.providerContent
 		joined.attachments = first.resolved.providerAttachments
@@ -105,23 +110,23 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 		return joined, nil
 	}
 
-	// BOTH texts are renumbered by the same walk. The stored summary is not
+	// BOTH texts are renumbered by the same walk, the summary's inside
+	// joinFlushMeta with the parts it measures. The stored summary is not
 	// display-only: the bubble renders its markers beside the row's attachment
 	// strip, and an edit-resend or a session-death requeue re-dispatches that
 	// exact string against the joined attachment list.
-	joined.content = joinRenumberedText(members, func(member flushMember) string {
-		return member.resolved.content
-	})
 	joined.providerContent = joinRenumberedText(members, func(member flushMember) string {
 		return member.resolved.providerContent
 	})
 	joined.attachments = joinProviderAttachments(members)
 
-	meta, sendID, err := joinFlushMeta(members)
+	content, meta, parts, sendID, err := joinFlushMeta(members)
 	if err != nil {
 		return joinedFlushMessage{}, err
 	}
+	joined.content = content
 	joined.meta = meta
+	joined.parts = parts
 	joined.sendID = sendID
 	return joined, nil
 }
@@ -154,13 +159,15 @@ func joinProviderAttachments(members []flushMember) []provider.ImageAttachment {
 	return attachments
 }
 
-// joinFlushMeta unions the members' row metadata (usermessage.JoinMetas) and
-// returns it with the send id that names the joined row.
-func joinFlushMeta(members []flushMember) (string, string, error) {
-	metas := make([]usermessage.Meta, 0, len(members))
+// joinFlushMeta joins the members' stored texts and row metadata
+// (usermessage.Join) and returns the joined summary, its encoded meta, the
+// joined message's parts, which the meta records too, and the send id that
+// names the joined row.
+func joinFlushMeta(members []flushMember) (string, string, []agentmeta.JoinedPart, string, error) {
+	joinMembers := make([]usermessage.JoinMember, 0, len(members))
 	for _, member := range members {
 		resolved := member.resolved
-		metas = append(metas, usermessage.Input{
+		meta := usermessage.Input{
 			Attachments:            resolved.persistedAttachments,
 			SourcePlan:             resolved.sourcePlan,
 			RevisionSourcePlan:     resolved.revisionSourcePlan,
@@ -171,9 +178,19 @@ func joinFlushMeta(members []flushMember) (string, string, error) {
 			ExpandComposerCommands: member.payload.ExpandComposerCommands,
 			SendID:                 member.payload.SendID,
 			JoinedSendIDs:          member.payload.JoinedSendIDs,
-		}.Projection())
+			// Attribution joins with the rest: JoinMetas keeps the first
+			// member's, so a wake or an agent's message that waited on the
+			// queue keeps its chip when it is joined with others.
+			Origin:       member.payload.Origin,
+			OriginThread: member.payload.OriginThread,
+			OriginWake:   member.payload.OriginWake,
+		}.Projection()
+		meta.JoinedParts = member.payload.JoinedParts
+		joinMembers = append(joinMembers, usermessage.JoinMember{
+			Meta: meta, Text: resolved.content, ImageCount: len(resolved.providerAttachments),
+		})
 	}
-	joined := usermessage.JoinMetas(metas)
+	content, joined := usermessage.Join(joinMembers)
 	// The joined text without the review comments any member rendered,
 	// renumbered by the same walk as the summary.
 	for _, member := range members {
@@ -190,7 +207,7 @@ func joinFlushMeta(members []flushMember) (string, string, error) {
 	}
 	meta, err := usermessage.MarshalMeta(joined)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, "", err
 	}
-	return meta, joined.SendID, nil
+	return content, meta, joined.JoinedParts, joined.SendID, nil
 }

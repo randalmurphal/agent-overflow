@@ -1,0 +1,58 @@
+// A computer on v0.0.19, as the window's calls see it: the methods this
+// build added answer `method_not_found`, and the thread actions whose result
+// this build added (ArchiveThread, DeleteThread) answer a success with
+// `null`, as that release's dispatcher encodes a method that returns only
+// an error. The list is the generated bindings at the tag against head.
+
+import { setBindingMock } from '../mocks/bindings-app';
+import { TransportError } from '../../lib/transport/wsClient';
+import type { Settings } from '../../lib/types/settings';
+import { makeSettings } from './settings';
+
+/** The App methods this build has and v0.0.19 does not. */
+export const METHODS_AFTER_V0_0_19 = [
+  'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
+  'GetDeleteDependents', 'GetNativeMemoryStatus', 'GetStandingAgent',
+  'GetThreadAgentRows', 'GetThreadRequestStates', 'GetThreadWakeDetail',
+  'GetThreadWorkerSummary', 'ListAssistantPastThreads', 'ListStandingAgentWakes',
+  'ListThreadAgentRows', 'ListThreadPastAgentRows', 'ListThreadRecurringJobs',
+  'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead',
+  'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
+  'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
+  'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
+] as const;
+
+/** The App methods that answer a value in this build and `null` on v0.0.19. */
+export const RESULTLESS_AT_V0_0_19 = ['ArchiveThread', 'DeleteThread'] as const;
+
+/** The settings keys this build has and v0.0.19's Settings does not. */
+export const SETTINGS_AFTER_V0_0_19 = [
+  'agentNotes', 'agentProfiles', 'assistantsEnabled', 'claudeOwnMemoryOff',
+  'codexOwnMemoryOff', 'notifyThreadAttention', 'sharedMemoryEnabled', 'subThreadLevels',
+] as const;
+
+/** A settings answer shaped like v0.0.19's: this build's, less the keys it added. */
+export function settingsAsV0019(overrides: Partial<Settings> = {}): Partial<Settings> {
+  const answer: Partial<Settings> = makeSettings(overrides);
+  for (const key of SETTINGS_AFTER_V0_0_19) delete answer[key];
+  return answer;
+}
+
+/** What v0.0.19's dispatcher answers for a method it does not register. */
+export function methodNotFound(): TransportError {
+  return new TransportError('method_not_found', 'unknown method');
+}
+
+/**
+ * Answers every method v0.0.19 lacks with `method_not_found`, and its
+ * archive, delete, mark read and workflow pause with `null`. Each mock is a
+ * vi.fn, so a test reads its calls through getBindingMock.
+ */
+export function answerAsV0019(): void {
+  for (const name of METHODS_AFTER_V0_0_19) {
+    setBindingMock(name, async () => { throw methodNotFound(); });
+  }
+  for (const name of [...RESULTLESS_AT_V0_0_19, 'MarkThreadRead', 'WorkflowPauseItem']) {
+    setBindingMock(name, async () => null);
+  }
+}

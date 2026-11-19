@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/harnessclient"
+	"agent-overflow/internal/stringsx"
 )
 
 // defaultFromThreadDelayMs paces the replay. The recorded chunk
@@ -191,11 +192,13 @@ func installScenarioDocument(ctx context.Context, client *harnessclient.Client, 
 // sendRecipe is the drive half: one `send` per rebuilt turn, carrying the
 // user text that produced it. The scenario replays assistant work only —
 // a real send is what opens each Turn — so without these lines the
-// document is a script with no trigger.
+// document is a script with no trigger. The full text is printed rather
+// than a truncation: the recipe is meant to be pasted, and a cut prompt
+// drives a different turn than the one that was recorded.
 func sendRecipe(threadID string, turns []recordedTurn) []string {
 	out := make([]string, 0, len(turns))
 	for _, turn := range turns {
-		out = append(out, fmt.Sprintf("ao-harness send --thread %s --wait %s", threadID, shellQuote(turn.UserText)))
+		out = append(out, fmt.Sprintf("ao-harness send --thread %s --wait %s", threadID, stringsx.ShellQuote(turn.UserText)))
 	}
 	return out
 }

@@ -2,14 +2,15 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -126,7 +127,12 @@ func TestAReplyDoesNotWakeAnArchivedSender(t *testing.T) {
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "starting on it")
 	ack := f.unattendedRunningRequest(t, "how big is the index?")
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	// An owned worker is archived with its owner, which interrupts the
+	// request; a standalone one keeps working and can still reply.
+	if _, err := f.app.store.SetThreadPlacement([]string{ack.ThreadID}, store.PlacementStandalone); err != nil {
+		t.Fatalf("SetThreadPlacement: %v", err)
+	}
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -190,15 +196,19 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
 	computer := uuid.NewString()
+	holdPairing(t, f.app, computer)
 	token := f.seedRemoteRequest(t, computer)
 
-	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, ThreadPeerRequest{
+	wakes, err := f.app.applyThreadPeerRequest(token, computer, ThreadPeerRequest{
 		Token: token, Known: true, State: store.ThreadReceiptReplied, Title: "Release checklist",
 		Answer: "the tag is pushed", AnswerKind: store.ThreadAnswerReply,
 		Revision: 1, SettledAt: time.Now().UnixMilli(),
-	})
-	if err != nil || revision != 1 {
-		t.Fatalf("applyThreadPeerRequest = revision %d err %v", revision, err)
+	}, threadPeerHearing{at: time.Now()})
+	if err != nil {
+		t.Fatalf("applyThreadPeerRequest: %v", err)
+	}
+	if owed := f.request(t, token).AckOwed; owed != 1 {
+		t.Fatalf("acknowledgement owed = %d, want revision 1", owed)
 	}
 	if len(wakes) != 1 || wakes[0].token != token || wakes[0].late {
 		t.Fatalf("wakes owed = %+v, want the reply's", wakes)
@@ -212,13 +222,15 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 
 // An answer from another computer that finished and then took a late reply
 // is collected whole, with the reply as its one wake, and the revision it
-// acknowledges is the one it holds. An acknowledgement lost after the
-// collection (a crash, a failed call) is sent again by the next poll that
-// finds the destination still behind, and by no other.
+// owes the acknowledgement of is the one it holds, recorded with the
+// collection. An acknowledgement the destination reports it never took,
+// though this computer cleared it, is owed again by the next poll that finds
+// the destination still behind, and by no other.
 func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	computer := uuid.NewString()
+	holdPairing(t, f.app, computer)
 	token := f.seedRemoteRequest(t, computer)
 	now := time.Now().UnixMilli()
 	answer := ThreadPeerRequest{
@@ -228,31 +240,47 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 		Revision: 2, SettledAt: now - 1000, ExpiresAt: now + time.Hour.Milliseconds(),
 	}
 
-	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, answer)
-	if err != nil || revision != 2 {
-		t.Fatalf("applyThreadPeerRequest = revision %d err %v; want 2", revision, err)
+	wakes, err := f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
+	if err != nil {
+		t.Fatalf("applyThreadPeerRequest: %v", err)
 	}
 	if len(wakes) != 1 || wakes[0] != (threadWakeRef{token: token, late: true}) {
 		t.Fatalf("wakes owed = %+v, want the late reply's alone", wakes)
 	}
 	row := f.request(t, token)
 	if row.State != store.ThreadRequestFinished || string(row.Answer) != "original final" ||
-		string(row.LateReply) != "actual requested reply" || row.LateReplyAt != now || row.Revision != 2 {
-		t.Fatalf("request = %+v, want the final and the late reply at revision 2", row)
+		string(row.LateReply) != "actual requested reply" || row.LateReplyAt != now || row.Revision != 2 || row.AckOwed != 2 {
+		t.Fatalf("request = %+v, want the final and the late reply at revision 2, its acknowledgement owed", row)
 	}
 
-	// The acknowledgement never arrived: the destination still reports
-	// nothing collected, and the poll acknowledges again, writing nothing.
-	revision, wakes, err = f.app.applyThreadPeerRequest(token, computer, answer)
-	if err != nil || revision != 2 || len(wakes) != 0 {
-		t.Fatalf("poll after a lost ack = revision %d wakes %+v err %v; want revision 2 and no wake", revision, wakes, err)
+	// Still owed: a poll that finds the destination behind writes nothing.
+	wakes, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
+	if err != nil || len(wakes) != 0 {
+		t.Fatalf("poll before the ack = wakes %+v err %v; want no wake", wakes, err)
 	}
 	if again := f.request(t, token); again.Revision != row.Revision || again.UpdatedAt != row.UpdatedAt {
-		t.Fatalf("poll after a lost ack rewrote the request: %+v", again)
+		t.Fatalf("poll before the ack rewrote the request: %+v", again)
+	}
+	// Cleared, but the destination never took it: owed again.
+	ack := store.ThreadRequestAck{Token: token, ComputerID: computer, Revision: 2}
+	if err := f.app.store.ClearThreadRequestAcks([]store.ThreadRequestAck{ack}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if owed := f.request(t, token).AckOwed; owed != 2 {
+		t.Fatalf("acknowledgement owed after a lost ack = %d, want 2", owed)
+	}
+	if err := f.app.store.ClearThreadRequestAcks([]store.ThreadRequestAck{ack}); err != nil {
+		t.Fatal(err)
 	}
 	answer.CollectedRevision = 2
-	if revision, _, err = f.app.applyThreadPeerRequest(token, computer, answer); err != nil || revision != 0 {
-		t.Fatalf("poll after the ack = revision %d err %v; want nothing to acknowledge", revision, err)
+	if _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if owed := f.request(t, token).AckOwed; owed != 0 {
+		t.Fatalf("acknowledgement owed after the ack = %d, want none", owed)
 	}
 }
 
@@ -269,9 +297,10 @@ func TestADestinationReportsTheRevisionItsSourceCollected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	if _, err := f.app.store.SettleThreadRequestReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+	// The request is another computer's, so only the receipt is written.
+	if _, err := f.app.store.SettleLocalThreadRequest(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 		State: store.ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
-	}); err != nil {
+	}, store.ThreadRequestFinished); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.app.store.AckThreadRequestReceipt(token, 1, 0); err != nil {
@@ -336,18 +365,103 @@ func TestOneTurnAnsweringTwoRequestsWakesTheirSenderOnce(t *testing.T) {
 	}
 	f.nothingOwed(t)
 
+	// A restart finds the message still queued: it never reached the agent,
+	// and it goes back to every request it answered, owed again and
+	// disarmed, rather than to the composer.
 	after := f.restart(t)
 	after.app.restoreDurableFlushQueueAtBoot()
 	for _, token := range tokens {
-		if row := after.request(t, token); row.DeliveredHow != store.ThreadWakeDraft {
-			t.Errorf("request %s = delivered %q after its message was restored to the composer, want draft", token, row.DeliveredHow)
+		row := after.request(t, token)
+		if row.DeliveredAt != 0 || row.DeliveredWith != "" || row.Notify || !row.WakeOwed(false) {
+			t.Errorf("request %s after the restart = delivered %q at %d with %q, notify %v; want owed again and disarmed",
+				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify)
 		}
+	}
+	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
+		t.Errorf("queue after the restart = %+v, want the message given back", rows)
+	}
+}
+
+// A session that ends during the turn that read two of one sender's
+// requests tells the sender once, as the turn's own end would have.
+func TestASessionEndDuringOneTurnAnsweringTwoRequestsWakesTheirSenderOnce(t *testing.T) {
+	t.Parallel()
+	q := newQueuedRequests(t)
+	f := q.f
+	f.mockClaudeHoldingTheTurn(t, "mid-thought")
+	f.holdCallerTurn(t)
+	q.notify = true
+	first, second := q.queue(t, 1, 1), q.queue(t, 2, 1)
+	first.bind(t)
+	second.bind(t)
+	q.endTurn(t)
+	q.startPickupTurn(t)
+	first.consumed(t)
+	second.consumed(t)
+	q.say(t, 1, "halfway through both")
+	f.app.settleReceiptsForEndedSession(q.target.ID, q.session)
+
+	wakes := f.wakesQueuedFor(t, first.token, second.token)
+	if len(wakes) != 1 {
+		t.Fatalf("queued wakes = %+v, want one message for the one session end", wakes)
+	}
+	if !strings.Contains(wakes[0].Message, "halfway through both") {
+		t.Fatalf("wake = %q, want what the turn wrote before the session ended", wakes[0].Message)
+	}
+	f.nothingOwed(t)
+}
+
+// A restore that settles two of one sender's requests as never read, because
+// the provider did not take them in or their queue refused them again,
+// tells the sender once.
+func TestARestoreSettlingTwoRequestsUnreadWakesTheirSenderOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		settle func(t *testing.T, q *queuedRequests, requests []*queuedRequest)
+	}{
+		{"not taken in", func(t *testing.T, q *queuedRequests, requests []*queuedRequest) {
+			var unread []unreadRequest
+			for _, r := range requests {
+				r.bind(t)
+				unread = append(unread, unreadRequest{token: r.token, why: threadtools.CauseSessionEndedUnread})
+			}
+			q.f.app.settleNotTakenIn(q.target.ID, []notTakenIn{{unread: unread}})
+		}},
+		{"queue refused at teardown", func(t *testing.T, q *queuedRequests, requests []*queuedRequest) {
+			if _, _, err := q.f.app.store.ArchiveThread(q.target.ID); err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			var owed teardownRequests
+			for _, r := range requests {
+				owed.queued = append(owed.queued, returnedRequest{token: r.token, message: storedAgentMessage(r.token, r.row.Summary, agentmeta.OriginAgentThread, nil, nil)})
+			}
+			q.f.app.giveBackTeardownRequests(q.target.ID, owed)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := newQueuedRequests(t)
+			f := q.f
+			f.mockClaudeHoldingTheTurn(t, "mid-thought")
+			f.holdCallerTurn(t)
+			q.notify = true
+			requests := []*queuedRequest{q.queue(t, 1, 1), q.queue(t, 2, 1)}
+			tc.settle(t, q, requests)
+
+			wakes := f.wakesQueuedFor(t, requests[0].token, requests[1].token)
+			if len(wakes) != 1 {
+				t.Fatalf("queued wakes = %+v, want one message for the one restore", wakes)
+			}
+			f.nothingOwed(t)
+		})
 	}
 }
 
 // A restart interrupts every open request. A thread with requests open on
-// several threads is told in one message, in the app's own voice, which of
-// them it interrupted.
+// several threads is told in one message which of them it interrupted,
+// attributed to the first of them as an agent's message, never the
+// person's.
 func TestARestartTellsASenderOnceAboutEveryInterruptedRequest(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -365,7 +479,7 @@ func TestARestartTellsASenderOnceAboutEveryInterruptedRequest(t *testing.T) {
 		t.Fatalf("queued wakes = %+v, want one message for the restart", wakes)
 	}
 	message := wakes[0].Message
-	if !strings.HasPrefix(message, "2 threads were interrupted, each for the same reason:\n") || !strings.HasSuffix(message, "\n"+threadReceiptRestarted) {
+	if !strings.HasPrefix(message, "2 threads were interrupted by a restart of this computer.\n") {
 		t.Fatalf("wake = %q, want the restart said once for both threads", message)
 	}
 	for _, ack := range []threadtools.RequestAck{first, second} {
@@ -377,8 +491,14 @@ func TestARestartTellsASenderOnceAboutEveryInterruptedRequest(t *testing.T) {
 	if err := json.Unmarshal(wakes[0].Payload, &payload); err != nil {
 		t.Fatalf("decode wake payload: %v", err)
 	}
-	if payload.Origin != usermessage.OriginApp || payload.OriginThread != nil {
-		t.Errorf("wake payload = %+v, want the app's own notice", payload)
+	if payload.Origin != agentmeta.OriginAgentThread || payload.OriginThread == nil ||
+		payload.OriginThread.Kind != agentmeta.OriginKindWake || payload.OriginThread.Token != first.Token {
+		t.Errorf("wake payload = %+v, want an agent's wake attributed to its carrier %s", payload, first.Token)
+	} else if facts := payload.OriginThread.Facts; facts == nil || facts.Outcome != threadtools.WakeInterrupted ||
+		facts.StoppedBy != "a restart of this computer" || len(facts.Threads) != 2 ||
+		facts.Threads[0].ThreadID != first.ThreadID || !slices.Equal(facts.Threads[0].Tokens, []string{first.Token}) ||
+		facts.Threads[1].ThreadID != second.ThreadID || !slices.Equal(facts.Threads[1].Tokens, []string{second.Token}) {
+		t.Errorf("wake facts = %+v, want both threads with their tokens, stopped by the restart", payload.OriginThread.Facts)
 	}
 	after.nothingOwed(t)
 }
@@ -398,7 +518,7 @@ func TestDeletingATargetTellsASenderOnceAboutBothRequests(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	if err := f.app.DeleteThread(running.ThreadID); err != nil {
+	if err := f.app.deleteThread(running.ThreadID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 
@@ -421,7 +541,7 @@ func TestWakesFoldOnlyWhenTheySayTheSameThing(t *testing.T) {
 	// Each request is made a millisecond after the last, so "oldest first"
 	// is the order they are seeded in and not the order of their tokens.
 	made := time.Now().UnixMilli()
-	settled := func(answer string) threadWakeRef {
+	settledAs := func(settlement store.ThreadRequestSettlement) threadWakeRef {
 		token := uuid.NewString()
 		made++
 		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
@@ -431,17 +551,34 @@ func TestWakesFoldOnlyWhenTheySayTheSameThing(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("InsertThreadRequest: %v", err)
 		}
-		if _, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State: store.ThreadRequestFinished, Answer: []byte(answer), AnswerKind: store.ThreadAnswerFinal,
-		}); err != nil {
+		if _, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), settlement); err != nil {
 			t.Fatalf("SettleThreadRequest: %v", err)
 		}
 		return threadWakeRef{token: token}
+	}
+	settled := func(answer string) threadWakeRef {
+		return settledAs(store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte(answer), AnswerKind: store.ThreadAnswerFinal,
+		})
+	}
+	interrupted := func(cause threadtools.Cause) threadWakeRef {
+		return settledAs(interruptedSettlement(cause, ""))
 	}
 
 	messages := f.app.threadWakeMessages([]threadWakeRef{settled("tests pass"), settled("lint fails"), settled("tests pass")})
 	if len(messages) != 2 || len(messages[0].rows) != 2 || len(messages[1].rows) != 1 {
 		t.Fatalf("messages = %d with %v rows, want the two that agree folded and the other alone", len(messages), messageSizes(messages))
+	}
+	// Interruptions with no text say the same thing only when their causes
+	// are the same.
+	messages = f.app.threadWakeMessages([]threadWakeRef{
+		interrupted(threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Desk"}),
+		interrupted(threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Laptop"}),
+		interrupted(threadtools.Cause{Code: threadtools.CauseRestart}),
+		interrupted(threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Desk"}),
+	})
+	if len(messages) != 3 || len(messages[0].rows) != 2 || messages[1].cause.Arg != "Laptop" || messages[2].cause.Code != threadtools.CauseRestart {
+		t.Fatalf("interruptions folded into %v, want the two moves to Desk together and the others alone", messageSizes(messages))
 	}
 
 	var many []threadWakeRef

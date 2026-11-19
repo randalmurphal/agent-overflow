@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 
 	"agent-overflow/internal/transferfiles"
@@ -76,6 +78,24 @@ func (s *Store) ExportThreadHistory(ctx context.Context, threadID string, output
 type ThreadHistoryExport struct {
 	ItemMeta func(string) (string, error)
 	Draft    func(ThreadDraft) (ThreadDraft, error)
+	// Tallies carries the thread's tallies in the header, for a move: the
+	// thread goes on as itself elsewhere, with the work it has done.
+	Tallies bool
+}
+
+// transferThreadHeader is the archive's first record: the thread, and for
+// a move its tallies (thread_tallies.go). The tallies are an additive
+// field a receiver that predates them ignores.
+type transferThreadHeader struct {
+	Thread
+	Tallies *transferTallies `json:"tallies,omitempty"`
+}
+
+// transferTallies is a moved thread's thread_tallies row.
+type transferTallies struct {
+	ToolCalls int64 `json:"toolCalls"`
+	Tokens    int64 `json:"tokens"`
+	TurnMs    int64 `json:"turnMs"`
 }
 
 func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, output io.Writer, transform ThreadHistoryExport) error {
@@ -97,7 +117,17 @@ func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, ou
 	} else if active {
 		return errors.New("transfer: wait for the conversation to finish before transferring it")
 	}
-	if err := writeHistoryRecord(output, "thread", thread); err != nil {
+	header := transferThreadHeader{Thread: thread}
+	if transform.Tallies {
+		var tallies transferTallies
+		err := s.reader().QueryRow(`SELECT tool_calls, tokens, turn_ms FROM thread_tallies WHERE thread_id = ?`, threadID).
+			Scan(&tallies.ToolCalls, &tallies.Tokens, &tallies.TurnMs)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("transfer: read the tallies of %s: %w", threadID, err)
+		}
+		header.Tallies = &tallies
+	}
+	if err := writeHistoryRecord(output, "thread", header); err != nil {
 		return err
 	}
 	if err := s.exportTransferPayloads(ctx, threadID, output); err != nil {

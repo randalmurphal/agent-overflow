@@ -36,33 +36,44 @@ func decodeUserInputResolvedMeta(raw json.RawMessage) (requestID string, decisio
 	return requestID, decision, payload.Answers
 }
 
-func (r *Router) setPendingUserInput(threadID string, request provider.UserInputRequest) {
-	if request.RequestID == "" {
-		return
-	}
+// setPendingUserInput registers a question. It reports false, and registers
+// nothing, for a retired session's question: only its dead process
+// could take the answer.
+func (r *Router) setPendingUserInput(threadID string, request provider.UserInputRequest, sessionToken string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false
+	}
+	if request.RequestID == "" {
+		return true
+	}
 	st := r.state(threadID)
 	if st.pendingUserInputs == nil {
 		st.pendingUserInputs = make(map[string]provider.UserInputRequest)
 	}
 	st.pendingUserInputs[request.RequestID] = request
 	st.pendingUserInputOrder = rememberInteractiveRequestOrder(st.pendingUserInputOrder, threadID, request.RequestID)
+	return true
 }
 
-func (r *Router) takePendingUserInput(threadID, requestID string) (provider.UserInputRequest, bool) {
+// takePendingUserInput is takePendingApproval for questions.
+func (r *Router) takePendingUserInput(threadID, requestID string, occurrence provider.PromptOccurrence) (request provider.UserInputRequest, ok, other bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
-		return provider.UserInputRequest{}, false
+		return provider.UserInputRequest{}, false, false
 	}
-	request, ok := st.pendingUserInputs[requestID]
+	request, ok = st.pendingUserInputs[requestID]
+	if ok && occurrence != 0 && request.Occurrence != occurrence {
+		return provider.UserInputRequest{}, false, true
+	}
 	if ok {
 		delete(st.pendingUserInputs, requestID)
 		st.pendingUserInputOrder = removeInteractiveRequestOrder(st.pendingUserInputOrder, threadID, requestID)
 	}
-	return request, ok
+	return request, ok, false
 }
 
 func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
@@ -94,7 +105,11 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 		})
 	}
 
-	r.setPendingUserInput(evt.ThreadID, request)
+	request.RoutedTo = r.routePrompt(evt.ThreadID)
+	request.SessionToken, request.Occurrence = evt.SessionToken, provider.PromptOccurrence(r.promptOccurrences.Add(1))
+	if !r.setPendingUserInput(evt.ThreadID, request, evt.SessionToken) {
+		return nil
+	}
 	// User-input requests are a sidebar-bump boundary alongside
 	// user_text persist and turn settle: the agent is paused waiting
 	// for the user. Resolutions ride on the user's submitted answer,
@@ -115,7 +130,15 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 	if requestID == "" {
 		requestID = evt.ItemID
 	}
-	request, ok := r.takePendingUserInput(evt.ThreadID, requestID)
+	request, ok, other := r.takePendingUserInput(evt.ThreadID, requestID, evt.PromptOccurrence)
+	if other {
+		// See handleApprovalResolved.
+		return nil
+	}
+	occurrence := request.Occurrence
+	if !ok {
+		occurrence = evt.PromptOccurrence
+	}
 	var persistErr error
 	if ok {
 		// The pending entry is already taken, so this resolution is the
@@ -126,10 +149,11 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 		}
 	}
 	r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
-		Action:    "resolve",
-		ThreadID:  evt.ThreadID,
-		RequestID: requestID,
-		Decision:  decision,
+		Action:     "resolve",
+		ThreadID:   evt.ThreadID,
+		RequestID:  requestID,
+		Decision:   decision,
+		Occurrence: occurrence,
 	})
 	return persistErr
 }

@@ -121,20 +121,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Step 1a0: stop the workflow scheduler before anything else workflow-side.
-	// Pausing every active run (Step 1a) while a cron tick or a chained internal
-	// event can still start a new one is a race the human loses: the new run
-	// would be admitted after the pause sweep walked past it and would die
-	// mid-turn with the process. Stopping is bounded; a scheduler that misses the
-	// window is recorded, not waited on.
-	if a.workflowApplication().Scheduler() != nil {
-		record("stop workflow scheduler", a.stopWorkflowScheduler(ctx))
-	}
-
-	// Self-resume timers come down with it, and for the same reason: a schedule
-	// firing into the pause sweep below would resume a run this shutdown is
-	// parking. The schedules are durable, so the next boot re-arms every one of
-	// them.
+	// Step 1a0: stop the self-resume timers before anything else
+	// workflow-side. A schedule firing into the pause sweep below would resume
+	// a run this shutdown is parking. The schedules are durable, so the next
+	// boot re-arms every one of them.
 	a.workflowApplication().StopAutoResumes()
 
 	// Step 1a: pause every active workflow run. This runs while provider
@@ -241,6 +231,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// Notification jobs read the thread title out of SQLite, so they drain
 	// with the other reactors rather than after the database closes.
 	record("drain notifications", a.drainNotifications(ctx, notificationDrainTimeout))
+	// Worker prompt deliveries and async question reconciles are fed by
+	// triage too, and read SQLite. The queue is closed here: what the
+	// session closes below and later events would queue runs nowhere, and
+	// the next boot routes the open questions again.
+	record("drain worker prompts", a.closeWorkerPrompts(ctx, notificationDrainTimeout))
 	// The push fan-out reads registrations out of the same database, so it
 	// drains here too — and after the notification queue, because that is
 	// what feeds it.
@@ -271,15 +266,21 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// about. stopIdleSessionReaper is idempotent and blocks until the
 	// goroutine returns.
 	a.remoteWatchWG.Wait()
-	// Before the request work is joined: an idle close stops a session,
-	// and the events a stop drains reach the turn observer that starts
-	// settlements.
+	// Before the request work is joined: an idle close hands the requests
+	// it took back to a settlement goroutine.
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed. Closing
 	// it refuses the settlements a later session close would start.
+	a.ownerUpdates.workers.Close()
 	a.threadRequestsWG.Close()
+	// After every producer of a notice: a session start a notice began
+	// registers its session, and Step 4 must see it to close it.
+	a.stopAgentNoticeWork()
+	// A memory report writes warning rows, so it is joined before the
+	// store is closed; the session starts that begin them are done.
+	a.stopMemoryReports()
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()
@@ -302,7 +303,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.permissionModeFollowWG.Wait()
 
 	// Step 3c: stop the retention TTL sweep. The sweep writes to
-	// SQLite (cascading thread deletes) and calls deleteThreadTreeLocked
+	// SQLite (cascading thread deletes) and deletes threads (deleteThreadPaced),
 	// which mutates a.sessions via stopSession — running it concurrently
 	// with Step 4's snapshotAndClear would race the session map, and
 	// running it past Step 9's store close would write to a torn-down
@@ -460,6 +461,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.waitThreadSearchIndex()
 	record("stop thread search index", nil)
 	record("close thread MCP server", a.threadMCPServer().Close())
+	record("close workflow MCP server", a.workflowMCPServer().Close())
+	// A workflow tool call's wait hold releases on the wake queue once its
+	// response is written, which can follow the engine's close and the drain
+	// there. Closing the server joins those calls, so their wake work is
+	// queued by now; it finishes before SQLite closes.
+	a.workflowApplication().WaitWake()
+	record("drain workflow wakes", nil)
 	if a.backends != nil {
 		a.backends.WaitOwnDevices()
 		// Session renewals write profile files and call the other

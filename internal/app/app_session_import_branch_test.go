@@ -189,7 +189,7 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 	// The session-start path resumes that id directly — no --fork-session,
 	// which would fork the SOURCE at its tail (the wrong branch).
 	opts := provider.SessionOptionsFromThread(
-		stored, provider.AutoCompactDefaults{}, "", stored.PendingForkRef != "")
+		stored, provider.AutoCompactDefaults{}, stored.PendingForkRef != "")
 	if opts.Resume != materialized.SessionRef || opts.ForkSession {
 		t.Fatalf("session options = {Resume:%q ForkSession:%v}, want a plain resume of %q",
 			opts.Resume, opts.ForkSession, materialized.SessionRef)

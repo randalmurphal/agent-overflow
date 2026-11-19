@@ -99,8 +99,9 @@ type AttachedBackends interface {
 	// installation holds no such profile. Nil is an ordinary answer — a
 	// page whose manifest is a moment stale asks for a backend that has
 	// just been removed — and it is answered with the same 404 a bad
-	// credential gets.
-	Carrier(id string) BackendCarrier
+	// credential gets. It gives up when ctx ends, which a request whose
+	// client left does while the profile is being changed.
+	Carrier(ctx context.Context, id string) BackendCarrier
 }
 
 // AttachedProfile is one attached machine as the manifest names it.
@@ -241,7 +242,7 @@ func (s *Server) attachedCarrier(w http.ResponseWriter, r *http.Request, id stri
 		http.NotFound(w, r)
 		return nil
 	}
-	carrier := s.cfg.AttachedBackends.Carrier(id)
+	carrier := s.cfg.AttachedBackends.Carrier(r.Context(), id)
 	if carrier == nil {
 		http.NotFound(w, r)
 		return nil

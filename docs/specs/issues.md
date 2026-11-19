@@ -438,7 +438,8 @@ Each answer is proposed, not ruled.
 - Selecting several backlog rows to move them together.
 - The calendar and call-duration readers behind the Time sources.
 - Running the time draft on a schedule. A reminder fires once; recurring
-  work belongs to workflow automations.
+  work belongs to a standing agent's loop or watch
+  ([wake supervisor](standing-agents.md#wake-supervisor)).
 - Telling template text from written text in a section. Comparing a
   section's text across tickets is the proposed method and is untried.
 - Light-theme chart colors.

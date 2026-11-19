@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -117,7 +118,7 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 	// TWO drains, one message each: the join at dispatch does not apply, so
 	// each message reaches the CLI as its own envelope under its own uuid.
 	for i, message := range messages {
-		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 			ID:      fmt.Sprintf("queue:%d", i),
 			Message: message,
 			Payload: flushQueuePayloadJSON(t, flushQueuePayload{
@@ -170,7 +171,7 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 	if _, found, err := app.store.GetThreadItem(thread.ID, firstRowID); err != nil || found {
 		t.Fatalf("merged-away row %s still present (found=%v err=%v)", firstRowID, found, err)
 	}
-	wantJoined := strings.Join(messages, usermessage.JoinSeparator)
+	wantJoined := strings.Join(messages, agentmeta.JoinSeparator)
 	if survivor.Summary != wantJoined {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, wantJoined)
 	}

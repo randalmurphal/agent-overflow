@@ -29,29 +29,34 @@ import (
 // dimension is the map this struct hangs off, so a per-thread sweep is a
 // single delete instead of a full-map prefix scan.
 type threadState struct {
+	// processBound is the state of the provider process the thread runs
+	// in, replaced whole when a new session commits (process_state.go).
+	processBound
+
 	// openTurn is the turn index currently open on the thread;
 	// openTurnSet distinguishes "turn 0 is open" from "no open turn"
 	// (the map's comma-ok).
 	openTurn    int
 	openTurnSet bool
-	// softClosedTurn is the turn a soft round close settled while its CLI
-	// turn's `result` is still to come (softClosedTurnSet).
-	// Parent content before the result continues it
-	// (reopenSoftClosedTurn); the result and every turn start clear it.
-	softClosedTurn    int
-	softClosedTurnSet bool
 	// waitingStop is a Stop of a send whose turn had not opened, held until
-	// that turn settles (stop_waiting_send.go). lastSettled is how the
-	// latest turn settlement ended, for a Stop marked after it.
+	// that turn settles (stop_waiting_send.go). The host writes it, so it
+	// is not process state: a session commit drops it by name
+	// (MarkThreadActive), because the replacement reuses turn indexes. How
+	// the latest settlement ended is the process's (processBound.lastSettled).
 	waitingStop    waitingStop
 	waitingStopSet bool
-	lastSettled    settledTurnOutcome
-	lastSettledSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
 	// when it returns. SampleInterrupt waits on it so an interrupt
 	// never samples the turn between its row and its open turn.
 	turnStarting chan struct{}
+	// turnOpenings counts the turn opens under way (markTurnOpeningLocked),
+	// each from before it claims the send its turn opens, or settles the
+	// round before it, until its round is published, so a live read finds
+	// the turn owed throughout (LiveStateSnapshot.TurnOwed).
+	turnOpenings int
+	// openingsDone releases cleanup once every previously admitted turn is published.
+	openingsDone chan struct{}
 
 	// interruptQueue holds persistence work deferred behind an active
 	// stream (invariant 11), drained once the thread stops streaming.
@@ -139,21 +144,6 @@ type threadState struct {
 	// can't leak its last-seen state into the next turn.
 	streamingPathRefsLast map[string]*streamingPathRefsState
 
-	// settledTurns marks turns whose settlement has run (turns row
-	// UPDATE-d, streaming items settled): handleTurnComplete's, or the
-	// predecessor settle when the next turn starts. A later
-	// EventTurnComplete for a settled turn (the synthetic-truncate-then-
-	// real race) is a persistence no-op apart from its late payload, so
-	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
-	// re-init can re-settle the same turn) and by MarkThreadActive.
-	// Key = turnIndex. The session has settled a turn when it is
-	// non-empty (sessionSettledATurn).
-	//
-	// This gate operates at LOGICAL-TURN granularity; the frontend-facing
-	// `provider:turn_completed` emission is gated per ROUND via
-	// currentRound/takeOpenRound below.
-	settledTurns map[int]bool
-
 	// currentRound names the active round for the thread. Frontend
 	// `provider:turn_started` / `provider:turn_completed` emissions are
 	// gated per round via this slot: every turn start and reopenSoftClosedTurn
@@ -166,22 +156,6 @@ type threadState struct {
 	// "user-typed prompt is in flight."
 	currentRound     ActiveTurnSnapshot
 	currentRoundOpen bool
-
-	// effectiveModel is the session-scoped model actually serving the
-	// thread after a provider fallback. The durable threads.model remains
-	// the user's requested model; this live projection is cleared with the
-	// provider session and included in GetThreadLiveState hydration. Its
-	// monotonic revision counter lives on threadIdentity — it must
-	// survive the session that produced it.
-	effectiveModel    string
-	effectiveModelSet bool
-
-	// announcedDeath is the id of the session_died notice this thread's
-	// session last announced on provider:session_died. It dedupes a
-	// replayed death whose notice the store refused, so no saved row can
-	// (handleSessionDied). Bound to the provider process: cleared when a
-	// replacement session starts (MarkThreadActive).
-	announcedDeath string
 
 	// tasks is the per-thread mirror of the Claude Task* family task
 	// list. Survives any number of Parser recreations within the process
@@ -240,18 +214,15 @@ type threadState struct {
 	// cancel, or when a replacement session starts) or the session-end
 	// DrainUnconfirmedFlushItems, which a Stop's drop runs too.
 	undeliveredSends []UnconfirmedFlushItem
-	// boundarySends are sends the provider consumed with no turn open and
-	// none it had started in: the turn that opens next answers them
-	// (send_consumed.go). One entry per consumed pending send; emptied when
-	// a turn opens and by MarkThreadActive.
-	boundarySends []boundarySend
-	// recentFlushDigests is the bounded, ordered history of this thread's
-	// flush sends and the content-block fingerprints they put on the wire.
-	// It outlives the pendingSends entry because the evidence for a provider
-	// queue-boundary merge arrives on the LAST member's echo, after the
-	// earlier members' entries have already been consumed. Lifecycle:
-	// session-scoped, swept with the rest of threadState at cleanup. See
-	// claude_merge_fold.go.
+	// recentFlushDigests is the ordered ledger of this thread's flush sends
+	// whose boundary is unresolved and the content-block fingerprints they
+	// put on the wire. It outlives the pendingSends entry because the
+	// evidence for a provider queue-boundary merge arrives on the LAST
+	// member's echo, after the earlier members' entries have already been
+	// consumed. Lifecycle: retired by the confirmation that resolves it
+	// (retireResolvedFlushDigests), bounded by MaxOutstandingFlushSends, and
+	// swept with the rest of threadState at cleanup. See
+	// claude_merge_digest.go.
 	recentFlushDigests []flushSendDigest
 	// wireOnlyUserTextSeen dedupes wire EventUserText events that don't
 	// match any pending AO send (the "agent prompted itself" or
@@ -267,22 +238,6 @@ type threadState struct {
 	// boundaries by design, so NOT swept by clearOpenTurn — only at
 	// session teardown. See flush_queue.go.
 	queuedFlushItems []QueuedFlushItem
-
-	// pendingWakeupAt is the fire time (epoch ms) of the Claude harness's
-	// pending ScheduleWakeup timer. The timer is in-process CLI state with
-	// no task lifecycle, so this field is the only record that an
-	// idle-looking session will resume itself; the idle-session reaper
-	// reads it via PendingWakeupAt. Session-scoped: cleared at teardown
-	// AND by MarkThreadActive (a replacement process never inherits the
-	// timer). See session_wakeup.go.
-	pendingWakeupAt  int64
-	pendingWakeupSet bool
-
-	// subagentProgress is the latest live progress tick per launch
-	// tool_use, keyed by itemID. Live UI state only; the terminal path
-	// consumes it into the launch row's meta. Swept with pendingWakeupAt
-	// (same session-scoped lifetime). See subagent_progress.go.
-	subagentProgress map[string]provider.SubagentProgressMeta
 
 	// pendingToolCorrelations holds correlation metadata (task_id /
 	// subagent_model / parent_tool_use_id) from a metaUpdateOnly
@@ -308,33 +263,6 @@ type threadState struct {
 	// Bounded by maxCarrierRootsPerThread; swept with the threadState.
 	carrierRoots map[string]string
 
-	// compactingSince is the open compacting window: the epoch-ms
-	// timestamp of the frame that opened it. Live-only projection behind
-	// `provider:compacting` (compaction_status.go); closed by the explicit
-	// close frame, the compact boundary, or turn completion, and swept at
-	// teardown AND by MarkThreadActive (a replacement process is never
-	// mid-compaction).
-	compactingSince    int64
-	compactingSinceSet bool
-
-	// commandLifecycle correlates Claude's `command_lifecycle` acks back
-	// to the AO row and the wire round each stdin user message was queued
-	// into, keyed by command_uuid. Send-time carry-over, released on the
-	// terminal ack and swept at teardown; bounded per thread by
-	// maxCommandLifecycleEntriesPerThread. See command_lifecycle.go for
-	// why neither value can be recovered lazily.
-	commandLifecycle map[string]commandLifecycleEntry
-
-	// workspacePath caches the directory the thread's provider process
-	// works in, for path-ref enrichment: every streaming text flush and
-	// every prose settle reads it, 10-30 times in a heavy turn. It is read
-	// from the thread row at first use, follows the process's own move
-	// (followWorkspaceChange), and is dropped when the process is replaced
-	// (MarkThreadActive) or the session is torn down. Every other checkout
-	// move restarts the session.
-	workspacePath    string
-	workspacePathSet bool
-
 	// usageEmitThrottle rate-limits provider:usage emissions to at most
 	// one per usageEmitMinInterval. The context-window meter changes
 	// gradually during streaming; Claude can fire 10-50 token usage
@@ -358,13 +286,14 @@ type threadState struct {
 	pendingApprovalItems  map[string]approvalDecision
 	pendingUserInputs     map[string]provider.UserInputRequest
 	pendingUserInputOrder []string
-	// answeredRequests holds the request ids this router has forwarded an
-	// answer for. Several clients render the same prompt, so two of them
+	// answeredRequests holds, by request id, the prompt occurrence this
+	// router has forwarded an answer for (zero for a request it held no
+	// prompt for). Several clients render the same prompt, so two of them
 	// can answer it; this is what makes the second one a loser rather than
 	// a duplicate write to the provider. Bounded like its siblings: an
 	// answered prompt's record is swept at the turn boundary, an open
 	// one's goes with its prompt. See interactive_claim.go.
-	answeredRequests map[string]struct{}
+	answeredRequests map[string]provider.PromptOccurrence
 
 	// toolCalls caches the placement (parent, turn) of tool_call rows the
 	// session persisted or asked about, so parent validation and scope
@@ -502,6 +431,15 @@ type threadIdentity struct {
 	// that lifetime. Guarded by r.mu, exactly as that map was.
 	claimedFlushItems []QueuedFlushItem
 
+	// dispatchGeneration is the app's dispatch generation for the thread
+	// (FlushDispatchGeneration). On the identity so a cleanup keeps it, and
+	// under r.mu so tryFlushQueue stamps a handoff with the generation it
+	// was made in.
+	dispatchGeneration uint64
+	// flushDroppedBelow is one past the last generation whose queued work
+	// was thrown away, 0 when none was (AdvanceFlushDispatchGeneration).
+	flushDroppedBelow uint64
+
 	// epoch counts MarkThreadActive calls. An asynchronous teardown
 	// captures the epoch before unregistering a dead session and hands it
 	// to CleanupThreadIfEpoch, which no-ops when the epoch has moved —
@@ -524,6 +462,15 @@ type threadIdentity struct {
 	// bypass the flag via HandleSynthetic. It is set BY cleanup, which is
 	// exactly why it cannot live on threadState.
 	stopped bool
+	// closing fences new frames while previously admitted turn opens finish.
+	closing bool
+
+	// sessionToken is the host session MarkThreadActive last committed the
+	// thread to. Handle admits a provider frame only when the frame carries
+	// this token, so a dead session's frames handled after a replacement
+	// start are refused whatever the host's drain managed. Tokens are never
+	// reused, so a retired token cannot match again.
+	sessionToken string
 
 	// turnSpanGeneration prevents a slow or reentrant span start from
 	// registering after a newer start or terminal cleanup won the thread.
@@ -578,6 +525,14 @@ type threadIdentity struct {
 	// persisting must keep reading the mark. MarkThreadActive is the one
 	// clear, and it is explicit for that reason.
 	interruptMarks []interruptMark
+
+	// stopRow is the newest turn of this session whose stop row is
+	// written (claimStopRow), so a turn carries one however many writers
+	// resolve its stop. Host state on the identity for the reason
+	// interruptMarks is: a stop can be written after cleanupThread. Guarded
+	// by r.mu; MarkThreadActive clears it, because a replacement after
+	// revert reuses turn indexes.
+	stopRow stopRowClaim
 }
 
 // state returns the thread's mutable correlation state, creating it on

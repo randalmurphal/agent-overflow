@@ -45,13 +45,13 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// --permission-mode flag) includes the user's own defaultMode
 		// setting. Changes arrive on system/status; the session reads init
 		// only for the auto drop (permission_mode.go).
-		return []provider.ProviderEvent{{
+		return append([]provider.ProviderEvent{{
 			Kind:      provider.EventInit,
 			ThreadID:  threadID,
 			Meta:      meta,
 			Timestamp: now,
 			Raw:       line,
-		}}, nil
+		}}, p.settleSessionStart(threadID, now)...), nil
 
 	case "commands_changed":
 		// Spontaneous full-list push after mid-session skill discovery or a
@@ -95,14 +95,19 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 
 	case "compact_boundary":
 		meta := extractCompactBoundaryMeta(raw)
-		return []provider.ProviderEvent{{
+		events := []provider.ProviderEvent{{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,
 			ItemID:    readRawString(raw["uuid"]),
 			Content:   readRawString(raw["content"]),
 			Meta:      meta,
 			Timestamp: now,
-		}}, nil
+		}}
+		// The compaction's SessionStart hooks have run by its boundary.
+		if p != nil {
+			p.sessionStart.Expect(provider.SessionStartAfterCompaction)
+		}
+		return append(events, p.settleSessionStart(threadID, now)...), nil
 
 	case "api_retry":
 		// Normalize the SDK's `data` payload into a shape both providers
@@ -180,8 +185,11 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 	case "background_tasks_changed":
 		return p.parseBackgroundTasksChangedEvent(threadID, now), nil
 
+	case "hook_response":
+		return p.observeHookResponse(threadID, raw, now), nil
+
 	// Explicitly skipped subtypes — no action, no error.
-	case "hook_started", "hook_progress", "hook_response",
+	case "hook_started", "hook_progress",
 		"notification",
 		"files_persisted",
 		"tool_use_summary",

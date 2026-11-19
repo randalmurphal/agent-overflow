@@ -76,6 +76,7 @@ func TestUserMessagePlacement(t *testing.T) {
 						want.persistence = messageDeferUntilEcho
 						if intent == messageFlush && state == "active" {
 							want.displayTurn = 7
+							want.joinsActiveTurn = true
 							if p == provider.Codex {
 								want.responseTurn = 7
 							} else {

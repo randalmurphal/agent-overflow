@@ -3,7 +3,7 @@
   // mode recorded at the fork, which puts it in the sidebar, and the
   // companion is replaced by an ordinary thread pane in the same slot.
   //
-  // Renders only on a scratch thread, which is the only thread there is
+  // Renders only on a side chat's scratch thread, the only thread there is
   // anything to keep about. A promotion failure is reported by the store as
   // a toast; the pane stays exactly as it was.
   import Save from '@lucide/svelte/icons/save';
@@ -16,7 +16,9 @@
   let { pane }: { pane: ThreadPane } = $props();
 
   let keeping = $state(false);
-  let isSideChat = $derived(isScratchThreadMode(pane.thread?.mode));
+  // An agent's ask runs in a scratch thread too, and is no side chat: it
+  // is deleted once it answers, so there is nothing to keep.
+  let isSideChat = $derived(isScratchThreadMode(pane.thread?.mode) && !pane.thread?.askCopy);
 
   async function keep(): Promise<void> {
     if (keeping) return;

@@ -80,7 +80,7 @@ func TestParentTurnEndLeavesAnAgentsPromptsOpen(t *testing.T) {
 	agentApproval(t, router, "t1", "req-agent", "tu-a-bash", "tu-a")
 	agentQuestion(t, router, "t1", "req-ask", "tu-a-ask", "tu-a")
 	agentApproval(t, router, "t1", "req-main", "tu-main", "")
-	if !router.ClaimApprovalResponse("t1", "req-agent") {
+	if !claimed(router.ClaimPrompt("t1", "req-agent", 0)) {
 		t.Fatal("the first answer to the agent's approval was refused")
 	}
 	// An approval answered before the agent's tool row is written leaves
@@ -104,7 +104,7 @@ func TestParentTurnEndLeavesAnAgentsPromptsOpen(t *testing.T) {
 	if !router.HasPendingWork("t1") {
 		t.Fatal("a thread whose agent waits on the user reads as idle")
 	}
-	if router.ClaimApprovalResponse("t1", "req-agent") {
+	if claimed(router.ClaimPrompt("t1", "req-agent", 0)) {
 		t.Fatal("the parent's end forgot the agent's approval was answered")
 	}
 
@@ -147,12 +147,12 @@ func TestAgentEndSettlesItsOwnPrompts(t *testing.T) {
 	agentQuestion(t, router, "t1", "req-a-ask", "tu-a-ask", "tu-a")
 	agentApproval(t, router, "t1", "req-b", "tu-b-bash", "tu-b")
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
-	if !router.ClaimApprovalResponse("t1", "req-a") {
+	if !claimed(router.ClaimPrompt("t1", "req-a", 0)) {
 		t.Fatal("the first answer to agent a's approval was refused")
 	}
 
 	agentKilled(t, router, "t1", "tu-a", "task-a", "")
-	if router.ClaimApprovalResponse("t1", "req-a") {
+	if claimed(router.ClaimPrompt("t1", "req-a", 0)) {
 		t.Fatal("a second answer to the ended agent's answered approval was let through")
 	}
 

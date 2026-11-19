@@ -49,11 +49,16 @@ describe('buildRecallEntries', () => {
         userItem('wire', 2, 'injected', { meta: '{"wire_only":true}' }),
         userItem('child', 3, 'child prompt', { parentId: 'real' }),
         makeItem({ id: 'a1', turnIndex: 4, kind: 'assistant_text', role: 'assistant', summary: 'reply' }),
+        // Another agent wrote these; the person did not.
+        userItem('request', 5, 'from the lead', { meta: '{"origin":"agent-thread"}' }),
+        userItem('wake', 6, 'loop fired', { meta: '{"origin":"agent-wake"}' }),
+        // Claude joined the person's composer message after an agent's.
+        userItem('joined', 7, 'mine after a wake', { meta: '{"origin":"agent-wake","expandComposerCommands":true}' }),
       ],
       [],
       '',
     );
-    expect(entries).toEqual(['real ask']);
+    expect(entries).toEqual(['mine after a wake', 'real ask']);
   });
 
   it('strips attachment images, drops blanks, collapses consecutive duplicates', () => {

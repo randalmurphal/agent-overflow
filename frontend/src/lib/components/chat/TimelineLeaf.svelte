@@ -17,6 +17,8 @@
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
+  import AgentMessageRow from './AgentMessageRow.svelte';
+  import { agentMessageFromItem } from '../../utils/agentMessage';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { generatedImageRow } from '../../utils/generatedImageMeta';
   import { ABANDONED_BLOCKS_NOTIFICATION_KIND, discardedItemIds } from '../../utils/discardedItems';
@@ -57,6 +59,10 @@
   // any other assistant row, with its own body; a row that is not one falls
   // through to AssistantMessage untouched.
   const isGeneratedImage = $derived(generatedImageRow(displayItem) !== null);
+
+  // A user_text another agent wrote is not the person speaking: it renders
+  // as an agent-message row (utils/agentMessage.ts), keyed on its origin.
+  const agentMessage = $derived(agentMessageFromItem(displayItem));
 
   // A streamed row Claude discarded after a stalled response. The server
   // marks the row when it serves it (`discardedBy`), so the mark holds
@@ -105,7 +111,9 @@
        inside ToolCallCard) is the persisted historical record that
        survives reloads, forks, and restores. See
        internal/provider/claude/parse_assistant.go and parse_user.go. -->
-  {#if displayItem.kind === 'user_text'}
+  {#if agentMessage}
+    <AgentMessageRow {pane} item={displayItem} message={agentMessage} />
+  {:else if displayItem.kind === 'user_text'}
     <UserMessage
       {pane}
       item={displayItem}

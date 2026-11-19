@@ -6,8 +6,11 @@ import {
   type AttachmentKind,
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
+import { MessageFacts } from '../../../bindings/agent-overflow/internal/threadtools/models';
+import { ReportDescriptor } from '../../../bindings/agent-overflow/internal/agentmeta/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
 import { textWithoutShellInvocations, type ShellOutputMeta } from './shellInvocation';
+import { readableWakeText } from './wakeText';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -28,6 +31,8 @@ export interface UserMessageMeta {
   sourceProposedPlan?: unknown;
   wire_only?: unknown;
   command?: unknown;
+  /** Set by the composer path only; see isAgentMessageMeta. */
+  expandComposerCommands?: unknown;
   /**
    * Who produced this message, when it was not the person in front of Agent
    * Overflow. The difference matters to a reader:
@@ -41,9 +46,20 @@ export interface UserMessageMeta {
    *   (`internal/provider/claude/session_peer.go#PeerTurnOrigin`)
    * - `agent-thread` — an agent in another Agent Overflow thread, on this
    *   computer or on a paired one, wrote this row through the thread tools:
-   *   a spawn's first message, a `thread_send`, or the wake carrying one
-   *   thread's answer back. `originThread` names the source thread.
-   *   (`docs/specs/agent-thread-tools.md`, Attribution)
+   *   a spawn's first message, a `thread_send`, a `thread_ask`, or the wake
+   *   carrying answers back. `originThread` names the source thread; a wake
+   *   that lists several threads names the first and its facts name them
+   *   all (userMessageFacts). It renders as an agent-message row, not the user bubble
+   *   (`docs/specs/agent-thread-tools.md`, How agent messages appear).
+   * - `scheduled` — the prompt of a turn the provider started on its own
+   *   schedule: a Claude cron job's fire or ScheduleWakeup wake. The model
+   *   stored it earlier; nobody typed it now.
+   *   (`internal/provider/claude/parse_turn_origin.go#ScheduledTurnOrigin`)
+   * - `agent-wake` — the wake supervisor wrote this row: a loop's fire, a
+   *   watch's output, or a script's `agent-overflow thread send`. Data
+   *   delivered to the thread, never the user speaking. `originWake` names
+   *   the loop or watch. It renders as an agent-message row too.
+   *   (`docs/specs/standing-agents.md`, Wake supervisor)
    * - `codex-delegation` — another Codex thread started or messaged this one
    *   through Codex's own `create_thread` / `send_message_to_thread` tools,
    *   outside Agent Overflow. Only imported history carries it.
@@ -56,6 +72,15 @@ export interface UserMessageMeta {
   origin?: unknown;
   /** The source thread of an `agent-thread` row. See userMessageOriginThread. */
   originThread?: unknown;
+  /** What wrote an `agent-wake` row. See userMessageOriginWake. */
+  originWake?: unknown;
+  /**
+   * A joined row's members in its text, each `{sendId, bytes, origin,
+   * originThread, originWake}`: bytes is the member's UTF-8 length, and an
+   * agent thread's member carries its request token. `originThread` keeps
+   * only the first member's. See userMessageOriginTokens.
+   */
+  joinedParts?: unknown;
   /**
    * The peer session's registered display name, on a `peer-session` row.
    * May be absent — an older CLI reports only a socket address — in which
@@ -73,18 +98,6 @@ export function userMessageOrigin(meta: UserMessageMeta): string {
 }
 
 /**
- * The label for a message another Claude session sent to this thread.
- *
- * Names the peer when the wire gave a name, because "from BETA" is what
- * lets the reader go look at BETA. Falls back to the unnamed form rather
- * than to an empty name — a message from nobody reads as a bug.
- */
-export function peerSessionOriginLabel(meta: UserMessageMeta): string {
-  const name = typeof meta.cross_session_from_name === 'string' ? meta.cross_session_from_name.trim() : '';
-  return name ? `From ${name} (another Claude session)` : 'From another Claude session';
-}
-
-/**
  * The thread an `agent-thread` row came from, as the tools stamped it.
  *
  * `threadId` is the whole point of the chip — it is what the reader clicks
@@ -99,6 +112,11 @@ export interface UserMessageOriginThread {
   title: string;
   /** The request token, so three requests from one thread stay distinct. */
   token: string;
+  /**
+   * What the row delivers: `spawn`, `send` or `ask` on a request, `wake` on
+   * an answer coming back. Empty on rows written before it was stamped.
+   */
+  kind: string;
 }
 
 export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOriginThread | null {
@@ -112,7 +130,173 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
     threadId,
     title: stringField(record.title),
     token: stringField(record.token),
+    kind: stringField(record.kind),
   };
+}
+
+/**
+ * The request tokens a user row answers: every joined member's (whatever
+ * the row's attribution, since a wake may have joined first), read from its
+ * parts; else an `agent-thread` row's own. A member's are every request its
+ * facts say it answers, a digest's included, and its token when it records
+ * none.
+ */
+export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
+  const own = (member: UserMessageMeta): string[] => {
+    const tokens = (storedFacts(member)?.tokens ?? []).filter((token) => typeof token === 'string' && token !== '');
+    if (tokens.length > 0) return tokens;
+    const token = userMessageOriginThread(member)?.token;
+    return token ? [token] : [];
+  };
+  if (Array.isArray(meta.joinedParts)) {
+    const joined = new Set<string>();
+    for (const part of meta.joinedParts as unknown[]) {
+      const record = objectRecord(part);
+      if (record && stringField(record.origin) === 'agent-thread') for (const token of own(record)) joined.add(token);
+    }
+    if (joined.size > 0) return [...joined];
+  }
+  return userMessageOrigin(meta) === 'agent-thread' ? own(meta) : [];
+}
+
+const FACT_FORMS: ReadonlySet<string> = new Set(['request', 'answer', 'message', 'report', 'whole']);
+const utf8 = new TextEncoder();
+const utf8Text = new TextDecoder();
+
+/** The facts a row's attribution stores (threadtools.MessageFacts), not yet held to any text. */
+function storedFacts(meta: UserMessageMeta): MessageFacts | null {
+  const origin = userMessageOrigin(meta);
+  const attribution = objectRecord(origin === 'agent-thread' ? meta.originThread : origin === 'agent-wake' ? meta.originWake : null);
+  const record = objectRecord(attribution?.facts);
+  return record ? MessageFacts.createFrom(record) : null;
+}
+
+/**
+ * The facts a row's attribution carries (`originThread.facts` on an
+ * `agent-thread` row, `originWake.facts` on an `agent-wake` row) when they
+ * describe text: of a known form, written for its length in UTF-8 bytes,
+ * with body spans inside it, in order, not empty and on character
+ * boundaries, as threadtools MessageFacts.Check holds them. The served row
+ * carries facts agentmeta.Describe checked; facts that do not describe
+ * the text a client holds are null, and the row shows that text whole.
+ */
+export function userMessageFacts(text: string, meta: UserMessageMeta): MessageFacts | null {
+  const facts = storedFacts(meta);
+  if (!facts || !FACT_FORMS.has(facts.form)) return null;
+  const bytes = utf8.encode(text);
+  if (facts.bytes !== bytes.length) return null;
+  const continues = (at: number) => at < bytes.length && (bytes[at] & 0xc0) === 0x80;
+  let at = 0;
+  for (const span of facts.body ?? []) {
+    const { start, end } = span;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < at || end <= start || end > bytes.length || continues(start) || continues(end)) {
+      return null;
+    }
+    at = end;
+  }
+  return facts;
+}
+
+/** The words facts' body spans cover in text, joined as they are; facts are userMessageFacts' of text. */
+export function factsBody(text: string, facts: MessageFacts): string {
+  const spans = facts.body ?? [];
+  if (spans.length === 0) return '';
+  const bytes = utf8.encode(text);
+  // Offsets are characters too when every character is one byte.
+  if (bytes.length === text.length) return spans.map((span) => text.slice(span.start, span.end)).join('');
+  return spans.map((span) => utf8Text.decode(bytes.subarray(span.start, span.end))).join('');
+}
+
+/** One member of a joined row: its text and its own attribution. */
+export interface JoinedMember {
+  text: string;
+  meta: UserMessageMeta;
+}
+
+const JOIN_SEPARATOR_BYTES = new TextEncoder().encode('\n\n---\n\n');
+
+/**
+ * Cut a joined row's text into the members its `joinedParts` record, each
+ * with its own attribution: the TypeScript twin of agentmeta
+ * SplitJoinedParts. A member's text is free text and can hold the separator,
+ * so only the recorded UTF-8 lengths cut it. null when the row records no
+ * parts or they do not describe its text exactly.
+ */
+export function splitJoinedParts(text: string, meta: UserMessageMeta): JoinedMember[] | null {
+  if (!Array.isArray(meta.joinedParts) || meta.joinedParts.length === 0) return null;
+  const bytes = new TextEncoder().encode(text);
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const members: JoinedMember[] = [];
+  let at = 0;
+  for (const [index, value] of (meta.joinedParts as unknown[]).entries()) {
+    const part = objectRecord(value);
+    if (!part) return null;
+    if (index > 0) {
+      if (!JOIN_SEPARATOR_BYTES.every((byte, offset) => bytes[at + offset] === byte)) return null;
+      at += JOIN_SEPARATOR_BYTES.length;
+    }
+    const length = part.bytes;
+    if (typeof length !== 'number' || !Number.isInteger(length) || length < 0 || length > bytes.length - at) return null;
+    let member: string;
+    try {
+      member = decoder.decode(bytes.subarray(at, at + length));
+    } catch {
+      // A length that cuts a character is not this text's.
+      return null;
+    }
+    members.push({
+      text: member,
+      meta: { sendId: part.sendId, origin: part.origin, originThread: part.originThread, originWake: part.originWake },
+    });
+    at += length;
+  }
+  return at === bytes.length ? members : null;
+}
+
+/**
+ * What wrote an `agent-wake` row: a loop, a watch, a script, a worker's
+ * prompt, a remote job, a workflow run or the app opening an assistant's
+ * thread (agentmeta.ReportKind). Go serves each report's attribution with
+ * what its kind means to a person (agentmeta.ReportDescriptor), which
+ * names it everywhere here; a row without one is of a kind the serving
+ * computer does not know, or did not decode, and is refused.
+ */
+export interface UserMessageOriginWake {
+  /** The report's kind, as Go names it. */
+  kind: string;
+  /** The loop, watch or worker; a remote job's label; a workflow's id. */
+  label: string;
+  /** The worker of a worker's prompt; empty otherwise. */
+  threadId: string;
+  /**
+   * The computer a remote job ran on, or the paired computer that holds a
+   * worker's prompt's worker; empty otherwise.
+   */
+  computer: string;
+  /** That paired computer's id, which opens the worker there; empty for this one. */
+  computerId: string;
+  report: ReportDescriptor;
+}
+
+const REPORT_FIELDS = ['category', 'label', 'title', 'sender', 'badge', 'body'] as const;
+
+export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {
+  const record = objectRecord(meta.originWake);
+  const report = objectRecord(record?.report);
+  if (!record || !report || REPORT_FIELDS.some((field) => typeof report[field] !== 'string')) return null;
+  return {
+    kind: stringField(record.kind),
+    label: stringField(record.label),
+    threadId: stringField(record.threadId),
+    computer: stringField(record.computer),
+    computerId: stringField(record.computerId),
+    report: ReportDescriptor.createFrom({ ...report, opens: stringField(report.opens) }),
+  };
+}
+
+/** The badge a wake row carries: which loop, watch or worker, or that a script sent it. */
+export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
+  return wake.report.badge;
 }
 
 function stringField(value: unknown): string {
@@ -140,17 +324,22 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
   }
 }
 
-// The two predicates below run over every user row of a pane on each queue
+// The predicates below run over every user row of a pane on each queue
 // and reveal pass. Their answers are remembered per row object for as long
 // as the row carries the same meta string, so a pass parses only the rows
 // that changed.
-interface RowFlags { meta: string | undefined; pendingFlush: boolean; wireOnly: boolean }
+interface RowFlags { meta: string | undefined; pendingFlush: boolean; wireOnly: boolean; agentMessage: boolean }
 const rowFlags = new WeakMap<Item, RowFlags>();
 function flagsOf(item: Item): RowFlags {
   let flags = rowFlags.get(item);
   if (flags === undefined || flags.meta !== item.meta) {
     const meta = parseUserMessageMeta(item.meta);
-    flags = { meta: item.meta, pendingFlush: meta.pendingFlush === true, wireOnly: meta.wire_only === true };
+    flags = {
+      meta: item.meta,
+      pendingFlush: meta.pendingFlush === true,
+      wireOnly: meta.wire_only === true,
+      agentMessage: isAgentMessageMeta(meta),
+    };
     rowFlags.set(item, flags);
   }
   return flags;
@@ -162,18 +351,33 @@ export function isPendingFlushRow(item: Item): boolean {
 }
 
 /**
+ * True for a message an agent wrote into this thread, not the person: an
+ * `agent-thread` or `agent-wake` row. A row that also carries the composer's
+ * `expandComposerCommands` is the person's: headless Claude joins queued
+ * messages at a turn boundary, so one row can hold the person's message
+ * after an agent's, attributed to the agent. The Go twin is
+ * agentmeta.IsAgentMessage; the SQL one store.AgentMessageFilterFor.
+ */
+export function isAgentMessageMeta(meta: UserMessageMeta): boolean {
+  if (meta.expandComposerCommands === true) return false;
+  const origin = userMessageOrigin(meta);
+  return origin === 'agent-thread' || origin === 'agent-wake';
+}
+
+/**
  * True for a top-level user_text row the reader actually wrote. Wire-only
- * rows — context injections the send path marks in meta — fail it, as do
- * subagent-child user rows. The ONE TypeScript counterpart of the store's
- * SQL predicate (items_read.go readerAuthoredUserTextFilter): the nav
- * rail's tick derivation, the sidebar's activity counting, and any future
- * "which user messages are real" question all route here so they cannot
- * drift.
+ * rows (context injections the send path marks in meta) fail it, as do
+ * subagent-child user rows and an agent's messages (isAgentMessageMeta).
+ * The ONE TypeScript counterpart of the store's tick predicate
+ * (items_read.go personMessageFilterFor): the nav rail's tick derivation,
+ * the composer's recall, and any future "which user messages are the
+ * person's" question all route here so they cannot drift.
  */
 export function isReaderAuthoredUserText(item: Item): boolean {
   if (item.kind !== 'user_text') return false;
   if ((item.parentId ?? '') !== '') return false;
-  return !flagsOf(item).wireOnly;
+  const flags = flagsOf(item);
+  return !flags.wireOnly && !flags.agentMessage;
 }
 
 /**
@@ -195,11 +399,20 @@ export function isShellOutput(
 /**
  * The text a user message's bubble shows (UserMessageBody): the summary
  * without its image blocks and without the typed `!command` of each shell
- * output, which the output's own block shows.
+ * output, which the output's own block shows. A bubble of `agent-wake`
+ * origin (the person's message a provider joined after a wake, the one wake
+ * row that keeps the bubble) shows the wake's quoted data decoded instead
+ * (readableWakeText).
  */
-export function userMessageVisibleText(summary: string, attachments: readonly AttachmentPreviewSource[]): string {
+export function userMessageVisibleText(
+  summary: string,
+  attachments: readonly AttachmentPreviewSource[],
+  origin = '',
+): string {
+  const text = stripAttachmentImages(summary).trimEnd();
+  if (origin === 'agent-wake') return readableWakeText(text);
   const shells = attachments.filter(isShellOutput).map((attachment) => attachment.shell);
-  return textWithoutShellInvocations(stripAttachmentImages(summary).trimEnd(), shells);
+  return textWithoutShellInvocations(text, shells);
 }
 
 /**

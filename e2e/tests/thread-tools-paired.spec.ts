@@ -4,7 +4,9 @@
 // Coverage: the paired (grouped) shape of thread_options and thread_search,
 // with each computer's per-model efforts and a spawn refused for a model
 // the destination lacks; a spawn that runs on the other computer and wakes
-// the caller through the source-side poller; an ask that forks and answers
+// the caller through the source-side poller; a standing agent on the other
+// computer named on its wake with its role line exactly as a local one is;
+// an ask that forks and answers
 // there with only the answer crossing, and a write inside that fork refused
 // there; thread_status and a thread-id prefix resolved across computers; a thread moved between the two resolving to
 // its new owner; a 38k-item thread over there windowed, paged and exported
@@ -12,27 +14,53 @@
 // range and negative offset; the origin chip naming the other computer on
 // both ends; a destination whose own switch is off still serving a
 // forwarded request and replying through thread_reply; a cancel that stops
-// work there; a deleted caller stopping the scratch ask it left there; a
+// work there; the Agents segment nesting a thread spawned over there with
+// its own spawn, named by that computer, and a Stop on its row cascading
+// there into its background shell, its turn and its own spawn; a nested
+// row over there naming the wake row its answer reached there; a deleted
+// caller stopping the scratch ask it left there; a
 // destination too old to carry the tools; a reply written while the calling
 // computer was off arriving once it is back; and forgetting a computer with
 // open requests.
-// Spec: docs/specs/agent-thread-tools.md.
+// Workers owned across the two computers, on desktop and compact layouts:
+// a spawn there is owned there, with no sidebar row in either computer's
+// window; its Agents row names the computer and opens it, and Show in
+// Sidebar places it there, which Remove from Sidebar in that computer's
+// window undoes; a window attached only to the spawner's computer names it
+// and can neither open nor place it. Its approval wakes the spawner here,
+// whose Agents row reads "waiting on" the spawner, whose wake row opens
+// it there, and whose reply answers it there; with the spawner's computer
+// stopped, it reaches the person there once the lease runs out. Archiving
+// and deleting the spawner archive and delete it there, the delete
+// confirmation saying so; with that computer stopped, both stand here, are
+// named as pending there, and land when it is back; a computer older than
+// owner operations is named as such.
+// Specs: docs/specs/agent-thread-tools.md, docs/specs/standing-agents.md
+// ("Owned workers").
+import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { test, expect } from '@playwright/test';
+import { test, expect, devices, type Page } from '@playwright/test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { HARNESS_TIMING, launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
+import { headlessPairing, pairOwnDevice } from './headless-pairing-helpers.js';
+import { launchFrontendClient } from './frontend-client-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
+import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
+import { backgroundShellSteps, openPast } from './agents-tray-helpers.js';
 import {
+  CODEX_STEER_NOT_STEERABLE,
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
   SHOW_CURSOR_PATTERN,
   TOOL_ROW_ID_PATTERN,
   advanceGate,
+  aoMessageOpening,
   awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
@@ -61,7 +89,7 @@ let homeDataDir = '';
 test.beforeAll(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), 'ao-thread-tools-home-'));
   homeDataDir = join(homeRoot, 'state');
-  [home, remote] = await startTogether(launchHarness({ dataDir: homeDataDir }), launchHarness());
+  [home, remote] = await startTogether(launchHarness({ dataDir: homeDataDir }), launchHarness({ dataDir: join(homeRoot, 'remote') }));
   // Own-device enrollment: the personal pairing the thread tools require,
   // and the one that introduces the reverse connection as well.
   const pairing = await headlessPairing(remote);
@@ -97,6 +125,22 @@ test.afterAll(async () => {
     if (homeRoot) await rm(homeRoot, { recursive: true, force: true });
   }
 });
+
+/** Resolves once `app` reports ready; a held boot's launch returns before that. */
+async function waitUntilReady(app: HarnessApp): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const resp = await fetch(`http://127.0.0.1:${app.bootstrap.port}/bootstrap.json`, {
+          headers: { authorization: `Bearer ${app.bootstrap.token}` },
+        });
+        await resp.body?.cancel();
+        return resp.status;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(200);
+}
 
 interface SeededProject {
   projectId: string;
@@ -284,6 +328,9 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
     }),
   );
 
+  // The sender line names the caller's computer as the remote's own pairing
+  // does, not as the caller's computer calls itself.
+  await remote.rpc('RenameBackend', homeID, 'Laptop computer');
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build the kernel', null);
 
@@ -316,13 +363,22 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   expect(delivered.report.input).toContain('Build the kernel and report what broke.');
   expect(delivered.report.input).toContain('Remote spawn caller');
   expect(delivered.report.input).toContain(spawned.token);
+  // Its sender line names the calling thread's computer, since it is not
+  // the one the message reached.
+  expect((delivered.report.input ?? '').split('\n')[0] + '\n').toBe(
+    aoMessageOpening(`the agent in thread "Remote spawn caller" (${caller.threadIds[0]}) on "Laptop computer"`),
+  );
 
-  // The thread lives there, not here.
+  // The thread lives there, not here, owned by its spawner: no sidebar row
+  // there either.
   const remoteRows = await threadRows(remote);
   const spawnedRow = remoteRows.find((row) => row.id === spawned.thread_id)!;
   expect(spawnedRow).toBeDefined();
   expect(spawnedRow.title).toBe('Kernel build');
   expect(spawnedRow.projectId).toBe(there.projectId);
+  expect(spawnedRow.placement).toBe('owned');
+  const listed = await remote.rpc<{ id: string }[]>('ListThreads');
+  expect(listed.some((row) => row.id === spawned.thread_id)).toBe(false);
   expect((await threadRows(home)).some((row) => row.id === spawned.thread_id)).toBe(false);
 
   // The source-side poller collects the settlement and wakes the caller.
@@ -336,6 +392,99 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   );
   expect(wake.report.input).toContain('The kernel build finished clean.');
   expect(wake.report.input).toContain('GPU computer');
+  expect(wake.report.input).toContain(
+    aoMessageOpening(`the request you made to thread "Kernel build" (${spawned.thread_id}) on "GPU computer"`),
+  );
+});
+
+test('a standing agent on the other computer is named on its wake as a local one is', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(20_000);
+  // A role with quotes, so the quoting is compared as well as the text.
+  const role = 'Reviewer of the "parser" branch: reads every change before it merges.';
+  const caller = await seed(home, 'wake-role-caller', ['Wake role caller']);
+  const local = await seed(home, 'wake-role-local', ['Local reviewer']);
+  const there = await seed(remote, 'wake-role-remote', ['Remote reviewer']);
+  // Each reviewer runs in its home.
+  const homes: string[] = [];
+  for (const [app, threadID] of [[home, local.threadIds[0]], [remote, there.threadIds[0]]] as const) {
+    const promoted = await app.rpc<{ home: string }>('HarnessMakeAssistant', threadID);
+    homes.push(promoted.home);
+    // Two heading markers: the remote role is bounded on both computers.
+    writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
+  }
+  await setScenario(home, homes[0], plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
+  await setScenario(remote, homes[1], plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));
+  const send = (threadID: string, computerID?: string) => ({
+    call: {
+      tool: 'thread_send',
+      args: { thread_id: threadID, ...(computerID ? { computer_id: computerID } : {}), message: 'Review the parser change.', wait_seconds: 0, notify: true },
+      timeoutMs: 120_000,
+    },
+  });
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'wake-role-caller',
+      provider: 'claude',
+      turns: [
+        { steps: [send(local.threadIds[0]), send(there.threadIds[0], remoteID)], text: 'Asked both reviewers.' },
+        { text: 'Read a wake.' },
+      ],
+      afterTurns: 'repeatLast',
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask both reviewers about the parser', null);
+
+  // Each wake names its agent on the line after its status line. A wake
+  // that arrived with the other in one input is read from the same text.
+  const agentLine = async (answer: string): Promise<string> => {
+    const wake = await home.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (ev) => ev.report.kind === 'user_input' && ev.cwd === caller.path && (ev.report.input ?? '').includes(answer),
+      120_000,
+    );
+    // What stands between the status line and the answer is the agent line.
+    const lines = (wake.report.input ?? '').split('\n');
+    const at = lines.indexOf(answer);
+    const status = lines.slice(0, at).findLastIndex((line) => line.endsWith('Its final message:'));
+    expect(status, wake.report.input).toBeGreaterThanOrEqual(0);
+    return lines.slice(status + 1, at).join('\n');
+  };
+  const localLine = await agentLine('Local review: the parser is fine.');
+  const remoteLine = await agentLine('Remote review: the parser is fine.');
+  const want = `That thread is a standing agent. Its role, in its own words: ${JSON.stringify(role)}`;
+  expect(localLine).toBe(want);
+  expect(remoteLine).toBe(localLine);
+
+  // Both wakes are agent rows in the caller's timeline
+  // (docs/specs/agent-thread-tools.md, "How agent messages appear"), each
+  // naming its standing agent's role, the remote one its computer. Two
+  // wakes the provider joined are one row with a part each.
+  await home.open(page);
+  await page.getByTestId('thread-row-title').filter({ hasText: 'Wake role caller' }).first().click();
+  const rows = page.getByTestId('agent-message-row');
+  await expect(rows.first()).toBeVisible();
+  for (const toggle of await rows.getByTestId('agent-message-toggle').all()) {
+    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  }
+  const wakeRow = (answer: string) => rows.filter({ has: page.getByTestId('agent-message-text').getByText(answer, { exact: true }) });
+  const localWake = wakeRow('Local review: the parser is fine.');
+  const remoteWake = wakeRow('Remote review: the parser is fine.');
+  await expect(localWake).toHaveCount(1);
+  await expect(remoteWake).toHaveCount(1);
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'review: the parser is fine.' })).toHaveCount(0);
+  for (const wake of [localWake, remoteWake]) {
+    await expect(wake.locator('[data-fact="Role"]').filter({ hasText: role }).first()).toBeVisible();
+  }
+  await expect(localWake).toContainText('Local reviewer');
+  await expect(remoteWake).toContainText('Remote reviewer on GPU computer');
+  // Tall enough for both wakes above the composer.
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await centerInTimeline(localWake);
+  await capture(page, 'wake-role-local-and-remote.png', localWake, remoteWake);
 });
 
 test('an ask forks the thread on the other computer and only the answer crosses', async () => {
@@ -1001,6 +1150,938 @@ test('a cancel stops a turn the caller started on the other computer', async () 
   expect(items.some((item) => (item.summary ?? '').includes('Long remote job done.'))).toBe(false);
 });
 
+test('the Agents segment nests a spawn on the other computer and its Stop cascades there', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'agents-remote-caller', ['Agents remote caller']);
+  const child = await seed(remote, 'agents-remote-child', []);
+  const grand = await seed(remote, 'agents-remote-grand', []);
+  const peer = await seed(remote, 'agents-remote-peer', ['Remote peer']);
+  await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: child.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: grand.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'agents-remote-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it over there.', title: 'Remote child', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }, { call: {
+        tool: 'thread_send',
+        args: { thread_id: peer.threadIds[0], computer_id: remoteID, message: 'Check the changelog.', notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  // The child spawns a thread of its own on its computer, starts a
+  // background shell there and holds.
+  await setScenario(remote, child.path, threadToolsScenario({
+    name: 'agents-remote-child-script', provider: 'claude',
+    turns: [
+      { steps: [
+        { call: { tool: 'thread_spawn', args: { prompt: 'Package it.', title: 'Remote grandchild', project_id: grand.projectId, notify: true } } },
+        ...backgroundShellSteps('claude'),
+        { gate: 'remote-child-hold' },
+      ], text: 'Built.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(remote, grand.path, threadToolsScenario({
+    name: 'agents-remote-grand-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'remote-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
+  }));
+  await setScenario(remote, peer.path, threadToolsScenario({
+    name: 'agents-remote-peer-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'remote-peer-hold' }], text: 'Fine.' }],
+  }));
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', timeoutMs: 120_000 });
+  expect(sent.isError, sent.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  expect(nested.isError, nested.text).toBe(false);
+  await awaitGate(remote, 'remote-child-hold', child.path);
+  await awaitGate(remote, 'remote-grand-hold', grand.path);
+  await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
+    .filter((item) => item.status === 'running').length).toBe(1);
+
+  await home.open(page);
+  await page.getByTestId('thread-row-title').getByText('Agents remote caller', { exact: true }).click();
+  const toggle = page.getByTestId('activity-rail-agents-toggle').filter({ visible: true });
+  await toggle.click();
+  const body = page.getByTestId('activity-rail-agents-body').filter({ visible: true });
+  const row = (token: string) => body.locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
+  const childRow = row(spawn.value!.token);
+  const grandRow = row(nested.value!.token);
+  await expect(childRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(childRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  // A send there shows its target's provider, from the acknowledgement.
+  const sendRow = row(sent.value!.token);
+  await expect(sendRow).toHaveAttribute('data-kind', 'send');
+  await expect(sendRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(sendRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow).toHaveAttribute('data-depth', '1');
+  await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Remote grandchild');
+  await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await body.screenshot({ path: test.info().outputPath('agents-remote-nested.png'), animations: 'disabled' });
+
+  const childInterrupted = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);
+  const grandInterrupted = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
+  // The cascade disarms the child's own spawn there: the person stopped
+  // the child's work, so the child takes no new turn for it.
+  const childWoken = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
+    30_000).then(() => true, () => false);
+  await childRow.getByTestId('agent-tray-row-stop').click();
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Remote child' }))
+    .toHaveText('Stopped Remote child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
+  await childInterrupted;
+  await grandInterrupted;
+  await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
+    .filter((item) => item.status === 'running').length).toBe(0);
+  await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
+  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+});
+
+// A worker there replied and keeps working, then its computer stops
+// answering: the row keeps its last known state and Stop, says why its own
+// work is not shown, stays out of Past, and drops the warning once that
+// computer answers again (docs/specs/standing-agents.md, "Owned workers").
+test('a worker on the other computer keeps its running row while that computer does not answer', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'agents-outage-caller', ['Agents outage caller']);
+  const child = await seed(remote, 'agents-outage-child', []);
+  await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: child.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'agents-outage-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Run the soak test over there.', title: 'Soak runner', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  // The worker replies at once and keeps its turn open.
+  await setScenario(remote, child.path, threadToolsScenario({
+    name: 'agents-outage-child-script', provider: 'claude',
+    turns: [
+      { steps: [
+        { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+        { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: 'The soak test is running.' } } },
+        { gate: 'outage-child-hold' },
+      ], text: 'Soaked.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'run the soak test on the GPU computer', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const held = await awaitGate(remote, 'outage-child-hold', child.path);
+
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    const phone = await phoneContext.newPage();
+    const views = [{ view: page, layout: 'desktop' }, { view: phone, layout: 'compact' }] as const;
+    for (const { view } of views) {
+      await home.open(view);
+      await view.getByTestId('thread-row-title').getByText('Agents outage caller', { exact: true }).click();
+      await view.getByTestId('activity-rail-agents-toggle').filter({ visible: true }).click();
+    }
+    const rowIn = (view: Page) => view.getByTestId('activity-rail-agents-body').filter({ visible: true })
+      .locator(`[data-testid="agent-tray-row"][data-token="${spawn.value!.token}"]`);
+    for (const { view } of views) {
+      const row = rowIn(view);
+      await expect(row).toHaveAttribute('data-state', 'replied', { timeout: 120_000 });
+      await expect(row.getByTestId('agent-tray-row-state')).toHaveText('running', { timeout: 60_000 });
+      await expect(row.getByTestId('agent-tray-row-degraded')).toHaveCount(0);
+    }
+
+    // The computer there stops answering: its backend is frozen, so every
+    // call to it waits out its timeout.
+    const pid = remote.bootstrap.pid;
+    expect(pid).toBeGreaterThan(0);
+    process.kill(pid, 'SIGSTOP');
+    try {
+      for (const { view, layout } of views) {
+        const row = rowIn(view);
+        await expect(row.getByTestId('agent-tray-row-degraded'))
+          .toContainText('Its own agents and background work are not shown: GPU computer', { timeout: 150_000 });
+        await expect(row.getByTestId('agent-tray-row-state'), 'the failed read turned the running worker into a finished row').toHaveText('running');
+        await expect(row).not.toHaveAttribute('data-settled');
+        await expect(row.getByTestId('agent-tray-row-stop')).toBeVisible();
+        await expect(view.getByTestId('activity-rail-agents-body').filter({ visible: true })
+          .getByTestId('activity-rail-agents-past-count')).toHaveCount(0);
+        if (layout === 'desktop') await view.mouse.move(800, 400);
+        await capture(view, `agents-remote-outage-${layout}.png`, row);
+      }
+    } finally {
+      process.kill(pid, 'SIGCONT');
+    }
+    for (const { view } of views) {
+      await expect(rowIn(view).getByTestId('agent-tray-row-degraded')).toHaveCount(0, { timeout: 150_000 });
+      await expect(rowIn(view).getByTestId('agent-tray-row-state')).toHaveText('running');
+    }
+  } finally {
+    await phoneContext.close();
+  }
+  await advanceGate(remote, held.mockId, 'outage-child-hold');
+  await awaitTurnCompleted(remote, spawn.value!.thread_id);
+});
+
+// ---- Workers owned across the two computers (docs/specs/standing-agents.md,
+// "Owned workers"; docs/specs/agent-thread-tools.md, "Reaching another
+// computer").
+
+/** Where a thread's row is in a window's sidebar, when it has one. */
+const sidebarRow = (view: Page, id: string) => view.locator(`[data-sidebar-thread-id="${id}"]`);
+
+/** The chat surface showing a thread, in any pane. */
+const chatShowing = (view: Page, id: string) => view.locator(`[data-ui-surface="chat"][data-thread-id="${id}"]`);
+
+/** A thread's placement on the computer that holds it, '' once it is gone. */
+async function placementThere(app: HarnessApp, id: string): Promise<string> {
+  const row = (await threadRows(app) as unknown as Array<{ id: string; placement?: string }>).find((r) => r.id === id);
+  return row ? (row.placement ?? '') : '';
+}
+
+/** A thread's archive state on the computer that holds it; null once it is gone. */
+async function archivedThere(app: HarnessApp, id: string): Promise<boolean | null> {
+  try {
+    return (await app.rpc<{ archived: boolean }>('GetThread', id)).archived;
+  } catch (err) {
+    if (String(err).startsWith('Error: not_found:')) return null;
+    throw err;
+  }
+}
+
+/** Opens a sidebar thread's Agents tray in a window, under either layout. */
+async function openAgentsTray(view: Page, caller: string, layout: 'desktop' | 'compact') {
+  const row = view.locator(`[data-testid="sidebar-projects-section"] [data-sidebar-thread-id="${caller}"]`);
+  if (layout === 'desktop') await row.click();
+  else await row.tap();
+  const toggle = view.getByTestId('activity-rail-agents-toggle').filter({ visible: true });
+  if (layout === 'desktop') await toggle.click();
+  else await toggle.tap();
+  return view.getByTestId('activity-rail-agents-body').filter({ visible: true });
+}
+
+/** Picks an item of a sidebar row's menu: a right click, or the row's menu button under compact. */
+async function rowMenuItem(view: Page, layout: 'desktop' | 'compact', id: string, label: string): Promise<void> {
+  if (layout === 'desktop') await sidebarRow(view, id).click({ button: 'right' });
+  else await view.locator('[data-testid="thread-row-shell"]', { has: sidebarRow(view, id) }).getByTestId('thread-row-menu').tap();
+  const item = view.locator('[data-popover]').getByRole('menuitem', { name: label, exact: true });
+  if (layout === 'desktop') await item.click();
+  else await item.tap();
+}
+
+/** One caller here spawning one owned worker over there, which holds its turn on a gate when `gate` is given. */
+async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: string, gate?: string) {
+  const caller = await seed(home, `${tag}-caller`, [callerTitle]);
+  // A sibling with history, so the worker project's rows are listed and an
+  // absent worker row means the worker has none.
+  const there = await seed(remote, `${tag}-work`, [`${tag} sibling`], true);
+  await setScenario(remote, there.path, threadToolsScenario({
+    name: `${tag}-worker`, provider: 'claude',
+    turns: [{ steps: gate ? [{ gate }] : [], text: `${workerTitle} is done.` }],
+    afterTurns: 'repeatLast',
+  }));
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: `${tag}-caller-script`, provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: `Do ${workerTitle}.`, title: workerTitle, computer_id: remoteID, project_id: there.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], `have the GPU computer do ${workerTitle}`, null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const held = gate ? await awaitGate(remote, gate, there.path) : null;
+  if (!gate) {
+    // The worker answers at once; its wake ends the caller's second turn.
+    await awaitTurnCompleted(remote, spawn.value!.thread_id);
+    await awaitTurnCompleted(home, caller.threadIds[0]);
+    await awaitTurnCompleted(home, caller.threadIds[0]);
+  }
+  await expect.poll(() => placementThere(remote, spawn.value!.thread_id)).toBe('owned');
+  return { caller: caller.threadIds[0], callerPath: caller.path, there, token: spawn.value!.token, worker: spawn.value!.thread_id, held };
+}
+
+test('a spawn on the other computer is owned there: no sidebar row, its Agents row opens it and places it there', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  const run = await spawnOwnedThere('owned-there', 'Owned caller', 'Owned remote worker', 'owned-there-hold');
+  const siblingThere = (await threadRows(remote)).find((row) => row.title === 'owned-there sibling')!.id;
+
+  // Neither computer's window lists it, though both list the other
+  // computer's threads and its sibling there.
+  const remotePage = await page.context().newPage();
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    const phone = await phoneContext.newPage();
+    await home.open(page);
+    await remote.open(remotePage);
+    await home.open(phone);
+    for (const view of [page, remotePage]) {
+      await expect(sidebarRow(view, siblingThere)).toBeVisible();
+      await expect(sidebarRow(view, run.worker)).toHaveCount(0);
+    }
+
+    // The spawner's Agents row names the computer and opens it.
+    const body = await openAgentsTray(page, run.caller, 'desktop');
+    const row = body.locator(`[data-testid="agent-tray-row"][data-token="${run.token}"]`);
+    await expect(row.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+    await expect(row.getByTestId('agent-tray-row-state')).toHaveText('running');
+    const show = row.getByTestId('agent-tray-row-show-in-sidebar');
+    await expect(show).toBeVisible();
+    await page.mouse.move(800, 400);
+    await capture(page, 'owned-remote-agents-row-desktop.png', row);
+    await row.getByTestId('agent-tray-row-open').click();
+    await expect(chatShowing(page, run.worker)).toBeVisible();
+
+    // Show in Sidebar places it on the computer that holds it: a row in
+    // every window, and the row's offer goes.
+    await show.click();
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('standalone');
+    await expect(show).toHaveCount(0);
+    for (const view of [page, remotePage]) await expect(sidebarRow(view, run.worker)).toBeVisible();
+
+    // Remove from Sidebar in the other computer's window takes it back.
+    await rowMenuItem(remotePage, 'desktop', run.worker, 'Remove from Sidebar');
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('owned');
+    for (const view of [page, remotePage]) await expect(sidebarRow(view, run.worker)).toHaveCount(0);
+    // The desktop tray, still open, offers it again from that computer's
+    // own word, whatever this computer's cache of it says; Show again
+    // places it, and the offer stays gone.
+    await expect(show).toBeVisible();
+    await show.click();
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('standalone');
+    await expect(show).toHaveCount(0);
+    await expect(sidebarRow(remotePage, run.worker)).toBeVisible();
+    await rowMenuItem(remotePage, 'desktop', run.worker, 'Remove from Sidebar');
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('owned');
+    await expect(show).toBeVisible();
+
+    // The same under the compact layout.
+    const phoneBody = await openAgentsTray(phone, run.caller, 'compact');
+    const phoneRow = phoneBody.locator(`[data-testid="agent-tray-row"][data-token="${run.token}"]`);
+    await expect(phoneRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+    await capture(phone, 'owned-remote-agents-row-compact.png', phoneRow);
+    await phoneRow.getByTestId('agent-tray-row-show-in-sidebar').tap();
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('standalone');
+    await phone.getByTestId('compact-back').tap();
+    await expect(sidebarRow(phone, run.worker)).toBeVisible();
+    await rowMenuItem(phone, 'compact', run.worker, 'Remove from Sidebar');
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('owned');
+    await expect(sidebarRow(phone, run.worker)).toHaveCount(0);
+  } finally {
+    await remotePage.close();
+    await phoneContext.close();
+  }
+
+  // A window attached only to the spawner's computer names it, and can
+  // neither open it nor place it.
+  const root = await mkdtemp(join(tmpdir(), 'ao-owned-there-frontend-'));
+  const attachedBefore = new Set((await home.rpc<Array<{ id: string }>>('ListBackends')).map((b) => b.id));
+  let desktop: HarnessApp | undefined;
+  let frontend: Awaited<ReturnType<typeof launchFrontendClient>> | undefined;
+  try {
+    desktop = await launchHarness({ dataDir: join(root, 'desktop') });
+    const homeEntry = await pairOwnDevice(desktop, home, 'Spawner computer');
+    const profiles = join(desktop.bootstrap.dataDir, 'device');
+    await desktop.close();
+    desktop = undefined;
+    frontend = await launchFrontendClient(profiles, join(root, 'frontend'), homeEntry);
+    const only = await page.context().newPage();
+    try {
+      await frontend.open(only);
+      await expect(sidebarRow(only, run.caller)).toBeVisible();
+      const onlyBody = await openAgentsTray(only, run.caller, 'desktop');
+      const onlyRow = onlyBody.locator(`[data-testid="agent-tray-row"][data-token="${run.token}"]`);
+      await expect(onlyRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+      await expect(onlyRow.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(0);
+      await onlyRow.getByTestId('agent-tray-row-open').click();
+      await expect(only.getByTestId('toast-message').filter({ hasText: 'Owned remote worker is on' }))
+        .toHaveText('Owned remote worker is on GPU computer this window is not connected to.');
+      await expect(chatShowing(only, run.worker)).toHaveCount(0);
+      await only.mouse.move(800, 400);
+      await capture(only, 'owned-remote-agents-row-spawner-only.png', onlyRow);
+    } finally {
+      await only.close();
+    }
+  } finally {
+    await frontend?.close();
+    await desktop?.close();
+    await rm(root, { recursive: true, force: true });
+    // The pairing made the spawner's computer attach the closed one back;
+    // later tests fan out to every attached computer.
+    for (const backend of await home.rpc<Array<{ id: string }>>('ListBackends')) {
+      if (!attachedBefore.has(backend.id)) await home.rpc('RemoveBackend', backend.id, true);
+    }
+  }
+  await advanceGate(remote, run.held!.mockId, 'owned-there-hold');
+  await awaitTurnCompleted(remote, run.worker);
+});
+
+const PROMPT_TOKEN = 'thread_reply, token (\\S+), once';
+
+test("a question over there wakes the spawner here, whose reply answers it there", async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'asks-there-caller', ['Asking caller']);
+  const there = await seed(remote, 'asks-there-work', []);
+  await setScenario(remote, there.path, threadToolsScenario({
+    name: 'asks-there-worker', provider: 'claude',
+    turns: [{ steps: [
+      { gate: 'before-remote-approval' },
+      { approval: { toolName: 'Bash', input: { command: 'make kernel' }, onAllow: [{ gate: 'asks-there-after' }], onDeny: [] } },
+    ], text: 'Built the kernel.' }],
+    afterTurns: 'repeatLast',
+  }));
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'asks-there-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build the kernel.', title: 'Remote asker', computer_id: remoteID, project_id: there.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { steps: [
+        { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: PROMPT_TOKEN } },
+        { gate: 'asks-there-answer' },
+        { call: { tool: 'thread_reply', args: { token: '${TOKEN}', decision: 'allow', text: 'Build it.' } } },
+      ], text: 'Allowed it.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build the kernel', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const worker = spawn.value!.thread_id;
+
+  const beforeApproval = await awaitGate(remote, 'before-remote-approval', there.path);
+  process.kill(remote.bootstrap.pid, 'SIGSTOP');
+  try {
+    await expect.poll(async () => {
+      const listing = await home.rpc<{ rows: { token: string; nestedUnavailable?: string }[] }>('ListThreadAgentRows', caller.threadIds[0]);
+      return listing.rows.find(row => row.token === spawn.value!.token)?.nestedUnavailable;
+    }, { timeout: 90_000 }).toContain('did not answer');
+  } finally {
+    process.kill(remote.bootstrap.pid, 'SIGCONT');
+  }
+  await advanceGate(remote, beforeApproval.mockId, 'before-remote-approval');
+
+  // The approval goes to the spawner here as a wake, not to the person there.
+  const wake = await home.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === caller.path && (ev.report.input ?? '').includes('is waiting on your answer'),
+    90_000,
+  );
+  expect(wake.report.input).toContain(`Thread "Remote asker" (${worker}) on "`);
+  const answering = await awaitGate(home, 'asks-there-answer', caller.path);
+  type Pending = { requestId: string; routedTo?: { threadId: string; computerName?: string } | null };
+  const approvals = async () => (await remote.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
+  expect((await approvals())[0].routedTo?.threadId).toBe(caller.threadIds[0]);
+
+  // Its Agents row here says what it waits on: the spawner here, named as
+  // this computer names it, with no computer beside it.
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    const phone = await phoneContext.newPage();
+    for (const [view, layout] of [[page, 'desktop'], [phone, 'compact']] as const) {
+      await home.open(view);
+      const body = await openAgentsTray(view, caller.threadIds[0], layout);
+      const row = body.locator(`[data-testid="agent-tray-row"][data-token="${spawn.value!.token}"]`);
+      await expect(row.getByTestId('agent-tray-row-state')).toHaveText('blocked', { timeout: 60_000 });
+      const waiting = row.getByTestId('agent-tray-row-blocked');
+      await expect(waiting).toHaveText(/^Needs approval for .*Bash.*, waiting on Asking caller$/);
+      if (layout === 'desktop') await view.mouse.move(800, 400);
+      await capture(view, `owned-remote-waiting-${layout}.png`, row);
+    }
+  } finally {
+    await phoneContext.close();
+  }
+
+  // The wake row names the worker on its computer and opens it there.
+  const sender = page.getByTestId('agent-message-sender').filter({ hasText: 'Remote asker' });
+  await expect(sender).toHaveText('Remote asker on GPU computer');
+  await sender.click();
+  await expect(chatShowing(page, worker)).toBeVisible();
+
+  // The spawner's reply answers it there.
+  await advanceGate(home, answering.mockId, 'asks-there-answer');
+  const after = await awaitGate(remote, 'asks-there-after', there.path);
+  await expect.poll(async () => (await approvals()).length).toBe(0);
+  const done = awaitTurnCompleted(remote, worker);
+  await advanceGate(remote, after.mockId, 'asks-there-after');
+  await done;
+});
+
+test("with the spawner's computer stopped, a question over there reaches the person there once the lease runs out", async () => {
+  test.setTimeout(300_000);
+  // The lease is shortened on the worker's computer only.
+  const leased = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},prompt-lease=10s` } });
+  let leasedID = '';
+  try {
+    leasedID = await pairOwnDevice(home, leased, 'Lease computer');
+    const caller = await seed(home, 'lease-caller', ['Lease caller']);
+    const there = await seed(leased, 'lease-work', []);
+    await setScenario(leased, there.path, threadToolsScenario({
+      name: 'lease-worker', provider: 'claude',
+      turns: [{ steps: [
+        { approval: { toolName: 'Bash', input: { command: 'make soak' }, onAllow: [], onDeny: [] } },
+      ], text: 'Soaked.' }],
+      afterTurns: 'repeatLast',
+    }));
+    // The spawner takes the wake and holds it, unanswered.
+    await setScenario(home, caller.path, threadToolsScenario({
+      name: 'lease-caller-script', provider: 'claude',
+      turns: [
+        { steps: [{ call: {
+          tool: 'thread_spawn',
+          args: { prompt: 'Run the soak.', title: 'Lease worker', computer_id: leasedID, project_id: there.projectId, notify: true },
+          timeoutMs: 120_000,
+        } }], text: 'Started it over there.' },
+        { steps: [{ gate: 'lease-caller-hold' }], text: 'Not now.' },
+        { text: 'Noted.' },
+      ],
+      afterTurns: 'repeatLast',
+    }));
+    await home.rpc('StartSession', caller.threadIds[0]);
+    await home.rpc('SendMessage', caller.threadIds[0], 'have the lease computer run the soak', null);
+    const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+    expect(spawn.isError, spawn.text).toBe(false);
+    const worker = spawn.value!.thread_id;
+    const holding = await awaitGate(home, 'lease-caller-hold', caller.path);
+    type Pending = { requestId: string; routedTo?: { threadId: string } | null };
+    const approvals = async () => (await leased.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
+    await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
+
+    // While the spawner's computer holds it, it outlasts the lease.
+    await new Promise((resolve) => setTimeout(resolve, 15_000));
+    expect((await approvals())[0]?.routedTo?.threadId).toBe(caller.threadIds[0]);
+
+    // Stopped, the spawner's computer holds it no longer: once the lease
+    // runs out, the person there has it.
+    const pid = home.bootstrap.pid;
+    expect(pid).toBeGreaterThan(0);
+    process.kill(pid, 'SIGSTOP');
+    try {
+      await expect.poll(async () => {
+        const [approval] = await approvals();
+        return approval ? (approval.routedTo?.threadId ?? 'the person') : 'none';
+      }, { timeout: 60_000 }).toBe('the person');
+    } finally {
+      process.kill(pid, 'SIGCONT');
+    }
+    // The person answers it there.
+    const done = awaitTurnCompleted(leased, worker);
+    await leased.rpc('RespondToApproval', worker, { requestId: (await approvals())[0].requestId, decision: 'allow' });
+    await done;
+    await advanceGate(home, holding.mockId, 'lease-caller-hold');
+  } finally {
+    if (leasedID !== '') await home.rpc('RemoveBackend', leasedID, true);
+    await leased.close();
+  }
+});
+
+test('an accepted send shows the approval blocking a busy ordinary thread on the other computer', async ({ page }) => {
+  test.setTimeout(120_000);
+  const caller = await seed(home, 'send-to-busy-caller', ['Sending caller']);
+  const { projects: [target] } = await remote.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [{ name: 'busy-ordinary-target', repo: {}, threads: [{ title: 'Busy target', provider: 'codex' }] }],
+  });
+  const worker = target.threadIds[0];
+  await setScenario(remote, target.path, threadToolsScenario({
+    name: 'ordinary-target', provider: 'codex', codexResponses: CODEX_STEER_NOT_STEERABLE,
+    turns: [
+      { steps: [
+        { gate: 'before-busy-approval' },
+        { approval: { toolName: 'Bash', input: { command: 'make test' }, onAllow: [], onDeny: [] } },
+      ], text: 'First task finished.' },
+      { text: 'Queued task finished.' },
+    ],
+  }));
+  await remote.rpc('StartSession', worker);
+  await remote.rpc('SendMessage', worker, 'start the first task', null);
+  const first = await awaitGate(remote, 'before-busy-approval', target.path);
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'ordinary-sender', provider: 'claude', turns: [
+      { steps: [{ call: { tool: 'thread_send', args: {
+        computer_id: remoteID, thread_id: worker, message: 'queue the second task', notify: true, wait_seconds: 0,
+      } } }], text: 'Sent.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'queue another task', null);
+  const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', cwd: caller.path });
+  expect(sent.isError, sent.text).toBe(false);
+  await home.open(page);
+  const body = await openAgentsTray(page, caller.threadIds[0], 'desktop');
+  const row = body.locator(`[data-testid="agent-tray-row"][data-token="${sent.value!.token}"]`);
+  await expect(row).toBeVisible();
+  const db = new DatabaseSync(join(remote.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    expect(db.prepare('SELECT state FROM thread_request_receipts WHERE token = ?').get(sent.value!.token))
+      .toMatchObject({ state: 'accepted' });
+  } finally {
+    db.close();
+  }
+  await advanceGate(remote, first.mockId, 'before-busy-approval');
+  await expect(row.getByTestId('agent-tray-row-state')).toHaveText('blocked', { timeout: 30_000 });
+  await expect(row.getByTestId('agent-tray-row-blocked')).toHaveText('Waiting on a person on GPU computer');
+  const { approvals } = await remote.rpc<{ approvals: { requestId: string }[] }>('ListPendingInteractiveRequests', worker);
+  await remote.rpc('RespondToApproval', worker, { requestId: approvals[0].requestId, decision: 'allow' });
+});
+
+test('a reconnected owner sees resting worker edits and confirms only surviving workers', async ({ page }) => {
+  test.setTimeout(240_000);
+  await home.rpc('UpdateSettings', { confirmDelete: true });
+  const kept = await spawnOwnedThere('reconcile-kept', 'Recovered caller', 'Worker before rename');
+  const gone = await spawnOwnedThere('reconcile-gone', 'Recent caller', 'Worker to remove');
+  const old = await spawnOwnedThere('reconcile-old', 'Older caller', 'Older worker to remove');
+  const offered = async (caller: string) => (await home.rpc<{ remoteWorkers: boolean }>('GetDeleteDependents', [caller])).remoteWorkers;
+  await remote.rpc('SetThreadPlacement', [kept.worker], 'standalone');
+  await expect.poll(() => offered(kept.caller)).toBe(false);
+
+  expect(await home.stop()).toBe(true);
+  const db = new DatabaseSync(join(home.bootstrap.dataDir, 'agent-overflow.db'));
+  try {
+    expect(db.prepare('UPDATE thread_requests SET settled_at = ? WHERE token = ? AND settled_at IS NOT NULL')
+      .run(Date.now() - 31 * 86_400_000, old.token).changes).toBe(1);
+  } finally {
+    db.close();
+  }
+  await remote.rpc('SetThreadPlacement', [kept.worker], 'owned');
+  await remote.rpc('RenameThread', kept.worker, 'Renamed while disconnected');
+  for (const worker of [gone.worker, old.worker]) await remote.rpc('DeleteThread', worker);
+  expect(await remote.stop()).toBe(true);
+  remote = await launchHarness({ dataDir: join(homeRoot, 'remote') });
+  home = await launchHarness({ dataDir: homeDataDir });
+  await home.rpc('RepairBackendAddress', remoteID, 'https://127.0.0.1:' + remote.bootstrap.port);
+  await remote.rpc('RepairBackendAddress', homeID, 'https://127.0.0.1:' + home.bootstrap.port);
+  for (const run of [gone, old]) await expect.poll(() => offered(run.caller), { timeout: 60_000 }).toBe(false);
+  await home.open(page);
+  await openAgentsTray(page, kept.caller, 'desktop');
+  const past = await openPast(page);
+  await expect(past.getByText('Renamed while disconnected', { exact: true })).toBeVisible();
+  for (const [caller, survives] of [[kept.caller, true], [gone.caller, false], [old.caller, false]] as const) {
+    await rowMenuItem(page, 'desktop', caller, 'Delete');
+    const dialog = page.locator('[role="dialog"]:not([inert])').filter({ has: page.getByRole('button', { name: 'Cancel', exact: true }) });
+    await expect(dialog).toBeVisible();
+    const warning = dialog.getByText('Workers it spawned on other computers are deleted there too.', { exact: false });
+    await expect(warning).toHaveCount(survives ? 1 : 0);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+});
+
+test('archiving and deleting the spawner archive and delete its worker over there', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  await home.rpc('UpdateSettings', { confirmArchive: false, confirmDelete: true });
+  const archived = await spawnOwnedThere('owner-archive', 'Archived owner', 'Archived worker');
+  const deleted = await spawnOwnedThere('owner-delete', 'Deleted owner', 'Deleted worker');
+  const dialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
+  const line = 'Workers it spawned on other computers are deleted there too.';
+
+  // The delete confirmation says what goes on the other computer, under
+  // both layouts.
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    const phone = await phoneContext.newPage();
+    await home.open(phone);
+    await rowMenuItem(phone, 'compact', deleted.caller, 'Delete');
+    const phoneDialog = phone.getByRole('dialog').or(phone.getByRole('alertdialog'));
+    await expect(phoneDialog).toContainText(`This will permanently delete this thread and all its messages. This action cannot be undone. ${line}`);
+    await capture(phone, 'owned-remote-delete-confirm-compact.png', phoneDialog);
+    await phoneDialog.getByRole('button', { name: 'Cancel', exact: true }).tap();
+  } finally {
+    await phoneContext.close();
+  }
+
+  await home.open(page);
+  await rowMenuItem(page, 'desktop', archived.caller, 'Archive Thread');
+  await expect.poll(() => archivedThere(remote, archived.worker), { timeout: 60_000 }).toBe(true);
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Archived worker' })).toHaveCount(0);
+
+  await rowMenuItem(page, 'desktop', deleted.caller, 'Delete');
+  await expect(dialog).toContainText(`This will permanently delete this thread and all its messages. This action cannot be undone. ${line}`);
+  await page.mouse.move(800, 400);
+  await capture(page, 'owned-remote-delete-confirm-desktop.png', dialog);
+  await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect.poll(() => archivedThere(remote, deleted.worker), { timeout: 60_000 }).toBeNull();
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Deleted worker' })).toHaveCount(0);
+});
+
+test('archiving and deleting the spawner while the other computer is stopped say so, and land when it is back', async ({ page }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  await home.rpc('UpdateSettings', { confirmArchive: false, confirmDelete: false });
+  const archived = await spawnOwnedThere('pending-archive', 'Pending archive owner', 'Pending archive worker');
+  const deleted = await spawnOwnedThere('pending-delete', 'Pending delete owner', 'Pending delete worker');
+  await home.open(page);
+  await expect(sidebarRow(page, archived.caller)).toBeVisible();
+
+  const pid = remote.bootstrap.pid;
+  expect(pid).toBeGreaterThan(0);
+  process.kill(pid, 'SIGSTOP');
+  try {
+    // The archive and the delete stand here, and the toasts say the
+    // worker's half is on its way, with no retry to press.
+    await rowMenuItem(page, 'desktop', archived.caller, 'Archive Thread');
+    const archiveToast = page.getByTestId('toast').filter({ hasText: 'Pending archive worker' });
+    await expect(archiveToast.getByTestId('toast-message')).toHaveText(
+      'Archived "Pending archive owner". Its worker "Pending archive worker" is pending on GPU computer. GPU computer did not answer in time; it is archived there once that computer answers.',
+      { timeout: 60_000 },
+    );
+    await expect(archiveToast.getByRole('button', { name: 'Archive again' })).toHaveCount(0);
+    await expect(sidebarRow(page, archived.caller)).toHaveCount(0);
+    await page.mouse.move(800, 400);
+    await capture(page, 'owned-remote-pending-archive-toast.png', archiveToast);
+
+    await rowMenuItem(page, 'desktop', deleted.caller, 'Delete');
+    const deleteToast = page.getByTestId('toast').filter({ hasText: 'Pending delete worker' });
+    await expect(deleteToast.getByTestId('toast-message')).toHaveText(
+      'Deleted "Pending delete owner". Its worker "Pending delete worker" is pending on GPU computer. GPU computer did not answer in time; it is deleted there once that computer answers.',
+      { timeout: 60_000 },
+    );
+    await expect(deleteToast.getByRole('button', { name: 'Delete again' })).toHaveCount(0);
+    await expect(home.rpc('GetThread', deleted.caller)).rejects.toThrow();
+    await capture(page, 'owned-remote-pending-delete-toast.png', deleteToast);
+  } finally {
+    process.kill(pid, 'SIGCONT');
+  }
+
+  // Back, the other computer takes both.
+  await expect.poll(() => archivedThere(remote, archived.worker), { timeout: 150_000 }).toBe(true);
+  await expect.poll(() => archivedThere(remote, deleted.worker), { timeout: 150_000 }).toBeNull();
+});
+
+test('a computer on v0.0.19: its threads archive and delete from this window, and a spawner here names it once', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  await home.rpc('UpdateSettings', { confirmArchive: false, confirmDelete: false });
+  // A computer that answers as v0.0.19 does: the methods added since are
+  // missing, archive and delete answer null, and owner operations are an
+  // unknown write (diagenv.HarnessOlderComputer).
+  const older = await launchHarness({ env: { AO_HARNESS_OLDER_COMPUTER: '1' } });
+  let olderID = '';
+  const missing: string[] = [];
+  page.on('console', (message) => {
+    if (/method_not_found|unknown method/i.test(message.text())) missing.push(message.text());
+  });
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    olderID = await pairOwnDevice(home, older, 'Old computer');
+    await expect(older.rpc('ListThreadAgentRows', 'any')).rejects.toThrow(/method_not_found/);
+
+    // Its own threads, from this window that has it attached, on the
+    // desktop and on the phone: each action goes through the method that
+    // release has and reports nothing more.
+    const own = await seed(older, 'older-own', ['Older archive me', 'Older delete me', 'Older phone delete'], true);
+    const [archiveMe, deleteMe, phoneDelete] = own.threadIds;
+    await home.open(page);
+    for (const id of own.threadIds) await expect(sidebarRow(page, id)).toBeVisible({ timeout: 60_000 });
+    await rowMenuItem(page, 'desktop', archiveMe, 'Archive Thread');
+    await expect(sidebarRow(page, archiveMe)).toHaveCount(0);
+    await expect.poll(() => archivedThere(older, archiveMe)).toBe(true);
+    await rowMenuItem(page, 'desktop', deleteMe, 'Delete');
+    await expect(sidebarRow(page, deleteMe)).toHaveCount(0);
+    await expect.poll(() => archivedThere(older, deleteMe)).toBeNull();
+    const phone = await phoneContext.newPage();
+    phone.on('console', (message) => {
+      if (/method_not_found|unknown method/i.test(message.text())) missing.push(message.text());
+    });
+    // Confirmed, so the confirmation reads what the delete takes: that
+    // release has no such read, and its answer is nothing more.
+    await home.rpc('UpdateSettings', { confirmDelete: true });
+    await home.open(phone);
+    await rowMenuItem(phone, 'compact', phoneDelete, 'Delete');
+    const confirmDelete = phone.getByRole('button', { name: 'Delete', exact: true });
+    await expect(confirmDelete).toBeEnabled();
+    await expect(phone.getByText('This will permanently delete this thread and all its messages. This action cannot be undone.', { exact: true })).toBeVisible();
+    await confirmDelete.tap();
+    await home.rpc('UpdateSettings', { confirmDelete: false });
+    await expect(sidebarRow(phone, phoneDelete)).toHaveCount(0);
+    await expect.poll(() => archivedThere(older, phoneDelete)).toBeNull();
+    // Opening a thread there reads no Agents segment and fails nothing.
+    const kept = await seed(older, 'older-kept', ['Older kept'], true);
+    await sidebarRow(page, kept.threadIds[0]).click();
+    await expect(chatShowing(page, kept.threadIds[0])).toBeVisible();
+    await expect(page.getByTestId('activity-rail-agents-toggle')).toHaveCount(0);
+    for (const view of [page, phone]) await expect(view.getByTestId('toast')).toHaveCount(0);
+    expect(missing).toEqual([]);
+
+    // Its settings name none of the keys added since: each page for them
+    // says so and offers nothing to change there.
+    await page.getByTestId('sidebar-settings-button').click();
+    const allSettings = page.getByRole('button', { name: 'All settings', exact: true });
+    if (await allSettings.isVisible()) await allSettings.click();
+    const tabs = page.getByRole('tablist', { name: 'Settings Sections' });
+    await tabs.getByRole('tab', { name: 'Assistants', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(olderID);
+    for (const [tab, testId, lacks] of [
+      ['Assistants', 'settings-assistants', 'assistants'],
+      ['Agent profiles', 'settings-agent-profiles', 'agent profiles'],
+      ['Memory', 'settings-memory', 'memory settings'],
+    ] as const) {
+      await tabs.getByRole('tab', { name: tab, exact: true }).click();
+      const pageBody = page.getByTestId(testId);
+      await expect(pageBody.getByTestId('settings-older-computer')).toHaveText(`Old computer runs an older version: it has no ${lacks}.`);
+      await expect(pageBody.locator('input, textarea, select, button, [role="switch"]')).toHaveCount(0);
+      if (tab === 'Memory') await capture(page, 'settings-older-computer-memory.png', pageBody);
+    }
+    await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+    await expect(page.getByTestId('toast')).toHaveCount(0);
+    expect(missing).toEqual([]);
+
+    const there = await seed(older, 'older-owner-work', []);
+    await setScenario(older, there.path, plainScenario({ name: 'older-owner-worker', provider: 'claude', texts: ['Done on the old computer.'] }));
+    const owners: Array<{ caller: string; worker: string }> = [];
+    for (const title of ['Older archive owner', 'Older delete owner']) {
+      const caller = await seed(home, title.toLowerCase().replaceAll(' ', '-'), [title]);
+      await setScenario(home, caller.path, threadToolsScenario({
+        name: `${title}-script`, provider: 'claude',
+        turns: [
+          { steps: [{ call: {
+            tool: 'thread_spawn',
+            args: { prompt: 'Work on the old computer.', title: `${title} worker`, computer_id: olderID, project_id: there.projectId, notify: true },
+            timeoutMs: 120_000,
+          } }], text: 'Started it there.' },
+          { text: 'Noted.' },
+        ],
+        afterTurns: 'repeatLast',
+      }));
+      await home.rpc('StartSession', caller.threadIds[0]);
+      await home.rpc('SendMessage', caller.threadIds[0], 'work on the old computer', null);
+      const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+      expect(spawn.isError, spawn.text).toBe(false);
+      await awaitTurnCompleted(older, spawn.value!.thread_id);
+      owners.push({ caller: caller.threadIds[0], worker: spawn.value!.thread_id });
+    }
+    await home.open(page);
+
+    await rowMenuItem(page, 'desktop', owners[0].caller, 'Archive Thread');
+    const archiveToast = page.getByTestId('toast').filter({ hasText: 'Older archive owner worker' });
+    await expect(archiveToast.getByTestId('toast-message')).toHaveText(
+      'Archived "Older archive owner", but its worker "Older archive owner worker" on Old computer is still open: Old computer runs an older version, so the worker there was not archived.',
+      { timeout: 60_000 },
+    );
+    await expect(archiveToast.getByRole('button', { name: 'Archive again' })).toHaveCount(0);
+    await page.mouse.move(800, 400);
+    await capture(page, 'owned-remote-older-archive-toast.png', archiveToast);
+
+    await rowMenuItem(page, 'desktop', owners[1].caller, 'Delete');
+    const deleteToast = page.getByTestId('toast').filter({ hasText: 'Older delete owner worker' });
+    await expect(deleteToast.getByTestId('toast-message')).toHaveText(
+      'Deleted "Older delete owner", but its worker "Older delete owner worker" on Old computer stays: Old computer runs an older version, so the worker there was not deleted.',
+      { timeout: 60_000 },
+    );
+    // That computer keeps both workers.
+    expect(await archivedThere(older, owners[0].worker)).toBe(false);
+    expect(await archivedThere(older, owners[1].worker)).toBe(false);
+  } finally {
+    await phoneContext.close();
+    if (olderID !== '') await home.rpc('RemoveBackend', olderID, true);
+    await older.close();
+  }
+});
+
+test('a nested row on the other computer names the wake row its answer reached there', async () => {
+  test.setTimeout(240_000);
+  const caller = await seed(home, 'agents-wake-caller', ['Agents wake caller']);
+  const child = await seed(remote, 'agents-wake-child', []);
+  const grand = await seed(remote, 'agents-wake-grand', []);
+  for (const projectId of [child.projectId, grand.projectId]) {
+    await remote.rpc('UpdateNewThreadDefaults', {
+      projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+    });
+  }
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'agents-wake-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it over there.', title: 'Remote child', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(remote, child.path, threadToolsScenario({
+    name: 'agents-wake-child-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Package it.', title: 'Remote grandchild', project_id: grand.projectId, notify: true } } }],
+        text: 'Packaging started.' },
+      { text: 'Packaged, noted.' },
+    ],
+  }));
+  await setScenario(remote, grand.path, plainScenario({
+    name: 'agents-wake-grand-script', provider: 'claude', texts: ['Packaged.'],
+  }));
+
+  // The grandchild's answer wakes the child there.
+  const woken = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes('Packaged.'),
+    180_000,
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  expect(nested.isError, nested.text).toBe(false);
+  expect((await woken).report.input).toContain(nested.value!.token);
+
+  // The child's computer records the row that carried the wake once the
+  // echo confirms it, and the caller's listing nests that row unchanged.
+  type Listing = { rows: { token: string; ownerComputerId?: string; wakeItemId?: string }[] };
+  let wakeItemId = '';
+  await expect.poll(async () => {
+    const there = await remote.rpc<Listing>('ListThreadAgentRows', spawn.value!.thread_id);
+    wakeItemId = there.rows.find((row) => row.token === nested.value!.token)?.wakeItemId ?? '';
+    return wakeItemId;
+  }, { timeout: 60_000 }).not.toBe('');
+  const items = await remote.rpc<{ id: string; kind: string }[]>('ListItems', spawn.value!.thread_id, true);
+  expect(items.find((item) => item.id === wakeItemId)?.kind, 'the wake link names a row of the child').toBe('user_text');
+  await expect.poll(async () => {
+    const here = await home.rpc<Listing>('ListThreadAgentRows', caller.threadIds[0]);
+    const row = here.rows.find((candidate) => candidate.token === nested.value!.token);
+    return row && { owner: row.ownerComputerId, wake: row.wakeItemId };
+  }, { timeout: 60_000 }).toEqual({ owner: remoteID, wake: wakeItemId });
+});
+
 test('a thread moved to the other computer resolves there by its bare id', async () => {
   test.setTimeout(180_000);
   const caller = await seed(home, 'remote-moved-caller', ['Moved caller']);
@@ -1169,6 +2250,8 @@ test('the origin chip names the other computer on both ends of a spawn', async (
                   title: 'Chip work',
                   computer_id: remoteID,
                   project_id: there.projectId,
+                  // A sidebar row there, which the person opens below.
+                  placement: 'standalone',
                   runtime_mode: 'read-only',
                   notify: true,
                 },
@@ -1212,15 +2295,15 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   // The destination's first message says which computer asked for it.
   await remote.open(page);
   await sidebarRow('Chip work').click();
-  await expect(page.getByTestId('user-message-thread-origin').first()).toHaveText(
-    'from Chip caller on Laptop computer',
+  await expect(page.getByTestId('agent-message-sender').first()).toHaveText(
+    'Chip caller on Laptop computer',
   );
 
   // The caller's wake says which computer answered.
   await home.open(page);
   await sidebarRow('Chip caller').click();
-  await expect(page.getByTestId('user-message-thread-origin').first()).toHaveText(
-    'from Chip work on GPU computer',
+  await expect(page.getByTestId('agent-message-sender').first()).toHaveText(
+    'Chip work on GPU computer',
   );
 });
 
@@ -1603,6 +2686,9 @@ test('a reply written while the calling computer was off arrives when it comes b
   );
   expect(wake.report.input).toContain('The nightly finished at 03:14.');
   expect(wake.report.input).toContain('GPU computer');
+  // The wake can arrive while the released boot is still finishing, and
+  // the next case calls this computer at once.
+  await waitUntilReady(home);
 });
 
 test('a thread of 38k items on the other computer is windowed, paged and exported here', async () => {
@@ -1895,6 +2981,79 @@ test('a multi-megabyte tool output on the other computer is searched and read in
   expect(tail.value!.text).not.toContain(bigItem.needle.trim());
 });
 
+test('two assistants with one name on the two computers show and resolve as <name>-<computer>', async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(20_000);
+  // Named here so neither the answers nor the captures carry the host's name.
+  await home.rpc('SetDeviceName', 'Desk computer');
+  const caller = await seed(home, 'name-clash-caller', ['Clash caller']);
+  const here = await seed(home, 'name-clash-here', ['Night ops'], true);
+  const there = await seed(remote, 'name-clash-there', ['Night ops'], true);
+  await home.rpc('HarnessMakeAssistant', here.threadIds[0]);
+  // The one over there runs in its home.
+  const thereAgent = await remote.rpc<{ home: string }>('HarnessMakeAssistant', there.threadIds[0]);
+  await setScenario(remote, thereAgent.home, plainScenario({ name: 'name-clash-there', provider: 'claude', texts: ['Night ops over there, on it.'] }));
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'name-clash-caller',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { call: { tool: 'thread_search', args: { agents: true } } },
+            { call: { tool: 'thread_send', args: { thread_id: 'night ops', message: 'Which one?', wait_seconds: 0 } } },
+            { call: { tool: 'thread_send', args: { thread_id: 'Night ops-GPU computer', message: 'Check the GPUs.', wait_seconds: 0 }, timeoutMs: 60_000 } },
+          ],
+          text: 'Asked the right one.',
+        },
+      ],
+      afterTurns: 'repeatLast',
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask night ops about the GPUs', null);
+
+  // thread_search agents lists both, each suffixed with its computer.
+  interface AgentsAnswer {
+    computers: Array<{ computer_id?: string; rows: Array<{ thread_id: string; assistant?: { name: string } }> }>;
+  }
+  const listed = await awaitToolAnswer<AgentsAnswer>(home, { tool: 'thread_search', cwd: caller.path, timeoutMs: 60_000 });
+  expect(listed.isError, listed.text).toBe(false);
+  const names = Object.fromEntries(
+    listed.value!.computers.flatMap((group) => group.rows).map((row) => [row.thread_id, row.assistant?.name]),
+  );
+  expect(names[here.threadIds[0]]).toBe('Night ops-Desk computer');
+  expect(names[there.threadIds[0]]).toBe('Night ops-GPU computer');
+
+  // The bare name is ambiguous, in any case, and the refusal names both.
+  const ambiguous = await awaitToolAnswer(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
+  expect(ambiguous.isError).toBe(true);
+  expect(ambiguous.text).toContain('"night ops" matches 2 threads');
+  expect(ambiguous.text).toContain(`${here.threadIds[0]} ("Night ops") on Desk computer, the assistant "Night ops-Desk computer"`);
+  expect(ambiguous.text).toContain(`${there.threadIds[0]} ("Night ops") on GPU computer, the assistant "Night ops-GPU computer"`);
+
+  // <name>-<computer> reaches the one over there.
+  const sent = await awaitToolAnswer<{ thread_id: string; computer_id: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
+  expect(sent.isError, sent.text).toBe(false);
+  expect(sent.value!.thread_id).toBe(there.threadIds[0]);
+  expect(sent.value!.computer_id).toBe(remoteID);
+  await awaitTurnCompleted(remote, there.threadIds[0], 60_000);
+
+  // The sidebar and the pane header show the suffix; the titles are unchanged.
+  await home.open(page);
+  const hereRow = page.locator(`[data-sidebar-thread-id="${here.threadIds[0]}"]`);
+  const thereRow = page.locator(`[data-sidebar-thread-id="${there.threadIds[0]}"]`);
+  await expect(hereRow.getByTestId('thread-row-title')).toHaveText('Night ops-Desk computer');
+  await expect(thereRow.getByTestId('thread-row-title')).toHaveText('Night ops-GPU computer');
+  await hereRow.click();
+  await expect(page.getByTestId('chat-header-title').filter({ visible: true })).toHaveText('Night ops-Desk computer');
+  await captureAgentMessage(page, 'assistant-name-clash-sidebar.png', hereRow, thereRow);
+  expect((await threadRows(home)).find((row) => row.id === here.threadIds[0])?.title).toBe('Night ops');
+  expect((await threadRows(remote)).find((row) => row.id === there.threadIds[0])?.title).toBe('Night ops');
+});
+
 // Last in the file: this one removes the pairing, and the tests run in
 // serial order against the two backends beforeAll launched.
 test('forgetting a computer with open requests refuses once, then abandons them', async () => {
@@ -1974,6 +3133,8 @@ test('forgetting a computer with open requests refuses once, then abandons them'
     refusal = (error as Error).message;
   }
   expect(refusal).toContain('thread_requests_open');
+  // Earlier cases in this file can leave their own requests open there.
+  expect(refusal).toMatch(/This computer has \d+ agent thread requests? still open there: /);
   expect(refusal).toContain(spawn.value!.token);
   expect(await home.rpc<Array<{ id: string }>>('ListBackends')).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: remoteID })]),

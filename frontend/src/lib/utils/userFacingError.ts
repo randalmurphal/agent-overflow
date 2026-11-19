@@ -10,11 +10,11 @@
 // `Timeout.` after capitalisation, which is fine, but `db: i/o` would
 // reduce to `I/o.`, which loses the cause.
 //
-// UUIDs are stripped wholesale: nobody hand-types a thread id, and
-// surfacing them in a toast just adds visual noise. The `\s*` before
-// the UUID is intentional so `for thread <uuid>` collapses to
-// `for thread` rather than `for thread ` with a trailing space, and quotes
-// around one go with it. The full text stays in the error's report
+// UUIDs are stripped: nobody hand-types a thread id, and surfacing them in
+// a toast just adds visual noise. The `\s*` before the UUID is intentional
+// so `for thread <uuid>` collapses to `for thread` rather than `for thread `
+// with a trailing space, and quotes around one go with it. A UUID that is
+// a path segment stays, or the folder a message names would break. The full text stays in the error's report
 // (errorReport.ts), which is where a person reads ids.
 //
 // A backend failure that carries its wrap chain (TransportError.detail)
@@ -65,10 +65,16 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
       raw = parts[parts.length - 1];
     }
   }
-  raw = raw.replace(/\s*"?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"?/gi, '');
+  raw = raw.replace(/(?<![\\/])\s*"?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"?/gi, '');
   raw = raw.trim();
   if (!raw) return fallback;
-  raw = raw.charAt(0).toUpperCase() + raw.slice(1);
-  if (!/[.!?]$/.test(raw)) raw += '.';
-  return raw;
+  return asSentence(raw);
+}
+
+// asSentence is how error text reads wherever it is shown: Go error strings
+// start lowercase and carry no closing punctuation, so the first letter is
+// capitalised and a period added unless the text already ends a sentence.
+export function asSentence(text: string): string {
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }

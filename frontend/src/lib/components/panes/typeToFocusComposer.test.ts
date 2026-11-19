@@ -234,7 +234,7 @@ describe('redirectTypingToFocusedComposer', () => {
     addPane('main');
     state.focusedPaneId = 'main';
     state.drafts.set('main', { hydrating: false, threadId: 't1' });
-    // No textarea mounted (discussion-mode pane).
+    // No textarea mounted (terminal pane).
     expect(redirectTypingToFocusedComposer(keyEvent('a'), OPEN_NOTHING)).toBe(false);
 
     const textarea = mountComposer('main');

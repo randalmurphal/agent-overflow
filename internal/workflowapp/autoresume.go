@@ -2,11 +2,13 @@ package workflowapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -26,6 +28,16 @@ type autoResumeState struct {
 	mu       sync.Mutex
 	timers   map[string]Timer
 	newTimer func(time.Duration, func()) Timer
+	// runs serializes, per run, a schedule, a fire, the boot sweep's arm and
+	// a disarm, so a disarm returns with no fire of the run under way and
+	// none to come.
+	runsOnce sync.Once
+	runs     *keyedlock.Registry
+}
+
+func (s *Service) lockAutoResume(itemID string) func() {
+	s.autoResume.runsOnce.Do(func() { s.autoResume.runs = keyedlock.New() })
+	return s.autoResume.runs.Lock(itemID)
 }
 
 func (s *Service) autoResumeTimer(delay time.Duration, fire func()) Timer {
@@ -56,6 +68,8 @@ func (s *Service) ConfigureClock(now func() time.Time) {
 func (s *Service) Now() time.Time { return s.deps.Now() }
 
 func (s *Service) SetAutoResume(itemID string, at time.Time) error {
+	unlock := s.lockAutoResume(itemID)
+	defer unlock()
 	if err := s.deps.Store.SetWorkItemAutoResumeAt(itemID, at.UnixMilli()); err != nil {
 		return err
 	}
@@ -99,6 +113,8 @@ func (s *Service) ClearAutoResume(itemID string) {
 }
 
 func (s *Service) fireAutoResume(itemID string) {
+	unlock := s.lockAutoResume(itemID)
+	defer unlock()
 	at, err := s.deps.Store.WorkItemAutoResumeAt(itemID)
 	if err != nil {
 		s.deps.Logf("workflow auto-resume %s: read schedule: %v", itemID, err)
@@ -141,8 +157,59 @@ func (s *Service) SweepAutoResumes() {
 		if delay < AutoResumeBootDelay {
 			delay = AutoResumeBootDelay
 		}
-		s.armAutoResume(resume.ItemID, delay)
+		s.armSweptAutoResume(resume.ItemID, delay)
 	}
+}
+
+// armSweptAutoResume arms one schedule the boot sweep read, unless a disarm
+// cleared it since.
+func (s *Service) armSweptAutoResume(itemID string, delay time.Duration) {
+	unlock := s.lockAutoResume(itemID)
+	defer unlock()
+	at, err := s.deps.Store.WorkItemAutoResumeAt(itemID)
+	if err != nil {
+		s.deps.Logf("workflow auto-resume sweep %s: read schedule: %v", itemID, err)
+		return
+	}
+	if at != 0 {
+		s.armAutoResume(itemID, delay)
+	}
+}
+
+// DisarmTreeAutoResumes cancels the scheduled resume of every run in the tree
+// rooted at rootID: its timer stops and its schedule is cleared, after a fire
+// of the run already under way has finished, so none fires afterwards, on
+// this boot or the next. A run that fire resumed stays resumed, and a manual
+// resume is unaffected. Each run whose schedule could not be cleared is
+// named in the error.
+func (s *Service) DisarmTreeAutoResumes(rootID string) error {
+	tree, err := s.RunTreeNodes(rootID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, run := range tree {
+		if err := s.disarmAutoResume(run.ID); err != nil {
+			errs = append(errs, fmt.Errorf("run %s: %w", run.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Service) disarmAutoResume(itemID string) error {
+	unlock := s.lockAutoResume(itemID)
+	defer unlock()
+	s.autoResume.mu.Lock()
+	if timer, armed := s.autoResume.timers[itemID]; armed {
+		timer.Stop()
+		delete(s.autoResume.timers, itemID)
+	}
+	s.autoResume.mu.Unlock()
+	at, err := s.deps.Store.WorkItemAutoResumeAt(itemID)
+	if err != nil || at == 0 {
+		return err
+	}
+	return s.deps.Store.SetWorkItemAutoResumeAt(itemID, 0)
 }
 
 func (s *Service) StopAutoResumes() {

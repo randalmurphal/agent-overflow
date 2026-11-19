@@ -82,7 +82,7 @@ func TestSignatureBoundsFreeTextTheWayTheMessageDoes(t *testing.T) {
 	if Signature(first) != Signature(second) {
 		t.Fatal("causes that render identically signed differently")
 	}
-	if Compose(first) != Compose(second) {
+	if composeText(first) != composeText(second) {
 		t.Fatal("the premise is wrong: those causes do not render identically")
 	}
 }

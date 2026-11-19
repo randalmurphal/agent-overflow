@@ -1,7 +1,7 @@
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // Each computer owns a settings snapshot and save queue. This frontend owns
 // its presentation preferences, overlaid on every computer's projection.
-import { FRONTEND_DEVICE_SETTINGS_KEYS } from '../generated/settingsDefaults';
+import { FRONTEND_DEVICE_SETTINGS_KEYS, SETTINGS_DEFAULTS, SETTINGS_KEYS_OMITTED_WHEN_EMPTY } from '../generated/settingsDefaults';
 import type { Settings } from '../types/settings';
 import { GetSettings, UpdateSettings } from './bindings';
 import { addErrorToast } from './toast.svelte';
@@ -10,6 +10,7 @@ import { defaultSettings, mergeSettingsWithDefaults } from './settingsDefaults';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { isFrontendOnly } from '../transport/runMode';
 import { attachedBackends, backendById, onBackendDetached, withBackendTarget } from '../transport/backends';
+import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import {
   frontendPreferences, seedFrontendPreferences, updateFrontendPreferences,
   isFrontendPreference, resetFrontendPreferencesForTest, validatedFrontendPreferences,
@@ -19,8 +20,14 @@ type PendingPatch = { patch: Partial<Settings> };
 interface ComputerSettings {
   saved: Settings;
   pending: readonly PendingPatch[];
+  /** The keys the computer's last settings answer named; null before one. */
+  named: ReadonlySet<string> | null;
 }
-const EMPTY: ComputerSettings = { saved: defaultSettings(), pending: [] };
+const EMPTY: ComputerSettings = { saved: defaultSettings(), pending: [], named: null };
+// The keys an answer of this build always names and this frontend keeps a
+// default for: the ones an answer without them says a release lacks.
+const omittedWhenEmpty = new Set<string>(SETTINGS_KEYS_OMITTED_WHEN_EMPTY);
+const alwaysNamed = new Set(Object.keys(SETTINGS_DEFAULTS).filter((key) => !omittedWhenEmpty.has(key)));
 const computers = createKeyedSignalRegistry<ComputerSettings>(EMPTY);
 const queues = new Map<BackendKey, Promise<void>>();
 const projections = new Map<BackendKey, {
@@ -32,24 +39,38 @@ const mirroredKeys = new Set<string>(FRONTEND_DEVICE_SETTINGS_KEYS);
 interface PreferenceMirror { pending: Partial<Settings>; running: boolean }
 const mirrors = new Map<BackendKey, PreferenceMirror>();
 
-/** Only device-tier keys may cross this seam; user-tier defaults never do. */
+/**
+ * Only device-tier keys may cross this seam; user-tier defaults never do. A
+ * computer is mirrored once its settings answer says which keys it has, and
+ * never a key it lacks (computerHasSetting).
+ */
 export function mirrorFrontendPreferences(backend: BackendKey, patch: Partial<Settings> = frontendPreferences()): void {
   if (isFrontendOnly() && backend === HOME_BACKEND) return;
-  const target = backendById(backend);
-  if (!target) return;
+  if (!backendById(backend)) return;
   const values = Object.fromEntries(Object.entries(validatedFrontendPreferences(patch)).filter(([key]) => mirroredKeys.has(key))) as Partial<Settings>;
   if (!Object.keys(values).length) return;
   let mirror = mirrors.get(backend);
   if (!mirror) { mirror = { pending: {}, running: false }; mirrors.set(backend, mirror); }
   Object.assign(mirror.pending, values);
-  if (mirror.running || (target.status.status !== 'connected' && (!target.home || target.client.getHello?.()))) return;
+  flushMirror(backend);
+}
+
+function flushMirror(backend: BackendKey): void {
+  const target = backendById(backend);
+  const mirror = mirrors.get(backend);
+  if (!target || !mirror || mirror.running) return;
+  if (target.status.status !== 'connected' && (!target.home || target.client.getHello?.())) return;
+  // readSettings flushes again once the answer lands.
+  if (computers.get(backend).named === null) return;
   const held = mirror;
   held.running = true;
   void (async () => {
     try {
       while (mirrors.get(backend) === held && backendById(backend) === target && Object.keys(held.pending).length) {
-        const next = held.pending;
+        const next = Object.fromEntries(Object.entries(held.pending)
+          .filter(([key]) => computerHasSetting(key as keyof Settings, backend))) as Partial<Settings>;
         held.pending = {};
+        if (!Object.keys(next).length) continue;
         try { await withBackendTarget(backend, () => UpdateSettings(next)); }
         catch {
           // Preserve the newest value for a reconnect or the next change.
@@ -63,6 +84,33 @@ export function mirrorFrontendPreferences(backend: BackendKey, patch: Partial<Se
 
 export function hasComputerSettings(backend: BackendKey): boolean {
   return computers.get(backend) !== EMPTY;
+}
+
+/**
+ * Whether the computer's release has the setting `key`, from its own
+ * settings answer: this build's answer names every key in `alwaysNamed`, so
+ * an answer without one is from a release without it. True until the
+ * computer's settings are read. Home is no exception: an installed app's
+ * home can run an older release. Nothing writes a key there that this says
+ * it lacks (updateSettingsPatch, the preference mirror); a release classes
+ * an unknown key host tier, refused without a step-up.
+ */
+export function computerHasSetting(key: keyof Settings, backend: BackendKey = HOME_BACKEND): boolean {
+  if (!alwaysNamed.has(key)) return true;
+  const named = computers.get(backend).named;
+  return named === null || named.has(key);
+}
+
+/** What a page or control for settings `lacks` says on a computer whose release has none. */
+export function olderComputerNote(backend: BackendKey, lacks: string): string {
+  const attached = getAttachedBackends();
+  const entry = attached.find((candidate) => candidate.id === backend);
+  const named = entry && attached.length > 1 ? backendDisplayName(entry) : '';
+  return `${named || 'This computer'} runs an older version: it has no ${lacks}.`;
+}
+
+function namedKeys(result: object): ReadonlySet<string> {
+  return new Set(Object.keys(result));
 }
 
 /** Stable per-computer projection; reads allocate only after an actual change. */
@@ -146,8 +194,11 @@ async function readSettings(backend: BackendKey, migrate: boolean): Promise<bool
     if (expected !== generation || backendById(backend) !== target) return false;
     if (result) {
       const saved = mergeSettingsWithDefaults(result as Partial<Settings>);
-      computers.set(backend, { saved, pending: computers.get(backend).pending });
+      computers.set(backend, {
+        saved, pending: computers.get(backend).pending, named: namedKeys(result),
+      });
       if (migrate && backend === HOME_BACKEND) seedFrontendPreferences(saved);
+      flushMirror(backend);
     }
     return true;
   } catch (err) {
@@ -180,7 +231,9 @@ export function updateSettingsPatch(
   if (Object.keys(frontend).length) {
     for (const entry of attachedBackends()) mirrorFrontendPreferences(entry.id, frontend);
   }
-  const host = Object.fromEntries(Object.entries(patch).filter(([key]) => !isFrontendPreference(key))) as Partial<Settings>;
+  // A key the computer's release lacks is not written there (computerHasSetting).
+  const host = Object.fromEntries(Object.entries(patch).filter(([key]) =>
+    !isFrontendPreference(key) && computerHasSetting(key as keyof Settings, backend))) as Partial<Settings>;
   // A local preference is fully saved before returning. A sleeping host's
   // optional device-bucket mirror cannot hold a toggle or block host edits.
   if (!Object.keys(host).length) return Promise.resolve();
@@ -199,7 +252,7 @@ export function updateSettingsPatch(
       const saved = result
         ? mergeSettingsWithDefaults(result as Partial<Settings>)
         : { ...state.saved, ...pending.patch };
-      computers.set(backend, { ...state, saved });
+      computers.set(backend, { ...state, saved, named: result ? namedKeys(result) : state.named });
     } catch (err) {
       if (expected !== generation || backendById(backend) !== target) return;
       console.error('Failed to update computer settings:', err);
@@ -226,6 +279,7 @@ export function applySettingsSnapshot(
 ): void {
   computers.set(backend, {
     saved: mergeSettingsWithDefaults(result), pending: computers.get(backend).pending,
+    named: namedKeys(result),
   });
 }
 

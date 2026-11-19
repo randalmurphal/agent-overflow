@@ -89,7 +89,7 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
 		},
-		app.sessionEventHandler(thread.ID, "shutdown-token", ""),
+		startedSessionEventHandler(app, thread.ID, "shutdown-token", ""),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
@@ -146,7 +146,7 @@ func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 			Binary:    "false",
 			WorkDir:   thread.WorkspacePath,
 		},
-		app.sessionEventHandler(thread.ID, "shutdown-error-token", ""),
+		startedSessionEventHandler(app, thread.ID, "shutdown-error-token", ""),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
@@ -203,7 +203,7 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 			Binary:    writeClaudeFailOnCloseBinary(t),
 			WorkDir:   thread.WorkspacePath,
 		},
-		app.sessionEventHandler(thread.ID, "replace-close-error-token", ""),
+		startedSessionEventHandler(app, thread.ID, "replace-close-error-token", ""),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)

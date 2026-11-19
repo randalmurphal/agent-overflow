@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 )
@@ -57,6 +58,23 @@ func elidedPaths(t *testing.T, raw string) []string {
 	return elision.Input
 }
 
+// isClipped reports whether got is original's opening closed with an
+// ellipsis, no longer than the clip bound allows.
+func isClipped(got any, original string) bool {
+	text, ok := got.(string)
+	if !ok || !strings.HasSuffix(text, "\u2026") {
+		return false
+	}
+	opening := strings.TrimSuffix(text, "\u2026")
+	return opening != "" && len(opening) <= ClippedLeafBytes && strings.HasPrefix(original, opening)
+}
+
+// notWhole reports whether a value the size rule governs left the wire
+// short: clipped to its opening, or absent when clipping was not enough.
+func notWhole(got any, original string) bool {
+	return got == nil || isClipped(got, original)
+}
+
 func TestProjectMeta_UnderBudgetIsByteIdentical(t *testing.T) {
 	meta := mustJSON(t, map[string]any{
 		"toolName": "Edit",
@@ -70,7 +88,7 @@ func TestProjectMeta_UnderBudgetIsByteIdentical(t *testing.T) {
 	}
 }
 
-func TestProjectMeta_DropsLargestLeavesKeepsSubFields(t *testing.T) {
+func TestProjectMeta_ClipsLargestLeavesKeepsSubFields(t *testing.T) {
 	meta := mustJSON(t, map[string]any{
 		"toolName": "Write",
 		"mcp":      map[string]any{"server": "docs", "tool": "search"},
@@ -113,8 +131,8 @@ func TestProjectMeta_DropsLargestLeavesKeepsSubFields(t *testing.T) {
 	if questions, ok := input["questions"].([]any); !ok || len(questions) != 1 {
 		t.Errorf("input.questions did not survive: %#v", input["questions"])
 	}
-	if _, present := input["content"]; present {
-		t.Error("input.content was not dropped")
+	if !isClipped(input["content"], bigString(6000)) {
+		t.Errorf("input.content was not clipped to its opening: %#v", input["content"])
 	}
 	if mcp, ok := decode(t, projected)["mcp"].(map[string]any); !ok || mcp["server"] != "docs" {
 		t.Errorf("a meta key outside input was disturbed: %#v", decode(t, projected)["mcp"])
@@ -122,12 +140,102 @@ func TestProjectMeta_DropsLargestLeavesKeepsSubFields(t *testing.T) {
 
 	paths := elidedPaths(t, projected)
 	if len(paths) == 0 {
-		t.Fatal("projection dropped values without a marker naming them")
+		t.Fatal("projection clipped values without a marker naming them")
 	}
 	for _, path := range paths {
-		if _, present := input[path]; present {
-			t.Errorf("marker names %q as elided but it is still present", path)
+		if text, _ := input[path].(string); !strings.HasSuffix(text, "\u2026") {
+			t.Errorf("marker names %q as elided but it is whole: %#v", path, input[path])
 		}
+	}
+}
+
+// The shape that left a thread_spawn row with an empty header: an AO
+// tool call whose prompt is kilobytes long. The row's header shows the
+// prompt's first line, so the projection must keep that opening while
+// taking the bulk off the wire.
+func TestProjectMeta_KeepsTheOpeningAHeaderReads(t *testing.T) {
+	prompt := "Own the reporting slice: make the weekly digest readable.\n\n" + strings.Repeat("Context line for the worker.\n", 300)
+	meta := mustJSON(t, map[string]any{
+		"assistant_message_id": "msg_fixture",
+		"mcp":                  map[string]any{"server": "ao-thread-tools", "tool": "thread_spawn"},
+		"toolName":             "MCP/thread_spawn",
+		"input": map[string]any{
+			"title":    "Reporting slice",
+			"worktree": "feature/reporting",
+			"base":     "main",
+			"notify":   true,
+			"prompt":   prompt,
+		},
+	})
+	projected := ProjectMeta(meta, "")
+	if len(projected) > MetaMaxBytes {
+		t.Fatalf("projected meta is %d bytes, over the %d budget", len(projected), MetaMaxBytes)
+	}
+	input := inputOf(t, projected)
+	got, _ := input["prompt"].(string)
+	if first, _, _ := strings.Cut(got, "\n"); first != "Own the reporting slice: make the weekly digest readable." {
+		t.Fatalf("the prompt's first line did not survive the projection: %q", got)
+	}
+	if !isClipped(got, prompt) {
+		t.Errorf("prompt was not clipped: %d bytes", len(got))
+	}
+	if input["title"] != "Reporting slice" || input["worktree"] != "feature/reporting" {
+		t.Errorf("small inputs were disturbed: %#v", input)
+	}
+	if paths := elidedPaths(t, projected); len(paths) != 1 || paths[0] != "prompt" {
+		t.Errorf("marker paths = %v, want [prompt]", paths)
+	}
+}
+
+// A row whose candidates are still over budget once every one is clipped
+// loses values outright, so the ceiling holds however many large values
+// one row carries.
+func TestProjectMeta_DropsClippedLeavesWhenClippingIsNotEnough(t *testing.T) {
+	edits := make([]any, 0, 20)
+	for range 20 {
+		edits = append(edits, map[string]any{"old_string": bigString(2000), "new_string": bigString(2000)})
+	}
+	meta := mustJSON(t, map[string]any{"input": map[string]any{"file_path": "a.ts", "edits": edits}})
+	projected := ProjectMeta(meta, "")
+	input := inputOf(t, projected)
+	if input["file_path"] != "a.ts" {
+		t.Fatalf("identity key lost: %#v", input["file_path"])
+	}
+	list, ok := input["edits"].([]any)
+	if !ok || len(list) != 20 {
+		t.Fatalf("edit list shape changed: %#v", input["edits"])
+	}
+	if got := elidedPaths(t, projected); len(got) != 40 {
+		t.Errorf("marker names %d paths, want all 40", len(got))
+	}
+	markerBytes := len(mustJSON(t, Elision{Input: elidedPaths(t, projected)})) + len(MarkerKey) + 4
+	if len(projected) > MetaMaxBytes+markerBytes {
+		t.Errorf("projected meta is %d bytes, over the %d budget plus its %d-byte marker", len(projected), MetaMaxBytes, markerBytes)
+	}
+}
+
+// A clip never splits a UTF-8 sequence. The leading byte puts the clip
+// bound inside a two-byte rune.
+func TestProjectMeta_ClipsOnRuneBoundaries(t *testing.T) {
+	original := "a" + strings.Repeat("é", 1500)
+	meta := mustJSON(t, map[string]any{"input": map[string]any{"text": original}})
+	projected := ProjectMeta(meta, "")
+	if len(projected) > MetaMaxBytes {
+		t.Fatalf("projected meta is %d bytes, over the %d budget", len(projected), MetaMaxBytes)
+	}
+	text, _ := inputOf(t, projected)["text"].(string)
+	if !utf8.ValidString(text) || !isClipped(text, original) {
+		t.Errorf("multi-byte text was not clipped on a rune boundary: %q", text)
+	}
+}
+
+// A value whose clipped opening still encodes large (every byte escaped)
+// does not leave the row over budget: the walk goes on to drop it.
+func TestProjectMeta_HoldsTheCeilingForEscapedText(t *testing.T) {
+	meta := mustJSON(t, map[string]any{"input": map[string]any{"markup": strings.Repeat("<", 1200)}})
+	projected := ProjectMeta(meta, "")
+	if len(projected) > MetaMaxBytes {
+		t.Fatalf("projected meta is %d bytes, over the %d budget", len(projected), MetaMaxBytes)
 	}
 }
 
@@ -143,11 +251,11 @@ func TestProjectMeta_SkipsNotBreaksAcrossOversizedLeaves(t *testing.T) {
 	})
 	projected := ProjectMeta(meta, "")
 	input := inputOf(t, projected)
-	if _, present := input["first"]; present {
-		t.Error("largest leaf survived")
+	if !isClipped(input["first"], bigString(5000)) {
+		t.Error("largest leaf survived whole")
 	}
-	if _, present := input["second"]; present {
-		t.Error("second oversized leaf survived: the budget broke instead of skipping on")
+	if !isClipped(input["second"], bigString(4000)) {
+		t.Error("second oversized leaf survived whole: the budget broke instead of skipping on")
 	}
 	if input["file_path"] != "src/lib/foo.ts" {
 		t.Errorf("a leaf under the floor was dropped: %#v", input["file_path"])
@@ -186,8 +294,8 @@ func TestProjectMeta_ArrayIndicesSurviveAnElidedElement(t *testing.T) {
 	if edits[0] != "keep-me" || edits[2] != "keep-me-too" {
 		t.Errorf("array indices shifted: %#v", edits)
 	}
-	if edits[1] != nil {
-		t.Errorf("elided element = %#v, want null", edits[1])
+	if !isClipped(edits[1], bigString(5000)) {
+		t.Errorf("elided element = %#v, want its opening", edits[1])
 	}
 	if got := elidedPaths(t, projected); len(got) != 1 || got[0] != "edits/1" {
 		t.Errorf("marker paths = %v, want [edits/1]", got)
@@ -213,18 +321,18 @@ func TestProjectMeta_CommandKeptWhenTheItemHasNoSecondCopy(t *testing.T) {
 	// No payload copy: the leaf is the row's only source and the
 	// collapsed row renders it uncapped, so it stays.
 	kept := ProjectMeta(meta, "")
-	if _, present := inputOf(t, kept)["command"]; !present {
-		t.Error("command was dropped from a row that carries no other copy of it")
+	if inputOf(t, kept)["command"] != bigString(5000) {
+		t.Error("command was elided from a row that carries no other copy of it")
 	}
-	if _, present := inputOf(t, kept)["description"]; present {
+	if !notWhole(inputOf(t, kept)["description"], bigString(4000)) {
 		t.Error("the retention rule leaked onto a leaf it does not cover")
 	}
 
 	// The payload already ships the same command: the meta copy is a
 	// duplicate and goes.
 	payloadMeta := mustJSON(t, map[string]any{"command": bigString(5000), "lineCount": 3})
-	dropped := ProjectMeta(meta, payloadMeta)
-	if _, present := inputOf(t, dropped)["command"]; present {
+	clipped := ProjectMeta(meta, payloadMeta)
+	if !isClipped(inputOf(t, clipped)["command"], bigString(5000)) {
 		t.Error("a duplicated command survived on the wire twice")
 	}
 }
@@ -250,7 +358,7 @@ func TestProjectMeta_IdentityKeysSurviveWhateverTheirSize(t *testing.T) {
 			}
 			// The row's content is still governed by size, or the
 			// retention would be an amnesty rather than a boundary.
-			if _, present := inputOf(t, projected)["content"]; present {
+			if !notWhole(inputOf(t, projected)["content"], bigString(6000)) {
 				t.Errorf("retaining %q left the row's content on the wire too", key)
 			}
 		})
@@ -295,7 +403,7 @@ func TestProjectMeta_QuestionsSurviveWhateverTheirSize(t *testing.T) {
 	}
 	// Retention is an inventory of uncapped readers, not an amnesty for
 	// the row: everything outside it is still governed by size.
-	if _, present := inputOf(t, projected)["context"]; present {
+	if !notWhole(inputOf(t, projected)["context"], bigString(5000)) {
 		t.Error("retaining questions leaked onto a leaf no reader renders whole")
 	}
 }

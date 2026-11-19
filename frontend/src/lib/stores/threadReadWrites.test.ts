@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -6,7 +9,16 @@ import {
   resetLocalReadMarkersForTest,
   withLocalReadMarker,
 } from './threadReadWrites';
-import { markThreadRead, markThreadUnread, replaceAllThreads, getThreadById } from './threads.svelte';
+import {
+  MARK_THREADS_READ_LIMIT,
+  getThreadById,
+  markThreadRead,
+  markThreadUnread,
+  markThreadsRead,
+  replaceAllThreads,
+  replaceThread,
+} from './threads.svelte';
+import { noteThreadRowFrame } from './threadRowFrames';
 import type { Thread } from '../types/models';
 
 function mkThread(id: string, lastReadAt: number | undefined): Thread {
@@ -102,5 +114,75 @@ describe('threadReadWrites', () => {
 
     await expect(markThreadRead('thread-1', 1_234)).resolves.toBeUndefined();
     expect(pendingLocalReadMarker('thread-1').held).toBe(false);
+  });
+  it('splits Mark All Read into calls the backend takes, and keeps the rows of a call that worked when another fails', async () => {
+    const threads = Array.from({ length: MARK_THREADS_READ_LIMIT + 1 }, (_, i) => ({
+      ...mkThread(`t${i}`, 0),
+      latestTurnCompletedAt: 100,
+    }));
+    replaceAllThreads(threads);
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      calls.push(ids);
+      if (calls.length === 1) throw new Error('first call failed');
+      return ids.map((id) => ({ ...mkThread(id, 200), latestTurnCompletedAt: 100 }));
+    });
+
+    await expect(markThreadsRead(threads)).rejects.toThrow('first call failed');
+    expect(calls.map((ids) => ids.length)).toEqual([MARK_THREADS_READ_LIMIT, 1]);
+    expect(getThreadById(`t${MARK_THREADS_READ_LIMIT}`)?.lastReadAt).toBe(200);
+    expect(getThreadById('t0')?.lastReadAt).toBe(0);
+    expect(pendingLocalReadMarker('t0').held).toBe(false);
+    expect(pendingLocalReadMarker(`t${MARK_THREADS_READ_LIMIT}`).held).toBe(false);
+  });
+  it('counts a pending attention flag as something Mark All Read reads, and claims past it', async () => {
+    replaceAllThreads([
+      { ...mkThread('flagged', 500), latestTurnCompletedAt: 100, attention: { kind: 'review', reason: 'r', at: Date.now() + 60_000 } },
+      { ...mkThread('read', 500), latestTurnCompletedAt: 100, attention: { kind: 'review', reason: 'r', at: 400 } },
+    ]);
+    let claimed: ReturnType<typeof pendingLocalReadMarker> | undefined;
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      calls.push(ids);
+      claimed = pendingLocalReadMarker('flagged');
+      return [];
+    });
+
+    await markThreadsRead([getThreadById('flagged')!, getThreadById('read')!]);
+    expect(calls).toEqual([['flagged']]);
+    expect(claimed?.held).toBe(true);
+    expect(claimed?.lastReadAt).toBe(getThreadById('flagged')!.attention!.at);
+  });
+  it('keeps a whole-row frame that landed during Mark All Read over the older reply', async () => {
+    replaceAllThreads([
+      { ...mkThread('framed', 0), latestTurnCompletedAt: 100 },
+      { ...mkThread('quiet', 0), latestTurnCompletedAt: 100 },
+    ]);
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      // A frame for 'framed' arrives mid-call: marked unread again elsewhere.
+      noteThreadRowFrame('framed');
+      replaceThread({ ...mkThread('framed', 0), latestTurnCompletedAt: 300 });
+      return ids.map((id) => ({ ...mkThread(id, 200), latestTurnCompletedAt: 100 }));
+    });
+
+    await markThreadsRead([getThreadById('framed')!, getThreadById('quiet')!]);
+    expect(getThreadById('framed')?.lastReadAt).toBe(0);
+    expect(getThreadById('framed')?.latestTurnCompletedAt).toBe(300);
+    expect(getThreadById('quiet')?.lastReadAt).toBe(200);
+  });
+});
+
+// The client splits Mark All Read at the backend's per-call limit; a limit
+// that drifted from the store's would have the backend refuse every split
+// call. The Go source is the reference.
+describe('the Mark All Read split', () => {
+  it('matches store.MarkThreadsReadLimit', () => {
+    const source = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../../../internal/store/threads.go'),
+      'utf8',
+    );
+    const limit = /MarkThreadsReadLimit = (\d+)/.exec(source);
+    expect(limit, 'store.MarkThreadsReadLimit is not declared in internal/store/threads.go any more').not.toBeNull();
+    expect(MARK_THREADS_READ_LIMIT).toBe(Number(limit![1]));
   });
 });

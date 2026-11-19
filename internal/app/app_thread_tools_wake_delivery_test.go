@@ -102,7 +102,7 @@ func TestAWakeOnItsWayWhenTheSenderIsArchivedIsNotDelivered(t *testing.T) {
 	if len(built) != 1 {
 		t.Fatalf("messages = %+v, want the one owed", built)
 	}
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestALateReplySupersedesAFirstAnswerStillBeingWritten(t *testing.T) {
 	if len(built) != 1 {
 		t.Fatalf("messages = %+v, want the first answer's", built)
 	}
-	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("all green"), time.Now().UnixMilli(), true); err != nil || !stored {
+	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("all green"), time.Now().UnixMilli(), nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	f.app.deliverThreadWakes([]threadWakeRef{{token: token, late: true}})

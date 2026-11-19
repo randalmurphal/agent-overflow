@@ -231,7 +231,7 @@ func TestDeleteThreadDropsTheScratchRecord(t *testing.T) {
 		t.Fatalf("ForkSideChat: %v", err)
 	}
 
-	if err := f.app.DeleteThread(fork.ID); err != nil {
+	if err := f.app.deleteThread(fork.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	if _, err := f.app.store.GetThread(fork.ID); err == nil {

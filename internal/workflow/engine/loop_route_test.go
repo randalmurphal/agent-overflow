@@ -212,7 +212,7 @@ func TestLoopRouteSessionContinueIntoACallPhaseLeavesNoIdBehind(t *testing.T) {
 	completePhases(t, h, "parent", 1) // prepare → audit invokes the child
 
 	// A call phase's attempt holding a thread is what an edit re-frozen by
-	// `run resume --refresh-def` leaves behind when it turns an agent phase into
+	// a resume with `refresh_def` leaves behind when it turns an agent phase into
 	// a call: the earlier rows keep the sessions they ran on, and the loop route
 	// resolves its continuation out of exactly those rows.
 	seedThread(t, h.store, "audit-thread")

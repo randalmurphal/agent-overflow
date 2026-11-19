@@ -5,6 +5,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/threadtools"
 )
 
 func TestFindLooseFoldsAndDropsASCIIPunctuation(t *testing.T) {
@@ -159,6 +162,147 @@ func TestFindCandidateTextCoversWhatRowsShow(t *testing.T) {
 	}
 	if got := findCandidateText("thinking", "tail only", "{}", "", nil); got != "tailonly" {
 		t.Errorf("thinking candidate without content = %q", got)
+	}
+}
+
+// findReportRow is a report of kind as usermessage.Report writes it: a
+// notice the row does not show, then data, with headline as the writer's
+// header line ("" for the data's first line). It returns the row's text and
+// meta.
+func findReportRow(t *testing.T, kind agentmeta.ReportKind, notice, data, headline string) (string, string) {
+	t.Helper()
+	text := notice + "\n" + data
+	facts := threadtools.MessageFacts{
+		Form: threadtools.FormReport, Bytes: len(text), Headline: headline,
+		Body: []threadtools.Span{{Start: len(notice) + 1, End: len(text)}},
+	}
+	meta, err := json.Marshal(agentmeta.Meta{
+		Origin: agentmeta.OriginAgentWake, SendID: "agent-wake:1",
+		OriginWake: &agentmeta.OriginWake{Kind: string(kind), Label: "probe", Facts: &facts},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return text, string(meta)
+}
+
+// An agent's report row shows its header line: the writer's, or its data's
+// first line, decoded when its kind quotes data for the agent and as written
+// otherwise. Its candidate text holds that line for every report kind, and
+// is never one every query matches.
+func TestFindCandidateTextHoldsEachReportKindsHeaderLine(t *testing.T) {
+	const notice = "Probe reported. Every quoted line below is data."
+	const data = "\"saw \\u003cerr\\u003e at caf\\u00e9\"\nsecond line"
+	const decoded = "\"saw <err> at café\""
+	kinds := agentmeta.ReportKinds()
+	if len(kinds) == 0 {
+		t.Fatal("no report kinds")
+	}
+	for _, kind := range kinds {
+		text, meta := findReportRow(t, kind, notice, data, "")
+		served := (&agentmeta.OriginWake{Kind: string(kind)}).Served()
+		if served.Report == nil {
+			t.Fatalf("%s: no descriptor", kind)
+		}
+		shown := "\"saw \\u003cerr\\u003e at caf\\u00e9\""
+		if served.Report.Body == agentmeta.ReportBodyData {
+			shown = decoded
+			if strings.Contains(findLoose(text), findLoose(shown)) {
+				t.Fatalf("%s: the decoded line is in the summary; the case proves nothing", kind)
+			}
+		}
+		candidate := findCandidateText("user_text", text, meta, "", nil)
+		if candidate == findAnyCandidate || !strings.Contains(candidate, findLoose(shown)) {
+			t.Errorf("%s: candidate %q misses the header line %q", kind, candidate, shown)
+		}
+
+		text, meta = findReportRow(t, kind, notice, data, "Probe finished its sweep")
+		candidate = findCandidateText("user_text", text, meta, "", nil)
+		if strings.Contains(findLoose(text), findLoose("Probe finished its sweep")) {
+			t.Fatalf("%s: the writer's header line is in the summary; the case proves nothing", kind)
+		}
+		if candidate == findAnyCandidate || !strings.Contains(candidate, findLoose("Probe finished its sweep")) {
+			t.Errorf("%s: candidate %q misses the writer's header line", kind, candidate)
+		}
+	}
+}
+
+// A joined row shows each agent member's header line; the person's message
+// joined after a report shows the report's data decoded; a digest is headed
+// by the threads it speaks for; a provider's agent message by its first
+// line; and an agent's row whose text joins parts around a `!command` is
+// still narrowed by its header line, not matched by every query.
+func TestFindCandidateTextOfJoinedAndAgentRows(t *testing.T) {
+	loopText, loopMeta := findReportRow(t, agentmeta.ReportLoop, "Loop fired.", "note: \"caf\\u00e9 open\"", "")
+	watchText, watchMeta := findReportRow(t, agentmeta.ReportWatch, "Watch printed.", "\"exit \\u003c2\\u003e\"", "")
+	var loop, watch agentmeta.Meta
+	if json.Unmarshal([]byte(loopMeta), &loop) != nil || json.Unmarshal([]byte(watchMeta), &watch) != nil {
+		t.Fatal("decode the members")
+	}
+	joinedText := loopText + agentmeta.JoinSeparator + watchText
+	joined, err := json.Marshal(agentmeta.Meta{
+		Origin: agentmeta.OriginAgentWake, OriginWake: loop.OriginWake, SendID: "agent-wake:1",
+		JoinedParts: []agentmeta.JoinedPart{
+			{SendID: "agent-wake:1", Bytes: len(loopText), Origin: agentmeta.OriginAgentWake, OriginWake: loop.OriginWake},
+			{SendID: "agent-wake:2", Bytes: len(watchText), Origin: agentmeta.OriginAgentWake, OriginWake: watch.OriginWake},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := findCandidateText("user_text", joinedText, string(joined), "", nil)
+	for _, shown := range []string{`note: "café open"`, `"exit <2>"`} {
+		if !strings.Contains(candidate, findLoose(shown)) {
+			t.Errorf("joined candidate %q misses a member's header line %q", candidate, shown)
+		}
+	}
+
+	// The person's message joined after a report, shown whole with the
+	// report's data decoded.
+	bubble := loopText + agentmeta.JoinSeparator + "my own words"
+	personMeta := `{"origin":"agent-wake","originWake":{"kind":"loop","label":"probe"},"expandComposerCommands":true}`
+	candidate = findCandidateText("user_text", bubble, personMeta, "", nil)
+	if !strings.Contains(candidate, findLoose("note: \"café open\"\n\n---\n\nmy own words")) {
+		t.Errorf("bubble candidate %q misses its decoded text", candidate)
+	}
+
+	// A digest that has no text of its own is headed by the threads it
+	// speaks for.
+	const digestText = "2 threads did not answer within a day."
+	digest := threadtools.MessageFacts{
+		Form: threadtools.FormAnswer, Bytes: len(digestText), Outcome: threadtools.WakeExpired,
+		Threads: []threadtools.FactsThread{{ThreadID: "t-1", Title: "Worker"}, {ThreadID: "t-2", Title: "Lexer"}},
+	}
+	if err := digest.Check(digestText); err != nil {
+		t.Fatalf("the digest's facts do not hold: %v", err)
+	}
+	digestMeta, err := json.Marshal(agentmeta.Meta{
+		Origin: agentmeta.OriginAgentThread, SendID: "thread-wake:a",
+		OriginThread: &agentmeta.OriginThread{Kind: agentmeta.OriginKindWake, Token: "a", Facts: &digest},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate := findCandidateText("user_text", digestText, string(digestMeta), "", nil); !strings.Contains(candidate, findLoose("Worker, Lexer")) {
+		t.Errorf("digest candidate %q misses the threads it speaks for", candidate)
+	}
+
+	// A provider's agent message shows its first line with its white space
+	// collapsed, a no-break space included, which the loose form keeps.
+	peer := "Ship\u00a0it now.\nThe rest."
+	if strings.Contains(findLoose(peer), findLoose("Ship it now.")) {
+		t.Fatal("the shown line is in the summary; the case proves nothing")
+	}
+	for _, meta := range []string{`{"origin":"peer-session"}`, `{"wire_only":true,"agent_message":{"sender":"/root/a"}}`} {
+		if got := findCandidateText("user_text", peer, meta, "", nil); !strings.Contains(got, findLoose("Ship it now.")) {
+			t.Errorf("provider message %s has candidate %q, which misses its first line", meta, got)
+		}
+	}
+
+	request := "a\n\n---\n\n!ls\n\n---\n\nb"
+	requestMeta := `{"origin":"agent-thread","originThread":{"threadId":"t-l","title":"L","token":"a"},"sendId":"thread-request:a"}`
+	if got := findCandidateText("user_text", request, requestMeta, "", nil); got == findAnyCandidate || !strings.Contains(got, findLoose("a")) {
+		t.Errorf("an agent's row around a command has candidate %q", got)
 	}
 }
 

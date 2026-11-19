@@ -348,6 +348,7 @@ func (a *App) RevokeAccessDevice(deviceID string) (DeviceRevocationResult, error
 	if err != nil {
 		return DeviceRevocationResult{}, err
 	}
+	a.ownerActivity.dropDevice(deviceID)
 	// After the revocation, never before: the state belongs to a device
 	// that still holds credentials until RevokeDevice returns, and
 	// dropping it first would clear a working device's preferences if the

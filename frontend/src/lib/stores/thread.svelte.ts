@@ -18,7 +18,7 @@
 //   threadPaneTurns.svelte.ts         turn start/settle/clear + the timeline facet
 //   threadPaneCompanions.ts           plan / review / agent surfaces
 //   threadPaneErrors.svelte.ts        the banner-stack error slots
-//   threadChannelState / threadActivityRuns /
+//   threadActivityRuns /
 //   threadPendingInteractiveState / liveTodoState / threadLiveStateHydration
 //
 // Add per-thread runtime state to one of those (or a new one composed here),
@@ -39,7 +39,6 @@ import type {
   SessionBannerKind,
   UserInputRequest,
 } from '../types/events';
-import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import { getThreadById } from './threads.svelte';
 import { GetThread } from './bindings';
 import { refreshWatchedThreads } from './watchedThreads';
@@ -79,7 +78,6 @@ import {
   normalizeContextWindowForThread,
   seedContextWindow,
 } from './threadContextWindow';
-import { createThreadChannelState } from './threadChannelState.svelte';
 import {
   nowForLiveContent,
   timelinePageShape,
@@ -226,7 +224,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // intent, and every structural-spring / warm-up arming decision. See
   // threadPaneScroll.svelte.ts.
   const paneScroll = createThreadPaneScroll({
-    getThread: () => thread,
     getLoading: () => loading,
     getSwitchGeneration: () => switchGeneration,
     getItemCount: () => getItems().length,
@@ -428,7 +425,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // gitStatusStore.svelte.ts).
   const gitStatus: GitStatusView = createGitStatusView(() => thread);
 
-  const channelState = createThreadChannelState();
   // Plan sidebar / review pane / agent companion — which
   // is open for this pane and what opening each one means. See
   // threadPaneCompanions.ts.
@@ -638,7 +634,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     rowUiState,
     activityRuns,
     streamingReveal,
-    channelState,
     pendingInteractiveState,
     liveTodoState,
     liveStateHydration,
@@ -713,7 +708,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     sendInFlight = false;
     awaitedSendId = null;
     showTerminal = false;
-    channelState.clear();
     // activeTurn lives in the global registry (threadStatuses) and is
     // cleared by projectTurnCompleted; clearing it from a pane.clear()
     // would race with an in-flight turn on the same thread that
@@ -990,41 +984,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get scrollToItemWithdrawal() {
       return paneScroll.scrollToItemWithdrawal;
-    },
-    get channelMessages() {
-      return channelState.messages;
-    },
-    get channelStatus() {
-      return channelState.status;
-    },
-    get channelTurnCount() {
-      return channelState.turnCount;
-    },
-    get channelMaxTurns() {
-      return channelState.maxTurns;
-    },
-    get channelAwaitingResponse() {
-      return channelState.awaitingResponse;
-    },
-    get channelCurrentSpeakerRole() {
-      return channelState.currentSpeakerRole;
-    },
-    get channelParticipants() {
-      return channelState.participants;
-    },
-    get channelLiveTail() {
-      return channelState.liveTail;
-    },
-    /**
-     * Non-reactive `performance.now()` stamp of the last live discussion
-     * advance (a new channel message, or live-tail growth). Read
-     * imperatively by ChannelView's scroll controller
-     * `liveContentActive` — mirrors `pane.lastLiveContentAt`'s
-     * chat-surface role. See
-     * `threadChannelState.svelte.ts`.
-     */
-    get channelLastLiveContentAt() {
-      return channelState.lastLiveContentAt;
     },
     // Companion surfaces — see threadPaneCompanions.ts.
     get showPlanSidebar() {
@@ -1474,9 +1433,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * (eventsMessageRevert.ts), which glides in through the spring
      * instead of sync-pinning without stamping the live-content latch
      * (one append wants one spring window, not 500ms of spring
-     * eligibility for unrelated reflows). Owns the loading/discussion
-     * gates; call it synchronously BEFORE the item mutation so the window
-     * is open when the flush delivers geometry.
+     * eligibility for unrelated reflows). Owns the loading gate; call it
+     * synchronously BEFORE the item mutation so the window is open when
+     * the flush delivers geometry.
      */
     armStructuralSpring,
 
@@ -1583,6 +1542,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get activityRailBackgroundOpen() {
       return liveTodoState.activityRailBackgroundOpen;
     },
+    get activityRailAgentsOpen() {
+      return liveTodoState.activityRailAgentsOpen;
+    },
     get activityRailInputCollapsed() {
       return liveTodoState.activityRailInputCollapsed;
     },
@@ -1595,6 +1557,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /** Toggle the Background accordion body inside the activity rail. */
     toggleActivityRailBackground(): void {
       liveTodoState.toggleActivityRailBackground(thread?.id ?? null);
+    },
+
+    /** Toggle the Agents accordion body inside the activity rail. */
+    toggleActivityRailAgents(): void {
+      liveTodoState.toggleActivityRailAgents(thread?.id ?? null);
+    },
+
+    /** Open or close the Background accordion body; a no-op when it already is. */
+    setActivityRailBackgroundOpen(open: boolean): void {
+      liveTodoState.setActivityRailBackgroundOpen(thread?.id ?? null, open);
     },
 
     /**
@@ -1670,29 +1642,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setShowReviewPane: companions.setShowReviewPane,
     openAgentPane: companions.openAgentPane,
     closeAgentPane: companions.closeAgentPane,
-
-    /** Single-message merge for a live `discussion:message` push, or the
-     * message `PostChannelMessage` itself returns on a successful post. */
-    applyChannelMessage(message: ChannelMessage): void {
-      channelState.applyMessage(message);
-    },
-
-    /** Bulk merge for an initial channel load or gap-recovery resync
-     * page — see `eventsDiscussion.ts`'s `refreshDiscussionChannel`. */
-    applyChannelMessages(messages: ChannelMessage[]): void {
-      channelState.applyMessageBatch(messages);
-    },
-
-    /** Full deliberation-FSM snapshot apply, shared by the initial load
-     * and every `discussion:state` push. */
-    applyChannelState(payload: ChannelStatePayload): void {
-      channelState.applyState(payload);
-    },
-
-    clearChannel(): void {
-      channelState.clear();
-    },
-
   };
 }
 

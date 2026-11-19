@@ -2,11 +2,14 @@ package triage
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // pending_send.go owns the pending-send correlation state used by the
@@ -36,8 +39,11 @@ import (
 // a Claude quiet row can belong to a different display turn. See
 // docs/architecture/user-message-ordering.md.
 type pendingSend struct {
-	AOItemID     string // opaque send-derived ID, or a legacy numeric ID
-	QueueItemID  string
+	AOItemID    string // opaque send-derived ID, or a legacy numeric ID
+	QueueItemID string
+	// QueueMembers are the queued messages the send carries
+	// (PendingSendExpectation.QueueMembers); QueueItemID is the first's.
+	QueueMembers []FlushQueueMember
 	TurnIndex    int
 	EnqueuedAt   int64
 	DeferredItem *store.Item
@@ -95,6 +101,10 @@ type pendingSend struct {
 	// queue-boundary merge rather than this message's own ack. See
 	// claude_merge_fold.go.
 	ExpectedContentBlockDigest []string
+
+	// JoinedParts are a joined message's members as they appear in its
+	// text, which a session-death restore splits it by.
+	JoinedParts []agentmeta.JoinedPart
 
 	// AnchoredAtInterrupt marks a flush entry whose row was already
 	// placed at its user-visible timeline position by the interrupt
@@ -187,22 +197,25 @@ type pendingSend struct {
 	// the message reached the model. It decides what the send's terminal
 	// lifecycle state means (handleCommandLifecycle).
 	Started bool
-	// StartedTurn is the turn that was open when `started` arrived, when
-	// one was: the turn the model read the message in. It answers for a
-	// confirmation that arrives after that turn closed.
-	StartedTurn    int
-	StartedTurnSet bool
 	// StartedAtClaim records whether `started` had arrived when a turn
 	// start took this send: the provider opened that turn for it. A turn
 	// that took it without one (a provider-started wake, or a provider with
 	// no lifecycle frames) is weaker evidence of where it is answered.
 	StartedAtClaim bool
-	// AnswerTurn is the turn the consumed hook was told answers this send.
-	// A retried confirmation reports it again, with whatever send ids the
-	// row carries by then. Unset while the send is held in boundarySends
-	// for the turn that opens next.
-	AnswerTurn    int
-	AnswerTurnSet bool
+
+	// DeliveryReported records that the app was told which turn this send
+	// was delivered into (send_delivery.go). The first delivery signal
+	// decides; a later one for the same send changes nothing.
+	DeliveryReported bool
+
+	// WrittenDuringTurn is the logical turn open when the send was
+	// registered, or -1 when none was. A delivery into that same turn
+	// joined a turn someone else started; a delivery into any other turn
+	// is one the provider opened for this message (SendDelivery.OwnTurn).
+	WrittenDuringTurn int
+
+	// Members is PendingSendExpectation.Members.
+	Members []string
 
 	Confirmation *userMessageConfirmation
 }
@@ -242,6 +255,25 @@ func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapsho
 	}, true
 }
 
+// PendingSendsForTest returns snapshots of every FIFO entry for threadID, in
+// order. Exported for integration tests in `internal/app` that dispatch
+// several sends and drive each one's echo.
+func (r *Router) PendingSendsForTest(threadID string) []PendingSendSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingSendsLocked(threadID)
+	out := make([]PendingSendSnapshot, 0, len(queue))
+	for _, send := range queue {
+		out = append(out, PendingSendSnapshot{
+			AOItemID:               send.AOItemID,
+			TurnIndex:              send.TurnIndex,
+			HasDeferred:            send.DeferredItem != nil,
+			ExpectedProviderItemID: send.ExpectedProviderItemID,
+		})
+	}
+	return out
+}
+
 // PendingSendExpectation names the wire identity a send's echo will carry
 // back, so the registry can consume the entry by IDENTITY rather than by
 // position. The two axes are per-provider and mutually exclusive in
@@ -270,6 +302,21 @@ type PendingSendExpectation struct {
 	// id — headless Claude's queue-boundary merge. See
 	// pendingSend.ExpectedContentBlockDigest.
 	ContentBlockDigest []string
+
+	// JoinedParts are the members of a joined message as they appear in its
+	// text (agentmeta.JoinedPart). They match no echo: a session-death
+	// restore splits the message by them (UnconfirmedFlushItem.JoinedParts).
+	JoinedParts []agentmeta.JoinedPart
+
+	// Members is the send id of every message the send carries, in order,
+	// "" for one sent without (usermessage.MemberSendIDs). Its delivery
+	// names them (SendDelivery.Members).
+	Members []string
+
+	// QueueMembers are the queued messages a flush send carries, in order,
+	// one per queue row it was dispatched from (FlushQueueMember). Empty
+	// for a send of one queued message, which is its queue item's.
+	QueueMembers []FlushQueueMember
 }
 
 // RegisterPendingSendWithExpectation registers a direct send — the
@@ -332,6 +379,18 @@ func (r *Router) RegisterPendingQuietFlushSendWithExpectation(threadID, queueIte
 	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect, sendShapeFlush, false)
 }
 
+// queueMembersOf is the queued messages a send of queue item queueItemID
+// carries: members when its dispatch named them, or the one item.
+func queueMembersOf(queueItemID string, members []FlushQueueMember) []FlushQueueMember {
+	if len(members) > 0 {
+		return slices.Clone(members)
+	}
+	if queueItemID == "" {
+		return nil
+	}
+	return []FlushQueueMember{{QueueItemID: queueItemID}}
+}
+
 func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation, shape sendShape, turnInput bool) {
 	if threadID == "" || aoItemID == "" {
 		return
@@ -350,6 +409,10 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	}
 	r.mu.Lock()
 	st := r.state(threadID)
+	writtenDuring := -1
+	if st.openTurnSet {
+		writtenDuring = st.openTurn
+	}
 	st.pendingSends = append(st.pendingSends, pendingSend{
 		AOItemID:                   aoItemID,
 		QueueItemID:                queueItemID,
@@ -360,9 +423,13 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		ExpectedProviderItemID:     expect.ProviderItemID,
 		ExpectedClientID:           expectedClientID,
 		ExpectedContentBlockDigest: expect.ContentBlockDigest,
+		JoinedParts:                expect.JoinedParts,
 		Shape:                      shape,
 		TurnInput:                  turnInput,
 		InterruptedTurnIndex:       -1,
+		WrittenDuringTurn:          writtenDuring,
+		Members:                    expect.Members,
+		QueueMembers:               queueMembersOf(queueItemID, expect.QueueMembers),
 	})
 	// The ledger outlives the FIFO entry on purpose: a merge is recognised
 	// from the SURVIVOR's echo, by which time the earlier members' entries
@@ -434,45 +501,65 @@ func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
 type PendingSendState int
 
 const (
-	// PendingSendNone: no unconsumed entry. The provider consumed the send
-	// (the consumed hook has run) or the entry was dropped.
+	// PendingSendNone: no unconsumed entry. The provider confirmed the send
+	// (its delivery, when it has one, was reported) or the entry was
+	// dropped.
 	PendingSendNone PendingSendState = iota
-	// PendingSendWaiting: the provider has the send and no turn has taken
-	// it, or consumed it at a turn boundary and the turn that answers has
-	// not opened. A turn that ends now did not read it.
+	// PendingSendWaiting: the provider has the send and no turn start ran
+	// it: none took it, or the one that took it was the provider's own
+	// (ranInTakingTurn). A turn that ends now did not read it.
 	PendingSendWaiting
-	// PendingSendClaimed: a turn start took the send as the returned turn.
+	// PendingSendClaimed: a turn start took the send as the returned turn
+	// and ran it there (ranInTakingTurn).
 	PendingSendClaimed
 )
 
 // PendingSendTurn reports where the send whose row is aoItemID stands, and
-// for a claimed one the turn that took it. It waits out a confirmation in
-// progress, and a send consumed at a turn boundary stays waiting until the
-// consumed hook has been told its turn, so PendingSendNone after a
-// consumption is reported only once the hook has run.
+// for a claimed one the turn that took it. It is how a reader learns the
+// turn of a send whose delivery was never reported (SetSendDeliveredHook): a
+// provider that opens the message's turn and never echoes the message. It
+// waits out a confirmation in progress.
 func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendState) {
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()
 	defer anchor.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, entry := range r.pendingSendsLocked(threadID) {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0, PendingSendNone
+	}
+	for i := range st.pendingSends {
+		entry := &st.pendingSends[i]
 		if entry.AOItemID != aoItemID || entry.EchoConsumed {
 			continue
 		}
-		if entry.OpenedTurn {
+		if st.ranInTakingTurn(entry) {
 			return entry.TurnIndex, PendingSendClaimed
 		}
 		return 0, PendingSendWaiting
 	}
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		for _, send := range st.boundarySends {
-			if send.aoItemID == aoItemID {
-				return 0, PendingSendWaiting
-			}
+	return 0, PendingSendNone
+}
+
+// PendingSendOpensTurn reports the turn the send whose row is aoItemID
+// reserved for itself, written with no turn running. ok is false for a send
+// written into a running turn, which only its delivery can place
+// (SendDelivery), and for a send this router no longer holds.
+func (r *Router) PendingSendOpensTurn(threadID, aoItemID string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0, false
+	}
+	for i := range st.pendingSends {
+		entry := &st.pendingSends[i]
+		if entry.AOItemID == aoItemID {
+			return entry.TurnIndex, entry.WrittenDuringTurn < 0
 		}
 	}
-	return 0, PendingSendNone
+	return 0, false
 }
 
 // turnOpeningPendingSend reads the entry claimTurnOpeningPendingSend would
@@ -494,26 +581,6 @@ func (r *Router) turnOpeningPendingSend(threadID string) (pendingSend, bool) {
 // open.
 func (p pendingSend) canOpenTurn() bool {
 	return p.Shape != sendShapeSteer && !p.OpenedTurn && !p.EchoConsumed
-}
-
-// markPendingSendStarted records `started` on the entry registered under
-// providerItemID, if it is still pending.
-func (r *Router) markPendingSendStarted(threadID, providerItemID string) {
-	if providerItemID == "" {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	queue := r.pendingSendsLocked(threadID)
-	for i := range queue {
-		if queue[i].ExpectedProviderItemID == providerItemID {
-			queue[i].Started = true
-			if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet && !queue[i].StartedTurnSet {
-				queue[i].StartedTurn, queue[i].StartedTurnSet = st.openTurn, true
-			}
-			return
-		}
-	}
 }
 
 // consumePendingSendByProviderID pops the entry registered under the wire id
@@ -899,6 +966,8 @@ type EagerPersistedFlush struct {
 	// TurnInput is the send's pendingSend.TurnInput: it went out as the
 	// input of a turn it starts, which the interrupt did not discard.
 	TurnInput bool
+	// QueueMembers are the pending send's (pendingSend.QueueMembers).
+	QueueMembers []FlushQueueMember
 }
 
 // EagerPersistDeferredFlushSends immediately persists all deferred
@@ -986,6 +1055,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 		queueItemID string
 		enqueuedAt  int64
 		turnInput   bool
+		members     []FlushQueueMember
 	}
 	var snapshots []eagerSnapshot
 	for i := range pending {
@@ -995,6 +1065,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 				queueItemID: pending[i].QueueItemID,
 				enqueuedAt:  pending[i].EnqueuedAt,
 				turnInput:   pending[i].TurnInput,
+				members:     slices.Clone(pending[i].QueueMembers),
 			})
 			pending[i].QuietItem = pending[i].DeferredItem
 			pending[i].DeferredItem = nil
@@ -1027,14 +1098,15 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			confirmedHook(threadID, persisted)
 		}
 		result = append(result, EagerPersistedFlush{
-			UserItemID:  persisted.ID,
-			TurnIndex:   persisted.TurnIndex,
-			ItemIndex:   persisted.ItemIndex,
-			Content:     persisted.Summary,
-			Meta:        persisted.Meta,
-			QueueItemID: snap.queueItemID,
-			EnqueuedAt:  snap.enqueuedAt,
-			TurnInput:   snap.turnInput,
+			UserItemID:   persisted.ID,
+			TurnIndex:    persisted.TurnIndex,
+			ItemIndex:    persisted.ItemIndex,
+			Content:      persisted.Summary,
+			Meta:         persisted.Meta,
+			QueueItemID:  snap.queueItemID,
+			EnqueuedAt:   snap.enqueuedAt,
+			TurnInput:    snap.turnInput,
+			QueueMembers: snap.members,
 		})
 	}
 	return result
@@ -1140,6 +1212,38 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		promoted = append(promoted, item)
 	}
 	return promoted
+}
+
+// sendIDs names the messages a flush send carries, from its retained copy:
+// all of a joined message's, in order. A send that retains no copy names
+// none; a copy whose meta does not decode is an error, because its owners
+// can then be neither confirmed nor named.
+func (p pendingSend) sendIDs() ([]string, error) {
+	for _, row := range []*store.Item{p.DeferredItem, p.QuietItem} {
+		if row == nil {
+			continue
+		}
+		meta, err := usermessage.FromItem(*row)
+		if err != nil {
+			return nil, fmt.Errorf("decode the send ids of %s: %w", row.ID, err)
+		}
+		if ids := sendIDsOf(meta); len(ids) > 0 {
+			return ids, nil
+		}
+	}
+	return nil, nil
+}
+
+// sendIDsOf is the send ids one user row's meta carries: every member's for
+// a joined message.
+func sendIDsOf(meta usermessage.Meta) []string {
+	if len(meta.JoinedSendIDs) > 0 {
+		return meta.JoinedSendIDs
+	}
+	if meta.SendID != "" {
+		return []string{meta.SendID}
+	}
+	return nil
 }
 
 // restorePendingSendDeferred undoes EagerPersistDeferredFlushSends'

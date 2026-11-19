@@ -66,7 +66,7 @@ type materializedStarter struct {
 func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
 	want := []string{
 		"build-and-validate", "converge-on-review", "multi-lens-review",
-		"poll-jira-and-start", "port-campaign", "port-one-task",
+		"port-campaign", "port-one-task",
 	}
 	if got := List(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("List() = %v, want %v", got, want)
@@ -87,8 +87,8 @@ func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
 
 	for _, name := range List() {
 		t.Run(name, func(t *testing.T) {
-			// The starter directory name is the workflow id: `workflow new
-			// port-campaign` has to reach the definition that calls
+			// The starter directory name is the workflow id: `workflow_new`
+			// with starter port-campaign has to reach the definition that calls
 			// `port-one-task` by that name, and the call edge names the id.
 			starter, ok := starters[name]
 			if !ok {

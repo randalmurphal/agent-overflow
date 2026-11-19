@@ -116,3 +116,37 @@ func TestReplayOfOwnSendIsNeverReclassifiedByContent(t *testing.T) {
 		})
 	}
 }
+
+// One main-transcript batch can hold both kinds of row stdout lacks: the
+// record of this app's prompt and a turn the CLI started itself. Each is
+// reported, in batch order, and a row under an issued uuid is the app's
+// own send whatever turnOrigin it carries.
+func TestTranscriptMirrorReportsOwnPromptsAndCLITurnStartsTogether(t *testing.T) {
+	line := `{"type":"transcript_mirror","filePath":"/tmp/s.jsonl","entries":[` +
+		`{"parentUuid":"leaf-1","isSidechain":false,"type":"user","message":{"role":"user","content":"typed"},"uuid":"u-own","promptSource":"sdk"},` +
+		`{"isSidechain":false,"type":"user","isMeta":true,"promptSource":"system","turnOrigin":"scheduled","uuid":"cron-1","message":{"role":"user","content":"tick"}},` +
+		`{"isSidechain":false,"type":"user","turnOrigin":"scheduled","uuid":"u-own-2","message":{"role":"user","content":"also typed"}}]}`
+	events := parseOne(t, ownPromptParser("u-own", "u-own-2"), line)
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want own prompt, scheduled turn, own prompt", events)
+	}
+	for i, want := range []struct {
+		uuid, origin string
+		recorded     bool
+	}{
+		{"u-own", "", true},
+		{"cron-1", ScheduledTurnOrigin, false},
+		{"u-own-2", "", true},
+	} {
+		meta := userTextMeta(t, events[i])
+		if meta["provider_item_id"] != want.uuid {
+			t.Fatalf("event %d uuid = %v, want %s", i, meta["provider_item_id"], want.uuid)
+		}
+		if origin, _ := meta["origin"].(string); origin != want.origin {
+			t.Fatalf("event %d origin = %q, want %q", i, origin, want.origin)
+		}
+		if recorded := meta[provider.MetaUserTextTranscriptRecordedKey] == true; recorded != want.recorded {
+			t.Fatalf("event %d transcript-recorded = %v, want %v", i, recorded, want.recorded)
+		}
+	}
+}

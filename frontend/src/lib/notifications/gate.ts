@@ -40,6 +40,7 @@ export const NOTIFY_KINDS = [
   'provider-signed-out',
   'workflow-attention',
   'app-update',
+  'thread-attention',
 ] as const;
 export type NotifyKind = (typeof NOTIFY_KINDS)[number];
 
@@ -65,6 +66,7 @@ export interface NotificationGateSettings {
   notifyProviderSignedOut: boolean;
   notifyWorkflowAttention: boolean;
   notifyAppUpdate: boolean;
+  notifyThreadAttention: boolean;
   notifyHiddenThreads: boolean;
   notifyQuietWhen: NotifyQuietWhen;
   notificationSoundsEnabled: boolean;
@@ -117,6 +119,8 @@ function kindEnabled(settings: NotificationGateSettings, kind: string): boolean 
       return settings.notifyWorkflowAttention;
     case 'app-update':
       return settings.notifyAppUpdate;
+    case 'thread-attention':
+      return settings.notifyThreadAttention;
     default:
       return false;
   }
@@ -183,7 +187,7 @@ export function notificationRefusal(
 
 /**
  * Which sound event a kind belongs to, mirroring `notify.SoundEventFor`.
- * Three events, not six: the kinds answer three questions a person reacts to
+ * Three events, not seven: the kinds answer three questions a person reacts to
  * differently, and a cue per kind would be a distinction nobody makes by ear.
  */
 export function soundEventFor(kind: string): NotifySoundEvent | null {
@@ -191,6 +195,7 @@ export function soundEventFor(kind: string): NotifySoundEvent | null {
     case 'turn-complete':
       return 'turn-complete';
     case 'approval-needed':
+    case 'thread-attention':
       return 'input-needed';
     case 'error':
     case 'provider-signed-out':

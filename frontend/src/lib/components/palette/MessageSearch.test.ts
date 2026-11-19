@@ -9,6 +9,9 @@ import { installAnimateShim } from '../../../test/integration/_helpers';
 import { makeItem } from '../../../test/helpers/chat';
 import type { Thread } from '../../types/models';
 import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
+import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 beforeAll(installAnimateShim);
 
@@ -499,6 +502,26 @@ describe('<MessageSearch> — debounce', () => {
     // One scan for the settled value, not one per keystroke.
     expect(search).toHaveBeenCalledTimes(1);
     expect(search.mock.calls[0]).toEqual(['seconds', 50]);
+  });
+});
+
+// Each computer leaves out its own assistants while they are off there, so
+// an open search asks again when any computer turns them on or off.
+describe('<MessageSearch> — assistants turned on or off', () => {
+  it('requeries an open search when a computer changes its Assistants setting', async () => {
+    stageBackend();
+    const search = setBindingMock('SearchThreadMessages', async () => []);
+    try {
+      const { getByTestId } = renderSearch({ open: true, pane: makePane() });
+      await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'deploy' } });
+      await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+      expect(search.mock.calls.at(-1)?.[0]).toBe('deploy');
+    } finally {
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
   });
 });
 

@@ -60,7 +60,7 @@ func TestLateReplySupersedesAnUndeliveredFirstAnswer(t *testing.T) {
 	mustCreateThread(t, s, "t-caller")
 	seedSettledThreadRequest(t, s, "tok-late", "t-caller", ThreadRequestSend, 100, "started the tests")
 
-	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, true); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	row := mustGetThreadRequest(t, s, "tok-late")
@@ -81,7 +81,7 @@ func TestLateReplySupersedesAnUndeliveredFirstAnswer(t *testing.T) {
 	if got := undeliveredTokens(t, s); len(got) != 0 {
 		t.Fatalf("owed wakes after the reply was delivered = %v, want none: the first answer is superseded", got)
 	}
-	schedule, err := s.NextThreadRequestWork()
+	schedule, err := s.NextThreadRequestWork(nil)
 	if err != nil {
 		t.Fatalf("NextThreadRequestWork: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestAReplyNeverArmsAnArchivedCaller(t *testing.T) {
 	}); err != nil || !settled {
 		t.Fatalf("settle the reply: settled=%v err=%v", settled, err)
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, true); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 
@@ -127,7 +127,7 @@ func TestLateReplyWithoutArmingLeavesNotifyAlone(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
 	seedSettledThreadRequest(t, s, "tok-late", "t-caller", ThreadRequestSend, 100, "started")
-	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, false); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, nil, false); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok-late"); row.Notify {
@@ -217,25 +217,180 @@ func TestQueueThreadWakeDeliversItsRidersWithTheCarrier(t *testing.T) {
 		t.Fatalf("queued rows = %+v err=%v, want the one message", rows, err)
 	}
 
-	// A restore to the composer follows the message: the carrier and the
-	// rider it delivered are in the composer now, and the inline delivery is
-	// not.
-	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:carrier"}, []string{item.SendID}); err != nil {
-		t.Fatalf("RestoreFlushQueueToDraft: %v", err)
+	// Queued is the first phase: the carrier and its rider are unconfirmed
+	// together, and the inline delivery was confirmed when it was marked.
+	if got := unconfirmedTokens(t, s); !equalTokens(got, "tok-carrier", "tok-rider") {
+		t.Fatalf("unconfirmed = %v, want the carrier and its rider", got)
 	}
-	for token, want := range map[string]string{
-		"tok-carrier": ThreadWakeDraft, "tok-rider": ThreadWakeDraft, "tok-read": ThreadWakeInline,
-	} {
-		if got := mustGetThreadRequest(t, s, token).DeliveredHow; got != want {
-			t.Errorf("%s delivered %q after the restore, want %q", token, got, want)
+	for token, want := range map[string]string{"tok-carrier": "", "tok-rider": "tok-carrier"} {
+		if got := mustGetThreadRequest(t, s, token).WakeCarrier(); got != "tok-carrier" || mustGetThreadRequest(t, s, token).DeliveredWith != want {
+			t.Errorf("%s carrier = %q, want tok-carrier", token, got)
 		}
 	}
 }
 
-// A wake handed to a session that is stopped before confirming it is taken
-// back with its row, and every request the message carried is retracted in
-// the same transaction; a failed retire retracts nothing.
-func TestRetireDroppedUserRowRetractsTheWakeItCarried(t *testing.T) {
+// The provider echoes the one message under the carrier's send id. The echo
+// confirms the carrier and every rider with the row that carried it, a
+// later echo naming another row (a merge folded it) moves them all, and
+// another carrier's riders and the inline delivery are left alone.
+func TestConfirmThreadWakeConfirmsItsRiders(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	for _, token := range []string{"tok-carrier", "tok-rider", "tok-other", "tok-other-rider"} {
+		seedOwedThreadWake(t, s, token, "t-caller", ThreadRequestSend, 100, "the turn ended")
+	}
+	for carrier, rider := range map[string]string{"tok-carrier": "tok-rider", "tok-other": "tok-other-rider"} {
+		item := FlushQueueItem{ID: "queue:" + carrier, ThreadID: "t-caller", SendID: "thread-wake:" + carrier, Message: "the turn ended", EnqueuedAt: 900}
+		if err := s.QueueThreadWake(carrier, []string{rider}, false, item); err != nil {
+			t.Fatalf("QueueThreadWake(%s): %v", carrier, err)
+		}
+	}
+
+	if confirmed, err := s.ConfirmThreadWake("tok-carrier", false, "row-1", 950); err != nil || !confirmed {
+		t.Fatalf("ConfirmThreadWake = %v, %v; want true", confirmed, err)
+	}
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		if row := mustGetThreadRequest(t, s, token); row.ConfirmedAt != 950 || rawWakeItem(t, s, token) != "row-1" {
+			t.Errorf("%s = confirmed at %d with row %q, want the carrier's echo", token, row.ConfirmedAt, rawWakeItem(t, s, token))
+		}
+	}
+	if got := unconfirmedTokens(t, s); !equalTokens(got, "tok-other", "tok-other-rider") {
+		t.Fatalf("unconfirmed = %v, want only the other message's requests", got)
+	}
+
+	// The same message's row folded into another: the carrier's echo moves
+	// every request it answered, keeping the first confirmation.
+	if confirmed, err := s.ConfirmThreadWake("tok-carrier", false, "row-merged", 990); err != nil || !confirmed {
+		t.Fatalf("ConfirmThreadWake(merged) = %v, %v; want true", confirmed, err)
+	}
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		if row := mustGetThreadRequest(t, s, token); row.ConfirmedAt != 950 || rawWakeItem(t, s, token) != "row-merged" {
+			t.Errorf("%s after the merge = confirmed at %d with row %q, want 950 and row-merged", token, row.ConfirmedAt, rawWakeItem(t, s, token))
+		}
+	}
+	// A confirmed message cannot be given back, riders included.
+	if returned, err := s.WithdrawThreadWake("tok-carrier", false, "", WithdrawUnconfirmed); err != nil || len(returned) != 0 {
+		t.Fatalf("WithdrawThreadWake(confirmed) = %v, %v; want nothing given back", returned, err)
+	}
+}
+
+// A give-back takes back the one message, so the carrier and every rider are
+// owed again and disarmed, their carrier forgotten, whether the message was
+// still queued or handed to the provider and never confirmed. A rider whose
+// carrier row is gone still goes back with its carrier's message.
+func TestWithdrawThreadWakeGivesItsRidersBack(t *testing.T) {
+	for _, scope := range []WakeWithdrawal{WithdrawQueued, WithdrawUnconfirmed} {
+		t.Run(fmt.Sprint(scope), func(t *testing.T) {
+			s := newTestStore(t)
+			mustCreateThread(t, s, "t-caller")
+			for _, token := range []string{"tok-carrier", "tok-rider", "tok-rider-2", "tok-alone"} {
+				seedOwedThreadWake(t, s, token, "t-caller", ThreadRequestSend, 100, "the turn ended")
+			}
+			item := FlushQueueItem{ID: "queue:carrier", ThreadID: "t-caller", SendID: "thread-wake:tok-carrier", Message: "the turn ended", EnqueuedAt: 900}
+			if err := s.QueueThreadWake("tok-carrier", []string{"tok-rider", "tok-rider-2"}, false, item); err != nil {
+				t.Fatalf("QueueThreadWake: %v", err)
+			}
+			alone := FlushQueueItem{ID: "queue:alone", ThreadID: "t-caller", SendID: "thread-wake:tok-alone", Message: "the turn ended", EnqueuedAt: 900}
+			if err := s.QueueThreadWake("tok-alone", nil, false, alone); err != nil {
+				t.Fatalf("QueueThreadWake(alone): %v", err)
+			}
+			rowID := "queue:carrier"
+			if scope == WithdrawUnconfirmed {
+				// The dispatch retired the row at the provider write.
+				if _, err := s.DeleteDispatchedFlushQueueItems([]string{rowID}); err != nil {
+					t.Fatalf("DeleteDispatchedFlushQueueItems: %v", err)
+				}
+				rowID = ""
+			}
+			returned, err := s.WithdrawThreadWake("tok-carrier", false, rowID, scope)
+			if err != nil {
+				t.Fatalf("WithdrawThreadWake: %v", err)
+			}
+			if !equalTokens(returned, "tok-carrier", "tok-rider", "tok-rider-2") || returned[0] != "tok-carrier" {
+				t.Fatalf("given back = %v, want the carrier first, then its riders", returned)
+			}
+			for _, token := range []string{"tok-carrier", "tok-rider", "tok-rider-2"} {
+				row := mustGetThreadRequest(t, s, token)
+				if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify || !row.WakeOwed(false) {
+					t.Errorf("%s = delivered %q at %d with %q, notify %v; want owed again and disarmed", token,
+						row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify)
+				}
+			}
+			if row := mustGetThreadRequest(t, s, "tok-alone"); row.DeliveredAt != 900 || !row.Notify {
+				t.Errorf("another message's request was given back: delivered at %d, notify %v", row.DeliveredAt, row.Notify)
+			}
+			if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 1 || rows[0].ID != "queue:alone" {
+				t.Fatalf("queue after the give-back = %+v err=%v, want only the other message", rows, err)
+			}
+		})
+	}
+
+	// The carrier's row is gone (deleted on its own); its rider still goes
+	// back by the carrier's token.
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		seedOwedThreadWake(t, s, token, "t-caller", ThreadRequestSend, 100, "the turn ended")
+	}
+	item := FlushQueueItem{ID: "queue:carrier", ThreadID: "t-caller", SendID: "thread-wake:tok-carrier", Message: "the turn ended", EnqueuedAt: 900}
+	if err := s.QueueThreadWake("tok-carrier", []string{"tok-rider"}, false, item); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if _, err := s.DeleteThreadRequest("tok-carrier"); err != nil {
+		t.Fatalf("DeleteThreadRequest: %v", err)
+	}
+	if returned, err := s.WithdrawThreadWake("tok-carrier", false, "queue:carrier", WithdrawQueued); err != nil || !equalTokens(returned, "tok-rider") {
+		t.Fatalf("WithdrawThreadWake = %v, %v; want the rider given back", returned, err)
+	}
+}
+
+func unconfirmedTokens(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.UnconfirmedThreadWakes()
+	if err != nil {
+		t.Fatalf("UnconfirmedThreadWakes: %v", err)
+	}
+	tokens := make([]string, 0, len(rows))
+	for _, row := range rows {
+		tokens = append(tokens, row.Token)
+	}
+	return tokens
+}
+
+// equalTokens reports whether got holds exactly want, in any order.
+func equalTokens(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(want))
+	for _, token := range want {
+		seen[token]++
+	}
+	for _, token := range got {
+		if seen[token] == 0 {
+			return false
+		}
+		seen[token]--
+	}
+	return true
+}
+
+func rawWakeItem(t *testing.T, s *Store, token string) string {
+	t.Helper()
+	var item string
+	if err := s.db.QueryRow(`SELECT wake_item_id FROM thread_requests WHERE token = ?`, token).Scan(&item); err != nil {
+		t.Fatalf("read the wake row of %s: %v", token, err)
+	}
+	return item
+}
+
+// A wake handed to a session that is stopped before confirming it goes back
+// to its request, not into the composer: the session's unconfirmed user row
+// is retired on its own (RetireUndeliveredUserRow), which leaves the request
+// alone, and the give-back (WithdrawThreadWake) owes the carrier and every
+// rider again, disarmed, while a wake the row did not carry stays queued. A
+// failed retire changes nothing.
+func TestADroppedUnconfirmedWakeGoesBackWithItsRiders(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
 	for _, token := range []string{"tok-carrier", "tok-rider", "tok-other"} {
@@ -252,7 +407,7 @@ func TestRetireDroppedUserRowRetractsTheWakeItCarried(t *testing.T) {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
 	// The dispatch wrote the carrier's message and dropped its queue row.
-	if err := s.DeleteFlushQueueItem("queue:carrier"); err != nil {
+	if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue:carrier"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AppendItem(Item{
@@ -266,24 +421,33 @@ func TestRetireDroppedUserRowRetractsTheWakeItCarried(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RetireDroppedUserRow("t-caller", "user:1:flush:1", []string{"thread-wake:tok-carrier"}); err == nil || !strings.Contains(err.Error(), "injected delete failure") {
+	if _, err := s.RetireUndeliveredUserRow("t-caller", "user:1:flush:1"); err == nil || !strings.Contains(err.Error(), "injected delete failure") {
 		t.Fatal("the retire succeeded past the injected failure")
-	}
-	if got := mustGetThreadRequest(t, s, "tok-carrier").DeliveredHow; got != ThreadWakeQueued {
-		t.Fatalf("carrier delivered %q after a failed retire, want queued", got)
 	}
 	if _, err := s.db.Exec(`DROP TRIGGER refuse_row_delete`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.RetireUndeliveredUserRow("t-caller", "user:1:flush:1"); err != nil {
+		t.Fatalf("RetireUndeliveredUserRow: %v", err)
+	}
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		if got := mustGetThreadRequest(t, s, token).DeliveredHow; got != ThreadWakeQueued {
+			t.Fatalf("%s delivered %q after the retire, want queued until the give-back", token, got)
+		}
+	}
 
-	if _, err := s.RetireDroppedUserRow("t-caller", "user:1:flush:1", []string{"thread-wake:tok-carrier"}); err != nil {
-		t.Fatalf("RetireDroppedUserRow: %v", err)
+	returned, err := s.WithdrawThreadWake("tok-carrier", false, "", WithdrawUnconfirmed)
+	if err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if !equalTokens(returned, "tok-carrier", "tok-rider") {
+		t.Fatalf("given back = %v, want the carrier and its rider", returned)
 	}
 	for _, token := range []string{"tok-carrier", "tok-rider"} {
 		row := mustGetThreadRequest(t, s, token)
-		if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify || row.WakeIssue == "" {
-			t.Errorf("%s after the drop = delivered %q at %d with %q, notify %v, issue %q; want undelivered, disarmed and explained",
-				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify, row.WakeIssue)
+		if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify || !row.WakeOwed(false) {
+			t.Errorf("%s after the drop = delivered %q at %d with %q, notify %v; want owed again and disarmed",
+				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify)
 		}
 	}
 	if got := mustGetThreadRequest(t, s, "tok-other").DeliveredHow; got != ThreadWakeQueued {
@@ -338,7 +502,7 @@ func TestQueueThreadWakeRefusesAFirstAnswerALateReplySuperseded(t *testing.T) {
 	mustCreateThread(t, s, "t-caller")
 	seedOwedThreadWake(t, s, "tok-late", "t-caller", ThreadRequestSend, 100, "started the tests")
 	seedOwedThreadWake(t, s, "tok-other", "t-caller", ThreadRequestSend, 100, "started the tests")
-	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, true); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("all green"), 300, nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 
@@ -539,7 +703,7 @@ func TestQueueThreadWakeAnswersOnlyItsOwnThreadsRequests(t *testing.T) {
 	if err := s.QueueThreadWake("tok-carrier", []string{"tok-rider"}, false, item); err != nil {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-rider", []byte("all green"), 950, true); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-rider", []byte("all green"), 950, nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	late := FlushQueueItem{ID: "queue:late", ThreadID: "t-caller", SendID: "thread-wake-late:tok-rider", Message: "all green", EnqueuedAt: 960}
@@ -551,8 +715,11 @@ func TestQueueThreadWakeAnswersOnlyItsOwnThreadsRequests(t *testing.T) {
 	}
 }
 
-// A receipt has no caller to wake, so a settlement that asks to arm one is a
-// caller's mistake and is refused.
+// A receipt has no caller to wake, so a receipt write that asks to arm one
+// is a caller's mistake and is refused. The local settlement takes the flag
+// for the source row: a reply to a request made without notify arms that
+// row's wake in the settlement's own statement and reports it armed, and an
+// archived caller's row stays disarmed.
 func TestAReceiptSettlementRefusesToArmAWake(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-target")
@@ -562,9 +729,35 @@ func TestAReceiptSettlementRefusesToArmAWake(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	if settled, err := s.SettleThreadRequestReceipt("tok-receipt", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	if _, settled, err := settleThreadReceiptRow(s.db, "tok-receipt", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptReplied, Answer: []byte("done"), AnswerKind: ThreadAnswerReply, ArmWake: true,
 	}); err == nil || settled {
 		t.Fatalf("a receipt settlement armed a wake: settled=%v err=%v", settled, err)
+	}
+
+	mustCreateThread(t, s, "t-caller")
+	mustCreateThread(t, s, "t-archived")
+	for token, caller := range map[string]string{"tok-quiet": "t-caller", "tok-gone": "t-archived"} {
+		if _, err := s.AcceptLocalThreadRequest(
+			ThreadRequest{Token: token, CallerThreadID: caller, Kind: ThreadRequestSend, TargetThreadID: "t-target", State: ThreadRequestAccepted},
+			ThreadRequestReceipt{Token: token, OwnerDeviceID: "local", Kind: ThreadRequestSend, TargetThreadID: "t-target"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.ArchiveThread("t-archived"); err != nil {
+		t.Fatal(err)
+	}
+	reply := ThreadRequestSettlement{State: ThreadReceiptReplied, Answer: []byte("done"), AnswerKind: ThreadAnswerReply, ArmWake: true}
+	for token, armed := range map[string]bool{"tok-quiet": true, "tok-gone": false} {
+		result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), reply, ThreadRequestReplied)
+		if err != nil || !result.Collected || result.Notify != armed {
+			t.Fatalf("%s: settlement = %+v, %v; want collected with notify %v", token, result, err, armed)
+		}
+		if row := mustGetThreadRequest(t, s, token); row.Notify != armed || row.State != ThreadRequestReplied {
+			t.Errorf("%s = %s notify %v, want replied with notify %v", token, row.State, row.Notify, armed)
+		}
+	}
+	if got := undeliveredTokens(t, s); len(got) != 1 || got[0] != "tok-quiet" {
+		t.Errorf("owed wakes = %v, want the reply to the request made without notify", got)
 	}
 }

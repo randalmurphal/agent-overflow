@@ -12,6 +12,26 @@ that text to the composer, and its comments return to drafts.
 shape boundary used by send, queue, retry, fork, and draft restoration.
 Coordinate JSON field changes with store, triage, App, and frontend consumers.
 
+A message the app writes into a thread is an `AgentMessage`: its text and
+the attribution its row is read by, with the facts it states
+(`agentmeta.OriginThread.Facts`, `agentmeta.OriginWake.Facts`,
+`threadtools.MessageFacts`). Make one only through its constructors
+(`Request`, `Answer`, `Message`, `StoppedWorker`, `Report`), which take
+text, facts and attribution from one source, share nothing with their
+inputs, and return an error for input no message can be made of: a request
+or thread message from no thread, a request with no token, an answer to no
+request, a report of no `agentmeta.ReportKind`. A message read back from a
+queue or a row goes through `DecodeStored`, which reads back everything the
+constructors write. `Attribution` returns a copy.
+
+The attribution types and the one reading of an agent's row live in
+[`internal/agentmeta`](../agentmeta/AGENTS.md), which the store also reads.
+`Meta.Agent` is the part of `Meta` that package reads; its fields keep
+`Meta`'s names and JSON keys (`TestAgentIsTheAttributionPartOfMeta`).
+`ProjectRowMeta`, which `itemwire` applies to every read and push, serves
+a row's meta with what `agentmeta.ProjectMeta` read of it and every other
+key as stored.
+
 `provider_item_id` and `provider_parent_uuid` share the JSON object but are
 not fields of typed `Meta`. Modify an existing blob with
 `MergeProviderIDs`, `MergeProviderItemID`, or the other merge helpers so
@@ -31,7 +51,7 @@ attachment (`ShellInvocationRuns`), as `command.go` owns the slash command
 word. The send path replaces those parts with the provider's command block
 and the timeline hides them behind the block. The frontend's copy is
 `utils/shellInvocation.ts` (`MESSAGE_JOIN_SEPARATOR` mirrors
-`JoinSeparator`). Both run `testdata/shell_invocation_vectors.json`, kept
+`agentmeta.JoinSeparator`). Both run `testdata/shell_invocation_vectors.json`, kept
 byte-identical with `frontend/src/test/fixtures/shellInvocationVectors.json`:
 change the rule by changing the vectors and both implementations.
 

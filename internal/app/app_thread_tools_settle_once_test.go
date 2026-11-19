@@ -62,8 +62,8 @@ func TestALocalSettlementThatCannotWriteTheRequestWritesNeitherRow(t *testing.T)
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
 	row := after.request(t, ack.Token)
-	if row.State != store.ThreadRequestInterrupted || string(row.Answer) != threadReceiptRestarted {
-		t.Fatalf("request = %q %q, want it interrupted by the restart", row.State, row.Answer)
+	if row.State != store.ThreadRequestInterrupted || row.Cause != threadtools.CauseRestart || len(row.Answer) != 0 {
+		t.Fatalf("request = %q %q %q, want it interrupted by the restart", row.State, row.Cause, row.Answer)
 	}
 	receipt := after.receipt(t, ack.Token)
 	if receipt.State != store.ThreadReceiptInterrupted || receipt.CollectedRevision != receipt.Revision {
@@ -147,24 +147,9 @@ func TestBootSettlesALocalRequestNothingElseCanSettle(t *testing.T) {
 
 	// Accepted by an older build that settled the receipt and lost the
 	// request's write.
-	answered := newThreadRequestToken()
-	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
-		Token: answered, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
-		TargetThreadID: target.ID, State: store.ThreadRequestRunning,
-	}); err != nil {
-		t.Fatalf("InsertThreadRequest: %v", err)
-	}
-	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
-		Token: answered, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: f.caller.ID,
-		Kind: store.ThreadRequestSend, TargetThreadID: target.ID, State: store.ThreadReceiptRunning,
-	}); err != nil {
-		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
-	}
-	if settled, err := f.app.store.SettleThreadRequestReceipt(answered, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+	answered := f.orphanedLocalRequest(t, target.ID, store.ThreadRequestSettlement{
 		State: store.ThreadReceiptFinished, Answer: []byte("the backfill touched 40 rows"), AnswerKind: store.ThreadAnswerFinal,
-	}); err != nil || !settled {
-		t.Fatalf("SettleThreadRequestReceipt: settled=%v err=%v", settled, err)
-	}
+	}, "")
 	// Written, and the process died before its receipt was.
 	unaccepted := newThreadRequestToken()
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
@@ -191,8 +176,8 @@ func TestBootSettlesALocalRequestNothingElseCanSettle(t *testing.T) {
 	if receipt := after.receipt(t, answered); receipt.CollectedRevision != receipt.Revision {
 		t.Errorf("receipt collected %d of %d, want its answer collected", receipt.CollectedRevision, receipt.Revision)
 	}
-	if row := after.request(t, unaccepted); row.State != store.ThreadRequestInterrupted || string(row.Answer) != threadReceiptRestarted {
-		t.Errorf("unaccepted request = %q %q, want it interrupted by the restart", row.State, row.Answer)
+	if row := after.request(t, unaccepted); row.State != store.ThreadRequestInterrupted || row.Cause != threadtools.CauseRestart || len(row.Answer) != 0 {
+		t.Errorf("unaccepted request = %q %q %q, want it interrupted by the restart", row.State, row.Cause, row.Answer)
 	}
 	if row := after.request(t, reminder); row.State != store.ThreadRequestAccepted {
 		t.Errorf("reminder = %q, want it left for its clock", row.State)
@@ -206,29 +191,32 @@ func TestBootSettlesALocalRequestNothingElseCanSettle(t *testing.T) {
 
 // orphanedLocalRequest is a local request left open beside a receipt that
 // settled without it. A non-empty `late` is a late reply the receipt took
-// after that, which the request never saw either.
+// after that, which the request never saw either. The receipt settles
+// before the request row exists, which is the only way a local settlement
+// leaves the request out (SettleLocalThreadRequest).
 func (f *requestFixture) orphanedLocalRequest(t *testing.T, target string, settlement store.ThreadRequestSettlement, late string) string {
 	t.Helper()
 	token := newThreadRequestToken()
-	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
-		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
-		TargetThreadID: target, State: store.ThreadRequestRunning,
-	}); err != nil {
-		t.Fatalf("InsertThreadRequest: %v", err)
-	}
 	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: f.caller.ID,
 		Kind: store.ThreadRequestSend, TargetThreadID: target, State: store.ThreadReceiptRunning,
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	if settled, err := f.app.store.SettleThreadRequestReceipt(token, store.ThreadReceiptOpenStates(), settlement); err != nil || !settled {
-		t.Fatalf("SettleThreadRequestReceipt: settled=%v err=%v", settled, err)
+	settled, err := f.app.store.SettleLocalThreadRequest(token, store.ThreadReceiptOpenStates(), settlement, store.ThreadRequestStateForReceipt(settlement.State))
+	if err != nil || !settled.Settled || settled.Collected {
+		t.Fatalf("SettleLocalThreadRequest = %+v, %v; want the receipt alone settled", settled, err)
 	}
 	if late != "" {
-		if stored, err := f.app.store.StoreThreadReceiptLateReply(token, []byte(late), 0); err != nil || !stored {
+		if stored, err := f.app.store.StoreThreadReceiptLateReply(token, []byte(late), 0, nil); err != nil || !stored {
 			t.Fatalf("StoreThreadReceiptLateReply: stored=%v err=%v", stored, err)
 		}
+	}
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: target, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatalf("InsertThreadRequest: %v", err)
 	}
 	return token
 }

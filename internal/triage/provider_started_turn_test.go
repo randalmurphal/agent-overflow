@@ -412,7 +412,7 @@ func TestCompletionAfterResumeLeavesPreviousSessionTurn(t *testing.T) {
 		t.Fatalf("turn 0: found=%v err=%v %+v", found, err, before)
 	}
 
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	persistSendRow(t, router, "user:1", 1)
 	if err := router.Handle(openerInit(t, provider.TurnOpenerInternalCommand)); err != nil {
 		t.Fatalf("internal command init: %v", err)

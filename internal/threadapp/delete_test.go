@@ -9,67 +9,81 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestDeleteTreeRunsChildrenFirstAndPreservesResourceOrder(t *testing.T) {
-	service, database, _ := newServiceFixture(t)
-	parent, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatalf("Create parent: %v", err)
+// commitDelete claims and commits the delete of ids as one family delete
+// would, so Destroy sees what it runs on.
+func commitDelete(t *testing.T, database *store.Store, ids ...string) {
+	t.Helper()
+	if _, err := database.ClaimDeleteFamily("op", ids); err != nil {
+		t.Fatalf("ClaimDeleteFamily: %v", err)
 	}
-	service.deps.NewID = func() string { return "child" }
-	child, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatalf("Create child: %v", err)
-	}
-	child.ParentThreadID = parent.ID
-	if err := database.UpdateThread(child); err != nil {
-		t.Fatalf("UpdateThread child parent: %v", err)
-	}
-
-	var calls []string
-	ports := DeletePorts{
-		CleanProviderBackground: func(thread store.Thread) error { calls = append(calls, thread.ID+":background"); return nil },
-		StopSession:             func(id string) error { calls = append(calls, id+":session"); return nil },
-		CancelWorktreeSetup:     func(id string) { calls = append(calls, id+":setup") },
-		CancelShellCommand:      func(id string) { calls = append(calls, id+":shell") },
-		CloseTerminals:          func(id string) error { calls = append(calls, id+":terminal"); return nil },
-		CloseBrowserPages:       func(id string) error { calls = append(calls, id+":browser"); return nil },
-		ClearSystemPrompt:       func(id string) { calls = append(calls, id+":prompt") },
-		RemoveDiscussion:        func(thread store.Thread) { calls = append(calls, thread.ID+":discussion") },
-		ClearAutoReconnect:      func(id string) { calls = append(calls, id+":reconnect") },
-		CleanupAttachments:      func(id string) error { calls = append(calls, id+":attachments"); return nil },
-		CleanupReplayLog:        func(id string) error { calls = append(calls, id+":replay"); return nil },
-		Forget:                  func(id string) { calls = append(calls, id+":forget") },
-	}
-	if err := service.DeleteTree(parent.ID, false, ports); err != nil {
-		t.Fatalf("DeleteTree: %v", err)
-	}
-	wantChild := []string{
-		"child:background", "child:session", "child:setup", "child:shell", "child:terminal",
-		"child:browser", "child:prompt", "child:discussion", "child:reconnect",
-		// The second stop is under the mutation lock a command registers with.
-		"child:shell", "child:attachments", "child:replay", "child:terminal", "child:browser", "child:forget",
-	}
-	if !slices.Equal(calls[:len(wantChild)], wantChild) {
-		t.Fatalf("child cleanup order = %v, want %v", calls[:len(wantChild)], wantChild)
-	}
-	if last := calls[len(calls)-1]; last != parent.ID+":forget" {
-		t.Fatalf("parent cleanup ended with %q, want its forget after the row drop", last)
-	}
-	if _, err := database.GetThread(parent.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("GetThread(parent) error = %v, want sql.ErrNoRows", err)
+	if _, err := database.CommitDeleteClaim("op"); err != nil {
+		t.Fatalf("CommitDeleteClaim: %v", err)
 	}
 }
 
-func TestDeleteTreeContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
+func TestDestroyPreservesResourceOrder(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	commitDelete(t, database, thread.ID)
+
+	var calls []string
+	ports := DeletePorts{
+		CleanProviderBackground: func(store.Thread) error { calls = append(calls, "background"); return nil },
+		StopSession:             func(string) error { calls = append(calls, "session"); return nil },
+		CancelWorktreeSetup:     func(string) { calls = append(calls, "setup") },
+		CancelShellCommand:      func(string) { calls = append(calls, "shell") },
+		CloseTerminals:          func(string) error { calls = append(calls, "terminal"); return nil },
+		CloseBrowserPages:       func(string) error { calls = append(calls, "browser"); return nil },
+		ClearAutoReconnect:      func(string) { calls = append(calls, "reconnect") },
+		CleanupAttachments:      func(string) error { calls = append(calls, "attachments"); return nil },
+		CleanupReplayLog:        func(string) error { calls = append(calls, "replay"); return nil },
+		CleanupMemoryFiles:      func(string) error { calls = append(calls, "records"); return nil },
+		Dropped:                 func(store.Thread, []string) { calls = append(calls, "dropped") },
+		Forget:                  func(string) { calls = append(calls, "forget") },
+	}
+	if err := service.tearDown(thread.ID, ports); err != nil {
+		t.Fatalf("tearDown: %v", err)
+	}
+	if _, err := database.GetThread(thread.ID); err != nil {
+		t.Fatalf("the row after the teardown: %v, want it kept for the drop", err)
+	}
+	calls = append(calls, "|")
+	if err := service.drop(thread.ID, ports); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	want := []string{
+		"background", "session", "setup", "shell", "terminal", "browser", "reconnect",
+		// The second stop is under the mutation lock a command registers with.
+		"shell", "attachments", "replay", "records", "|",
+		"dropped", "terminal", "browser", "forget",
+	}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("cleanup order = %v, want %v", calls, want)
+	}
+	if _, err := database.GetThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetThread error = %v, want sql.ErrNoRows", err)
+	}
+	// A row already gone is nothing to do: a destroy the boot resumes.
+	if err := service.drop(thread.ID, ports); err != nil {
+		t.Fatalf("drop of a dropped row: %v", err)
+	}
+}
+
+func TestTearDownContinuesCleanupButKeepsTheRowOnFailure(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	thread, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	commitDelete(t, database, thread.ID)
 	var calls []string
 	cleanupErr := errors.New("disk busy")
 	browserErr := errors.New("profile busy")
-	err = service.DeleteTree(thread.ID, false, DeletePorts{
+	recordsErr := errors.New("records busy")
+	err = service.tearDown(thread.ID, DeletePorts{
 		StopSession:       func(string) error { calls = append(calls, "session"); return nil },
 		CloseBrowserPages: func(string) error { calls = append(calls, "browser"); return browserErr },
 		CleanupAttachments: func(string) error {
@@ -77,88 +91,63 @@ func TestDeleteTreeContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 			return cleanupErr
 		},
 		CleanupReplayLog: func(string) error { calls = append(calls, "replay"); return nil },
-		Forget:           func(string) { calls = append(calls, "forget") },
+		CleanupMemoryFiles: func(string) error {
+			calls = append(calls, "records")
+			return recordsErr
+		},
+		Forget: func(string) { calls = append(calls, "forget") },
 	})
-	if !errors.Is(err, cleanupErr) || !errors.Is(err, browserErr) {
-		t.Fatalf("DeleteTree error = %v, want disk and browser errors", err)
+	if !errors.Is(err, cleanupErr) || !errors.Is(err, browserErr) || !errors.Is(err, recordsErr) {
+		t.Fatalf("tearDown error = %v, want disk, browser and records errors", err)
 	}
-	if !slices.Equal(calls, []string{"session", "browser", "attachments", "replay"}) {
+	if !slices.Equal(calls, []string{"session", "browser", "attachments", "replay", "records"}) {
 		t.Fatalf("cleanup calls = %v", calls)
 	}
 	if _, err := database.GetThread(thread.ID); err != nil {
 		t.Fatalf("row deleted after failed cleanup: %v", err)
 	}
-}
-
-// From its delete mark on a thread is gone to every read, so a delete that
-// fails after the mark still reports the row deleted, for clients to drop
-// it, and the next boot finishes it. One that fails before the mark keeps
-// the row listed and reports nothing.
-func TestDeleteTreeReportsTheRowOnceItsDeleteMarkCommits(t *testing.T) {
-	service, database, _ := newServiceFixture(t)
-	afterMark, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.deps.NewID = func() string { return "before-mark" }
-	beforeMark, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var deleted []string
-	report := func(thread store.Thread) { deleted = append(deleted, thread.ID) }
-
-	cleanupErr := errors.New("disk busy")
-	err = service.DeleteTree(afterMark.ID, false, DeletePorts{
-		CleanupAttachments: func(string) error { return cleanupErr },
-		Deleted:            report,
-	})
-	if !errors.Is(err, cleanupErr) {
-		t.Fatalf("DeleteTree error = %v, want the cleanup failure", err)
-	}
-	if !slices.Equal(deleted, []string{afterMark.ID}) {
-		t.Fatalf("deleted = %v after a failure past the mark, want the thread", deleted)
-	}
-	if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{afterMark.ID}) {
-		t.Fatalf("pending deletes = %v, %v; want the thread for the next boot", pending, err)
-	}
-
-	deleted = nil
-	remoteErr := errors.New("remote command admitted during cleanup could not be stopped")
-	calls := 0
-	err = service.DeleteTree(beforeMark.ID, false, DeletePorts{
-		StopRemoteWork: func(string) error {
-			calls++
-			if calls == 2 {
-				return remoteErr
-			}
-			return nil
-		},
-		Deleted: report,
-	})
-	if !errors.Is(err, remoteErr) {
-		t.Fatalf("DeleteTree error = %v, want the refusal before the mark", err)
-	}
-	if len(deleted) != 0 {
-		t.Fatalf("deleted = %v after a failure before the mark, want none", deleted)
-	}
-	if _, err := service.Get(beforeMark.ID); err != nil {
-		t.Fatalf("Get after a failure before the mark: %v, want the thread listed", err)
+	if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{thread.ID}) {
+		t.Fatalf("pending deletes = %v, %v; want the thread committed for the next attempt", pending, err)
 	}
 }
 
-// The second close catches a page a companion action opened while the row
-// was present. Its failure is reported, and the delete it follows stands.
-func TestDeleteTreeClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
+// An assistant home the delete may not remove refuses the teardown before
+// anything of the thread stops.
+func TestTearDownRefusesAHomeBeforeStoppingAnything(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	commitDelete(t, database, thread.ID)
+	homeErr := errors.New("this assistant was not deleted: its home is not its own folder")
+	stopped := false
+	err = service.tearDown(thread.ID, DeletePorts{
+		AssistantHome:  func(string) (func() error, error) { return nil, homeErr },
+		StopRemoteWork: func(string) error { stopped = true; return nil },
+		StopSession:    func(string) error { stopped = true; return nil },
+	})
+	if !errors.Is(err, homeErr) {
+		t.Fatalf("tearDown error = %v, want the home's refusal", err)
+	}
+	if stopped {
+		t.Fatal("a refused teardown stopped the thread's work")
+	}
+}
+
+// The second close catches a page a companion action opened while the row
+// was present. Its failure is reported, and the drop it follows stands.
+func TestDropClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	thread, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitDelete(t, database, thread.ID)
 	var rowPresent []bool
-	var forgotten, deleted bool
+	var forgotten, dropped bool
 	closeErr := errors.New("profile busy")
-	err = service.DeleteTree(thread.ID, false, DeletePorts{
+	err = service.Destroy(thread.ID, DeletePorts{
 		CloseBrowserPages: func(id string) error {
 			_, err := database.GetThread(id)
 			rowPresent = append(rowPresent, err == nil)
@@ -168,16 +157,16 @@ func TestDeleteTreeClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
 			return nil
 		},
 		Forget:  func(string) { forgotten = true },
-		Deleted: func(store.Thread) { deleted = true },
+		Dropped: func(store.Thread, []string) { dropped = true },
 	})
 	if !errors.Is(err, closeErr) {
-		t.Fatalf("DeleteTree error = %v, want the second close's error", err)
+		t.Fatalf("destroy error = %v, want the second close's error", err)
 	}
 	if !slices.Equal(rowPresent, []bool{true, false}) {
 		t.Fatalf("browser closes saw the row present = %v, want before and after the drop", rowPresent)
 	}
-	if !forgotten || !deleted {
-		t.Fatalf("forgotten = %v, deleted = %v after the row dropped, want both", forgotten, deleted)
+	if !forgotten || !dropped {
+		t.Fatalf("forgotten = %v, dropped = %v after the row dropped, want both", forgotten, dropped)
 	}
 	if _, err := database.GetThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetThread error = %v, want sql.ErrNoRows", err)
@@ -185,17 +174,18 @@ func TestDeleteTreeClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
 }
 
 // The second close catches a terminal a client opened while the row was
-// present. Its failure is reported, and the delete it follows stands.
-func TestDeleteTreeClosesTerminalsAgainAfterTheRowDrops(t *testing.T) {
+// present. Its failure is reported, and the drop it follows stands.
+func TestDropClosesTerminalsAgainAfterTheRowDrops(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	commitDelete(t, database, thread.ID)
 	var rowPresent []bool
-	var forgotten, deleted bool
+	var forgotten, dropped bool
 	closeErr := errors.New("pty busy")
-	err = service.DeleteTree(thread.ID, false, DeletePorts{
+	err = service.Destroy(thread.ID, DeletePorts{
 		CloseTerminals: func(id string) error {
 			_, err := database.GetThread(id)
 			rowPresent = append(rowPresent, err == nil)
@@ -205,31 +195,32 @@ func TestDeleteTreeClosesTerminalsAgainAfterTheRowDrops(t *testing.T) {
 			return nil
 		},
 		Forget:  func(string) { forgotten = true },
-		Deleted: func(store.Thread) { deleted = true },
+		Dropped: func(store.Thread, []string) { dropped = true },
 	})
 	if !errors.Is(err, closeErr) {
-		t.Fatalf("DeleteTree error = %v, want the second close's error", err)
+		t.Fatalf("destroy error = %v, want the second close's error", err)
 	}
 	if !slices.Equal(rowPresent, []bool{true, false}) {
 		t.Fatalf("terminal closes saw the row present = %v, want before and after the drop", rowPresent)
 	}
-	if !forgotten || !deleted {
-		t.Fatalf("forgotten = %v, deleted = %v after the row dropped, want both", forgotten, deleted)
+	if !forgotten || !dropped {
+		t.Fatalf("forgotten = %v, dropped = %v after the row dropped, want both", forgotten, dropped)
 	}
 	if _, err := database.GetThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetThread error = %v, want sql.ErrNoRows", err)
 	}
 }
 
-func TestDeleteTreeStopsRemoteWorkAdmittedDuringCleanup(t *testing.T) {
+func TestTearDownStopsRemoteWorkAdmittedDuringCleanup(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	commitDelete(t, database, thread.ID)
 	admitted := false
 	busy := errors.New("remote command admitted during cleanup could not be stopped")
-	err = service.DeleteTree(thread.ID, false, DeletePorts{
+	err = service.tearDown(thread.ID, DeletePorts{
 		StopRemoteWork: func(string) error {
 			if admitted {
 				return busy
@@ -243,9 +234,50 @@ func TestDeleteTreeStopsRemoteWorkAdmittedDuringCleanup(t *testing.T) {
 		},
 	})
 	if !errors.Is(err, busy) {
-		t.Fatalf("deletion error: %v", err)
+		t.Fatalf("teardown error: %v", err)
 	}
 	if _, err := database.GetThread(thread.ID); err != nil {
 		t.Fatalf("deleted source of newly admitted remote work: %v", err)
+	}
+}
+
+// A thread a delete claimed is refused to every change (CheckMutable) and to
+// a cleanup (CheckCleanup) until the delete commits or lets it go, and
+// admitted to the delete's own check (CheckDelete). A committed thread is
+// retired to a cleanup: it has nothing left for anyone else to clean.
+func TestAClaimedThreadIsTheDeletesAlone(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	thread, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ClaimDeleteFamily("op", []string{thread.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CheckMutable(thread.ID); !errors.Is(err, store.ErrThreadDeleting) {
+		t.Fatalf("CheckMutable on a claimed thread = %v, want ErrThreadDeleting", err)
+	}
+	if _, err := service.CheckCleanup(thread.ID); !errors.Is(err, store.ErrThreadDeleting) {
+		t.Fatalf("CheckCleanup on a claimed thread = %v, want ErrThreadDeleting", err)
+	}
+	for _, cleanup := range []bool{false, true} {
+		if retired, err := service.CheckDelete(thread.ID, cleanup); err != nil || retired {
+			t.Fatalf("CheckDelete(cleanup %v) on a claimed thread = %v, %v; want admitted", cleanup, retired, err)
+		}
+	}
+
+	if err := database.ReleaseDeleteClaim("op"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CheckMutable(thread.ID); err != nil {
+		t.Fatalf("CheckMutable once the claim was released: %v", err)
+	}
+
+	commitDelete(t, database, thread.ID)
+	if retired, err := service.CheckCleanup(thread.ID); err != nil || !retired {
+		t.Fatalf("CheckCleanup on a committed thread = %v, %v; want retired", retired, err)
+	}
+	if err := service.CheckMutable(thread.ID); !errors.Is(err, store.ErrThreadDeleting) {
+		t.Fatalf("CheckMutable on a committed thread = %v, want ErrThreadDeleting", err)
 	}
 }

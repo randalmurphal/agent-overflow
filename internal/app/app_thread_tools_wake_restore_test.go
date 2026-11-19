@@ -13,12 +13,14 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-// Every path that moves a wake's message from the queue to the composer
-// corrects the delivery mark of the requests it answers, in the transaction
-// that writes the draft: the answer reached the thread, and is waiting on the
-// person rather than on its way to the agent. The boot restore is pinned by
-// TestOneTurnAnsweringTwoRequestsWakesTheirSenderOnce, and a start that
-// leaves no session by
+// A wake is the app's message to the agent, never the person's: every path
+// that takes queued messages back to the composer gives a wake among them
+// back to its requests instead (giveBackToOwners), owed again and disarmed,
+// and the composer gets only the person's text. thread_status, or a later
+// wait, is where the answer is read. A caller whose session cannot start
+// keeps the wake queued for its next start, as every notice does. The boot
+// restore is pinned by TestOneTurnAnsweringTwoRequestsWakesTheirSenderOnce,
+// and a start that leaves no session by
 // TestAParkedTrialSettlesTheLastRunsRequestsButActsOnlyAfterItsCommit.
 
 // queuedWake is a settled request whose wake sits in the caller's queue,
@@ -33,24 +35,37 @@ func (f *requestFixture) queuedWake(t *testing.T, answer string) string {
 	return token
 }
 
-// requireWakeInDraft asserts the wake's message is in the caller's composer
-// and its request reads as delivered there.
-func (f *requestFixture) requireWakeInDraft(t *testing.T, token, answer string) {
+// requireWakeGivenBack asserts the wake's message is in neither the
+// caller's composer nor its queue, and its request is owed again and
+// disarmed.
+func (f *requestFixture) requireWakeGivenBack(t *testing.T, token, answer string) {
+	t.Helper()
+	f.requireWakeOutOfTheComposer(t, answer)
+	for _, row := range durableQueueRows(t, f.app, f.caller.ID) {
+		if row.SendID == threadWakeSendID(token) {
+			t.Fatalf("the wake is still queued: %+v", row)
+		}
+	}
+	if row := f.request(t, token); row.DeliveredHow != "" || row.DeliveredAt != 0 || row.Notify {
+		t.Fatalf("request = delivered %q at %d, notify %v; want it owed again and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
+}
+
+// requireWakeOutOfTheComposer asserts the caller's composer does not carry
+// the wake's answer.
+func (f *requestFixture) requireWakeOutOfTheComposer(t *testing.T, answer string) {
 	t.Helper()
 	draft, _, err := f.app.store.GetThreadDraft(f.caller.ID)
 	if err != nil {
 		t.Fatalf("GetThreadDraft: %v", err)
 	}
-	if !strings.Contains(draft.Content, answer) {
-		t.Fatalf("composer = %q, want the wake carrying %q", draft.Content, answer)
-	}
-	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeDraft || row.DeliveredAt == 0 {
-		t.Fatalf("request = delivered %q at %d after its message went to the composer, want draft", row.DeliveredHow, row.DeliveredAt)
+	if strings.Contains(draft.Content, answer) {
+		t.Fatalf("composer = %q, want the wake carrying %q kept out of it", draft.Content, answer)
 	}
 }
 
-// A caller with no session whose start fails gets its queued messages back
-// in the composer, a wake among them.
+// A caller with no session whose start fails keeps its wake queued for the
+// next start, with the failure on the thread; the composer does not get it.
 func TestAWakeReturnedBecauseTheCallerCannotStartReadsDraft(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -64,15 +79,27 @@ func TestAWakeReturnedBecauseTheCallerCannotStartReadsDraft(t *testing.T) {
 	}
 	token := f.settledNotifyRequest(t, "the build is green")
 	f.app.deliverThreadWake(token, false)
+	f.app.waitAgentNoticeWork()
 
-	waitUntil(t, 10*time.Second, func() bool {
-		return f.request(t, token).DeliveredHow == store.ThreadWakeDraft
-	})
-	f.requireWakeInDraft(t, token, "the build is green")
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || !row.Notify {
+		t.Fatalf("request = delivered %q, notify %v; want its wake still queued", row.DeliveredHow, row.Notify)
+	}
+	queued := false
+	for _, row := range durableQueueRows(t, f.app, caller) {
+		queued = queued || row.SendID == threadWakeSendID(token)
+	}
+	if !queued {
+		t.Fatal("the wake left the caller's queue")
+	}
+	if rows := threadErrorRows(t, f.app.store, caller, ""); len(rows) == 0 {
+		t.Fatal("the failed start left no row saying why nothing answered")
+	}
+	f.requireWakeOutOfTheComposer(t, "the build is green")
 }
 
 // A session that dies, or that the app stops for a reason other than the
-// person's Stop, hands its queue back to the composer.
+// person's Stop, hands its queue back to the composer, and a wake in it back
+// to its request.
 func TestAWakeRestoredWhenTheCallersSessionEndsReadsDraft(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -82,13 +109,13 @@ func TestAWakeRestoredWhenTheCallersSessionEndsReadsDraft(t *testing.T) {
 	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
 
 	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
-		t.Fatalf("queue after the restore = %+v, want it in the composer", rows)
+		t.Fatalf("queue after the restore = %+v, want it emptied", rows)
 	}
-	f.requireWakeInDraft(t, token, "the migration is reversible")
+	f.requireWakeGivenBack(t, token, "the migration is reversible")
 }
 
-// A wake written to Claude that Claude cancels without running comes back to
-// the composer from the row it was written as, which names its send id.
+// A wake written to Claude that Claude cancels without running goes back to
+// its request from the row it was written as, which names its send id.
 func TestAWakeClaudeCancelledUnrunReadsDraft(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -124,12 +151,13 @@ func TestAWakeClaudeCancelledUnrunReadsDraft(t *testing.T) {
 	}
 
 	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, caller)) == 0 })
-	f.requireWakeInDraft(t, token, "the lint is clean")
+	waitUntil(t, 10*time.Second, func() bool { return f.request(t, token).DeliveredAt == 0 })
+	f.requireWakeGivenBack(t, token, "the lint is clean")
 }
 
 // A message the provider had and lost (a failed Codex resend, a row taken
 // back out of the Codex queue) is restored from its timeline row, which
-// names its send id in its meta.
+// names its send id in its meta: a wake goes back to its request.
 func TestAWakeRestoredFromItsTimelineRowReadsDraft(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -144,5 +172,8 @@ func TestAWakeRestoredFromItsTimelineRowReadsDraft(t *testing.T) {
 		UserItemID: "wake-row-gone", Content: "the cache was cold", Meta: string(meta),
 	}})
 
-	f.requireWakeInDraft(t, token, "the cache was cold")
+	f.requireWakeOutOfTheComposer(t, "the cache was cold")
+	if row := f.request(t, token); row.DeliveredHow != "" || row.DeliveredAt != 0 || row.Notify {
+		t.Fatalf("request = delivered %q at %d, notify %v; want it owed again and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
 }

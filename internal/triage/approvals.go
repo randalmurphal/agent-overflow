@@ -87,33 +87,46 @@ func (r *Router) persistedToolCallScope(threadID, toolUseID string) string {
 	return strings.TrimSpace(item.ParentID)
 }
 
-func (r *Router) setPendingApproval(threadID string, approval pendingApprovalState) {
-	if approval.Request.RequestID == "" {
-		return
-	}
+// setPendingApproval registers a prompt. It reports false, and registers
+// nothing, for a retired session's prompt: only its dead process could
+// take the answer.
+func (r *Router) setPendingApproval(threadID string, approval pendingApprovalState, sessionToken string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false
+	}
+	if approval.Request.RequestID == "" {
+		return true
+	}
 	st := r.state(threadID)
 	if st.pendingApprovals == nil {
 		st.pendingApprovals = make(map[string]pendingApprovalState)
 	}
 	st.pendingApprovals[approval.Request.RequestID] = approval
 	st.pendingApprovalOrder = rememberInteractiveRequestOrder(st.pendingApprovalOrder, threadID, approval.Request.RequestID)
+	return true
 }
 
-func (r *Router) takePendingApproval(threadID, requestID string) (pendingApprovalState, bool) {
+// takePendingApproval takes the approval open under requestID. occurrence,
+// when not zero, names the prompt the resolution answered: another prompt
+// open under the same id is left open, and other reports it.
+func (r *Router) takePendingApproval(threadID, requestID string, occurrence provider.PromptOccurrence) (approval pendingApprovalState, ok, other bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
-		return pendingApprovalState{}, false
+		return pendingApprovalState{}, false, false
 	}
-	approval, ok := st.pendingApprovals[requestID]
+	approval, ok = st.pendingApprovals[requestID]
+	if ok && occurrence != 0 && approval.Request.Occurrence != occurrence {
+		return pendingApprovalState{}, false, true
+	}
 	if ok {
 		delete(st.pendingApprovals, requestID)
 		st.pendingApprovalOrder = removeInteractiveRequestOrder(st.pendingApprovalOrder, threadID, requestID)
 	}
-	return approval, ok
+	return approval, ok, false
 }
 
 // approvalDecision is an answer's decision waiting for the tool row it
@@ -291,10 +304,14 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 
 	itemID := approvalItemID(evt, request)
 	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, itemID)
-	r.setPendingApproval(evt.ThreadID, pendingApprovalState{
+	request.RoutedTo = r.routePrompt(evt.ThreadID)
+	request.SessionToken, request.Occurrence = evt.SessionToken, provider.PromptOccurrence(r.promptOccurrences.Add(1))
+	if !r.setPendingApproval(evt.ThreadID, pendingApprovalState{
 		Request: request,
 		ItemID:  itemID,
-	})
+	}, evt.SessionToken) {
+		return nil
+	}
 	// Approval requests are one of the three sidebar-bump boundaries
 	// (alongside user_text persist and turn settle): the agent is
 	// blocked waiting on the user. Resolutions don't bump — the user's
@@ -316,12 +333,19 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 		requestID = evt.ItemID
 	}
 
-	pending, open := r.takePendingApproval(evt.ThreadID, requestID)
+	pending, open, other := r.takePendingApproval(evt.ThreadID, requestID, evt.PromptOccurrence)
+	if other {
+		// This app's answer to a prompt that ended, after its session asked
+		// again under the same id: the open prompt is not the one answered.
+		return nil
+	}
+	occurrence := pending.Request.Occurrence
 	if !open {
 		// An answer that raced its prompt's end (the agent that asked
 		// ended, or the turn did). Only an event naming a row other than
 		// the request says which row it answers.
 		pending.Request.RequestID = requestID
+		occurrence = evt.PromptOccurrence
 	}
 	itemID := pending.ItemID
 	if itemID == "" {
@@ -348,10 +372,11 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 	}
 
 	r.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
-		Action:    "resolve",
-		ThreadID:  evt.ThreadID,
-		RequestID: requestID,
-		Decision:  decision,
+		Action:     "resolve",
+		ThreadID:   evt.ThreadID,
+		RequestID:  requestID,
+		Decision:   decision,
+		Occurrence: occurrence,
 	})
 	return applyErr
 }

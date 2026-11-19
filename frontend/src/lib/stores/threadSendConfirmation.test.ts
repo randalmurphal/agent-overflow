@@ -3,7 +3,7 @@ import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { applyQueueFlushed, applyQueueStateChanged } from './eventsQueue';
-import { getQueueForThread } from './sendQueue.svelte';
+import { getFlushedForThread, getQueueForThread } from './sendQueue.svelte';
 import type { ThreadPane } from './thread.svelte';
 
 function userRow(pane: ThreadPane, sendId: string, overrides: Parameters<typeof makeItem>[0] = {}) {
@@ -154,5 +154,30 @@ describe('a dispatched send awaiting its confirmation', () => {
     const pane = await awaitingPane();
     pane.clear();
     expect(pane.sendAwaitingConfirmation).toBe(false);
+  });
+});
+
+describe('an agent message in the send queue', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  // The queue carries the backend's classification of an agent's message and
+  // its sender, through the live event and the snapshot alike, so the
+  // composer's preview can leave it out and the Agents rail can name it.
+  it('keeps its classification and sender through the event and the snapshot', async () => {
+    const pane = await buildPane();
+    const agent = {
+      ...queued(pane.threadId!, 'thread-wake:k'), id: 'queue:wake', agentMessage: true, origin: 'agent-thread',
+      originThread: { threadId: 't-w', title: 'Worker', kind: 'wake' },
+    };
+    applyQueueStateChanged({ threadId: pane.threadId!, items: [agent, queued(pane.threadId!, 'mine')] } as never);
+    const [wake, mine] = getQueueForThread(pane.threadId);
+    expect(wake).toMatchObject({ agentMessage: true, originThread: { threadId: 't-w', title: 'Worker', kind: 'wake' } });
+    expect(mine.agentMessage).toBeUndefined();
+
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: pane.threadId, queueItems: [agent], deferredItems: [],
+      flushedItems: [{ queueItemId: 'queue:f', userItemId: 'user:0:flush:f', message: 'm', agentMessage: true }] }));
+    await pane.refreshFromBackend();
+    expect(getQueueForThread(pane.threadId)[0]?.agentMessage).toBe(true);
+    expect(getFlushedForThread(pane.threadId)[0]?.agentMessage).toBe(true);
   });
 });

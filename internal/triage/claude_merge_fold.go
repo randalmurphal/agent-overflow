@@ -46,6 +46,8 @@ type mergedFlushRow struct {
 	// has nothing to delete.
 	persisted bool
 	kind      string
+	// turnIndex is the persisted row's turn.
+	turnIndex int
 }
 
 // foldMergedFlushRows rebuilds the survivor row as the join of members +
@@ -61,7 +63,7 @@ type mergedFlushRow struct {
 // earlier refusal leaves the conversation exactly as the pre-fold code left
 // it: several rows, one of which a revert will refuse. That is a loud,
 // recoverable state, and strictly better than a partially folded one.
-func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, digests []flushSendDigest) error {
+func (r *Router) foldMergedFlushRows(threadID, sessionToken string, survivor *pendingSend, digests []flushSendDigest) error {
 	members := make([]mergedFlushRow, 0, len(digests)+1)
 	for _, entry := range digests {
 		member, ok, err := r.resolveMergedFlushRow(threadID, entry.AOItemID)
@@ -125,7 +127,16 @@ func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, dig
 		return fmt.Errorf("triage: fold merged flush rows on %s: %w", threadID, err)
 	}
 
-	r.settleFoldedMergeState(threadID, survivor, digests)
+	// The survivor's row now carries every member's message, its owners'
+	// included: a member whose own echo confirmed it named its own row,
+	// which the fold deleted.
+	var carried []string
+	for _, member := range folded {
+		carried = append(carried, sendIDsOf(member.meta)...)
+	}
+	r.reportConsumed(threadID, []ConsumedSend{{ItemID: persisted.ID, SendIDs: carried}})
+	r.settleFoldedMergeState(threadID, sessionToken, survivor, digests)
+	r.settleFoldEmptiedTurns(threadID, sessionToken, survivor, persisted.ID, folded, now)
 
 	r.emitItemUpsert(persisted)
 	for _, member := range folded {
@@ -152,8 +163,10 @@ func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, dig
 // provider context — the survivor's echo carried its blocks — so leaving the
 // entry would let the late echo pop it and stamp a row this fold absorbed; and
 // dropping the entry without marking its uuid seen would route that echo to
-// the injected-context branch. Both are done together here.
-func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, digests []flushSendDigest) {
+// the injected-context branch. Both are done together here. The consumption is
+// also a confirmation source, which foldMergedFlushRows reports for every
+// member before this runs.
+func (r *Router) settleFoldedMergeState(threadID, sessionToken string, survivor *pendingSend, digests []flushSendDigest) {
 	var joinedDigest []string
 	dropped := make([]string, 0, len(digests))
 	for _, entry := range digests {
@@ -163,6 +176,7 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 	joinedDigest = append(joinedDigest, survivor.ExpectedContentBlockDigest...)
 
 	var consumedIDs []string
+	var consumedSends []pendingSend
 	r.mu.Lock()
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		st.dropFlushSendDigests(dropped)
@@ -172,7 +186,12 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 		// disagreed with the row would decompose a later echo wrongly.
 		st.recordFlushSendDigest(survivor.AOItemID, joinedDigest)
 		for _, id := range dropped {
-			if entry, ok := r.popPendingSendByItemIDLocked(threadID, id); ok && entry.ExpectedProviderItemID != "" {
+			entry, ok := r.popPendingSendByItemIDLocked(threadID, id)
+			if !ok {
+				continue
+			}
+			consumedSends = append(consumedSends, entry)
+			if entry.ExpectedProviderItemID != "" {
 				consumedIDs = append(consumedIDs, entry.ExpectedProviderItemID)
 			}
 		}
@@ -180,6 +199,72 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 	r.mu.Unlock()
 	for _, providerItemID := range consumedIDs {
 		r.markWireOnlyUserTextSeen(threadID, providerItemID)
+	}
+	// The survivor's turn is the members' too: the CLI ran them as one
+	// message.
+	members := make([]*pendingSend, 0, len(consumedSends))
+	for i := range consumedSends {
+		members = append(members, &consumedSends[i])
+	}
+	r.reportSendsDelivered(threadID, sessionToken, members)
+}
+
+// settleFoldEmptiedTurns handles the members whose own echo opened a turn of
+// their own before the survivor's turn opened (openQueuedEchoTurn), and whose
+// delivery was reported into it. The fold moved their rows into the survivor,
+// so that turn holds nothing and never ran: their delivery moves to the
+// survivor's turn, and the empty turn is ended so it does not stay open.
+func (r *Router) settleFoldEmptiedTurns(threadID, sessionToken string, survivor *pendingSend, survivorItemID string, folded []mergedFlushRow, now int64) {
+	survivorTurn, open := r.openTurnIndex(threadID)
+	if !open {
+		return
+	}
+	emptied := make(map[int]bool)
+	var moved []SendDelivery
+	for _, member := range folded {
+		if !member.persisted || member.turnIndex == survivorTurn {
+			continue
+		}
+		empty, ok := emptied[member.turnIndex]
+		if !ok {
+			has, err := r.store.TurnHasItems(threadID, member.turnIndex)
+			if err != nil {
+				r.providerWriteFailed(threadID, "read a merge member's turn", err)
+				continue
+			}
+			empty = !has
+			emptied[member.turnIndex] = empty
+		}
+		if !empty {
+			continue
+		}
+		moved = append(moved, SendDelivery{
+			UserItemID: survivorItemID, SendIDs: sendIDsOf(member.meta), Members: usermessage.MemberSendIDs(member.meta),
+			TurnIndex: survivorTurn, OwnTurn: survivorTurn != survivor.WrittenDuringTurn,
+			Rebind: true, ReboundFrom: member.turnIndex, Session: sessionToken,
+		})
+	}
+	r.reportReboundDeliveries(threadID, sessionToken, moved)
+	for turnIndex, empty := range emptied {
+		if empty {
+			r.endFoldEmptiedTurn(threadID, turnIndex, now)
+		}
+	}
+}
+
+// endFoldEmptiedTurn completes a turn a merge fold left with no rows, at the
+// time of the fold, unless something already completed it.
+func (r *Router) endFoldEmptiedTurn(threadID string, turnIndex int, now int64) {
+	turn, found, err := r.store.GetTurnByThreadIndex(threadID, turnIndex)
+	if err != nil {
+		r.providerWriteFailed(threadID, "read a turn a merge fold emptied", err)
+		return
+	}
+	if !found || turn.CompletedAt != nil {
+		return
+	}
+	if err := r.store.UpdateTurnCompleted(turn.TurnID, now, "end_turn", "", "", ""); err != nil {
+		r.providerWriteFailed(threadID, "end a turn a merge fold emptied", err)
 	}
 }
 
@@ -205,6 +290,7 @@ func (r *Router) resolveMergedFlushRow(threadID, aoItemID string) (mergedFlushRo
 			meta:      meta,
 			persisted: true,
 			kind:      row.Kind,
+			turnIndex: row.TurnIndex,
 		}, true, nil
 	}
 	entry, ok := r.peekPendingSendByItemID(threadID, aoItemID)
@@ -233,21 +319,22 @@ func (r *Router) resolveMergedFlushRow(threadID, aoItemID string) (mergedFlushRo
 // joinMergedFlushContent builds the survivor's new summary and meta: the
 // members' texts in queue order joined by the shared separator with their
 // `[Image #N]` markers renumbered into the combined attachment list, and the
-// union of their metadata merged onto the survivor's existing blob so its
-// provider correlation keys and promotion markers survive.
+// union of their metadata, with the members' parts, merged onto the
+// survivor's existing blob so its provider correlation keys and promotion
+// markers survive.
 func joinMergedFlushContent(survivorMetaJSON string, members []mergedFlushRow) (string, string, error) {
-	parts := make([]usermessage.TextPart, 0, len(members))
-	metas := make([]usermessage.Meta, 0, len(members))
+	joinMembers := make([]usermessage.JoinMember, 0, len(members))
 	for _, member := range members {
-		parts = append(parts, usermessage.TextPart{
+		joinMembers = append(joinMembers, usermessage.JoinMember{
+			Meta:       member.meta,
 			Text:       member.summary,
 			ImageCount: usermessage.ImageAttachmentCount(member.meta.Attachments),
 		})
-		metas = append(metas, member.meta)
 	}
-	meta, err := usermessage.MergeJoinedMeta(survivorMetaJSON, usermessage.JoinMetas(metas))
+	summary, joined := usermessage.Join(joinMembers)
+	meta, err := usermessage.MergeJoinedMeta(survivorMetaJSON, joined)
 	if err != nil {
 		return "", "", err
 	}
-	return usermessage.JoinRenumberedText(parts), meta, nil
+	return summary, meta, nil
 }

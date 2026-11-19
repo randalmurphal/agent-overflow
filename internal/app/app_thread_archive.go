@@ -1,6 +1,7 @@
 package app
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -31,120 +32,221 @@ import (
 // unchanged (app_session_reaper.go). Archive is different in kind: it
 // is a person stating they are done with the thread, and that intent
 // outranks the work, exactly as deleting the thread already does
-// (threadapp.DeleteTree stops the session before dropping rows).
+// (threadapp.Destroy stops the session before dropping rows).
 
 // ArchiveThread flips archived to true so the thread leaves the active
 // sidebar, and closes the thread's provider session so the host stops
-// carrying it.
+// carrying it. The workers it owns are archived after it, each the same
+// way (finishArchive); unarchiving it unarchives none of them.
 //
-// The row flip commits first and the cleanup follows. A cleanup that
-// fails returns a *threadCleanupError: the archive itself has committed
-// and been announced, and the error says so and names what may still be
-// running or open.
+// The row flip commits first and the rest follows. Once the flip has
+// committed the call succeeds: the archive itself has succeeded durably,
+// and failing the call would tell the caller otherwise. What it could not
+// finish afterwards, a worker whose archive was refused or work that may
+// still be running or open, is reported in the result.
 //
 //ao:scope threads:operate
 //ao:route thread
-func (a *App) ArchiveThread(id string) error {
-	work, err := a.archiveThreadLocked(id)
+func (a *App) ArchiveThread(id string) (ArchiveThreadResult, error) {
+	work, err := a.archiveThreadLocked(id, "")
 	if err != nil {
-		return err
+		return ArchiveThreadResult{}, err
 	}
-	return a.stopArchivedThreadWork(work)
+	return a.finishArchive(work, reachNow).result(a), nil
 }
 
-// archivedThreadWork is what a thread was waiting on at the moment its
-// archive committed: the asks it owns and the remote commands it started.
-// cleanup gathers what the archive's cleanup could not do, for
-// stopArchivedThreadWork to return.
-type archivedThreadWork struct {
-	threadID string
-	asks     []store.ThreadRequest
-	commands []store.RemoteWatch
-	cleanup  threadCleanupError
+// ArchiveThreadResult is what an archive left undone after the thread's own
+// archive committed. The zero value is a complete archive.
+type ArchiveThreadResult struct {
+	// WorkersNotArchived names each worker under the thread, at any depth,
+	// whose archive was refused. It stays open; archiving it again retries
+	// it, and so does archiving again the thread that owns it. A worker on
+	// another computer named here either has not taken the archive yet
+	// (Pending), which is sent again until it does, or runs a version that
+	// cannot take it.
+	WorkersNotArchived []WorkerFailure `json:"workersNotArchived,omitempty"`
+	// CleanupError says, for a person, what of the archived threads may
+	// still be running or open (threadCleanupError). Their archives stand.
+	CleanupError string `json:"cleanupError,omitempty"`
 }
 
-// captureArchivedThreadWork runs in the critical section that commits the
-// archive, under the thread's mutation lock, which remote command
-// admission also takes. It ends the thread's parked calls, disarms its
-// wakes and names the work open at that moment. A later wait or
-// thread_status re-arms the wakes, and delivering one unarchives the
-// thread.
-//
-// Nothing keeps new work from starting on an archived thread afterwards: a
-// wake unarchives it and a remote command is admitted to it whatever its
-// archive state. So only the archive that changes the row captures, and
-// the stop acts on these identities alone, never on what the thread is
-// running by the time it gets there.
-func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
-	work := newArchivedThreadWork(id)
-	asks, askErr := a.disarmThreadRequests(id)
-	commands, commandErr := a.disarmRemoteCommands(id)
-	work.asks, work.commands = asks, commands
-	if askErr != nil {
-		work.cleanup.asks = fmt.Errorf("disarm requests: %w", askErr)
+// archiveOutcome is what finishArchive could not do, for each door to
+// report in its own terms.
+type archiveOutcome struct {
+	cleanup threadCleanupError
+	workers []workerFailure
+}
+
+// add gathers what the archive of a thread under this one could not do.
+func (o *archiveOutcome) add(child archiveOutcome) {
+	o.cleanup.addBelow(child.cleanup)
+	o.workers = append(o.workers, child.workers...)
+}
+
+// result renders the outcome for the binding. The host log keeps the
+// cleanup's causes.
+func (o archiveOutcome) result(a *App) ArchiveThreadResult {
+	var result ArchiveThreadResult
+	if cause := o.cleanup.Unwrap(); cause != nil {
+		log.Printf("app: archive thread: %v", cause)
+		result.CleanupError = o.cleanup.message()
 	}
-	if commandErr != nil {
-		work.cleanup.commandRecords = fmt.Errorf("list remote commands: %w", commandErr)
+	result.WorkersNotArchived = a.workerFailures(o.workers)
+	return result
+}
+
+// finishArchive stops the work an archive captured, then archives the
+// workers the thread owned when it committed
+// (docs/specs/standing-agents.md, "Owned workers"), here (walkArchive) and
+// on paired computers: the archive's end owes each computer a thread it
+// owns spawned on the archive of that spawn's worker there, which reach
+// says when to deliver (deliverOwnerOps). A worker it could not archive is
+// reported, and the others are still archived.
+func (a *App) finishArchive(work restingThreadWork, reach ownerOpReach) archiveOutcome {
+	outcome, owed := a.walkArchive(work)
+	outcome.workers = append(outcome.workers, a.deliverOwnerOps(owed, nil, reach)...)
+	return outcome
+}
+
+// walkArchive archives the workers here, each through the binding's own
+// path: its locks, its session stop and its disarmed requests, and in turn
+// the workers it owns, down the lineage. Each worker's flip is fenced by
+// its owner's archive (ArchiveOwnedWorker), so a cleanup that runs late
+// leaves alone a worker moved since, and every worker of an owner reopened
+// since. Then the archive ends (endArchiveWalk), returning what it owes the
+// paired computers. A worker's own walk owes what the owner's end owes
+// again, under a newer sequence.
+func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.OwnerOp) {
+	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
+	outcome.cleanup.outcome = "archived"
+	for _, worker := range work.workers {
+		child, err := a.archiveThreadLocked(worker.ThreadID, worker.OwnerID)
+		switch {
+		case errors.Is(err, sql.ErrNoRows), errors.Is(err, store.ErrThreadGone):
+			// Deleted since: there is nothing left to archive.
+		case err != nil:
+			outcome.workers = append(outcome.workers, workerFailure{threadID: worker.ThreadID, err: err})
+		case child.captured:
+			childOutcome, _ := a.walkArchive(child)
+			outcome.add(childOutcome)
+		}
 	}
-	return work
+	// A prompt of a worker the archive left running goes back to the user,
+	// delivered or not; the archived workers' prompts ended with them.
+	a.reroutePromptsFrom(work.threadID)
+	owed, err := a.endArchiveWalk(work.threadID)
+	outcome.cleanup.remoteWorkers = err
+	return outcome, owed
 }
 
-// stopArchivedThreadWork stops exactly the work its archive captured. Both
-// doors that archive (this binding and the agents' thread_update patch)
-// run it, so a thread archived from either one is left in the same state.
-// It runs on the app's lifetime, not its caller's, because the archive is
-// already durable, and outside the locks because reaching the other
-// computer may take a while. It returns everything the archive's cleanup
-// could not do, stopArchivedThreadSession's part included, as one
-// *threadCleanupError.
-func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
-	ctx := a.lifeCtx()
-	work.cleanup.asks = errors.Join(work.cleanup.asks, a.cancelOwnedAsks(ctx, work.threadID, work.asks))
-	undelivered, err := a.cancelRemoteCommands(ctx, work.threadID, work.commands)
-	work.cleanup.commands = undelivered
-	work.cleanup.commandRecords = errors.Join(work.cleanup.commandRecords, err)
-	return work.cleanup.err()
+// archiveThreadLocked archives id under its action lock. ownerID names the
+// owner whose archive this one carries out and fences the flip by it
+// (commitArchive); an archive the fence excludes changes nothing and stops
+// nothing, because the thread is no longer that archive's to stop.
+func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error) {
+	return a.runArchive(id, archiveRequest{ownerID: ownerID})
 }
 
-func newArchivedThreadWork(threadID string) archivedThreadWork {
-	return archivedThreadWork{threadID: threadID, cleanup: threadCleanupError{outcome: "archived"}}
+// archiveRequest is which archive runArchive carries out: a person's or an
+// agent's (the zero value), a worker's for its owner's archive (ownerID),
+// or a worker's for its owner on a paired computer (link).
+type archiveRequest struct {
+	ownerID string
+	link    *linkedArchive
 }
 
-func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
+// linkedArchive is the archive a paired computer's owner sent through the
+// spawn link token from device, as its operation seq.
+type linkedArchive struct {
+	token, device string
+	seq           int64
+}
+
+// errOwnerOpTaken is a linked archive whose operation the link already
+// took: it was admitted before, or a newer one superseded it.
+var errOwnerOpTaken = errors.New("that owner operation was already taken")
+
+// runArchive is the one archive: commit, capture, session stop and the
+// read of the workers its walk goes on to archive. A worker's archive for
+// its owner here that captured nothing stops nothing and walks nothing:
+// the thread is no longer that archive's to stop.
+func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, error) {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
 	// holding it can dispatch a whole turn before this call gets its
 	// turn. stopArchivedThreadSession re-checks against this instant.
 	requestedAt := time.Now().UnixMilli()
+	// The thread starts no work from before its capture until its session
+	// is stopped, so the capture holds all it started (threadRestFence).
+	reopen := a.resting.close(id)
+	defer reopen()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	work, changed, err := a.commitArchive(id)
+	work, changed, err := a.commitArchive(id, req)
 	if err != nil {
-		return archivedThreadWork{}, err
+		return restingThreadWork{}, err
 	}
 	// Broadcast as `unlisted` so a second attached client drops the row
 	// from its sidebar too; re-archiving an already-archived thread
 	// changes nothing and says nothing.
 	a.announceThreadIfChanged(triage.ThreadActionUnlisted, id, changed)
+	if !work.captured && req.ownerID != "" {
+		return work, nil
+	}
+	a.beginArchiveWalk(id)
 	a.stopArchivedThreadSession(&work, requestedAt)
+	a.readArchivedWorkers(&work)
 	return work, nil
 }
 
+// readArchivedWorkers names the workers an archive goes on to archive: the
+// unarchived ones the thread owns, at any depth through workers already
+// archived, whose own archives are not replayed. Its caller holds the
+// thread's action lock, which unarchive takes, after the archive committed
+// and the session stopped, so a thread the owner spawns once reopened is
+// never among them.
+func (a *App) readArchivedWorkers(work *restingThreadWork) {
+	workers, err := a.store.ListOwnedWorkersToArchive(work.threadID)
+	if err != nil {
+		work.cleanup.workers = fmt.Errorf("read the workers of %s: %w", work.threadID, err)
+		return
+	}
+	work.workers = workers
+}
+
 // commitArchive flips the row and, when that changed it, captures the work
-// the archive stops, in one critical section under the mutation lock. The
-// lock is released before the session stops: the teardown's queue drop
-// takes it, and it is not reentrant.
-func (a *App) commitArchive(id string) (archivedThreadWork, bool, error) {
+// the archive stops, in one critical section under the mutation lock. A
+// queue write that holds app messages from an archived thread
+// (registerQueueItem) takes the same lock, so it sees the flip either way
+// round, never between its check and its write. The lock is released
+// before the session stops: the teardown's queue drop takes it, and it is
+// not reentrant. A worker's archive, ownerID set, flips the row only while
+// its owner is archived and still owns it (store.ArchiveOwnedWorker); a
+// linked one only while the link owns it, and once per operation
+// (store.ArchiveLinkedWorker), walking again a worker already archived.
+func (a *App) commitArchive(id string, req archiveRequest) (restingThreadWork, bool, error) {
 	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), id)
 	if err != nil {
-		return archivedThreadWork{}, false, err
+		return restingThreadWork{}, false, err
 	}
 	defer unlock()
-	_, changed, err := a.threadApplication().Archive(id)
-	if err != nil || !changed {
-		return newArchivedThreadWork(id), changed, err
+	var changed bool
+	switch {
+	case req.link != nil:
+		var applied bool
+		_, changed, applied, err = a.threadApplication().ArchiveLinkedWorker(id, req.link.token, req.link.device, req.link.seq)
+		if err == nil && !applied {
+			return restingThreadWork{}, false, errOwnerOpTaken
+		}
+	case req.ownerID == "":
+		_, changed, err = a.threadApplication().Archive(id)
+	default:
+		_, changed, err = a.threadApplication().ArchiveWorker(id, req.ownerID)
 	}
-	return a.captureArchivedThreadWork(id), true, nil
+	if err != nil || !changed {
+		return restingThreadWork{threadID: id}, changed, err
+	}
+	return a.captureRestingThreadWork(id, archiveRest), true, nil
 }
 
 // UnarchiveThread flips archived back to false so the thread reappears in the
@@ -182,6 +284,10 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
+	if changed {
+		// The completions the archive held are the watcher's again.
+		a.nudgeRemoteWatches()
+	}
 	// Broadcast as `listed` so every other attached client puts the row
 	// back in its sidebar, unless it is a never-sent thread the list does
 	// not count yet.
@@ -199,8 +305,8 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 // Killing that turn would be a stale archive stopping work the reader
 // asked for AFTER they archived.
 //
-// The discriminator is the durable turn row's started_at, not the
-// session's activity stamp. A session that was mid-turn when the reader
+// The discriminator is when the newest turn began, from its durable rows
+// (threadTurnStartedAfter), not the session's activity stamp. A session that was mid-turn when the reader
 // archived keeps streaming events, so its activity stamp advances past
 // requestedAt within milliseconds — reading that as "re-engaged" would
 // make archive unable to stop the very sessions it most needs to. A
@@ -217,7 +323,7 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 //
 // What it could not close goes into work.cleanup. A re-engaged session is
 // kept on purpose and is not a failure.
-func (a *App) stopArchivedThreadSession(work *archivedThreadWork, requestedAtMillis int64) {
+func (a *App) stopArchivedThreadSession(work *restingThreadWork, requestedAtMillis int64) {
 	threadID := work.threadID
 	if _, live := a.sessionManager().get(threadID); live {
 		reengaged, err := a.threadTurnStartedAfter(threadID, requestedAtMillis)
@@ -247,17 +353,24 @@ func (a *App) stopArchivedThreadSession(work *archivedThreadWork, requestedAtMil
 }
 
 // threadTurnStartedAfter reports whether the thread's newest turn began
-// after the given instant. One indexed row read; turns are ordered by
-// turn_index, so the newest turn is also the newest start.
+// after the given instant: was asked for then, by the first message written
+// into it, or, with none (a turn the agent started on its own), reported
+// by the provider then. The provider reports a turn some time after its
+// message was written (Claude's init, Codex's turn/started), so a turn the
+// reader asked for before archiving can be reported after; it is not a
+// newer engagement. Two indexed reads; turns are ordered by turn_index, so
+// the newest turn is also the newest start.
 func (a *App) threadTurnStartedAfter(threadID string, sinceMillis int64) (bool, error) {
 	turns, err := a.store.ListRecentTurns(threadID, 1)
 	if err != nil {
 		return false, err
 	}
-	for _, turn := range turns {
-		if turn.StartedAt > sinceMillis {
-			return true, nil
-		}
+	if len(turns) == 0 || turns[0].StartedAt <= sinceMillis {
+		return false, nil
 	}
-	return false, nil
+	asked, found, err := a.store.FirstUserRowOfTurn(threadID, turns[0].TurnIndex)
+	if err != nil {
+		return false, err
+	}
+	return !found || asked > sinceMillis, nil
 }

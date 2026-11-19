@@ -11,6 +11,13 @@
   // protects against an accidentally-spammed Enter key wiping the
   // user's work. The Modal primitive's focus trap looks for the
   // [data-autofocus] attribute Button stamps via its `autofocus` prop.
+  //
+  // An optional destructive alternative (`alternateLabel` with
+  // `onAlternate`) sits between Cancel and Confirm, for a prompt whose
+  // confirm has a stronger variant the user must pick deliberately.
+  //
+  // `confirmDisabled` holds Confirm while the prompt does not yet know what
+  // confirming does; nothing confirms it then.
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
 
@@ -20,8 +27,13 @@
     description,
     confirmLabel = 'Confirm',
     cancelLabel = 'Cancel',
+    confirmDisabled = false,
     destructive = false,
+    alternateLabel,
+    alternateDisabled = false,
+    alternateTitle,
     onConfirm,
+    onAlternate,
     onCancel,
   }: {
     open: boolean;
@@ -29,8 +41,13 @@
     description: string;
     confirmLabel?: string;
     cancelLabel?: string;
+    confirmDisabled?: boolean;
     destructive?: boolean;
+    alternateLabel?: string;
+    alternateDisabled?: boolean;
+    alternateTitle?: string;
     onConfirm: () => void;
+    onAlternate?: () => void;
     onCancel: () => void;
   } = $props();
 
@@ -57,10 +74,16 @@
     >
       {#snippet children()}{cancelLabel}{/snippet}
     </Button>
+    {#if alternateLabel && onAlternate}
+      <Button variant="danger" size="sm" disabled={alternateDisabled} title={alternateTitle} onclick={onAlternate}>
+        {#snippet children()}{alternateLabel}{/snippet}
+      </Button>
+    {/if}
     <Button
       variant={destructive ? 'danger' : 'primary'}
       size="sm"
       autofocus={!destructive}
+      disabled={confirmDisabled}
       onclick={onConfirm}
     >
       {#snippet children()}{confirmLabel}{/snippet}

@@ -202,19 +202,6 @@ export function trimToTailRunes(text: string, maxRunes: number): string {
 }
 
 /**
- * Whether a thread renders the discussion surface (ChannelView) instead
- * of the chat timeline. Shared by ChatView's surface swap,
- * DiscussionView's render gate, and the pane's structural-spring arm
- * skip — the three must agree, or the pane arms a controller that
- * watches channel messages rather than timeline rows.
- */
-export function threadUsesDiscussionSurface(
-  thread: Pick<Thread, 'mode' | 'discussionId'> | null | undefined,
-): boolean {
-  return !!thread && thread.mode === 'discussion' && !!thread.discussionId;
-}
-
-/**
  * The kinds the pane's one user-facing error surface can be carrying,
  * derived from the writers that used to assign its slot directly:
  * `setSessionError` → `'session'`, `setHistoryLoadError` →
@@ -243,11 +230,11 @@ export type LoadUntilItemResult = 'loaded' | 'missing' | 'superseded' | 'failed'
 
 /**
  * Minimal surface a registered scroll controller exposes to the pane.
- * MessageTimeline registers an explicit adapter (its `observe` routes
+ * MessageTimeline registers an explicit adapter: its `observe` routes
  * `'host-layout'` through the listRef-aware retry ladder and it adds the
- * timeline-window anchor transaction); ChannelView registers its raw
- * `useStickToBottom` controller, which satisfies the required members
- * directly.
+ * timeline-window anchor transaction. The optional members are the ones a
+ * controller with no virtualizer behind it cannot provide; callers fall
+ * back when one is absent.
  */
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
@@ -313,8 +300,7 @@ export interface PaneScrollController {
    * opens upward instead of pushing the reader's rows down the page — and
    * without the spring, which would otherwise animate across the whole delta.
    *
-   * Optional for the same reason the anchor transaction is: ChannelView
-   * registers a raw controller with no virtualizer behind it. Go through
+   * Optional for the same reason the anchor transaction is. Go through
    * `withViewportBottomHeld` rather than reaching for it directly.
    */
   preserveViewportBottom?(change: () => void, opts?: PreserveViewportBottomOptions): void;
@@ -324,9 +310,7 @@ export interface PaneScrollController {
    * a bare bottom write would pin the bottom of a stale window). The
    * edit-and-resend flow calls this after a successful saga: the rows the
    * reader was parked against were just destroyed at their own request,
-   * and the resend streams at the new tail. Optional because ChannelView
-   * registers its raw stick controller and no discussion surface runs
-   * that flow.
+   * and the resend streams at the new tail.
    */
   stickToLatest?(): void;
   /** Claim follow before a prepared replacement, without a later snap over its send spring. */
@@ -346,8 +330,8 @@ export interface PaneScrollController {
    * Today that is the row-size priors (`utils/virtual/priors.ts`), which
    * are keyed by scroll-pane width and expansion signature — component
    * state the store cannot see, which is why the store asks rather than
-   * reads. Optional because ChannelView registers a raw controller with no
-   * virtualizer behind it.
+   * reads. Optional because only a virtualizer-backed controller holds
+   * priors.
    */
   persistSizePriors?(): void;
 }

@@ -8,6 +8,7 @@ import { replaceAllThreads } from '../../stores/threads.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
 import { resetDirectSendsForTest, runInterrupt } from '../../stores/threadInterrupt.svelte';
 import { isThreadInterruptPending, resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
@@ -120,6 +121,36 @@ describe('dispatchSend', () => {
       failure,
     );
     expect(consoleErr).toHaveBeenCalled();
+  });
+
+  it('leaves the text to the assistant\'s new thread when the send found its session gone', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    resetToastsForTest();
+    const message = "The provider cleaned up this assistant's session. It continues in a new thread, and your message is waiting in that thread's composer.";
+    setBindingMock('SendMessageWithOptions', async () => {
+      throw new TransportError('assistant_session_gone', message);
+    });
+    const opts = sendOptions();
+
+    expect(await dispatchSend(opts)).toBe(false);
+    expect(opts.restoreDraft).not.toHaveBeenCalled();
+    expect(opts.reportError).not.toHaveBeenCalled();
+    expect(getToasts()).toEqual([expect.objectContaining({ type: 'info', message })]);
+  });
+
+  it('leaves the text to the assistant\'s current thread when a handoff moved the draft it sends', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    resetToastsForTest();
+    const message = 'Your unsent text moved to Ops; send it from there.';
+    setBindingMock('SendMessageWithOptions', async () => {
+      throw new TransportError('assistant_draft_moved', message);
+    });
+    const opts = sendOptions();
+
+    expect(await dispatchSend(opts)).toBe(false);
+    expect(opts.restoreDraft).not.toHaveBeenCalled();
+    expect(opts.reportError).not.toHaveBeenCalled();
+    expect(getToasts()).toEqual([expect.objectContaining({ type: 'info', message })]);
   });
 
   it('restores without an ambiguous-send prompt when draft preparation loses its connection', async () => {
@@ -249,19 +280,6 @@ describe('dispatchSend', () => {
     setBindingMock('SendMessageWithOptions', async () => makeThread({
       isDraft: false,
       importSource: draft.importSource,
-    }));
-    const pin = setBindingMock('PinThread', vi.fn());
-
-    expect(await dispatchSend(sendOptions())).toBe(true);
-    expect(pin).not.toHaveBeenCalled();
-  });
-
-  it('does not auto-pin provider-spawned child drafts', async () => {
-    const draft = makeThread({ isDraft: true, parentThreadId: 'parent-thread' });
-    replaceAllThreads([draft]);
-    setBindingMock('SendMessageWithOptions', async () => makeThread({
-      isDraft: false,
-      parentThreadId: draft.parentThreadId,
     }));
     const pin = setBindingMock('PinThread', vi.fn());
 

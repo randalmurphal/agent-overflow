@@ -1,4 +1,4 @@
-// Every surface that renders a row's or a channel message's markdown resolves
+// Every surface that renders a row's markdown resolves
 // a relative image against the workspace it recorded
 // (`meta.authoredWorkspace`), not the thread's current one: the GetLocalImage
 // call names the recorded workspace.
@@ -11,9 +11,7 @@ import AssistantMessage from './AssistantMessage.svelte';
 import CommandResultRow from './CommandResultRow.svelte';
 import PlanSidebar from './PlanSidebar.svelte';
 import ProposedPlanCard from './ProposedPlanCard.svelte';
-import ChannelView from '../discussion/ChannelView.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { makeChannelMessage, makeChannelStatePayload } from '../../../test/helpers/discussion';
 import { mockLocalImage } from '../../../test/mocks/attachmentTransfer';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
@@ -196,18 +194,6 @@ const surfaces: Surface[] = [
       const pane = await paneWith([plan]);
       pane.setShowPlanSidebar(true);
       render(PlanSidebar, { props: { ctx: makePanelContext(pane, () => {}) } });
-    },
-  },
-  {
-    name: 'ChannelView message',
-    image: 'shots/channel.png',
-    async mount(image, authored) {
-      setBindingMock('GetChannelState', async () => makeChannelStatePayload({ participants: [] }));
-      setBindingMock('GetChannelMessages', async () => [
-        makeChannelMessage({ content: `![shot](${image})`, meta: withAuthored({}, authored) }),
-      ]);
-      const thread = makeThread({ workspacePath: THREAD_WORKSPACE, mode: 'discussion', discussionId: 'channel-1' });
-      render(ChannelView, { props: { pane: await buildPane(thread), channelId: 'channel-1' } });
     },
   },
 ];

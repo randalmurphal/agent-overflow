@@ -1,63 +1,20 @@
 <script lang="ts">
+  // Thread list for a single project: its pending forks, its empty state,
+  // and the list element whose rows SidebarTreeList renders, with the drop
+  // targets only a project's list has (a group takes a thread in, the list
+  // background ungroups one).
   import { pendingForks } from '../../stores/forkPreparation.svelte';
   import ForkPendingRow from './ForkPendingRow.svelte';
   import { projectHasScope } from '../../transport/entityScopes';
-  // Nested thread list for a single project. Builds the discussion tree
-  // (depth ≤ 2) once per render so child status / activity bubbles into
-  // each parent row, then truncates to the project-specific visible
-  // limit (with the active thread always pinned in if it would otherwise
-  // sit below the fold), and finally flattens to a flat list honoring
-  // the per-thread expand/collapse state. Indent comes from the node's
-  // depth (rendered via ThreadRow's `indent` prop). We deliberately do
-  // NOT virtualize — at 50 threads the flat render is 60fps and the
-  // tree-level sort already pushes off-screen rows below the fold.
-
   import type { Thread, ThreadGroup } from '../../types/models';
-  import type { SidebarTreeNode } from '../../utils/sidebarTree';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     shouldOpenProjectThreadInNewPane,
     type ProjectNewThreadHandler,
   } from './projectNewThread';
-  import {
-    collapseThreadList,
-    getCollapsedGroups,
-    getExpandedDiscussions,
-    getThreadListVisibleLimit,
-    isGroupExpanded,
-    setThreadListVisibleLimit,
-    setExpandedDiscussions,
-    toggleDiscussion,
-  } from '../../stores/sidebar.svelte';
-  import {
-    isThreadSelected,
-    toggleThreadSelection,
-  } from '../../stores/threadFilter.svelte';
-  import {
-    getEffectiveThreadStatus,
-  } from '../../stores/threadStatuses.svelte';
-  import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
-  import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
-  import { openThreadIds } from '../../stores/panes.svelte';
-  import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
-  import ThreadGroupRow from './ThreadGroupRow.svelte';
-  import ThreadRow from './ThreadRow.svelte';
-  import ThreadListMoreFooter from './ThreadListMoreFooter.svelte';
-  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
-  import {
-    flattenSidebarThreadTree,
-    nextSidebarThreadRevealLimit,
-    previewSidebarThreads,
-    rollupDisplayStatus,
-    sameSidebarVisibleRows,
-    sameThreadStatusPill,
-    sidebarVisibleRowKey,
-    pruneSidebarDiscussionExpansion,
-  } from '../../utils/sidebarTreeView';
-  import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
-  import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
+  import SidebarTreeList, { type SidebarTreeDrops } from './SidebarTreeList.svelte';
   import {
     canDropThreadInGroup,
     canUngroupDroppedThread,
@@ -70,6 +27,7 @@
   } from './threadGroupActions';
 
   interface Props {
+    /** The project entry this list is. */
     projectId: string;
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
@@ -85,126 +43,19 @@
   // the whole content of an empty project, so it stays and goes inert.
   let newThreadUngranted = $derived(!projectHasScope('threads:operate', projectId));
 
-  // Tree is built per-render: cheap (small N) and lets us reactively
-  // pick up effective live-status changes from the status store and
-  // live-activity ordering from the per-thread activity boxes. Streaming
-  // beats DO wake this derived (activity is sort input); the identity
-  // cutoff on visibleNodes below is what keeps those beats from
-  // reaching the DOM.
-  let tree = $derived(
-    buildSidebarThreadTree({
-      threads: threads.filter(thread => !thread.forkPreparing),
-      groups,
-      statusOf: (thread) => getEffectiveThreadStatus(thread),
-      unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
-      activityOf: (thread) => getThreadLiveActivityAt(thread),
-    }),
-  );
-
-  // Threads mounted in any pane never hide behind the cut. Re-minted only
-  // when a pane opens, closes, or swaps thread.
-  let openIds = $derived(openThreadIds());
-  let visibleLimit = $derived(getThreadListVisibleLimit(projectId));
-
-  // Truncation operates on top-level nodes only — discussion children
-  // are nested under their parent and don't compete for preview slots.
-  let preview = $derived.by(() => {
-    return previewSidebarThreads({
-      nodes: tree,
-      openThreadIds: openIds,
-      limit: visibleLimit,
-    });
-  });
-
-  let hiddenThreadCount = $derived(preview.hiddenNodes.length);
-
-  // Identity cutoff: the rollup object is minted per tree build, so
-  // return the previous one when its content is unchanged — otherwise
-  // every streaming beat re-renders the show-more footer.
-  let prevHiddenStatus: ReturnType<typeof rollupDisplayStatus> = null;
-  let hiddenStatus = $derived.by(() => {
-    const next = rollupDisplayStatus(preview.hiddenNodes);
-    if (
-      prevHiddenStatus !== null && next !== null
-      && prevHiddenStatus.liveStatus === next.liveStatus
-      && sameThreadStatusPill(prevHiddenStatus.pill, next.pill)
-    ) {
-      return prevHiddenStatus;
-    }
-    prevHiddenStatus = next;
-    return next;
-  });
-
-  $effect(() => {
-    setExpandedDiscussions(pruneSidebarDiscussionExpansion({
-      nodes: tree,
-      expandedThreadIds: getExpandedDiscussions(),
-    }));
-  });
-
-  // Identity cutoff: return the PREVIOUS array when nothing the rows
-  // render has changed, so svelte's derived cutoff stops the animated
-  // each-block from reconciling. This is load-bearing for streaming
-  // performance — without it every item-event flush re-ran the FLIP
-  // measure pass (a forced synchronous layout per beat). See
-  // sameSidebarVisibleRows.
-  let prevVisibleNodes: ReturnType<typeof flattenSidebarThreadTree> = [];
-  let visibleNodes = $derived.by(() => {
-    const next = flattenSidebarThreadTree({
-      nodes: preview.visibleNodes,
-      expandedThreadIds: getExpandedDiscussions(),
-      collapsedGroupIds: getCollapsedGroups(),
-      activeThreadId: pane?.threadId ?? null,
-      openThreadIds: openIds,
-      groupVisibleLimit: getThreadListVisibleLimit,
-    });
-    if (sameSidebarVisibleRows(prevVisibleNodes, next)) return prevVisibleNodes;
-    prevVisibleNodes = next;
-    return next;
-  });
-
-  /**
-   * Reveal the next step of a thread list: the project's top level
-   * (`ownerId` = the project) or a group's members (`ownerId` = the group).
-   */
-  function showMore(ownerId: string, nodes: readonly SidebarTreeNode[]): void {
-    setThreadListVisibleLimit(ownerId, nextSidebarThreadRevealLimit({
-      nodes,
-      openThreadIds: openIds,
-      currentLimit: getThreadListVisibleLimit(ownerId),
-      revealCount: THREAD_REVEAL_INCREMENT,
-    }));
-  }
-
-  function showMoreGroup(groupId: string): void {
-    const group = tree.find((node) => node.kind === 'group' && node.group.id === groupId);
-    if (!group) throw new Error(`Show more: group ${groupId} is not in project ${projectId}`);
-    showMore(groupId, group.children);
-  }
-
-  /**
-   * Multi-select row click handler. Shift-click is folded into toggle for
-   * now; Cmd/Ctrl-click is reserved for opening or focusing a pane. A plain
-   * click falls through to thread switch via the row's own switchThread.
-   */
-  function handleSelectClick(
-    threadId: string,
-    modifier: 'toggle' | 'range' | 'single' | null,
-  ): boolean {
-    if (modifier === 'toggle' || modifier === 'range') {
-      toggleThreadSelection(threadId);
-      // Suppress the switchThread fallback so the user's selection click
-      // doesn't ALSO swap the active pane.
-      return true;
-    }
-    return false;
-  }
-
   function handleEmptyNewThreadClick(e: MouseEvent): void {
     if (Date.now() - lastNewThreadContextMenuAt < 500) return;
     onNewThread?.(projectId, {
       openInNewPane: shouldOpenProjectThreadInNewPane(e),
     });
+  }
+
+  function handleEmptyNewThreadContextMenu(e: MouseEvent): void {
+    if (!shouldOpenProjectThreadInNewPane(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    lastNewThreadContextMenuAt = Date.now();
+    onNewThread?.(projectId, { openInNewPane: true });
   }
 
   // ── Drop targets ─────────────────────────────────────────────────────────
@@ -277,6 +128,14 @@
     void moveThreadsToGroupAction([payload.threadId], groupId);
   }
 
+  const drops: SidebarTreeDrops = {
+    memberDragOver,
+    memberDragLeave,
+    memberDrop,
+    groupLit: (groupId) => dropTargetGroupId === groupId && dropTargetAccepts,
+    groupTargetChange: setGroupDropTarget,
+  };
+
   // The list background: the ungroup target.
   function handleContainerDragOver(e: DragEvent): void {
     if (!e.dataTransfer) return;
@@ -311,15 +170,6 @@
     e.preventDefault();
     void removeThreadsFromGroupAction([payload.threadId]);
   }
-
-  function handleEmptyNewThreadContextMenu(e: MouseEvent): void {
-    if (!shouldOpenProjectThreadInNewPane(e)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    lastNewThreadContextMenuAt = Date.now();
-    onNewThread?.(projectId, { openInNewPane: true });
-  }
-
 </script>
 
 {#each threads.filter(thread => thread.forkPreparing) as thread (thread.id)}
@@ -331,6 +181,7 @@
 {/each}
 
 {#if threads.length === 0 && groups.length === 0}
+  <div class="ml-4 flex flex-wrap items-center">
   <button
     type="button"
     onclick={handleEmptyNewThreadClick}
@@ -338,11 +189,12 @@
     disabled={newThreadUngranted}
     title={newThreadUngranted ? 'Not granted to this device' : undefined}
     data-testid="project-thread-list-empty"
-    class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
+    class="mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
   >
     <Icon icon={Plus} size={11} strokeWidth={2.2} class="opacity-80" />
     <span>New Thread</span>
   </button>
+  </div>
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
@@ -357,98 +209,6 @@
     ondrop={handleContainerDrop}
     ondragend={clearDropState}
   >
-    {#each visibleNodes as node (sidebarVisibleRowKey(node))}
-      <!-- role="presentation" keeps the animated wrapper transparent to the
-           list > listitem structure now that the divider shares it. -->
-      <div role="presentation" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
-        {#if node.kind !== 'group-more' && node.startsSection}
-          <div
-            role="separator"
-            aria-hidden="true"
-            data-testid="thread-section-divider"
-            class="mx-2 my-1 border-t border-border-subtle/60"
-          ></div>
-        {/if}
-        {#if node.kind === 'group-more'}
-          <!-- Inside the group's rail and a drop target for the group,
-               like the member rows above it. -->
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            role="listitem"
-            class="border-l border-border-subtle/60 pb-px -mb-px"
-            style:margin-left="{GROUP_RAIL_LEFT_PX}px"
-            ondragover={(e) => memberDragOver(e, node.groupId)}
-            ondragleave={(e) => memberDragLeave(e, node.groupId)}
-            ondrop={(e) => memberDrop(e, node.groupId)}
-          >
-            <ThreadListMoreFooter
-              hiddenCount={node.hiddenCount}
-              hiddenStatus={node.hiddenStatus}
-              canShowLess={node.canShowLess}
-              testIdPrefix="thread-group"
-              onShowMore={() => showMoreGroup(node.groupId)}
-              onShowLess={() => collapseThreadList(node.groupId)}
-            />
-          </div>
-        {:else if node.kind === 'group'}
-          <div role="listitem">
-            <ThreadGroupRow
-              group={node.group}
-              {pane}
-              expanded={isGroupExpanded(node.group.id)}
-              memberThreadIds={node.children.filter((child) => child.kind === 'thread').map((child) => child.thread.id)}
-              dropActive={dropTargetGroupId === node.group.id && dropTargetAccepts}
-              onDropTargetChange={(active, accepts) => setGroupDropTarget(node.group.id, active, accepts)}
-            />
-          </div>
-        {:else}
-          <!--
-            A group member sits behind its own rail, dropped from the centre
-            of the group row's chevron (GROUP_RAIL_LEFT_PX), so "inside the
-            group" is a line and not an
-            indent the eye has to measure. Rows are siblings in one animated list (no
-            wrapper per group), so each member draws its own segment; the
-            1px pad-and-pull-back carries the border across the list's
-            gap-px so the segments join into one line.
-          -->
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            role="listitem"
-            class={node.ownerGroupId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
-            style:margin-left={node.ownerGroupId ? `${GROUP_RAIL_LEFT_PX}px` : null}
-            data-group-member={node.ownerGroupId ? '' : null}
-            ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); }}
-            ondragleave={(e) => { if (node.ownerGroupId) memberDragLeave(e, node.ownerGroupId); }}
-            ondrop={(e) => { if (node.ownerGroupId) memberDrop(e, node.ownerGroupId); }}
-          >
-            <ThreadRow
-              thread={node.thread}
-              {pane}
-              indent={node.depth + 1}
-              inGroup={node.ownerGroupId !== null}
-              pinnable={node.isPinTarget}
-              hasChildren={node.isExpandable}
-              expanded={node.isExpanded}
-              displayLiveStatus={node.displayLiveStatus}
-              displayStatus={node.displayStatus}
-              onToggleExpand={() => toggleDiscussion(node.thread.id)}
-              selected={isThreadSelected(node.thread.id)}
-              onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}
-            />
-          </div>
-        {/if}
-      </div>
-    {/each}
-
-    {#if hiddenThreadCount > 0 || preview.canShowLess}
-      <ThreadListMoreFooter
-        hiddenCount={hiddenThreadCount}
-        {hiddenStatus}
-        canShowLess={preview.canShowLess}
-        testIdPrefix="project-thread-list"
-        onShowMore={() => showMore(projectId, tree)}
-        onShowLess={() => collapseThreadList(projectId)}
-      />
-    {/if}
+    <SidebarTreeList {threads} {groups} listKey={projectId} {pane} {drops} />
   </div>
 {/if}

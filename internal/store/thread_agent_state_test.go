@@ -1,0 +1,130 @@
+package store
+
+import (
+	"fmt"
+	"testing"
+)
+
+// A thread's own state is the one a spawn of it reads (TargetOpen): open
+// work it made, or made at any depth below it, stored or held in memory,
+// remote included, and nothing settled. Its rows are whatever its listing
+// shows, open or settled inside the window.
+func TestThreadAgentStateIsTheOpenStateASpawnOfItReads(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	chain := []string{"root", "a", "b", "c", "d", "e"}
+	for _, id := range append([]string{"lead", "peer"}, chain...) {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "to-root", "lead", ThreadRequestSpawn, "root", false, 100)
+	settleAgentRequest(t, s, "to-root", 200)
+	for i, id := range chain[1:] {
+		token := "to-" + id
+		seedAgentRequest(t, s, token, chain[i], ThreadRequestSpawn, id, false, int64(110+i))
+		settleAgentRequest(t, s, token, int64(210+i))
+	}
+	check := func(what string, waiting, live []string, open, rows bool) {
+		t.Helper()
+		checkBoth(t, s, what, waiting, live, open, open, rows)
+	}
+	check("at rest", nil, nil, false, false)
+
+	for depth, id := range chain {
+		token := fmt.Sprintf("open-%d", depth)
+		seedAgentRequest(t, s, token, id, ThreadRequestSend, "peer", true, int64(300+depth))
+		check(fmt.Sprintf("a send owed an answer %d below", depth), nil, nil, true, true)
+		// Settled, its answer is on its way to the thread that sent it,
+		// which takes a turn for it: that thread is not at rest. For the
+		// thread itself that is its own state, which the spawn of it reads.
+		settleAgentRequestOwed(t, s, token, int64(400+depth))
+		if depth == 0 {
+			checkBoth(t, s, "its answer on its way to the thread", nil, nil, false, true, false)
+		} else {
+			check(fmt.Sprintf("its answer on its way %d below", depth), nil, nil, true, true)
+		}
+		if _, err := s.MarkThreadRequestDelivered(token, ThreadWakeInline, int64(450+depth), false); err != nil {
+			t.Fatal(err)
+		}
+		check(fmt.Sprintf("that send's answer delivered %d below", depth), nil, nil, false, false)
+	}
+	checkRest(t, s, check)
+}
+
+// A send or ask a call is parked on, with no wake armed, is open work of
+// the thread that made it as well as of every spawn above that thread: the
+// thread's own state and its spawn's row agree, a thread no spawn made
+// included, and neither reads it once the call returns.
+func TestAParkedRequestIsOpenWorkOfItsCaller(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "root", "peer"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "to-root", "lead", ThreadRequestSpawn, "root", false, 100)
+	settleAgentRequest(t, s, "to-root", 200)
+	seedAgentRequest(t, s, "parked", "root", ThreadRequestSend, "peer", false, 300)
+	checkBoth(t, s, "a call parked on the thread's own quiet send", []string{"parked"}, nil, true, true, true)
+	checkBoth(t, s, "the call returned", nil, nil, false, false, false)
+
+	seedAgentRequest(t, s, "lead-parked", "lead", ThreadRequestAsk, "peer", false, 400)
+	for _, c := range []struct {
+		waiting []string
+		open    bool
+	}{{[]string{"lead-parked"}, true}, {nil, false}} {
+		state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "lead", Waiting: c.waiting, SettledSince: 10_000})
+		if err != nil || state.OpenBelow != c.open {
+			t.Fatalf("a thread no spawn made, parked on %v: state %+v, %v; want open %v", c.waiting, state, err, c.open)
+		}
+	}
+}
+
+// checkBoth reads root's state and the spawn of it lead made, and wants
+// stateOpen of the one, targetOpen of the other, and rows of the state.
+func checkBoth(t *testing.T, s *Store, what string, waiting, live []string, stateOpen, targetOpen, rows bool) {
+	t.Helper()
+	const window = 10_000
+	state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "root", Waiting: waiting, Live: live, SettledSince: window})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{
+		Root: "lead", Waiting: waiting, Live: live, SettledSince: window, Depth: 4, Limit: 8, Tokens: []string{"to-root"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := len(listed) == 1 && listed[0].TargetOpen
+	if state.OpenBelow != stateOpen || target != targetOpen || state.Rows != rows {
+		t.Fatalf("%s: state %+v, the spawn's target open %v; want open %v and %v, rows %v", what, state, target, stateOpen, targetOpen, rows)
+	}
+}
+
+func checkRest(t *testing.T, s *Store, check func(what string, waiting, live []string, open, rows bool)) {
+	t.Helper()
+	const window = 10_000
+	chain := []string{"root", "a", "b", "c", "d", "e"}
+	// The thread's own liveness is its computer's to read, not the ledger's.
+	for depth, id := range chain[1:] {
+		check(fmt.Sprintf("a live thread %d below", depth+1), nil, []string{id}, true, true)
+	}
+	seedAgentRequest(t, s, "parked", "e", ThreadRequestSend, "peer", false, 500)
+	check("a quiet send no call waits on", nil, nil, false, false)
+	check("a call parked on that send", []string{"parked"}, nil, true, true)
+	settleAgentRequest(t, s, "parked", 510)
+
+	seedAgentRequest(t, s, "far", "d", ThreadRequestSpawn, "", false, 600)
+	mustExec(t, s.db, `UPDATE thread_requests SET target_computer_id = 'pc', target_thread_id = 'far-thread' WHERE token = 'far'`)
+	settleAgentRequest(t, s, "far", 610)
+	check("a remote spawn at rest", nil, nil, false, false)
+	if _, err := s.SetThreadRequestNestedOpen("far", true); err != nil {
+		t.Fatal(err)
+	}
+	check("a remote spawn with open work there", nil, nil, true, true)
+	if _, err := s.SetThreadRequestNestedOpen("far", false); err != nil {
+		t.Fatal(err)
+	}
+
+	seedAgentRequest(t, s, "recent", "root", ThreadRequestSpawn, "", false, 700)
+	settleAgentRequest(t, s, "recent", window+1)
+	check("a spawn settled inside the window", nil, nil, false, true)
+}

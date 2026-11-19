@@ -1,15 +1,12 @@
 // The build's tools, as the upgrade corpus checks use them: the check's
-// sandbox at its fixed root, the harness tools `make harness-build` wrote
-// (the candidate itself is `backendBinary` in update-launcher-helpers.ts),
-// the stamped version, and a read-only query of a database through
-// `ao-harness db`.
-import { execFile } from 'node:child_process';
+// sandbox at its fixed root, the stamped version, and a read-only query of
+// a database through `ao-harness db`. The harness tools themselves are
+// productBinary's (src/product-process.ts).
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
+import { execProduct, productBinary } from '../src/product-process.js';
 import { buildSandbox, type Sandbox } from './update-launcher-helpers.js';
 
-const run = promisify(execFile);
 export const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
 /** The rig root under its parent: fixed, because a corpus archive is relocatable only to the root it was made at. */
@@ -24,11 +21,6 @@ export async function prepareRig(parent: string | undefined): Promise<Sandbox> {
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   return buildSandbox(root);
-}
-
-/** A tool `make harness-build` wrote beside the default candidate (ao-harness, ao-mockprovider, ao-store-test). */
-export function harnessTool(name: string): string {
-  return path.join(repoRoot, 'bin', name);
 }
 
 /** The version `make harness-build` stamps into the candidate. */
@@ -55,7 +47,7 @@ export async function dbQuery<T>(dbPath: string, sql: string, attach?: string | 
   const args = ['-o', 'json', 'db', '--file', dbPath, '--limit', '0'];
   const schemas = typeof attach === 'string' ? { snap: attach } : attach ?? {};
   for (const [name, file] of Object.entries(schemas)) args.push('--attach', `${name}=${file}`);
-  const { stdout } = await run(harnessTool('ao-harness'), [...args, sql], {
+  const { stdout } = await execProduct(productBinary('ao-harness'), [...args, sql], {
     timeout: 10 * 60_000,
     maxBuffer: 256 * 1024 * 1024,
   });

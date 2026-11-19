@@ -43,6 +43,9 @@ const (
 	workWorkflow
 	// workProviderUpdate is a provider CLI update.
 	workProviderUpdate
+	// workAgentWatch is a standing agent's watch script, which runs in its
+	// thread's workspace or a directory the watch names.
+	workAgentWatch
 )
 
 // workKinds is every kind, in the order runningWorkIn probes them. Part of
@@ -61,6 +64,7 @@ var workKinds = []workKind{
 	workRemoteJob,
 	workWorkflow,
 	workProviderUpdate,
+	workAgentWatch,
 }
 
 // String says that work of the kind is running, for a consumer without
@@ -89,6 +93,8 @@ func (k workKind) String() string {
 		return "a workflow is running"
 	case workProviderUpdate:
 		return "a provider CLI update is running"
+	case workAgentWatch:
+		return "an assistant's watch script is running"
 	default:
 		return fmt.Sprintf("work of kind %d is running", int(k))
 	}
@@ -188,6 +194,8 @@ func (a *App) probeThreadWork(kind workKind, threadID string) (int, error) {
 	case workRemoteWatch:
 		pending, err := a.store.HasPendingRemoteWatches(threadID)
 		return boolCount(pending), err
+	case workAgentWatch:
+		return boolCount(len(a.agentWatchDirs(threadID)) > 0), nil
 	default:
 		// The other kinds belong to a directory or to the computer.
 		return 0, nil
@@ -204,6 +212,8 @@ func (a *App) probeDirWork(kind workKind, dir string) (bool, error) {
 		})) > 0, nil
 	case workWorktreeSetup:
 		return a.worktreeSetupService().HasRunningPath(dir), nil
+	case workAgentWatch:
+		return slices.ContainsFunc(a.agentWatchDirs(""), func(running string) bool { return pathWithin(running, dir) }), nil
 	default:
 		// The other kinds belong to a thread or to the computer.
 		return false, nil
@@ -215,7 +225,7 @@ func (a *App) probeComputerWork(kind workKind) (int, error) {
 	case workTurn:
 		// Queues, echoes, open rounds and pending answers are read together
 		// so a handoff cannot look idle between two separate reads.
-		if a.triage.AnyUnfinishedWork(wakeupReapGrace) {
+		if a.triage.AnyUnfinishedWork(a.wakeupReapGrace()) {
 			return 1, nil
 		}
 		for _, sess := range a.sessionManager().snapshot() {
@@ -266,7 +276,10 @@ func (a *App) probeComputerWork(kind workKind) (int, error) {
 		// workAwaitingAnswer is part of the triage read under workTurn. A
 		// setup recipe holds a work admission lease for its whole run, which
 		// the update's quiescence reports before it asks here. A remote
-		// watch is durable and resumes after a restart.
+		// watch is durable and resumes after a restart, and so is an
+		// assistant's watch: the row of an interval run cut short stays
+		// `running` and the next boot runs it again, and a long-running
+		// watch starts afresh (recoverAgentWakesAtBoot).
 		return 0, nil
 	}
 }

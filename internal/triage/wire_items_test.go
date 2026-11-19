@@ -259,7 +259,7 @@ func TestWireItemRefreshAccountingUnderConcurrency(t *testing.T) {
 					router.noteWireItemEmitted("t1", "agent-1", store.UnstampedItemRev)
 				case 3:
 					router.CleanupThread("t1")
-					router.MarkThreadActive("t1")
+					router.MarkThreadActive("t1", "")
 				}
 			}
 		}(i)

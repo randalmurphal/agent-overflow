@@ -47,6 +47,9 @@ type ThreadOrganizeWrite struct {
 	// ungroup. It is ignored when CreateGroup minted the destination.
 	MoveGroup bool
 	GroupID   string
+	// Placement writes nested or standalone after the group move
+	// (SetThreadPlacement's rules); grouped is the group move itself.
+	Placement *string
 	// Pin is the tier to write.
 	Pin *ThreadPinWrite
 	// Archived flips the archive flag.
@@ -62,9 +65,10 @@ type ThreadOrganizeResult struct {
 	Changed bool
 	// ArchivedChanged says the archive flag itself moved.
 	ArchivedChanged bool
-	// Carried are the OTHER rows the group move wrote: the discussion
-	// children that travel with their root.
-	Carried []Thread
+	// Listing is how the write moved the thread across the sidebar
+	// listing: an unarchive, a group move or a placement can list it, and
+	// an archive or an own can take it off.
+	Listing ListingChange
 	// CreatedGroup is the group this write inserted, if any. A destination
 	// that already existed is not announced: every client already has it.
 	CreatedGroup *ThreadGroup
@@ -73,9 +77,9 @@ type ThreadOrganizeResult struct {
 // ApplyThreadOrganize writes a title, a group move, a pin tier and the
 // archive flag as one change.
 //
-// Order is load-bearing rather than incidental: a group move clears the
-// pin of a row that changes group, so the move runs before the pin and a
-// pin in the same write lands inside the new group. Any refusal (a group
+// Order is load-bearing rather than incidental: a group move and a
+// placement change clear the pin of a row that moves, so both run before
+// the pin and a pin in the same write lands inside the new place. Any refusal (a group
 // that is gone, a thread handed to another computer) rolls back
 // everything, including a group this call created.
 func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) (ThreadOrganizeResult, error) {
@@ -91,6 +95,10 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 	before, err := getThreadTx(tx, threadID)
 	if err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: organize thread %s: %w", threadID, err)
+	}
+	listedBefore, err := threadListed(tx, threadID)
+	if err != nil {
+		return ThreadOrganizeResult{}, err
 	}
 	result := ThreadOrganizeResult{Thread: before}
 
@@ -116,18 +124,19 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		groupID = group.ID
 	}
 	if write.MoveGroup {
-		moved, err := setThreadGroupTx(tx, []string{threadID}, groupID)
-		if err != nil {
+		if err := setThreadGroupTx(tx, []string{threadID}, groupID); err != nil {
 			return ThreadOrganizeResult{}, err
-		}
-		for _, row := range moved {
-			if row.ID != threadID {
-				result.Carried = append(result.Carried, row)
-			}
 		}
 		if groupID != before.GroupID {
 			result.Changed = true
 		}
+	}
+	if write.Placement != nil {
+		changed, err := setThreadPlacementTx(tx, threadID, *write.Placement)
+		if err != nil {
+			return ThreadOrganizeResult{}, err
+		}
+		result.Changed = result.Changed || changed
 	}
 	if write.Pin != nil {
 		changed, err := applyThreadPinTx(tx, threadID, *write.Pin)
@@ -137,7 +146,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		result.Changed = result.Changed || changed
 	}
 	if write.Archived != nil {
-		_, changed, err := applyThreadRowWriteTx(tx, threadArchivedWrite(threadID, *write.Archived))
+		_, changed, err := setThreadArchivedTx(tx, threadID, *write.Archived, workerFence{})
 		if err != nil {
 			return ThreadOrganizeResult{}, err
 		}
@@ -151,6 +160,11 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 			return ThreadOrganizeResult{}, fmt.Errorf("store: read back organized thread %s: %w", threadID, err)
 		}
 		result.Thread = current
+		listedAfter, err := threadListed(tx, threadID)
+		if err != nil {
+			return ThreadOrganizeResult{}, err
+		}
+		result.Listing = listingChange(listedBefore, listedAfter)
 	}
 	if err := tx.Commit(); err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: commit organize thread %s: %w", threadID, err)

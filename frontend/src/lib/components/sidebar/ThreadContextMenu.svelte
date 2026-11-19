@@ -20,6 +20,8 @@
   import Popover from '../primitives/Popover.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import Menu from '../primitives/Menu.svelte';
+  import { openAssistantProjectsDialog } from '../../stores/newAssistant.svelte';
+  import { openPreviousThreadsDialog } from '../../stores/assistantPastThreads.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
@@ -28,16 +30,19 @@
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
+    deleteThreadsAction,
     forkThreadAction,
     transferThreadAction,
     markThreadUnreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
+    nextAssistantThreadAction,
     pinThreadAction,
     setThreadPinGroupAction,
     unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
+  import { isStandingAgent } from '../../utils/sidebarTree';
   import {
     applyThreadImportUpdatesAction,
     checkThreadImportUpdatesAction,
@@ -49,17 +54,13 @@
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
-  import {
-    TerminalsClosingNote,
-    terminalsClosingNoteForThreadDelete,
-    withTerminalsNote,
-  } from '../../stores/worktreeRemoval.svelte';
   import { getThreadGroupsForProject } from '../../stores/threadGroups.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import {
     createThreadGroupAndMoveAction,
     moveThreadsToGroupAction,
     removeThreadsFromGroupAction,
+    setThreadPlacementAction,
   } from './threadGroupActions';
   import { providerSupports } from '../../providers/catalog';
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
@@ -68,6 +69,12 @@
   import { hasScope } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
   import { canOfferConversationTransfer } from '../../stores/conversationTransfers.svelte';
+  import {
+    ThreadDeleteNote,
+    confirmsThreadDelete,
+    threadDeleteTitle,
+    withDeleteNote,
+  } from '../../stores/assistants.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
 
   interface Props {
@@ -82,6 +89,8 @@
     /** Whether the row is currently the pane's active thread. Delete
      *  clears the pane when true. */
     isActive: boolean;
+    /** A standing agent's own row: no group items. */
+    agentBound?: boolean;
   }
 
   let {
@@ -92,14 +101,27 @@
     onClose,
     onRename,
     isActive,
+    agentBound = false,
   }: Props = $props();
 
   let showDeleteConfirm = $state(false);
   let showArchiveConfirm = $state(false);
   let showBulkDeleteConfirm = $state(false);
-  // Deleting a thread on a worktree removes it; the confirmation says which
-  // terminals that closes.
-  const deleteTerminalsNote = new TerminalsClosingNote();
+
+  // ── Assistant ────────────────────────────────────────────────────────────
+  //
+  // An assistant's current thread offers New Thread, Same Assistant, its
+  // projects, its previous threads and its loops and watches; its delete is
+  // always confirmed and the confirm names its home folder and what is
+  // removed with it.
+  let isAgent = $derived(isStandingAgent(thread));
+
+  async function openLoopsAndWatches(): Promise<void> {
+    onClose();
+    const target = pane ? await openThreadFromNavigation(thread, pane) : await openThreadFromNavigation(thread);
+    target.setActivityRailBackgroundOpen(true);
+  }
+  const deleteNote = new ThreadDeleteNote();
   // Provider-update check: in flight while the backend reads the session
   // file (it builds the rows a refresh WOULD write, so it is a real read of
   // a possibly-large transcript, not an instant stat), then the plan it
@@ -165,10 +187,6 @@
     Boolean(pendingUpdate?.restoresModelProfile) && (pendingUpdate?.newItems ?? 0) === 0,
   );
 
-  // Discussion children (threads with a parentThreadId) cannot be
-  // deleted in isolation — the parent thread owns the subtree's
-  // lifecycle.
-  let canDelete = $derived(!thread.parentThreadId);
   let canArchive = $derived(thread.mode !== 'terminal');
   let isPinned = $derived(thread.pinnedAt != null);
   let isBackBurner = $derived(isPinned && thread.pinGroup === PIN_GROUP_BACK);
@@ -190,6 +208,8 @@
       : !threadHasScope('threads:operate', thread.id, thread.projectId),
   );
   let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
+  // StartNextAssistantThread and SetAssistantProjects ride threads:autonomy.
+  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
 
   /**
    * Run an async per-thread action across the selection sequentially —
@@ -204,6 +224,17 @@
    * `reportError` given here, which counts it; the walk shows one
    * aggregate toast at the end.
    */
+  /**
+   * Delete the selection as one delete per computer (deleteThreadsAction).
+   * Selection is cleared once every computer's delete went through. A
+   * failure is a toast, as runBulk's is: the menu's pane may show a thread
+   * the delete just removed.
+   */
+  async function deleteSelected(): Promise<void> {
+    const complete = await deleteThreadsAction(selectedThreads.slice(), (msg, err) => addErrorToast(msg, err));
+    if (complete) clearThreadSelection();
+  }
+
   async function runBulk(
     action: (perThreadCtx: ThreadActionCtx) => Promise<void>,
   ): Promise<void> {
@@ -245,8 +276,8 @@
 
   // Single-row Delete gate. Mirrors ThreadRow's `handleDelete` (the
   // terminal row-X): honor the global confirmDelete setting — off →
-  // delete immediately, on → confirm first. Bulk delete (runBulk via
-  // showBulkDeleteConfirm) keeps its own always-on confirm; a
+  // delete immediately, on → confirm first. Bulk delete (deleteSelected
+  // via showBulkDeleteConfirm) keeps its own always-on confirm; a
   // multi-thread delete is a higher-stakes action.
   /**
    * The check reads the source transcript, which on a large session is not
@@ -268,9 +299,9 @@
 
   function handleDelete(): void {
     onClose();
-    if (getSettings().confirmDelete) {
+    if (confirmsThreadDelete([thread])) {
       showDeleteConfirm = true;
-      deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
+      deleteNote.load([thread]);
     } else {
       void deleteThreadAction(ctx());
     }
@@ -289,10 +320,6 @@
 
   // ── Groups ───────────────────────────────────────────────────────────────
   //
-  // Only a TOP-LEVEL row can move: a discussion tree joins a group as a unit
-  // (the backend moves children with their root), so offering the items on a
-  // child would promise a move it cannot make.
-  //
   // Bulk moves need one project, because a group belongs to one — the store
   // would refuse the cross-project half of the call and roll the rest back.
   let bulkProjectId = $derived.by(() => {
@@ -307,22 +334,22 @@
     return shared ?? '';
   });
   let groupProjectId = $derived(inBulkContext ? bulkProjectId : (thread.projectId ?? ''));
-  // Children are dropped from a bulk move rather than travelling with it:
-  // they already follow their root, and a selection of nothing but children
-  // has no move to offer.
-  let moveTargetIds = $derived.by(() => {
-    if (!inBulkContext) return thread.parentThreadId ? [] : [thread.id];
-    return selectedThreads.filter((t) => !t.parentThreadId).map((t) => t.id);
-  });
+  let moveTargetIds = $derived(inBulkContext ? selectedThreads.map((t) => t.id) : [thread.id]);
   // Ungroup writes only the rows that are IN a group; passing the rest would
   // spend a round trip per row to change nothing.
   let removeTargetIds = $derived.by(() => {
     if (!inBulkContext) return thread.groupId ? moveTargetIds : [];
     return selectedThreads
-      .filter((t) => !t.parentThreadId && t.groupId)
+      .filter((t) => t.groupId)
       .map((t) => t.id);
   });
-  let canMoveToGroup = $derived(Boolean(groupProjectId) && moveTargetIds.length > 0);
+  // A standing agent's own row never joins a group; a bulk selection
+  // holding one has no group move either.
+  let bulkAgentBound = $derived(inBulkContext && selectedThreads.some((t) => isStandingAgent(t)));
+  let canMoveToGroup = $derived(
+    Boolean(groupProjectId) && moveTargetIds.length > 0
+      && !(inBulkContext ? bulkAgentBound : agentBound),
+  );
   let currentGroupId = $derived(inBulkContext ? '' : (thread.groupId ?? ''));
   let canRemoveFromGroup = $derived(canMoveToGroup && removeTargetIds.length > 0);
   // Sorted by name so the submenu reads as a list the user curated, not as
@@ -332,6 +359,18 @@
     return [...getThreadGroupsForProject(groupProjectId)]
       .sort((a, b) => a.name.localeCompare(b.name));
   });
+
+  // ── Placement ────────────────────────────────────────────────────────────
+  //
+  // A thread another thread spawned into a project, on this computer or a
+  // paired one, is that thread's worker; it has a row here because it was
+  // placed standalone or in a group (docs/specs/standing-agents.md ruling
+  // 36). Remove from Sidebar makes it owned again, out of any group. The
+  // backend refuses a thread no thread spawned as its worker and one
+  // outside every project.
+  let canRemoveFromSidebar = $derived(
+    !isAgent && Boolean(thread.spawnedByThreadId || thread.spawnedByComputerId) && Boolean(thread.projectId),
+  );
 
   // The project is expanded first for the same reason the project header
   // does it: the new group's row opens inline rename, and a row inside a
@@ -433,8 +472,7 @@
             onSelect={() => {
               onClose();
               showBulkDeleteConfirm = true;
-              const targets = selectedThreads.slice();
-              deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete(targets));
+              deleteNote.load(selectedThreads.slice());
             }}
           />
         {:else}
@@ -454,6 +492,37 @@
               onRename();
             }}
           />
+          {#if isAgent}
+            <MenuItem
+              label="New Thread, Same Assistant"
+              disabled={nextThreadUngranted}
+              title={nextThreadUngranted ? 'Not granted to this device' : undefined}
+              onSelect={() => {
+                onClose();
+                void nextAssistantThreadAction(ctx());
+              }}
+            />
+            <MenuItem
+              label="Projects…"
+              disabled={nextThreadUngranted}
+              title={nextThreadUngranted ? 'Not granted to this device' : undefined}
+              onSelect={() => {
+                onClose();
+                openAssistantProjectsDialog(thread);
+              }}
+            />
+            <MenuItem
+              label="Previous Threads…"
+              onSelect={() => {
+                onClose();
+                openPreviousThreadsDialog(thread, pane);
+              }}
+            />
+            <MenuItem
+              label="Loops and Watches"
+              onSelect={() => void openLoopsAndWatches()}
+            />
+          {/if}
           {#if canFork}
             <MenuItem
               label="Fork Thread"
@@ -505,7 +574,20 @@
               }}
             />
           {/if}
-          {#if isPinned}
+          {#if canRemoveFromSidebar}
+            <MenuItem
+              label="Remove from Sidebar"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void setThreadPlacementAction([thread.id], 'owned');
+              }}
+            />
+          {/if}
+          {#if isAgent}
+            <!-- An assistant's row ignores its thread's pin. -->
+          {:else if isPinned}
             <MenuItem
               label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
               disabled={operateUngranted}
@@ -552,9 +634,7 @@
               void copyThreadIdAction(ctx());
             }}
           />
-          {#if canArchive || canDelete}
-            <MenuDivider />
-          {/if}
+          <MenuDivider />
           <!-- The row's hover Archive is unreachable without a pointer, so
                the menu carries it too. Terminals are not archivable. -->
           {#if canArchive}
@@ -565,15 +645,13 @@
               onSelect={handleArchive}
             />
           {/if}
-          {#if canDelete}
-            <MenuItem
-              label="Delete"
-              variant="danger"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={handleDelete}
-            />
-          {/if}
+          <MenuItem
+            label="Delete"
+            variant="danger"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
+            onSelect={handleDelete}
+          />
         {/if}
       {/snippet}
     </Menu>
@@ -582,21 +660,22 @@
 
 <ConfirmDialog
   open={showDeleteConfirm}
-  title="Delete Thread"
-  description={withTerminalsNote(
+  title={threadDeleteTitle(thread)}
+  description={withDeleteNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
-    deleteTerminalsNote.note,
+    deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={() => {
     showDeleteConfirm = false;
-    deleteTerminalsNote.clear();
+    deleteNote.clear();
     void deleteThreadAction(ctx());
   }}
   onCancel={() => {
     showDeleteConfirm = false;
-    deleteTerminalsNote.clear();
+    deleteNote.clear();
   }}
 />
 
@@ -633,19 +712,20 @@
 <ConfirmDialog
   open={showBulkDeleteConfirm}
   title={`Delete ${selectedIds.size} Threads`}
-  description={withTerminalsNote(
+  description={withDeleteNote(
     `This will permanently delete ${selectedIds.size} threads and all their messages. This action cannot be undone.`,
-    deleteTerminalsNote.note,
+    deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={() => {
     showBulkDeleteConfirm = false;
-    deleteTerminalsNote.clear();
-    void runBulk(deleteThreadAction);
+    deleteNote.clear();
+    void deleteSelected();
   }}
   onCancel={() => {
     showBulkDeleteConfirm = false;
-    deleteTerminalsNote.clear();
+    deleteNote.clear();
   }}
 />

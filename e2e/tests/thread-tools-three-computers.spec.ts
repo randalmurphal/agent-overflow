@@ -2,14 +2,22 @@
 // backends with their own stores, settings and mock providers.
 //
 // Coverage: `thread_search`'s `computers` filter narrowing a fan-out to one
-// named computer, and a paired computer that is down contributing an
-// `errors` row beside the computers that did answer instead of failing the
-// call. Spec: docs/specs/agent-thread-tools.md ("Addressing threads and
-// computers", `thread_search`).
-import { test, expect } from '@playwright/test';
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+// named computer; the Agents segment nesting a spawn two computers away (a
+// spawn on the studio whose own spawn runs on the bench) and a Stop on the
+// first row cascading through both; and a paired computer that is down
+// contributing an `errors` row beside the computers that did answer instead
+// of failing the call. Workers owned two computers away, on desktop and
+// compact layouts: each nested row's Show in Sidebar places its worker on
+// the computer holding it, Remove from Sidebar takes it back, and archiving
+// the lead archives the studio worker and, through it, the bench worker.
+// Specs: docs/specs/agent-thread-tools.md ("Addressing threads and
+// computers", `thread_search`), docs/specs/standing-agents.md ("Agents
+// segment", "Owned workers").
+import { test, expect, devices, type Page } from '@playwright/test';
+import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
-import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { backgroundShellSteps } from './agents-tray-helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -20,6 +28,8 @@ let studio: HarnessApp;
 let bench: HarnessApp | undefined;
 let studioID = '';
 let benchID = '';
+// The bench as the studio knows it: the studio's spawns reach it too.
+let studioBenchID = '';
 
 /** Own-device enrollment, the pairing the thread tools require. */
 async function pair(host: HarnessApp, peer: HarnessApp, name: string): Promise<string> {
@@ -48,6 +58,7 @@ test.beforeAll(async () => {
   bench = await launchHarness();
   studioID = await pair(home, studio, 'Studio computer');
   benchID = await pair(home, bench, 'Bench computer');
+  studioBenchID = await pair(studio, bench, 'Bench computer');
   expect(studioID).not.toBe(benchID);
 });
 
@@ -217,6 +228,225 @@ test('computers narrows a search to the one computer it names', async () => {
 });
 
 // Last: this test takes the bench computer down for good.
+test('the Agents segment nests a spawn two computers away and its Stop cascades through both', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(30_000);
+  const lead = await seed(home, 'three-agents-lead', 'Two hop lead');
+  const [child, grand] = [
+    (await studio.rpc<{ projects: SeededProject[] }>('HarnessSeed', { projects: [{ name: 'three-agents-child', repo: {}, threads: [] }] })).projects[0],
+    (await bench!.rpc<{ projects: SeededProject[] }>('HarnessSeed', { projects: [{ name: 'three-agents-grand', repo: {}, threads: [] }] })).projects[0],
+  ];
+  await studio.rpc('UpdateNewThreadDefaults', {
+    projectId: child.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await bench!.rpc('UpdateNewThreadDefaults', {
+    projectId: grand.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await setScenario(home, lead.path, threadToolsScenario({
+    name: 'three-agents-lead', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it on the studio.', title: 'Studio child', computer_id: studioID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it on the studio.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  // The studio's child spawns on the bench, starts a shell and holds.
+  await setScenario(studio, child.path, threadToolsScenario({
+    name: 'three-agents-child', provider: 'claude',
+    turns: [
+      { steps: [
+        { call: {
+          tool: 'thread_spawn',
+          args: { prompt: 'Package it on the bench.', title: 'Bench grandchild', computer_id: studioBenchID, project_id: grand.projectId, notify: true },
+          timeoutMs: 120_000,
+        } },
+        ...backgroundShellSteps('claude'),
+        { gate: 'two-hop-child-hold' },
+      ], text: 'Built.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(bench!, grand.path, threadToolsScenario({
+    name: 'three-agents-grand', provider: 'claude',
+    turns: [{ steps: [{ gate: 'two-hop-grand-hold' }, { approval: {
+      toolName: 'Bash', input: { command: 'make package' }, onAllow: [], onDeny: [],
+    } }], text: 'Packaged.' }, { text: 'Noted.' }],
+  }));
+
+  await home.rpc('StartSession', lead.threadIds[0]);
+  await home.rpc('SendMessage', lead.threadIds[0], 'build it two computers away', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  expect(nested.isError, nested.text).toBe(false);
+  await awaitGate(studio, 'two-hop-child-hold', child.path);
+  const heldGrand = await awaitGate(bench!, 'two-hop-grand-hold', grand.path);
+
+  await home.open(page);
+  await page.getByTestId('thread-row-title').getByText('Two hop lead', { exact: true }).click();
+  await page.getByTestId('activity-rail-agents-toggle').filter({ visible: true }).click();
+  const body = page.getByTestId('activity-rail-agents-body').filter({ visible: true });
+  const row = (token: string) => body.locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
+  const childRow = row(spawn.value!.token);
+  const grandRow = row(nested.value!.token);
+  await expect(childRow.getByTestId('agent-tray-row-computer')).toHaveText('on Studio computer');
+  await expect(childRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow).toHaveAttribute('data-depth', '1');
+  await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Bench grandchild');
+  await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on Bench computer');
+  await advanceGate(bench!, heldGrand.mockId, 'two-hop-grand-hold');
+  await expect(grandRow.getByTestId('agent-tray-row-state')).toHaveText('blocked');
+  await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('running');
+  await body.screenshot({ path: test.info().outputPath('agents-two-hop-nested.png'), animations: 'disabled' });
+
+  const childInterrupted = studio.waitForEvent<HarnessMockEventData>(
+    'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);
+  const grandInterrupted = bench!.waitForEvent<HarnessMockEventData>(
+    'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
+  // The cascade disarms the child's own spawn there: the person stopped
+  // the child's work, so the child takes no new turn for it.
+  const childWoken = studio.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
+    30_000).then(() => true, () => false);
+  await childRow.getByTestId('agent-tray-row-stop').click();
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Studio child' }))
+    .toHaveText('Stopped Studio child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
+  await childInterrupted;
+  await grandInterrupted;
+  await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
+  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+});
+
+/** A thread on the computer that holds it: its placement and archive state, null once it is gone. */
+async function heldThere(app: HarnessApp, id: string): Promise<{ placement: string; archived: boolean } | null> {
+  try {
+    const row = await app.rpc<{ placement?: string; archived: boolean }>('GetThread', id);
+    return { placement: row.placement ?? '', archived: row.archived };
+  } catch (err) {
+    if (String(err).startsWith('Error: not_found:')) return null;
+    throw err;
+  }
+}
+
+const sidebarRow = (view: Page, id: string) => view.locator(`[data-sidebar-thread-id="${id}"]`);
+
+/** Picks an item of a sidebar row's menu: a right click, or the row's menu button under compact. */
+async function rowMenuItem(view: Page, layout: 'desktop' | 'compact', id: string, label: string): Promise<void> {
+  if (layout === 'desktop') await sidebarRow(view, id).click({ button: 'right' });
+  else await view.locator('[data-testid="thread-row-shell"]', { has: sidebarRow(view, id) }).getByTestId('thread-row-menu').tap();
+  const item = view.locator('[data-popover]').getByRole('menuitem', { name: label, exact: true });
+  if (layout === 'desktop') await item.click();
+  else await item.tap();
+}
+
+test('workers two computers away are placed on their own computers, and archiving the lead archives both', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  await home.rpc('UpdateSettings', { confirmArchive: false });
+  const lead = await seed(home, 'three-owned-lead', 'Owning lead');
+  const [child, grand] = [
+    (await studio.rpc<{ projects: SeededProject[] }>('HarnessSeed', { projects: [{ name: 'three-owned-child', repo: {}, threads: [] }] })).projects[0],
+    (await bench!.rpc<{ projects: SeededProject[] }>('HarnessSeed', { projects: [{ name: 'three-owned-grand', repo: {}, threads: [] }] })).projects[0],
+  ];
+  await setScenario(home, lead.path, threadToolsScenario({
+    name: 'three-owned-lead', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it on the studio.', title: 'Owned studio child', computer_id: studioID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it on the studio.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(studio, child.path, threadToolsScenario({
+    name: 'three-owned-child', provider: 'claude',
+    turns: [
+      { steps: [
+        { call: {
+          tool: 'thread_spawn',
+          args: { prompt: 'Package it on the bench.', title: 'Owned bench grandchild', computer_id: studioBenchID, project_id: grand.projectId, notify: true },
+          timeoutMs: 120_000,
+        } },
+        { gate: 'owned-child-hold' },
+      ], text: 'Built.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(bench!, grand.path, threadToolsScenario({
+    name: 'three-owned-grand', provider: 'claude',
+    turns: [{ steps: [{ gate: 'owned-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
+  }));
+
+  await home.rpc('StartSession', lead.threadIds[0]);
+  await home.rpc('SendMessage', lead.threadIds[0], 'build it two computers away, owned', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  expect(nested.isError, nested.text).toBe(false);
+  await awaitGate(studio, 'owned-child-hold', child.path);
+  await awaitGate(bench!, 'owned-grand-hold', grand.path);
+  const childID = spawn.value!.thread_id;
+  const grandID = nested.value!.thread_id;
+  expect(await heldThere(studio, childID)).toEqual({ placement: 'owned', archived: false });
+  expect(await heldThere(bench!, grandID)).toEqual({ placement: 'owned', archived: false });
+
+  // Under either layout, each nested row's Show in Sidebar places that
+  // worker on the computer holding it, and Remove from Sidebar takes it
+  // back.
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    const phone = await phoneContext.newPage();
+    for (const [view, layout] of [[page, 'desktop'], [phone, 'compact']] as const) {
+      await home.open(view);
+      const leadRow = view.locator(`[data-testid="sidebar-projects-section"] [data-sidebar-thread-id="${lead.threadIds[0]}"]`);
+      const toggle = view.getByTestId('activity-rail-agents-toggle').filter({ visible: true });
+      if (layout === 'desktop') {
+        await leadRow.click();
+        await toggle.click();
+      } else {
+        await leadRow.tap();
+        await toggle.tap();
+      }
+      const body = view.getByTestId('activity-rail-agents-body').filter({ visible: true });
+      const row = (token: string) => body.locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
+      const childRow = row(spawn.value!.token);
+      const grandRow = row(nested.value!.token);
+      await expect(childRow.getByTestId('agent-tray-row-computer')).toHaveText('on Studio computer');
+      await expect(grandRow).toHaveAttribute('data-depth', '1');
+      await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on Bench computer');
+      for (const [workerRow, app, id] of [[grandRow, bench!, grandID], [childRow, studio, childID]] as const) {
+        const show = workerRow.getByTestId('agent-tray-row-show-in-sidebar');
+        if (layout === 'desktop') await show.click();
+        else await show.tap();
+        await expect.poll(async () => (await heldThere(app, id))?.placement).toBe('standalone');
+        await expect(show).toHaveCount(0);
+      }
+      if (layout === 'compact') await view.getByTestId('compact-back').tap();
+      for (const [app, id] of [[bench!, grandID], [studio, childID]] as const) {
+        await expect(sidebarRow(view, id)).toBeVisible();
+        await rowMenuItem(view, layout, id, 'Remove from Sidebar');
+        await expect.poll(async () => (await heldThere(app, id))?.placement).toBe('owned');
+        await expect(sidebarRow(view, id)).toHaveCount(0);
+      }
+    }
+  } finally {
+    await phoneContext.close();
+  }
+
+  // Archiving the lead archives its worker on the studio and, through it,
+  // the worker that one spawned on the bench.
+  await rowMenuItem(page, 'desktop', lead.threadIds[0], 'Archive Thread');
+  await expect.poll(async () => (await heldThere(studio, childID))?.archived, { timeout: 90_000 }).toBe(true);
+  await expect.poll(async () => (await heldThere(bench!, grandID))?.archived, { timeout: 90_000 }).toBe(true);
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Owned studio child' })).toHaveCount(0);
+});
+
 test('a paired computer that is down becomes an errors row beside the live rows', async () => {
   test.setTimeout(120_000);
   // Its own caller thread: a scenario rule is read when a mock starts, so

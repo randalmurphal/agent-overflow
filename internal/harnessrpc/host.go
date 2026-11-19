@@ -52,6 +52,12 @@ type Host interface {
 	CreateProject(path string) (store.Project, error)
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error
+	// MakeAssistant makes a thread an assistant's current thread, with its
+	// record and home, as New Assistant does, without the opening message.
+	// The thread moves into the home, out of its project, group and
+	// worktree, and the assistant serves the project it came from. A name
+	// another assistant holds is refused before the thread moves.
+	MakeAssistant(threadID string) (store.StandingAgent, error)
 	// BroadcastThreadRow re-reads one thread and emits it to connected
 	// clients, as `listed` when the row now belongs in the sidebar. The
 	// seeder writes history behind the store, which changes derived row
@@ -59,7 +65,16 @@ type Host interface {
 	// either.
 	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
+	// AwaitSessionEndWork waits for the work stopped sessions set off (a
+	// request a stop settled, the wake that answer owes another thread, and
+	// the session that wake starts) and returns the threads with a live
+	// session afterwards.
+	AwaitSessionEndWork() []string
 	DeleteProject(projectID string) error
+	// DeleteThread deletes a thread as the sidebar's Delete does: an
+	// assistant's current thread takes the assistant, its past threads,
+	// its helpers and its home with it.
+	DeleteThread(threadID string) error
 	RecoverCrashedTurns() error
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error
@@ -108,6 +123,16 @@ type Host interface {
 	// recorder, which is every shipping one.
 	PushSent() []PushMessage
 	ForgetPushSent()
+	// UpdateWorkReason is the production update admission check: what a
+	// service update or restart would wait for now, "" when nothing.
+	UpdateWorkReason() (string, error)
+	// StallProviderEvents queues a handler that holds the thread's
+	// provider event worker until ReleaseProviderEvents, and
+	// PendingProviderEvents counts the thread's queued events not handled
+	// yet, the stall included.
+	StallProviderEvents(threadID string) error
+	ReleaseProviderEvents(threadID string) error
+	PendingProviderEvents(threadID string) int
 	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
 	// boot without one. RequestClaudeUsageReading asks for a reading of the
 	// selected Claude account without waiting for it.

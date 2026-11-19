@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // TestMethodsGen_InSync regenerates methods_gen.go into a tempfile and
@@ -24,7 +26,7 @@ func TestMethodsGen_InSync(t *testing.T) {
 		t.Skip("methodgen integrity test runs on POSIX CI")
 	}
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := reporoot.Dir(t)
 
 	tempDir := t.TempDir()
 	tempOut := filepath.Join(tempDir, "methods_gen.go")
@@ -197,27 +199,4 @@ func observeGeneratorInputs(t *testing.T, manifest string) {
 		}
 		_ = f.Close()
 	}
-}
-
-// findRepoRoot walks up from the test binary's location until it
-// finds go.mod. Tests run from internal/transport/, so we expect to
-// find go.mod two levels up.
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 8; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	t.Fatal("could not locate repo root (no go.mod above test cwd)")
-	return ""
 }

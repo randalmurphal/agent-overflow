@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/accountswitch"
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/assetwatch"
@@ -19,7 +20,6 @@ import (
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexthread"
 	"agent-overflow/internal/dictation"
-	"agent-overflow/internal/discussionapp"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitapp"
@@ -111,6 +111,12 @@ type App struct {
 	// ordered queue its moments dispatch on, and the small edge state the
 	// pure mapping is handed. See app_notification_mapping.go.
 	notifications notificationDispatch
+	// workerPrompts routes the prompts of a spawned thread to its spawner
+	// (app_worker_prompts.go).
+	workerPrompts workerPrompts
+	// resting holds the threads being brought to rest, which take no
+	// app-written message and start no work meanwhile (app_thread_rest_fence.go).
+	resting threadRestFence
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
 	// owner reads. Its own queue because a send to Google can hang for its
@@ -158,7 +164,7 @@ type App struct {
 	settings       *settings.Service
 	triage         *triage.Router
 	// workflowApp owns persisted agent-facing workflow reads, wake/event
-	// coordination, and the engine/scheduler/autoresume application runtime.
+	// coordination, and the engine/autoresume application runtime.
 	workflowAppOnce sync.Once
 	workflowApp     *workflowapp.Service
 	// themeWatcher watches <configDir>/themes so an agent (or a text
@@ -188,11 +194,6 @@ type App struct {
 	// onEvent callback to its handling, one FIFO per thread, so triage
 	// never runs on a provider read loop (app_provider_event_queue.go).
 	providerEvents providerEventQueues
-	// discussionApp owns definition/channel services and every process-local
-	// deliberation ward. Session lifecycle remains on App behind its narrow
-	// ParticipantRuntime adapter.
-	discussionAppOnce sync.Once
-	discussionApp     *discussionapp.Service
 	// browser owns the built-in provider-neutral browser and its MCP bridge.
 	browser appBrowserState
 	// backends is the set of OTHER machines this installation has
@@ -212,16 +213,64 @@ type App struct {
 	// threadMCP owns the ao-thread-tools server and the threadtools
 	// contract bound to this app. Zero value ready; built on first use.
 	threadMCP appThreadMCP
+	// workflowMCP is ao-workflow-tools (app_workflow_tools_mcp.go).
+	workflowMCP appWorkflowMCP
 	// threadRequests holds the agent thread-request ledger's in-process
 	// state: the parked waits, the per-token settle lock, and which
 	// threads own a receipt that a turn end could settle. Zero value
 	// ready. See app_thread_tools_wait.go.
 	threadRequests threadRequestState
+	// peerAdmissions is the tokens a paired computer's spawn, send or ask
+	// has a handler in flight for here (app_thread_tools_admissions.go).
+	// Zero value ready.
+	peerAdmissions peerAdmissions
+	// threadAgentEmits coalesces the Agents rows' change frames
+	// (app_thread_agent_rows_emit.go).
+	threadAgentEmits threadAgentEmits
+	// liveWorkers is the threads last found not at rest, which keep the
+	// local spawn that made each open (app_thread_agent_live.go).
+	liveWorkers liveWorkers
+	// restRevisions is the revision of what memory holds of a thread's
+	// rest, for the decisions on rest that cannot be taken back
+	// (app_thread_rest_assess.go).
+	restRevisions restRevisions
+	// threadAgentPeers is the last agent_rows answer for each spawn on a
+	// paired computer (app_thread_agent_rows_remote.go).
+	threadAgentPeers threadAgentPeerCache
+	ownerActivity    ownerActivity
+	ownerUpdates     ownerUpdates
+	ownerReads       ownerReads
+	// agentRoles keeps each standing agent's role line until its
+	// instructions file changes, for the sends, spawns, settlements and
+	// thread reads that name it. Read it through assistantRoles, which
+	// makes the store's deletion of an assistant record forget its home.
+	agentRoles     agenthome.RoleCache
+	agentRolesOnce sync.Once
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher, with the
-	// polls, settlements and wake deliveries it counts. They start from any
+	// settlements, wake runs and emits it counts. They start from any
 	// goroutine while it may be waited on, so it is a workGroup.
 	threadRequestsWG workGroup
+	// threadRequestSettling counts, inside threadRequestsWG, the
+	// settlements and wake deliveries in flight (goThreadRequestSettling),
+	// so a caller can wait for what a settlement sets off without waiting
+	// out the sweep.
+	threadRequestSettling workGroup
+	// agentWakes is the wake supervisor's in-process state: the runs and
+	// long-running watch processes in flight. Zero value ready. See
+	// app_agent_wakes.go.
+	agentWakes agentWakeState
+	// agentNoticeWork joins what notices run after they are accepted.
+	agentNoticeWork appAgentNoticeWorkState
+	// memoryReports joins the memory reads behind warning rows.
+	memoryReports appMemoryReportsState
+	// assistantHandOffs holds each assistant's running handoff and the
+	// messages it carries (StartNextAssistantThread,
+	// recoverAssistantSessionLoss).
+	assistantHandOffs assistantHandOffState
+	// assistantsSwitch converges this computer on its Assistants setting
+	// (app_assistants_switch.go).
+	assistantsSwitch assistantsSwitchState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
@@ -241,13 +290,28 @@ type App struct {
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
 	pendingThreadDeletes pendingThreadDeletes
+	// archiveWalks counts the archive walks under way
+	// (app_archive_walks.go).
+	archiveWalks archiveWalks
+	// ownerOps delivers what archives and deletes owe the paired computers
+	// their threads spawned on (app_thread_owner_ops.go).
+	ownerOps ownerOpDelivery
+	// deleteDecisions are the running deletes' decision gates, which the
+	// app's own starts wait at (app_thread_delete_decisions.go).
+	deleteDecisions deleteDecisions
 	// terminalThreads ends each terminal thread when its last shell exits
 	// (app_terminal_threads.go).
 	terminalThreads terminalThreads
 	// firstReads holds heavy post-boot work until a client has read its
 	// catalogs. See app_first_reads.go.
-	firstReads       firstReadsGate
-	remoteWatchWG    sync.WaitGroup
+	firstReads    firstReadsGate
+	remoteWatchWG sync.WaitGroup
+	// remoteWatchNudges wakes the remote command watcher's loops
+	// (app_remote_watch_loop.go).
+	remoteWatchNudges remoteWatchNudges
+	// peerExports records the exports rendered for paired computers
+	// (app_thread_tools_export.go).
+	peerExports      peerExports
 	remoteStartsOnce sync.Once
 	remoteStarts     *keyedlock.Registry
 	// reviewSubmits, postedReviewDrafts and reviewAttempts are
@@ -541,6 +605,9 @@ type App struct {
 	// sendsPending publishes provider:sends_pending
 	// (`app_sends_pending.go`).
 	sendsPending appSendsPendingState
+	// sessionLive publishes provider:session_live
+	// (`app_session_live.go`).
+	sessionLive appSessionLiveState
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState
@@ -677,10 +744,180 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
+	// heldReturnedForTest, when set, runs after answers and completions
+	// have been given back to their owners (giveBackToOwners), so a test can
+	// land a watcher pass at that moment.
+	heldReturnedForTest func(threadID string)
+	// queueDropReadForTest, when set, runs in a wholesale drop between its
+	// read of the durable queue and its delete (dropDurableFlushQueue), so
+	// a test can queue a message at that moment.
+	queueDropReadForTest func(threadID string)
 	// queueDroppedForTest, when set, runs in a wholesale drop after its
 	// delete of the durable queue (dropDurableFlushQueue), so a test can
 	// queue a message before the in-memory queue is cleared.
 	queueDroppedForTest func(threadID string)
+	// remoteCompletionReadForTest, when set, runs in a watcher pass between
+	// its read of the watch and the queueing of the completion
+	// (checkRemoteWatch), so a test can hand the thread off at that moment.
+	remoteCompletionReadForTest func(w store.RemoteWatch)
+	// sessionLossHandOffForTest, when set, runs as a session-loss handoff
+	// begins, before it reads anything (recoverAssistantSessionLoss), so a
+	// test can send again or make the handoff fail at that moment.
+	sessionLossHandOffForTest func(threadID string)
+	// handOffCommittedForTest, when set, runs in a handoff after its store
+	// transaction committed and before the handoff ends
+	// (nextAssistantThread), so a test can act while it still runs.
+	handOffCommittedForTest func(oldThreadID, successorID string)
+	// handOffSuccessorMadeForTest, when set, runs in a handoff after it
+	// created the successor and before it takes the old thread's locks
+	// (nextAssistantThread), so a test can rename or archive meanwhile.
+	handOffSuccessorMadeForTest func(oldThreadID, successorID string)
+	// remoteReplySettledForTest, when set, runs in a parked remote call's
+	// after-response work between the dismissal and the end of its wait.
+	remoteReplySettledForTest func()
+	// agentWakeClaimedForTest, when set, runs in a fire between its claim
+	// and its run's registration (fireAgentWake), under the wake lifecycle
+	// lock, so a test can cancel the row at that moment.
+	agentWakeClaimedForTest func(row store.AgentWake)
+	// agentWakeRetiringForTest, when set, runs as an interval run publishes
+	// the row it leaves behind (retireAgentWakeRun): before the write, and
+	// after it under the wake lifecycle lock (rearmed), so a test can hold
+	// the run on either side of the write.
+	agentWakeRetiringForTest func(row store.AgentWake, rearmed bool)
+	// deleteDecisionReadForTest, when set, runs in a start that met a
+	// delete's claim once it read the claim, before it looks for the
+	// delete's gate (waitDeleteDecision), so a test can decide the delete
+	// at that moment.
+	deleteDecisionReadForTest func(threadID string)
+	// deleteDecisionMadeForTest, when set, runs in a start that waited for
+	// a delete's decision once it is made, before the start goes on
+	// (waitDeleteDecision), so a test can finish the delete meanwhile.
+	deleteDecisionMadeForTest func(threadID string)
+	// flushHandoffForTest, when set, runs as triage hands a batch to the
+	// dispatch (enqueueFlushDispatch), before the dispatch records it, so a
+	// test can withdraw a message in the handoff.
+	flushHandoffForTest func(threadID string)
+	// requeueRowsReadForTest, when set, runs in a requeue between its read
+	// of which rows stand and its queueing of the messages again
+	// (requeueUnconfirmedFlushItemsLocked), so a test can withdraw one then.
+	requeueRowsReadForTest func(threadID string)
+	// flushDispatchReturnedForTest, when set, runs in a dispatch worker once
+	// a batch's dispatch returned and released the thread's action lock,
+	// before the worker retires the batch, so a test can recover the
+	// session in between.
+	flushDispatchReturnedForTest func(threadID string)
+	// flushGroupCommitForTest, when set, runs in a dispatch under the
+	// thread's action lock right before a group's commit point (committed
+	// false) and right after it (committed true), so a test can withdraw a
+	// message on either side of it.
+	flushGroupCommitForTest func(threadID string, committed bool)
+	// agentWatchRefusedForTest, when set, runs in a long-running watch's
+	// supervisor after the pause refused its process start and before the
+	// supervisor returns (superviseAgentWatch).
+	agentWatchRefusedForTest func(wakeID string)
+	// cancelReadForTest, when set, runs in a request cancel between its read
+	// of the receipt and its settlement (stopThreadRequestWorkFor), so a
+	// test can settle the receipt at that moment.
+	cancelReadForTest func(token string)
+	// agentStopCapturedForTest, when set, runs in a Stop All and in each
+	// rest it makes once it has read what it stops under threadID and
+	// before it stops any of it (threadAgentStopRows,
+	// stopRequestsOfRestingThread), so a test can make a request at that
+	// moment.
+	agentStopCapturedForTest func(threadID string)
+	// restPausedReadForTest, when set, runs in a rest pass once it has read
+	// a held request's thread under a paused assistant (settleRestedReceipts),
+	// so a test can turn assistants off and on again at that moment.
+	restPausedReadForTest func(threadID string)
+	// threadAgentDrainForTest, when set, runs in the Agents rows' drain
+	// before it takes each batch (drainThreadAgentEmits), so a test can hold
+	// what liveWorkers records behind a change.
+	threadAgentDrainForTest     func()
+	beforeWorkerReassessForTest func(string)
+	// beforeOwnerWaitForTest holds the boundary between applying a cursor and checking out its next connection.
+	beforeOwnerWaitForTest func(context.Context, OwnerCursor)
+	// restReadForTest, when set, runs in a read of rest a decision acts on
+	// once the threads reached from roots have been read, memory included,
+	// and before the decision is written (readRest), so a test can admit
+	// work there.
+	restReadForTest func(roots []string)
+	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
+	// sleeps until the channel it returns for the delay asked sends
+	// (sweepSleep).
+	sweepSleepForTest func(d time.Duration) <-chan time.Time
+	// admitWorkForTest, when set, runs as a call reaches admitWork, after
+	// its authentication and before its admission, so a test can hold it
+	// there while the thread is brought to rest.
+	admitWorkForTest func(threadID string)
+	// asyncQuestionsReadForTest, when set, runs in a reconcile of threadID's
+	// async questions between its store read and what it registers
+	// (reconcileAsyncQuestions), so a test can change the thread at that
+	// moment.
+	asyncQuestionsReadForTest func(threadID string)
+	// spawnNamingForTest, when set, runs in a thread_spawn of
+	// callerThreadID's, here or on a paired computer, once its thread is
+	// made and before the spawn names it (acceptRequest), so a test can hold
+	// an admitted spawn there.
+	spawnNamingForTest func(callerThreadID string)
+	// peerAdmissionForTest, when set, runs in a paired computer's spawn,
+	// send or ask once its handler holds the token and before anything can
+	// admit it (runThreadPeerRequest), so a test can hold it there.
+	peerAdmissionForTest func(token string)
+	// peerStatusReadForTest, when set, runs in a ThreadToolRequestStatus
+	// between its two reads of a token, whether a handler holds it and its
+	// receipt, so a test can let a handler admit and exit there.
+	peerStatusReadForTest func(token string)
+	// deleteClaimedForTest, when set, runs once a delete's claim committed
+	// and before it verifies anything (familyDelete.claim), with the
+	// threads it claimed.
+	deleteClaimedForTest func(threadIDs []string)
+	// deleteFamilyReadForTest, when set, runs each time a delete reads and
+	// claims its family (store.ClaimDeleteFamily), so a test can count the
+	// reads.
+	deleteFamilyReadForTest func()
+	// deleteVerifiedForTest, when set, runs once a delete verified
+	// threadID and released its action lock (familyDelete.verify), so a
+	// test can act between two threads' checks.
+	deleteVerifiedForTest func(threadID string)
+	// deleteCommittedForTest, when set, runs once a delete committed and
+	// before it destroys anything (familyDelete.commit).
+	deleteCommittedForTest func(threadIDs []string)
+	// deleteDestroyedForTest, when set, runs once a delete destroyed
+	// threadID (familyDelete.destroy), so a test can stop it between two
+	// threads.
+	deleteDestroyedForTest func(threadID string)
+	// deletePortsForTest, when set, edits the ports a delete destroys each
+	// thread through, so a test can fail one.
+	deletePortsForTest func(ports *threadapp.DeletePorts)
+	// restRunsListedForTest, when set, runs once a rest has listed the
+	// workflow runs that report to the thread and before it acts on any
+	// (pauseRunsOfRestingThread), so a test can move a run at that moment.
+	restRunsListedForTest func(runs []store.WorkItem)
+	// remoteStatusReadForTest, when set, runs in a watch check once the
+	// destination answered its status call and before the answer is
+	// recorded (checkRemoteWatch), so a test can stop the thread then.
+	remoteStatusReadForTest func(w store.RemoteWatch)
+	// workerStopObservedForTest, when set, runs in a person's Stop of a
+	// worker that outlived its spawn once it read the send id of its message
+	// to the spawner and before it brings the worker to rest
+	// (workerStoppedNotice), so a test can race a second Stop there.
+	workerStopObservedForTest func(token string)
+	// turnEndSettledForTest, when set, runs in a turn-end settlement pass
+	// after it settled its receipts and before it retires the stops it read
+	// (settleReceiptsForEndedTurn), so a test can stop or end a turn then.
+	turnEndSettledForTest func(threadID string)
+	// threadWakeRenderedForTest, when set, runs in a wake's delivery after
+	// it rendered the message and before it is queued
+	// (deliverThreadWakeMessage), so a test can hand the caller off then.
+	threadWakeRenderedForTest func(carrier string)
+	// archiveWalkEndingForTest, when set, runs once the last walk of
+	// threadID's archive decided to end it and before the store ends it
+	// (endArchiveWalk), so a test can archive the thread again then.
+	archiveWalkEndingForTest func(threadID string)
+	// workerPromptAnsweringForTest, when set, runs once an answer claimed
+	// a routed prompt and before it is written to the worker
+	// (answerRoutedPrompt); an error it returns is that write's failure.
+	workerPromptAnsweringForTest func(token string) error
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a
@@ -712,6 +949,20 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// workerPromptLeaseOverride shortens the lease of a prompt routed to a
+	// paired computer (workerPromptLease) for a test. Zero keeps the
+	// product lease.
+	workerPromptLeaseOverride time.Duration
+	// ownerOpsOmitted answers agent_owner_op as a build before owner
+	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
+	ownerOpsOmitted bool
+	// remoteWatchPoll replaces the remote-job watcher's cadence for a
+	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
+	// product cadence.
+	remoteWatchPoll time.Duration
+	// idleReap holds an isolated test boot's idle-session reaper timing
+	// (IsolationConfig). Zero fields keep the product values.
+	idleReap idleReapTiming
 	// usageProbeGap shortens the shortest gap between two usage probes of
 	// one provider for an end-to-end test (IsolationConfig). Zero keeps the
 	// product gap.
@@ -934,7 +1185,6 @@ func NewAppWithVersion(buildVersion string) *App {
 		Emit:                 app.emit,
 		RestartWatchdogDelay: updateRestartWatchdogDelay,
 	})
-	app.installDiscussionTurnObserver()
 	return app
 }
 

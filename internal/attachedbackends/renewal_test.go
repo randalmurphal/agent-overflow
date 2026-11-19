@@ -2,6 +2,7 @@ package attachedbackends
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"runtime"
 	"sync"
@@ -71,15 +72,18 @@ func TestCarrierRenewsBeforeItsWindowClosesAndReportsTheVerdict(t *testing.T) {
 		return append([]SetChange(nil), ended...)
 	}
 
-	if _, err := manager.carrier("peer"); err != nil {
+	if _, err := manager.carrier(context.Background(), "peer"); err != nil {
 		t.Fatal(err)
 	}
+	// The peer issues every credential with the same short window, so the
+	// rotations repeat about every 200ms: any successor proves the renewal
+	// ran, and the next one is what meets the revocation below.
 	waitFor(t, "the rotation", func() bool {
 		stored, err := deviceclient.LoadSession(dir, "peer")
-		return err == nil && stored.Credential == "credential-1"
+		return err == nil && stored.Credential != "credential-0"
 	})
-	if p.rotations.Load() != 1 {
-		t.Fatalf("rotations = %d, want one", p.rotations.Load())
+	if p.rotations.Load() == 0 {
+		t.Fatal("a successor was saved with no rotation")
 	}
 	if got := removed(); len(got) != 0 {
 		t.Fatalf("a renewal ended the session: %v", got)
@@ -90,7 +94,7 @@ func TestCarrierRenewsBeforeItsWindowClosesAndReportsTheVerdict(t *testing.T) {
 	if got := removed(); got[0].ID != "peer" || got[0].Reason != RemovedByComputer {
 		t.Errorf("observer told %v, want the one ended pairing with its reason", got)
 	}
-	if manager.Carrier("peer") != nil {
+	if manager.Carrier(context.Background(), "peer") != nil {
 		t.Error("a revoked pairing still has a carrier")
 	}
 	if _, err := deviceclient.LoadSession(dir, "peer"); !errors.Is(err, deviceclient.ErrNoSession) {
@@ -106,7 +110,7 @@ func TestRemovingACarrierStopsItsRenewal(t *testing.T) {
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	seedExpiring(t, dir, p, time.Hour)
-	if _, err := manager.carrier("peer"); err != nil {
+	if _, err := manager.carrier(context.Background(), "peer"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the renewal loop starts", func() bool { return renewalRunning() })
@@ -142,7 +146,7 @@ func TestCloseJoinsRenewalsAndRefusesNewCarriers(t *testing.T) {
 	// Runs before the peer's own cleanup, which waits for this handler.
 	t.Cleanup(answer)
 	seedExpiring(t, dir, p, renewMargin)
-	if _, err := manager.carrier("peer"); err != nil {
+	if _, err := manager.carrier(context.Background(), "peer"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -170,7 +174,7 @@ func TestCloseJoinsRenewalsAndRefusesNewCarriers(t *testing.T) {
 	if session, err := deviceclient.LoadSession(dir, "peer"); err != nil || session.Credential != "credential-1" {
 		t.Fatalf("the rotation's successor was not saved: %+v, %v", session, err)
 	}
-	if _, err := manager.carrier("peer"); !errors.Is(err, ErrClosed) {
+	if _, err := manager.carrier(context.Background(), "peer"); !errors.Is(err, ErrClosed) {
 		t.Fatalf("carrier after Close = %v, want ErrClosed", err)
 	}
 	manager.Close()
@@ -182,7 +186,7 @@ func TestCloseJoinsAnIdleRenewal(t *testing.T) {
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	seedExpiring(t, dir, p, time.Hour)
-	if _, err := manager.carrier("peer"); err != nil {
+	if _, err := manager.carrier(context.Background(), "peer"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the renewal loop starts", func() bool { return renewalRunning() })

@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/usermessage"
 )
 
 // ListAsyncQuestions reads outstanding questions or one historical question group.
@@ -24,40 +25,66 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
 		return err
 	}
-	unlock, err := a.lockSendAdmission(ctx, threadID, sendID)
+	unlock, err := a.lockClientSendAdmission(ctx, threadID, sendID)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	err = a.queueAgentNotice(ctx, agentNotice{
-		threadID: threadID, sendID: sendID,
-		prepare: func() (string, bool, error) {
-			thread, err := a.store.GetThread(threadID)
-			if err != nil {
-				return "", false, err
-			}
-			if thread.Provider != "codex" {
-				return "", false, fmt.Errorf("async answers require a Codex thread")
-			}
-			if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
-				return "", false, err
-			}
-			body, already, err := a.store.AsyncAnswerMessage(threadID, sendID, answers)
-			if err != nil || already {
-				return body, false, err
-			}
-			if _, found, err := a.findRecordedSend(threadID, sendID); err != nil {
-				return "", false, err
-			} else if found {
-				return "", false, fmt.Errorf("submission identity already belongs to a different message")
-			}
-			return body, true, nil
-		},
-		persist: func(item store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(item, answers) },
+	person := func(text string) (usermessage.AgentMessage, error) { return usermessage.PersonMessage(text), nil }
+	return a.queueAsyncAnswers(threadID, sendID, answers, nil, person, agentNotice{
 		startFailed: func(err error) string {
 			return "Your answers are queued, but the agent could not start: " + err.Error()
 		},
+		// The person answering may have opened an archived thread to do it.
+		fromPerson: true,
 	})
+}
+
+// queueAsyncAnswers claims answers to threadID's async questions and queues
+// them as one message, under sendID, whose admission lock its caller holds:
+// the person's (SubmitAsyncAnswers) or the spawner's agent's, written for a
+// worker (answerAsyncWorkerPrompt). asked is the revision of each item the
+// answers were written for, nil for the person's (store.QueueAsyncAnswers).
+// written attributes the answers' text to who wrote it, and notice brings
+// what the thread is told when its session will not start. A question
+// already answered or dismissed, or changed since asked, is
+// transport.ErrAlreadyHandled.
+func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, asked map[string]int64, written func(text string) (usermessage.AgentMessage, error), notice agentNotice) error {
+	notice.threadID, notice.sendID = threadID, sendID
+	text := func() (string, bool, error) {
+		thread, err := a.store.GetThread(threadID)
+		if err != nil {
+			return "", false, err
+		}
+		if thread.Provider != "codex" {
+			return "", false, fmt.Errorf("async answers require a Codex thread")
+		}
+		// A delete's claim is the queue write's to decide: it takes an
+		// agent's answers and refuses the person's (registerQueueItem).
+		if err := a.store.CheckThreadDeliverable(thread); err != nil {
+			return "", false, err
+		}
+		body, already, err := a.store.AsyncAnswerMessage(threadID, sendID, answers)
+		if err != nil || already {
+			return body, false, err
+		}
+		if _, found, err := a.findRecordedSend(threadID, sendID); err != nil {
+			return "", false, err
+		} else if found {
+			return "", false, fmt.Errorf("submission identity already belongs to a different message")
+		}
+		return body, true, nil
+	}
+	notice.prepare = func() (usermessage.AgentMessage, bool, error) {
+		body, proceed, err := text()
+		if err != nil {
+			return usermessage.AgentMessage{}, false, err
+		}
+		message, err := written(body)
+		return message, proceed, err
+	}
+	notice.persist = func(item store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(item, answers, asked) }
+	err := a.queueAgentNotice(notice)
 	if errors.Is(err, store.ErrAsyncQuestionHandled) {
 		return fmt.Errorf("%w: %v", transport.ErrAlreadyHandled, err)
 	}

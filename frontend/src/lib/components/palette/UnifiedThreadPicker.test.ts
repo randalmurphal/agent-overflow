@@ -12,6 +12,9 @@ import { installAnimateShim } from '../../../test/integration/_helpers';
 import type { Thread } from '../../types/models';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { tick } from 'svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 
 beforeAll(installAnimateShim);
 
@@ -50,6 +53,55 @@ function makePane() {
 function markThreadRunning(threadId: string): void {
   projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
+
+// ---- Assistants turned off ----
+
+// While assistants are off, the picker offers none of their threads: an
+// assistant's current thread, a past thread or a helper. On again, they
+// are offered as before.
+describe('<UnifiedThreadPicker> — assistants turned off', () => {
+  it('offers no thread under an assistant while assistants are off', async () => {
+    await seedThreads([
+      makeThread({ id: 'plain', title: 'Plain' }),
+      makeThread({ id: 'agent', title: 'Ops', agentId: 'ops' }),
+      makeThread({ id: 'past', title: 'Earlier Ops', pastAgentId: 'ops' }),
+      makeThread({ id: 'helper', title: 'Research', helperOfAgentId: 'ops' }),
+    ]);
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(UnifiedThreadPicker, { open: true, pane: makePane(), onClose: vi.fn() });
+    const hits = () => Array.from(view.container.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="thread-picker-hit-"]'), (el) => el.dataset.testid);
+    expect(hits()).toEqual(['thread-picker-hit-plain']);
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(hits()?.sort()).toEqual(['thread-picker-hit-agent', 'thread-picker-hit-helper', 'thread-picker-hit-past', 'thread-picker-hit-plain']);
+  });
+
+  // Each thread by its own computer's setting: this computer's assistant is
+  // offered while the laptop has its off, and the other way round.
+  it("offers each computer's assistants by that computer's setting", async () => {
+    await seedThreads([
+      makeThread({ id: 'agent', title: 'Ops', agentId: 'ops' }),
+      makeThread({ id: 'remote-agent', title: 'Scout', agentId: 'scout' }),
+    ]);
+    stageBackend();
+    noteThread('remote-agent', 'laptop', 2);
+    try {
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      const view = render(UnifiedThreadPicker, { open: true, pane: makePane(), onClose: vi.fn() });
+      const hits = () => Array.from(view.container.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="thread-picker-hit-"]'), (el) => el.dataset.testid);
+      expect(hits()).toEqual(['thread-picker-hit-agent']);
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }), 'laptop');
+      await tick();
+      expect(hits()).toEqual(['thread-picker-hit-remote-agent']);
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    }
+  });
+});
 
 // ---- Visibility ----
 
@@ -419,25 +471,6 @@ describe('<UnifiedThreadPicker> — status dots', () => {
       resetStagedBackends();
       __resetEntityIndexForTest();
     }
-  });
-
-  it('uses the shared sidebar pill presentation for running discussion threads', async () => {
-    await seedThreads([
-      makeThread({ id: 'discussion', title: 'Roundtable', mode: 'discussion' }),
-    ]);
-    markThreadRunning('discussion');
-    const pane = makePane();
-    const { getByTestId } = render(UnifiedThreadPicker, {
-      open: true,
-      pane,
-      onClose: vi.fn(),
-    });
-
-    const dot = getByTestId('thread-picker-status-dot');
-    expect(dot.getAttribute('aria-label')).toBe('Discussing');
-    expect(dot.classList.contains('border-info')).toBe(true);
-    expect(dot.classList.contains('bg-transparent')).toBe(true);
-    expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
   it('renders durable Interrupted from the thread row without a live event', async () => {

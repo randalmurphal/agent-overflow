@@ -111,6 +111,50 @@ func TestRunGroupReportsTheExitCodeAndCombinedOutput(t *testing.T) {
 	}
 }
 
+// With Stderr set, stderr from the command and from what it starts reaches
+// Stderr alone, and Output carries only stdout.
+func TestRunGroupGivesStderrItsOwnSinkWhenAsked(t *testing.T) {
+	t.Parallel()
+	var output, stderr syncBuffer
+	command := shellCommand(t, "echo to-stdout; echo to-stderr 1>&2; /bin/sh -c 'echo child-stderr 1>&2'; exit 3", &output)
+	command.Stderr = &stderr
+	reaper := &recordingReaper{}
+	outcome, err := RunGroup(context.Background(), reaper, command)
+	if err == nil || outcome.ExitCode != 3 || outcome.Leftovers || outcome.OutputHeld || outcome.PipeErr != nil {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if text := output.String(); text != "to-stdout\n" {
+		t.Fatalf("output = %q, want stdout alone", text)
+	}
+	if text := stderr.String(); text != "to-stderr\nchild-stderr\n" {
+		t.Fatalf("stderr = %q, want the command's and its child's stderr", text)
+	}
+	requireReleased(t, reaper, true)
+}
+
+// A Stderr sink that refuses a write is reported, and its pipe keeps
+// draining so the command does not stall on it.
+func TestRunGroupKeepsDrainingWhenTheStderrSinkRefusesAWrite(t *testing.T) {
+	t.Parallel()
+	refused := errors.New("stderr sink is full")
+	var output syncBuffer
+	command := shellCommand(t, `echo to-stdout; head -c 1000000 /dev/zero | tr '\0' x 1>&2; exit 3`, &output)
+	command.Stderr = refusingWriter{refused}
+	done := make(chan GroupOutcome, 1)
+	go func() {
+		outcome, _ := RunGroup(context.Background(), &recordingReaper{}, command)
+		done <- outcome
+	}()
+	select {
+	case outcome := <-done:
+		if outcome.ExitCode != 3 || !errors.Is(outcome.PipeErr, refused) || output.String() != "to-stdout\n" {
+			t.Fatalf("outcome %+v, output %q", outcome, output.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the command stalled writing to a stderr pipe nobody read")
+	}
+}
+
 // recordingReaper records the groups a Group has watched and released.
 type recordingReaper struct {
 	mu       sync.Mutex

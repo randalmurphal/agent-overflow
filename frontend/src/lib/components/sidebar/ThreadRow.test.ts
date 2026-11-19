@@ -28,7 +28,10 @@ import {
 } from '../../stores/keyboardModifiers.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { TransportError } from '../../transport/wsClient';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
+import { getToasts } from '../../stores/toast.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert, installThreadSwitchMocks } from '../../../test/helpers/chat';
 import { endThreadRowDrag, THREAD_ROW_DRAG_MIME, threadDragPayloadForEvent } from '../../utils/threadDragPayload';
@@ -42,7 +45,8 @@ import { refreshProjects, resetProjectsForTest } from '../../stores/projects.sve
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -82,7 +86,6 @@ describe('<ThreadRow> provider icons', () => {
     { thread: { provider: 'claude' }, label: 'Claude' },
     { thread: { provider: 'claude-tui' }, label: 'Claude TUI' },
     { thread: { provider: 'codex', isDraft: true }, label: 'Codex' },
-    { thread: { mode: 'discussion', parentThreadId: 'parent', provider: 'codex' }, label: 'Codex' },
     { thread: { groupId: 'group', provider: 'codex' }, label: 'Codex' },
   ])('identifies $label on $thread', ({ thread, label }) => {
     setShowProviderIcons(true);
@@ -92,13 +95,27 @@ describe('<ThreadRow> provider icons', () => {
 
   it.each([
     { mode: 'terminal' },
-    { mode: 'discussion' },
     { provider: undefined },
     { provider: 'unknown' },
   ])('omits provider icons for $mode $provider', (thread) => {
     setShowProviderIcons(true);
     const view = render(ThreadRow, { thread: makeThread(thread as Partial<Thread>), pane: null });
     expect(view.queryByTestId('thread-row-provider')).toBeNull();
+  });
+
+  it("keeps the rename open under a refusal naming the assistant that has the name", async () => {
+    setBindingMock('RenameThread', async () => {
+      throw new TransportError('assistant_name_taken', 'The assistant "Ops" already has that name; names are unique on this computer.');
+    });
+    const view = render(ThreadRow, { thread: makeThread(), pane: null });
+    await fireEvent.doubleClick(view.getByTestId('thread-row'));
+    const input = view.getByRole('textbox', { name: 'Rename Thread' });
+    await fireEvent.input(input, { target: { value: 'ops' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await vi.waitFor(() => expect(view.getByTestId('thread-row-rename-error')).toHaveTextContent('The assistant "Ops" already has that name'));
+    expect(view.getByRole('textbox', { name: 'Rename Thread' })).toBeInTheDocument();
+    await fireEvent.keyDown(view.getByRole('textbox', { name: 'Rename Thread' }), { key: 'Escape' });
+    expect(view.queryByTestId('thread-row-rename-error')).toBeNull();
   });
 
   it('updates the provider when the thread changes and hides it during rename', async () => {
@@ -225,7 +242,7 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
   });
 
   it('disables pin and archive on a chat thread with the reason', async () => {
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const pin = setBindingMock('PinThread', vi.fn(async () => {}));
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
     const pinBtn = getByTestId('thread-row-pin') as HTMLButtonElement;
@@ -241,8 +258,22 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
     expect(archive).not.toHaveBeenCalled();
   });
 
+  it('disables New Thread, Same Assistant without threads:autonomy, and enables it with it', async () => {
+    setBindingMock('ListThreadWakes', async () => []);
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    const thread = makeThread({ agentId: 'agent-1' });
+    const inert = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+    expect((inert.getByTestId('thread-row-next-thread') as HTMLButtonElement).disabled).toBe(true);
+    inert.unmount();
+
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate', 'threads:autonomy']);
+    const granted = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+    expect((granted.getByTestId('thread-row-next-thread') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('disables delete on a terminal thread with the reason', async () => {
-    const del = setBindingMock('DeleteThread', vi.fn(async () => {}));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const del = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ mode: 'terminal' }), pane: createThreadPane() },
     });
@@ -284,7 +315,8 @@ describe('<ThreadRow> terminal delete action', () => {
   it('deletes immediately, without a confirm dialog, when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deletedId: string | null = null;
-    setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; return {}; });
 
     const thread = makeThread({ id: 'term-off', mode: 'terminal' });
     const pane = createThreadPane();
@@ -303,7 +335,8 @@ describe('<ThreadRow> terminal delete action', () => {
   it('confirms first when confirmDelete is on, deleting only after confirm', async () => {
     await primeSettings({ confirmDelete: true });
     let deletedId: string | null = null;
-    setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; return {}; });
 
     const thread = makeThread({ id: 'term-on', mode: 'terminal' });
     const pane = createThreadPane();
@@ -323,9 +356,11 @@ describe('<ThreadRow> terminal delete action', () => {
     expect(deletedId).toBe('term-on');
   });
 
-  it('says how many terminals close when the terminal thread sits on a worktree', async () => {
+  // The delete keeps the worktree, so the terminal row's confirmation says
+  // nothing of it and reads nothing about it.
+  it('says nothing of the worktree a terminal thread sits on', async () => {
     await primeSettings({ confirmDelete: true });
-    setBindingMock('GitWorktreeStatus', async () => ({ path: '/tmp/wt/term', terminals: 2 }));
+    const status = setBindingMock('GitWorktreeStatus', vi.fn(async () => ({ terminals: 2 })));
     const thread = makeThread({
       id: 'term-wt',
       mode: 'terminal',
@@ -337,7 +372,10 @@ describe('<ThreadRow> terminal delete action', () => {
 
     await fireEvent.click(getByTestId('thread-row-delete'));
 
-    await findByText(/This cannot be undone\. 2 terminals will close\./);
+    expect((await findByText(/This cannot be undone\./)).textContent).toBe(
+      'This will remove the terminal from the sidebar and close its shell. This cannot be undone.',
+    );
+    expect(status).not.toHaveBeenCalled();
   });
 });
 
@@ -378,6 +416,7 @@ describe('<ThreadRow> drag source', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
 
   it('publishes a sidebar-thread drag payload', async () => {
@@ -409,6 +448,27 @@ describe('<ThreadRow> drag source', () => {
       projectId: 'project-1',
       groupId: 'group-1',
     });
+    endThreadRowDrag();
+  });
+
+  it.each([
+    ['a standing agent', { agentId: 'agent-1' }, true],
+    // A thread an agent spawned joins groups (ruling 36): its payload is
+    // not agent-bound, standalone, grouped or with its agent archived.
+    ['a standalone thread a standing agent spawned', { spawnedByThreadId: 'agent-1', placement: 'standalone' as const }, false],
+    ['a grouped thread a standing agent spawned', { spawnedByThreadId: 'agent-1', placement: 'grouped' as const, groupId: 'g1' }, false],
+    ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent' }, false],
+  ])('marks the payload of %s agent-bound only when it is the agent', async (_, overrides, bound) => {
+    setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentId: 'agent-1' })]);
+    await refreshThreads();
+    const thread = makeThread({ id: 'drag-bound', projectId: 'project-1', ...overrides });
+    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+    const dataTransfer = makeDataTransfer();
+    await fireEvent.dragStart(rendered.getByTestId('thread-row'), { dataTransfer });
+    // The mark stays in the document's in-flight record; the DataTransfer
+    // carries the id alone.
+    expect(dataTransfer.getData(THREAD_ROW_DRAG_MIME)).toBe('drag-bound');
+    expect(threadDragPayloadForEvent({ dataTransfer } as unknown as DragEvent)?.agentBound === true).toBe(bound);
     endThreadRowDrag();
   });
 
@@ -844,6 +904,28 @@ describe('<ThreadRow> worktree metadata', () => {
   });
 });
 
+describe('<ThreadRow> attention flag', () => {
+  beforeEach(resetSidebarForTest);
+  afterEach(resetSidebarForTest);
+
+  it('names the kind and the reason under the row, bolds the title, and goes once read', async () => {
+    const attention = { kind: 'problem' as const, reason: 'CI is red on main', at: 2_000 };
+    const flagged = makeThread({ id: 'flagged', title: 'Ops', lastReadAt: 1_000, latestTurnCompletedAt: 900, attention });
+    const view = render(ThreadRow, { props: { thread: flagged, pane: createThreadPane() } });
+
+    const line = view.getByTestId('thread-row-attention');
+    expect(line.dataset.kind).toBe('problem');
+    expect(line.textContent).toContain('Problem');
+    expect(view.getByTestId('thread-row-attention-reason').textContent?.trim()).toBe('CI is red on main');
+    expect(line.getAttribute('title')).toBe('Hit a problem that needs you: CI is red on main');
+    expect(view.getByText('Ops').classList.contains('font-semibold')).toBe(true);
+
+    await view.rerender({ thread: { ...flagged, lastReadAt: 2_000 }, pane: createThreadPane() });
+    expect(view.queryByTestId('thread-row-attention')).toBeNull();
+    expect(view.getByText('Ops').classList.contains('font-semibold')).toBe(false);
+  });
+});
+
 describe('<ThreadRow> pin affordance placement', () => {
   beforeEach(async () => {
     resetPanesForTest();
@@ -933,20 +1015,6 @@ describe('<ThreadRow> pin affordance placement', () => {
     await fireEvent.click(getByTestId('thread-row-pin'));
     await Promise.resolve();
     expect(pin).toHaveBeenCalledWith('thread-1');
-  });
-
-  it('keeps the pin action out of rows that are not pin targets', () => {
-    const pane = createThreadPane();
-    const { queryByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ parentThreadId: 'parent' }),
-        pane,
-        indent: 2,
-        pinnable: false,
-      },
-    });
-
-    expect(queryByTestId('thread-row-pin')).toBeNull();
   });
 
   it.each([
@@ -1128,9 +1196,6 @@ describe('<ThreadRow> live status dot', () => {
 
     await rerender({ thread: { ...chat, mode: 'plan' }, pane });
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
-
-    await rerender({ thread: { ...chat, mode: 'discussion' }, pane });
-    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');
   });
 
   it('flips the pill to Working when provider:turn_started arrives', async () => {
@@ -1371,7 +1436,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 });
 
-describe('<ThreadRow> nested row chrome', () => {
+describe('<ThreadRow> row chrome', () => {
   beforeEach(async () => {
     resetPanesForTest();
     await primeSettings();
@@ -1382,20 +1447,16 @@ describe('<ThreadRow> nested row chrome', () => {
   it.each([
     { name: 'front pin', thread: { pinnedAt: 1, pinGroup: 0 }, eligible: true },
     { name: 'legacy front pin', thread: { pinnedAt: 0 }, eligible: true },
-    { name: 'pinned discussion parent', thread: { mode: 'discussion' as const, pinnedAt: 1 }, eligible: true },
     { name: 'back pin', thread: { pinnedAt: 1, pinGroup: 1 }, eligible: false },
     { name: 'unpinned', thread: { pinGroup: 0 }, eligible: false },
     { name: 'front-pinned group member', thread: { pinnedAt: 1, groupId: 'group' }, indent: 2, inGroup: true, eligible: false },
-    { name: 'nested discussion child', thread: { pinnedAt: 1, parentThreadId: 'parent' }, indent: 2, pinnable: false, eligible: false },
-    { name: 'pinned child promoted to a top-level row', thread: { pinnedAt: 1, parentThreadId: 'missing-parent' }, eligible: true },
-  ])('marks jump eligibility for $name', ({ thread, eligible, indent, inGroup, pinnable }) => {
+  ])('marks jump eligibility for $name', ({ thread, eligible, indent, inGroup }) => {
     const { getByTestId } = render(ThreadRow, {
       props: {
         thread: makeThread(thread),
         pane: null,
         indent: indent ?? 1,
         inGroup: inGroup ?? false,
-        pinnable: pinnable ?? true,
       },
     });
     expect(getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(eligible);
@@ -1411,67 +1472,6 @@ describe('<ThreadRow> nested row chrome', () => {
     expect(getByTestId('thread-row')).toHaveAttribute('data-sidebar-jump-target');
     await rerender({ thread: makeThread(), pane: null });
     expect(getByTestId('thread-row')).not.toHaveAttribute('data-sidebar-jump-target');
-  });
-
-  it('renders no chevron when hasChildren is false', () => {
-    const pane = createThreadPane();
-    const { queryByTestId } = render(ThreadRow, {
-      props: { thread: makeThread(), pane, hasChildren: false },
-    });
-    expect(queryByTestId('thread-row-expand')).toBeNull();
-  });
-
-  it('renders the chevron (not rotated) when hasChildren is true and expanded is false', () => {
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ discussionId: 'def-1' }),
-        pane,
-        hasChildren: true,
-        expanded: false,
-      },
-    });
-    const btn = getByTestId('thread-row-expand');
-    expect(btn.getAttribute('aria-expanded')).toBe('false');
-    expect(btn.querySelector('.lucide-icon')?.classList.contains('rotate-90')).toBe(false);
-  });
-
-  it('rotates the chevron when expanded is true', () => {
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ discussionId: 'def-1' }),
-        pane,
-        hasChildren: true,
-        expanded: true,
-      },
-    });
-    const btn = getByTestId('thread-row-expand');
-    expect(btn.getAttribute('aria-expanded')).toBe('true');
-    expect(btn.querySelector('.lucide-icon')?.classList.contains('rotate-90')).toBe(true);
-  });
-
-  it('chevron click calls onToggleExpand and not the row-click path', async () => {
-    const onToggleExpand = vi.fn();
-    const onSelectClick = vi.fn(() => false);
-    const pane = createThreadPane();
-    setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
-
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ discussionId: 'def-1' }),
-        pane,
-        hasChildren: true,
-        expanded: false,
-        onToggleExpand,
-        onSelectClick,
-      },
-    });
-    await fireEvent.click(getByTestId('thread-row-expand'));
-    expect(onToggleExpand).toHaveBeenCalledTimes(1);
-    expect(onSelectClick).not.toHaveBeenCalled();
-    expect(pane.threadId).toBeNull();
   });
 
   it('applies indent via padding-left on the outer container', () => {
@@ -1785,6 +1785,41 @@ describe('<ThreadRow> compact layout', () => {
     expect(pane.threadId).toBeNull();
   });
 
+  // A thread on a computer on v0.0.19, from the phone's row menu: the
+  // confirmation knows at once that the delete takes nothing more, the
+  // delete goes through DeleteThread, and the archive's null answer is a
+  // success (test/helpers/olderComputer.ts).
+  it('archives and deletes a thread on a computer on v0.0.19 from its menu', async () => {
+    await primeSettings({ confirmDelete: true, confirmArchive: false });
+    answerAsV0019();
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    type RowView = { getByTestId: (id: string) => HTMLElement; getByRole: (role: string, options: { name: string }) => HTMLElement };
+    const menuItem = async (view: RowView, name: string) => {
+      await fireEvent.click(view.getByTestId('thread-row-menu'));
+      await tick();
+      return view.getByRole('menuitem', { name });
+    };
+
+    const doomed = makeThread({ id: 'old-delete', title: 'Old delete' });
+    const deleting = render(ThreadRow, { props: { thread: doomed, pane } });
+    await fireEvent.click(await menuItem(deleting, 'Delete'));
+    const confirm = () => [...document.querySelectorAll<HTMLButtonElement>('button:not([role="menuitem"])')]
+      .find((b) => b.textContent?.trim() === 'Delete');
+    await vi.waitFor(() => expect(confirm()?.disabled).toBe(false));
+    expect(document.body.textContent).not.toContain('could not be checked');
+    await fireEvent.click(confirm()!);
+    await vi.waitFor(() => expect(getBindingMock('DeleteThread')).toHaveBeenCalledWith('old-delete'));
+    deleting.unmount();
+
+    const archived = render(ThreadRow, { props: { thread: makeThread({ id: 'old-archive', title: 'Old archive' }), pane } });
+    await fireEvent.click(await menuItem(archived, 'Archive Thread'));
+    await vi.waitFor(() => expect(getBindingMock('ArchiveThread')).toHaveBeenCalledWith('old-archive'));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(getToasts()).toEqual([]);
+    archived.unmount();
+  });
+
   it('keeps the row draggable on the desktop', async () => {
     setCompactLayoutForTest(false);
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
@@ -1803,5 +1838,99 @@ describe('<ThreadRow> fork preparation', () => {
     await view.rerender({ thread: makeThread({ forkPreparing: false }), pane: null });
     expect(view.queryByRole('status')).toBeNull();
     expect(view.getByTestId('thread-row')).toBeInTheDocument();
+  });
+});
+
+describe('<ThreadRow> standing agent variant', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetSidebarForTest();
+    await primeSettings();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+  });
+
+  it('offers no pin on an agent, even rendered as a plain row', () => {
+    const rendered = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1', pinnedAt: 1 }), pane: createThreadPane() } });
+    expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
+    expect(rendered.queryByTestId('thread-row-agent-expand')).toBeNull();
+    expect(rendered.getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(false);
+  });
+
+  it('is one row: the glyph in the pin\'s place, no fold, its state and projects lines under it', () => {
+    const thread = makeThread({ agentId: 'agent-1' });
+    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane(), agentProjects: 'Alpha, Beta' } });
+    const row = rendered.getByTestId('thread-row');
+    expect(row.getAttribute('data-sidebar-agent')).toBe('');
+    expect(row.hasAttribute('aria-expanded')).toBe(false);
+    expect(rendered.getByTestId('thread-row-agent-icon')).toBeTruthy();
+    expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
+    expect(rendered.queryByTestId('thread-row-agent-expand')).toBeNull();
+    expect(rendered.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('Alpha, Beta');
+    // An ordinary row has neither line.
+    const plain = render(ThreadRow, { props: { thread: makeThread({ id: 'plain' }), pane: createThreadPane(), agentProjects: 'ignored' } });
+    expect(plain.container.querySelector('[data-testid="thread-row-agent-projects"]')).toBeNull();
+    expect(plain.container.querySelector('[data-testid="thread-row-agent-icon"]')).toBeNull();
+  });
+
+  it('opens its thread from Enter, and takes no arrow-key fold', async () => {
+    const thread = makeThread({ agentId: 'agent-1' });
+    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+    const row = rendered.getByTestId('thread-row');
+    await fireEvent.keyDown(row, { key: 'ArrowLeft' });
+    expect(row.hasAttribute('aria-expanded')).toBe(false);
+  });
+});
+// A row says its thread has workers (docs/specs/standing-agents.md,
+// "Sidebar"): the open count in the count slot, and a warning badge for
+// those waiting on the user, each saying what it counts.
+describe('<ThreadRow> worker counts', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetSidebarForTest();
+    resetThreadWorkerSummariesForTest();
+    await primeSettings();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+  });
+  afterEach(() => setCompactLayoutForTest(false));
+
+  async function summaries(rows: { threadId: string; open: number; needYou: number }[]): Promise<void> {
+    setBindingMock('ListThreadWorkerSummaries', async () => ({ summaries: rows, next: '' }));
+    await refreshThreadWorkerSummaries();
+    await tick();
+  }
+
+  it.each([
+    ['an ordinary thread', {}],
+    ['an assistant', { agentId: 'agent-1' }],
+  ])('shows the open workers and those waiting on the user on %s, and clears them', async (_, overrides) => {
+    const rendered = render(ThreadRow, { props: { thread: makeThread(overrides), pane: createThreadPane() } });
+    expect(rendered.queryByTestId('thread-row-workers')).toBeNull();
+    expect(rendered.queryByTestId('thread-row-workers-need-you')).toBeNull();
+
+    await summaries([{ threadId: 'thread-1', open: 3, needYou: 1 }, { threadId: 'other', open: 5, needYou: 5 }]);
+    const count = rendered.getByTestId('thread-row-workers');
+    expect(count.textContent?.trim()).toBe('3');
+    expect(count.getAttribute('title')).toBe('3 open workers');
+    const badge = rendered.getByTestId('thread-row-workers-need-you');
+    expect(badge.textContent?.trim()).toBe('1');
+    expect(badge.getAttribute('title')).toBe('1 worker waiting on you');
+    expect(badge.dataset.tone).toBe('warning');
+
+    // Nobody waiting: the badge goes, the count stays.
+    await summaries([{ threadId: 'thread-1', open: 2, needYou: 0 }]);
+    expect(rendered.getByTestId('thread-row-workers').textContent?.trim()).toBe('2');
+    expect(rendered.queryByTestId('thread-row-workers-need-you')).toBeNull();
+
+    // The computer lists the thread no more: it has no open worker.
+    await summaries([]);
+    expect(rendered.queryByTestId('thread-row-workers')).toBeNull();
+  });
+
+  it('shows them under the compact layout too', async () => {
+    setCompactLayoutForTest(true);
+    const rendered = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    await summaries([{ threadId: 'thread-1', open: 2, needYou: 2 }]);
+    expect(rendered.getByTestId('thread-row-workers').textContent?.trim()).toBe('2');
+    expect(rendered.getByTestId('thread-row-workers-need-you').getAttribute('title')).toBe('2 workers waiting on you');
   });
 });

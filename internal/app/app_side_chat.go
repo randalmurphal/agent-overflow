@@ -24,6 +24,24 @@ import (
 // stale pane or a second Keep.
 const sideChatNotScratchCode = "thread_not_scratch"
 
+// askCopyReadOnlyCode is what a person's message to, or Keep of, the
+// hidden copy a thread_ask runs in answers with (store.Thread.AskCopy).
+// The copy answers the agent that asked and is deleted once it has: a
+// message there would steer that answer or be deleted with the copy, and
+// a kept copy would outlive its request. Its pane offers neither.
+const askCopyReadOnlyCode = "thread_ask_copy"
+
+// refuseAskCopyMessage refuses text a person typed (ExpandComposerCommands
+// marks it) for an ask's copy. The question the ask sends, and what the
+// copy's own thread tools queue there, are the app's and go through.
+func refuseAskCopyMessage(thread store.Thread, opts sendMessageOptions) error {
+	if !thread.AskCopy || !opts.ExpandComposerCommands {
+		return nil
+	}
+	return errorsx.Public(askCopyReadOnlyCode,
+		"This is the copy an agent's question runs in. It takes no messages; send to the thread it copies instead.", nil)
+}
+
 // ForkSideChat forks a thread at its tail into a hidden scratch thread and
 // records where it came from, so the fork can be kept or deleted later.
 //
@@ -63,8 +81,14 @@ type scratchForkOptions struct {
 	// RuntimeMode is the fork's, empty to inherit the source's.
 	RuntimeMode string
 	// RequestToken is the agent request an ask fork answers. A side chat has
-	// none: a person is driving it.
+	// none: a person is driving it, so it continues no agent's delegation
+	// and is level 0 (store.SubThreadLevel).
 	RequestToken string
+	// SpawnLevel is the level a paired computer's ask carried to its copy.
+	SpawnLevel int
+	// Lineage is the thread an ask's copy works for
+	// (forkOptions.Lineage), "" for a side chat.
+	Lineage string
 }
 
 // forkScratchThread forks source at its tail into a hidden scratch thread and
@@ -80,6 +104,8 @@ func (a *App) forkScratchThread(
 		Mode:        threadmode.ModeScratch,
 		RuntimeMode: opts.RuntimeMode,
 		Title:       scratchForkTitle(opts.TitlePrefix, source.Title),
+		SpawnLevel:  opts.SpawnLevel,
+		Lineage:     opts.Lineage,
 	})
 	if err != nil {
 		return store.Thread{}, err
@@ -93,7 +119,7 @@ func (a *App) forkScratchThread(
 		// The fork exists and nothing owns it yet: no pane has opened on it
 		// and no sweep knows about it. Take it back rather than leave a
 		// hidden thread nothing can reach.
-		if deleteErr := a.DeleteThread(fork.ID); deleteErr != nil {
+		if deleteErr := a.deleteThread(fork.ID); deleteErr != nil {
 			log.Printf("side chat: delete orphaned scratch fork %s: %v", fork.ID, deleteErr)
 		}
 		return store.Thread{}, err
@@ -132,13 +158,17 @@ func (a *App) PromoteScratchThread(ctx context.Context, threadID string) (store.
 		return store.Thread{}, err
 	}
 	defer unlock()
-	_, found, err := a.store.GetScratchThread(threadID)
+	record, found, err := a.store.GetScratchThread(threadID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("promote scratch thread: %w", err)
 	}
 	if !found {
 		return store.Thread{}, errorsx.Public(sideChatNotScratchCode,
 			"This thread is not a side chat, so there is nothing to keep.", nil)
+	}
+	if record.RequestToken != "" {
+		return store.Thread{}, errorsx.Public(askCopyReadOnlyCode,
+			"This is the copy an agent's question runs in, and it is deleted once it answers; it cannot be kept.", nil)
 	}
 	promoted, err := a.store.PromoteScratchThread(threadID)
 	if err != nil {

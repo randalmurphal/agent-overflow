@@ -1,0 +1,960 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+// mustCreateAssistant moves threadID into home and records an assistant on
+// it, its id the thread's.
+func mustCreateAssistant(t *testing.T, s *Store, threadID, home string) StandingAgent {
+	t.Helper()
+	mustPlaceInHome(t, s, threadID, home)
+	agent := StandingAgent{ID: threadID, ThreadID: threadID, Home: home, CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent); err != nil {
+		t.Fatalf("create assistant on %s: %v", threadID, err)
+	}
+	return agent
+}
+
+// mustPlaceInHome moves a thread outside every project into home, where an
+// assistant's thread and a handoff's successor live.
+func mustPlaceInHome(t *testing.T, s *Store, threadID, home string) {
+	t.Helper()
+	if err := s.PlaceThreadInHome(threadID, home); err != nil {
+		t.Fatalf("place %s in %s: %v", threadID, home, err)
+	}
+}
+
+func mustRetitle(t *testing.T, s *Store, threadID, title string) {
+	t.Helper()
+	if _, err := s.db.Exec(`UPDATE threads SET title = ? WHERE id = ?`, title, threadID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An assistant is recorded only on a thread in its home, outside every
+// project, with no group, worktree or branch: PlaceThreadInHome moves an
+// existing thread there, origin cleared, and refuses a thread that is
+// already an assistant's.
+func TestAnAssistantsThreadLivesInItsHome(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	group := mustCreateGroup(t, s, defaultTestProjectID, "Release")
+	thread := makeThread("ops", "claude")
+	thread.Title, thread.GroupID, thread.Branch, thread.WorktreePath = "Ops", group.ID, "feature", "/repo/.worktrees/feature"
+	thread.Origin = ThreadOrigin{Branch: "feature", HeadCommit: "abc"}
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	agent := StandingAgent{ID: "ops", ThreadID: "ops", Home: "/config/agents/a", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("a thread in a project = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	if _, found, err := s.GetStandingAgent("ops"); err != nil || found {
+		t.Fatalf("a refused record stayed: %v %v", found, err)
+	}
+	mustPlaceInHome(t, s, "ops", "/config/agents/other")
+	if err := s.CreateStandingAgent(agent); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("a thread in another home = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	mustPlaceInHome(t, s, "ops", agent.Home)
+	if err := s.CreateStandingAgent(agent); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetThread("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProjectID != "" || got.WorkspacePath != "/config/agents/a" || got.GroupID != "" || got.Placement != "standalone" ||
+		got.Branch != "" || got.WorktreePath != "" || !got.Origin.IsZero() || got.AgentID != "ops" {
+		t.Fatalf("the assistant's thread = %+v", got)
+	}
+	if err := s.PlaceThreadInHome("ops", "/config/agents/b"); err == nil {
+		t.Fatal("an assistant's thread was moved to another home")
+	}
+}
+
+// assistantDependents lists the past threads and helpers a delete of
+// threadID takes (ListDeleteFamily), in claim order.
+func assistantDependents(t *testing.T, s *Store, threadID string) []string {
+	t.Helper()
+	family, err := s.ListDeleteFamily([]string{threadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, member := range family {
+		if member.Kind == DeletePastThread || member.Kind == DeleteHelper {
+			ids = append(ids, member.ThreadID)
+		}
+	}
+	return ids
+}
+
+// Nothing deletes an assistant's record while threads live under it. Its
+// delete claims its current thread first, and from the claim no helper is
+// recorded for it and no handoff moves it; the store delete's drop is
+// refused, naming the counts, and leaves the record and what is under it in
+// place. With them gone the delete goes through.
+func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	homeThread(t, s, "old", "")
+	mustRetitle(t, s, "old", "Ops")
+	agent := StandingAgent{ID: "a-ops", ThreadID: "old", Home: "/h/old", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", agent.Home)
+	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "helper", agent.ID)
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"old", "helper"}) {
+		t.Fatalf("the threads under the assistant = %q", ids)
+	}
+	if ids := assistantDependents(t, s, "helper"); len(ids) != 0 {
+		t.Fatalf("a helper's dependents = %q", ids)
+	}
+
+	if err := s.BeginThreadDelete("next"); err != nil {
+		t.Fatalf("claim the assistant's current thread: %v", err)
+	}
+	late := makeThread("late", "claude")
+	late.ProjectID, late.WorkspacePath, late.HelperOfAgentID = "", agent.Home, agent.ID
+	if err := s.CreateThread(late); !errors.Is(err, ErrHelperOfNoAssistant) {
+		t.Fatalf("a helper of an assistant being deleted = %v, want ErrHelperOfNoAssistant", err)
+	}
+	if _, err := s.GetThread("late"); err == nil {
+		t.Fatal("a refused helper left its thread")
+	}
+	homeThread(t, s, "successor", "")
+	mustPlaceInHome(t, s, "successor", agent.Home)
+	if _, err := s.HandOffAssistant("next", "successor", 20); !errors.Is(err, ErrThreadGone) {
+		t.Fatalf("a handoff of an assistant being deleted = %v, want ErrThreadGone", err)
+	}
+	var dependents *AssistantDependentsError
+	if err := s.DeleteThread("next"); !errors.As(err, &dependents) || dependents.AgentID != agent.ID || dependents.PastThreads != 1 || dependents.Helpers != 1 {
+		t.Fatalf("the store delete = %v, want the past thread and the helper named", err)
+	}
+	if _, found, err := s.GetStandingAgent("next"); err != nil || !found {
+		t.Fatalf("after the refused drop the record = %v %v", found, err)
+	}
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"old", "helper"}) {
+		t.Fatalf("after the refused drop the threads under the assistant = %q", ids)
+	}
+
+	for _, id := range []string{"old", "helper"} {
+		if err := s.DeleteThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteThread("next"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := s.GetAgent(agent.ID); err != nil || found {
+		t.Fatalf("the record after the delete = %v %v", found, err)
+	}
+}
+
+// An assistant's current thread does not move: its transfer row is refused,
+// and a move recorded before the thread became the assistant's is refused at
+// its commit, which leaves the record and the transfer to cancel. A copy
+// keeps the record, and a past thread or a helper moves and stops being one.
+func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	homeThread(t, s, "old", "")
+	mustRetitle(t, s, "old", "Ops")
+	agent := StandingAgent{ID: "a-ops", ThreadID: "old", Home: "/h/old", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", agent.Home)
+	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "helper", agent.ID)
+	var deleted []string
+	s.OnAgentRecordDeleted(func(home string) { deleted = append(deleted, home) })
+	isCurrent := func(id string) bool {
+		t.Helper()
+		_, found, err := s.GetStandingAgent(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+
+	refused := transferRequest("next", "move", "outgoing")
+	if _, err := s.CreateThreadTransfer(refused); !errors.Is(err, ErrAssistantThreadStays) {
+		t.Fatalf("a move of the current thread = %v, want ErrAssistantThreadStays", err)
+	}
+	if _, err := s.GetThreadTransfer(refused.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused move left a row: %v", err)
+	}
+	copied, err := s.CreateThreadTransfer(transferRequest("next", "copy", "outgoing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, copied.ID, "prepared", "committed", "complete")
+	if !isCurrent("next") {
+		t.Fatal("a copy dropped the record")
+	}
+
+	for _, id := range []string{"old", "helper"} {
+		move, err := s.CreateThreadTransfer(transferRequest(id, "move", "outgoing"))
+		if err != nil {
+			t.Fatalf("a move of the %s thread: %v", id, err)
+		}
+		advanceTransfer(t, s, move.ID, "prepared", "committed")
+	}
+	if ids := assistantDependents(t, s, "next"); len(ids) != 0 {
+		t.Fatalf("after the moves the threads under the assistant = %q, want none", ids)
+	}
+
+	homeThread(t, s, "early", "")
+	mustRetitle(t, s, "early", "Early")
+	early, err := s.CreateThreadTransfer(transferRequest("early", "move", "outgoing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a-early", ThreadID: "early", Home: "/h/early", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, early.ID, "prepared")
+	if _, err := s.AdvanceThreadTransfer(early.ID, "committed", strings.Repeat("b", 64)); !errors.Is(err, ErrAssistantThreadStays) {
+		t.Fatalf("the commit of a move of a current thread = %v, want ErrAssistantThreadStays", err)
+	}
+	if row, err := s.GetThreadTransfer(early.ID); err != nil || row.Phase != "prepared" {
+		t.Fatalf("the refused commit left the transfer %+v %v, want it prepared", row, err)
+	}
+	if !isCurrent("early") {
+		t.Fatal("the refused commit dropped the record")
+	}
+	advanceTransfer(t, s, early.ID, "canceled")
+	if len(deleted) != 0 {
+		t.Fatalf("a transfer deleted the records of %q", deleted)
+	}
+}
+
+// A helper lives outside every project: one in a project is refused with
+// its thread.
+func TestAHelperInAProjectIsRefused(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	homeThread(t, s, "ops", "")
+	mustRetitle(t, s, "ops", "Ops")
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a-ops", ThreadID: "ops", Home: "/h/ops", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	helper := makeThread("helper", "claude")
+	helper.HelperOfAgentID = "a-ops"
+	if err := s.CreateThread(helper); !errors.Is(err, ErrHelperInProject) {
+		t.Fatalf("a helper in a project = %v, want ErrHelperInProject", err)
+	}
+	if _, err := s.GetThread("helper"); err == nil {
+		t.Fatal("a refused helper left its thread")
+	}
+}
+
+// Names are unique among this computer's assistants, ignoring case and
+// surrounding space; the refusal names the holder, and a thread is one
+// assistant's at most, current or past.
+func TestAssistantNamesAreUniquePerComputer(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"ops", "clash", "blank", "other"} {
+		mustCreateThread(t, s, id)
+	}
+	mustRetitle(t, s, "ops", "Ops")
+	mustRetitle(t, s, "clash", " oPS ")
+	mustRetitle(t, s, "blank", "  ")
+	mustCreateAssistant(t, s, "ops", "/h/ops")
+
+	var taken *AssistantNameTakenError
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a2", ThreadID: "clash", Home: "/h/a2"}); !errors.As(err, &taken) || taken.ThreadID != "ops" || taken.Name != "Ops" {
+		t.Fatalf("a clashing name = %v, want the holder named", err)
+	}
+	if err := s.CheckAssistantName("OPS"); !errors.As(err, &taken) {
+		t.Fatalf("CheckAssistantName(OPS) = %v", err)
+	}
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a3", ThreadID: "blank", Home: "/h/a3"}); !errors.Is(err, ErrAssistantNameEmpty) {
+		t.Fatalf("a blank name = %v", err)
+	}
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a4", ThreadID: "ops", Home: "/h/a4"}); err == nil {
+		t.Fatal("a second record on one thread was accepted")
+	}
+
+	// A rename to a name in use is refused; renaming a non-assistant
+	// thread to it is not, and an assistant keeps its own name.
+	if err := s.UpdateTitle("other", "ops"); err != nil {
+		t.Fatalf("an ordinary thread may share an assistant's name: %v", err)
+	}
+	mustCreateThread(t, s, "second")
+	mustRetitle(t, s, "second", "Second")
+	mustCreateAssistant(t, s, "second", "/h/second")
+	if err := s.UpdateTitle("second", "OPS"); !errors.As(err, &taken) || taken.ThreadID != "ops" {
+		t.Fatalf("renaming an assistant to a name in use = %v", err)
+	}
+	if err := s.UpdateTitle("ops", "ops"); err != nil {
+		t.Fatalf("an assistant renamed to its own name in another case: %v", err)
+	}
+	// A provider's title never renames an assistant.
+	if renamed, err := s.UpdateProviderTitle("second", "Generated"); err != nil || renamed {
+		t.Fatalf("provider title on an assistant = %v, %v", renamed, err)
+	}
+	if renamed, err := s.UpdateProviderTitle("other", "Generated"); err != nil || !renamed {
+		t.Fatalf("provider title on an ordinary thread = %v, %v", renamed, err)
+	}
+}
+
+// A handoff moves the record, its live loops and watches and every request
+// the old thread made, keeps the maker, archives the old thread and records
+// it as past; a second handoff onto a taken thread is refused whole.
+func TestHandOffAssistantMovesEverythingAtOnce(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"old", "new", "worker", "far", "taken"} {
+		mustCreateThread(t, s, id)
+	}
+	mustCreateAssistant(t, s, "old", "/h/old")
+	for _, w := range []AgentWake{
+		{ID: "loop", ThreadID: "old", Kind: AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 60, NextAt: 100},
+		{ID: "gone", ThreadID: "old", Kind: AgentWakeLoop, Label: "stale", Note: "n", IntervalSeconds: 60, NextAt: 100},
+	} {
+		if _, err := s.RegisterAgentWake(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.CancelAgentWake("old", "stale", "", "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	seedThreadRequest(t, s, "spawn", "old", ThreadRequestSpawn, 10)
+	if _, err := s.SetThreadRequestTarget("spawn", "", "worker", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	seedThreadRequest(t, s, "remote", "old", ThreadRequestSpawn, 11)
+	if _, err := s.SetThreadRequestTarget("remote", "desk", "far", "Far", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertThreadRequest(ThreadRequest{Token: "remind", CallerThreadID: "old", Kind: ThreadRequestRemind,
+		TargetThreadID: "old", State: ThreadRequestUnconfirmed, CreatedAt: 12, UpdatedAt: 12}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The successor becomes the assistant's thread, so it must be in no
+	// project.
+	if _, err := s.HandOffAssistant("old", "new", 500); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("a handoff onto a thread in a project = %v", err)
+	}
+	if agent, found, _ := s.GetStandingAgent("old"); !found || agent.ID != "old" {
+		t.Fatal("a refused handoff moved the record")
+	}
+	mustPlaceInHome(t, s, "new", "/h/old")
+	handOff, err := s.HandOffAssistant("old", "new", 500)
+	if err != nil {
+		t.Fatalf("hand off: %v", err)
+	}
+	if handOff.Agent.ID != "old" || handOff.Agent.ThreadID != "new" || !handOff.Old.Archived ||
+		!slices.Equal(handOff.MovedWakeIDs, []string{"loop"}) || handOff.MovedRequests != 3 {
+		t.Fatalf("handoff = %+v", handOff)
+	}
+	if agent, found, err := s.GetStandingAgent("new"); err != nil || !found || agent.Home != "/h/old" {
+		t.Fatalf("record on the successor = %+v %v %v", agent, found, err)
+	}
+	if _, found, _ := s.GetStandingAgent("old"); found {
+		t.Fatal("the old thread is still current")
+	}
+	if current, found, err := s.AssistantCurrentThreadOf("old"); err != nil || !found || current != "new" {
+		t.Fatalf("current thread of the past one = %q %v %v", current, found, err)
+	}
+	if _, found, _ := s.AssistantCurrentThreadOf("new"); found {
+		t.Fatal("a current thread maps to a current thread")
+	}
+	old, _ := s.GetThread("old")
+	if old.PastAgentID != "old" || old.AgentSupersededAt == nil || *old.AgentSupersededAt != 500 || old.AgentID != "" {
+		t.Fatalf("old row = past %q superseded %v agent %q", old.PastAgentID, old.AgentSupersededAt, old.AgentID)
+	}
+	if wake, _, _ := s.GetAgentWake("loop"); wake.ThreadID != "new" {
+		t.Errorf("live loop on %q", wake.ThreadID)
+	}
+	if wake, _, _ := s.GetAgentWake("gone"); wake.ThreadID != "old" {
+		t.Errorf("a cancelled loop moved to %q", wake.ThreadID)
+	}
+	for token, target := range map[string]string{"spawn": "worker", "remote": "far", "remind": "new"} {
+		row := rawThreadRequest(t, s, token)
+		if row.CallerThreadID != "new" || row.MadeInThreadID != "old" || row.MadeIn() != "old" || row.TargetThreadID != target {
+			t.Errorf("%s = caller %q made in %q target %q", token, row.CallerThreadID, row.MadeInThreadID, row.TargetThreadID)
+		}
+	}
+	if source, err := s.RemoteRequestSource("new", "desk", "far"); err != nil || source != "old" {
+		t.Errorf("remote source = %q %v, want the thread that made it", source, err)
+	}
+	if spawner, _, found, err := localSpawnerOf(s, "worker"); err != nil || !found || spawner != "new" {
+		t.Errorf("worker's spawner = %q %v %v, want the current thread", spawner, found, err)
+	}
+
+	// A second handoff keeps the first maker.
+	mustCreateAssistant(t, s, "taken", "/h/taken")
+	if _, err := s.HandOffAssistant("new", "taken", 600); err == nil {
+		t.Fatal("handed off onto another assistant's thread")
+	}
+	if agent, found, _ := s.GetStandingAgent("new"); !found || agent.ID != "old" {
+		t.Fatal("a refused handoff moved the record")
+	}
+	mustCreateThread(t, s, "third")
+	mustPlaceInHome(t, s, "third", "/h/old")
+	if _, err := s.HandOffAssistant("new", "third", 700); err != nil {
+		t.Fatal(err)
+	}
+	if row := rawThreadRequest(t, s, "spawn"); row.CallerThreadID != "third" || row.MadeInThreadID != "old" {
+		t.Errorf("after two handoffs spawn = caller %q made in %q", row.CallerThreadID, row.MadeInThreadID)
+	}
+	if current, _, _ := s.AssistantCurrentThreadOf("old"); current != "third" {
+		t.Errorf("the first past thread maps to %q", current)
+	}
+	if _, err := s.HandOffAssistant("worker", "taken", 800); !errors.Is(err, ErrNotAssistantCurrentThread) {
+		t.Errorf("hand off a non-assistant = %v", err)
+	}
+}
+
+// A handoff reads the old thread as it stands in its transaction: the
+// successor must pass creation's checks, an archived assistant is refused,
+// and the successor takes the current name and model settings, not the ones
+// it was created with, so a rename made meanwhile survives even when another
+// assistant took the old name. Every refusal leaves everything in place.
+func TestHandOffAssistantKeepsTheCurrentIdentity(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"old", "next", "rival"} {
+		mustCreateThread(t, s, id)
+	}
+	mustRetitle(t, s, "old", "Ops")
+	mustCreateAssistant(t, s, "old", "/h/old")
+	if _, err := s.RegisterAgentWake(AgentWake{ID: "loop", ThreadID: "old", Kind: AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 60, NextAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// The successor as New Thread, Same Assistant creates it: titled and
+	// set up from a snapshot of the old thread.
+	mustRetitle(t, s, "next", "Ops")
+	unchanged := func(what string) {
+		t.Helper()
+		if agent, found, err := s.GetStandingAgent("old"); err != nil || !found || agent.ID != "old" {
+			t.Fatalf("after %s the record = %+v %v %v", what, agent, found, err)
+		}
+		if wake, _, _ := s.GetAgentWake("loop"); wake.ThreadID != "old" {
+			t.Fatalf("after %s the loop is on %q", what, wake.ThreadID)
+		}
+		if old, _ := s.GetThread("old"); old.PastAgentID != "" {
+			t.Fatalf("after %s the old thread is past", what)
+		}
+	}
+
+	mustPlaceInHome(t, s, "next", "/h/elsewhere")
+	if _, err := s.HandOffAssistant("old", "next", 10); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("a successor in another home = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	unchanged("a successor in another home")
+	mustPlaceInHome(t, s, "next", "/h/old")
+
+	if _, _, err := s.ArchiveThread("old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HandOffAssistant("old", "next", 10); !errors.Is(err, ErrAssistantArchived) {
+		t.Fatalf("a handoff of an archived assistant = %v, want ErrAssistantArchived", err)
+	}
+	unchanged("an archived assistant")
+	if _, _, err := s.UnarchiveThread("old"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Renamed, its settings changed and its old name taken while the
+	// successor was being made.
+	if err := s.UpdateTitle("old", "Release"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET model = 'opus-current', reasoning_effort = 'high', fast_mode = 1,
+		context_window = 200000, auto_compact_standard_percent = 70, auto_compact_extended_percent = 80,
+		runtime_mode = 'full-access' WHERE id = 'old'`); err != nil {
+		t.Fatal(err)
+	}
+	mustRetitle(t, s, "rival", "Ops")
+	mustCreateAssistant(t, s, "rival", "/h/rival")
+	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	old, err := s.GetThread("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.GetThread("next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Title != "Release" || next.AgentID != "old" {
+		t.Fatalf("successor = title %q agent %q, want the current name", next.Title, next.AgentID)
+	}
+	if next.Provider != old.Provider || next.Model != "opus-current" || next.ReasoningEffort != "high" || !next.FastMode ||
+		next.ContextWindow != 200000 || next.AutoCompactStandardPercent != 70 || next.AutoCompactExtendedPercent != 80 ||
+		next.RuntimeMode != "full-access" {
+		t.Fatalf("successor settings = %+v, want the old thread's current ones", next)
+	}
+	if hits := mustSearch(t, s, "release", ThreadSearchFilter{Kinds: []string{ThreadSearchKindTitle}}); !slices.ContainsFunc(hits, func(h ThreadSearchHit) bool { return h.ThreadID == "next" }) {
+		t.Fatalf("title hits for the successor's name = %+v", hits)
+	}
+	listed, err := s.ListAssistants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, l := range listed {
+		names = append(names, l.Name)
+	}
+	if !slices.Equal(names, []string{"Ops", "Release"}) {
+		t.Fatalf("assistant names = %q, want each held once", names)
+	}
+}
+
+// The agent columns follow a handoff: the old thread is the assistant's
+// past thread, an assistant another created is not, and the workers name
+// the current thread as their spawner.
+func TestThreadRowsFollowAHandOff(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"old", "new", "child", "created"} {
+		mustCreateThread(t, s, id)
+	}
+	mustCreateAssistant(t, s, "old", "/h/old")
+	for token, target := range map[string]string{"tok-child": "child", "tok-created": "created"} {
+		seedThreadRequest(t, s, token, "old", ThreadRequestSpawn, 10)
+		if _, err := s.SetThreadRequestTarget(token, "", target, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustPlaceInHome(t, s, "created", "/h/c")
+	if err := s.CreateStandingAgent(StandingAgent{ID: "c", ThreadID: "created", Home: "/h/c", CreatorAgentID: "old", CreatedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread("created"); err != nil {
+		t.Fatal(err)
+	}
+	mustPlaceInHome(t, s, "new", "/h/old")
+	if _, err := s.HandOffAssistant("old", "new", 500); err != nil {
+		t.Fatal(err)
+	}
+	row := func(id string) Thread {
+		t.Helper()
+		got, err := s.GetThread(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := row("new"); got.AgentID != "old" {
+		t.Errorf("current row = agent %q", got.AgentID)
+	}
+	if got := row("child"); got.SpawnedByThreadID != "new" {
+		t.Errorf("worker row = spawnedBy %q", got.SpawnedByThreadID)
+	}
+	if page, err := s.ListAssistantPastThreads("old", PastThreadsCursor{}, 20); err != nil || len(page.Threads) != 1 || page.Threads[0].ID != "old" {
+		t.Errorf("past threads of the assistant = %+v, %v", page, err)
+	}
+}
+
+// A receipt still waiting on a past thread moves to the current one, with
+// the local request row; one already running stays.
+func TestRetargetThreadReceipt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"sender", "old", "new"} {
+		mustCreateThread(t, s, id)
+	}
+	seedThreadRequest(t, s, "tok", "sender", ThreadRequestSend, 10)
+	if _, err := s.SetThreadRequestTarget("tok", "", "old", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: "tok", OwnerDeviceID: "local", SourceThreadID: "sender", Kind: ThreadRequestSend, TargetThreadID: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := s.RetargetThreadReceipt("tok", "old", "new"); err != nil || !moved {
+		t.Fatalf("retarget = %v %v", moved, err)
+	}
+	if row := rawThreadRequest(t, s, "tok"); row.TargetThreadID != "new" {
+		t.Errorf("request target = %q", row.TargetThreadID)
+	}
+	if moved, err := s.RetargetThreadReceipt("tok", "old", "new"); err != nil || moved {
+		t.Fatalf("a second retarget = %v %v, want no change", moved, err)
+	}
+}
+
+// The frontend folds names the same way (stores/assistants.svelte.ts); both
+// sides read testdata/assistant_name_folds.json so the two cannot drift.
+func TestSameAssistantNameFolds(t *testing.T) {
+	raw, err := os.ReadFile("testdata/assistant_name_folds.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		A, B string
+		Same bool
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if got := SameAssistantName(c.A, c.B); got != c.Same {
+			t.Errorf("SameAssistantName(%q, %q) = %v, want %v", c.A, c.B, got, c.Same)
+		}
+	}
+}
+
+// homeThread seeds a thread outside every project, as an assistant's and
+// its helpers' are.
+func homeThread(t *testing.T, s *Store, id, helperOf string) Thread {
+	t.Helper()
+	thread := makeThread(id, "claude")
+	thread.ProjectID, thread.WorkspacePath, thread.HelperOfAgentID = "", "/h/"+id, helperOf
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("create thread %s: %v", id, err)
+	}
+	got, err := s.GetThread(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// An assistant serves the projects its record names, without repeats, or
+// all of them; its thread row carries the choice, a project's deletion
+// unassigns it, and a project that does not exist is refused whole.
+func TestAnAssistantServesItsProjects(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	other, err := s.CreateProject(Project{ID: "other", Path: "/tmp/other", Name: "Other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "ops", "")
+	mustRetitle(t, s, "ops", "Ops")
+	agent := StandingAgent{ID: "a-ops", ThreadID: "ops", Home: "/h/ops", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent, other.ID, defaultTestProjectID, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	served := func() []string {
+		t.Helper()
+		projects, err := s.ServedProjects(agent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, p := range projects {
+			names = append(names, p.Name)
+		}
+		return names
+	}
+	row, err := s.GetThread("ops")
+	if err != nil || row.ProjectID != "" || row.AgentID != agent.ID || row.AgentAllProjects ||
+		!slices.Equal(row.AgentProjectIDs, []string{defaultTestProjectID, other.ID}) {
+		t.Fatalf("thread row = project %q agent %q all %v projects %q (%v)", row.ProjectID, row.AgentID, row.AgentAllProjects, row.AgentProjectIDs, err)
+	}
+	listed, err := s.ListAssistants()
+	if err != nil || len(listed) != 1 || listed[0].Agent != agent || listed[0].Name != "Ops" {
+		t.Fatalf("listed = %+v (%v)", listed, err)
+	}
+	if got := served(); !slices.Equal(got, []string{"Default Test Project", "Other"}) {
+		t.Fatalf("served = %q", got)
+	}
+
+	// All projects: no rows, every unarchived project, a new one included.
+	if _, found, err := s.SetAgentProjects(agent.ID, true, []string{other.ID}); err != nil || !found {
+		t.Fatalf("SetAgentProjects(all) = %v %v", found, err)
+	}
+	if _, err := s.CreateProject(Project{ID: "later", Path: "/tmp/later", Name: "Later"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveProject(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); !slices.Equal(got, []string{"Default Test Project", "Later"}) {
+		t.Fatalf("served by a chief of staff = %q", got)
+	}
+	row, _ = s.GetThread("ops")
+	if !row.AgentAllProjects || row.AgentProjectIDs != nil {
+		t.Fatalf("thread row = all %v projects %q", row.AgentAllProjects, row.AgentProjectIDs)
+	}
+
+	// A project named is served while archived; deleting it unassigns it
+	// and leaves the assistant.
+	if _, _, err := s.SetAgentProjects(agent.ID, false, []string{other.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); !slices.Equal(got, []string{"Other"}) {
+		t.Fatalf("served = %q", got)
+	}
+	if err := s.DeleteProject(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := s.GetStandingAgent("ops"); err != nil || !found || got.ID != agent.ID {
+		t.Fatalf("the assistant after its project's deletion = %+v %v %v", got, found, err)
+	}
+	if ids, err := s.AgentProjectIDs(agent.ID); err != nil || len(ids) != 0 {
+		t.Fatalf("projects after the deletion = %q %v", ids, err)
+	}
+
+	if _, found, err := s.SetAgentProjects("nobody", true, nil); err != nil || found {
+		t.Fatalf("an unknown assistant = %v %v", found, err)
+	}
+	if _, _, err := s.SetAgentProjects(agent.ID, false, []string{"gone"}); err == nil {
+		t.Fatal("an unknown project was accepted")
+	}
+	homeThread(t, s, "scout", "")
+	mustRetitle(t, s, "scout", "Scout")
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a-scout", ThreadID: "scout", Home: "/h/scout"}, "gone"); err == nil {
+		t.Fatal("an assistant serving an unknown project was recorded")
+	}
+	if _, found, err := s.GetStandingAgent("scout"); err != nil || found {
+		t.Fatalf("a refused record stayed: %v %v", found, err)
+	}
+}
+
+// A helper is recorded with its thread, and a fork of a thread under an
+// assistant is its helper; the threads under the assistant list past
+// threads first, then helpers, each oldest first, and go with their rows.
+func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	homeThread(t, s, "ops", "")
+	mustRetitle(t, s, "ops", "Ops")
+	agent := StandingAgent{ID: "a-ops", ThreadID: "ops", Home: "/h/ops", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent, defaultTestProjectID); err != nil {
+		t.Fatal(err)
+	}
+	helper := homeThread(t, s, "helper", agent.ID)
+	if helper.HelperOfAgentID != agent.ID || helper.AgentID != "" || helper.AgentProjectIDs != nil {
+		t.Fatalf("helper row = helperOf %q agent %q projects %q", helper.HelperOfAgentID, helper.AgentID, helper.AgentProjectIDs)
+	}
+	// Neither takes a placement, so a row naming either offers none.
+	names, err := s.ThreadNames([]string{"ops", "helper"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"ops", "helper"} {
+		if name, ok := names[id]; !ok || name.Placement != "" {
+			t.Errorf("ThreadNames[%s] = %+v, %v, want no placement", id, name, ok)
+		}
+	}
+	if err := s.CreateThread(Thread{ID: "stray", Provider: "claude", Model: "m", WorkspacePath: "/h", HelperOfAgentID: "nobody"}); err == nil {
+		t.Fatal("a helper of no assistant was created")
+	}
+	if _, err := s.GetThread("stray"); err == nil {
+		t.Fatal("a refused helper left its thread")
+	}
+
+	ops, err := s.GetThread("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []Thread{ops, helper} {
+		fork := BuildForkedThread(source)
+		if fork.HelperOfAgentID != agent.ID {
+			t.Fatalf("a fork of %s is a helper of %q", source.ID, fork.HelperOfAgentID)
+		}
+	}
+	project := makeThread("project-work", "claude")
+	if err := s.CreateThread(project); err != nil {
+		t.Fatal(err)
+	}
+	if fork := BuildForkedThread(project); fork.HelperOfAgentID != "" {
+		t.Fatalf("a fork of project work is a helper of %q", fork.HelperOfAgentID)
+	}
+	fork := BuildForkedThread(helper)
+	fork.ID = "helper-fork"
+	if err := s.CreatePointerFork(fork, helper.ID, ForkCut{}, testInterruptedSummary, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", "/h/ops")
+	if _, err := s.HandOffAssistant("ops", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"ops", "helper", "helper-fork"}) {
+		t.Fatalf("threads under the assistant = %q", ids)
+	}
+	for _, placement := range []string{PlacementStandalone, PlacementOwned} {
+		if _, err := s.SetThreadPlacement([]string{"helper"}, placement); !errors.Is(err, ErrPlacementOutsideProjects) {
+			t.Fatalf("placing a helper %s = %v", placement, err)
+		}
+	}
+	if err := s.DeleteThread("helper"); err != nil {
+		t.Fatal(err)
+	}
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"ops", "helper-fork"}) {
+		t.Fatalf("after deleting a helper = %q", ids)
+	}
+}
+
+// Names differing only by case clash, and the refusal
+// names the holder.
+func TestAssistantNameCaseClash(t *testing.T) {
+	s := newTestStore(t)
+	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
+		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0),
+		('b', NULL, 'Mail', 'claude', '/h/B', '', 1, 1, 0),
+		('c', NULL, '  OPS ', 'claude', '/h/C', '', 1, 1, 0)`)
+	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateStandingAgent(StandingAgent{ID: "B", ThreadID: "b", Home: "/h/B", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var taken *AssistantNameTakenError
+	if err := s.CreateStandingAgent(StandingAgent{ID: "C", ThreadID: "c", Home: "/h/C", CreatedAt: 1}); err == nil {
+		t.Fatal("a case-and-space variant of a taken name was accepted at creation")
+	} else if !asNameTaken(err, &taken) || taken.Name != "Ops" {
+		t.Fatalf("creation refusal = %v", err)
+	}
+	if err := s.UpdateTitle("b", "oPs"); err == nil {
+		t.Fatal("rename to a case variant of a taken name was accepted")
+	} else if !asNameTaken(err, &taken) || taken.Name != "Ops" {
+		t.Fatalf("rename refusal = %v", err)
+	}
+	// A provider title never renames an assistant.
+	if renamed, err := s.UpdateProviderTitle("a", "Provider title"); err != nil || renamed {
+		t.Fatalf("provider title renamed an assistant: %v %v", renamed, err)
+	}
+	if ok, err := s.UpdateTitleIfCurrent("a", "Ops", "Generated"); err != nil || ok {
+		t.Fatalf("generated title renamed an assistant: %v %v", ok, err)
+	}
+}
+
+func asNameTaken(err error, out **AssistantNameTakenError) bool {
+	t, ok := err.(*AssistantNameTakenError)
+	if ok {
+		*out = t
+	}
+	return ok
+}
+
+// A handoff moves the remote jobs still owed to the old
+// thread (pending, or queued and never confirmed) and leaves a confirmed or
+// dismissed one where it was. It moves the owner only: every watch still
+// names the thread that launched its job.
+func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
+	s := newTestStore(t)
+	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
+		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0), ('a2', NULL, 'Ops', 'claude', '/h/A', '', 2, 2, 0)`)
+	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.db, `INSERT INTO remote_watches (computer_id, request_id, thread_id, launched_in_thread_id, fingerprint, label, notification, created_at, confirmed_at) VALUES
+		('c', 'pending', 'a', 'a', 'f', 'l', 'pending', 1, NULL),
+		('c', 'unconfirmed', 'a', 'a', 'f', 'l', 'queued', 1, NULL),
+		('c', 'confirmed', 'a', 'a', 'f', 'l', 'queued', 1, 5),
+		('c', 'dismissed', 'a', 'a', 'f', 'l', 'dismissed', 1, NULL)`)
+	if _, err := s.HandOffAssistant("a", "a2", 10); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"pending": "a2", "unconfirmed": "a2", "confirmed": "a", "dismissed": "a"}
+	for request, thread := range want {
+		w, err := s.GetRemoteWatch("c", request)
+		if err != nil || w.ThreadID != thread {
+			t.Errorf("watch %s on %q %v, want %s", request, w.ThreadID, err, thread)
+		}
+		// The destination's receipt keeps naming the thread that launched it.
+		if w.LaunchedIn != "a" {
+			t.Errorf("watch %s launched in %q, want a", request, w.LaunchedIn)
+		}
+	}
+}
+
+// The thread that answers the prompts of a worker this computer spawned on
+// a paired computer is the spawn's caller while it is not archived; a
+// local spawn or an unknown token names none.
+func TestRemotePromptHolderIsTheSpawnsCallerWhileItCanAnswer(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "worker"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "near", "lead", ThreadRequestSpawn, "worker", false, 100)
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "far", CallerThreadID: "lead", Kind: ThreadRequestSpawn, TargetComputerID: "desk", TargetThreadID: "remote-worker",
+		State: ThreadRequestRunning, CreatedAt: 110, UpdatedAt: 110,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for token, want := range map[string]string{"far": "lead", "near": "", "missing": ""} {
+		holder, title, found, err := s.RemotePromptHolder(token)
+		if err != nil || found != (want != "") || holder != want || (found && title != "Thread lead") {
+			t.Errorf("holder of %s = %q %q found=%v err=%v; want %q", token, holder, title, found, err, want)
+		}
+	}
+	if _, _, err := s.ArchiveThread("lead"); err != nil {
+		t.Fatal(err)
+	}
+	if holder, _, found, err := s.RemotePromptHolder("far"); err != nil || found {
+		t.Errorf("holder of a spawn whose caller is archived = %q found=%v err=%v; want none", holder, found, err)
+	}
+}
+
+// A thread's prompts go to the caller of its newest local spawn, whoever
+// that is, a worker's worker to the worker; a thread whose spawner is
+// archived, or that only a spawn on another computer names, has none. A
+// worker past the ledger's retention still names its spawner through the
+// lineage row the sweep kept.
+func TestSpawnOwnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "worker", "grand", "far", "kept", "orphan"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "lead-worker", "lead", ThreadRequestSpawn, "worker", false, 100)
+	seedAgentRequest(t, s, "worker-grand", "worker", ThreadRequestSpawn, "grand", false, 110)
+	seedAgentRequest(t, s, "lead-kept", "lead", ThreadRequestSpawn, "kept", false, 10)
+	settleAgentRequest(t, s, "lead-kept", 20)
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "lead-far", CallerThreadID: "lead", Kind: ThreadRequestSpawn, TargetComputerID: "desk", TargetThreadID: "orphan",
+		State: ThreadRequestRunning, CreatedAt: 120, UpdatedAt: 120,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.DeleteThreadRequestsBefore(50, everySpawnRests(t, s, 50)); err != nil {
+		t.Fatal(err)
+	}
+	if !rawThreadRequest(t, s, "lead-kept").LineageOnly {
+		t.Fatal("the old spawn was not kept as lineage")
+	}
+	for _, tc := range []struct{ thread, spawner string }{
+		{"worker", "lead"}, {"grand", "worker"}, {"kept", "lead"}, {"orphan", ""}, {"lead", ""},
+	} {
+		spawner, title, found, err := localSpawnerOf(s, tc.thread)
+		if err != nil || found != (tc.spawner != "") || spawner != tc.spawner {
+			t.Errorf("spawner of %s = %q found=%v err=%v; want %q", tc.thread, spawner, found, err, tc.spawner)
+		}
+		if found && title != "Thread "+tc.spawner {
+			t.Errorf("spawner of %s titled %q", tc.thread, title)
+		}
+	}
+	if _, _, err := s.ArchiveThread("worker"); err != nil {
+		t.Fatal(err)
+	}
+	if spawner, _, found, err := localSpawnerOf(s, "grand"); err != nil || found {
+		t.Errorf("spawner of a worker whose spawner is archived = %q found=%v err=%v; want none", spawner, found, err)
+	}
+	if spawner, _, found, err := localSpawnerOf(s, "worker"); err != nil || !found || spawner != "lead" {
+		t.Errorf("an archived worker's own spawner = %q found=%v err=%v; want lead", spawner, found, err)
+	}
+}

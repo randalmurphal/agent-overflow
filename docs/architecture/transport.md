@@ -466,7 +466,17 @@ each bound watch so the cleanup is unbound by the task's end or the
 client's release even after the tailer has let the watch go. A gap on the
 channel re-watches every held tail.
 `provider:background_tasks_changed` is a payload-free, wildcard refetch nudge
-for readers that must hear about threads no pane shows.
+for readers that must hear about threads no pane shows. The tray's loop,
+watch and reminder rows read `ListThreadWakes` when the thread opens and
+after a reconnect or a lost frame, and otherwise apply
+`thread:wakes_changed`, which carries one changed row with its thread and
+is not filtered by thread, so a reader without a pane can apply it.
+The Agents segment reads `ListThreadAgentRows` the same way. A
+`thread:agent_rows_changed` frame names the caller thread whose rows
+changed (a nested caller included) and the request, carries no row, and
+is not filtered by thread: the segment reads the rows frames named again
+(`GetThreadAgentRows`, up to 32 at once) when it lists them, and its list
+otherwise.
 
 A `lease` frame reports whether the platform has paused the client. It is not
 page visibility, focus, or pane selection. New connections start active.
@@ -600,3 +610,18 @@ The highest-value transport tests cover:
 - the in-flight RPC cap refusal and read-loop liveness while handlers are
   parked; and
 - mixed-version hello, refusal, refresh, and additive-field compatibility.
+
+
+### Paired worker updates
+
+`ThreadOwnerChanges` serves one bounded wait for the authenticated device
+on its existing carrier. The connection hello and each wait answer name
+the backend launch. A replaced carrier or launch invalidates outstanding
+reads. The caller records the reported changes as owed before advancing its
+cursor and continues waiting while independent readers apply ordinary and
+prompt changes. Closing the listening connection releases its device log.
+
+`ThreadOwnerRecovery` pages by stable keys through held prompts, active
+work, uncollected answers and structural revisions. `ThreadToolRequestStatus` carries batched
+status and link-state reads, original-source link contact and exact
+structural acknowledgments. These operations use `thread-tools.v2`.

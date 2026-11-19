@@ -65,6 +65,16 @@ type Session struct {
 	recMu sync.Mutex
 	rec   *reconstructor
 
+	// sessionStart follows the delivery of Config.SessionStartHook
+	// (observeMainRequest); nil when the session has none. sessionStartSince
+	// is when its open expectation opened: a context stamped earlier came
+	// from an earlier run. sessionStartMu orders a compaction's Expect
+	// against a main request's check and settle, which run on the relay's
+	// and the gateway's goroutines.
+	sessionStartMu    sync.Mutex
+	sessionStart      *provider.SessionStartDelivery
+	sessionStartSince time.Time
+
 	gateway *gateway
 	relay   *hookRelay
 
@@ -155,6 +165,10 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if onEvent == nil {
 		return nil, fmt.Errorf("claudetui: onEvent callback is required")
 	}
+	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget, cfg.Resume)
+	if err != nil {
+		return nil, fmt.Errorf("claudetui: %w", err)
+	}
 
 	s = &Session{
 		threadID: threadID,
@@ -173,6 +187,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s.parser.SetModelAliases(maps.Clone(cfg.ModelAliases))
 	s.parser.SetAgentLaunchLookup(cfg.AgentLaunchByTask)
 	s.rec = newReconstructor(s.feedEnvelope)
+	s.sessionStart = sessionStart
+	s.sessionStartSince = time.Now()
 	// Debug-gated: record per-request routing/reconstruction decisions to the
 	// "decision" event stream only when the logger is live, so a production
 	// session never builds a decisionLog (the hook stays nil). See debuglog.go.
@@ -397,6 +413,12 @@ func (s *Session) finalizeCompaction(trigger, summary string) {
 	s.recMu.Lock()
 	s.rec.finalizeCompaction(trigger, summary)
 	s.recMu.Unlock()
+	// The compaction's SessionStart hooks run after PostCompact; the next
+	// main request carries the context.
+	s.sessionStartMu.Lock()
+	s.sessionStartSince = time.Now()
+	s.sessionStart.Expect(provider.SessionStartAfterCompaction)
+	s.sessionStartMu.Unlock()
 }
 
 // queueUserEcho records an AO Send on the reconstructor's pending-echo FIFO so
@@ -482,6 +504,18 @@ func (s *Session) Close() error {
 	appendSystemPromptPath := s.appendSystemPromptPath
 	s.mu.Unlock()
 
+	// A delivery no model request settled may not have arrived, and the
+	// next session resumes without the hook: its prompts must deliver the
+	// whole memory.
+	s.sessionStartMu.Lock()
+	if after := s.sessionStart.Expecting(); after != "" {
+		s.logf("claudetui: session closed before a model request showed whether its SessionStart hooks delivered after its %s", after)
+		if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
+			s.emitNonFatalError(warning)
+		}
+	}
+	s.sessionStartMu.Unlock()
+
 	// Stop the parser loop and release any producer parked on feed before
 	// shutting the proxy/relay down, so their handler goroutines don't deadlock
 	// on a feed send while Shutdown waits for them.
@@ -556,11 +590,17 @@ func (s *Session) onProxyError(err error) {
 	if err == nil {
 		return
 	}
-	s.logf("claudetui: %v", err)
+	s.emitNonFatalError(err.Error())
+}
+
+// emitNonFatalError logs message and puts it on the thread as an error the
+// session continues after.
+func (s *Session) emitNonFatalError(message string) {
+	s.logf("claudetui: %s", message)
 	s.emit(provider.ProviderEvent{
 		Kind:      provider.EventError,
 		ThreadID:  s.threadID,
-		Content:   err.Error(),
+		Content:   message,
 		Meta:      mustMarshal(map[string]any{"fatal": false}),
 		Timestamp: time.Now(),
 	})

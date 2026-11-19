@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/chatmodel"
@@ -58,13 +59,8 @@ func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error
 // the spawn path and the live config reconciler (app_session_config.go) so
 // both see the exact same view of "what a session for this row looks like".
 //
-// Feature-owned prompt plumbing is caller-owned: the provider package
-// intentionally doesn't know about discussions. We compose the final system
-// prompt here, then hand a provider-agnostic SessionOptions bundle to each
-// provider's ConfigFromOptions translator.
-//
 // What this function does NOT do is stamp the settings-owned axes
-// (SystemPrompt when no feature owns it, DisabledTools). Those are read
+// (SystemPrompt, DisabledTools). Those are read
 // from Settings rather than projected from the thread row, so the two
 // callers need opposite treatment — the spawn path applies today's values
 // (applySettingsOwnedAxes), the reconcile path resolves against the live
@@ -75,8 +71,6 @@ func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error
 // two git subprocesses under the per-thread config lock) on every model,
 // effort, and runtime-mode change.
 func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, error) {
-	systemPrompt := a.featureOwnedSystemPrompt(t)
-
 	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
 	// either PendingForkRef or SessionRef into opts.Resume based on this
 	// flag. We consume it here (bool in scope) rather than mutating the
@@ -92,7 +86,6 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, erro
 			StandardPercent: standardDefault,
 			ExtendedPercent: extendedDefault,
 		},
-		systemPrompt,
 		forkSession,
 	)
 
@@ -130,7 +123,7 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 	sanitized := a.sanitizeThreadModelSettings(t)
 	if !chatmodel.SameModelFields(t, sanitized) {
-		if err := a.store.UpdateThread(sanitized); err != nil {
+		if err := a.store.UpdateThreadModelSettings(threadID, t.Provider, sanitized.ModelSettings()); err != nil {
 			return fmt.Errorf("start session: persist live model settings: %w", err)
 		}
 		a.announceThread(triage.ThreadActionFull, threadID)
@@ -155,6 +148,11 @@ func (a *App) startSessionNow(threadID string) error {
 	if err := a.requireIsolatedWorkspace(opts.WorkDir); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	// Also before the transcript is settled under the workspace, which would
+	// otherwise report its own failure for a directory that is gone.
+	if err := requireWorkspaceDir(opts.WorkDir); err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
 	// Spawn-only, and the one place the settings-level override is decided
 	// for this session. The resolution travels to ensureClaudeMemoryDir
 	// below so the directory we create and the prompt we rendered come from
@@ -162,6 +160,18 @@ func (a *App) startSessionNow(threadID string) error {
 	// disagree.
 	promptOverride, err := a.applySettingsOwnedAxes(t, &opts)
 	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	// The thread's sub-thread place fixes, for this session's life, whether
+	// it has thread_spawn and its provider's own subagents.
+	place, err := a.subThreadPlaceOf(threadID)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	withoutNativeSubagents(&opts, t.Provider, place)
+	// Before anything is torn down: an assistant whose transcript the
+	// provider cleaned up continues in a new thread instead.
+	if err := a.requireAssistantSession(t, opts); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
@@ -209,25 +219,31 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	// Re-admit the thread's events in triage BEFORE spawning. A prior
-	// StopSession left the stopped-thread marker set, and the
+	// Commit the thread to this session in triage BEFORE spawning. A
+	// prior StopSession left the stopped-thread marker set, and the
 	// replacement session can emit before any wire proof-of-life lands:
 	// Codex emits EventInit synchronously inside NewSession, and a
 	// Claude process that dies during startup (unusable
 	// --resume-session-at cursor) emits its only diagnostics pre-init.
-	// Clearing here is safe — stopExistingSessionLocked has fully
-	// drained the prior session's read loop and its event queue
-	// (closeProviderSession waits for both), so no stale frame can slip
-	// through. This is the ONLY place the marker
-	// is cleared; see triage.MarkThreadActive.
+	// From here triage admits only this session's frames, so a prior
+	// session's frames that stopExistingSessionLocked's drain left
+	// queued when the worker stalled are refused rather than applied to
+	// this one. This is the ONLY place the marker is cleared; see
+	// triage.MarkThreadActive.
 	if a.triage != nil {
-		a.triage.MarkThreadActive(threadID)
+		a.triage.MarkThreadActive(threadID, sessionToken)
 	}
 
 	registeredTools := false
 	defer func() {
 		if !registeredTools {
 			a.revokeSessionMCP(threadID, sessionToken)
+			// The commit above retired the session this start replaced,
+			// so that session's disconnect leaves the thread's event
+			// queue alone, and this start's own session never ran to
+			// disconnect. Mark the queue here, or it stays registered
+			// until a later session ends.
+			a.providerEvents.retireWhenIdle(threadID)
 		}
 	}()
 	browserServers, err := a.browserMCPConfigForThread(t, sessionToken)
@@ -240,9 +256,13 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: register remote tools: %w", err)
 	}
-	threadServers, err := a.threadMCPConfigForThread(t, sessionToken)
+	threadServers, err := a.threadMCPConfigForThread(t, sessionToken, place)
 	if err != nil {
 		return fmt.Errorf("start session: register thread tools: %w", err)
+	}
+	workflowServers, err := a.workflowMCPConfigForThread(t, sessionToken)
+	if err != nil {
+		return fmt.Errorf("start session: register workflow tools: %w", err)
 	}
 	if browserServers == nil {
 		browserServers = map[string]any{}
@@ -251,6 +271,9 @@ func (a *App) startSessionNow(threadID string) error {
 		browserServers[name] = remoteMCPServerConfig(t.Provider, config)
 	}
 	for name, config := range threadServers {
+		browserServers[name] = threadMCPServerConfig(t.Provider, config)
+	}
+	for name, config := range workflowServers {
 		browserServers[name] = threadMCPServerConfig(t.Provider, config)
 	}
 	if len(browserServers) == 0 {
@@ -279,12 +302,34 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, onEvent)
+	agent, err := a.readStandingAgentSession(t)
 	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	// A read-only session refuses every write, so its memory comes
+	// without the write rules; claude-tui leaves approvals to the
+	// terminal, so its mode never refuses one.
+	readOnly := opts.RuntimeMode == provider.RuntimeReadOnly && provider.CapabilitiesForProvider(t.Provider).EnforcesRuntimeMode
+	mem, err := a.readSessionMemory(t, agent.Agent, opts.Resume != "", readOnly)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, mem, place, onEvent)
+	if err != nil {
+		if codex.IsThreadNotFound(err) && agent.Block != "" {
+			// An assistant's Codex thread the provider no longer has.
+			err = errors.Join(errAssistantSessionGone, err)
+		}
 		a.emitProviderStatusOnSessionStartError(t.Provider)
+		// The start failed for its own reason; the memory that could not be
+		// read is still news the user needs before the next attempt.
+		a.reportSessionMemory(threadID, mem)
 		return fmt.Errorf("start session: %w", err)
 	}
 
+	if mem.Hook != nil {
+		newSess.MemoryPlan = mem.Plan
+	}
 	a.sessionManager().put(threadID, newSess)
 	registeredTools = true
 	// Codex reports its thread in an EventInit emitted before NewSession
@@ -296,6 +341,7 @@ func (a *App) startSessionNow(threadID string) error {
 		a.signalRemotePeers()
 	}
 	a.emitProviderSessionAccount(threadID)
+	a.reportSessionMemory(threadID, mem)
 	// The fresh session launched with today's prompt, which clears any
 	// prompt change flag; a save that landed while it spawned flags it.
 	a.reconcileStalePromptSession(threadID)
@@ -418,16 +464,20 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	a.emitProviderSessionDisconnected(threadID, existing.Provider)
 
 	err := a.closeProviderSession(threadID, existing)
+	if a.triage != nil {
+		a.triage.EndReplacedSessionTurn(threadID)
+	}
 	// The close processed the old CLI's final frames, including the sends
 	// it discarded unrun. No session-end restore runs on this path.
 	a.restoreUndeliveredSendsLocked(threadID)
 	// The replacement session streams fresh items; the old stream's
 	// scanner states are dead weight (their final ticks will never
 	// arrive) and a reused item ID would inherit a stale watermark.
-	// unregisterSession can't purge for this path — the token was
-	// already taken above, so its callback no-ops. Unlike
+	// unregisterSession can't purge for this path: the token was
+	// already taken above, so its callback only drops the dead
+	// process's schedule and skips the registry half that purges. Unlike
 	// teardownAndCloseSession there is no CleanupThread here (the
-	// replacement path deliberately keeps triage live), so the stream
+	// replacement path keeps triage live apart from the closed turn), so the stream
 	// persist buffers must be drained explicitly first: the close drained
 	// the read loop and its events, but a buffer armed by its final deltas would
 	// otherwise fire its 250ms flush AFTER the purge and re-register
@@ -446,7 +496,7 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 // the user's custom environment for that provider (settings, applied at spawn),
 // the boot-mode overrides (providerExtraEnv — the harness's mock-control
 // credentials), the session's CLI credential (AO_ENDPOINT / AO_TOKEN /
-// AO_THREAD_ID, plus AO_RUN_ID / AO_PHASE_ID for a workflow phase), and the
+// AO_THREAD_ID), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
 // Precedence is provider config < user custom env < boot-mode overrides < AO
@@ -496,6 +546,9 @@ func (a *App) spawnProviderSession(
 	opts provider.SessionOptions,
 	mcpServers map[string]any,
 	credential aoSessionCredential,
+	agent standingAgentSession,
+	mem sessionMemory,
+	place subThreadPlace,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
 	// liveness is initialized once and attached to whichever provider
@@ -508,14 +561,15 @@ func (a *App) spawnProviderSession(
 		return session{}, err
 	}
 	accountSelection := a.captureProviderAccountSelection(t.Provider)
-	// The app guide (app_agent_guide.go) is spawn-only on every provider: it
-	// rides the Config, not the options bundle, so the reconciler never
-	// queues a restart for it and a settings change lands at the next start
-	// or resume.
-	appGuide, err := a.agentGuideFor(t, mcpServers)
+	// What the session appends to its system prompt (app_agent_guide.go) is
+	// spawn-only on every provider: it rides the Config, not the options
+	// bundle, so the reconciler never queues a restart for it and a change
+	// lands at the next start or resume.
+	prompts, err := a.sessionPromptsFor(t, mcpServers, agent.Block, place)
 	if err != nil {
 		return session{}, err
 	}
+	appSettings := a.currentSettings()
 
 	switch t.Provider {
 	case string(provider.Claude):
@@ -524,7 +578,10 @@ func (a *App) spawnProviderSession(
 			cfg.OutputSchema = string(workflowSchema)
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.AppendSystemPrompt = appGuide
+		cfg.AppendSystemPrompt = prompts.claudeAppend
+		cfg.SessionStartHook = mem.Hook
+		cfg.SessionStartForget = mem.Forget
+		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
@@ -537,11 +594,15 @@ func (a *App) spawnProviderSession(
 		if mcpServers[threadMCPName] != nil {
 			cfg.AllowedTools = append(cfg.AllowedTools, ThreadToolsAllowedTool)
 		}
+		if mcpServers[workflowMCPName] != nil {
+			cfg.AllowedTools = append(cfg.AllowedTools, WorkflowToolsAllowedTool)
+		}
 		cfg.EventLogger = a.logger
 		cfg.Reaper = a.groupReaper("claude session")
 		cfg.MCPServers = mcpServers
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
-		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
+		cfg.AccessDirs = mem.Dirs
+		applyClaudeSessionAxes(&cfg, appSettings.ClaudeSessionAxesForProvider(t.Provider))
 		cfg.Retention = a.claudeRetention(cfg.WorkDir)
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
@@ -588,7 +649,11 @@ func (a *App) spawnProviderSession(
 		// sent when the tools are on, and a live switch reaches the text at
 		// the next start or resume: a resumed thread whose text changed
 		// gets it injected (codexDeveloperInstructionsDelivery).
-		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
+		cfg.DeveloperInstructions = prompts.codexDeveloper
+		cfg.SessionStartHook = mem.Hook
+		cfg.SessionStartForget = mem.Forget
+		cfg.WritableRoots = mem.Dirs
+		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
 		if err != nil {
 			return session{}, err
@@ -709,7 +774,7 @@ func (a *App) spawnProviderSession(
 		}, nil
 
 	case string(provider.ClaudeTUI):
-		cfg, err := a.claudeTUISessionConfig(threadID, opts, appGuide, credential)
+		cfg, err := a.claudeTUISessionConfig(threadID, opts, prompts.claudeAppend, mcpServers, credential, mem)
 		if err != nil {
 			return session{}, err
 		}
@@ -736,13 +801,21 @@ func (a *App) spawnProviderSession(
 // claudeTUISessionConfig is the launch configuration of a thread's
 // interactive Claude session.
 func (a *App) claudeTUISessionConfig(
-	threadID string, opts provider.SessionOptions, appGuide string, credential aoSessionCredential,
+	threadID string,
+	opts provider.SessionOptions,
+	appGuide string,
+	mcpServers map[string]any,
+	credential aoSessionCredential,
+	mem sessionMemory,
 ) (claudetui.Config, error) {
 	cfg := claudetui.ConfigFromOptions(opts)
 	// The interactive provider drives the same `claude` binary as the
 	// headless one; there is no separate TUI binary setting.
 	cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 	cfg.AppendSystemPrompt = appGuide
+	cfg.SessionStartHook = mem.Hook
+	cfg.SessionStartForget = mem.Forget
+	cfg.NativeMemoryOff = mem.OwnMemoryOff
 	cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 	cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 	cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
@@ -769,6 +842,8 @@ func (a *App) claudeTUISessionConfig(
 		opts.ClaudeMaxCommandTimeoutHours,
 	))
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()
+	cfg.AccessDirs = mem.Dirs
+	cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
 	cfg.Retention = a.claudeRetention(cfg.WorkDir)
 	cfg.Upstream = a.claudetuiUpstream()
 	cfg.EventLogger = a.logger
@@ -904,30 +979,15 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// interrupt of whatever is running ends them before it waits for the
 	// lock; a fenced one only once it knows the turn is the one it names,
 	// because the calls belong to whatever turn the thread is running.
-	cancelParked := func() {
-		a.cancelRemoteWaits(threadID)
-		a.cancelThreadRequestWaits(threadID)
-	}
 	if expectTurnIndex == anyOpenTurn {
-		cancelParked()
+		a.cancelParkedTurnCalls(threadID)
 	}
 	// Capture before waiting on the app-level thread lock. A Codex revert holds
 	// that lock across its provider and SQLite halves; an interrupt that entered
 	// before or during the cut must not wake afterward and hit the reloaded
 	// thread. The provider fence also covers direct Session callers that do not
 	// know about this lock.
-	observedSessionToken := ""
-	observedSession := false
-	var fencedCodex *codex.Session
-	var interruptFence codex.InterruptFence
-	if current, ok := a.sessionManager().get(threadID); ok {
-		observedSession = true
-		observedSessionToken = current.Token
-		if current.Codex != nil {
-			fencedCodex = current.Codex
-			interruptFence = current.Codex.CaptureInterruptFence()
-		}
-	}
+	observed := a.observeInterruptTarget(threadID)
 	// The whole interrupt — session capture, pre-ack Mark, ack wait,
 	// and the post-ack bookkeeping/promote/eager block — runs under the
 	// thread action lock: the same lock the session-start funnel holds
@@ -945,16 +1005,59 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		return false, fmt.Errorf("interrupt turn %s: thread action lock: %w", threadID, err)
 	}
 	defer unlock()
+	return a.interruptTurnHoldingLock(threadID, expectTurnIndex, stop, observed)
+}
+
+// cancelParkedTurnCalls ends the tool calls a thread's turn has parked on a
+// remote command or on another thread's request.
+func (a *App) cancelParkedTurnCalls(threadID string) {
+	a.cancelRemoteWaits(threadID)
+	a.cancelThreadRequestWaits(threadID)
+}
+
+// interruptTarget is the session an interrupt saw before it took the thread
+// action lock, which fences it against a revert or a replacement that ran
+// while it waited.
+type interruptTarget struct {
+	seen  bool
+	token string
+	codex *codex.Session
+	fence codex.InterruptFence
+}
+
+func (a *App) observeInterruptTarget(threadID string) interruptTarget {
+	current, ok := a.sessionManager().get(threadID)
+	if !ok {
+		return interruptTarget{}
+	}
+	observed := interruptTarget{seen: true, token: current.Token}
+	if current.Codex != nil {
+		observed.codex = current.Codex
+		observed.fence = current.Codex.CaptureInterruptFence()
+	}
+	return observed
+}
+
+// interruptTurnHoldingLock is interruptTurnAtIndex past its lock: the
+// caller holds the thread action lock, and observed is the session it saw
+// before taking it, or under it. An interrupt of whatever is running has
+// ended the turn's parked calls already.
+func (a *App) interruptTurnHoldingLock(threadID string, expectTurnIndex int, stop turnStop, observed interruptTarget) (bool, error) {
+	if !stop.valid() {
+		return false, fmt.Errorf("interrupt turn %s: no stop cause", threadID)
+	}
+	consent := stop.consent
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return false, nil
 	}
-	if observedSession && sess.Token != observedSessionToken {
+	if observed.seen && sess.Token != observed.token {
 		// The work visible when the interrupt entered is gone. A replacement
 		// session may already be processing a later send, so the stale intent
 		// must not be retargeted onto it.
 		return false, nil
 	}
+	fencedCodex, interruptFence := observed.codex, observed.fence
 
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
@@ -994,9 +1097,9 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
 	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)
-	a.recordTurnStop(threadID, cutTurn, stop)
+	a.recordTurnStop(threadID, a.stoppedTurnOf(threadID, sess.Token, cutTurn, interruptedTurn), stop)
 	if expectTurnIndex != anyOpenTurn {
-		cancelParked()
+		a.cancelParkedTurnCalls(threadID)
 	}
 	var interruptErr error
 	interruptSent := true
@@ -1127,12 +1230,24 @@ func (a *App) codexResendAfterInterrupt(
 	thread store.Thread,
 ) {
 	ids := make([]string, len(persisted))
-	contents := make([]string, len(persisted))
 	for i, p := range persisted {
 		ids[i] = p.UserItemID
-		contents[i] = p.Content
 	}
 	a.triage.ClearPendingSendsByItemIDs(threadID, ids)
+
+	// Each row goes back on the wire as its dispatch first sent it: marked
+	// with its sender and with its composer command expanded, neither of
+	// which the stored row holds.
+	contents := make([]string, len(persisted))
+	for i, p := range persisted {
+		content, err := a.rowWireText(threadID, p.Content, p.Meta)
+		if err != nil {
+			log.Printf("app: codex interrupt re-send: rebuild %s/%s: %v", threadID, p.UserItemID, err)
+			a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
+			return
+		}
+		contents[i] = content
+	}
 
 	// The original dispatch delivered the turn's attachments alongside the
 	// steer; this resend is the content's only remaining delivery, so it
@@ -1163,7 +1278,7 @@ func (a *App) codexResendAfterInterrupt(
 	// The merged re-send is correlated to the FIRST item's row, which is
 	// the row the pending entry below is registered for. Items 2+ share
 	// that correlation, exactly as they share the turn.
-	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, "")
+	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, persisted[0].Meta, "")
 	sendOpts := provider.SendOptions{
 		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:         attachments.images,
@@ -1276,7 +1391,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 				// funnel flush still finds them (round-13, D13-1). When the
 				// cleanup was skipped, the queue was never wiped and they
 				// are still registered.
-				a.requeueUnconfirmedFlushItems(threadID, requeued)
+				a.requeueUnconfirmedFlushItems(threadID, requeued, queueRestoredReasonSessionDied)
 				a.emitQueueStateChanged(threadID)
 			}
 		}
@@ -1349,8 +1464,25 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 	// persisted; CleanupThread below marks the thread stopped, after which
 	// triage drops them.
 	a.drainProviderEvents(threadID, "stop session")
+	var held []ownedMessage
+	var requests teardownRequests
+	var restore flushRestore
 	if a.triage != nil {
-		a.settleQueueForTeardown(threadID, mutationsHeld, queue)
+		held, requests, restore = a.settleQueueForTeardown(threadID, mutationsHeld, queue)
+	}
+	// The answers and remote completions the drop held go back to their
+	// requests and watches once the session is closed, so a completion the
+	// watcher queues again starts a session only after this one is gone.
+	// Other threads' requests go back on the queue the cleanup emptied; a
+	// caller holding the mutation lock a queue write takes (the idle
+	// reaper) has them queued once it lets go. A restore's app messages
+	// are settled the same way, after the mutation lock is released.
+	defer a.finishFlushRestore(threadID, restore)
+	defer a.giveBackToOwners(threadID, held)
+	if mutationsHeld && !requests.empty() {
+		defer a.goThreadRequestSettling(func() { a.giveBackTeardownRequests(threadID, requests) })
+	} else {
+		defer a.giveBackTeardownRequests(threadID, requests)
 	}
 	var err error
 	if a.closeProviderSessionFn != nil {
@@ -1376,6 +1508,9 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 			log.Printf("app: settle background launches on session close for thread %s: %v", threadID, err)
 			a.emitErrorToThread(threadID, triage.BackgroundSettleFailureSummary(err))
 		}
+		// Its prompts went with the process, and so do their copies routed
+		// to the thread that spawned it.
+		a.settleEndedWorkerPrompts(threadID)
 	}
 	if sess.Provider != "" {
 		a.emitProviderSessionDisconnected(threadID, sess.Provider)
@@ -1400,28 +1535,72 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 // dropped queue (itemmeta.SetPendingFlush). The sweep would otherwise forget
 // the send and leave its row marked as history.
 //
+// A drop returns the answers and remote completions it held for their
+// owners, and the other threads' requests it took back before the agent
+// took them in (returnRequestsAtTeardown). Among the messages the provider
+// was handed and has not confirmed, an answer, a reminder or a completion is
+// held too: its row went at the provider write, and nothing else would tell
+// its owner it was not taken in.
+//
 // It runs under the thread's mutation lock, which every queue write takes
 // (registerQueueItem), so a message queued during a teardown is either in
-// the queue the teardown empties or queued once the memory cleanup is done,
-// durable and in memory for the next session. A drop takes nothing else; a
-// restore needs the thread action lock its caller holds.
-func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue teardownQueue) {
+// the queue the teardown empties, and settled with it, or queued once the
+// memory cleanup is done, durable and in memory for the next session. A
+// drop takes nothing else; a restore needs the thread action lock its
+// caller holds. A restore returns what it owes the app's messages for the
+// caller to settle once the lock is released (finishFlushRestore): settling
+// requeues other threads' requests, which is a queue write.
+func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue teardownQueue) ([]ownedMessage, teardownRequests, flushRestore) {
 	if !mutationsHeld {
 		defer a.threadApplication().LockMutations(threadID)()
 	}
-	var requeued []triage.UnconfirmedFlushItem
+	var held []ownedMessage
+	var requests teardownRequests
+	var restore flushRestore
 	switch queue {
 	case restoreQueue:
-		requeued = a.restoreUnconfirmedQueueLocked(threadID)
+		// The restore settles what the app wrote as a session end does
+		// (agentPartsNotTakenIn): answers and completions back to their
+		// owners, other threads' requests back to their queue.
+		restore = a.restoreUnconfirmedQueueOwing(threadID)
 	default:
-		a.dropUnconfirmedSends(threadID, a.dropFlushQueue(threadID))
+		requests = a.returnRequestsAtTeardown(threadID)
+		var dispatched []triage.QueuedFlushItem
+		held, dispatched = a.dropFlushQueueLocked(threadID)
+		// Read before dropUnconfirmedSends drains the sends they name.
+		held = append(held, a.unconfirmedOwnedMessages(threadID, held)...)
+		a.dropUnconfirmedSends(threadID, dispatched, requests)
 	}
 	a.triage.CleanupThread(threadID)
-	if len(requeued) > 0 {
-		// The cleanup wiped the queue these re-entered.
-		a.requeueUnconfirmedFlushItems(threadID, requeued)
-		a.emitQueueStateChanged(threadID)
+	if len(restore.requeued) > 0 {
+		// The cleanup wiped the queue these re-entered: they are queued
+		// again under the same hold of the mutation lock as the restore
+		// read their rows, and finishFlushRestore announces the queue.
+		var failures requeueOutcome
+		restore.requeued, failures = a.requeueUnconfirmedFlushItemsLocked(threadID, restore.requeued, queueRestoredReasonSessionDied)
+		restore.requeueFailed = restore.requeueFailed.join(failures)
 	}
+	return held, requests, restore
+}
+
+// unconfirmedOwnedMessages names the answers, reminders and completions
+// among the sends the provider was handed and has not confirmed, each once
+// and none that held already names. The send of a joined message names
+// them all; the person's text joined with them stays the teardown's.
+func (a *App) unconfirmedOwnedMessages(threadID string, held []ownedMessage) []ownedMessage {
+	var owned []ownedMessage
+	named := func(id string) bool {
+		return slices.ContainsFunc(held, func(m ownedMessage) bool { return m.sendID == id }) ||
+			slices.ContainsFunc(owned, func(m ownedMessage) bool { return m.sendID == id })
+	}
+	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
+		for _, id := range unconfirmedMembersOf(item).ids {
+			if ownedSendID(id) && !named(id) {
+				owned = append(owned, ownedMessage{sendID: id, unconfirmed: true})
+			}
+		}
+	}
+	return owned
 }
 
 // applyClaudeSessionAxes stamps the Claude-only `--settings` block axes

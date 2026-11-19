@@ -20,6 +20,7 @@ import {
   DeleteThreadGroup,
   RenameThreadGroup,
   SetThreadGroup,
+  SetThreadPlacement,
 } from '../../stores/bindings';
 import {
   removeThreadGroup,
@@ -39,7 +40,7 @@ import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import type { BackendKey } from '../../transport/backendKey';
 import { userFacingError } from '../../utils/userFacingError';
-import type { Thread, ThreadGroup } from '../../types/models';
+import type { Thread, ThreadGroup, ThreadPlacement } from '../../types/models';
 
 /** The name a group is born with; the row opens inline rename on top of it. */
 export const NEW_THREAD_GROUP_NAME = 'New Group';
@@ -157,8 +158,8 @@ export async function deleteThreadGroupAction(groupId: string): Promise<boolean>
 
 /**
  * Move threads into a group. The response carries every row the call
- * touched — discussion children follow their root, and a moved row comes
- * back unpinned: a thread starts unpinned in its new group.
+ * touched, and a moved row comes back unpinned: a thread starts unpinned in
+ * its new group.
  */
 export async function moveThreadsToGroupAction(
   threadIds: readonly string[],
@@ -173,6 +174,33 @@ export async function removeThreadsFromGroupAction(
   threadIds: readonly string[],
 ): Promise<boolean> {
   return setThreadGroupMembership(threadIds, '', 'remove threads from group');
+}
+
+/**
+ * Hand threads back to the thread that spawned them (owned: no sidebar
+ * row), or make them plain rows of their project, out of any group they
+ * were in (docs/specs/standing-agents.md ruling 36). Grouped is a group
+ * move. A row whose placement changes comes back unpinned. The reply's row
+ * moves the sidebar: an owned row leaves it and a pane showing it stays.
+ */
+export async function setThreadPlacementAction(
+  threadIds: readonly string[],
+  placement: Exclude<ThreadPlacement, 'grouped'>,
+): Promise<boolean> {
+  if (threadIds.length === 0) return false;
+  if (spansBackends(threadIds)) {
+    addToast('error', CROSS_MACHINE_GROUP_REFUSAL);
+    return false;
+  }
+  try {
+    const mark = threadRowFrameMark();
+    const rows = await SetThreadPlacement([...threadIds], placement) as Thread[];
+    updateThreadGroupState(rows, mark);
+    return true;
+  } catch (err) {
+    reportGroupFailure(placement === 'owned' ? 'remove thread from the sidebar' : 'show thread in the sidebar', err);
+    return false;
+  }
 }
 
 /** Shown when a batch names threads on two machines. A group belongs to one

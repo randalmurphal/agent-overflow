@@ -315,7 +315,7 @@ type Config struct {
 	// manifest carries no backends array. See attachedroutes.go.
 	AttachedBackends AttachedBackends
 
-	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
+	// ScopedTokens resolves a session command's credential to the scope it
 	// was minted for. The App owns the registry (a token lives exactly as
 	// long as the provider session it belongs to); this package owns the
 	// authorization table and the ScopedRPCPath route.
@@ -435,12 +435,14 @@ type Config struct {
 	// ordinary boots, which do not expose the harness bridge.
 	PageMarker string
 
-	// OmitThreadToolsCapability drops CapabilityThreadTools from the hello
-	// frame so this backend stands in for a build older than the agent
-	// thread tools. Test isolation only: main.go sets it from
-	// diagenv.HarnessOldPeer and only on a harness boot, which is what an
-	// end-to-end test needs to reach the thread_unsupported refusal.
-	OmitThreadToolsCapability bool
+	// ThreadToolsOlderThan, a thread peer protocol generation
+	// (CapabilityThreadTools or a later one), drops it and every later
+	// generation from the hello frame so this backend stands in for a build
+	// that predates it. Empty advertises them all. Test isolation only:
+	// main.go sets CapabilityThreadTools from diagenv.HarnessOldPeer and
+	// only on a harness boot, which is what an end-to-end test needs to
+	// reach the thread_unsupported refusal.
+	ThreadToolsOlderThan string
 
 	// CrossOriginIsolate makes every asset response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
@@ -1591,8 +1593,8 @@ func (s *Server) Ready() bool { return s.ready.Load() }
 
 // Origin returns this server's own origin ("http://host:port"), with no
 // credential on it. Callers that want a page to navigate to want AppURL;
-// this is for the callers that only need to name the server — the `ao`
-// CLI's endpoint, the harness's page-origin check.
+// this is for the callers that only need to name the server: the session
+// command's endpoint, the harness's page-origin check.
 //
 // Empty before Start, for the same reason AppURL is.
 func (s *Server) Origin() string {
@@ -2355,7 +2357,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.OmitThreadToolsCapability),
+			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.ThreadToolsOlderThan),
 			BackendID:    backendID,
 			LaunchID:     s.launchID,
 			BackendName:  backendName,

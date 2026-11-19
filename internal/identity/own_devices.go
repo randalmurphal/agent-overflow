@@ -25,7 +25,7 @@ func (s *Sessions) mergeOwnDevices(sponsor *owndevices.Member, members []owndevi
 			return false, err
 		}
 	}
-	changed, ids, err := s.store.MergeOwnDevices(members, s.now().UnixMilli(), s.backendID)
+	changed, ids, released, err := s.store.MergeOwnDevices(members, s.now().UnixMilli(), s.backendID)
 	if changed {
 		s.forgetAll(ids)
 	}
@@ -33,6 +33,7 @@ func (s *Sessions) mergeOwnDevices(sponsor *owndevices.Member, members []owndevi
 	for _, id := range ids {
 		s.closeConns(id)
 	}
+	s.linksReleased(released)
 	return changed, err
 }
 func (s *Sessions) checkOwnSponsor(sponsor owndevices.Member) error {
@@ -80,7 +81,7 @@ func (s *Sessions) MintOwnIntroduction(req PairingRequest) (PairingLink, error) 
 		s.ownMu.Unlock()
 		return PairingLink{}, errors.New("own-device introduction is not authorized")
 	}
-	ids, err := s.store.RetireOwnIntroductions(req.ExpectedKey, s.now().UnixMilli())
+	ids, released, err := s.store.RetireOwnIntroductions(req.ExpectedKey, s.now().UnixMilli())
 	if err != nil {
 		s.ownMu.Unlock()
 		return PairingLink{}, err
@@ -91,6 +92,7 @@ func (s *Sessions) MintOwnIntroduction(req PairingRequest) (PairingLink, error) 
 	for _, id := range ids {
 		s.closeConns(id)
 	}
+	s.linksReleased(released)
 	return link, err
 }
 

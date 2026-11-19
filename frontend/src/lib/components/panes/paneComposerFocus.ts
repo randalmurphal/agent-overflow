@@ -90,7 +90,7 @@ export function restorePickerFocus(
 
 /**
  * Locate the named pane's composer textarea, or null when it is missing
- * (discussion-mode pane, companion pane) or disabled (blocking prompt,
+ * (terminal pane, companion pane) or disabled (blocking prompt,
  * !canCompose). Exported for type-to-focus, which needs the node itself
  * to pair focus with caret-at-end.
  */

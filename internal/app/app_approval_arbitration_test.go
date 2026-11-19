@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // One backend serves several screens, and each of them renders the same
@@ -37,7 +38,7 @@ func TestASecondAnswerToOnePromptIsReportedAsAlreadyHandled(t *testing.T) {
 	// The first answer wins the arbitration and then fails for an unrelated
 	// reason (no session in this fixture), which is what a real first answer
 	// does to the router: it takes the record.
-	if !app.triage.ClaimApprovalResponse("thread-1", "req-1") {
+	if !claimed(app.triage.ClaimPrompt("thread-1", "req-1", 0)) {
 		t.Fatal("the first answer was refused")
 	}
 	failures = nil
@@ -64,7 +65,7 @@ func TestASecondUserInputSubmissionIsReportedAsAlreadyHandled(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 
-	if !app.triage.ClaimUserInputResponse("thread-1", "req-1") {
+	if !claimed(app.triage.ClaimPrompt("thread-1", "req-1", 0)) {
 		t.Fatal("the first submission was refused")
 	}
 
@@ -104,3 +105,5 @@ func TestAFailedAnswerCanBeRetried(t *testing.T) {
 		t.Fatalf("a retry after a failed write was refused as already handled: %v", second)
 	}
 }
+
+func claimed(_ triage.PromptClaim, ok bool) bool { return ok }

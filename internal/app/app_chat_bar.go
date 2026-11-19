@@ -233,13 +233,6 @@ func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]sto
 	return favorites, nil
 }
 
-// StartDiscussionByID is StartDiscussion for a definition named by id.
-//
-//ao:scope threads:operate
-func (a *App) StartDiscussionByID(ctx context.Context, threadID, discussionID string) error {
-	return a.discussionService().StartByID(threadID, strings.TrimSpace(discussionID), a.participantDriveCheck(ctx))
-}
-
 func (a *App) projectPathForThread(thread store.Thread) (string, error) {
 	if strings.TrimSpace(thread.ProjectID) == "" {
 		return "", fmt.Errorf("thread %s has no project", thread.ID)

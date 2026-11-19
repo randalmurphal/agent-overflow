@@ -8,7 +8,7 @@
 // surface makes on the reader's behalf (a jump to a file, a comment, a
 // section) is theirs too: the surface reports it (`reportReaderNavigation`).
 
-import { DOWN_KEYS, UP_KEYS, inScrollbarGutter, isEditableTarget } from './intent';
+import { inScrollbarGutter, navigationKeyScrollDelta, navigationKeyScrolls } from './intent';
 import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
 
 const SIDE_KEYS: ReadonlySet<string> = new Set(['ArrowLeft', 'ArrowRight']);
@@ -38,8 +38,13 @@ export function watchReaderScrollInput(host: HTMLElement, scroller: () => HTMLEl
     onInput();
   };
   const key = (e: KeyboardEvent) => {
-    if (!inside(e) || isEditableTarget(e.target)) return;
-    if (UP_KEYS.has(e.key) || DOWN_KEYS.has(e.key) || SIDE_KEYS.has(e.key) || e.key === ' ') onInput();
+    const el = inside(e);
+    if (!el) return;
+    if (SIDE_KEYS.has(e.key) || e.key === ' ') {
+      if (navigationKeyScrolls(e)) onInput();
+    } else if (navigationKeyScrollDelta(e, el) !== 0) {
+      onInput();
+    }
   };
   const touchStart = (e: TouchEvent) => {
     const at = e.touches[0];

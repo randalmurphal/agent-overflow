@@ -38,6 +38,19 @@ const (
 	PathImageIngestion ImageIngestion = "path"
 )
 
+// ResumeTranscript is where a provider keeps the transcript a resume reads,
+// for a check before a start tears the running session down.
+type ResumeTranscript string
+
+const (
+	// NoResumeTranscript: nothing to check before the start. Codex refuses
+	// thread/resume of a thread it no longer has, after the start.
+	NoResumeTranscript ResumeTranscript = ""
+	// ClaudeProjectsTranscript: a session JSONL under the account's Claude
+	// projects directory, which sessionfork.ResumeTranscriptGone checks.
+	ClaudeProjectsTranscript ResumeTranscript = "claude_projects"
+)
+
 // Capabilities names provider-level behavior that app code can depend on.
 // Concrete protocol routing still belongs at the call site or in
 // provider-specific code, so fields that require provider-specific plumbing use
@@ -56,6 +69,9 @@ type Capabilities struct {
 	// exists today — must refuse to start on a provider where this is false,
 	// instead of running unenforced under a mode nothing reads.
 	EnforcesRuntimeMode bool
+	// ResumeTranscript says how a start can tell, before it stops anything,
+	// that the provider no longer has the session it resumes.
+	ResumeTranscript ResumeTranscript
 }
 
 func CapabilitiesForProvider(providerName string) Capabilities {
@@ -75,8 +91,9 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 		// resume / effort from the shared options — permission flags never reach
 		// the TUI, which owns approvals itself — so RuntimeMode is inert here.
 		return Capabilities{
-			ModelCatalog:   ClaudeProbeEnrichedCatalog,
-			ImageIngestion: PathImageIngestion,
+			ModelCatalog:     ClaudeProbeEnrichedCatalog,
+			ImageIngestion:   PathImageIngestion,
+			ResumeTranscript: ClaudeProjectsTranscript,
 		}
 	case string(Claude):
 		// Headless: base64-inlines image bytes (the zero-value ingestion); named
@@ -85,6 +102,7 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 		return Capabilities{
 			ModelCatalog:        ClaudeProbeEnrichedCatalog,
 			EnforcesRuntimeMode: true,
+			ResumeTranscript:    ClaudeProjectsTranscript,
 		}
 	default:
 		return Capabilities{}

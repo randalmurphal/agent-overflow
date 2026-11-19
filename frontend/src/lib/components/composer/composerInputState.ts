@@ -2,6 +2,8 @@ export interface ComposerInputStateInput {
   isDisabled: boolean;
   /** See ComposerSendStateInput.sendUngranted. */
   sendUngranted?: boolean;
+  /** See ComposerSendStateInput.askCopy. */
+  askCopy?: boolean;
   /**
    * The display name of the thread's machine when this client cannot
    * reach it, else empty. An attached backend dropping disables the
@@ -51,6 +53,7 @@ export function deriveComposerInputState(input: ComposerInputStateInput): Compos
     disabled:
       input.isDisabled ||
       Boolean(input.sendUngranted) ||
+      Boolean(input.askCopy) ||
       Boolean(input.unreachableTarget) ||
       Boolean(input.offline) ||
       input.hasBlockingPrompt,
@@ -64,6 +67,7 @@ function inputPlaceholder(input: ComposerInputStateInput): string {
   // Read before the prompt cases: a session that cannot send also cannot
   // answer, so offering the prompt's instructions would be a dead end.
   if (input.sendUngranted) return 'This device has read-only access';
+  if (input.askCopy) return "An agent's question runs in this copy. It takes no messages.";
   // Named computer first: "<name> is offline" says more than "disconnected"
   // and both are true at once when another computer's socket is the one
   // that dropped. "Offline" is the one word every surface uses for a down

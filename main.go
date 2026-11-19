@@ -34,6 +34,7 @@ import (
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
@@ -118,6 +119,13 @@ func main() {
 		return
 	}
 
+	// A session that receives memory runs this binary as its SessionStart
+	// hook, at a start and after a compaction; it prints the delivery as hook
+	// output. Same tiny-sidecar shape. See internal/memory/hook.go.
+	if len(os.Args) > 1 && os.Args[1] == memory.HookSubcommand {
+		os.Exit(memory.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	// A supervisor asks a staged binary what it is before it writes anything
 	// down. Short-circuit with the other internal re-execs: the answer is one
 	// JSON line and an exit, and a version being asked whether it can be
@@ -143,7 +151,7 @@ func main() {
 		os.Exit(runDesktopApply(os.Args[2:]))
 	}
 
-	// This binary is also the workflow CLI (D30): there is no separate `ao`
+	// This binary is also the `agent-overflow` CLI (D30): there is no separate
 	// executable, and a provider session finds this one on its PATH under the
 	// canonical name (see ensureCLISymlink). The two sidecars above are internal
 	// re-execs of our own making and win the argv outright; everything from here
@@ -346,6 +354,10 @@ type bootTransportOptions struct {
 	// transport and attached-computer ones are applied here. Only harness
 	// mode sets it.
 	HarnessTiming harnessTiming
+	// HarnessOlderComputer serves the App surface as v0.0.19 did
+	// (olderComputerSurface). Only harness mode sets it
+	// (diagenv.HarnessOlderComputer).
+	HarnessOlderComputer bool
 }
 
 // bootBrowserCDPRelay binds the loopback endpoint the Windows launcher's
@@ -379,6 +391,21 @@ func applyBootReadiness(cfg *transport.Config) {
 	cfg.StartupMethods = []string{wsllauncher.RPCShutdownBackend}
 }
 
+// registerAppMethods registers the App's wire surface, with the retired
+// methods windows on the previous release still call
+// (transport.ReleasedMethods) under the App's labels.
+func registerAppMethods(dispatcher *transport.Dispatcher, appService *App, opts transport.RegisterOptions) ([]*transport.Method, error) {
+	methods, err := dispatcher.Register(appService, opts)
+	if err != nil {
+		return nil, err
+	}
+	released, err := dispatcher.Register(&transport.ReleasedMethods{}, transport.RegisterOptions{Package: "main", TypeName: "App"})
+	if err != nil {
+		return nil, fmt.Errorf("register the previous release's retired methods: %w", err)
+	}
+	return append(methods, released...), nil
+}
+
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
 	if !opts.BackendLockHeldBySupervisor {
 		if lockErr := holdBackendLock(bootSettingsDir()); lockErr != nil {
@@ -398,11 +425,15 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 
 	phaseStarted := time.Now()
 	dispatcher := transport.NewDispatcher()
-	methods, err := dispatcher.Register(appService, transport.RegisterOptions{
+	appOptions := transport.RegisterOptions{
 		Package:   "main",
 		TypeName:  "App",
 		AllowList: transport.NewMethodAllowList(),
-	})
+	}
+	if opts.HarnessOlderComputer {
+		appOptions.Skip, appOptions.Reshape = olderComputerSurface()
+	}
+	methods, err := registerAppMethods(dispatcher, appService, appOptions)
 	if err != nil {
 		fatalf("transport: register App methods: %v", err)
 	}
@@ -477,12 +508,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// has no harness methods on it.
 		Harness:    opts.HarnessReceiver != nil,
 		PageMarker: opts.HarnessPageMarker,
-		// Test isolation: a harness backend that stands in for a build
-		// older than the agent thread tools, so a paired computer calling
-		// it gets thread_unsupported. Gated on the harness receiver, so an
-		// ordinary boot cannot be talked out of a capability it has.
-		OmitThreadToolsCapability: opts.HarnessReceiver != nil && envTruthy(os.Getenv(diagenv.HarnessOldPeer)),
-		WatermarkInterval:         opts.HarnessTiming.Watermark,
+		// Test isolation: a harness backend that stands in for an older
+		// build advertises the thread peer protocol generations that build
+		// had. Gated on the harness receiver, so an ordinary boot cannot be
+		// talked out of a capability it has.
+		ThreadToolsOlderThan: harnessThreadToolsOlderThan(opts),
+		WatermarkInterval:    opts.HarnessTiming.Watermark,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.
@@ -691,6 +722,24 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 	log.Printf("transport: TLS certificate fingerprint %s", material.Fingerprint)
 }
 
+// realStdout is the process's stdout once routeStdoutToStderr has replaced
+// os.Stdout. It stays referenced for the life of the process: an os.File
+// nothing references is closed by its finalizer, which would end the
+// reader's stream at whichever moment the collector ran.
+var realStdout *os.File
+
+// routeStdoutToStderr sends everything written to os.Stdout and the log to
+// stderr, so stdout carries the bootstrap line and nothing else, and
+// returns the real stdout for that line.
+func routeStdoutToStderr() *os.File {
+	if realStdout == nil {
+		realStdout = os.Stdout
+	}
+	os.Stdout = os.Stderr
+	log.SetOutput(logging.Output(os.Stderr))
+	return realStdout
+}
+
 // runHeadless is the Phase D entry point used by the Windows-side
 // launcher. It boots the transport server inside the WSL distro,
 // writes a bootstrap line back to the launcher, and runs until SIGTERM.
@@ -767,8 +816,7 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	// sentinel; once we've handed off the {port,token} the channel is
 	// done with us. Routing log.Printf to stderr keeps the diagnostics
 	// where the launcher can still surface them via its log mirror.
-	os.Stdout = os.Stderr
-	log.SetOutput(logging.Output(os.Stderr))
+	routeStdoutToStderr()
 
 	// Boot the App's subsystems directly. Wails normally calls
 	// ServiceStartup with a context that lives until shutdown — we
@@ -1029,6 +1077,22 @@ func logBootPhase(phase string, started time.Time) {
 // envTruthy treats "1"/"true" (any case) as enabled; everything else,
 // including empty, is off. Deliberately narrower than strconv.ParseBool
 // so a typo'd value reads as off rather than a surprise opt-in.
+// harnessThreadToolsOlderThan is the thread peer protocol generation a
+// harness boot standing in for an older build predates: thread-tools.v1
+// for one older than the agent thread tools, so a paired computer calling
+// it gets thread_unsupported, and thread-tools.v2 for one on v0.0.19.
+func harnessThreadToolsOlderThan(opts bootTransportOptions) string {
+	switch {
+	case opts.HarnessReceiver == nil:
+		return ""
+	case envTruthy(os.Getenv(diagenv.HarnessOldPeer)):
+		return transport.CapabilityThreadTools
+	case opts.HarnessOlderComputer:
+		return transport.CapabilityThreadToolsV2
+	}
+	return ""
+}
+
 func envTruthy(v string) bool {
 	v = strings.TrimSpace(v)
 	return v == "1" || strings.EqualFold(v, "true")

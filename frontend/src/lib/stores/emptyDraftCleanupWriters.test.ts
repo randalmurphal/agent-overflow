@@ -12,14 +12,15 @@ import {
   applyThreadReasoningEffort,
 } from './threadModelControls';
 import { cycleAgentMode } from '../components/composer/toolbar/agentModeCycle';
-import { startPaneDiscussion } from '../components/composer/toolbar/startPaneDiscussion';
 import { renameThreadTitle } from './paneTitleRename';
 import { moveDraftProject } from './draftProjectMove';
 import {
   archiveThreadAction,
   deleteThreadAction,
+  deleteThreadsAction,
   forkThreadAction,
   markThreadUnreadAction,
+  nextAssistantThreadAction,
   pinThreadAction,
   renameThreadAction,
   setThreadPinGroupAction,
@@ -59,13 +60,13 @@ const rowRpc = {
   UpdateThreadFastMode: async () => makeThread({ id: DRAFT }),
   UpdateThreadContextWindow: async () => makeThread({ id: DRAFT }),
   UpdateThreadMode: async () => makeThread({ id: DRAFT, mode: 'plan' }),
-  StartDiscussionByID: async () => {},
   GetThread: async () => makeThread({ id: DRAFT }),
   RenameThread: async () => {},
   ArchiveThread: async () => {},
   ForkThread: async () => makeThread({ id: 'fork' }),
   StopSession: async () => {},
-  DeleteThread: async () => {},
+  DeleteThreads: async () => ({}),
+  StartNextAssistantThread: async () => makeThread({ id: 'successor' }),
   MarkThreadUnread: async () => {},
   PinThread: async () => makeThread({ id: DRAFT }),
   UnpinThread: async () => makeThread({ id: DRAFT }),
@@ -81,12 +82,13 @@ const writers: Array<[string, RowRpc, (pane: ThreadPane) => Promise<unknown>]> =
   ['fast mode', 'UpdateThreadFastMode', (pane) => applyThreadFastMode(pane, true)],
   ['context window', 'UpdateThreadContextWindow', (pane) => applyThreadContextWindow(pane, 1_000_000)],
   ['agent mode', 'UpdateThreadMode', (pane) => cycleAgentMode(pane)],
-  ['discussion start', 'StartDiscussionByID', (pane) => startPaneDiscussion(pane, 'def-1', 'Review')],
   ['title rename', 'RenameThread', () => renameThreadTitle(DRAFT, 'Renamed')],
   ['sidebar rename', 'RenameThread', () => renameThreadAction(ctxFor(), 'Renamed')],
   ['sidebar archive', 'ArchiveThread', () => archiveThreadAction(ctxFor())],
   ['sidebar fork', 'ForkThread', () => forkThreadAction(ctxFor())],
-  ['sidebar delete', 'DeleteThread', () => deleteThreadAction(ctxFor())],
+  ['sidebar delete', 'DeleteThreads', () => deleteThreadAction(ctxFor())],
+  ['sidebar delete of a selection', 'DeleteThreads', () => deleteThreadsAction([makeThread({ id: DRAFT })], vi.fn())],
+  ['next thread, same assistant', 'StartNextAssistantThread', () => nextAssistantThreadAction(ctxFor())],
   ['sidebar mark unread', 'MarkThreadUnread', () => markThreadUnreadAction(ctxFor())],
   ['sidebar pin', 'PinThread', () => pinThreadAction(ctxFor())],
   ['sidebar unpin', 'UnpinThread', () => unpinThreadAction(ctxFor())],
@@ -112,7 +114,7 @@ describe('row writers during an empty-draft delete', () => {
     cleanup.answer();
     await cleanup.settled;
     await written;
-    expect(call.mock.calls.filter((args) => args[0] === DRAFT)).toEqual([]);
+    expect(call.mock.calls.filter((args) => args.flat().includes(DRAFT))).toEqual([]);
     expect(pane.hasDraftPlaceholder).toBe(true);
   });
 

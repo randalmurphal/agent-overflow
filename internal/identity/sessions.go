@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -86,6 +87,9 @@ type Sessions struct {
 	// session that proved it. Process-local and short-lived on purpose: a
 	// step-up that survived a restart would be standing elevation.
 	stepUps map[string]stepUpGrant
+
+	// releasedTo is the OnLinksReleased function.
+	releasedTo atomic.Pointer[func(threadIDs []string)]
 }
 
 // liveSweepThreshold is when the fast path drops expired entries. Below it
@@ -114,6 +118,32 @@ func NewSessions(st *store.Store, backendID string) (*Sessions, error) {
 		ceremonies: make(map[string]passkeyCeremony),
 		stepUps:    make(map[string]stepUpGrant),
 	}, nil
+}
+
+// OnLinksReleased sets the function every session end hands the threads
+// whose spawn links it released: a paired computer's owned spawns, which
+// the end of their device's last session here made standalone in its own
+// write (store.endSessionsTx). It is called after that write, outside every
+// lock of the session core, and only with a non-empty list. Set once at
+// boot, before anything serves; nil clears it.
+func (s *Sessions) OnLinksReleased(fn func(threadIDs []string)) {
+	if fn == nil {
+		s.releasedTo.Store(nil)
+		return
+	}
+	s.releasedTo.Store(&fn)
+}
+
+// linksReleased hands threadIDs to the OnLinksReleased function. Every call
+// of a store write that ends sessions passes what it released here
+// (TestNoCallerDropsTheThreadsASessionEndReleased).
+func (s *Sessions) linksReleased(threadIDs []string) {
+	if len(threadIDs) == 0 {
+		return
+	}
+	if fn := s.releasedTo.Load(); fn != nil {
+		(*fn)(threadIDs)
+	}
 }
 
 // AttachConns wires the live-connection registry. Called once during boot,
@@ -439,12 +469,13 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 	if sessionID == "" {
 		return false, nil
 	}
-	moved, err := s.store.RevokeSession(sessionID, s.now().UnixMilli())
+	moved, released, err := s.store.RevokeSession(sessionID, s.now().UnixMilli())
 	if err != nil {
 		return false, err
 	}
 	s.forget(sessionID)
 	closed := s.closeConns(sessionID)
+	s.linksReleased(released)
 	if moved {
 		s.audit(store.AuthAuditEntry{
 			Event: string(AuditSessionRevoked), Outcome: store.AuthAuditOutcomeAllowed,
@@ -499,6 +530,7 @@ func (s *Sessions) RevokeDevice(deviceID string) (DeviceRevocation, error) {
 	for _, id := range revoked.SessionIDs {
 		closed += s.closeConns(id)
 	}
+	s.linksReleased(revoked.ReleasedThreads)
 	result := DeviceRevocation{
 		DeviceMoved:       revoked.DeviceMoved,
 		SessionsEnded:     len(revoked.SessionIDs),
@@ -580,10 +612,11 @@ func (s *Sessions) ForgetDevice(deviceID string) (bool, error) {
 	if device.RevokedAt == 0 {
 		return false, ErrDeviceNotRevoked
 	}
-	forgotten, err := s.store.DeleteDevice(deviceID)
+	forgotten, released, err := s.store.DeleteDevice(deviceID)
 	if err != nil {
 		return false, err
 	}
+	s.linksReleased(released)
 	if forgotten {
 		s.audit(store.AuthAuditEntry{
 			Event: string(AuditDeviceForgotten), Outcome: store.AuthAuditOutcomeAllowed,

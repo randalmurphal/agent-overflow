@@ -129,8 +129,14 @@ the transcript both show a running call. The tool server emits
 `provider:background_tasks_changed` when a wait ends with the job still
 running, so both surfaces flip together.
 The source backend tracks outstanding jobs across frontend disconnects
-and source restarts. It polls only outstanding jobs, four checks at a time,
-with a slower retry after connection errors. An unreachable host is not an
+and source restarts, resuming from the table at boot. A pass checks up to 32
+due jobs, four at a time; a job is due again 5 s after a check, 30 s after a
+failed one, and 5 s later while a tool call is parked on it. Between passes
+the watcher sleeps until the earliest due watch or owed cancel, on a timer
+never set shorter than 2 s, and each write that adds or brings one forward
+wakes it at once (`nudgeRemoteWatches`, `app_remote_watch_loop.go`); with no
+outstanding job it does no work. Successive checks of one host reuse its
+pooled connection (`internal/attachedbackends/peerconns.go`). An unreachable host is not an
 exited process. A start whose reply was lost is checked against the destination
 once no retry is in flight: a host holding no receipt for it never accepted the
 request, and that job is released rather than watched forever.
@@ -145,7 +151,8 @@ start a follow-up turn. User drafts remain intact. Source registration precedes
 the network mutation; one durable transaction inserts the completion message
 and transfers notification responsibility to the queue. Stable send identity
 and this handoff prevent repeated observations from injecting duplicates.
-`notification: queued` means queue ownership, not proof the agent read it.
+`notification: queued` means queue ownership, not proof the agent read it;
+the provider's echo of the message records it confirmed.
 A tool reply that carried the finished receipt is the delivery: the watcher
 leaves a job alone while a call is parked on it, and the watch is dismissed
 once that reply is written, so the agent never receives the same result twice.
@@ -154,20 +161,45 @@ and the completion still arrives as a message. Notices name the computer and
 job, retain the exact routing IDs, and include at most 1 KiB of the output's
 start plus 2 KiB of its end, untrusted. Log-tool guidance appears only when
 output is omitted; general usage instructions stay in tool descriptions.
-After handoff, normal queue crash recovery applies: undelivered text is recovered
-into the composer, never independently sent again by the remote-job watcher.
+After handoff, a completion the queue could not deliver is not the person's to
+send and never goes to the composer: one still queued, or handed to the
+provider and never confirmed, at a restart, or left queued or unconfirmed by a
+session that ended or a Codex resend that failed, goes back to its watch as
+`pending`, and the watcher delivers it again. After a session end or a failed
+resend it waits on the thread request wake retry's ladder first, and once that
+is spent the watch is dismissed with a `wakeIssue` and keeps the result
+([standing agents](../specs/standing-agents.md#wake-supervisor)).
 Finished workflow phases are not reopened.
-The conversation that called `remote_run` owns the job. Deleting, archiving or
-moving it cancels the commands it still owns and drops their pending
-notifications; a copy waits for outstanding remote work and its notification
-handoff like the existing queued/background-work checks. A cancel that cannot
-reach the destination still drops the notification and does not hold the
-operation; the command runs there until the owner grace
-(`remotejobs.DefaultOwnerGrace`) ends it. An archive or delete from the sidebar
-reports it in its cleanup error; a move logs it. Deletion runs it before provider cleanup and again under the thread
+The conversation that called `remote_run` owns the job. Deleting or moving it
+cancels the commands it still owns and drops their pending notifications; a
+watch is deleted with the conversation that receives its completion, and one
+with nothing left to deliver is deleted by the request retention sweep 30 days
+after it was made.
+Archiving cancels only the jobs that have not finished and keeps the result of
+every finished one: a finish the cancel's reply reports is recorded on the
+watch, and a completion still queued, behind a failed start, goes back to its
+watch. The watcher skips an archived conversation's watches, and a completion
+it was delivering when the archive came is refused by the queue write before
+its watch moves, so a kept result arrives once the conversation is unarchived.
+A completion still queued when a Stop or a revert drops the conversation's
+queue goes back to its watch too, once the queue is gone, as does one a Stop
+or an archive finds handed to the provider and not confirmed, and the watcher
+delivers it again, starting the session for it. A copy waits for outstanding
+remote work and its notification handoff like the existing
+queued/background-work checks; the refusal for an archived conversation that
+holds a finished job says to unarchive it to receive the result. A cancel that
+cannot reach the destination does not hold the operation: it is owed on the
+watch and sent again while the watch stays (below), and a delete, which takes
+the watch with it, leaves the command to run there until the owner grace
+(`remotejobs.DefaultOwnerGrace`) ends it. An archive or delete from the
+sidebar reports it in its cleanup error; a move logs it. Deletion runs it
+before provider cleanup and again under the thread
 mutation lock, so a concurrent send cannot leave an orphaned command.
-Forgetting a computer waits for outstanding jobs and notification handoff;
-reconnect an offline computer and stop its jobs first. Pairing credentials must
+Forgetting a computer waits for outstanding jobs, notification handoff and
+cancels owed for stopped jobs whose notification was dismissed, which its
+refusal counts; reconnect an offline computer and stop its jobs first. Finished jobs held for
+archived conversations do not block it: the confirmation states how many
+results it discards, and confirming dismisses them. Pairing credentials must
 remain available while AO still needs to confirm or cancel its work.
 
 Configuration changes refresh discovery for sessions that already registered
@@ -177,7 +209,11 @@ toggles survive provider-session restarts within the app process; machine
 opt-ins persist across app restarts.
 Disabling destination agent access blocks new work while preserving owned job
 status, cancellation, log reads and artifact retrieval. Revoking the pairing
-ends all peer access. A disabled conversation MCP server blocks its tools.
+ends all peer access, and unless a new pairing replaces it the source ends
+that computer's jobs
+([the end of a pairing](../specs/agent-thread-tools.md#reaching-another-computer));
+the destination stops a job left running after the owner grace. A disabled
+conversation MCP server blocks its tools.
 
 ## Logs and artifacts
 
@@ -224,7 +260,17 @@ A destination stops a running job that no owner has asked about for an hour,
 which covers a source that quit uncleanly or lost its pairing; the receipt
 says so. A clean source restart resumes polling within that grace. Status and
 cancellation belong to the original source conversation and the paired source
-device. The destination bounds active processes and retained disk output, with
+device. A cancel a Stop or an archive sends that the destination does not take
+is reported by that Stop or archive and owed on the watch
+(`cancel_owed_at`): the source watcher sends it again every 30 seconds, on a
+loop apart from its completion checks so an unanswered cancel delays none, until
+the destination takes it or holds no such job, and settles it once the job is
+owed longer than the hour, by which the destination has stopped it. While a
+cancel is owed the watcher neither polls the job nor delivers its completion.
+The completion a Stop or an archive dismissed stays dismissed (`stopped_at`):
+a status reply already on its way, or a retry of the same request, does not
+bring it back, as they do for a start the destination refused and later
+proves it accepted. The destination bounds active processes and retained disk output, with
 truncation reported explicitly.
 After a destination restart, unfinished receipts say interrupted and are never
 automatically rerun. A process crash during a log overwrite reports the incomplete log explicitly; the acceptance
@@ -245,6 +291,16 @@ in host logs behind a reference; they are never marked as public failures.
 
 A failed network reply does not establish whether a command ran. Inspect its
 original receipt, then retry identical arguments with the same ID if needed.
+A call whose request frame was never written (its pairing could not be
+loaded, no connection to the destination opened, or the call ended before
+its write, `rpcclient.NotSent`) says that nothing was sent, and a start
+refused that way releases its fresh watch at once, as a refusal the
+destination answers before accepting does. A start retried under an ID
+whose watch the same conversation holds, for an attempt the destination did
+not refuse, keeps that watch. Any failure of the retry, including a refusal
+before it is sent such as agent commands turned off for that computer,
+names the request and says the earlier attempt may have run and to check
+its status first.
 A cancellation reply lost in transit likewise requires status verification.
 An older destination may still redact its errors; the source explains that
 limitation and preserves the destination's reference instead of guessing why

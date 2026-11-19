@@ -12,6 +12,7 @@ import {
   resetForTest,
 } from './threadStatuses.svelte';
 import { applyCompactingState, isThreadCompacting } from './compactingState.svelte';
+import { applySessionLive, threadSessionLive } from './threadSessionLive.svelte';
 import { hasScope } from '../transport/scopes';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import type { TransportHello } from '../transport/wsClient';
@@ -235,6 +236,44 @@ describe('sends pending', () => {
     expect(getThreadStatus('gpu-stale')).toBe('running');
   });
 
+});
+
+describe('session live', () => {
+  const hello: TransportHello = {
+    protocolVersion: 1, capabilities: ['session-live.v1'], backendId: 'gpu', backendName: 'gpu',
+    serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+  };
+  beforeEach(() => __setTransportHelloForTest(hello, 'gpu'));
+  afterEach(() => __setTransportHelloForTest(null, 'gpu'));
+
+  it('marks a named thread live and clears an unnamed one', async () => {
+    // An end this client missed while it was away.
+    applySessionLive({ threadId: 'gpu-stale', live: true });
+    setBindingMock('ListThreadLiveActivity', async () => [
+      { threadId: 'gpu-running', approvalRequestIds: [], userInputRequestIds: [], sessionLive: true },
+    ]);
+    await reconcileThreadLiveActivity('gpu');
+    expect(threadSessionLive('gpu-running')).toBe(true);
+    expect(threadSessionLive('gpu-stale')).toBe(false);
+  });
+
+  it('lets a frame that landed during the read win over the snapshot', async () => {
+    let answer!: (rows: unknown[]) => void;
+    setBindingMock('ListThreadLiveActivity', () => new Promise(resolve => { answer = resolve; }));
+    const pending = reconcileThreadLiveActivity('gpu');
+    applySessionLive({ threadId: 'gpu-running', live: false });
+    applySessionLive({ threadId: 'gpu-stale', live: true });
+    answer([{ threadId: 'gpu-running', approvalRequestIds: [], userInputRequestIds: [], sessionLive: true }]);
+    await pending;
+    expect(threadSessionLive('gpu-running')).toBe(false);
+    expect(threadSessionLive('gpu-stale')).toBe(true);
+  });
+
+  it('says nothing for a computer that does not publish it', () => {
+    __setTransportHelloForTest(null, 'gpu');
+    applySessionLive({ threadId: 'gpu-running', live: true });
+    expect(threadSessionLive('gpu-running')).toBeUndefined();
+  });
 });
 
 it("drops a detached computer's read in flight, whose threads it no longer owns, and the read queued behind it", async () => {

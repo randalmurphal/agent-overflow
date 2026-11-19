@@ -922,6 +922,17 @@ describe('<GenericToolCallRow> AO tools', () => {
     expect(queryByText('exit 2')).not.toBeNull();
   });
 
+  it('says why a job with no exit code ended, not what the call that started it returned', async () => {
+    const reason = "The pairing with this computer ended, so this command's outcome is unknown.";
+    setBindingMock('ListThreadRemoteCommands', vi.fn(async () => [record({ state: 'unknown', finishedAt: 4000, error: reason })]));
+    const item = remoteRun({ computer_id: 'far', request_id: REQUEST, argv: ['make'] }, {
+      status: 'completed',
+      payloadMeta: JSON.stringify({ preview: JSON.stringify({ id: REQUEST, state: 'running', backgrounded: true }) }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    await waitFor(() => expect(getByTestId('row-error-msg').textContent).toBe(reason));
+  });
+
   it('keeps a job in another thread\'s listing out of this row', async () => {
     setBindingMock('ListThreadRemoteCommands', vi.fn(async () => []));
     const item = remoteRun({ computer_id: 'far', request_id: REQUEST, argv: ['make'] }, { status: 'completed' });

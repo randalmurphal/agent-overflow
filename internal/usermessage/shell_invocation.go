@@ -3,6 +3,8 @@ package usermessage
 import (
 	"slices"
 	"strings"
+
+	"agent-overflow/internal/agentmeta"
 )
 
 // Composer shell commands. A command the person runs as `!command` is stored
@@ -28,7 +30,7 @@ type PartRun struct {
 
 // ShellInvocationRuns reports, for each command in order, the parts of one
 // message that are its typed invocation. parts is the message split on
-// JoinSeparator. Rules, mirrored exactly by the frontend:
+// agentmeta.JoinSeparator. Rules, mirrored exactly by the frontend:
 //
 //   - an invocation is whole parts: the run's text, joined by the separator
 //     and trimmed of surrounding white space, is exactly `!command`. A
@@ -64,7 +66,7 @@ func ShellInvocationRuns(parts []string, commands []string) []PartRun {
 // invocation, or -1.
 func invocationEnd(parts []string, claimed []bool, first int, invocation string) int {
 	for last := first; last < len(parts) && !claimed[last]; last++ {
-		typed := strings.TrimSpace(strings.Join(parts[first:last+1], JoinSeparator))
+		typed := strings.TrimSpace(strings.Join(parts[first:last+1], agentmeta.JoinSeparator))
 		if len(typed) < len(invocation) {
 			continue
 		}

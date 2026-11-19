@@ -11,7 +11,9 @@ import (
 
 // A wake already handed to a live, mid-turn session waits there for the turn
 // boundary. A Stop before the session confirms it takes the message back
-// with the session, and the request must not go on reading as delivered.
+// with the session, and the request must not go on reading as delivered: it
+// is owed again and disarmed (WithdrawThreadWake), so the person's Stop does
+// not start the caller again and thread_status still returns the answer.
 func TestAStopThatTakesBackAnUnconfirmedWakeLeavesItsRequestUndelivered(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -41,15 +43,16 @@ func TestAStopThatTakesBackAnUnconfirmedWakeLeavesItsRequestUndelivered(t *testi
 		t.Fatalf("wake row after the stop: found=%v err=%v, want it taken back", found, err)
 	}
 	row := f.request(t, token)
-	if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify || row.WakeIssue == "" {
-		t.Fatalf("request after the stop = delivered %q at %d, notify %v, issue %q; want undelivered, disarmed and explained",
-			row.DeliveredHow, row.DeliveredAt, row.Notify, row.WakeIssue)
+	if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("request after the stop = delivered %q at %d, notify %v; want it owed again and disarmed",
+			row.DeliveredHow, row.DeliveredAt, row.Notify)
 	}
 }
 
 // A Stop clears the caller's queue, a queued wake with it. The requests that
 // message answered must not go on reading as delivered: the agent never saw
-// it, and thread_status is then where the answer is read.
+// it, so they are owed again and disarmed, and thread_status is then where
+// the answer is read. A late reply's wake records its own route.
 func TestAStopThatDropsAQueuedWakeLeavesItsRequestsUndelivered(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -61,7 +64,7 @@ func TestAStopThatDropsAQueuedWakeLeavesItsRequestsUndelivered(t *testing.T) {
 	if _, err := f.app.store.MarkThreadRequestDelivered(late, store.ThreadWakeInline, 0, false); err != nil {
 		t.Fatalf("MarkThreadRequestDelivered: %v", err)
 	}
-	if stored, err := f.app.store.StoreThreadRequestLateReply(late, []byte("a late reply"), 0, true); err != nil || !stored {
+	if stored, err := f.app.store.StoreThreadRequestLateReply(late, []byte("a late reply"), 0, nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	// Not dropped: a wake another thread's queue holds.
@@ -74,10 +77,13 @@ func TestAStopThatDropsAQueuedWakeLeavesItsRequestsUndelivered(t *testing.T) {
 		t.Fatalf("queued first wakes = %+v, want one message for both", wakes)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return f.request(t, late).LateDeliveredAt != 0 })
-	for _, token := range []string{carrier, rider, late} {
+	for _, token := range []string{carrier, rider} {
 		if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued {
 			t.Fatalf("request %s delivered %q before the stop, want queued", token, row.DeliveredHow)
 		}
+	}
+	if row := f.request(t, late); row.DeliveredHow != store.ThreadWakeInline || row.LateDeliveredHow != store.ThreadWakeQueued {
+		t.Fatalf("request %s delivered %q, late %q before the stop; want the first answer inline and the late reply queued", late, row.DeliveredHow, row.LateDeliveredHow)
 	}
 	// The other thread's dispatch is held, so its wake stays on its queue.
 	app := f.app
@@ -100,9 +106,9 @@ func TestAStopThatDropsAQueuedWakeLeavesItsRequestsUndelivered(t *testing.T) {
 	}
 	for _, token := range []string{carrier, rider} {
 		row := f.request(t, token)
-		if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify || row.WakeIssue == "" {
-			t.Errorf("request %s after the stop = delivered %q at %d with %q, notify %v, issue %q; want undelivered, disarmed and explained",
-				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify, row.WakeIssue)
+		if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify {
+			t.Errorf("request %s after the stop = delivered %q at %d with %q, notify %v; want it owed again and disarmed",
+				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify)
 		}
 	}
 	if row := f.request(t, late); row.LateDeliveredAt != 0 || row.DeliveredAt == 0 || row.Notify {

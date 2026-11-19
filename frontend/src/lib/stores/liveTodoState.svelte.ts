@@ -85,11 +85,12 @@ export function __resetLiveTodoUiPrefsForTest(): void {
 interface ActivityRailUiPrefs {
   todosOpen: boolean;
   backgroundOpen: boolean;
+  agentsOpen: boolean;
   inputCollapsed: boolean;
 }
 
 function defaultActivityRailUiPrefs(): ActivityRailUiPrefs {
-  return { todosOpen: false, backgroundOpen: false, inputCollapsed: false };
+  return { todosOpen: false, backgroundOpen: false, agentsOpen: false, inputCollapsed: false };
 }
 
 const activityRailUiPrefs = new Map<string, ActivityRailUiPrefs>();
@@ -120,6 +121,7 @@ export interface LiveTodoState {
   readonly liveTodoShowAll: boolean;
   readonly activityRailTodosOpen: boolean;
   readonly activityRailBackgroundOpen: boolean;
+  readonly activityRailAgentsOpen: boolean;
   readonly activityRailInputCollapsed: boolean;
   readonly revision: number;
 
@@ -135,6 +137,8 @@ export interface LiveTodoState {
   toggleLiveTodoShowAll(threadID: string | null): void;
   toggleActivityRailTodos(threadID: string | null): void;
   toggleActivityRailBackground(threadID: string | null): void;
+  setActivityRailBackgroundOpen(threadID: string | null, open: boolean): void;
+  toggleActivityRailAgents(threadID: string | null): void;
   toggleActivityRailInputCollapsed(threadID: string | null): void;
 }
 
@@ -153,12 +157,14 @@ export function createLiveTodoState(): LiveTodoState {
   let liveTodoShowAll = $state(false);
   let activityRailTodosOpen = $state(false);
   let activityRailBackgroundOpen = $state(false);
+  let activityRailAgentsOpen = $state(false);
   let activityRailInputCollapsed = $state(false);
 
   function persistActivityRailUiPrefs(threadID: string | null): void {
     writeActivityRailUiPrefs(threadID, {
       todosOpen: activityRailTodosOpen,
       backgroundOpen: activityRailBackgroundOpen,
+      agentsOpen: activityRailAgentsOpen,
       inputCollapsed: activityRailInputCollapsed,
     });
   }
@@ -226,6 +232,7 @@ export function createLiveTodoState(): LiveTodoState {
     const railPrefs = readActivityRailUiPrefs(threadID);
     activityRailTodosOpen = railPrefs.todosOpen;
     activityRailBackgroundOpen = railPrefs.backgroundOpen;
+    activityRailAgentsOpen = railPrefs.agentsOpen;
     activityRailInputCollapsed = railPrefs.inputCollapsed;
   }
 
@@ -236,6 +243,7 @@ export function createLiveTodoState(): LiveTodoState {
     liveTodoShowAll = false;
     activityRailTodosOpen = false;
     activityRailBackgroundOpen = false;
+    activityRailAgentsOpen = false;
     activityRailInputCollapsed = false;
   }
 
@@ -244,6 +252,7 @@ export function createLiveTodoState(): LiveTodoState {
     get liveTodoShowAll() { return liveTodoShowAll; },
     get activityRailTodosOpen() { return activityRailTodosOpen; },
     get activityRailBackgroundOpen() { return activityRailBackgroundOpen; },
+    get activityRailAgentsOpen() { return activityRailAgentsOpen; },
     get activityRailInputCollapsed() { return activityRailInputCollapsed; },
     get revision() { return revision; },
 
@@ -285,6 +294,17 @@ export function createLiveTodoState(): LiveTodoState {
 
     toggleActivityRailBackground(threadID: string | null): void {
       activityRailBackgroundOpen = !activityRailBackgroundOpen;
+      persistActivityRailUiPrefs(threadID);
+    },
+
+    setActivityRailBackgroundOpen(threadID: string | null, open: boolean): void {
+      if (activityRailBackgroundOpen === open) return;
+      activityRailBackgroundOpen = open;
+      persistActivityRailUiPrefs(threadID);
+    },
+
+    toggleActivityRailAgents(threadID: string | null): void {
+      activityRailAgentsOpen = !activityRailAgentsOpen;
       persistActivityRailUiPrefs(threadID);
     },
 

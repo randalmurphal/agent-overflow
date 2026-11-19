@@ -22,6 +22,7 @@ type updateArgs struct {
 	Archived  *bool           `json:"archived"`
 	Pin       *string         `json:"pin"`
 	Group     json.RawMessage `json:"group"`
+	Placement *string         `json:"placement"`
 }
 
 type updateResult struct {
@@ -89,6 +90,7 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 				continue
 			}
 			results[slot].Updated, results[slot].Error, results[slot].ErrorCode = row.Updated, row.Error, row.ErrorCode
+			results[slot].WorkersNotArchived = row.WorkersNotArchived
 			if row.Title != "" {
 				results[slot].Title = row.Title
 			}
@@ -98,9 +100,9 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 	return updateResult{Results: results, Note: updateNote(results)}, nil
 }
 
-// updateNote explains the errors in results. An error on a row that was
-// not updated is a refusal; on an updated row it is an archive whose
-// cleanup did not finish, which the user should hear about.
+// updateNote explains the errors and workers in results. An error on a row
+// that was not updated is a refusal; on an updated row it is an archive
+// whose cleanup did not finish, which the user should hear about.
 func updateNote(results []ThreadUpdateResult) string {
 	var notes []string
 	if slices.ContainsFunc(results, func(row ThreadUpdateResult) bool { return row.Error != "" && !row.Updated }) {
@@ -108,6 +110,19 @@ func updateNote(results []ThreadUpdateResult) string {
 	}
 	if slices.ContainsFunc(results, func(row ThreadUpdateResult) bool { return row.Error != "" && row.Updated }) {
 		notes = append(notes, "An updated thread with an error was archived, but something it ran may still be running or open; tell the user what its error says.")
+	}
+	var open, pending bool
+	for _, row := range results {
+		for _, worker := range row.WorkersNotArchived {
+			pending = pending || worker.Pending
+			open = open || !worker.Pending
+		}
+	}
+	if open {
+		notes = append(notes, "Some archived threads have workers that could not be archived and are still open; workers_not_archived names them and why. Archive them again once the reason is gone.")
+	}
+	if pending {
+		notes = append(notes, "Some workers on other computers, marked pending in workers_not_archived, have not taken the archive yet; it is sent again until they do.")
 	}
 	return strings.Join(notes, " ")
 }
@@ -141,8 +156,18 @@ func updatePatch(args updateArgs) (UpdateCall, error) {
 		}
 		patch.Group = group
 	}
+	if args.Placement != nil {
+		placement := trim(*args.Placement)
+		if placement == "" {
+			return UpdateCall{}, invalidf("placement must be owned, grouped or standalone.")
+		}
+		if err := checkPlacement(placement, patch.Group); err != nil {
+			return UpdateCall{}, err
+		}
+		patch.Placement = &placement
+	}
 	if !patch.Patched() {
-		return UpdateCall{}, invalidf("Set at least one of title, archived, pin or group.")
+		return UpdateCall{}, invalidf("Set at least one of title, archived, pin, group or placement.")
 	}
 	return patch, nil
 }
@@ -214,6 +239,9 @@ func marshalUpdate(call UpdateCall) (json.RawMessage, error) {
 		} else {
 			fields["group"] = *call.Group
 		}
+	}
+	if call.Placement != nil {
+		fields["placement"] = *call.Placement
 	}
 	return json.Marshal(fields)
 }

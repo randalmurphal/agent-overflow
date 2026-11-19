@@ -146,3 +146,99 @@ func TestTransferStatusDoesNotDependOnRecentListOrExposePrivateState(t *testing.
 		t.Fatalf("private status data: %+v", got)
 	}
 }
+
+// A handoff's draft move writes the next thread's draft and clears the
+// previous thread's together, and refuses, changing neither, when the
+// previous draft is not the one the move read.
+func TestHandOffThreadDraftMovesWholeOrNotAtAll(t *testing.T) {
+	s := newTestStore(t)
+	a := createDraftCleanupThread(t, s, "previous", "chat")
+	b := createDraftCleanupThread(t, s, "next", "chat")
+	read := ThreadDraft{ThreadID: a.ID, Content: "typed note"}
+	if _, err := s.UpsertThreadDraft(ThreadDraft{ThreadID: a.ID, Content: "typed note, then more"}); err != nil {
+		t.Fatal(err)
+	}
+	moved := ThreadDraft{ThreadID: b.ID, Content: "typed note"}
+	if _, err := s.HandOffThreadDraft(a.ID, &read, moved); err == nil {
+		t.Fatal("moved a draft that changed after the move read it")
+	}
+	if got, _, _ := s.GetThreadDraft(a.ID); got.Content != "typed note, then more" {
+		t.Fatalf("previous draft = %q, want it untouched", got.Content)
+	}
+	if _, found, _ := s.GetThreadDraft(b.ID); found {
+		t.Fatal("the refused move wrote the next thread's draft")
+	}
+
+	if _, err := s.UpsertThreadDraft(read); err != nil {
+		t.Fatal(err)
+	}
+	move, err := s.HandOffThreadDraft(a.ID, &read, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Neither thread was ever sent: the draft is what listed the previous
+	// one, and lists the next one now.
+	if !move.Destination.Changed || move.Destination.Listing != ListingListed {
+		t.Fatalf("next thread's write = %+v, want changed and listed", move.Destination)
+	}
+	if !move.Source.Changed || move.Source.Listing != ListingUnlisted {
+		t.Fatalf("previous thread's write = %+v, want changed and unlisted", move.Source)
+	}
+	if _, found, _ := s.GetThreadDraft(a.ID); found {
+		t.Fatal("previous draft kept")
+	}
+	if got, _, _ := s.GetThreadDraft(b.ID); got.Content != "typed note" {
+		t.Fatalf("next draft = %q", got.Content)
+	}
+	move, err = s.HandOffThreadDraft(a.ID, nil, ThreadDraft{ThreadID: b.ID, Content: "carried"})
+	if err != nil {
+		t.Fatalf("a move with no previous draft: %v", err)
+	}
+	if move.Source.Changed || !move.Destination.Changed || move.Destination.Listing != ListingUnchanged {
+		t.Fatalf("a move with no previous draft = %+v, want only the listed next thread's draft changed", move)
+	}
+}
+
+// The handoff records on the past thread's row the text and attachment ids
+// it moved, and nothing when it moved no draft.
+func TestHandOffThreadDraftRecordsWhatItMoved(t *testing.T) {
+	s := newTestStore(t)
+	past := createDraftCleanupThread(t, s, "past", "chat")
+	next := createDraftCleanupThread(t, s, "next", "chat")
+	other := createDraftCleanupThread(t, s, "other", "chat")
+	for _, q := range []string{
+		`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('agent', 'next', '/h', 1)`,
+		`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('past', 'agent', 2)`,
+		`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('other', 'agent', 1)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draft := ThreadDraft{ThreadID: past.ID, Content: "typed note", Attachments: `["att-1"]`, TerminalChips: `[{"id":"c"}]`}
+	if _, err := s.UpsertThreadDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HandOffThreadDraft(past.ID, &draft, ThreadDraft{ThreadID: next.ID, Content: "typed note"}); err != nil {
+		t.Fatal(err)
+	}
+	if moved, found, err := s.MovedDraftOf(past.ID); err != nil || !found || moved.Content != "typed note" || moved.Attachments != `["att-1"]` {
+		t.Fatalf("moved draft = %+v %v %v", moved, found, err)
+	}
+	if moved, found, err := s.MovedDraftOf(other.ID); err != nil || !found || moved.Content != "" || moved.Attachments != "[]" {
+		t.Fatalf("a past thread nothing moved from = %+v %v %v", moved, found, err)
+	}
+	if _, found, err := s.MovedDraftOf(next.ID); err != nil || found {
+		t.Fatalf("current thread found as past: %v %v", found, err)
+	}
+}
+
+func TestSameDraftComparesAsTheConsumingDeleteDoes(t *testing.T) {
+	stored := ThreadDraft{ThreadID: "t", Content: "x", Attachments: "[]", TerminalChips: "[]", UpdatedAt: 5}
+	if !SameDraft(stored, ThreadDraft{Content: "x"}) {
+		t.Fatal("empty lists and timestamps differ")
+	}
+	if SameDraft(stored, ThreadDraft{Content: "x", PendingPlanImplementation: `{"itemId":"i"}`}) || SameDraft(stored, ThreadDraft{Content: "y"}) {
+		t.Fatal("different drafts compared equal")
+	}
+}

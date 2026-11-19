@@ -1,6 +1,6 @@
 <script lang="ts">
   // One project's group (UI-SPEC §3.2), in order: needs attention → running →
-  // workflows (definitions + their automations) → recent history, collapsed.
+  // workflow definitions → recent history, collapsed.
 
   import WorkflowRunRow from './WorkflowRunRow.svelte';
   import WorkflowDefinitionRow from './WorkflowDefinitionRow.svelte';
@@ -40,8 +40,8 @@
 
   {#if group.definitions.length > 0}
     <div class="mt-2 space-y-0.5" data-testid="workflow-definition-list">
-      {#each group.definitions as entry (entry.definition.scope + ':' + entry.definition.id)}
-        <WorkflowDefinitionRow definition={entry.definition} automations={entry.automations} />
+      {#each group.definitions as definition (definition.scope + ':' + definition.id)}
+        <WorkflowDefinitionRow {definition} />
       {/each}
     </div>
   {/if}

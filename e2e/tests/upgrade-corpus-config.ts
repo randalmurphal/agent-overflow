@@ -39,7 +39,19 @@ export interface MigrationException {
   reason: string;
 }
 
-export const migrationExceptions: MigrationException[] = [];
+export const migrationExceptions: MigrationException[] = [
+  { version: 154, table: 'channels', dropped: true, reason: 'v154 removes discussions and their channels' },
+  { version: 154, table: 'channel_messages', dropped: true, reason: 'v154 removes discussions and their channel messages' },
+  { version: 154, table: 'discussion_definitions', dropped: true, reason: 'v154 removes discussion definitions' },
+  { version: 154, table: 'threads', columns: ['mode'], reason: 'v154 turns a former discussion thread into a chat thread' },
+  { version: 154, table: 'scratch_threads', columns: ['return_mode'], reason: 'v154 returns a side chat opened from a discussion to chat mode' },
+  { version: 154, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v154 keeps only model favorites; discussion favorites are removed' },
+  { version: 154, table: 'automations', dropped: true, reason: 'v154 removes the workflow scheduler and drops its automations' },
+  { version: 154, table: 'automation_cursors', dropped: true, reason: "v154 drops the scheduler's per-source cursors with its automations" },
+  { version: 154, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v154 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 158, table: 'thread_requests', columns: ['next_check'], reason: 'v158 makes the acknowledgement it owes again for an answer from a paired computer due at once' },
+];
 
 /**
  * Tables the old-row comparison skips, with the reason. Row counts are
@@ -56,8 +68,8 @@ export const fingerprintIgnoredTables: Record<string, string> = {
  * rewrite whenever the row's text does.
  */
 export const fingerprintIgnoredColumns: Record<string, string> = {
-  'items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill and v153",
-  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill and v153",
+  'items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill, v153 and v157",
+  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill, v153 and v157",
 };
 
 /**
@@ -132,15 +144,55 @@ export const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${
   AND NOT EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
   AND NOT EXISTS (SELECT 1 FROM mig.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
 /**
- * The thread request `x` whose wake the boot restore returns to the draft: an
- * unconfirmed user row carries its send id, or a durable queue row does
- * whose message the provider had not confirmed (a confirmed one is dropped
- * without marking the wake).
+ * The send id `sendId` names a message whose owner takes it back when the
+ * boot finds it undelivered (app.ownedSendID): a request's answer or late
+ * reply, a remote job's completion, or a spawner's answer to its worker's
+ * async questions. None of them goes to the composer.
  */
-const queuedWake = (x: string) => `(EXISTS (SELECT 1 FROM mig.flush_queue_items q
-    WHERE q.send_id IN ('thread-wake:' || ${x}.token, 'thread-wake-late:' || ${x}.token)
-      AND NOT (${sendConfirmed('q.thread_id', 'q.send_id')}))
-  OR EXISTS (SELECT 1 FROM mig.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, ${x}.token) > 0))`;
+const ownedSend = (sendId: string) => `(${sendId} GLOB 'thread-wake:?*' OR ${sendId} GLOB 'thread-wake-late:?*'
+  OR ${sendId} GLOB 'remote-completion:*:*' OR ${sendId} GLOB 'agent-answer:*')`;
+/** The send id of the message that carried the first answer of the thread request `x`: its carrier's (delivered_with), or its own. */
+const firstWakeSend = (x: string) => `'thread-wake:' || CASE WHEN ${x}.delivered_with <> '' THEN ${x}.delivered_with ELSE ${x}.token END`;
+/**
+ * The thread request `x` whose wake the boot gives back to it, owed again
+ * and disarmed (store.WithdrawThreadWake): its first answer or its late
+ * reply is delivered and not confirmed, either still on a queue row
+ * (restoreThreadQueueAtBoot) or handed to the provider
+ * (giveBackUnconfirmedAtBoot), and no row carrying the provider's id
+ * answers for its message (confirmEchoedAtBoot confirms that one instead).
+ * A confirmed wake is never given back: a queue row that outlived its echo
+ * goes alone. A lineage-only row keeps its marks.
+ */
+const wakeGivenBack = (x: string) => `${x}.lineage_only = 0 AND (
+  (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NULL
+    AND NOT (${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))}))
+  OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NULL
+    AND NOT (${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)})))`;
+/**
+ * The thread request `x` whose unconfirmed delivery the boot confirms from
+ * the row of its echo (app.confirmEchoedAtBoot, store.ConfirmThreadWake):
+ * the last run died between the echo's row write and its confirmation.
+ */
+const wakeEchoConfirmed = (x: string) => `${x}.lineage_only = 0 AND (
+  (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NULL
+    AND ${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))})
+  OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NULL
+    AND ${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)}))`;
+/**
+ * The confirmed thread request `x` whose wake's queue row outlived the echo:
+ * the boot drops that row, and before it confirms the send from its echo's
+ * row again (app.confirmEchoedAtBoot), which on a confirmed wake only names
+ * that row (store.ConfirmThreadWake), as a wake v155 confirmed never has.
+ */
+const wakeRowNamed = (x: string) => `${x}.lineage_only = 0 AND (
+  (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.caller_thread_id AND q.send_id = ${firstWakeSend(x)})
+    AND ${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))})
+  OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.caller_thread_id AND q.send_id = 'thread-wake-late:' || ${x}.token)
+    AND ${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)}))`;
+/** The send id of the remote watch `x`'s completion (app.remoteCompletionSendID). */
+const completionSend = (x: string) => `'remote-completion:' || ${x}.computer_id || ':' || ${x}.request_id`;
 /** The pairing link `x` of an approved own-device admission the last run did not finish: store.IncompleteOwnAdmissions' selection. */
 const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confirmed_at IS NOT NULL AND ${x}.canceled_at IS NULL
   AND ${x}.session_id NOT IN (SELECT session_id FROM mig.own_device_sessions)
@@ -204,6 +256,13 @@ export const recoveryRules: RecoveryRule[] = [
     to: "b.completed_at IS NOT NULL AND b.stop_reason = 'interrupted'",
   },
   {
+    // The crashed turn's span, to its last activity, is added to its
+    // thread's runtime as an ended turn's is (tallyTurnSpanTx).
+    name: 'crashed-turn-runtime', writer: 'store.(*Store).RecoverCrashedTurns (tallyTurnSpanTx)', table: 'thread_tallies',
+    rows: 'EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = s.thread_id AND t.completed_at IS NULL)',
+    columns: ['turn_ms'], to: 'b.turn_ms >= s.turn_ms',
+  },
+  {
     name: 'crashed-turn-rows', writer: 'store.(*Store).RecoverCrashedTurns (flipCrashedTurnItemsTx)', table: 'items',
     rows: `s.status IN ('streaming', 'running') AND NOT (s.is_background = 1 AND s.kind = 'tool_call')
       AND EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = s.thread_id AND t.turn_index = s.turn_index AND t.completed_at IS NULL)`,
@@ -238,7 +297,10 @@ export const recoveryRules: RecoveryRule[] = [
     columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status IN ('errored', 'completed')",
   },
   {
-    // The row is the unit, a joined one included: it goes to the draft whole.
+    // The row is the unit: it is retired whole, and the person's text in it
+    // goes to the draft. A joined row splits off the members the app wrote
+    // by the parts its dispatch recorded (unconfirmedRowAtBoot); one whose
+    // parts no longer describe its text goes to the draft whole.
     name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
     table: 'items', removes: true,
     rows: `${unconfirmedUserRow('s')} AND ${draftRestored('s')}`,
@@ -283,11 +345,24 @@ export const recoveryRules: RecoveryRule[] = [
     rows: "s.worktree_setup_state = 'running'", columns: ['worktree_setup_state'], to: "b.worktree_setup_state = 'failed'",
   },
   {
-    // restoreThreadQueueAtBoot takes every queue row of the thread: a copy
-    // of a joined row's member and a message the provider confirmed add no
+    // A delete claim no delete committed: nothing of the thread was stopped or removed.
+    name: 'undecided-delete-claims', writer: 'store.(*Store).ReleaseUndecidedDeleteClaims (releaseUndecidedDeletes)', table: 'threads',
+    rows: "s.delete_claim <> '' AND s.deleting = 0", columns: ['delete_claim'], to: "b.delete_claim = ''",
+  },
+  {
+    // restoreThreadQueueAtBoot takes every queue row of the thread but the
+    // owned ones: a copy of a joined row's member, a message the provider
+    // confirmed and a message the app wrote (discardAgentWakeAtBoot) add no
     // text, the rest do; restoredDraftThreads composes which.
     name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
-    table: 'flush_queue_items', removes: true, rows: draftRestored('s'),
+    table: 'flush_queue_items', removes: true, rows: `${draftRestored('s')} AND NOT ${ownedSend('s.send_id')}`,
+  },
+  {
+    // An answer, a reminder, a completion or a spawner's answer goes back to
+    // its owner with its queue row, each in a transaction of its own.
+    name: 'owned-queued-messages',
+    writer: 'app.(*App).giveBackToOwners (store.WithdrawThreadWake, WithdrawRemoteCompletion, ReturnAsyncAnswer), from restoreThreadQueueAtBoot',
+    table: 'flush_queue_items', removes: true, rows: ownedSend('s.send_id'),
   },
   {
     name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft (composerdraft.MergeParts)', table: 'thread_drafts',
@@ -296,12 +371,67 @@ export const recoveryRules: RecoveryRule[] = [
     columns: draftColumns, to: `${draftRestored('s')} AND ${draftPlanKept}`,
   },
   {
-    name: 'queued-wakes-to-draft', writer: 'app.noteThreadWakeRestoredToDraft (store.MarkThreadRequestDeliveredAsDraft)',
-    table: 'thread_requests',
-    // The wake's own request, and the requests that rode with it (delivered_with).
-    rows: `${queuedWake('s')} OR (s.delivered_with <> ''
-      AND EXISTS (SELECT 1 FROM mig.thread_requests w WHERE w.token = s.delivered_with AND ${queuedWake('w')}))`,
-    columns: ['delivered_how', 'updated_at'], to: "b.delivered_how = 'draft'",
+    // The wake's own request and the requests that rode with it: the
+    // delivery mark cleared and the wake disarmed, so thread_status returns
+    // the answer and nothing delivers it unasked.
+    name: 'wakes-given-back',
+    writer: 'app.(*App).giveBackToOwners (store.WithdrawThreadWake), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'thread_requests', rows: wakeGivenBack('s'),
+    columns: ['delivered_at', 'delivered_how', 'wake_item_id', 'delivered_with',
+      'late_delivered_at', 'late_delivered_how', 'late_wake_item_id', 'notify', 'updated_at'],
+    to: 'b.notify = 0',
+  },
+  {
+    // The delivery the echo's row proves is confirmed by it, and stays delivered.
+    name: 'echoed-wakes-confirmed',
+    writer: 'app.(*App).confirmEchoedAtBoot (store.ConfirmThreadWake), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'thread_requests', rows: wakeEchoConfirmed('s'),
+    columns: ['confirmed_at', 'wake_item_id', 'late_confirmed_at', 'late_wake_item_id', 'updated_at'],
+    to: '(b.delivered_at IS NULL OR b.confirmed_at IS NOT NULL) AND (b.late_delivered_at IS NULL OR b.late_confirmed_at IS NOT NULL)',
+  },
+  {
+    // A confirmed wake stays delivered and confirmed; its echo's row is named.
+    name: 'confirmed-wakes-name-their-row',
+    writer: 'app.(*App).confirmEchoedAtBoot (store.ConfirmThreadWake), from restoreThreadQueueAtBoot',
+    table: 'thread_requests', rows: wakeRowNamed('s'),
+    columns: ['wake_item_id', 'late_wake_item_id', 'updated_at'],
+    to: 'b.confirmed_at IS s.confirmed_at AND b.late_confirmed_at IS s.late_confirmed_at',
+  },
+  {
+    // The watch is pending again, and the watcher delivers its completion. A
+    // confirmed one never goes back, and one its echo's row proves is
+    // confirmed instead (below).
+    name: 'completions-given-back',
+    writer: 'app.(*App).giveBackToOwners (store.WithdrawRemoteCompletion), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'remote_watches',
+    rows: `s.notification = 'queued' AND s.confirmed_at IS NULL AND NOT (${sendConfirmed('s.thread_id', completionSend('s'))})`,
+    columns: ['notification'], to: "b.notification = 'pending'",
+  },
+  {
+    name: 'echoed-completions-confirmed',
+    writer: 'app.(*App).confirmEchoedAtBoot (store.ConfirmRemoteCompletion), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'remote_watches',
+    rows: `s.notification = 'queued' AND s.confirmed_at IS NULL AND ${sendConfirmed('s.thread_id', completionSend('s'))}`,
+    columns: ['confirmed_at'], to: 'b.confirmed_at IS NOT NULL',
+  },
+  {
+    // The worker's questions are unanswered again, routed to their spawner anew.
+    name: 'worker-answers-returned', writer: 'app.(*App).returnWorkerAnswer (store.ReturnAsyncAnswer), from restoreThreadQueueAtBoot',
+    table: 'async_questions',
+    rows: `s.send_id GLOB 'agent-answer:*' AND s.state IN ('submitted', 'restored')
+      AND EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = s.thread_id AND q.send_id = s.send_id)`,
+    columns: ['state', 'answer', 'send_id', 'user_item_id', 'revision'], to: "b.state = 'unanswered'",
+  },
+  {
+    // A loop's or watch's wake still queued, or carried by an unconfirmed
+    // message, is recorded not delivered; an interval row is due again by
+    // the fire it was for.
+    name: 'queued-agent-wakes', writer: 'app.(*App).discardAgentWakeAtBoot (store.ReleaseQueuedAgentWake)',
+    table: 'agent_wakes',
+    rows: `s.state <> 'cancelled' AND (EXISTS (SELECT 1 FROM mig.flush_queue_items q
+        WHERE substr(q.send_id, 1, length('agent-wake:' || s.id || ':')) = 'agent-wake:' || s.id || ':')
+      OR EXISTS (SELECT 1 FROM mig.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, '"agent-wake:' || s.id || ':') > 0))`,
+    columns: ['last_outcome', 'undelivered', 'last_output', 'next_at'],
   },
   {
     name: 'retired-message-claims', writer: 'store.(*Store).RetireUndeliveredUserRow', table: 'diff_review_comments',
@@ -590,14 +720,75 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'remote_watches', reason: 'a watch on a connected computer' },
   { table: 'thread_transfers', reason: 'a conversation moved or copied to a connected computer' },
   { table: 'thread_transfer_sessions', reason: 'a transfer session with a connected computer' },
-  { table: 'thread_requests', columns: ['target_computer_id', 'target_thread_title', 'next_check', 'attempts', 'issue', 'polling'], values: { polling: [0] }, reason: 'the poll of a request to a thread on a connected computer' },
-  { table: 'thread_requests', columns: ['origin_thread_id', 'late_reply', 'late_reply_at', 'late_delivered_at', 'wake_attempts', 'wake_next_check', 'wake_issue'], values: { kind: ['spawn', 'ask'], state: ['unconfirmed', 'accepted', 'running', 'errored', 'cancelled', 'interrupted', 'expired', 'refused'], answer_kind: ['', 'error'], delivered_how: ['', 'draft'] }, reason: 'the top-up asks with thread_send and thread_remind and lets each settle with an answer its caller takes; a spawn, an ask, a late reply, a failed or stopped request and a wake whose caller cannot take it are not staged, and open states are ones a request passes through' },
-  { table: 'thread_request_receipts', columns: ['late_reply', 'late_reply_at'], values: { kind: ['spawn', 'ask', 'remind'], state: ['accepted', 'running', 'errored', 'cancelled', 'interrupted', 'expired'], answer_kind: ['', 'error', 'note'] }, reason: 'a target receipts sends only (a reminder has no target); the top-up stages no spawn, ask, late reply or failed or stopped request, and open states are ones a request passes through' },
+  { table: 'thread_requests', columns: ['target_computer_id', 'target_thread_title', 'next_check', 'attempts', 'issue', 'polling', 'admit_until'], values: { polling: [0] }, reason: 'the poll of a request to a thread on a connected computer, and its admission deadline there (v158)' },
+  {
+    table: 'thread_requests',
+    columns: [
+      'origin_thread_id', 'late_reply', 'late_reply_at', 'late_delivered_at', 'wake_attempts', 'wake_next_check', 'wake_issue',
+      'lineage_only', 'superseded', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
+      'late_delivered_how', 'made_in_thread_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
+      'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'rest_unreported',
+    ],
+    values: {
+      kind: ['ask'],
+      state: ['unconfirmed', 'accepted', 'running', 'errored', 'cancelled', 'expired', 'refused'],
+      answer_kind: [''],
+      delivered_how: ['draft'],
+      late_delivered_how: ['inline', 'queued', 'draft'],
+      lineage_only: [1],
+      superseded: [1],
+      answer_agent: [1],
+      late_reply_agent: [1],
+      nested_open: [1],
+    },
+    reason: "the top-up's requests are thread_send and thread_remind requests its caller takes as each settles, a send its caller's thread_cancel interrupts, and the assistant's helper spawn; an ask, a late reply, a failed request, a wake whose caller cannot take it (no request reads draft since a wake never enters the composer), an answer from a standing agent, a handoff's moved request, a remote spawn and a spawn the retention floor kept as lineage are not staged, and open states are ones a request passes through",
+  },
+  {
+    table: 'thread_request_receipts',
+    columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role', 'lineage_only'],
+    values: {
+      kind: ['ask', 'remind'],
+      state: ['accepted', 'running', 'errored', 'cancelled', 'expired'],
+      answer_kind: ['', 'note'],
+      answer_agent: [1],
+      late_reply_agent: [1],
+      lineage_only: [1],
+    },
+    reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed request or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
+  },
+  {
+    table: 'thread_request_receipts',
+    columns: ['spawn_link', 'owner_op_seq'],
+    values: { spawn_link: [1] },
+    reason: "the link of a paired computer's owned spawn and the owner operations it admitted (v158), which need a second computer",
+  },
+  {
+    table: 'thread_requests',
+    columns: ['owner_op_seq', 'ack_owed', 'late_reply_expired', 'target_computer_name'],
+    values: { late_reply_expired: [1] },
+    reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the computer name a request there was admitted under (v158), which need a second computer",
+  },
+  {
+    table: 'thread_request_receipts', columns: ['track_spawn'], values: { track_spawn: [1] },
+    reason: 'tracking starts when a paired owner spawns a worker (TestOwnerRecoversRenamedWorkerWithoutReadingPane)',
+  },
+  {
+    table: 'thread_requests', columns: ['link_end', 'contact_due'], values: { link_end: ['released', 'detached', 'gone'] },
+    reason: 'a paired worker reports its link end and its owner schedules contact (TestOwnerRecoversReleaseAndDetachmentOfASettledWorker, TestOwnerRetriesAFailedReadOfAnOtherwiseRestingLink, TestDueOwnerContactUsesTheOriginalSpawnerAndStopsAfterRelease)',
+  },
+  { table: 'spawn_revisions', reason: 'unacknowledged changes to a paired computer’s spawns require a second computer' },
+  { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
-  { table: 'channels', reason: 'a discussion or coordination channel an agent opens' },
-  { table: 'channel_messages', reason: 'messages on a discussion or coordination channel' },
+  { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },
+  {
+    table: 'agent_wakes',
+    columns: ['last_output', 'undelivered', 'missed'],
+    values: { state: ['running'] },
+    reason: "a wake that never reached the agent (last_output, undelivered), a skipped fire (missed) or a live run (state running): the top-up's one fire reaches the agent before another is due, and a run left live would keep its script running through every later boot of the corpus",
+  },
   { table: 'scratch_threads', reason: 'a side chat not yet promoted; the next boot sweeps every one, so the corpus keeps none' },
   { table: 'work_item_effects', reason: "an agent's workflow tool calls on a run" },
+  { table: 'session_start_failures', reason: "a session start that failed for a message the app queued for an agent (a wake, a remote completion, a thread request's answer); a later start that succeeds deletes it" },
 
   // Imports from a provider home.
   { table: 'import_history_items', reason: 'a provider session imported from a provider home' },
@@ -608,21 +799,21 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'thread_import_state', reason: 'a provider session imported from a provider home' },
   { table: 'threads', columns: ['import_source'], reason: 'a thread imported from a provider home' },
 
-  // Discussions, plans and reviews.
-  { table: 'discussion_definitions', reason: 'a discussion definition the project provides' },
-  { table: 'threads', columns: ['discussion_id'], values: { mode: ['discussion', 'terminal', 'workflow-studio', 'workflow-triage', 'holder', 'scratch'], provider: ['claude-tui'] }, reason: 'threads their owning saga creates (a discussion, a terminal, the workflow studio and triage, a fork holder, an unpromoted side chat) and the claude-tui provider, which no mock speaks' },
+  // Plans and reviews.
+  { table: 'threads', values: { mode: ['terminal', 'workflow-studio', 'workflow-triage', 'holder', 'scratch'], provider: ['claude-tui'] }, reason: 'threads their owning saga creates (a terminal, the workflow studio and triage, a fork holder, an unpromoted side chat) and the claude-tui provider, which no mock speaks' },
   { table: 'proposed_plans', reason: 'a plan a Claude turn proposes through ExitPlanMode, which no library scenario emits' },
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
   { table: 'diff_review_comments', columns: ['claim_settles'], values: { claim_settles: ['row', 'confirm'] }, reason: "a sent draft's claim waits for its message's row or the provider's confirmation, and settles before the turn rests" },
   { table: 'thread_pull_requests', columns: ['merged_at', 'handled_at', 'removal_failed_at', 'outcome'], values: { forge: ['gitlab'], outcome: ['removed', 'kept', 'gone', 'closed', 'skipped'] }, reason: "the top-up's pull request stays open, so no merge cleanup runs; one forge's pull request proves the table" },
   { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
-  { table: 'chat_bar_favorites', values: { kind: ['discussion'], provider: ['codex', 'claude-tui'] }, reason: 'favorites of other kinds and providers; one favorite proves the table' },
+  { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 
   // Provider accounting the mock does not report.
   { table: 'usage_ledger', reason: 'token usage the provider reports; the mock reports none' },
   { table: 'usage_pending', reason: 'token usage the provider reports; the mock reports none' },
+  { table: 'thread_tallies', columns: ['tokens'], reason: "the tokens a thread spent itself, counted from the own usage the provider reports with a turn's settlement; the mock reports none" },
   { table: 'provider_thread_cost', reason: 'cost the provider reports; the mock reports none' },
   { table: 'turns', columns: ['token_usage_json'], reason: 'token usage the provider reports; the mock reports none' },
   { table: 'threads', columns: ['last_token_usage', 'live_todo'], reason: 'token usage and a TodoWrite list, which no library scenario emits' },
@@ -631,15 +822,15 @@ export const coverageAllowlist: CoverageAllowance[] = [
 
   // Transient states no run is left in, and item shapes no library
   // scenario emits.
-  { table: 'items', values: { kind: ['compaction_reasoning', 'workflow_proposal', 'command_result', 'compaction', 'terminal_interaction', 'api_retry'], status: ['streaming', 'killed', 'parked'], decision: ['approved', 'amended', 'lost'] }, reason: 'compaction, API retry, terminal and workflow-proposal rows need scenarios no library entry provides; the approval scenarios raise their request without a toolUseId, so an allowed decision is not matched to the tool row that follows, and an amended or lost one needs an edited or abandoned request; streaming, killed and parked are mid-turn states' },
-  { table: 'threads', columns: ['history_bulk_load', 'fork_preparing', 'fork_cut_turn_index', 'deleting', 'parent_thread_id', 'created_remote_url', 'worktree_setup_state'], reason: 'fork-in-progress, delete-in-progress and worktree-setup-in-progress markers, which rest at their defaults; the remote a thread was created from needs a forge remote' },
+  { table: 'items', values: { kind: ['compaction_reasoning', 'workflow_proposal', 'command_result', 'terminal_interaction', 'api_retry'], status: ['streaming', 'killed', 'parked'], decision: ['approved', 'amended', 'lost'] }, reason: 'compaction reasoning, API retry, terminal and workflow-proposal rows need scenarios no library entry provides; the approval scenarios raise their request without a toolUseId, so an allowed decision is not matched to the tool row that follows, and an amended or lost one needs an edited or abandoned request; streaming, killed and parked are mid-turn states' },
+  { table: 'threads', columns: ['history_bulk_load', 'fork_preparing', 'fork_cut_turn_index', 'deleting', 'delete_claim', 'created_remote_url', 'worktree_setup_state'], reason: 'fork-in-progress, delete-in-progress and worktree-setup-in-progress markers, which rest at their defaults; the remote a thread was created from needs a forge remote' },
   { table: 'threads', values: { reasoning_effort: ['none', 'minimal'] }, reason: 'efforts no catalog model declares' },
+  { table: 'threads', columns: ['spawn_level'], reason: "the level a paired computer's spawn carries, which needs a second computer" },
+  { table: 'threads', values: { attention_kind: ['decision', 'problem'] }, reason: "the other kinds of an agent's thread_attention flag; the top-up's one flag is a review" },
   { table: 'subagent_aggregates', columns: ['state', 'transcript_count', 'transcript_newest_turn', 'transcript_newest_item'], reason: 'a subagent still running or failed when its thread rested, and transcript cursors of Codex children' },
-  { table: 'work_items', columns: ['wake_signature', 'pending_guidance', 'auto_resume_at', 'budget', 'triage_thread_id', 'origin_thread_id', 'disposition', 'parent_item_id', 'parent_phase_id', 'parent_unit_id', 'parent_attempt', 'call_depth', 'soft_stop'], values: { state: ['running', 'needs-human', 'failed'], workflow_scope: ['shared'], source: ['agent', 'call'], reason: ['gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted', 'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted', 'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed', 'taken-over', 'unit-failed', 'child-failed', 'paused', 'checkpoint'] }, reason: 'running and needs-human are states a run passes through; the rest are failures, budgets, child runs, shared-scope and agent-started runs the top-up does not stage' },
+  { table: 'work_items', columns: ['wake_signature', 'pending_guidance', 'auto_resume_at', 'budget', 'triage_thread_id', 'origin_thread_id', 'disposition', 'parent_item_id', 'parent_phase_id', 'parent_unit_id', 'parent_attempt', 'call_depth', 'soft_stop', 'source_ref', 'reports_owed'], values: { state: ['running', 'needs-human', 'failed'], workflow_scope: ['shared'], source: ['agent', 'call'], reason: ['gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted', 'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted', 'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed', 'taken-over', 'unit-failed', 'child-failed', 'paused', 'checkpoint'] }, reason: 'running and needs-human are states a run passes through; the rest are failures, budgets, child runs, shared-scope and agent-started runs the top-up does not stage; source_ref is set only on a run a phase started or a call phase invoked; reports_owed counts rests whose wake jobs have not ended, none once a run settles' },
   { table: 'work_item_phases', columns: ['park_cause', 'provider_usage_scope_id'], values: { status: ['running', 'failed', 'superseded'] }, reason: 'running is a state a phase passes through; failed, superseded and parked phases need a failing or looping run' },
   { table: 'work_item_units', reason: 'a phase fanned out into units (a fan-out workflow definition)' },
-  { table: 'automations', columns: ['enabled', 'condition', 'notes', 'skip_count', 'last_skip_at', 'last_skip_reason'], values: { workflow_scope: ['shared'] }, reason: 'a conditional, disabled, noted or skipped automation, and the shared scope' },
-  { table: 'automation_cursors', reason: 'a cron automation fired on schedule rather than by hand' },
   { table: 'projects', columns: ['color', 'workflow_queue_paused', 'workflow_concurrency', 'remote_url', 'root_commit', 'repository_id'], reason: 'a verified repository_id needs a repository the forge serves (the top-up only writes a failed read); remote_url and root_commit are retired; the queue pause and concurrency are project settings the top-up leaves default; color is set by no App method' },
 
   // Fork internals.

@@ -12,16 +12,10 @@ func organizeArchived(archived bool) *bool { return &archived }
 
 // TestApplyThreadOrganizeWritesTitleGroupAndArchiveAtOnce is the landing
 // case: four fields, one transaction, and the rows it wrote read back from
-// inside it: the moved thread, the discussion child that travelled with
-// it, and the group it had to create.
+// inside it: the moved thread and the group it had to create.
 func TestApplyThreadOrganizeWritesTitleGroupAndArchiveAtOnce(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-root")
-	child := makeThread("t-child", "claude")
-	child.ParentThreadID = "t-root"
-	if err := s.CreateThread(child); err != nil {
-		t.Fatalf("create child thread: %v", err)
-	}
 
 	result, err := s.ApplyThreadOrganize("t-root", ThreadOrganizeWrite{
 		Title:       organizeTitle("Release work"),
@@ -47,12 +41,6 @@ func TestApplyThreadOrganizeWritesTitleGroupAndArchiveAtOnce(t *testing.T) {
 	if !result.Thread.Archived {
 		t.Error("returned row is not archived")
 	}
-	if len(result.Carried) != 1 || result.Carried[0].ID != "t-child" {
-		t.Fatalf("carried = %+v, want the discussion child", result.Carried)
-	}
-	if result.Carried[0].GroupID != result.CreatedGroup.ID {
-		t.Errorf("carried child groupId = %q, want %q", result.Carried[0].GroupID, result.CreatedGroup.ID)
-	}
 
 	stored, err := s.GetThread("t-root")
 	if err != nil {
@@ -60,9 +48,6 @@ func TestApplyThreadOrganizeWritesTitleGroupAndArchiveAtOnce(t *testing.T) {
 	}
 	if stored.Title != "Release work" || stored.GroupID != result.CreatedGroup.ID || !stored.Archived {
 		t.Errorf("committed row = %+v, want the renamed, grouped, archived thread", stored)
-	}
-	if got := threadGroupID(t, s, "t-child"); got != result.CreatedGroup.ID {
-		t.Errorf("committed child groupId = %q, want %q", got, result.CreatedGroup.ID)
 	}
 }
 
@@ -250,8 +235,8 @@ func TestApplyThreadOrganizeReportsNoChangeWhenNothingMoves(t *testing.T) {
 	if result.Thread.ID != "t-still" || result.Thread.Title != before.Title {
 		t.Errorf("returned row = %+v, want the unchanged row", result.Thread)
 	}
-	if result.CreatedGroup != nil || len(result.Carried) != 0 {
-		t.Errorf("a no-op patch reported group work: %+v / %+v", result.CreatedGroup, result.Carried)
+	if result.CreatedGroup != nil {
+		t.Errorf("a no-op patch reported group work: %+v", result.CreatedGroup)
 	}
 	assertThreadUntouched(t, s, before)
 }

@@ -93,8 +93,10 @@ contracts, integration paths and platform behavior. Read the affected area
 guides for additional requirements. Do not run unrelated suites solely because
 code changed; run broader checks when the impact crosses areas or is uncertain.
 
-For Go changes, use the Make targets so platform build settings are applied:
-`make go-build` and `make go-test`, and run `gofmt -w` on every changed Go
+For Go changes, use the Make targets so platform build settings and
+`-trimpath` are applied: `make go-build` and `make go-test`. `-trimpath` lets
+worktrees share the build cache; a bare `go build`, `go vet` or `go test`
+compiles its own copy of every package. Run `gofmt -w` on every changed Go
 file before finishing. For frontend changes, run
 `cd frontend && pnpm run check`, `cd frontend && pnpm run build`, and the
 relevant Vitest tests.

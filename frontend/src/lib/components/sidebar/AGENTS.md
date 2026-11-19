@@ -1,18 +1,39 @@
 # components/sidebar/
 
-The sidebar projects threads, discussions, groups, and repositories from their
-entity stores. `Sidebar.svelte` owns the top-level render boundary;
-`ProjectThreadList.svelte` owns each project's visible tree.
+The sidebar projects assistants, threads, groups, and repositories from
+their entity stores. `Sidebar.svelte` owns the top-level render boundary;
+`ProjectsSection.svelte` holds the Assistants section
+(`AssistantsSection.svelte`) above the Projects section in one scroll
+area. `SidebarTreeList.svelte` renders the rows of one tree: the
+assistants' cards, and each project's inside `ProjectThreadList.svelte`,
+which adds the project's empty state and drop targets.
 
 ## Rows and actions
 
-- Keep one row grammar for normal, grouped, and discussion entries. Shared
-  controls such as `ThreadRowPinButton` receive callbacks; they do
-  not own entities.
-- Nested discussion children do not expose independent pin actions; the parent
-  discussion is the pin target. Groups are not pinnable. A group's direct
-  members pin like top-level threads, but never as numbered jump targets.
-  `flattenSidebarThreadTree` decides pin targets (`isPinTarget`).
+- A thread renders flat under its project or group. Keep one row grammar
+  for normal and grouped entries. Shared controls such as
+  `ThreadRowPinButton` receive callbacks; they do not own entities.
+- Groups are not pinnable. A group's members pin like top-level threads, but
+  never as numbered jump targets.
+- An assistant is one row in the Assistants section, `ThreadRow`'s agent
+  variant: its glyph in the pin column, its state line
+  (`stores/threadWakes.svelte.ts`) and projects line under the title, and
+  no pin or group item. Its past threads open from Previous Threads…
+  (`PreviousThreadsDialog.svelte`, `stores/assistantPastThreads.svelte.ts`).
+  Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
+- Each assistant follows the Assistants setting of the computer it lives
+  on (`assistantsOn` in `stores/assistants.svelte.ts`): while that
+  computer has it off, nothing of its assistants renders, New Assistant…
+  for it is gone or disabled, and the assistant dialogs close and do not
+  open. Any surface that lists threads leaves out those under an
+  assistant with `hiddenAssistantThread`. Rules:
+  [standing agents](../../../../../docs/specs/standing-agents.md#turning-assistants-off).
+- `sidebarListsThread` in `sidebarBuckets.ts` is the one place that
+  decides a thread has a row: never archived, never `placement` owned.
+  The buckets put an assistant in the Assistants section and every other
+  listed thread in its project.
+- A row's worker count and needs-you badge read
+  `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the
@@ -34,14 +55,16 @@ makes every text field a drop target for the row.
 
 Clear the record on every drop target as well as `dragend`; the source row may
 unmount before `dragend`. Groups accept same-project threads not already in the
-group and stop propagation. The list background accepts grouped threads for
+group, never one whose payload is `agentBound` (a standing agent's own row),
+and stop propagation. An assistant row is not a drop target. The list
+background accepts grouped threads for
 ungrouping. Keep hover ownership in `ProjectThreadList` so child rows illuminate
 their group and rejected group targets clear the background affordance.
 
 ## Persisted presentation
 
-Sidebar expansion and sorting live in `stores/sidebar.svelte.ts`. Discussion
-expansion stores opened IDs; group collapse stores explicitly closed IDs.
+Sidebar expansion and sorting live in `stores/sidebar.svelte.ts`. Group
+collapse stores explicitly closed IDs.
 Synchronizing one project's tree must not remove another project's state.
 
 ## Connected computers

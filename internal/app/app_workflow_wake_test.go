@@ -1,7 +1,9 @@
 package app
 
 import (
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -68,9 +70,9 @@ func (a *App) sweepWorkflowUsageAttention() {
 	a.surfaceReclaimedWorkflowUsageAttention(a.reclaimWorkflowUsageAttention())
 }
 
-// wakeHarness wires the two seams a wake crosses — the ordinary send and the
-// flush queue — so a test can assert which one a delivery took without a
-// provider process.
+// wakeHarness wires the seams a wake crosses — an idle thread's session
+// start and the flush queue — so a test can assert which one a delivery took
+// without a provider process.
 type wakeHarness struct {
 	app   *App
 	mu    sync.Mutex
@@ -95,12 +97,34 @@ func newWakeHarness(t *testing.T) *wakeHarness {
 		h.sends = append(h.sends, content)
 		return nil
 	}
-	app.triage.SetFlushDispatcher(func(_ string, items []triage.QueuedFlushItem) {
+	// An idle thread's wake starts its session, and that start is the
+	// provider taking the wake at once: what it flushes is a send, settled
+	// as the dispatch settles it. A live session's flush stops at the
+	// dispatcher.
+	started := map[string]bool{}
+	app.startSessionFn = func(threadID string) error {
 		h.mu.Lock()
-		defer h.mu.Unlock()
+		started[threadID] = true
+		h.mu.Unlock()
+		app.triage.FlushQueuedItems(threadID)
+		return nil
+	}
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		h.mu.Lock()
+		idle := started[threadID]
 		for _, item := range items {
+			if idle {
+				h.sends = append(h.sends, item.Message)
+				continue
+			}
 			h.queued = append(h.queued, item.Message)
 			h.queuedItems = append(h.queuedItems, item)
+		}
+		h.mu.Unlock()
+		if idle {
+			for _, item := range items {
+				item.Settlement.Settle("")
+			}
 		}
 	})
 	app.testEmitHook = func(name string, data any) {
@@ -123,8 +147,12 @@ func (h *wakeHarness) snapshot() (sends, queued, events, errorTexts []string) {
 }
 
 // drain waits for the app's wake worker, which runs off the engine's emit
-// goroutine and therefore is not finished when the transition returns.
-func (h *wakeHarness) drain() { h.app.workflowApplication().WaitWake() }
+// goroutine and therefore is not finished when the transition returns, and
+// for the session starts its wakes made.
+func (h *wakeHarness) drain() {
+	h.app.workflowApplication().WaitWake()
+	h.app.waitAgentNoticeWork()
+}
 
 // dispatchQueued completes the queued messages the way the real dispatch worker
 // does once it has written them to the provider: it runs each item's
@@ -136,7 +164,7 @@ func (h *wakeHarness) dispatchQueued() {
 	h.queuedItems = nil
 	h.mu.Unlock()
 	for _, item := range pending {
-		item.Settlement.Settle()
+		item.Settlement.Settle("")
 	}
 }
 
@@ -214,7 +242,7 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 	item := h.run(t, "wake-done", engine.StateDone, "")
 	h.phase(t, item.ID, "verify", 1, "completed", "phase-thread",
 		json.RawMessage(`{"status":"done","outputs":{"ok":true}}`))
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	// A draft the user has typed but not sent must survive a background wake.
@@ -231,7 +259,7 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 
 	sends, queued, _, _ := h.snapshot()
 	if len(sends) != 1 || len(queued) != 0 {
-		t.Fatalf("idle delivery took sends=%d queued=%d, want one ordinary send", len(sends), len(queued))
+		t.Fatalf("idle delivery took sends=%d queued=%d, want one sent by the session it started", len(sends), len(queued))
 	}
 	for _, want := range []string{`Run "wake-done"`, "is done", `Phase "verify"`, "nothing is waiting on a reply"} {
 		if !strings.Contains(sends[0], want) {
@@ -255,7 +283,7 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 	item := h.run(t, "wake-question", engine.StateNeedsHuman, engine.ReasonQuestion)
 	h.phase(t, item.ID, "plan", 1, "parked", "phase-thread",
 		json.RawMessage(`{"status":"question","question":"Which base branch?"}`))
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,6 +301,21 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 			t.Fatalf("queued wake missing %q:\n%s", want, queued[0])
 		}
 	}
+	// The wake is the workflow's report, not the person's message.
+	h.mu.Lock()
+	notice := wake.DataNotice
+	wake := flushqueue.ItemFromTriage(thread.ID, h.queuedItems[0])
+	h.mu.Unlock()
+	if !wake.AgentMessage || wake.Origin != agentmeta.OriginAgentWake || wake.OriginWake == nil ||
+		wake.OriginWake.Kind != string(agentmeta.ReportWorkflow) || wake.OriginWake.Label != item.WorkflowID {
+		t.Fatalf("queued wake attribution = agent %v origin %q wake %+v, want the workflow's", wake.AgentMessage, wake.Origin, wake.OriginWake)
+	}
+	// Its row shows the run's data, not the notice written for the agent.
+	if facts := wake.OriginWake.Facts; facts == nil || facts.Check(queued[0]) != nil ||
+		facts.BodyOf(queued[0]) != strings.TrimLeft(strings.TrimPrefix(queued[0], notice+"\n"), "\n") ||
+		!strings.HasPrefix(queued[0], notice+"\n") {
+		t.Fatalf("queued wake facts = %+v over %q, want the data after the notice as the body", wake.OriginWake.Facts, queued[0])
+	}
 }
 
 func TestWorkflowUsageLimitStormNotifiesOncePerAccountAndWatcher(t *testing.T) {
@@ -282,7 +325,7 @@ func TestWorkflowUsageLimitStormNotifiesOncePerAccountAndWatcher(t *testing.T) {
 	scope := h.usageScope(t, string(provider.Claude), "acct-a", 4)
 	park := func(id string, scopeID store.WorkflowProviderUsageScopeID) store.WorkItem {
 		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
-		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		h.usageLimitedPhase(t, item.ID, scopeID)
@@ -330,7 +373,7 @@ func TestWorkflowUsageAttentionQueuedResumeRaceCannotSilenceLateFailure(t *testi
 	scope := h.usageScope(t, string(provider.Claude), "acct", 9)
 	park := func(id string) store.WorkItem {
 		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
-		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		h.usageLimitedPhase(t, item.ID, scope)
@@ -378,7 +421,7 @@ func TestWorkflowUsageAttentionBootSweepRedeliversAnUnsettledClaim(t *testing.T)
 	scope := h.usageScope(t, string(provider.Codex), "acct", 12)
 	makePark := func(id string) store.WorkItem {
 		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
-		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		h.usageLimitedPhase(t, item.ID, scope)
@@ -423,7 +466,7 @@ func TestWorkflowUsageAttentionBootSweepReselectsAnAffectedRunWhenSourceResolved
 	scope := h.usageScope(t, string(provider.Codex), "acct", 16)
 	makePark := func(id string) store.WorkItem {
 		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
-		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		h.usageLimitedPhase(t, item.ID, scope)
@@ -431,7 +474,7 @@ func TestWorkflowUsageAttentionBootSweepReselectsAnAffectedRunWhenSourceResolved
 	}
 	original := makePark("usage-recovery-original")
 	mixed := h.run(t, "usage-recovery-a-mixed", engine.StateNeedsHuman, engine.ReasonUnitFailed)
-	if err := h.app.store.UpdateWorkItemOriginThread(mixed.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(mixed.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.phase(t, mixed.ID, "fan", 1, "parked", "", nil)
@@ -476,7 +519,7 @@ func TestWorkflowUsageAttentionComposerRecoverySettlesTheBootClaim(t *testing.T)
 	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
 	scope := h.usageScope(t, string(provider.Claude), "acct", 13)
 	item := h.run(t, "usage-restored-to-draft", engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.usageLimitedPhase(t, item.ID, scope)
@@ -527,7 +570,7 @@ func TestWorkflowUsageAttentionBootSweepResurfacesTheParkedDescendant(t *testing
 	thread := h.chatThread(t, "origin-usage-descendant-restart")
 	scope := h.usageScope(t, string(provider.Codex), "acct", 14)
 	root := h.run(t, "usage-root-running", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	root.OriginThreadID = thread.ID
@@ -562,7 +605,7 @@ func TestWorkflowCalledChildBirthDoesNotRearmProviderUsageAttention(t *testing.T
 	scope := h.usageScope(t, string(provider.Claude), "acct", 15)
 	park := func(id string) {
 		item := h.run(t, id, engine.StateNeedsHuman, engine.ReasonProviderUsageLimited)
-		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		h.usageLimitedPhase(t, item.ID, scope)
@@ -575,7 +618,7 @@ func TestWorkflowCalledChildBirthDoesNotRearmProviderUsageAttention(t *testing.T
 	park("usage-before-child")
 
 	root := h.run(t, "running-caller", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	child := store.WorkItem{
@@ -598,7 +641,7 @@ func TestWorkflowCalledChildBirthDoesNotRearmProviderUsageAttention(t *testing.T
 
 	// A top-level birth is an explicit new start and remains a re-arm boundary.
 	started := h.run(t, "explicit-root-start", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(started.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(started.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.app.afterWorkflowStateEvent(engine.StateEvent{
@@ -620,7 +663,7 @@ func TestWorkflowMixedFanOutFailureIsNeverHiddenByUsageCoalescing(t *testing.T) 
 	usageOnly := h.run(t, "fan-usage-only", engine.StateNeedsHuman, engine.ReasonUnitFailed)
 	mixed := h.run(t, "fan-mixed", engine.StateNeedsHuman, engine.ReasonUnitFailed)
 	for _, item := range []*store.WorkItem{&usageOnly, &mixed} {
-		if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		h.phase(t, item.ID, "fan", 1, "parked", "", nil)
@@ -652,7 +695,7 @@ func TestWorkflowWakeFallsBackWhenTheBoundThreadIsGone(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-deleted")
 	item := h.run(t, "wake-orphan", engine.StateFailed, engine.ReasonAgentError)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.app.store.DeleteThread(thread.ID); err != nil {
@@ -719,7 +762,7 @@ func TestWorkflowDescendantParkSurfacesAtTheRoot(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-root")
 	root := h.run(t, "tree-root", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	child := store.WorkItem{
@@ -770,7 +813,7 @@ func TestWorkflowDescendantParkIsSilentOnceTheRootRests(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-settled")
 	root := h.run(t, "settled-root", engine.StateNeedsHuman, engine.ReasonChildFailed)
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	child := store.WorkItem{
@@ -800,7 +843,7 @@ func TestWorkflowDescendantParkCarriesTheChainAndItsOwnFailedUnits(t *testing.T)
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-campaign")
 	root := h.run(t, "campaign-root", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	// The root has a failed unit of its own from an earlier wave. It must not be
@@ -884,7 +927,7 @@ func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-checkpoint")
 	root := h.run(t, "checkpoint-root", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	child := store.WorkItem{
@@ -910,10 +953,10 @@ func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	for _, want := range []string{
 		"needs-human (checkpoint)",
 		`run "checkpoint-wave" reached the checkpoint and did not start the next one`,
-		// The literal command, against the DESCENDANT's id: the run to act on is
+		// The literal call, against the DESCENDANT's id: the run to act on is
 		// one the reader has never seen, and "resume" is one of four control
-		// verbs it could otherwise be mapped onto.
-		"`agent-overflow run resume \"checkpoint-wave\"` takes the call it skipped, or leave it parked.",
+		// actions it could otherwise be mapped onto.
+		"`run_control(run_id: \"checkpoint-wave\", action: \"resume\")` takes the call it skipped, or leave it parked.",
 	} {
 		if !strings.Contains(sends[0], want) {
 			t.Fatalf("checkpoint wake missing %q:\n%s", want, sends[0])
@@ -929,7 +972,7 @@ func TestWorkflowWakeCarriesNarrativeArtifactAndFailedUnitReferences(t *testing.
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-refs")
 	item := h.run(t, "wake-refs", engine.StateNeedsHuman, engine.ReasonUnitFailed)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.phase(t, item.ID, "fan", 1, "parked", "join-thread", json.RawMessage(`{"status":"stuck","reason":"a unit failed"}`))
@@ -984,7 +1027,7 @@ func TestWorkflowWakeSaysWhyEachFailedUnitRests(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-paused")
 	item := h.run(t, "wake-paused", engine.StateNeedsHuman, engine.ReasonPaused)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.phase(t, item.ID, "fan", 1, "parked", "join-thread", nil)
@@ -992,7 +1035,7 @@ func TestWorkflowWakeSaysWhyEachFailedUnitRests(t *testing.T) {
 	// attempt down: the phase attempt's status, not the run's reason.
 	const interrupted = "interrupted with its phase attempt (parked)"
 	// A note far past the reference budget still leaves the id and the thread
-	// whole, because those are what `run retry-unit` and a thread read take.
+	// whole, because those are what `retry_unit` and a thread read take.
 	long := "unit outcome error: " + strings.Repeat("stack frame; ", 200)
 	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
 		{ItemID: item.ID, PhaseID: "fan", Attempt: 1, UnitID: "adjudicate", UnitIndex: 0,
@@ -1039,7 +1082,7 @@ func TestWorkflowWakeOmitsAMissingNarrative(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-missing")
 	item := h.run(t, "wake-missing", engine.StateNeedsHuman, engine.ReasonStuck)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.phase(t, item.ID, "survey", 1, "parked", "phase-thread",
@@ -1098,7 +1141,7 @@ func TestWorkflowWakeCarriesTheEngineParkCause(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-cause")
 	item := h.run(t, "wake-cause", engine.StateNeedsHuman, engine.ReasonSetupFailed)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	const cause = `provision worktree for item "wake-cause": branch "ao/wave-3" already exists`
@@ -1127,7 +1170,7 @@ func TestWorkflowDescendantWakeCarriesTheDescendantsParkCause(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-cause-root")
 	root := h.run(t, "cause-root", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	child := store.WorkItem{
@@ -1169,7 +1212,7 @@ func TestWorkflowDescendantParkOmitsTheRootsDeclaredOutputs(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-carryforward")
 	root := h.run(t, "campaign-root", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	// A recursive campaign root: the wave that already finished produced the
@@ -1256,7 +1299,7 @@ func (h *wakeHarness) act(itemID, projectID string, from engine.State) {
 func (h *wakeHarness) boundRun(t *testing.T, id, threadID string, state engine.State, reason engine.Reason) store.WorkItem {
 	t.Helper()
 	item := h.run(t, id, state, reason)
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, threadID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, threadID); err != nil {
 		t.Fatal(err)
 	}
 	item.OriginThreadID = threadID
@@ -1437,7 +1480,7 @@ func TestWorkflowWakeCarriesTheWorkspaceAndTheGateOutputs(t *testing.T) {
 	}
 }
 
-// The attempt digest is bounded by the same helper `run inspect` uses, and says
+// The attempt digest is bounded by the same helper `run_inspect` uses, and says
 // what it left out — a digest that hides its own truncation is how a reader
 // concludes an output does not exist.
 func TestWorkflowWakeBoundsTheGateOutputsAndNamesTheDrillDown(t *testing.T) {
@@ -1461,7 +1504,7 @@ func TestWorkflowWakeBoundsTheGateOutputsAndNamesTheDrillDown(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("wakes = %d, want one", len(sends))
 	}
-	if !strings.Contains(sends[0], "…and 3 more (`agent-overflow run inspect \"bounded-run\" --phase \"review\" --attempt 1`).") {
+	if !strings.Contains(sends[0], "…and 3 more (`run_inspect(run_id: \"bounded-run\", phase_id: \"review\", attempt: 1)`).") {
 		t.Fatalf("wake did not state its own overflow with the read that answers it:\n%s", sends[0])
 	}
 	if !strings.Contains(sends[0], "[truncated]") {
@@ -1580,7 +1623,7 @@ func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.
 	}
 
 	// (2) Somebody acts before the thread reaches a boundary — an overlay
-	// resolve, a `run resume`, an auto-resume timer: all of them land here.
+	// resolve, a run_control resume, an auto-resume timer: all of them land here.
 	h.act(item.ID, item.ProjectID, engine.StateNeedsHuman)
 	if spent, err := h.app.store.WorkItemWakeSignature(item.ID); err != nil || spent != "" {
 		t.Fatalf("the action did not spend the queued wake record: %q (err %v)", spent, err)

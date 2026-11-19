@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scopeRefusalMessage } from '../transport/scopeRefusal';
 import { TransportError } from '../transport/wsClient';
-import { userFacingError } from './userFacingError';
+import { asSentence, userFacingError } from './userFacingError';
 
 describe('userFacingError', () => {
   it('returns fallback for null/undefined', () => {
@@ -97,6 +97,19 @@ describe('userFacingError', () => {
     expect(userFacingError(err)).toBe('Stored provider uuid is missing from session /home/u/s.jsonl: refusing a slice.');
   });
 
+  it("names the folder of a refused assistant delete, keeping the id that is a path segment", () => {
+    const id = '550e8400-e29b-41d4-a716-446655440000';
+    const inner = `this assistant was not deleted: its home /tmp/other/${id} is not its own folder in the app's agents folder`;
+    const outer = `delete the assistant's home "/tmp/other/${id}" (expected /home/u/.config/agent-overflow/agents/${id})`;
+    const err = new TransportError('method_error', `${outer}: ${inner}`, {
+      detail: { ref: 'r3', method: 'DeleteThread', at: 1, chain: [outer, inner] },
+    });
+    expect(userFacingError(err)).toBe(
+      `This assistant was not deleted: its home /tmp/other/${id} is not its own folder in the app's agents folder.`,
+    );
+    expect(userFacingError(new Error(`no session for thread ${id}`))).toBe('No session for thread.');
+  });
+
   it('shows a reviewed backend message whole', () => {
     const err = new TransportError('remote_connection_failed', 'Could not stop "build" on Mac: Could not get a response.', {
       detail: { ref: 'r2', method: 'StopRemoteJob', at: 1, chain: [] },
@@ -109,5 +122,17 @@ describe('userFacingError', () => {
       detail: { ref: 'rKVzmpRFjxI', method: 'RevertConversationAndResendMessage', at: 1 },
     });
     expect(userFacingError(err)).toBe('The backend could not complete this request.');
+  });
+});
+
+describe('asSentence', () => {
+  it('capitalises Go error text and closes it with a period', () => {
+    expect(asSentence('this conversation belongs to a workflow. Transfer an independent conversation'))
+      .toBe('This conversation belongs to a workflow. Transfer an independent conversation.');
+  });
+
+  it('leaves a finished sentence as written', () => {
+    expect(asSentence('Reconnect the destination computer to finish setup.')).toBe('Reconnect the destination computer to finish setup.');
+    expect(asSentence('Retry now?')).toBe('Retry now?');
   });
 });

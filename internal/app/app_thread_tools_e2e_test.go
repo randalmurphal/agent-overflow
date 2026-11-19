@@ -40,7 +40,7 @@ func TestThreadMCPHandshakeListsEveryToolAndTheGuide(t *testing.T) {
 	if handshake.ServerInfo.Name != threadMCPName {
 		t.Errorf("server name = %q, want %q", handshake.ServerInfo.Name, threadMCPName)
 	}
-	if handshake.Instructions != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) {
+	if handshake.Instructions != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID, subThreadPlace{})) {
 		t.Error("initialize did not carry the thread tools guide as its instructions")
 	}
 

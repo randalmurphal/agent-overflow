@@ -134,3 +134,17 @@ describe('deriveComposerInputState, compact layout', () => {
       .toBe('Add feedback to refine the plan, or leave blank to implement it');
   });
 });
+
+describe('deriveComposerInputState, an ask copy', () => {
+  it('disables the input and says an agent question runs there, ranked under read-only access', () => {
+    expect(deriveComposerInputState(input({ askCopy: true }))).toEqual({
+      disabled: true,
+      value: 'draft text',
+      placeholder: "An agent's question runs in this copy. It takes no messages.",
+    });
+    expect(deriveComposerInputState(input({ askCopy: true, hasBlockingPrompt: true })).placeholder)
+      .toBe("An agent's question runs in this copy. It takes no messages.");
+    expect(deriveComposerInputState(input({ askCopy: true, sendUngranted: true })).placeholder)
+      .toBe('This device has read-only access');
+  });
+});

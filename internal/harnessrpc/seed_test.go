@@ -1,10 +1,14 @@
 package harnessrpc
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +171,113 @@ func TestHarnessSeedBroadcastsRowsWhoseHistoryLandedBehindTheStore(t *testing.T)
 	}
 	if row.IsDraft {
 		t.Fatal("seeded thread with history still reads as a draft; the broadcast would re-announce a draft row")
+	}
+}
+
+// A seeded assistant is an assistant's current thread whose row is
+// announced with its record; a thread spawned by it names it.
+func TestHarnessSeedMakesAnAssistant(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "assistant-seed",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{
+			{Title: "Ops", Assistant: true},
+			{Title: "Worker", SpawnedBy: "Ops"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ids := result.Projects[0].ThreadIDs
+	if agent, found, err := host.store.GetStandingAgent(ids[0]); err != nil || !found || agent.ThreadID != ids[0] {
+		t.Fatalf("assistant record = %+v %v %v", agent, found, err)
+	}
+	if !slices.Contains(host.broadcastRows, ids[0]) {
+		t.Fatalf("broadcast rows = %v, want the assistant's row announced", host.broadcastRows)
+	}
+	worker, err := host.store.GetThread(ids[1])
+	if err != nil || worker.SpawnedByThreadID != ids[0] || worker.Placement != store.PlacementOwned {
+		t.Fatalf("worker = spawnedBy %q placement %s (%v)", worker.SpawnedByThreadID, worker.Placement, err)
+	}
+}
+
+// A seeded assistant lives outside every project, so the project cascade
+// leaves it; the reset deletes it and every other thread outside a
+// project, archived ones included.
+func TestHarnessResetDeletesThreadsOutsideProjects(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name:    "assistant-reset",
+		Repo:    &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Title: "Ops", Assistant: true}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ops := result.Projects[0].ThreadIDs[0]
+	now := time.Now().UnixMilli()
+	if err := host.store.CreateThread(store.Thread{ID: "loose", Title: "Loose", Provider: "claude", WorkspacePath: t.TempDir(), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := host.store.ArchiveThread("loose"); err != nil {
+		t.Fatal(err)
+	}
+	if outside, err := host.store.ThreadIDsOutsideProjects(); err != nil || len(outside) != 2 || outside[0] != ops {
+		t.Fatalf("before the reset: %v, %v; want the assistant first of two", outside, err)
+	}
+	if err := receiver.HarnessReset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if outside, err := host.store.ThreadIDsOutsideProjects(); err != nil || len(outside) != 0 {
+		t.Fatalf("after the reset: %v, %v", outside, err)
+	}
+	if _, found, err := host.store.GetStandingAgent(ops); err != nil || found {
+		t.Fatalf("the assistant survived the reset: %v %v", found, err)
+	}
+}
+
+// The reset removes the user and project memory scopes, which no thread
+// owns.
+func TestHarnessResetRemovesTheMemoryScopes(t *testing.T) {
+	receiver, _ := newHarnessTestHost(t)
+	fact := filepath.Join(receiver.config.DataDir, "memory", "user", "a.md")
+	if err := os.MkdirAll(filepath.Dir(fact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fact, []byte("---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.HarnessReset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(filepath.Dir(fact))); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the memory scopes survived the reset: %v", err)
+	}
+}
+
+// A seeded turn can open with a message another agent wrote, carrying the
+// origin meta a real delivery writes on the turn's user row.
+func TestHarnessSeedWritesTheUserMessageMeta(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	meta := `{"origin":"agent-thread","originThread":{"threadId":"t-lead","kind":"send"}}`
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "user-meta",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Turns: []HarnessSeedTurn{
+			{UserText: "mine"},
+			{UserText: "from the lead", UserMeta: json.RawMessage(meta)},
+		}}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	items, err := host.store.ListItems(result.Projects[0].ThreadIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Meta != "{}" || items[1].Meta != meta {
+		t.Fatalf("user rows = %+v, want an empty meta then %s", items, meta)
 	}
 }
 
@@ -394,5 +505,42 @@ func TestHarnessSeedsTheWindowedThreadFixture(t *testing.T) {
 	}
 	if all[1].Summary != "PAIRBIGHEAD sweep started" || all[len(all)-1].Summary != "PAIRBIGTAIL sweep complete" {
 		t.Fatalf("thread runs %q..%q, want the head and tail rows", all[1].Summary, all[len(all)-1].Summary)
+	}
+}
+
+// A seeded thread can name the seeded thread that spawned it: the row then
+// names its spawner the way a real thread_spawn's does, and it is broadcast
+// again once it does.
+func TestHarnessSeedRecordsASpawner(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "spawned-seed",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{
+			{Title: "Agent"},
+			{Title: "Child", SpawnedBy: "Agent"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ids := result.Projects[0].ThreadIDs
+	row, err := host.store.GetThread(ids[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.SpawnedByThreadID != ids[0] {
+		t.Fatalf("child names spawner %q, want %s", row.SpawnedByThreadID, ids[0])
+	}
+	if strings.Join(host.broadcastRows, ",") != ids[1] {
+		t.Fatalf("broadcast rows = %v, want the child alone", host.broadcastRows)
+	}
+	_, err = Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name:    "unknown-spawner",
+		Repo:    &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Title: "Child", SpawnedBy: "Nobody"}},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "names no thread seeded earlier") {
+		t.Fatalf("seed with an unknown spawner: %v", err)
 	}
 }

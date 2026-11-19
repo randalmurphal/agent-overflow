@@ -67,23 +67,25 @@ func writeOwnDevice(tx *sql.Tx, m owndevices.Member) error {
 
 // MergeOwnDevices commits membership and revokes obsolete group sessions together.
 // Returned IDs must be invalidated in the identity cache after the transaction.
-func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (bool, []string, error) {
+// The revocation releases the spawn links of the devices it leaves with no
+// unrevoked session here, and released names their threads (session_end.go).
+func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (changed bool, ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	defer tx.Rollback()
 	old, e := readOwnDevices(tx)
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	next, changed, e := owndevices.Merge(old, in)
 	if e != nil || !changed {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	for _, m := range next {
 		if e = writeOwnDevice(tx, m); e != nil {
-			return false, nil, e
+			return false, nil, nil, e
 		}
 	}
 	// Withdrawing this serving host withdraws every personal inbound grant.
@@ -104,35 +106,21 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 	}
 	if hostingRemoved {
 		if _, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, at); e != nil {
-			return false, nil, e
+			return false, nil, nil, e
 		}
 	}
 	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND canceled_at IS NULL AND (? OR sponsor_key IN(SELECT key_thumbprint FROM own_devices WHERE removed=1) OR EXISTS(SELECT 1 FROM own_devices d WHERE d.key_thumbprint=expected_key AND (d.removed=1 OR d.generation<>member_generation))) AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, hostingRemoved)
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
-	rows, e := tx.Query(`UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation) RETURNING id`, at, hostingRemoved)
+	ids, released, e = endSessionsTx(tx, revokeSessions, at, nil, `id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation)`, hostingRemoved)
 	if e != nil {
-		return false, nil, e
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return false, nil, e
-		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
-	return true, ids, nil
+	return true, ids, released, nil
 }
 
 // RegisterOwnDevice changes metadata only, never membership or removal state.
@@ -260,38 +248,26 @@ func (s *Store) PairingLinkByTokenHash(hash []byte) (PairingLink, error) {
 
 // RetireOwnIntroductions replaces only enrollments whose first renewal was never
 // acknowledged. A completed independent session is never revoked by a retry.
-func (s *Store) RetireOwnIntroductions(key string, at int64) ([]string, error) {
+// The revocation releases the spawn links of the devices it leaves with no
+// unrevoked session here, and released names their threads (session_end.go).
+func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	defer tx.Rollback()
 	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NULL AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, key)
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
-	rows, e := tx.Query(`UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND id IN(SELECT session_id FROM pairing_links WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NOT NULL) RETURNING id`, at, key)
+	ids, released, e = endSessionsTx(tx, revokeSessions, at, nil, `id IN(SELECT session_id FROM pairing_links WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NOT NULL)`, key)
 	if e != nil {
-		return nil, e
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
-		return nil, e
+		return nil, nil, e
 	}
-	return ids, nil
+	return ids, released, nil
 }
 
 // PrepareOwnPairing freezes the generation authorized by this human approval.

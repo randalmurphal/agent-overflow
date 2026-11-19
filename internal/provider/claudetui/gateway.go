@@ -56,6 +56,9 @@ type agentTurnDriver interface {
 	// classAgent request after PreCompact.
 	beginCompactionCapture(req *messagesRequest) *agentRequest
 	endAgentTurn(ar *agentRequest)
+	// observeMainRequest sees the body of each main-loop request before its
+	// turn begins: the conversation as the model receives it.
+	observeMainRequest(body []byte)
 }
 
 // agentIDHeader is the per-subagent identifier Claude Code sets on a subagent's
@@ -227,6 +230,7 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 				if agentID := r.Header.Get(agentIDHeader); agentID != "" && !requestReportsAgentCompletion(req.Messages, agentID) {
 					ar = g.drive.beginSubagentTurn(req, agentID)
 				} else {
+					g.drive.observeMainRequest(body)
 					ar = g.drive.beginAgentTurn(req)
 				}
 			}

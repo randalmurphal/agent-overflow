@@ -378,6 +378,39 @@ func TestClaudeMcpCallRunsRealToolAndFramesWire(t *testing.T) {
 	validateClaudeFrames(t, p.all)
 }
 
+// Two sessions of one thread are two mock processes running the same
+// scenario. The tool_use ids they mint must differ, or the second session's
+// call lands on the first one's row.
+func TestMintedToolUseIDsDifferAcrossProcesses(t *testing.T) {
+	server := startMcpTestServer(t)
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "claude-mcp-ids",
+		Provider: scenario.ProviderClaude,
+		Turns: []scenario.Turn{{Steps: []scenario.Step{
+			mcpCallStep("ao-thread-tools", "json_ok", `{"text":"x"}`),
+			{Emit: &scenario.EmitStep{Lines: []string{`{"type":"result","subtype":"success","is_error":false}`}}},
+		}}},
+	}
+	ids := make([]string, 0, 2)
+	for range 2 {
+		_, _, env := mcpControl(t, sc)
+		args := append(append([]string(nil), claudeSessionArgs...),
+			"--mcp-config", claudeMcpConfig("ao-thread-tools", server.url()))
+		p := startMock(t, args, env, t.TempDir())
+		p.send(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"alpha"}]}}`)
+		useLine := p.expectLineContaining(`"tool_use"`, testTimeout)
+		p.expectLineContaining(`"type":"result"`, testTimeout)
+		p.closeStdinAndExpectExit(0, testTimeout)
+		parser := claude.NewParser()
+		t.Cleanup(parser.Close)
+		ids = append(ids, parseOneEvent(t, parser, useLine, provider.EventToolStart).ItemID)
+	}
+	if ids[0] == "" || ids[0] == ids[1] {
+		t.Fatalf("two processes minted tool_use ids %q and %q", ids[0], ids[1])
+	}
+}
+
 // parseOneEvent runs one mock frame through the real Claude parser and
 // returns the single event of the wanted kind.
 func parseOneEvent(t *testing.T, parser *claude.Parser, line string, kind provider.EventKind) provider.ProviderEvent {

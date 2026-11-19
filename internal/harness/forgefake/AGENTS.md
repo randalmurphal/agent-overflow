@@ -29,9 +29,11 @@ own loopback listener and hands its base URL and fixed token to the boot
 `ServeHTTP` maps a REST request onto the `api` route it stands for
 (`http.go`) and a GraphQL request onto the operation its `operationName`
 names (`github_graphql.go`; GitLab's in `gitlab_lists.go`), and answers
-from the same fixture. Offline
-drops the listener's open connections and records each request that
-arrives as route `offline`, dropping it without a reply.
+from the same fixture. A GitLab REST write whose `Content-Type` is not
+`application/json` is unhandled, since GitLab reads such a body as
+something other than JSON (`decodeRESTBody`). Offline drops the
+listener's open connections and records each request that arrives as
+route `offline`, dropping it without a reply.
 
 The engine lives in the harness process, not the binary, so seeding and
 inspection go through the harness wire with no fixture files.

@@ -1,7 +1,6 @@
 package threadapp
 
 import (
-	"errors"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -67,61 +66,6 @@ func TestApplyOrganizePatchLandsEveryFieldItPlanned(t *testing.T) {
 	}
 }
 
-// TestApplyOrganizePatchLeavesTheThreadUntouchedWhenAWriteFails is the
-// spec's rule through the service, on a refusal the plan cannot foresee: a
-// discussion child is refused by the group move, and the rename planned
-// beside it must not land on its own.
-func TestApplyOrganizePatchLeavesTheThreadUntouchedWhenAWriteFails(t *testing.T) {
-	service, database, _ := newServiceFixture(t)
-	parent, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatalf("Create parent: %v", err)
-	}
-	service.deps.NewID = func() string { return "child" }
-	child, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatalf("Create child: %v", err)
-	}
-	child.ParentThreadID = parent.ID
-	if err := database.UpdateThread(child); err != nil {
-		t.Fatalf("UpdateThread child parent: %v", err)
-	}
-	before, err := database.GetThread(child.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-
-	_, err = service.ApplyOrganizePatch(child.ID, OrganizePatch{
-		Title:    patchString("Renamed"),
-		Group:    patchString("Release"),
-		Archived: patchBool(true),
-	})
-	if !errors.Is(err, store.ErrThreadNotRoot) {
-		t.Fatalf("error = %v, want store.ErrThreadNotRoot", err)
-	}
-
-	after, err := database.GetThread(child.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if after.Title != before.Title {
-		t.Errorf("title = %q, want the refused patch to leave %q", after.Title, before.Title)
-	}
-	if after.Archived != before.Archived {
-		t.Errorf("archived = %v, want %v", after.Archived, before.Archived)
-	}
-	if after.GroupID != "" {
-		t.Errorf("groupId = %q, want the refused move to leave it ungrouped", after.GroupID)
-	}
-	groups, err := database.ListThreadGroups()
-	if err != nil {
-		t.Fatalf("ListThreadGroups: %v", err)
-	}
-	if len(groups) != 0 {
-		t.Errorf("groups = %+v, want the refused patch to create none", groups)
-	}
-}
-
 // TestApplyOrganizePatchPinsGroupedThreads: a grouped thread takes a pin,
 // and a patch that sets a group and a pin lands the pin inside the new
 // group, including the tier the row already held before the move cleared
@@ -178,5 +122,87 @@ func TestApplyOrganizePatchPinsGroupedThreads(t *testing.T) {
 	}
 	if result.Thread.GroupID != "" || currentPinTier(result.Thread) != PinNone || !result.Changed {
 		t.Errorf("ungrouped thread = %+v (changed %v), want it out of the group and unpinned", result.Thread, result.Changed)
+	}
+}
+
+// spawnedChild makes a thread spawned by another one on this computer and
+// owned by it, the only kind of thread a placement patch moves.
+func spawnedChild(t *testing.T, service *Service, database *store.Store, id string) store.Thread {
+	t.Helper()
+	service.deps.NewID = func() string { return id + "-spawner" }
+	spawner, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Create spawner: %v", err)
+	}
+	service.deps.NewID = func() string { return id }
+	child, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Create child: %v", err)
+	}
+	token := id + "-token"
+	if _, err := database.AcceptLocalThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: spawner.ID, Kind: store.ThreadRequestSpawn, State: store.ThreadRequestUnconfirmed,
+	}, store.ThreadRequestReceipt{Token: token, OwnerDeviceID: "device", Kind: store.ThreadRequestSpawn, SourceThreadID: spawner.ID}); err != nil {
+		t.Fatalf("AcceptLocalThreadRequest: %v", err)
+	}
+	if _, err := database.NameLocalThreadRequestTarget(token, child.ID, true); err != nil {
+		t.Fatalf("NameLocalThreadRequestTarget: %v", err)
+	}
+	child, err = database.GetThread(child.ID)
+	if err != nil || child.Placement != store.PlacementOwned {
+		t.Fatalf("spawned child = %+v, %v; want it owned", child, err)
+	}
+	return child
+}
+
+// An ungroup with placement owned takes a grouped child out of its group
+// and back to its spawner in one patch: the store's ungroup leaves it
+// standalone, and the plan's placement write makes it owned. The result
+// says the write took the child, real by its spawn link, off the sidebar
+// list; a rename alone moves nothing across it.
+func TestApplyOrganizePatchUngroupsAndOwnsInOnePatch(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	child := spawnedChild(t, service, database, "child")
+	group, err := database.CreateThreadGroup("project", "Sweep")
+	if err != nil {
+		t.Fatalf("CreateThreadGroup: %v", err)
+	}
+	if _, err := database.SetThreadGroup([]string{child.ID}, group.ID); err != nil {
+		t.Fatalf("SetThreadGroup: %v", err)
+	}
+	result, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{
+		Group:     patchString(""),
+		Placement: patchString(store.PlacementOwned),
+	})
+	if err != nil {
+		t.Fatalf("ApplyOrganizePatch: %v", err)
+	}
+	if result.Thread.GroupID != "" || result.Thread.Placement != store.PlacementOwned || result.Listing != store.ListingUnlisted {
+		t.Errorf("child = %s in group %q (listing %v), want owned with no group, off the list", result.Thread.Placement, result.Thread.GroupID, result.Listing)
+	}
+	renamed, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{Title: patchString("Renamed")})
+	if err != nil || !renamed.Changed || renamed.Listing != store.ListingUnchanged {
+		t.Errorf("rename = changed %v listing %v, %v; want a change that moves nothing across the list", renamed.Changed, renamed.Listing, err)
+	}
+}
+
+// A placement change clears the pin, so a pin named in the same patch is
+// compared with no pin and written after the move: the child keeps the
+// tier it held, now in its new place.
+func TestApplyOrganizePatchKeepsAPinNamedWithAPlacementChange(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	child := spawnedChild(t, service, database, "child")
+	if _, _, err := database.PinThread(child.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	result, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{
+		Placement: patchString(store.PlacementStandalone),
+		Pin:       patchString(PinFront),
+	})
+	if err != nil {
+		t.Fatalf("ApplyOrganizePatch: %v", err)
+	}
+	if result.Thread.Placement != store.PlacementStandalone || currentPinTier(result.Thread) != PinFront {
+		t.Errorf("child = %s pinned %q, want standalone and pinned front", result.Thread.Placement, currentPinTier(result.Thread))
 	}
 }

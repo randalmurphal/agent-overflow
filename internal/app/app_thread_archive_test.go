@@ -3,6 +3,8 @@ package app
 import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +12,25 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
+
+// archiveThread is the ArchiveThread binding as one error: its refusal, or
+// what its result left undone.
+func archiveThread(a *App, id string) error {
+	result, err := a.ArchiveThread(id)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	if result.CleanupError != "" {
+		errs = append(errs, errors.New(result.CleanupError))
+	}
+	for _, worker := range result.WorkersNotArchived {
+		errs = append(errs, fmt.Errorf("worker %s: %s", worker.ThreadID, worker.Error))
+	}
+	return errors.Join(errs...)
+}
 
 // writeExitMarkerClaudeScript writes a mock Claude CLI that answers the
 // first stdin line with init + result and writes a marker file on exit.
@@ -113,7 +133,7 @@ func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
 		t.Fatalf("seed running background row: %v", err)
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -129,6 +149,72 @@ func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
 	}
 	if !archived.Archived {
 		t.Fatal("thread is not archived")
+	}
+}
+
+// An archive of a thread with a live session returns through either door,
+// the binding and an agent's thread_update: the session and its process
+// end, and the thread's action and mutation locks are free. The teardown
+// takes the mutation lock to drop the queue, so a door that held it across
+// the teardown would never return.
+func TestArchivingALiveThreadReturnsThroughEitherDoor(t *testing.T) {
+	t.Parallel()
+	doors := map[string]func(app *App, threadID string) error{
+		"binding": func(app *App, threadID string) error { return archiveThread(app, threadID) },
+		"thread_update": func(app *App, threadID string) error {
+			archived := true
+			report, err := threadToolsApp{app: app}.UpdateThreads(context.Background(), threadtools.Caller{ThreadID: "another-thread"},
+				threadtools.UpdateCall{ThreadIDs: []string{threadID}, Archived: &archived})
+			if err != nil {
+				return err
+			}
+			if row := report.Results[0]; !row.Updated {
+				return fmt.Errorf("thread_update refused: %s", row.Error)
+			}
+			return nil
+		},
+	}
+	for name, archive := range doors {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app, bus := setupE2EApp(t)
+			thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+			if err != nil {
+				t.Fatalf("createTestThread: %v", err)
+			}
+			marker := startExitMarkerClaudeSession(t, app, bus, thread.ID)
+			if _, live := app.sessionManager().get(thread.ID); !live {
+				t.Fatal("expected a live session before archiving")
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- archive(app, thread.ID) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("archive: %v", err)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatalf("the archive did not return in 15s; mutation lock refs %d, action lock refs %d",
+					app.threadApplication().MutationRefs(thread.ID), app.threadLocks().Refs(thread.ID))
+			}
+
+			if _, live := app.sessionManager().get(thread.ID); live {
+				t.Fatal("the archived thread still holds a registered session")
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("the provider process survived the archive: %v", err)
+			}
+			if refs := app.threadApplication().MutationRefs(thread.ID); refs != 0 {
+				t.Fatalf("mutation lock refs = %d after the archive, want 0", refs)
+			}
+			if refs := app.threadLocks().Refs(thread.ID); refs != 0 {
+				t.Fatalf("action lock refs = %d after the archive, want 0", refs)
+			}
+			if row, err := app.store.GetThread(thread.ID); err != nil || !row.Archived {
+				t.Fatalf("thread archived = %v (%v), want true", row.Archived, err)
+			}
+		})
 	}
 }
 
@@ -165,7 +251,7 @@ func TestArchiveThreadMidTurnSettlesTheOpenTurn(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -215,7 +301,7 @@ func TestArchiveThreadKeepsSessionWhenATurnStartedAfterTheRequest(t *testing.T) 
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -258,11 +344,60 @@ func TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest(t *testing.T)
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, live := app.sessionManager().get(thread.ID); live {
 		t.Fatal("archive left a session running whose turn predates the archive request")
+	}
+}
+
+// The provider reports a turn some time after its message was written
+// (Claude's init, Codex's turn/started). A turn whose message was written
+// before the archive request but which the provider reported while the
+// archive ran was asked for before the reader archived, so the archive
+// stops it; one whose message was written after the request is a newer
+// engagement and keeps the session.
+func TestArchiveThreadStopsSessionWhoseTurnWasAskedForBeforeTheRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		asked    time.Duration
+		wantLive bool
+	}{
+		{"asked before", -time.Minute, false},
+		{"asked after", time.Minute, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-archive-reported-late")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			if err := app.store.InsertTurn(store.Turn{
+				TurnID: "turn-reported", ThreadID: thread.ID, TurnIndex: 0, StartedAt: time.Now().Add(2 * time.Minute).UnixMilli(),
+			}); err != nil {
+				t.Fatalf("InsertTurn: %v", err)
+			}
+			asked := time.Now().Add(tc.asked).UnixMilli()
+			if _, err := app.store.AppendItem(store.Item{ID: "user:0", ThreadID: thread.ID, TurnIndex: 0, Kind: "user_text", Role: "user",
+				Status: "completed", Summary: "work on it", Meta: "{}", CreatedAt: asked, UpdatedAt: asked}); err != nil {
+				t.Fatalf("AppendItem: %v", err)
+			}
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
+
+			if err := archiveThread(app, thread.ID); err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			if _, live := app.sessionManager().get(thread.ID); live != tc.wantLive {
+				t.Fatalf("session live after the archive = %v, want %v", live, tc.wantLive)
+			}
+		})
 	}
 }
 
@@ -277,7 +412,7 @@ func TestArchiveThreadWithoutSessionStaysARowFlip(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -310,7 +445,7 @@ func TestUnarchiveThreadDoesNotResurrectTheSession(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, live := app.sessionManager().get(thread.ID); live {
@@ -349,7 +484,7 @@ func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
 		t.Fatal("expected a live session before archiving")
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, stillLive := app.sessionManager().get(thread.ID); stillLive {

@@ -33,7 +33,7 @@ func TestCodexThreadRevertCutsInPlace(t *testing.T) {
 		t.Fatalf("initialize response = %q, want a parseable app-server version", got)
 	}
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"historyMode":"paginated"}}`)
-	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-paginated","historyMode":"paginated"}}}` {
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-paginated","historyMode":"paginated"},"approvalsReviewer":"user"}}` {
 		t.Fatalf("thread/start response = %q", got)
 	}
 
@@ -174,7 +174,7 @@ func TestCodexThreadHistoryModeSurvivesTheProcess(t *testing.T) {
 	resumer.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	resumer.expectLineContaining(`"id":1`, testTimeout)
 	resumer.send(`{"jsonrpc":"2.0","id":2,"method":"thread/resume","params":{"threadId":"th-durable"}}`)
-	if got := resumer.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-durable","historyMode":"paginated"}}}` {
+	if got := resumer.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-durable","historyMode":"paginated"},"approvalsReviewer":"user"}}` {
 		t.Fatalf("thread/resume response = %q, want the started mode", got)
 	}
 

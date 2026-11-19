@@ -156,6 +156,9 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 	if err := a.requireSettingsTier(ctx, patch); err != nil {
 		return settings.Settings{}, err
 	}
+	if err := a.refuseUnrunnableProfiles(ctx, patch); err != nil {
+		return settings.Settings{}, err
+	}
 	caller, err := a.settingsCaller(ctx)
 	if err != nil {
 		return settings.Settings{}, err

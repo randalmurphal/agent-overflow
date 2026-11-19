@@ -1,9 +1,8 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TransportError } from '../../transport/wsClient';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { buildPane, makeThread } from '../../../test/helpers/chat';
+import { makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
@@ -11,6 +10,9 @@ import { getPinnedBackend } from '../../transport/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import { forgetGrantedScopes, setCarriedSessionScopes } from '../../transport/scopes';
 import ArchivedThreads from './ArchivedThreads.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 
 describe('<ArchivedThreads>', () => {
   it('renders friendly model aliases', async () => {
@@ -26,10 +28,29 @@ describe('<ArchivedThreads>', () => {
     const { findByText } = render(ArchivedThreads);
     expect(await findByText(/codex · GPT 5\.6 Sol/)).toBeTruthy();
   });
+
+  // While assistants are off, an archived assistant and the threads under
+  // it are not listed; they are when assistants are on again.
+  it('lists no thread under an assistant while assistants are off', async () => {
+    setBindingMock('ListArchivedThreads', async () => [
+      makeThread({ id: 'plain', title: 'Plain', archived: true }),
+      makeThread({ id: 'agent', title: 'Ops', archived: true, agentId: 'ops' }),
+      makeThread({ id: 'past', title: 'Earlier Ops', archived: true, pastAgentId: 'ops' }),
+      makeThread({ id: 'helper', title: 'Research', archived: true, helperOfAgentId: 'ops' }),
+    ]);
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(ArchivedThreads);
+    expect(await view.findByText('Plain')).toBeTruthy();
+    expect(view.getByText('1 archived thread')).toBeTruthy();
+    for (const title of ['Ops', 'Earlier Ops', 'Research']) expect(view.queryByText(title)).toBeNull();
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    expect(await view.findByText('4 archived threads')).toBeTruthy();
+  });
 });
 
 // A delete that happened but could not stop the thread's work elsewhere
-// drops the row like any delete and shows the error, never "Failed to delete".
+// drops the row like any delete and shows the backend's sentence in place of
+// "Deleted", never "Failed to delete".
 describe('<ArchivedThreads> delete whose cleanup failed', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -40,12 +61,13 @@ describe('<ArchivedThreads> delete whose cleanup failed', () => {
   it('drops the row and shows the cleanup failure', async () => {
     const message = 'The thread was deleted, but an ask it sent to another thread could not be stopped and may keep running.';
     setBindingMock('ListArchivedThreads', async () => [makeThread({ id: 'archived-cleanup', title: 'Old work', archived: true })]);
-    setBindingMock('StopSession', async () => {});
-    setBindingMock('DeleteThread', async () => { throw new TransportError('thread_cleanup_failed', message); });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async () => ({ cleanupError: message }));
 
     const { findByLabelText, getByRole, queryByText, findByText } = render(ArchivedThreads);
     await findByText('Old work');
     await fireEvent.click(await findByLabelText('Delete permanently'));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(getToasts().map((t) => [t.type, t.message])).toEqual([['error', message]]));
@@ -59,29 +81,77 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
     resetPanesForTest();
   });
 
-  it('says how many terminals close and applies the rows the removal moved', async () => {
+  // The confirmation names what goes with the thread and says nothing of
+  // its worktree, which the delete keeps; no worktree is read or removed.
+  it('says nothing of the worktree and removes none', async () => {
     const worktree = '/tmp/wt/archived';
     const archived = makeThread({ id: 'archived-on-wt', archived: true, projectId: 'project-1', workspacePath: worktree, worktreePath: worktree });
-    const sibling = makeThread({ id: 'sibling-on-wt', workspacePath: worktree, worktreePath: worktree, branch: 'feature' });
-    const siblingPane = await buildPane(sibling, [], 'pane-sibling');
     setBindingMock('ListArchivedThreads', async () => [archived]);
-    setBindingMock('GitWorktreeStatus', async () => ({ path: worktree, terminals: 1 }));
-    setBindingMock('StopSession', async () => {});
-    const removed = setBindingMock('RemoveOtherWorktree', async () => ({
-      workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' },
-      reattached: [{ ...sibling, workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }],
-    }));
-    const deleted = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 1 }));
+    const status = setBindingMock('GitWorktreeStatus', vi.fn(async () => ({ terminals: 3 })));
+    const removed = setBindingMock('RemoveOtherWorktree', vi.fn(async () => ({ workspace: null, reattached: [] })));
+    const deleted = setBindingMock('DeleteThreads', async () => ({}));
 
     const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
     await fireEvent.click(await findByLabelText('Delete permanently'));
-    await findByText(/This action cannot be undone\. 1 terminal will close\./);
+    expect((await findByText(/This action cannot be undone\./)).textContent).toBe(
+      'This will permanently delete this thread and all its messages. This action cannot be undone. Its worker is deleted with it.',
+    );
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
-    await waitFor(() => expect(deleted).toHaveBeenCalledWith('archived-on-wt'));
-    expect(removed).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: '' }, worktree, false);
-    expect(siblingPane.thread?.worktreePath).toBe('');
-    expect(siblingPane.thread?.branch).toBe('main');
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(['archived-on-wt']));
+    expect(status).not.toHaveBeenCalled();
+    expect(removed).not.toHaveBeenCalled();
+  });
+
+  // Unknown is not none: the delete cannot be confirmed until the read
+  // answers, and a read that failed says what the delete may take.
+  it('cannot be confirmed before the read answers, and says when the read failed', async () => {
+    const archived = makeThread({ id: 'archived-early', title: 'Early', archived: true, projectId: 'project-1' });
+    setBindingMock('ListArchivedThreads', async () => [archived]);
+    let fail: (err: Error) => void = () => {};
+    setBindingMock('GetDeleteDependents', () => new Promise((_resolve, reject) => { fail = reject; }));
+    const deleted = setBindingMock('DeleteThreads', async () => ({}));
+
+    const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    expect(getByRole('button', { name: 'Delete' })).toBeDisabled();
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+    expect(deleted).not.toHaveBeenCalled();
+    fail(new Error('database is locked'));
+    expect((await findByText(/could not be checked/)).textContent).toBe(
+      'This will permanently delete this thread and all its messages. This action cannot be undone. Its sub-threads could not be checked; any it has are deleted too, here and on other computers.',
+    );
+    expect(getByRole('button', { name: 'Delete' })).toBeEnabled();
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(['archived-early']));
+  });
+});
+
+describe('<ArchivedThreads> delete of a thread with workers', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    resetToastsForTest();
+  });
+
+  it('names a thread under it that was not deleted', async () => {
+    const archived = makeThread({ id: 'archived-owner', title: 'Owner', archived: true, projectId: 'project-1' });
+    setBindingMock('ListArchivedThreads', async () => [archived]);
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 2 }));
+    const deleted = setBindingMock('DeleteThreads', async () => ({
+      workersNotDeleted: [{ threadId: 'worker-2', title: 'Parser review', error: 'the remote computer did not answer' }],
+    }));
+
+    const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    await findByText(/This action cannot be undone\. Its 2 workers are deleted with it\./);
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(['archived-owner']));
+    await waitFor(() => expect(getToasts().find((toast) => toast.type === 'warning')?.message).toBe(
+      '"Owner" is not fully deleted: the thread "Parser review" under it was not deleted: The remote computer did not answer.',
+    ));
   });
 });
 
@@ -104,67 +174,83 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
 
   // The project is archived too, so the project index never learns its
   // computer; only the archived thread row says where it lives.
-  it('removes the worktree on the thread\'s computer, then deletes the thread', async () => {
+  it('reads what goes with it and deletes on the thread\'s computer', async () => {
     const archived = makeThread({ id: 'archived-on-laptop', archived: true, projectId: 'project-archived', workspacePath: worktree, worktreePath: worktree });
     noteThread(archived.id, 'laptop');
     setBindingMock('ListArchivedThreads', async () => [archived]);
     const countTargets: Array<string | null> = [];
-    setBindingMock('GitWorktreeStatus', async () => {
+    setBindingMock('GetDeleteDependents', async () => {
       countTargets.push(getPinnedBackend());
-      return { path: worktree, terminals: 2 };
+      return { pastThreads: 0, helpers: 0, workers: 1 };
     });
-    setBindingMock('StopSession', async () => {});
-    const removalTargets: Array<string | null> = [];
-    const removed = setBindingMock('RemoveOtherWorktree', async () => {
-      removalTargets.push(getPinnedBackend());
-      return { workspace: { workspacePath: '/tmp/repo', worktreePath: '', branch: 'main' }, reattached: [] };
+    const deleteTargets: Array<string | null> = [];
+    const deleted = setBindingMock('DeleteThreads', async () => {
+      deleteTargets.push(getPinnedBackend());
+      return {};
     });
-    const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
     await fireEvent.click(await findByLabelText('Delete permanently'));
-    await findByText(/2 terminals will close\./);
+    await findByText(/Its worker is deleted with it\./);
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
-    await waitFor(() => expect(deleted).toHaveBeenCalledWith('archived-on-laptop'));
-    expect(removed).toHaveBeenCalledWith({ projectId: 'project-archived', workspacePath: '' }, worktree, false);
-    expect(removalTargets).toEqual(['laptop']);
-    expect(countTargets).toEqual(['laptop']);
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(['archived-on-laptop']));
+    expect(deleteTargets).toEqual(['laptop']);
+    expect(countTargets.every((target) => target === 'laptop')).toBe(true);
   });
 
-  it('removes and deletes nothing when the thread\'s computer is unknown', async () => {
+  it('deletes nothing when the thread\'s computer is unknown', async () => {
     const archived = makeThread({ id: 'archived-unowned', archived: true, projectId: 'project-archived', workspacePath: worktree, worktreePath: worktree });
     setBindingMock('ListArchivedThreads', async () => [archived]);
-    setBindingMock('GitWorktreeStatus', async () => ({ path: worktree, terminals: 0 }));
-    const stopped = setBindingMock('StopSession', async () => {});
-    const removed = setBindingMock('RemoveOtherWorktree', async () => ({ workspace: null, reattached: [] }));
-    const deleted = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const deleted = setBindingMock('DeleteThreads', async () => ({}));
 
     const { findByLabelText, getByRole } = render(ArchivedThreads);
     await fireEvent.click(await findByLabelText('Delete permanently'));
+    // Confirmable once it knows what the delete takes.
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(getToasts().some((t) => /computer that owns this item is unknown/.test(t.message))).toBe(true));
-    expect(stopped).not.toHaveBeenCalled();
-    expect(removed).not.toHaveBeenCalled();
     expect(deleted).not.toHaveBeenCalled();
   });
 
-  it('keeps the thread when its computer refuses the removal', async () => {
+  // v0.0.19 has DeleteThread only, answers it with null, and has no read of
+  // what a delete takes: the dialog says nothing more and the delete goes.
+  it('deletes a thread on a computer on v0.0.19 through the method it has', async () => {
+    const archived = makeThread({ id: 'archived-on-older', title: 'Old work', archived: true, projectId: 'project-archived' });
+    noteThread(archived.id, 'laptop');
+    setBindingMock('ListArchivedThreads', async () => [archived]);
+    answerAsV0019();
+    const targets: Array<string | null> = [];
+    setBindingMock('DeleteThread', async () => { targets.push(getPinnedBackend()); return null; });
+
+    const { findByLabelText, getByRole, queryByText, findByText } = render(ArchivedThreads);
+    await findByText('Old work');
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
+    expect(queryByText(/could not be checked|deleted with it/)).toBeNull();
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(targets).toEqual(['laptop']));
+    await waitFor(() => expect(queryByText('Old work')).toBeNull());
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([['info', 'Deleted "Old work".']]);
+  });
+
+  it('keeps the thread when its computer refuses the delete', async () => {
     const archived = makeThread({ id: 'archived-offline', archived: true, projectId: 'project-archived', workspacePath: worktree, worktreePath: worktree });
     noteThread(archived.id, 'laptop');
     setBindingMock('ListArchivedThreads', async () => [archived]);
-    setBindingMock('GitWorktreeStatus', async () => ({ path: worktree, terminals: 0 }));
-    setBindingMock('StopSession', async () => {});
-    setBindingMock('RemoveOtherWorktree', async () => { throw new Error('client closed'); });
-    const deleted = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async () => { throw new Error('client closed'); });
 
     const { findByLabelText, getByRole, findByText } = render(ArchivedThreads);
     await fireEvent.click(await findByLabelText('Delete permanently'));
+    // Confirmable once it knows what the delete takes.
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(getToasts().some((t) => /client closed/.test(t.message))).toBe(true));
-    expect(deleted).not.toHaveBeenCalled();
     expect(await findByText(archived.title)).toBeTruthy();
   });
 });

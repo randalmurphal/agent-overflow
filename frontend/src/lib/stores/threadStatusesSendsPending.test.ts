@@ -7,6 +7,7 @@ import {
   endSendsPendingRead,
   getThreadStatus,
   hydrateSendsPending,
+  isThreadWorking,
   projectThreadReverted,
   projectTurnStarted,
   resetForTest,
@@ -55,6 +56,17 @@ describe('a backend that publishes provider:sends_pending', () => {
     expect(getThreadStatus('remote')).toBe('running');
     frame(false, 2);
     expect(getThreadStatus('remote')).toBe('idle');
+  });
+
+  it('shows a pane holding a queued message as working only while the backend counts it pending', () => {
+    // A message requeued on a stopped thread: in the pane's queue, but with
+    // no session live or starting the backend does not count it.
+    replaceQueueForThread('remote', [{ id: 'queue:owed', sendId: 'thread-request:t', threadId: 'remote', message: 'owed', enqueuedAt: 1, attachmentIds: [] }]);
+    expect(isThreadWorking('remote')).toBe(false);
+    frame(true, 1);
+    expect(isThreadWorking('remote')).toBe(true);
+    frame(false, 2);
+    expect(isThreadWorking('remote')).toBe(false);
   });
 
   it('keeps an active turn running whatever the bridge says', () => {

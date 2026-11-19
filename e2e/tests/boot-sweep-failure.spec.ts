@@ -5,26 +5,15 @@
 // failed phase, the hello carries it, the transport strip names the phase
 // and its error with the retry, a dismiss clears it, a reload shows it
 // again, and the turn stays in flight for the next start.
-import { execFile } from 'node:child_process';
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { execProduct, productBinary } from '../src/product-process.js';
 import { test, expect } from './fixtures.js';
 
-const run = promisify(execFile);
-
-// Siblings of the backend binary, for the same reason harness-bench resolves
-// ao-harness that way: AO_HARNESS_BIN names the backend of this build.
-function sibling(name: string): string {
-  const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-  const backend = process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
-  return path.join(path.dirname(backend), name);
-}
-
 async function inFlightTurns(dbPath: string): Promise<number> {
-  const { stdout } = await run(sibling('ao-harness'), ['-o', 'json', 'db', '--file', dbPath,
+  const { stdout } = await execProduct(productBinary('ao-harness'), ['-o', 'json', 'db', '--file', dbPath,
     'SELECT count(*) AS n FROM turns WHERE completed_at IS NULL'], { timeout: 30_000 });
   return (JSON.parse(stdout) as Array<{ n: number }>)[0].n;
 }
@@ -35,8 +24,8 @@ test('a failed boot sweep is shown on the transport strip', async ({ page }) => 
   let host: HarnessApp | undefined;
   try {
     await mkdir(path.dirname(dbPath), { recursive: true });
-    await run(sibling('ao-store-test'), ['-test.run', '^TestBootSweepFailureHarnessFixture$', '-test.count=1'], {
-      env: { ...process.env, AO_TEST_BOOT_SWEEP_FAILURE_FIXTURE: dbPath },
+    await execProduct(productBinary('ao-store-test'), ['-test.run', '^TestBootSweepFailureHarnessFixture$', '-test.count=1'], {
+      env: { AO_TEST_BOOT_SWEEP_FAILURE_FIXTURE: dbPath },
       timeout: 120_000,
     });
     // The test skips, and exits 0, when it is not handed a path.

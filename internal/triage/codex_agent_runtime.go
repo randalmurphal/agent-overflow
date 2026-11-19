@@ -26,9 +26,15 @@ func (r *Router) codexAgentRuntimeOrLaunch(launch store.Item) store.Item {
 	return launch
 }
 
-func (r *Router) setCodexAgentRuntime(current store.Item) error {
+// A frame of a retired session sets nothing: the live runtime belongs to
+// the process that replaced it.
+func (r *Router) setCodexAgentRuntime(current store.Item, sessionToken string) error {
 	current.Meta = mergeItemMetaJSON(current.Meta, json.RawMessage(`{"codex_live_projection":true}`))
 	r.mu.Lock()
+	if r.frameRetiredLocked(current.ThreadID, sessionToken) {
+		r.mu.Unlock()
+		return nil
+	}
 	state := r.codexBackgroundForThread(current.ThreadID)
 	if _, exists := state.agents[current.ID]; !exists && len(state.agents) >= subagentProgressCap {
 		r.mu.Unlock()

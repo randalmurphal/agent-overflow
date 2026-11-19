@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"log"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
-	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -34,6 +34,16 @@ type QueuedItem struct {
 	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
 	EnqueuedAt                   int64                        `json:"enqueuedAt"`
+	// Origin, OriginThread and OriginWake attribute a message the app queued
+	// on an agent's behalf, as the row it becomes will, a report's with its
+	// kind's descriptor (agentmeta.OriginWake.Served). AgentMessage is
+	// agentmeta.IsAgentMessage of that attribution: the message is not
+	// the person's, so the composer's queue preview leaves it out and the
+	// Agents rail segment lists it as incoming instead.
+	Origin       string                  `json:"origin,omitempty"`
+	OriginThread *agentmeta.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *agentmeta.OriginWake   `json:"originWake,omitempty"`
+	AgentMessage bool                    `json:"agentMessage,omitempty"`
 }
 
 // Payload is the wire shape of triage.QueuedFlushItem.Payload — the
@@ -70,6 +80,11 @@ type Payload struct {
 	// re-dispatched row answering for the first member only, and a retry of
 	// any other member would send a duplicate.
 	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
+	// JoinedParts are that joined message's members as they appear in its
+	// text, which the session-death restore splits it by
+	// (agentmeta.JoinedPart). Set on the same requeue path, when the
+	// dispatch that joined the message recorded them.
+	JoinedParts []agentmeta.JoinedPart `json:"joinedParts,omitempty"`
 	// TextBeforeReviewComments is set when the message is the summary of
 	// the row an earlier dispatch of it landed as, which renders the diff
 	// review comments it carried (`usermessage.Meta.TextBeforeReviewComments`).
@@ -88,8 +103,9 @@ type Payload struct {
 	// an agent's behalf. They ride the payload for the same reason SendID
 	// does: the dispatch that persists the row happens later, and the row
 	// must carry the same attribution the immediate send would have.
-	Origin       string                    `json:"origin,omitempty"`
-	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
+	Origin       string                  `json:"origin,omitempty"`
+	OriginThread *agentmeta.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *agentmeta.OriginWake   `json:"originWake,omitempty"`
 }
 
 // RenderedReviewComments are one source's comments a requeued message
@@ -140,6 +156,13 @@ func itemFrom(threadID, id, message string, enqueuedAt int64, raw []byte) Queued
 	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs
 	out.RevisionSourceDiffReview = payload.RevisionSourceDiffReview
 	out.RevisionSourceDiffCommentIDs = payload.RevisionSourceDiffCommentIDs
+	out.Origin = payload.Origin
+	out.OriginThread = payload.OriginThread
+	out.OriginWake = payload.OriginWake.Served()
+	out.AgentMessage = agentmeta.IsAgentMessage(agentmeta.Meta{
+		Origin:                 payload.Origin,
+		ExpandComposerCommands: payload.ExpandComposerCommands,
+	})
 	return out
 }
 
