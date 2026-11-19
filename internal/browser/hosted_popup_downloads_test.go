@@ -235,10 +235,11 @@ func TestNestedHostedPopupBeforeParentListed(t *testing.T) {
 	l.settledEngine()
 }
 
-// A download's end still being applied when its page's close arrives (its
-// call timed out at the launcher while the path lookup ran) reaches the
-// Manager first: the row ends completed, never canceled for the close,
-// whether the popup is listed or still being adopted.
+// A download's end still being applied when its page's close arrives
+// reaches the Manager first: the close is acknowledged at once, the row
+// stays running while the path lookup runs, and ends completed, never
+// canceled for the close, whether the popup is listed or still being
+// adopted.
 func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 	for _, listed := range []bool{false, true} {
 		name := "during-adoption"
@@ -250,9 +251,12 @@ func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 			access := popupTestAccess(t, "thread")
 			_, opener := l.open(access)
 			entered, releasePath := make(chan struct{}), make(chan struct{})
-			l.engine.backendPath = func(_ context.Context, _ string) (string, error) {
+			l.engine.backendPath = func(ctx context.Context, _ string) (string, error) {
 				close(entered)
-				<-releasePath
+				select {
+				case <-releasePath:
+				case <-ctx.Done():
+				}
 				return "", errors.New("no test download file")
 			}
 			releaseAttach := func() {}
@@ -279,19 +283,17 @@ func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 				defer close(closed)
 				l.report(popup, webview2host.ReportClosed, "")
 			}()
-			early := false
-			select {
-			case <-closed:
-				early = true
-			case <-time.After(100 * time.Millisecond):
+			waitClosed(t, closed, "the close's acknowledgment while the terminal snapshot is applied")
+			time.Sleep(50 * time.Millisecond)
+			// A popup still being adopted has its download parked, unlisted.
+			for _, row := range l.manager.CompanionState(access).Downloads {
+				if row.State != downloadStateRunning {
+					t.Errorf("the close passed the pending terminal snapshot: row %+v", row)
+				}
 			}
 			close(releasePath)
 			<-terminal
-			<-closed
 			releaseAttach()
-			if early {
-				t.Error("the close passed the pending terminal snapshot")
-			}
 			l.awaitDownloads(access, downloadStateCompleted)
 		})
 	}

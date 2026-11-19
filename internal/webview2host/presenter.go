@@ -22,7 +22,7 @@ func (p *pagePresentation) noteBounds(d Directive) {
 	p.mount, p.pageW, p.pageH, p.seq = d.Mount, d.PageW, d.PageH, d.Seq
 }
 
-// paneView is where and whether the host shows a page.
+// paneView is where and whether a page's presentation wants it shown.
 type paneView struct {
 	bounds    paneBounds
 	hasBounds bool
@@ -79,6 +79,38 @@ const (
 	focusNoIntent
 )
 
+// appliedPlacement is the place both of a page's native objects, its clip
+// container and its controller, were last moved to. Only commitPlacement
+// makes a known one, after every write succeeded; the zero value is no
+// known place, which a move takes from its first write until it commits.
+type appliedPlacement struct {
+	bounds paneBounds
+	known  bool
+}
+
+// at reports whether the page is known to stand at b.
+func (p appliedPlacement) at(b paneBounds) bool { return p.known && p.bounds == b }
+
+// commitPlacement makes the writes that move a page to b, in order, and
+// answers the placement at b only when all of them succeeded. The first
+// failure stops the rest and answers no known place, with its error.
+func commitPlacement(b paneBounds, writes ...func() error) (appliedPlacement, error) {
+	for _, write := range writes {
+		if err := write(); err != nil {
+			return appliedPlacement{}, err
+		}
+	}
+	return appliedPlacement{bounds: b, known: true}, nil
+}
+
+// shownView is what the host has applied to a page: where both its native
+// objects stand, and whether its clip is shown. Each field changes only
+// after the native call that makes it true succeeded.
+type shownView struct {
+	placement appliedPlacement
+	visible   bool
+}
+
 // focusDecision answers what the host does with a page's pending focus
 // intent, given the view it shows (the view it last applied). Only a page
 // the host presents and shows takes keyboard focus, and only while the
@@ -88,9 +120,9 @@ const (
 // ineligible page keeps its intent pending. Eligibility is not permission:
 // take, asked last and only of an eligible page, consumes the pending intent
 // and answers whether the user's request still stands.
-func focusDecision(shown paneView, launcherForeground bool, take func() bool) focusOutcome {
+func focusDecision(shown shownView, launcherForeground bool, take func() bool) focusOutcome {
 	switch {
-	case !shown.visible || !shown.hasBounds:
+	case !shown.visible || !shown.placement.known:
 		return focusNotShown
 	case !launcherForeground:
 		return focusNotForeground
@@ -111,15 +143,16 @@ type presentStep struct {
 	hide   bool
 }
 
-// nextPresentStep diffs two views. raise asks for a show even when the page
-// is already shown: a backend show re-raises the page above the SPA, which
-// Wails' renderer recovery can recreate on top of it.
-func nextPresentStep(shown, want paneView, raise bool) (presentStep, paneView) {
+// nextPresentStep is what takes a page from the view the host applied to
+// the one it wants. A page at no known place is moved whatever the bounds.
+// raise asks for a show even when the page is already shown: a backend show
+// re-raises the page above the SPA, which Wails' renderer recovery can
+// recreate on top of it. The host records each part only as its native
+// call succeeds (Host.present).
+func nextPresentStep(shown shownView, want paneView, raise bool) presentStep {
 	var step presentStep
-	next := shown
-	if want.visible && want.hasBounds && (!shown.hasBounds || shown.bounds != want.bounds) {
+	if want.visible && want.hasBounds && !shown.placement.at(want.bounds) {
 		step.move, step.bounds = true, want.bounds
-		next.bounds, next.hasBounds = want.bounds, true
 	}
 	switch {
 	case want.visible && (!shown.visible || raise):
@@ -127,6 +160,5 @@ func nextPresentStep(shown, want paneView, raise bool) (presentStep, paneView) {
 	case !want.visible && shown.visible:
 		step.hide = true
 	}
-	next.visible = want.visible
-	return step, next
+	return step
 }

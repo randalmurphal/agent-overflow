@@ -346,12 +346,14 @@ func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
 			bindTestPage(t, engine, "page1", "TARGET-1")
 
 			engine.Report("page1", kind, "")
+			settleReports(t, engine, "")
 			if len(closed) != 1 || closed[0] != "page1" {
 				t.Fatalf("PageClosed saw %v", closed)
 			}
 			// The retirement is the engine's whole bookkeeping, so a repeat
 			// report must not reach the Manager twice.
 			engine.Report("page1", kind, "")
+			settleReports(t, engine, "")
 			if len(closed) != 1 {
 				t.Fatalf("a repeated report was reported again: %v", closed)
 			}

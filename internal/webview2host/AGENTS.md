@@ -47,7 +47,10 @@ its bounds directive to a mount with a local report is placed from that
 report with `paneplace.Fit` and shows only while the backend shows it and
 the report is visible, unless the directive's `Seq` (the SPA's number for
 the report the backend placed from) is newer than the report's; then, and
-without a local report, the directive's rect stands. Only backend
+without a local report, the directive's rect stands. A page is at a
+known place only once both its clip container and its controller moved
+(`commitPlacement`); a move that fails hides it, its focus intent
+pending, until a later move succeeds. Only backend
 directives bind a page to a mount. Raw reports have their own validation:
 an empty clip on either axis is a hidden pane, not an error. The mailbox
 keeps the newest report per mount, drops older sequences, and has at most
@@ -104,8 +107,8 @@ including after the window request was answered. A `ReportPopup` the
 launcher could not deliver closes the popup (`ReportUndelivered`), and
 with it its unannounced descendants. A middle, Ctrl or Shift click opens
 a popup whose target names no opener. A departing popup answers any open
-request. A departing unannounced popup ends its held running downloads
-with `PopupGoneReason`. If its opener is a live unannounced popup, held
+request. A departing unannounced popup reads its downloads' states, then
+ends those still running with `PopupGoneReason`. If its opener is a live unannounced popup, held
 snapshots pass to that opener, up to `maxHeldPopupDownloads`.
 Otherwise an unannounced popup with downloads is announced and closed
 with its held reports, after any departing opener it needs. A popup with
@@ -127,7 +130,8 @@ terminal snapshot under its own number (up to `MaxEndedDownloads` per page
 while the page lives), or `DownloadUnknown` for an id with no record. The
 launcher keeps a copy of at most `MaxDownloadURIBytes` of a download's
 address, taken as it starts, and a digest of the whole address that a
-resume is matched by (`downloadAddress`). A report is bounded: the
+resume is matched by (`downloadAddress`, `resumeKey`); an address the
+runtime did not answer has no key, so it matches nothing. A report is bounded: the
 address is shortened, then the path left out, never the start or end. WebView2 resumes a dropped download as a new
 `DownloadStarting` whose operation carries the
 interruption's reason, while the dropped operation stays in progress with
@@ -138,13 +142,21 @@ detached, until the download ends, because releasing them stops the new
 one's reports. Otherwise it is a row of its own and nothing running is
 touched. The held snapshot cap applies only to new downloads. A cancel
 settles through WebView2's report or after `downloadCancelBound`
-(`settleCancel`), which reads the state before ending the download
-canceled. A cancel WebView2 refuses is withdrawn, starts no bound, and is
-answered with the refusal (`DownloadCancelRefusedReason`). A download
+(`settleCancel`), where a download still running stops being followed
+and one whose state cannot be read waits another bound. Every read of a
+download's operation goes through `reconcileDownload`, and its typed
+verdict (`downloadoutcome.go`) alone makes a terminal snapshot: WebView2's
+end only from a read that found one, and the launcher's own end of a
+download only for an explicit cause (the cancel bound, an unannounced
+popup's going). The backend numbers its cancel attempts
+(`Directive.Cancel`); a directive of either kind naming an attempt past
+the last taken makes it, and every later snapshot carries the last
+attempt's `CancelOutcome`, so a refusal rides every snapshot until an
+attempt is taken. A download
 ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
 (`retireDownloads`), which cancels it and reports nothing. What the real
-runtime does on a drop is recorded at `downloadStateChanged`,
+runtime does on a drop is recorded at `reconcileDownload`,
 `settleCancel` and in `download_smoke_windows_test.go`. WebView2 opens the
 dialog by itself over a popup's opener when the popup's first navigation
 is a download; every page closes its dialog as it opens

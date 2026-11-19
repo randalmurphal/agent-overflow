@@ -93,7 +93,9 @@ func (e *hostedEngine) DiscardPage(handle string) {
 
 // Report routes one launcher answer. Called from the App's
 // BrowserHostReport binding, which is the backend end of the RPC the
-// launcher posts over the notification bridge.
+// launcher posts over the notification bridge, so its return acknowledges
+// the report: a download snapshot, a close or a crash is accepted here and
+// processed on the page's lane (hosted_report_lanes.go).
 func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detail string) {
 	switch kind {
 	case webview2host.ReportCreated:
@@ -116,12 +118,10 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 			e.logf("browser: pane host page %s reported %s; the page keeps running", pageID, detail)
 			return
 		}
-		// Inline, as retirePage reports a close: this is the launcher's
-		// report path, an RPC goroutine of its own.
-		e.pageCrashed(pageID, detail)
+		e.acceptCrash(hostedPageID(pageID), detail)
 	case webview2host.ReportClosed:
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			e.retirePage(pageID)
+			e.acceptClose(hostedPageID(pageID))
 		}
 	case webview2host.ReportAccelerator:
 		// The launcher already matched and swallowed the chord; the Manager
@@ -146,7 +146,7 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		}
 		e.events.PageFocusReported(pageID, report.Mount, report.Intent, failure)
 	case webview2host.ReportDownload:
-		e.downloadReport(pageID, detail)
+		e.acceptDownload(hostedPageID(pageID), detail)
 	case webview2host.ReportPopup:
 		e.popupReported(pageID, detail)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:

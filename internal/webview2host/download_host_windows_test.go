@@ -35,8 +35,8 @@ type fakeOp struct {
 	uri       string
 	canceled  int
 	// refuseStateSub fails AddStateChanged; stateErr fails GetState;
-	// refuseCancel fails Cancel.
-	refuseStateSub, stateErr, refuseCancel bool
+	// refuseCancel fails Cancel; uriErr fails get_Uri.
+	refuseStateSub, stateErr, refuseCancel, uriErr bool
 }
 
 func fakeHandlerAddRef(h *iDownloadEventHandler) {
@@ -82,6 +82,9 @@ var fakeOpVtbl = iCoreWebView2DownloadOperationVtbl{
 	}),
 	RemoveStateChanged: newComProc(fakeUnsubscribe),
 	GetURI: newComProc(func(this *fakeOp, out *uintptr) uintptr {
+		if this.uriErr {
+			return 0x80004005 // E_FAIL
+		}
 		*out = coTaskMemString(this.uri)
 		return 0
 	}),
@@ -292,11 +295,11 @@ func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 	start(t, r.page, op)
 	r.take()
 
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	if got := r.take(); states(got) != "dl-t-1:running" || op.canceled != 0 || got[0].Seq != 2 || !got[0].Answer {
 		t.Fatalf("a status of a running download answers %+v and cancels %d times", got, op.canceled)
 	}
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	if got := r.take(); states(got) != "dl-t-1:running" || op.canceled != 1 || got[0].Seq != 3 || !got[0].Answer {
 		t.Fatalf("a cancel answers %+v and cancels %d times", got, op.canceled)
 	}
@@ -307,8 +310,8 @@ func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 	}
 	// Ended: the same terminal snapshot again, as an answer, and nothing
 	// canceled.
-	r.host.answerDownload(r.page, "dl-t-1", true)
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	again := terminal[0]
 	again.Answer = true
 	if got := r.take(); len(got) != 2 || got[0] != again || got[1] != again || op.canceled != 1 {
@@ -321,7 +324,7 @@ func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 	if got := r.take(); len(got) != 0 {
 		t.Fatalf("after the end the operation reported %+v", got)
 	}
-	r.host.answerDownload(r.page, "dl-t-9", true)
+	r.host.answerDownload(r.page, "dl-t-9", 1)
 	if got := r.take(); len(got) != 1 || got[0] != (DownloadReport{ID: "dl-t-9", State: DownloadUnknown, Reason: DownloadUnknownReason, Answer: true}) {
 		t.Fatalf("an unknown id answers %+v", got)
 	}
@@ -339,14 +342,14 @@ func TestAStatusReconcilesADownloadWithNoStateCallback(t *testing.T) {
 	start(t, r.page, op)
 	r.take()
 	op.stateErr = true
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	if got := r.take(); states(got) != "dl-t-1:running" || !got[0].Answer {
 		t.Fatalf("an unreadable state answers %+v", got)
 	}
 	op.stateErr = false
 	op.received = 100
 	op.st = downloadStateCompleted
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	got := r.take()
 	if states(got) != "dl-t-1:completed" || got[0].Received != 100 {
 		t.Fatalf("a completed download with no callback answers %+v", got)
@@ -354,7 +357,7 @@ func TestAStatusReconcilesADownloadWithNoStateCallback(t *testing.T) {
 	if r.page.downloads["dl-t-1"] != nil || op.refs != 1 {
 		t.Fatalf("the reconciled download is still tracked (%d refs)", op.refs-1)
 	}
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	if again := r.take(); len(again) != 1 || !again[0].Answer || again[0].State != DownloadCompleted {
 		t.Fatalf("after the reconciled end: %+v", again)
 	}
@@ -407,14 +410,14 @@ func TestAPageKeepsBoundedEndedSnapshotsUntilItGoes(t *testing.T) {
 		ops = append(ops, op)
 	}
 	r.take()
-	r.host.answerDownload(r.page, "dl-t-1", false)
-	r.host.answerDownload(r.page, "dl-t-2", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
+	r.host.answerDownload(r.page, "dl-t-2", 0)
 	got := r.take()
 	if got[0].Reason != DownloadUnknownReason || got[1].State != DownloadCompleted {
 		t.Fatalf("the oldest answers %+v and the next %+v", got[0], got[1])
 	}
 	r.done(t, ops...)
-	r.host.answerDownload(r.page, "dl-t-2", false)
+	r.host.answerDownload(r.page, "dl-t-2", 0)
 	if got := r.take(); got[0].Reason != DownloadUnknownReason {
 		t.Fatalf("after the page went an ended download answers %+v", got[0])
 	}
@@ -660,7 +663,7 @@ func TestACancelHoldsForAResume(t *testing.T) {
 	r := newDownloadRig(t)
 	first := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, first)
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	drop(first)
 	again := newFakeOp(`C:\D\f.bin`)
 	resume(t, r.page, again)
@@ -732,14 +735,14 @@ func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {
 	start(t, r.page, op)
 	drop(op)
 	r.take()
-	r.host.answerDownload(r.page, "dl-t-1", true)
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
+	r.host.answerDownload(r.page, "dl-t-1", 2)
 	if got := r.take(); states(got) != "dl-t-1:running dl-t-1:running" || len(r.timers) != 1 {
 		t.Fatalf("two cancels answered %s and started %d bounds", states(got), len(r.timers))
 	}
 	r.timers[0]()
 	end := r.take()
-	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadInterruptReason(downloadUserCanceled) || end[0].Answer {
+	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadCancelBoundReason || end[0].Answer {
 		t.Fatalf("at the bound the download ended %+v", end)
 	}
 	if op.refs != 1 || len(op.subs) != 0 {
@@ -748,7 +751,7 @@ func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {
 	op.received = 100
 	op.set(downloadStateCompleted, 0)
 	op.fire()
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	if got := r.take(); len(got) != 1 || !got[0].Answer || got[0].State != DownloadInterrupted {
 		t.Fatalf("after the settled end: %+v", got)
 	}
@@ -764,18 +767,18 @@ func TestARefusedCancelKeepsTheDownloadRunning(t *testing.T) {
 	start(t, r.page, op)
 	r.take()
 	op.refuseCancel = true
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	got := r.take()
-	if states(got) != "dl-t-1:running" || !got[0].CancelRefused() ||
-		!strings.HasPrefix(got[0].Reason, DownloadCancelRefusedReason) || len(r.timers) != 0 {
+	if states(got) != "dl-t-1:running" || !refused(got[0]) ||
+		!strings.HasPrefix(refusal(got[0]), DownloadCancelRefusedReason) || got[0].Cancel.Attempt() != 1 || len(r.timers) != 0 {
 		t.Fatalf("a refused cancel answered %+v and started %d bounds", got, len(r.timers))
 	}
 	if d := r.page.downloads["dl-t-1"]; d == nil || d.cancelRequested {
 		t.Fatal("a refused cancel is still requested or the download is gone")
 	}
 	op.refuseCancel = false
-	r.host.answerDownload(r.page, "dl-t-1", true)
-	if got := r.take(); states(got) != "dl-t-1:running" || got[0].CancelRefused() || len(r.timers) != 1 {
+	r.host.answerDownload(r.page, "dl-t-1", 2)
+	if got := r.take(); states(got) != "dl-t-1:running" || refused(got[0]) || len(r.timers) != 1 {
 		t.Fatalf("a cancel taken answered %+v and started %d bounds", got, len(r.timers))
 	}
 	op.refuseCancel = true
@@ -785,7 +788,7 @@ func TestARefusedCancelKeepsTheDownloadRunning(t *testing.T) {
 	ofOp := newFakeOp(`C:\D\f (1).bin`)
 	ofOp.refuseCancel = true
 	resume(t, r.page, ofOp)
-	if got := r.take(); states(got) != "dl-t-1:running" || !got[0].CancelRefused() {
+	if got := r.take(); states(got) != "dl-t-1:running" || !refused(got[0]) {
 		t.Fatalf("a resume whose cancel was refused reported %+v", got)
 	}
 	r.timers[0]()
@@ -806,7 +809,7 @@ func TestACancelBoundReadsTheDownloadsState(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, op)
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	r.take()
 	op.received = 100
 	op.st = downloadStateCompleted
@@ -823,7 +826,7 @@ func TestACanceledDownloadSettlesByWebView2sReport(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, op)
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	op.set(downloadStateInterrupted, downloadUserCanceled)
 	r.timers[0]()
 	if got := states(r.take()); got != "dl-t-1:running dl-t-1:running dl-t-1:interrupted" {
@@ -838,7 +841,7 @@ func TestACancelBoundAfterThePageWentDoesNothing(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, op)
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	r.take()
 	r.done(t, op)
 	delete(r.host.pages, "p")

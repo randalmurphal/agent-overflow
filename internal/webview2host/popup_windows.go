@@ -369,11 +369,13 @@ func (h *Host) departPopup(page *hostPage, announce bool) bool {
 	return true
 }
 
-// finishHeldDownloads records terminal snapshots before teardown cancels
-// the popup's running downloads.
+// finishHeldDownloads ends the downloads of a popup that goes before its
+// announcement, each read first (reconcileDownload): one WebView2 ended,
+// with or without its state change, is held as it ended, and one still
+// running, or unread, is canceled and held with PopupGoneReason.
 func (h *Host) finishHeldDownloads(page *hostPage) {
 	for _, d := range page.downloads {
-		h.holdDownload(page, d.snapshot(DownloadInterrupted, PopupGoneReason))
+		h.reconcileDownload(d, sampleRetire)
 	}
 }
 
@@ -455,7 +457,7 @@ func (h *Host) windowCloseRequested(page *hostPage) {
 func (h *Host) closeAsked(page *hostPage) {
 	h.config.Post(func() {
 		for _, d := range page.downloads {
-			h.downloadStateChanged(d)
+			h.reconcileDownload(d, sampleStatus)
 		}
 		if len(page.downloads) > 0 {
 			h.config.Logf("browser host: page %s asked to close while it downloads; it closes when its downloads end", page.id)

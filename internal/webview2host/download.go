@@ -33,6 +33,12 @@ import (
 // creates one: a running download's, an ended one's terminal snapshot
 // again (kept while its page lives, up to MaxEndedDownloads per page), or,
 // for an id it has no record of, DownloadUnknown.
+//
+// The backend numbers its cancel attempts of a download (Directive.Cancel),
+// and every snapshot after one carries the outcome of the last the launcher
+// took (Cancel, a CancelOutcome). So a lost answer to a cancel heals on the
+// download's next snapshot, a status answer included, and a status naming
+// an attempt the launcher never got makes it.
 
 // The states a DownloadReport carries: running until one terminal state.
 // DownloadUnknown is no download's state: it answers a directive naming an
@@ -57,9 +63,9 @@ const MaxEndedDownloads = 64
 // DownloadUnknownReason is the reason a DownloadUnknown answer carries.
 const DownloadUnknownReason = "the browser host has no record of this download"
 
-// DownloadCancelRefusedReason begins the reason of a running snapshot that
-// answers a cancel WebView2 refused: the download runs on, and its cancel
-// is no longer requested.
+// DownloadCancelRefusedReason begins a refused CancelOutcome's refusal:
+// WebView2 refused the download's last cancel, the download runs on, and
+// its cancel is no longer requested.
 const DownloadCancelRefusedReason = "the browser refused to cancel the download"
 
 // DownloadPathTooLongReason is a completed snapshot's reason when the
@@ -75,19 +81,20 @@ const DownloadPathTooLongReason = "the saved file's path is too long to report, 
 // Path the file as Windows names it, from the first snapshot on; URI its
 // address, shortened or left out so the report fits; Reason an interrupted
 // download's cause, why a completed one's file is not reported
-// (DownloadPathTooLongReason), why a running one's cancel was refused (an
-// answer only, DownloadCancelRefusedReason), or DownloadUnknownReason.
+// (DownloadPathTooLongReason), or DownloadUnknownReason; Cancel what came
+// of the backend's last cancel attempt the launcher took.
 type DownloadReport struct {
-	ID       string `json:"id"`
-	Seq      uint64 `json:"seq,omitempty"`
-	Answer   bool   `json:"answer,omitempty"`
-	State    string `json:"state"`
-	URI      string `json:"uri,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Path     string `json:"path,omitempty"`
-	Received int64  `json:"received"`
-	Total    int64  `json:"total,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	ID       string        `json:"id"`
+	Seq      uint64        `json:"seq,omitempty"`
+	Answer   bool          `json:"answer,omitempty"`
+	State    string        `json:"state"`
+	URI      string        `json:"uri,omitempty"`
+	Name     string        `json:"name,omitempty"`
+	Path     string        `json:"path,omitempty"`
+	Received int64         `json:"received"`
+	Total    int64         `json:"total,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Cancel   CancelOutcome `json:"cancel,omitzero"`
 }
 
 // maxDownloadNameBytes bounds the name a report carries; Windows bounds a
@@ -102,19 +109,40 @@ const MaxDownloadURIBytes = 2048
 // once as the download starts: at most MaxDownloadURIBytes of it, copied,
 // for its reports and its kept terminal snapshot, so an address of any
 // length (a data URL carries its whole file) is neither retained nor
-// encoded again on every report; and a digest of the whole address, which
-// a resume is matched by (resumedDownload).
+// encoded again on every report; and, when the runtime answered it, the
+// resume key of the whole address.
 type downloadAddress struct {
 	shown  string
-	digest [sha256.Size]byte
+	resume resumeIdentity
 }
 
-func newDownloadAddress(uri string) downloadAddress {
+// resumeKey is the digest of a download's whole address, which a resume is
+// matched by (resumedDownload).
+type resumeKey [sha256.Size]byte
+
+// resumeIdentity is a download's resume key, or none: only
+// readDownloadAddress makes one, and only from an address the runtime
+// answered, so two downloads whose address could not be read are never one.
+type resumeIdentity struct {
+	key resumeKey
+	ok  bool
+}
+
+// Key answers the resume key, and false when there is none.
+func (r resumeIdentity) Key() (resumeKey, bool) { return r.key, r.ok }
+
+// readDownloadAddress keeps the address the runtime answered as uri, or
+// failed to answer with err: an empty or failed read keeps no address and
+// has no resume key.
+func readDownloadAddress(uri string, err error) downloadAddress {
+	if err != nil || uri == "" {
+		return downloadAddress{}
+	}
 	shown := truncateUTF8(uri, MaxDownloadURIBytes)
 	if len(shown) < len(uri) {
 		shown = strings.Clone(shown)
 	}
-	return downloadAddress{shown: shown, digest: sha256.Sum256([]byte(uri))}
+	return downloadAddress{shown: shown, resume: resumeIdentity{key: sha256.Sum256([]byte(uri)), ok: true}}
 }
 
 // Encode answers the report as a report detail of at most
@@ -186,19 +214,13 @@ func ParseDownloadReport(detail string) (DownloadReport, error) {
 	if r.Received < 0 || r.Total < 0 {
 		return DownloadReport{}, errors.New("download report has negative bytes")
 	}
-	if r.State == DownloadRunning && r.Reason != "" && !r.Answer {
-		return DownloadReport{}, errors.New("a running download report carries a reason only as an answer to a refused cancel")
+	if r.State == DownloadRunning && r.Reason != "" {
+		return DownloadReport{}, errors.New("a running download report carries no reason")
 	}
 	if r.State == DownloadCompleted && r.Path == "" && r.Reason == "" {
 		return DownloadReport{}, errors.New("a completed download report names no file and says no reason")
 	}
 	return r, nil
-}
-
-// CancelRefused reports whether the snapshot answers a cancel WebView2
-// refused (DownloadCancelRefusedReason).
-func (r DownloadReport) CancelRefused() bool {
-	return r.State == DownloadRunning && r.Answer && r.Reason != ""
 }
 
 // Terminal reports whether the snapshot is the download's last state.

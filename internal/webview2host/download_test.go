@@ -1,6 +1,7 @@
 package webview2host
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,11 +11,12 @@ import (
 )
 
 // A download keeps a bounded copy of its address, never a slice of a long
-// one, and a digest of the whole address that tells two long addresses
-// with one prefix apart.
+// one, and a resume key of the whole address that tells two long addresses
+// identical through the kept copy apart; an address that was not read has
+// no key.
 func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
 	long := "data:application/octet-stream;base64," + strings.Repeat("QUJD", 250_000)
-	addr := newDownloadAddress(long)
+	addr := readDownloadAddress(long, nil)
 	if len(addr.shown) > MaxDownloadURIBytes || !strings.HasPrefix(long, addr.shown) {
 		t.Fatalf("the kept address is %d bytes, want a prefix of at most %d", len(addr.shown), MaxDownloadURIBytes)
 	}
@@ -23,11 +25,25 @@ func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
 	if kept >= start && kept < start+uintptr(len(long)) {
 		t.Fatal("the kept address shares the long address's memory")
 	}
-	if newDownloadAddress(long).digest != addr.digest || newDownloadAddress(long+"x").digest == addr.digest {
-		t.Fatal("the digest does not name the whole address")
+	key := func(a downloadAddress) resumeKey {
+		t.Helper()
+		k, ok := a.resume.Key()
+		if !ok {
+			t.Fatalf("an address read as %.40q has no resume key", a.shown)
+		}
+		return k
 	}
-	if short := newDownloadAddress("https://example.test/f"); short.shown != "https://example.test/f" {
+	other := readDownloadAddress(long+"x", nil)
+	if other.shown != addr.shown || key(readDownloadAddress(long, nil)) != key(addr) || key(other) == key(addr) {
+		t.Fatal("the resume key does not name the whole address")
+	}
+	if short := readDownloadAddress("https://example.test/f", nil); short.shown != "https://example.test/f" {
 		t.Fatalf("a short address is kept as %q", short.shown)
+	}
+	for _, unread := range []downloadAddress{readDownloadAddress("", nil), readDownloadAddress("https://example.test/f", errors.New("E_FAIL"))} {
+		if _, ok := unread.resume.Key(); ok || unread.shown != "" {
+			t.Fatalf("an address not read keeps %+v", unread)
+		}
 	}
 }
 
@@ -193,34 +209,5 @@ func TestDownloadInterruptReasonNamesEveryKind(t *testing.T) {
 	}
 	if got := downloadInterruptReason(99); !strings.Contains(got, "99") {
 		t.Fatalf("an unknown reason = %q", got)
-	}
-}
-
-// A running snapshot names a reason only as the answer to a refused cancel.
-func TestARunningReasonIsARefusedCancelsAnswer(t *testing.T) {
-	refused := DownloadReport{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Reason: DownloadCancelRefusedReason}
-	detail, err := refused.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := ParseDownloadReport(detail)
-	if err != nil || !parsed.CancelRefused() {
-		t.Fatalf("a refused cancel's answer parses as %+v, %v", parsed, err)
-	}
-	refused.Answer = false
-	detail, err = refused.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ParseDownloadReport(detail); err == nil {
-		t.Fatal("an unasked running snapshot with a reason parsed")
-	}
-	for _, r := range []DownloadReport{
-		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true},
-		{ID: "dl-1", Seq: 2, State: DownloadInterrupted, Answer: true, Reason: "the network failed"},
-	} {
-		if r.CancelRefused() {
-			t.Fatalf("%+v reads as a refused cancel", r)
-		}
 	}
 }

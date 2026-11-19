@@ -309,16 +309,20 @@ func createClipContainer(parent uintptr) (uintptr, error) {
 
 // moveWindow positions a window in its parent's client coordinates
 // without touching z-order or activation.
-func moveWindow(hwnd uintptr, r rect) {
+func moveWindow(hwnd uintptr, r rect) error {
 	if hwnd == 0 {
-		return
+		return nil
 	}
-	_, _, _ = procSetWindowPo.Call(
+	ok, _, callErr := procSetWindowPo.Call(
 		hwnd, 0,
 		uintptr(int32(r.Left)), uintptr(int32(r.Top)),
 		uintptr(int32(r.width())), uintptr(int32(r.height())),
 		swpNoZOrder|swpNoActivate,
 	)
+	if ok == 0 {
+		return fmt.Errorf("SetWindowPos: %w", callErr)
+	}
+	return nil
 }
 
 // showWindow shows or hides a window without activating it.

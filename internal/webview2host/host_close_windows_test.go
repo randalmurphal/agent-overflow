@@ -18,7 +18,7 @@ func TestADirectiveAfterARequestedCloseTouchesNothing(t *testing.T) {
 	for _, directive := range []Directive{
 		{Op: OpBounds, PageID: "page", W: 200, H: 100},
 		{Op: OpHide, PageID: "page"},
-		{Op: OpCancelDownload, PageID: "page", Download: "dl-t-1"},
+		{Op: OpCancelDownload, PageID: "page", Download: "dl-t-1", Cancel: 1},
 	} {
 		for turn := 1; turn <= 2; turn++ {
 			t.Run(fmt.Sprintf("%s before turn %d", directive.Op, turn), func(t *testing.T) {
@@ -129,7 +129,7 @@ func TestARequestedCloseWaitsForADownloadThatStartedAfterIt(t *testing.T) {
 	if r.page("page") == nil || controller.closed != 0 {
 		t.Fatal("a close requested before a download started closed the page under it")
 	}
-	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	finish(d)
 	sameReports(t, "the download's end", kinds(t, r.awaitReport("page", ReportClosed)),
 		"page:download(dl-1,running)", "page:download(dl-1,completed)", "page:closed")
 	closed(t, controller)

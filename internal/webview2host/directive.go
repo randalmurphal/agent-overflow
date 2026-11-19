@@ -74,11 +74,13 @@ const (
 	// refused with ReportFocusFailed.
 	OpFocus Op = "focus"
 	// OpCancelDownload cancels the page's download Download, a launcher id
-	// from its ReportDownload, and is answered with the download's snapshot
-	// as OpDownloadStatus is: a running one's end follows its cancel.
+	// from its ReportDownload, under the cancel's number Cancel, and is
+	// answered with the download's snapshot as OpDownloadStatus is: a
+	// running one's end follows its cancel.
 	OpCancelDownload Op = "cancel-download"
 	// OpDownloadStatus asks for the snapshot of the page's download
-	// Download and changes nothing: the launcher answers a running
+	// Download, and changes nothing but to make a cancel numbered past the
+	// last the launcher took (Cancel): the launcher answers a running
 	// download's snapshot, an ended one's terminal snapshot again, and an
 	// id it has no record of with a terminal snapshot saying so
 	// (download.go).
@@ -147,6 +149,11 @@ type Directive struct {
 	Query string `json:"query,omitempty"`
 	// Download is OpCancelDownload's and OpDownloadStatus's download id.
 	Download string `json:"download,omitempty"`
+	// Cancel is OpCancelDownload's number among the backend's cancels of
+	// Download, from 1, and on OpDownloadStatus the number of the last one
+	// sent (0 for none): the launcher makes a cancel numbered past the last
+	// it took, so a status also makes a cancel that was lost on the way.
+	Cancel CancelAttempt `json:"cancel,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.
@@ -203,6 +210,9 @@ func (d Directive) Validate() error {
 	case OpCancelDownload, OpDownloadStatus:
 		if err := ValidatePageID(d.PageID); err != nil {
 			return err
+		}
+		if d.Op == OpCancelDownload && d.Cancel == 0 {
+			return errors.New("a download cancel must carry its number")
 		}
 		return ValidateDownloadID(d.Download)
 	case OpFind:

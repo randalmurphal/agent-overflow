@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // A popup's life from its window request to its announcement
@@ -22,16 +23,26 @@ func answerTarget(t *testing.T, controller *fakeController, target string) {
 	controller.view.answerDevTools(t, 0, `{"targetInfo":{"targetId":"`+target+`"}}`)
 }
 
-// startDownload starts a download of page as WebView2 would report it.
+// startDownload starts a download of page under id, on a stand-in
+// operation, as WebView2 would report it.
 func (r *popupRig) startDownload(page *hostPage, id string) *hostDownload {
 	r.t.Helper()
-	d := &hostDownload{id: id, page: page, uri: newDownloadAddress("https://example.test/" + id), path: `C:\Downloads\` + id}
+	op := newFakeOp(`C:\Downloads\` + id)
+	op.uri = "https://example.test/" + id
+	op.refs++ // the reference DownloadStarting hands over
+	d := &hostDownload{id: id, page: page, uri: readDownloadAddress(op.uri, nil), path: op.path}
+	r.host.attachOperation(d, op.com())
 	if page.downloads == nil {
 		page.downloads = map[string]*hostDownload{}
 	}
 	page.downloads[id] = d
-	r.host.report(page, d.snapshot(DownloadRunning, ""))
+	r.host.report(page, d.snapshot())
 	return d
+}
+
+// finish has WebView2 complete a download startDownload started.
+func finish(d *hostDownload) {
+	(*fakeOp)(unsafe.Pointer(d.op)).set(downloadStateCompleted, 0)
 }
 
 // awaitReports answers the reports that arrive until none has for a moment,
@@ -95,7 +106,7 @@ func TestAPopupThatGoesBeforeItsAnnouncementReportsItsDownloads(t *testing.T) {
 	popup, controller := r.openPopup(opener, args)
 	d := r.startDownload(popup, "dl-1")
 	controller.view.raise("close-requested")
-	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	finish(d)
 	sameReports(t, "a popup gone before its target was read", kinds(t, r.awaitReports(3)),
 		popup.id+":popup(opener,)", popup.id+":find-unavailable", popup.id+":download(dl-1,completed)", popup.id+":closed")
 	settled(t, args, controller.view)
@@ -297,7 +308,7 @@ func TestAPopupGoneWithADownloadingPopupOfItsOwnIsAnnounced(t *testing.T) {
 	child, childController := r.openPopup(parentController, newFakeWindowArgs(popupURL))
 	child.popup.held.findUnavailable = false
 	d := r.startDownload(child, "dl-1")
-	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	finish(d)
 	parentController.view.raise("close-requested")
 	sameReports(t, "a popup going with its downloading popup", kinds(t, r.awaitReports(5)),
 		parent.id+":popup(opener,)", child.id+":popup("+parent.id+",)", child.id+":download(dl-1,completed)",
@@ -423,9 +434,9 @@ func TestAPopupHoldsTheNewestSnapshotOfEachDownload(t *testing.T) {
 	popup, _ := r.openPopup(opener, newFakeWindowArgs(popupURL))
 	d := r.startDownload(popup, "dl-0")
 	for range 100 {
-		r.host.report(popup, d.snapshot(DownloadRunning, ""))
+		r.host.report(popup, d.snapshot())
 	}
-	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	finish(d)
 	if held := popup.popup.held.downloads; len(held) != 1 || held[0].State != DownloadCompleted {
 		t.Fatalf("held %+v, want the download's completion alone", held)
 	}
