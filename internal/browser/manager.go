@@ -391,7 +391,7 @@ type managedPage struct {
 	findBusy atomic.Bool
 	// incarnation tells this page apart from another under the same id: a
 	// restored page reuses its id. docEpoch counts the documents its main
-	// frame committed, stamped on the engine's own thread (find.go).
+	// frame committed, stamped on the engine's own thread (find_ends.go).
 	incarnation uint64
 	docEpoch    atomic.Uint64
 	// userNav is the address-bar navigation running under mu, for the stop
