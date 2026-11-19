@@ -18,6 +18,9 @@ type Pool struct {
 	name  string
 	limit int64
 	used  atomic.Int64
+	// registration is the pool's place in the Registry that made it, nil
+	// for a pool of none.
+	registration *registration
 }
 
 // NewPool answers an empty pool of limit bytes, named in its refusals.
@@ -62,12 +65,25 @@ type Reservation struct {
 }
 
 // Reserve holds amount of every pool, all or none, or answers the
-// *FullError of the first that has no room.
+// *FullError of the first that has no room, or ErrReplaced for a registry's
+// pool it forgot and replaced. A reservation keeps each registry's pool
+// registered until it ends.
 func Reserve(amount int64, pools ...*Pool) (*Reservation, error) {
+	for i, pool := range pools {
+		if err := pool.hold(); err != nil {
+			for _, held := range pools[:i] {
+				held.unhold()
+			}
+			return nil, err
+		}
+	}
 	for i, pool := range pools {
 		if !pool.take(amount) {
 			for _, taken := range pools[:i] {
 				taken.used.Add(-amount)
+			}
+			for _, held := range pools {
+				held.unhold()
 			}
 			return nil, &FullError{Pool: pool.name, Limit: pool.limit}
 		}
@@ -84,6 +100,7 @@ func (r *Reservation) Settle(actual int64) bool {
 	}
 	for _, pool := range r.pools {
 		pool.used.Add(actual - r.amount)
+		pool.unhold()
 	}
 	return true
 }

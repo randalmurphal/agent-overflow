@@ -12,7 +12,49 @@ import (
 	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
+
+	"agent-overflow/internal/browser/quota"
 )
+
+// A workspace has one download pool while any reservation holds it: with
+// its quota held by transfers that outlive its last page, a page of the
+// workspace opened again meets the same pool, and a download there is
+// refused past it.
+func TestAWorkspaceKeepsOnePoolWhileItsDownloadsHoldIt(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	authority := authorityOf(t, manager, access)
+	var held []*quota.Reservation
+	for range maxWorkspaceDownloadBytes / maxDownloadBytes {
+		reservation, err := manager.reserveDownload(authority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, reservation)
+	}
+	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+		t.Fatal(err)
+	}
+	if authorityOf(t, manager, access) != nil {
+		t.Fatal("the workspace kept its authority with no page left")
+	}
+	again, err := manager.Open(t.Context(), access, "https://example.test/again", OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authorityOf(t, manager, access).downloadBytes; got != authority.downloadBytes {
+		t.Fatal("the workspace has a second pool while its first holds reservations")
+	}
+	frame := paneHandle(manager, access, again.ID)
+	if got := manager.downloadStarted(downloadStart{Frame: frame, ID: "fifth", SuggestedName: "fifth.bin"}); got != downloadRefused {
+		t.Fatalf("a download past the workspace's held quota answered %d, want refused", got)
+	}
+	for _, reservation := range held {
+		reservation.Release()
+	}
+	if got := manager.downloadStarted(downloadStart{Frame: frame, ID: "sixth", SuggestedName: "sixth.bin"}); got != downloadAdmitted {
+		t.Fatalf("a download once the quota freed answered %d, want admitted", got)
+	}
+}
 
 // startPopupDownload starts download id in popup, opened by openers,
 // nearest first, in the engine's profile, and answers the Manager's

@@ -225,7 +225,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		}
 	}
 	m.scopes = make(map[string]*jarScope)
-	m.authorities = nil
+	m.forgetAuthoritiesLocked()
 	// A failed creation's tab names a page that never existed in the
 	// browser being closed.
 	for id, pending := range m.pending {

@@ -169,6 +169,9 @@ type Manager struct {
 	artifactInitMu sync.Mutex
 	artifactReady  bool
 	artifactBytes  *quota.Pool
+	// workspacePools hands each workspace its one download pool
+	// (workspaceAuthority).
+	workspacePools *quota.Registry
 	// downloadsMu guards threadDownloads, each thread's downloads as its
 	// pane lists them (downloads_thread.go). It is taken inside m.mu and
 	// inside a page's download log hold, and never held around either.
@@ -435,24 +438,25 @@ func (p *managedPage) attach(driver pageDriver) {
 
 func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
-		artifactBytes: quota.NewPool("browser artifacts", maxArtifactRootBytes),
-		config:        config,
-		profileDir:    filepath.Join(configDir, browserProfileDir),
-		scopes:        make(map[string]*jarScope),
-		suspended:     make(map[string]*suspendedPage),
-		pending:       make(map[string]*pendingPage),
-		heldInfo:      newBoundedMap[string, heldInfo](orderSlack),
-		admissions:    popupadmit.New(orderSlack),
-		disposing:     make(map[string]chan struct{}),
-		recordDir:     filepath.Join(configDir, browserPageRecordDir),
-		panes:         make(map[string]paneMount),
-		sessions:      make(map[string]SessionInfo),
-		viewportSyncs: make(map[string]*viewportSync),
-		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
-		findTimeout:   findActionTimeout,
-		closedTabs:    make(map[string]*closedTabs),
-		agentLinger:   agentActivityLinger,
-		recentLaunch:  uuid.NewString(),
+		artifactBytes:  quota.NewPool("browser artifacts", maxArtifactRootBytes),
+		workspacePools: quota.NewRegistry("workspace downloads", maxWorkspaceDownloadBytes),
+		config:         config,
+		profileDir:     filepath.Join(configDir, browserProfileDir),
+		scopes:         make(map[string]*jarScope),
+		suspended:      make(map[string]*suspendedPage),
+		pending:        make(map[string]*pendingPage),
+		heldInfo:       newBoundedMap[string, heldInfo](orderSlack),
+		admissions:     popupadmit.New(orderSlack),
+		disposing:      make(map[string]chan struct{}),
+		recordDir:      filepath.Join(configDir, browserPageRecordDir),
+		panes:          make(map[string]paneMount),
+		sessions:       make(map[string]SessionInfo),
+		viewportSyncs:  make(map[string]*viewportSync),
+		artifactRoot:   filepath.Join(configDir, "browser-artifacts"),
+		findTimeout:    findActionTimeout,
+		closedTabs:     make(map[string]*closedTabs),
+		agentLinger:    agentActivityLinger,
+		recentLaunch:   uuid.NewString(),
 	}
 	m.selectionGapTimer = turnorder.NewGapTimer
 	m.accelerators = opts.Accelerators
