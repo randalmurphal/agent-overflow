@@ -86,10 +86,10 @@ unchanged.
 - Identity: who the credential belongs to.
 - Structure: projects, boards, one board's columns, statuses, estimate and
   sprints.
-- Sync: a page of a scope's changed issues from a cursor; the complete set
-  of IDs in a scope, or a statement that the set is incomplete; cards for a
-  set of IDs; status, sprint, estimate and assignee changes for a set of
-  issues.
+- Sync: a page of a board's changed rows from a cursor; the complete set
+  of IDs on a board, or a statement that the set is incomplete; a board's
+  rows for a set of IDs; cards for a set of IDs with no board; status,
+  sprint, estimate and assignee changes for a set of issues.
 - Detail: one issue's detail; pages of its comments.
 - Writes: create, edit fields, move to a status (with the fields the move
   requires), rank before or after a neighbor, move to a sprint or the
@@ -107,11 +107,23 @@ resolution is the provider's business at the end of a walk.
 **A write returns an outcome for each thing it touched, not one error.** One
 operation can be several requests: a create followed by an image upload, a
 rank of 120 issues in three groups. Each issue or step is applied, refused,
-unknown or not sent, and the result names every issue the operation may
-have changed and any it created. `trackerapi.WriteNotApplied` judges one
-request inside a provider; it never judges an operation. A write does not
-return a card: an answer that carries an issue carries only the fields the
-tracker chose to send.
+unknown or not sent. `trackerapi.WriteNotApplied` judges one request inside
+a provider; it never judges an operation.
+
+The result also names what the operation may have changed, by resource: an
+issue's card, an issue's row on a named board, an issue's detail, a board's
+structure. A write does not return any of them: an answer that carries an
+issue carries only the fields the tracker chose to send.
+
+A create whose answer was lost has an outcome of its own: the tracker may
+hold a new issue and nobody knows its ID. The result says so and names no
+issue. Nothing retries it.
+
+**History says how far back it is complete.** Jira records every change
+from creation. Linear folds the changes of an issue's first minutes into
+its creation and records none of them. A provider returns an issue's
+changes with the time from which they are complete, and a value before that
+time is unknown, never inferred from the absence of a change.
 
 ## Connections and key files
 
@@ -194,7 +206,7 @@ classification:
 | `tracker_cache_issues` | Cards, one per issue per mirror. |
 | `tracker_cache_board_issues` | Which issues are on which board, each with that board's order key and estimate. |
 | `tracker_cache_issue_sprints` | Which sprints an issue is or was in. |
-| `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. |
+| `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. The issue row holds the time from which they are complete. |
 | `tracker_cache_issue_details` | The detail of recently opened issues, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. |
@@ -210,10 +222,11 @@ For each board some app project lists:
   history window (180 days);
 - its issues that are not done, those done inside the window, and those in
   a kept sprint;
-- every status, sprint, estimate and assignee change of those issues, back
-  to their creation. What a sprint started with is rebuilt from changes
-  made before it started, so changes are not cut at the window; they go
-  when their issue does.
+- every status, sprint, estimate and assignee change the tracker recorded
+  for those issues. What a sprint started with is rebuilt from changes made
+  before it started, so changes are not cut at the window; they go when
+  their issue does. A query that needs a value from before an issue's
+  changes are complete gets none and shows the issue as not counted.
 
 Plus, per connection: the issues linked to threads, and the detail of the
 200 most recently opened issues. An issue outside every listed board is
@@ -225,15 +238,27 @@ it.
 Sync is polling, per scope. A scope is one board, or a connection's linked
 issues.
 
-- **Delta.** Each tick reads pages of the scope's changed issues from its
+The mirror is filled by resource, and each resource has one read that sync
+and writes share:
+
+| Resource | Read | Stores |
+|---|---|---|
+| Board row | an issue through a board | the card, and that board's order key and estimate |
+| Card | an issue with no board (a linked issue outside every listed board) | the card |
+| Detail | one issue | the detail document |
+| Structure | one board | columns, statuses, estimate, sprints, users |
+
+- **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
   returned, so a restart resumes exactly after the last stored page. A
-  card is never replaced by a version with an earlier update time.
+  card is never replaced by a version with an earlier update time; a board
+  row is stored whenever it is read through its board.
 - **Reconcile.** A delta sees only issues whose update time moved. An
-  issue enters or leaves a scope without that: a board's filter is edited,
-  an issue is deleted, a sprint is reassigned. A reconcile lists the IDs in
-  scope, reads the cards of those the mirror lacks, and removes the
-  memberships no longer listed. A listing the provider reports as
+  issue enters or leaves a board without that: the board's filter is
+  edited, an issue is deleted, a board is newly listed while its issues are
+  already cards from another board. A reconcile lists the IDs on the board,
+  reads the board rows of every listed ID that has no row on this board,
+  and removes the rows no longer listed. A listing the provider reports as
   incomplete adds and never removes. It runs when a board is subscribed, on
   a slower cadence, and on request.
 - **Structure** is read when a board is subscribed, on a slower cadence,
@@ -263,15 +288,22 @@ there, so there is one implementation.
 
 Every edit goes to the tracker first.
 
-1. `trackerapp` calls the provider and gets the operation's outcomes.
-2. Every issue whose outcome is applied or unknown, and every issue the
-   operation created, is read again through the same card read sync uses,
-   and stored. There is one way a card is built.
+1. `trackerapp` calls the provider and gets the operation's outcomes and
+   the resources it may have changed.
+2. Each named resource whose outcome is applied or unknown is read again
+   through that resource's read and stored: a ranked issue's row on the
+   board it was ranked on, a commented issue's detail when it is cached or
+   open, a board's structure after a sprint is created. An issue's card is
+   refreshed through every board the mirror has it on.
 3. The caller gets the outcomes as they are: all applied, all refused with
    the tracker's reason, or a mix that names which issues and steps
    landed. An operation that created an issue and then failed a later step
    reports the issue as created.
-4. Subscribers get the stored changes.
+4. A create of unknown outcome is reported as that, with a warning that a
+   second attempt may make a second issue. The board's delta runs at once;
+   an issue it brings in is the only evidence, and nothing matches it to
+   the attempt.
+5. Subscribers get the stored changes.
 
 The mirror is never written ahead of the tracker. A client that shows a
 drop before the answer owns that preview and replaces it with the event.
@@ -303,9 +335,11 @@ remaining cards are read by page.
 The tools read, search, create, edit, move, comment, move between sprints
 and list and add worklogs, through `trackerapp`. A worklog an agent adds is
 an entry in a time draft. Only the posting path in `trackerapp` sends time
-to a tracker, and it sends a draft's day when the user approved it or when
-the project's setting posts days with no open question. No tool reaches
-the provider's worklog write.
+to a tracker, and it sends exactly the entries it is given: the entries
+the user approved (one entry, a day or the whole draft), an entry the user
+logged by hand, or the entries of a day with no open question when the
+project's setting posts such days. An entry an agent made is never posted
+on the agent's call. No tool reaches the provider's worklog write.
 
 Three mechanisms the tools need do not exist for any built-in tool server
 yet and are part of that work:
@@ -326,8 +360,11 @@ guide and each read tool say so.
 
 - `tracker` providers are tested against the clients' fake servers.
 - `trackerapp` is tested with fake providers: a restart between pages of
-  issues that share an update time, reconciles that add and remove, an
-  incomplete listing, cascades, each mix of write outcomes, pump lifetimes,
+  issues that share an update time, reconciles that add and remove, a
+  board newly listed over issues another board already mirrored, an
+  incomplete listing, cascades, each mix of write outcomes including a
+  create of unknown outcome, the refresh of each resource a write names,
+  history that is not complete from creation, pump lifetimes,
   repeated subscribe and release, and a connection turned off, and off then
   on, while a read and a write are in flight.
 - `trackerfake` answers the requests the clients send and fails a request

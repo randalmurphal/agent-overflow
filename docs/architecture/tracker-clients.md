@@ -9,7 +9,8 @@ are in
 
 Nothing here touches the store, the app or a provider. The local mirror,
 sync, the tracker-neutral core, key files, agent tools and the harness fake
-sit on top of these packages and are not built yet.
+sit on top of these packages; their design is
+[tracker backend](tracker-backend.md).
 
 ## Packages
 
