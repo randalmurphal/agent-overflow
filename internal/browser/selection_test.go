@@ -393,12 +393,12 @@ func TestADetachBetweenAdmissionAndCommit(t *testing.T) {
 	}
 }
 
-// A reopen whose pane detaches between its pop and its tab's add puts the
-// closed tab back.
+// A reopen whose pane detaches between its read of the closed tab and its
+// tab's admission leaves the closed tab where it was.
 func TestADetachDuringAReopenKeepsTheClosedTab(t *testing.T) {
 	m, access, fixture, mount := newPairManager(t)
 	popped, resume := make(chan struct{}, 1), make(chan struct{})
-	m.reopenPopped = func() {
+	m.reopenRead = func() {
 		popped <- struct{}{}
 		<-resume
 	}
@@ -421,7 +421,7 @@ func TestADetachDuringAReopenKeepsTheClosedTab(t *testing.T) {
 func TestADetachBeforeAReopensPopTakesNothing(t *testing.T) {
 	m, access, fixture, mount := newPairManager(t)
 	var popped atomic.Bool
-	m.reopenPopped = func() { popped.Store(true) }
+	m.reopenRead = func() { popped.Store(true) }
 	admitted, resume := pauseAdmissions(m, mount)
 	done := deliver(func() error { return m.ReopenClosedTab(numbered(context.Background(), mount, 1), access) })
 	select {

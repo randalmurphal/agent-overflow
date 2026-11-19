@@ -382,8 +382,9 @@ behave as a desktop browser's:
   download the address row shows a downloads button, never moved into the
   More menu. While downloads run it shows how far they are in eighths, or a
   stepped spinner when no running download announced its size. It opens the
-  thread's downloads, newest first (at most 20; a running one is never
-  dropped): name, the page it began on, received and total bytes, and the
+  thread's downloads, newest first (every running one, and the 20 that
+  settled last, so a download's notification always finds its row): name,
+  the page it began on, received and total bytes, and the
   failure. A running one cancels; a finished one shows in the file manager
   (the reveal hand-off of Show in folder) and, for a type every engine shows
   in a tab (PDF, PNG, JPEG, GIF, WebP, BMP, text, JSON), opens in a new tab.
@@ -456,8 +457,10 @@ behave as a desktop browser's:
   it is, finished or running, or canceled with the reason when the popup's
   close ended it (WebView2 cancels a closing page's downloads). A popup
   whose window went before the launcher reported it is never a tab; its
-  downloads are listed at its close. With no opener listed, or over its
-  workspace's quota, it is canceled, and the file AO keeps for it (headless
+  downloads are listed at its close. Under headless Chromium such a
+  download holds the quota of the workspace of the nearest page that opened
+  it from its start, and one over it is refused then. With no opener listed
+  at its fate it is canceled, and the file AO keeps for it (headless
   Chromium's artifact, WebKit's staged file) is removed. Past 16 such downloads of a popup, or 64
   popups holding some, a download is refused and canceled. When a popup's first navigation is
   a download, WebView2 asks to close the popup, which closes when the
@@ -914,6 +917,10 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   are in. Downloads and asset bundles share a 4 GiB per-process artifact
   quota. Files older than seven days are pruned on the next artifact
   use, while newer files are never silently evicted to make quota room.
+  The workspace's finished downloads are in a directory no earlier release
+  wrote; the files an earlier release kept beside its running downloads
+  are never opened in a tab, as they never were, and go with the
+  seven-day prune.
 
 A download that begins in a page no thread owns is cancelled.
 

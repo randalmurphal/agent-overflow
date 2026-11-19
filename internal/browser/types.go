@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"agent-overflow/internal/browser/quota"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -388,7 +389,9 @@ type DownloadInfo struct {
 	TotalBytes    int64  `json:"totalBytes,omitempty"`
 	Error         string `json:"error,omitempty"`
 	StartedAt     string `json:"startedAt"`
-	reservedBytes int64
+	// reservation is the quota a download AO keeps holds until it settles
+	// (quota.Reservation), nil for one that holds none.
+	reservation *quota.Reservation
 	// key is the download's entry in its thread's list (downloads_thread.go).
 	key string
 	// cancelRequested is set while the user's cancel is with the engine, so
@@ -400,6 +403,9 @@ type DownloadInfo struct {
 	// file is the finished file as it was when the download settled, so a
 	// later Open or Show in folder acts on that file and no other.
 	file os.FileInfo
+	// settled numbers the entry among its page's settled ones in the order
+	// they settled, from 1; zero while it runs (trimDownloadsLocked).
+	settled uint64
 }
 
 type DownloadOptions struct {

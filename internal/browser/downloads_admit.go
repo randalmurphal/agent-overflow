@@ -1,8 +1,13 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
+
+	"agent-overflow/internal/browser/quota"
 )
 
 // A download's admission to its page: the caps, its row and its reservation.
@@ -23,6 +28,9 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 }
 
 func (m *Manager) admitDownload(event downloadStart) bool {
+	// The address is display data from here, bounded once as it enters, in
+	// a copy of its own, before anything parks or lists it.
+	event.URL = strings.Clone(truncateUTF8(event.URL, maxBrowserURLBytes))
 	p, _ := m.pageForFrame(event.Frame)
 	if p == nil {
 		if event.Popup != "" {
@@ -31,11 +39,12 @@ func (m *Manager) admitDownload(event downloadStart) bool {
 		}
 		return false
 	}
-	return m.admitTo(p, event)
+	return m.admitTo(p, event, nil)
 }
 
-// admitTo lists a starting download in p.
-func (m *Manager) admitTo(p *managedPage, event downloadStart) bool {
+// admitTo lists a starting download in p. A parked download's listing
+// (parked set) takes its reservation over.
+func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDownload) bool {
 	authority := p.authority
 	source := p.cachedInfo().URL
 	if source == "" || source == "about:blank" {
@@ -57,12 +66,19 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart) bool {
 		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		key: fmt.Sprintf("d%d", m.downloadKeys.Add(1)),
 	}
-	if m.downloadsToArtifacts() {
-		entry.reservedBytes = maxDownloadBytes
-		m.reserveDownloadLocked(authority, &entry)
+	switch {
+	case parked != nil:
+		// Its listing moves its reservation to its row: its bytes stay held,
+		// against the workspace they were taken from.
+		entry.reservation = quota.Take(&parked.reservation)
+	case m.downloadsToArtifacts():
+		reservation, err := m.reserveDownload(authority)
+		if err != nil {
+			entry.State, entry.Error = downloadStateCanceled, err.Error()
+		}
+		entry.reservation = reservation
 	}
 	p.downloads = append(p.downloads, entry)
-	p.trimDownloadsLocked()
 	note := m.noteDownloadLocked(p, &p.downloads[len(p.downloads)-1], source)
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
@@ -70,39 +86,52 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart) bool {
 	return entry.State != downloadStateCanceled
 }
 
-// reserveDownloadLocked reserves a new download's bytes against its
-// workspace's quota and the artifact root's, or settles entry as canceled
-// over quota. The caller holds the page's downloadMu.
-func (m *Manager) reserveDownloadLocked(authority *workspaceAuthority, entry *DownloadInfo) {
-	scopeReserved := authority != nil && authority.reserveDownload(maxDownloadBytes)
-	globalReserved := scopeReserved && m.reserveArtifacts(maxDownloadBytes)
-	if !globalReserved {
-		if scopeReserved {
-			authority.downloadBytes.Add(-maxDownloadBytes)
-		}
-		entry.State, entry.Error, entry.reservedBytes = downloadStateCanceled, fmt.Sprintf("workspace downloads exceed %d bytes", maxWorkspaceDownloadBytes), 0
-		if scopeReserved && !globalReserved {
-			entry.Error = fmt.Sprintf("browser artifacts exceed %d bytes", maxArtifactRootBytes)
-		}
+// errNoWorkspace refuses a download AO would keep that no workspace owns.
+var errNoWorkspace = errors.New("the download belongs to no workspace")
+
+// reserveDownload holds maxDownloadBytes of the workspace's download quota
+// and the artifact root's, both or neither.
+func (m *Manager) reserveDownload(authority *workspaceAuthority) (*quota.Reservation, error) {
+	if authority == nil {
+		return nil, errNoWorkspace
 	}
+	return m.reserveArtifacts(maxDownloadBytes, authority.downloadBytes)
 }
 
-// trimDownloadsLocked keeps the page's log within maxPageDownloads by
-// dropping its oldest settled entries. A running one stays: its progress,
-// its reservation and its cancel all need it, and the quotas bound how many
-// can run. The caller holds p.downloadMu.
+// trimDownloadsLocked numbers the entries that settled since it last ran
+// and drops the earliest settled beyond maxPageDownloads, so the entry that
+// just settled stays for its waiter however many run. A running one stays:
+// its progress, its reservation and its cancel all need it, and the quotas
+// bound how many can run. The caller holds p.downloadMu.
 func (p *managedPage) trimDownloadsLocked() {
-	excess := len(p.downloads) - maxPageDownloads
-	if excess <= 0 {
-		return
-	}
-	kept := make([]DownloadInfo, 0, maxPageDownloads)
-	for _, entry := range p.downloads {
-		if excess > 0 && entry.State != downloadStateRunning {
-			excess--
+	settled := 0
+	for i := range p.downloads {
+		entry := &p.downloads[i]
+		if entry.State == downloadStateRunning {
 			continue
 		}
-		kept = append(kept, entry)
+		if entry.settled == 0 {
+			p.downloadSettles++
+			entry.settled = p.downloadSettles
+		}
+		settled++
+	}
+	if settled <= maxPageDownloads {
+		return
+	}
+	stamps := make([]uint64, 0, settled)
+	for _, entry := range p.downloads {
+		if entry.settled != 0 {
+			stamps = append(stamps, entry.settled)
+		}
+	}
+	slices.Sort(stamps)
+	cutoff := stamps[settled-maxPageDownloads-1]
+	kept := make([]DownloadInfo, 0, len(p.downloads)-(settled-maxPageDownloads))
+	for _, entry := range p.downloads {
+		if entry.settled == 0 || entry.settled > cutoff {
+			kept = append(kept, entry)
+		}
 	}
 	p.downloads = kept
 }
@@ -121,10 +150,6 @@ func (p *managedPage) downloadLocked(id string) *DownloadInfo {
 
 // releaseDownloadLocked returns a download's whole reservation, for one that
 // ends with no file kept. The caller holds p.downloadMu.
-func (m *Manager) releaseDownloadLocked(p *managedPage, entry *DownloadInfo) {
-	if p.authority != nil && entry.reservedBytes > 0 {
-		p.authority.downloadBytes.Add(-entry.reservedBytes)
-		m.settleArtifactReservation(entry.reservedBytes, 0)
-		entry.reservedBytes = 0
-	}
+func (m *Manager) releaseDownloadLocked(_ *managedPage, entry *DownloadInfo) {
+	quota.Take(&entry.reservation).Release()
 }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/browser/threadlife"
 )
 
 // CloseThread closes every page the thread owns, including a popup one of
@@ -27,6 +29,9 @@ import (
 // them.
 func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	m.mu.Lock()
+	// Before anything closes: a pane action bound to the thread opens
+	// nothing from here (thread_life.go).
+	m.lives.Retire(threadlife.ThreadID(threadID))
 	if info, ok := m.sessions[threadID]; ok {
 		info.Jar = JarWorktree
 		m.sessions[threadID] = info
@@ -99,7 +104,13 @@ func (m *Manager) ClearSiteData(ctx context.Context) error {
 // forgotten too. keepJars keeps the threads' jar settings. clear, when set,
 // runs once the browser closed without error, in the startMu hold of that
 // close, so no page opens before it ends.
+//
+// No page becomes a record from the start of the forget to its end
+// (beginForget): a live page a jar switch, the reaper or a crash would
+// suspend is one the close takes, and the records are forgotten once, before
+// the engine start is interrupted, which cancels the restores in flight.
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func() error) error {
+	m.beginForget()
 	err := m.forgetAllRecords(keepJars)
 	// Release an in-flight engine start first: it holds startMu.
 	m.engine.Interrupt()
@@ -110,6 +121,7 @@ func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func(
 	}
 	m.mu.Lock()
 	threads := m.forgetAllBrowsingLocked()
+	m.forgetting--
 	m.mu.Unlock()
 	m.startMu.Unlock()
 	// The closes pushed state before the forget; these carry its generation.
@@ -118,6 +130,22 @@ func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func(
 	}
 	return err
 }
+
+// beginForget starts a forget of every page: from here until forgetAllPages
+// ends it, no page becomes a record (forgettingLocked). It waits for the
+// record writes in flight, which hold persistMu from their write to their
+// commit, so none commits after it.
+func (m *Manager) beginForget() {
+	m.persistMu.Lock()
+	m.mu.Lock()
+	m.forgetting++
+	m.mu.Unlock()
+	m.persistMu.Unlock()
+}
+
+// forgettingLocked reports whether a forget of every page runs, during which
+// no page becomes a record. The caller holds m.mu.
+func (m *Manager) forgettingLocked() bool { return m.forgetting > 0 }
 
 // Close shuts the manager down. The pages open at that moment are saved as
 // suspended pages first, so they come back in their threads after a restart.
@@ -232,7 +260,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Unlock()
 	// A popup not listed yet goes with the browser, its downloads with it;
 	// their files go once the engine writing them has stopped.
-	parkedFiles := m.dropParked(scopes)
+	parkedFiles := m.dropParked()
 	for _, p := range pages {
 		m.endFind(p)
 	}

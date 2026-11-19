@@ -197,12 +197,7 @@ type appBrowserState struct {
 	// a view in. Set once before Start by the serve boot alone
 	// (UseHeadlessBrowserEngine), and NEVER inferred from nativeWindow being
 	// nil — that nil is what every test and every `--connect` backend has.
-	headlessChromium bool
-	// companionMu guards companionFlights: per thread with a companion
-	// action running, how many run and how many closes of its pages
-	// (closeThreadBrowserPages) they have seen (app_browser_companion.go).
-	companionMu        sync.Mutex
-	companionFlights   map[string]*companionFlight
+	headlessChromium   bool
 	applyMu            sync.Mutex
 	applyWG            sync.WaitGroup
 	settingsGeneration atomic.Uint64

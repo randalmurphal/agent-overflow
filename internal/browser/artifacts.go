@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"agent-overflow/internal/browser/quota"
 )
 
 const (
@@ -49,23 +51,13 @@ func (m *Manager) prepareArtifacts() {
 	if entries > maxArtifactScanEntries {
 		total = maxArtifactRootBytes
 	}
-	m.artifactBytes.Store(total)
+	m.artifactBytes.SetUsed(total)
 	m.artifactReady = true
 }
 
-func (m *Manager) reserveArtifacts(bytes int64) bool {
+// reserveArtifacts holds bytes of the artifact quota, measured on first use
+// (prepareArtifacts), and of any pools besides it, all or none.
+func (m *Manager) reserveArtifacts(bytes int64, pools ...*quota.Pool) (*quota.Reservation, error) {
 	m.prepareArtifacts()
-	for {
-		current := m.artifactBytes.Load()
-		if bytes < 0 || current > maxArtifactRootBytes-bytes {
-			return false
-		}
-		if m.artifactBytes.CompareAndSwap(current, current+bytes) {
-			return true
-		}
-	}
-}
-
-func (m *Manager) settleArtifactReservation(reserved, actual int64) {
-	m.artifactBytes.Add(actual - reserved)
+	return quota.Reserve(bytes, append(pools, m.artifactBytes)...)
 }

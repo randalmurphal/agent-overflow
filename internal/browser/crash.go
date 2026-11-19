@@ -51,12 +51,11 @@ func cdpCrashReason(event target.EventTargetCrashed) string {
 // cancelled first, so one waiting on a dead renderer gives up the page's
 // lock; then, in one m.mu hold, the page leaves its scope and its record
 // takes its place, as a suspension does (suspendPage). A page closed or
-// suspended meanwhile, or one whose records were cleared since the report
-// (the browser turned off, its site data cleared), is left as it is.
+// suspended meanwhile, or one a forget of every page (the browser turned
+// off, its site data cleared) is closing, is left as it is.
 func (m *Manager) pageCrashed(handle, reason string) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
-	cleared := m.recordsCleared
 	m.mu.Unlock()
 	if p == nil {
 		return
@@ -72,7 +71,7 @@ func (m *Manager) pageCrashed(handle, reason string) {
 			break
 		}
 	}
-	if scope == nil || m.closed || m.recordsCleared != cleared {
+	if scope == nil || m.closed || m.forgettingLocked() {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return

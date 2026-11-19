@@ -363,7 +363,7 @@ func openPage(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
 
 func setJar(t *testing.T, m *Manager, access Access, kind string) {
 	t.Helper()
-	if err := m.SetJar(access, kind); err != nil {
+	if err := m.SetJar(context.Background(), access, kind); err != nil {
 		t.Fatalf("set jar %s for %s: %v", kind, access.ThreadID, err)
 	}
 }
@@ -554,7 +554,7 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	}
 
 	manager.mu.Lock()
-	manager.authorities[canonical(t, proj.one)].downloadBytes.Store(maxWorkspaceDownloadBytes)
+	manager.authorities[canonical(t, proj.one)].downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	manager.mu.Unlock()
 	if manager.downloadStarted(downloadStart{Frame: paneHandle(manager, a, pageA.ID), ID: "over"}) {
 		t.Fatal("a download over its workspace's quota was kept")

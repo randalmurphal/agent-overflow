@@ -199,11 +199,12 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	if len(selected) > 200 {
 		return AssetBundle{}, fmt.Errorf("browser: asset bundle exceeds 200 files")
 	}
-	if !m.reserveArtifacts(maxAssetBundleBytes) {
-		return AssetBundle{}, fmt.Errorf("browser: artifacts exceed %d bytes", maxArtifactRootBytes)
+	reservation, err := m.reserveArtifacts(maxAssetBundleBytes)
+	if err != nil {
+		return AssetBundle{}, err
 	}
 	var settledBytes int64
-	defer func() { m.settleArtifactReservation(maxAssetBundleBytes, settledBytes) }()
+	defer func() { reservation.Settle(settledBytes) }()
 	dir := filepath.Join(m.artifactRoot, "assets", uuid.NewString())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return AssetBundle{}, err

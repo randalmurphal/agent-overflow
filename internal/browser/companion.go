@@ -72,7 +72,7 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 		return PageInfo{}, err
 	}
 	defer m.releaseSelectionTurn(turn)
-	info, err := m.openUserTab(ctx, access, turn, address, "", -1)
+	info, err := m.openUserTab(ctx, access, turn, address, "", -1, nil)
 	if errors.Is(err, errSelectionPassed) {
 		return PageInfo{}, nil
 	}
@@ -80,14 +80,14 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 }
 
 // openUserTab is NewCompanionPage, in turn (awaitSelectionTurn), with the
-// tab placed at index in tab order (negative appends it) and given label.
-// It answers errSelectionPassed, opening nothing, when the turn's pane
-// detached before the tab was added.
-func (m *Manager) openUserTab(ctx context.Context, access Access, turn *selectionTurn, address, label string, index int) (PageInfo, error) {
+// tab placed at index in tab order (negative appends it), given label and
+// taking claim (createPageAt). It answers errSelectionPassed, opening
+// nothing, when the turn's pane detached before the tab was added.
+func (m *Manager) openUserTab(ctx context.Context, access Access, turn *selectionTurn, address, label string, index int, claim *tabClaim) (PageInfo, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return PageInfo{}, fmt.Errorf("browser: invalid caller scope")
 	}
-	p, err := m.createPageAt(ctx, access, turn, index)
+	p, err := m.createPageAt(ctx, access, turn, index, claim)
 	var onTab *shownOnTab
 	if errors.Is(err, errClosedWhileCreating) || errors.As(err, &onTab) {
 		return PageInfo{}, nil

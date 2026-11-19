@@ -11,6 +11,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/quota"
+	"agent-overflow/internal/browser/threadlife"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -99,10 +101,12 @@ type Manager struct {
 	// by page id. They belong to their thread's tab set but hold no engine
 	// resource. Guarded by mu.
 	suspended map[string]*suspendedPage
-	// recordsCleared counts forgetAllRecords calls, so a suspension that
-	// began before its browser was turned off or its site data cleared
-	// records nothing. Guarded by mu.
-	recordsCleared uint64
+	// forgetting counts the forgets of every page running (beginForget),
+	// during which no page becomes a record. Guarded by mu.
+	forgetting int
+	// lives holds the thread lifetimes pane actions are bound to
+	// (thread_life.go); retired in a hold of mu.
+	lives threadlife.Registry
 	// pending holds the pages being created, and the failed creations of
 	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
 	pending map[string]*pendingPage
@@ -162,7 +166,7 @@ type Manager struct {
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
-	artifactBytes  atomic.Int64
+	artifactBytes  *quota.Pool
 	// downloadsMu guards threadDownloads, each thread's downloads as its
 	// pane lists them (downloads_thread.go). It is taken inside m.mu and
 	// inside a page's downloadMu, and never held around either.
@@ -230,10 +234,6 @@ type Manager struct {
 	// infoRead is a test seam: called between a read of a page's info (or
 	// history state) and its commit. Production leaves it nil.
 	infoRead func(p *managedPage)
-	// reopenRefused is a test seam: called between a reopen's refused open
-	// and its putting the closed tab back (ReopenClosedTab). Production
-	// leaves it nil.
-	reopenRefused func()
 	// selectionGapTimer starts one wait of a selection for its predecessors
 	// (awaitSelectionTurn) and answers its expiry and stop. A test seam;
 	// production uses newSelectionGapTimer.
@@ -241,9 +241,13 @@ type Manager struct {
 	// selectionAdmitted is a test seam run between a selection's admission
 	// and its commit (awaitSelectionTurn). Production leaves it nil.
 	selectionAdmitted func(sel Selection)
-	// reopenPopped is a test seam run between a reopen's pop of its closed
-	// tab and the tab's add (ReopenClosedTab). Production leaves it nil.
-	reopenPopped func()
+	// reopenRead is a test seam run between a reopen's read of its closed
+	// tab and the tab's admission (ReopenClosedTab). Production leaves it
+	// nil.
+	reopenRead func()
+	// switchWritten is a test seam run between a jar switch's write of its
+	// saved copy and its commit (SetJar). Production leaves it nil.
+	switchWritten func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -369,14 +373,17 @@ type managedPage struct {
 	// downloadMu.
 	downloadsEnded bool
 	downloadSeq    uint64
-	downloads      []DownloadInfo
-	downloadWait   chan struct{}
-	assetMu        sync.Mutex
-	inventories    map[string]AssetInventory
-	assetOrder     []string
-	nodeMu         sync.Mutex
-	nodeRefs       map[string]nodeReference
-	nodeOrder      []string
+	// downloadSettles counts the entries that settled
+	// (DownloadInfo.settled). Guarded by downloadMu.
+	downloadSettles uint64
+	downloads       []DownloadInfo
+	downloadWait    chan struct{}
+	assetMu         sync.Mutex
+	inventories     map[string]AssetInventory
+	assetOrder      []string
+	nodeMu          sync.Mutex
+	nodeRefs        map[string]nodeReference
+	nodeOrder       []string
 	// find is written only by a find transition, which holds mu (find.go);
 	// findMu guards it for readers. findMu may be held around the Manager's
 	// mu, never taken inside it. ends are the find ends submitted and not
@@ -429,6 +436,7 @@ func (p *managedPage) attach(driver pageDriver) {
 
 func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
+		artifactBytes: quota.NewPool("browser artifacts", maxArtifactRootBytes),
 		config:        config,
 		profileDir:    filepath.Join(configDir, browserProfileDir),
 		scopes:        make(map[string]*jarScope),

@@ -19,7 +19,8 @@ const (
 	downloadStateCanceled  = "canceled"
 )
 
-// maxPageDownloads bounds one page's download log.
+// maxPageDownloads bounds the settled entries of one page's download log
+// (trimDownloadsLocked).
 const maxPageDownloads = 100
 
 // downloadsToArtifacts is whether this Manager's finished downloads stay
@@ -115,7 +116,11 @@ func (m *Manager) pageForDownload(id string) (*managedPage, *jarScope) {
 	return nil, nil
 }
 
+// signalDownloadLocked wakes the waiters on the page's log after an entry
+// was added or settled, once the log is trimmed: a pointer to an entry is
+// invalid from here. The caller holds p.downloadMu.
 func (p *managedPage) signalDownloadLocked() {
+	p.trimDownloadsLocked()
 	close(p.downloadWait)
 	p.downloadWait = make(chan struct{})
 }

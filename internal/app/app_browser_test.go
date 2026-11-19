@@ -501,9 +501,9 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 }
 
 // Every companion action but stop opens a page for a thread that has none
-// (stop acts only on a live page, StopCompanionLoad). A thread
-// deleted between the action's row read and the page's registration gets
-// that page closed.
+// (stop acts only on a live page, StopCompanionLoad). A thread deleted
+// between the action's row read and the page's registration gets that page
+// closed by the delete, and the action answers the close.
 func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 	t.Parallel()
 	calls := map[string]func(ctx context.Context, app *App, threadID string) error{
@@ -548,8 +548,8 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 			if !fired.Load() {
 				t.Fatalf("the action opened no page (%v)", err)
 			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				t.Fatalf("the action returned %v, want the deleted thread's missing row", err)
+			if !errors.Is(err, appbrowser.ErrThreadClosed) {
+				t.Fatalf("the action returned %v, want the thread's close", err)
 			}
 			if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
 				t.Fatalf("the deleted thread owns %d browser pages", len(pages))
@@ -558,8 +558,8 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 	}
 }
 
-// A page that opens after the delete's last close finds the row gone, or
-// kept as a holder, and closes itself.
+// A companion action on a deleted thread, or one kept as a holder, answers
+// its missing row; one bound before the delete opens nothing after it.
 func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 	t.Parallel()
 	for _, held := range []bool{false, true} {
@@ -569,11 +569,13 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			app.browser.manager = manager
 			t.Cleanup(func() { _ = manager.Close() })
 			var threadID string
+			bound, end := context.Background(), func() error { return nil }
 			if held {
 				threadID, _ = seedHeldSource(t, app, 1)
 			} else {
 				thread := makeWorkspaceThread(t, app, "thread-companion-late")
 				threadID = thread.ID
+				bound, end = manager.BindThread(context.Background(), threadID)
 				if err := app.deleteThread(threadID); err != nil {
 					t.Fatal(err)
 				}
@@ -581,54 +583,55 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			if _, err := app.BrowserCompanionDo(context.Background(), threadID, BrowserCompanionAction{Kind: "new"}); !errors.Is(err, sql.ErrNoRows) {
 				t.Fatalf("a companion action on the deleted thread returned %v, want its missing row", err)
 			}
+			if held {
+				return
+			}
 			// An action that read the row before the delete opens its page
 			// after the delete's last close.
 			access := appbrowser.Access{ThreadID: threadID, Workspace: t.TempDir()}
-			if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
-				t.Fatal(err)
-			}
-			if err := app.closeBrowserPagesIfThreadDeleted(threadID); !errors.Is(err, sql.ErrNoRows) {
-				t.Fatalf("the recheck returned %v, want the missing row", err)
+			if _, err := manager.NewCompanionPage(bound, access, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
+				t.Fatalf("the action bound before the delete opened a tab: %v", err)
 			}
 			if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
 				t.Fatalf("the deleted thread owns %d browser pages", len(pages))
+			}
+			if err := end(); !errors.Is(err, appbrowser.ErrThreadClosed) {
+				t.Fatalf("the action ended with %v, want the thread's close", err)
 			}
 		})
 	}
 }
 
-// A companion action that began before an archive or a handoff closed the
-// thread's pages closes the page it opens after that close, though the
-// thread's row is still there; an action begun after the close keeps its
-// page.
+// A companion action bound before an archive or a handoff closed the
+// thread's pages opens no page after that close, though the thread's row is
+// still there, and its end leaves alone the tab an action bound after the
+// close opened.
 func TestACompanionActionOverlappingAPageCloseLeavesNoPage(t *testing.T) {
 	t.Parallel()
 	app, manager := newBrowserTestApp(t)
 	thread, access := browserTestThread(t, app, "thread-companion-retired")
 
-	stale := app.beginCompanionAction(thread.ID)
+	staleCtx, endStale := manager.BindThread(context.Background(), thread.ID)
 	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
+	laterCtx, endLater := manager.BindThread(context.Background(), thread.ID)
+	fresh, err := manager.NewCompanionPage(laterCtx, access, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.endCompanionAction(stale); !errors.Is(err, errCompanionThreadClosed) {
-		t.Fatalf("the stale action ended with %v, want errCompanionThreadClosed", err)
+	if _, err := manager.NewCompanionPage(staleCtx, access, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
+		t.Fatalf("the stale action's new tab answered %v, want ErrThreadClosed", err)
 	}
-	if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
-		t.Fatalf("the closed thread owns %d browser pages", len(pages))
+	if err := endStale(); !errors.Is(err, appbrowser.ErrThreadClosed) {
+		t.Fatalf("the stale action ended with %v, want ErrThreadClosed", err)
 	}
-
-	later := app.beginCompanionAction(thread.ID)
-	if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
-		t.Fatal(err)
+	if err := endLater(); err != nil {
+		t.Fatalf("an action bound after the close ended with %v", err)
 	}
-	if err := app.endCompanionAction(later); err != nil {
-		t.Fatalf("an action begun after the close ended with %v", err)
-	}
-	if pages := manager.CompanionState(access).Pages; len(pages) != 1 {
-		t.Fatalf("an action begun after the close left %d pages, want its own", len(pages))
+	pages := manager.CompanionState(access).Pages
+	if len(pages) != 1 || pages[0].ID != fresh.ID {
+		t.Fatalf("the thread has tabs %+v, want only the one the later action opened", pages)
 	}
 }
 

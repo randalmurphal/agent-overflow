@@ -104,10 +104,7 @@ func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFil
 			rec = recordOf(tab.live, tab.live.cachedInfo())
 		}
 		if rec != nil {
-			file.Pages = append(file.Pages, pageRecord{
-				ID: rec.id, URL: rec.url, Title: rec.title, Label: rec.label,
-				Order: rec.tabOrder, Created: rec.createdAt, LastUsed: rec.lastUse,
-			})
+			file.Pages = append(file.Pages, rec.saved())
 		}
 	}
 	if session, ok := m.sessions[threadID]; ok {
@@ -115,6 +112,14 @@ func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFil
 		file.Jar = savedJar(jarKindOf(session))
 	}
 	return file
+}
+
+// saved is the record as its thread's saved copy holds it.
+func (r *suspendedPage) saved() pageRecord {
+	return pageRecord{
+		ID: r.id, URL: r.url, Title: r.title, Label: r.label,
+		Order: r.tabOrder, Created: r.createdAt, LastUsed: r.lastUse,
+	}
 }
 
 // writeRecordFile writes one thread's saved copy, or removes it when it

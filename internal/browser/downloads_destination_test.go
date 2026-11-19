@@ -2,6 +2,7 @@ package browser
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -331,6 +332,68 @@ func TestARunningArtifactDownloadIsNotOpenable(t *testing.T) {
 	}
 }
 
+// A file an earlier release left in the workspace's old download directory,
+// where its engine wrote running downloads beside finished ones, does not
+// open: only the finished files AO moved since are granted.
+func TestAnEarlierReleasesDownloadFileIsNotOpenable(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	workspace, err := canonicalRoot(access.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(manager.artifactRoot, "downloads", jarDirName(workspace))
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"4b1f6a2e-guid.crdownload", "report.pdf"} {
+		path := filepath.Join(old, name)
+		if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.authorizeFile(access, path); err == nil {
+			t.Fatalf("%s in an earlier release's download directory opens", name)
+		}
+	}
+	startDownload(t, manager, access, page, "done.bin", 10)
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if _, err := manager.authorizeFile(access, item.path); err != nil {
+		t.Fatalf("a finished download does not open: %v", err)
+	}
+}
+
+// A finished artifact download its workspace's directory cannot take fails
+// with nothing kept: the engine's file goes and neither quota holds its
+// bytes, so repeated failures use up no allowance.
+func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	authority := authorityOf(t, manager, access)
+	if err := os.RemoveAll(authority.downloadDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authority.downloadDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceBefore, artifactsBefore := authority.downloadBytes.Used(), manager.artifactBytes.Used()
+	startDownload(t, manager, access, page, "report.pdf", 5)
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if item.State != downloadStateFailed {
+		t.Fatalf("the download lists as %+v, want failed", item.ThreadDownload)
+	}
+	manager.mu.Lock()
+	var engineDir string
+	for _, scope := range manager.scopes {
+		engineDir = scope.downloadDir
+	}
+	manager.mu.Unlock()
+	awaitRemoved(t, filepath.Join(engineDir, filepath.Base(item.engineID)))
+	if got := authority.downloadBytes.Used(); got != workspaceBefore {
+		t.Fatalf("the workspace holds %d download bytes, want %d", got, workspaceBefore)
+	}
+	if got := manager.artifactBytes.Used(); got != artifactsBefore {
+		t.Fatalf("the artifact root holds %d bytes, want %d", got, artifactsBefore)
+	}
+}
+
 // With neither hard links nor a no-replace rename, or a staging directory
 // on another filesystem, the download fails on its row with the reason:
 // nothing is copied, nothing appears in Downloads, and the staged file goes.
@@ -550,15 +613,16 @@ func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	}
 }
 
-// The prune removes only names AO stages under, and their companions: an
-// old file of the user's or another program's in the staging folder stays.
+// The prune removes only names AO stages under, exactly, and their engine's
+// sidecars: an old file of the user's or another program's in the staging
+// folder stays, a name that merely starts like a staged one included.
 func TestTheStagingPruneLeavesFilesAONeverStaged(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), stagingDirName)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-2 * stagedLeftoverAge)
-	names := []string{"notes.txt", "dl-report", "dl-2", "dl-0123456789ab-7", "dl-0123456789ab-8.wkdownload", "dl-p42-3"}
+	names := []string{"notes.txt", "dl-report", "dl-2", "dl-0123456789ab-7", "dl-0123456789ab-8.wkdownload", "dl-p42-3", "dl-2.user-notes.txt", "dl-3.wkdownload.bak"}
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -569,8 +633,27 @@ func TestTheStagingPruneLeavesFilesAONeverStaged(t *testing.T) {
 		}
 	}
 	stagingPrune(t, dir)
-	if got := folderNames(t, dir); !slices.Equal(got, []string{"dl-report", "notes.txt"}) {
+	if got := folderNames(t, dir); !slices.Equal(got, []string{"dl-2.user-notes.txt", "dl-3.wkdownload.bak", "dl-report", "notes.txt"}) {
 		t.Fatalf("after the prune the staging folder holds %q, want only the files AO never staged", got)
+	}
+}
+
+// Releasing a staged file removes it and its engine's sidecar, and nothing
+// else beside it that starts with its name.
+func TestReleasingAStagedFileRemovesOnlyItAndItsSidecar(t *testing.T) {
+	downloads := testDownloadsFolder(t)
+	staged, err := stageDownload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{staged, staged + ".wkdownload", staged + ".user-notes.txt"} {
+		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releaseStaged(staged)
+	if got := folderNames(t, filepath.Join(downloads, stagingDirName)); !slices.Equal(got, []string{filepath.Base(staged) + ".user-notes.txt"}) {
+		t.Fatalf("after the release the staging folder holds %q, want only the file AO never staged", got)
 	}
 }
 
@@ -810,12 +893,12 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, mode.saving)
 			frame := paneHandle(manager, access, page.ID)
 
-			authorityOf(t, manager, access).downloadBytes.Store(maxWorkspaceDownloadBytes)
+			authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 			admitted := manager.downloadStarted(downloadStart{Frame: frame, ID: "quota", SuggestedName: "q.bin"})
 			if admitted == artifacts {
 				t.Fatalf("a download past the workspace quota was admitted: %v", admitted)
 			}
-			authorityOf(t, manager, access).downloadBytes.Store(0)
+			authorityOf(t, manager, access).downloadBytes.SetUsed(0)
 
 			if !manager.downloadStarted(downloadStart{Frame: frame, ID: "big", SuggestedName: "big.bin"}) {
 				t.Fatal("a download within quota was refused")
@@ -949,7 +1032,7 @@ func TestForgettingBrowsingLeavesTheDownloadsFolderAlone(t *testing.T) {
 				}
 			}},
 			{"jar switch", func(t *testing.T, manager *Manager, access Access) {
-				if err := manager.SetJar(access, JarPrivate); err != nil {
+				if err := manager.SetJar(context.Background(), access, JarPrivate); err != nil {
 					t.Fatal(err)
 				}
 			}},

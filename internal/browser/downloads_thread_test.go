@@ -298,7 +298,7 @@ func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSavi
 	if _, err := os.Stat(partial); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the partial file is still there: %v", err)
 	}
-	if reserved := p.authority.downloadBytes.Load(); reserved != 0 {
+	if reserved := p.authority.downloadBytes.Used(); reserved != 0 {
 		t.Fatalf("the workspace still reserves %d bytes", reserved)
 	}
 	// A second cancel of a settled download is no error and changes nothing.
@@ -520,11 +520,11 @@ func TestAFinishAfterARefusedCancelListsNoRefusal(t *testing.T) {
 func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
 	manager, log, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	frame := paneHandle(manager, access, page.ID)
-	authorityOf(t, manager, access).downloadBytes.Store(maxWorkspaceDownloadBytes)
+	authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	if manager.downloadStarted(downloadStart{Frame: frame, ID: "over", SuggestedName: "over.bin"}) {
 		t.Fatal("a download over quota was kept")
 	}
-	authorityOf(t, manager, access).downloadBytes.Store(0)
+	authorityOf(t, manager, access).downloadBytes.SetUsed(0)
 	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "kept", SuggestedName: "kept.bin"}) {
 		t.Fatal("a download within quota was refused")
 	}
@@ -574,8 +574,8 @@ func TestClearingDownloadsKeepsRunningOnesAndFiles(t *testing.T) {
 	}
 }
 
-// The thread's list keeps maxThreadDownloads, dropping the oldest settled
-// download first and never a running one.
+// The thread's list keeps maxThreadDownloads settled downloads, dropping the
+// one that settled first, and every running one.
 func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
@@ -584,69 +584,96 @@ func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
 		startDownload(t, manager, access, page, fmt.Sprintf("f%d.txt", i), 1)
 	}
 	listed := threadDownloads(manager, access)
-	if len(listed) != maxThreadDownloads {
-		t.Fatalf("the thread lists %d downloads, want %d", len(listed), maxThreadDownloads)
+	if len(listed) != maxThreadDownloads+1 {
+		t.Fatalf("the thread lists %d downloads, want %d settled and the running one", len(listed), maxThreadDownloads)
 	}
-	if listed[0].Name != fmt.Sprintf("f%d.txt", maxThreadDownloads+4) {
-		t.Fatalf("the newest download is %q, want it first", listed[0].Name)
+	if listed[0].Name != fmt.Sprintf("f%d.txt", maxThreadDownloads+4) || listed[1].Name != fmt.Sprintf("f%d.txt", maxThreadDownloads+3) {
+		t.Fatalf("the newest downloads are %q, %q, want them first", listed[0].Name, listed[1].Name)
 	}
 	if last := listed[len(listed)-1]; last.Name != "first.bin" || last.State != downloadStateRunning {
 		t.Fatalf("the oldest listed is %+v, want the running first download kept", last)
 	}
 }
 
-// A download that starts while the list's bound is all running downloads
-// is listed and takes its progress; the list is back within its bound once
-// one settles.
-func TestADownloadPastABoundOfRunningOnesIsListed(t *testing.T) {
+// A download that settles while maxThreadDownloads others run stays listed
+// for its announcement, and once the others settle it is the one dropped,
+// the first to settle, though it started last.
+func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
+	manager, log, access, page := newDownloadManager(t)
+	frame := paneHandle(manager, access, page.ID)
+	start := func(id string) {
+		if !manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) {
+			t.Fatalf("%s was refused", id)
+		}
+	}
+	for i := 1; i <= maxThreadDownloads; i++ {
+		start(fmt.Sprintf("dl-%d", i))
+	}
+	start("newest")
+	log.take()
+	manager.downloadProgress(downloadProgress{ID: "newest", State: downloadCanceled, Error: "the server closed the connection"})
+	if len(threadDownloads(manager, access)) != maxThreadDownloads+1 {
+		t.Fatalf("the list holds %d downloads, want every one", len(threadDownloads(manager, access)))
+	}
+	var announced *ThreadDownload
+	for _, event := range log.take() {
+		if event.Kind == "download" {
+			announced = event.Download
+		}
+	}
+	if announced == nil {
+		t.Fatal("the settled download was not announced")
+	}
+	if _, err := manager.threadDownload(access.ThreadID, announced.ID); err != nil {
+		t.Fatalf("the announced download is not in the list: %v", err)
+	}
+
+	for i := 1; i <= maxThreadDownloads; i++ {
+		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadCanceled, Error: "stopped"})
+	}
+	listed := threadDownloads(manager, access)
+	if len(listed) != maxThreadDownloads {
+		t.Fatalf("the list holds %d downloads, want %d", len(listed), maxThreadDownloads)
+	}
+	for _, item := range listed {
+		if item.Name == "newest.bin" {
+			t.Fatal("the download that settled first is still listed")
+		}
+	}
+}
+
+// A page's log keeps maxPageDownloads settled entries once a burst
+// settles, the ones that settled last, whatever order they started in.
+func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
-	for i := 0; i <= maxThreadDownloads; i++ {
+	total := maxPageDownloads + 10
+	for i := range total {
 		id := fmt.Sprintf("dl-%d", i)
-		manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"})
+		if !manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) {
+			t.Fatalf("%s was refused", id)
+		}
 	}
-	newest := fmt.Sprintf("dl-%d", maxThreadDownloads)
-	manager.downloadProgress(downloadProgress{ID: newest, Received: 7, Total: 10, State: downloadInProgress})
-	listed := threadDownloads(manager, access)
-	if len(listed) != maxThreadDownloads+1 || listed[0].Name != newest+".bin" || listed[0].ReceivedBytes != 7 {
-		t.Fatalf("with %d running downloads the list holds %d, newest %+v; want all of them, the newest %s with its progress", maxThreadDownloads+1, len(listed), listed[0], newest)
+	// The first to start settles last.
+	for i := total - 1; i >= 0; i-- {
+		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadCanceled, Error: "stopped"})
 	}
-	manager.downloadProgress(downloadProgress{ID: "dl-0", State: downloadCanceled, Error: "the server closed the connection"})
-	if listed := threadDownloads(manager, access); len(listed) != maxThreadDownloads || listed[0].Name != newest+".bin" {
-		t.Fatalf("after one settled the list holds %d downloads, newest %q; want %d and the newest", len(listed), listed[0].Name, maxThreadDownloads)
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A reservation the workspace quota refuses leaves the quota as it was,
-// however the other jars of the workspace reserve and release meanwhile.
-func TestARefusedReservationNeverKeepsWorkspaceBytes(t *testing.T) {
-	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { _ = manager.Close() })
-	authority := &workspaceAuthority{}
-	// One reservation's room left.
-	start := int64(maxWorkspaceDownloadBytes - maxDownloadBytes)
-	authority.downloadBytes.Store(start)
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Go(func() {
-			for range 5000 {
-				entry := DownloadInfo{reservedBytes: maxDownloadBytes}
-				manager.reserveDownloadLocked(authority, &entry)
-				if entry.reservedBytes > 0 {
-					authority.downloadBytes.Add(-entry.reservedBytes)
-					manager.settleArtifactReservation(entry.reservedBytes, 0)
-				}
-			}
-		})
+	p.downloadMu.Lock()
+	defer p.downloadMu.Unlock()
+	if len(p.downloads) != maxPageDownloads {
+		t.Fatalf("the page logs %d downloads, want %d", len(p.downloads), maxPageDownloads)
 	}
-	wg.Wait()
-	if got := authority.downloadBytes.Load(); got != start {
-		t.Fatalf("after every reservation ended the workspace holds %d bytes, want %d", got, start)
+	if p.downloadLocked("dl-0") == nil || p.downloadLocked(fmt.Sprintf("dl-%d", total-1)) != nil {
+		t.Fatal("the log dropped a download that settled last, or kept one that settled first")
 	}
 }
 
-// A page's own log drops its oldest settled entries past maxPageDownloads,
-// never a running one, whose progress must still find it.
+// A page's own log keeps maxPageDownloads settled entries and every running
+// one, whose progress must still find it.
 func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
@@ -662,8 +689,8 @@ func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries := tool.([]DownloadInfo)
-	if len(entries) != maxPageDownloads || entries[0].ID != "running" || entries[0].Bytes != 5 {
-		t.Fatalf("the page log holds %d entries starting %+v, want %d with the running one first and current", len(entries), entries[0], maxPageDownloads)
+	if len(entries) != maxPageDownloads+1 || entries[0].ID != "running" || entries[0].Bytes != 5 {
+		t.Fatalf("the page log holds %d entries starting %+v, want %d settled and the running one first and current", len(entries), entries[0], maxPageDownloads)
 	}
 }
 
@@ -869,7 +896,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, log, access, page := newDownloadManager(t)
-			baseline := manager.artifactBytes.Load()
+			baseline := manager.artifactBytes.Used()
 			authority := authorityOf(t, manager, access)
 			manager.mu.Lock()
 			p, _ := manager.livePageLocked(page.ID)
@@ -888,8 +915,8 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			if entries != 0 {
 				t.Fatalf("the page that left holds %d download entries", entries)
 			}
-			if authority.downloadBytes.Load() != 0 || manager.artifactBytes.Load() != baseline {
-				t.Fatalf("the workspace reserves %d bytes and the artifacts %d over %d", authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
+			if authority.downloadBytes.Used() != 0 || manager.artifactBytes.Used() != baseline {
+				t.Fatalf("the workspace reserves %d bytes and the artifacts %d over %d", authority.downloadBytes.Used(), manager.artifactBytes.Used(), baseline)
 			}
 			if n := countKind(log.take(), "download"); n != 0 {
 				t.Fatalf("the refused download was announced %d times", n)
@@ -1038,7 +1065,7 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, saving)
-			baseline := manager.artifactBytes.Load()
+			baseline := manager.artifactBytes.Used()
 			startDownload(t, manager, access, page, "held.bin", 4096, "hold")
 			authority := authorityOf(t, manager, access)
 			item, err := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
@@ -1060,11 +1087,11 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 				profile.mu.Unlock()
 				_, statErr := os.Stat(partial)
 				partialGone := errors.Is(statErr, os.ErrNotExist)
-				if !running && settled && !held && partialGone && authority.downloadBytes.Load() == 0 && manager.artifactBytes.Load() == baseline {
+				if !running && settled && !held && partialGone && authority.downloadBytes.Used() == 0 && manager.artifactBytes.Used() == baseline {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, its partial file is gone: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, partialGone, authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
+					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, its partial file is gone: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, partialGone, authority.downloadBytes.Used(), manager.artifactBytes.Used(), baseline)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -1075,5 +1102,43 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 				}
 			}
 		})
+	}
+}
+
+// A download's address is bounded as it starts, before its row or a parked
+// popup download keeps it, and so is the source a blank page lists in its
+// place.
+func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
+	manager, _, access, _ := newDownloadManager(t)
+	blank, err := manager.NewCompanionPage(t.Context(), access, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := paneHandle(manager, access, blank.ID)
+	long := "data:text/plain," + strings.Repeat("a", 1<<20)
+	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "listed", URL: long, SuggestedName: "a.txt"}) {
+		t.Fatal("the download was refused")
+	}
+	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.downloadMu.Lock()
+	logged := len(p.downloads[0].URL)
+	p.downloadMu.Unlock()
+	if logged > maxBrowserURLBytes {
+		t.Fatalf("the page's log keeps a %d-byte address", logged)
+	}
+	if source := len(threadDownloads(manager, access)[0].Source); source > maxBrowserURLBytes {
+		t.Fatalf("the thread's list keeps a %d-byte source", source)
+	}
+	if !manager.downloadStarted(downloadStart{Frame: "popup", Popup: "popup", ID: "parked", URL: long, SuggestedName: "b.txt", Openers: []string{frame}}) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.parkMu.Lock()
+	parked := len(manager.parked["popup"].downloads[0].start.URL)
+	manager.parkMu.Unlock()
+	if parked > maxBrowserURLBytes {
+		t.Fatalf("a parked download keeps a %d-byte address", parked)
 	}
 }

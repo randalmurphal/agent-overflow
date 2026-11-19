@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/store"
@@ -144,15 +143,12 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	flight := a.beginCompanionAction(threadID)
+	ctx, end := a.browser.manager.BindThread(ctx, strings.TrimSpace(threadID))
 	access, err := a.browserAccess(threadID)
 	if err == nil {
 		err = a.browser.manager.RevealPageFile(ctx, access, pageID)
 	}
-	if endErr := a.endCompanionAction(flight); endErr != nil {
-		return endErr
-	}
-	return err
+	return errors.Join(err, end())
 }
 
 // BrowserCompanionRecentAddresses answers the addresses the thread's pages
@@ -178,10 +174,12 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
 	}
-	flight := a.beginCompanionAction(threadID)
+	// Bound before the row is read: a close of the thread's pages after the
+	// read leaves this action nothing to open (BindThread).
+	ctx, end := a.browser.manager.BindThread(ctx, strings.TrimSpace(threadID))
 	access, err := a.browserAccess(threadID)
 	if err != nil {
-		return appbrowser.CompanionEvent{}, errors.Join(err, a.endCompanionAction(flight))
+		return appbrowser.CompanionEvent{}, errors.Join(err, end())
 	}
 	// newPage is the page a "new" opened, named in the answer so the client
 	// that asked can tell its own tab from one an agent opened meanwhile.
@@ -234,7 +232,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
 	case "jar":
 		// Closes the live tabs and reopens their addresses in the new jar.
-		err = a.browser.manager.SetJar(access, action.Jar)
+		err = a.browser.manager.SetJar(ctx, access, action.Jar)
 	case "download-cancel":
 		err = a.browser.manager.CancelThreadDownload(access, action.DownloadID)
 	case "download-reveal":
@@ -260,10 +258,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}
-	// An action on a thread with no page opens one, and a failed action can
-	// still have opened it.
-	if endErr := a.endCompanionAction(flight); endErr != nil {
-		return appbrowser.CompanionEvent{}, endErr
+	if endErr := end(); endErr != nil {
+		return appbrowser.CompanionEvent{}, errors.Join(err, endErr)
 	}
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
@@ -299,102 +295,16 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if a.browser.manager == nil {
 		return appbrowser.FindState{}, fmt.Errorf("browser manager unavailable")
 	}
-	flight := a.beginCompanionAction(threadID)
+	ctx, end := a.browser.manager.BindThread(ctx, strings.TrimSpace(threadID))
 	access, err := a.browserAccess(threadID)
 	if err != nil {
-		return appbrowser.FindState{}, errors.Join(err, a.endCompanionAction(flight))
+		return appbrowser.FindState{}, errors.Join(err, end())
 	}
 	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Seq)
-	// An open or start on a suspended page restores it.
-	if endErr := a.endCompanionAction(flight); endErr != nil {
-		return appbrowser.FindState{}, endErr
+	if endErr := end(); endErr != nil {
+		return appbrowser.FindState{}, errors.Join(err, endErr)
 	}
 	return state, err
-}
-
-// companionFlight is the companion actions running on one thread: how many,
-// and how many times the thread's pages were closed while any ran.
-type companionFlight struct {
-	running int
-	closes  uint64
-}
-
-// companionAction is one companion action in flight: its thread's flight
-// and the closes it counted as it began.
-type companionAction struct {
-	threadID string
-	flight   *companionFlight
-	closes   uint64
-}
-
-// errCompanionThreadClosed answers a companion action whose thread's pages
-// were closed (a delete, an archive, a handoff) while it ran.
-var errCompanionThreadClosed = errors.New("browser: the thread's pages were closed while the action ran")
-
-// beginCompanionAction counts a companion action on the thread from before
-// it reads the thread's row, so a close of the thread's pages that runs
-// before the action reaches the Manager is one the action sees at its end.
-func (a *App) beginCompanionAction(threadID string) companionAction {
-	threadID = strings.TrimSpace(threadID)
-	b := &a.browser
-	b.companionMu.Lock()
-	defer b.companionMu.Unlock()
-	if b.companionFlights == nil {
-		b.companionFlights = make(map[string]*companionFlight)
-	}
-	flight := b.companionFlights[threadID]
-	if flight == nil {
-		flight = &companionFlight{}
-		b.companionFlights[threadID] = flight
-	}
-	flight.running++
-	return companionAction{threadID: threadID, flight: flight, closes: flight.closes}
-}
-
-// endCompanionAction ends a companion action. A page it opened or restored
-// after its thread's pages were closed, or after its row went, is closed
-// again: the close that retired the thread already ran.
-func (a *App) endCompanionAction(action companionAction) error {
-	b := &a.browser
-	b.companionMu.Lock()
-	action.flight.running--
-	retired := action.flight.closes != action.closes
-	if action.flight.running == 0 {
-		delete(b.companionFlights, action.threadID)
-	}
-	b.companionMu.Unlock()
-	// A deleted thread answers its missing row, its pages closed.
-	if err := a.closeBrowserPagesIfThreadDeleted(action.threadID); err != nil || !retired {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return errors.Join(errCompanionThreadClosed, a.browser.manager.CloseThread(ctx, action.threadID))
-}
-
-// retireCompanionActions marks the companion actions running on the thread
-// as begun before a close of its pages.
-func (a *App) retireCompanionActions(threadID string) {
-	b := &a.browser
-	b.companionMu.Lock()
-	if flight := b.companionFlights[threadID]; flight != nil {
-		flight.closes++
-	}
-	b.companionMu.Unlock()
-}
-
-// closeBrowserPagesIfThreadDeleted closes the pages of a thread deleted while
-// a companion action ran. A delete closes the thread's pages again
-// after its row drops or becomes a holder, so a row read after the open that
-// still finds the thread leaves the page to that close.
-func (a *App) closeBrowserPagesIfThreadDeleted(threadID string) error {
-	_, err := a.browserThread(threadID)
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return errors.Join(err, a.browser.manager.CloseThread(ctx, threadID))
 }
 
 // browserThread reads a thread that can hold browser pages. A deleted thread

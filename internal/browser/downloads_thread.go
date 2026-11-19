@@ -23,8 +23,9 @@ import (
 // (CloseThread); clearing it never deletes a file.
 
 const (
-	// maxThreadDownloads bounds the thread's list. A running download is
-	// never dropped to make room (trim), and the quotas bound how many run.
+	// maxThreadDownloads bounds the settled downloads the thread's list
+	// keeps, the most recently settled (trim). A running download is never
+	// dropped, and the quotas bound how many run.
 	maxThreadDownloads = 20
 	// downloadPushInterval is the most often byte progress pushes a thread's
 	// state.
@@ -58,11 +59,16 @@ type threadDownload struct {
 	workspace string
 	path      string
 	file      os.FileInfo
+	// settled numbers the item among its list's settled ones in the order
+	// they settled, from 1; zero while it runs.
+	settled uint64
 }
 
 type threadDownloadList struct {
 	// items is newest first.
 	items []*threadDownload
+	// settles counts the items that settled (threadDownload.settled).
+	settles uint64
 	// push is the pending coalesced state push, nil for none.
 	push *time.Timer
 }
@@ -76,12 +82,30 @@ func (l *threadDownloadList) find(id string) *threadDownload {
 	return nil
 }
 
-// trim drops the oldest settled items beyond maxThreadDownloads.
+// trim numbers the items that settled since it last ran and drops the
+// earliest settled beyond maxThreadDownloads, so the item that just settled
+// stays for its announcement however many run.
 func (l *threadDownloadList) trim() {
-	for i := len(l.items) - 1; i >= 0 && len(l.items) > maxThreadDownloads; i-- {
-		if l.items[i].State != downloadStateRunning {
-			l.items = append(l.items[:i], l.items[i+1:]...)
+	settled := 0
+	for i := len(l.items) - 1; i >= 0; i-- {
+		item := l.items[i]
+		if item.State == downloadStateRunning {
+			continue
 		}
+		if item.settled == 0 {
+			l.settles++
+			item.settled = l.settles
+		}
+		settled++
+	}
+	for ; settled > maxThreadDownloads; settled-- {
+		earliest := -1
+		for i, item := range l.items {
+			if item.settled != 0 && (earliest < 0 || item.settled < l.items[earliest].settled) {
+				earliest = i
+			}
+		}
+		l.items = append(l.items[:earliest], l.items[earliest+1:]...)
 	}
 }
 
@@ -128,9 +152,8 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 	}
 	item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
 	item.Openable = item.State == downloadStateCompleted && item.file != nil && downloadOpensInPage(item.Name)
-	// After the item takes its state: a new running item is never the one
-	// dropped, and a list over its bound while every item ran shrinks as
-	// one settles.
+	// After the item takes its state, which numbers it as the newest
+	// settled when it just settled.
 	list.trim()
 	note := downloadNote{threadID: p.owner}
 	// The user's own cancel is not announced; a finish that beat it is.
@@ -380,7 +403,7 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if !downloadOpensInPage(item.path) {
 		return PageInfo{}, fmt.Errorf("browser: a browser tab does not show %s; use Show in folder", item.Name)
 	}
-	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1)
+	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1, nil)
 	if errors.Is(err, errSelectionPassed) {
 		return PageInfo{}, nil
 	}
@@ -405,9 +428,15 @@ func downloadOpensInPage(name string) bool {
 // opens from one is a finished download AO moved there.
 const jarDownloadingDir = "downloading"
 
+// workspaceDownloadsDir is the artifact subtree of the workspaces' finished
+// downloads. No earlier release wrote to it: one wrote its engine's running
+// downloads, and the files it finished, into "downloads", whose files
+// authorizeFile never grants and the artifact prune removes with age.
+const workspaceDownloadsDir = "finished"
+
 // workspaceDownloadDir is the directory a workspace's finished downloads
 // are kept in (workspaceAuthority.downloadDir), for the canonical
 // workspace.
 func (m *Manager) workspaceDownloadDir(workspace string) string {
-	return filepath.Join(m.artifactRoot, "downloads", jarDirName(workspace))
+	return filepath.Join(m.artifactRoot, workspaceDownloadsDir, jarDirName(workspace))
 }

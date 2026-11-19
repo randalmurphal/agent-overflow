@@ -126,12 +126,46 @@ func (m *Manager) goLife(fn func()) bool {
 	return true
 }
 
+// tabClaim is what a new tab takes besides its slot: a closed tab it
+// reopens (ReopenClosedTab), taken off the thread's closed-tab history in the
+// hold that adds the tab.
+type tabClaim struct {
+	stack *closedTabs
+	tab   closedTab
+}
+
+// errReopenForgotten refuses a reopened tab whose closed-tab history was
+// forgotten, or whose entry another reopen took, after the reopen read it.
+var errReopenForgotten = errors.New("browser: the closed tab was forgotten")
+
+// admitTabLocked is a new tab's admission in the hold that adds it and
+// again in the startMu hold that creates its page: the thread lifetime ctx
+// is bound to still holds (BindThread), and a reopened tab's history is
+// still the thread's, which a clear's forget, a jar switch and the thread's
+// close replace. The caller holds m.mu.
+func (m *Manager) admitTabLocked(ctx context.Context, owner string, claim *tabClaim) error {
+	if err := m.lifeAdmitsLocked(ctx, owner); err != nil {
+		return err
+	}
+	if claim != nil && m.closedTabs[owner] != claim.stack {
+		return errReopenForgotten
+	}
+	return nil
+}
+
+// admissionRefused is a tab admitTabLocked refused where its page is
+// created.
+type admissionRefused struct{ err error }
+
+func (e *admissionRefused) Error() string { return e.err.Error() }
+func (e *admissionRefused) Unwrap() error { return e.err }
+
 // createPage creates a page for access's thread. Its tab appears at once,
 // creating, and the call returns once the engine page exists. A tab closed
 // meanwhile answers errClosedWhileCreating. This is an agent's tab, opened
 // behind the selection; the user's go through createPageAt.
 func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
-	return m.createPageAt(ctx, access, nil, -1)
+	return m.createPageAt(ctx, access, nil, -1, nil)
 }
 
 // createPageAt is createPage with the new tab placed at index in the
@@ -140,8 +174,9 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 // is selected and its companion shown before the engine is asked, in the
 // hold that adds the tab and commits the turn, and a failure stays on the
 // tab. A turn whose pane detached meanwhile opens nothing and answers
-// errSelectionPassed. An agent's tab has no turn.
-func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int) (*managedPage, error) {
+// errSelectionPassed. An agent's tab has no turn. claim, when set, is taken in
+// the hold that adds the tab (admitTabLocked).
+func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int, claim *tabClaim) (*managedPage, error) {
 	user := turn != nil
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
@@ -151,7 +186,24 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	defer close(pending.done)
 	owner := access.ThreadID
 
+	admit := func() error {
+		if err := m.admitTabLocked(ctx, owner, claim); err != nil {
+			return &admissionRefused{err: err}
+		}
+		return nil
+	}
 	m.mu.Lock()
+	if err := m.admitTabLocked(ctx, owner, claim); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if claim != nil {
+		if stack := claim.stack; len(stack.tabs) == 0 || stack.tabs[len(stack.tabs)-1] != claim.tab {
+			// Another reopen took it.
+			m.mu.Unlock()
+			return nil, errReopenForgotten
+		}
+	}
 	if user && !m.commitSelectionLocked(turn) {
 		m.mu.Unlock()
 		return nil, errSelectionPassed
@@ -159,6 +211,9 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	if err := m.admitThreadPageLocked(owner); err != nil {
 		m.mu.Unlock()
 		return nil, err
+	}
+	if claim != nil {
+		claim.stack.tabs = claim.stack.tabs[:len(claim.stack.tabs)-1]
 	}
 	if m.pending == nil {
 		m.pending = make(map[string]*pendingPage)
@@ -193,9 +248,12 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	var scope *jarScope
 	var err error
 	var closed bool
+	var refused *admissionRefused
 	for {
 		m.startMu.Lock()
-		scope, err = m.openPageLocked(createCtx, access, p, nil)
+		scope, err = m.openPageLocked(createCtx, access, p, admit)
+		refused = nil
+		errors.As(err, &refused)
 		// One m.mu hold settles the creation against its close flag and its
 		// thread's jar as they are now, so neither a close nor a jar switch can
 		// land between reading them and acting on it.
@@ -216,7 +274,7 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 			delete(m.pending, p.id)
 			delete(scope.creating, p)
 			m.listPageLocked(scope, p)
-		case err != nil && (closed || !user):
+		case err != nil && (closed || !user || refused != nil):
 			delete(m.pending, p.id)
 		case err != nil:
 			pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
@@ -254,10 +312,12 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	m.repairActivePage(owner)
 	m.emitThreadState(owner)
 	m.syncPanePresentation(owner)
-	if closed {
+	switch {
+	case closed:
 		return nil, errClosedWhileCreating
-	}
-	if user {
+	case refused != nil:
+		return nil, refused.err
+	case user:
 		return nil, &shownOnTab{err: err}
 	}
 	return nil, err
@@ -584,18 +644,36 @@ func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
 	return true
 }
 
-// retirePrivateJarLocked ends the thread's use of a private jar once no page
+// retirePrivateJarLocked ends the thread's use of a private jar once no tab
 // of it is live or being created: the thread's next private page opens a new
-// jar, while pages still closing finish in the old one, under its own key.
+// jar, while pages still closing, and popups still being adopted, finish in
+// the old one, under its own key. A popup is listed only while its opener is
+// a tab of the jar (adoptPopup), so one being adopted keeps no tab coming.
 // The caller holds m.mu.
 func (m *Manager) retirePrivateJarLocked(scope *jarScope) {
-	if scope.jar.private == "" || len(scope.pages) > 0 || len(scope.creating) > 0 {
+	if scope.jar.private == "" || len(scope.pages) > 0 {
 		return
+	}
+	for p := range scope.creating {
+		if !m.adoptingLocked(p) {
+			return
+		}
 	}
 	if info, ok := m.sessions[scope.jar.thread]; ok && info.privateJar == scope.jar.private {
 		info.privateJar = ""
 		m.sessions[scope.jar.thread] = info
 	}
+}
+
+// adoptingLocked reports whether p is the page a popup's adoption reserves.
+// The caller holds m.mu.
+func (m *Manager) adoptingLocked(p *managedPage) bool {
+	for _, adopted := range m.adopting {
+		if adopted == p {
+			return true
+		}
+	}
+	return false
 }
 
 // disposeScope disposes a scope releaseScopeLocked unregistered, frees its

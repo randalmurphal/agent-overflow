@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -129,6 +130,103 @@ func TestASwitchSavesItsTabsBeforeTheOldPagesClose(t *testing.T) {
 	release()
 }
 
+// A page that changes its title during every write of a switch's saved copy
+// neither holds the switch back nor, through it, another thread's save: the
+// switch commits the copy it wrote, and the record in memory is the record
+// on disk.
+func TestABusyPageDoesNotHoldASwitch(t *testing.T) {
+	dir := t.TempDir()
+	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	page := openPage(t, manager, access, "https://example.test/busy")
+	handle := paneHandle(manager, access, page.ID)
+	var titles uint64
+	saved := make(chan error, 1)
+	manager.switchWritten = func() {
+		titles++
+		manager.updatePageInfo(handle, "https://example.test/busy", fmt.Sprintf("title %d", titles), titles)
+		if titles == 1 {
+			go func() { saved <- manager.persistThreads([]string{"other"}) }()
+		}
+	}
+	switched := make(chan error, 1)
+	go func() { switched <- manager.SetJar(context.Background(), access, JarThread) }()
+	for _, done := range []chan error{saved, switched} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a busy page's title held the jar switch, or the saves behind it")
+		}
+	}
+	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	if got, want := restarted.CompanionState(access).Pages, manager.CompanionState(access).Pages; len(got) != 1 || len(want) != 1 || got[0].Title != want[0].Title {
+		t.Fatalf("the saved tab %+v is not the switched tab %+v", got, want)
+	}
+}
+
+// Tabs that come and go during a switch's write are the switch's as they
+// are at its commit, in memory and on disk: a tab opened then is switched
+// with the others, a tab closed then is not brought back, and the saved copy
+// a restart loads holds exactly the tabs the switch left.
+func TestTabsChangedDuringASwitchAreSavedAsTheSwitchLeftThem(t *testing.T) {
+	dir := t.TempDir()
+	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	gone := openPage(t, manager, access, "https://example.test/gone")
+	openPage(t, manager, access, "https://example.test/kept")
+	manager.switchWritten = func() {
+		manager.switchWritten = nil
+		openPage(t, manager, access, "https://example.test/new")
+		if err := manager.ClosePage(t.Context(), access, gone.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	setJar(t, manager, access, JarThread)
+	want := []string{"https://example.test/kept", "https://example.test/new"}
+	if got := tabURLs(manager, access); !slices.Equal(got, want) {
+		t.Fatalf("after the switch the tabs are %q, want %q", got, want)
+	}
+	for _, page := range manager.CompanionState(access).Pages {
+		if !page.Suspended {
+			t.Fatalf("tab %+v stayed live in the old jar", page)
+		}
+	}
+	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	if got := tabURLs(restarted, access); !slices.Equal(got, want) || restarted.CompanionState(access).Jar != JarThread {
+		t.Fatalf("the saved copy holds %q in jar %q, want %q in the thread jar", got, restarted.CompanionState(access).Jar, want)
+	}
+}
+
+// A switch whose thread's pages were closed during its write (an archive)
+// commits nothing: the action bound before the close changes no jar.
+func TestASwitchOfAThreadClosedDuringItsWriteCommitsNothing(t *testing.T) {
+	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	openPage(t, manager, access, "https://example.test/")
+	ctx, end := manager.BindThread(context.Background(), access.ThreadID)
+	defer func() { _ = end() }()
+	manager.switchWritten = func() {
+		go func() { _ = manager.CloseThread(context.Background(), access.ThreadID) }()
+		eventually(t, "the close retires the thread", func() bool {
+			manager.mu.Lock()
+			defer manager.mu.Unlock()
+			return manager.lifeAdmitsLocked(ctx, access.ThreadID) != nil
+		})
+	}
+	if err := manager.SetJar(ctx, access, JarThread); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("the switch answered %v, want ErrThreadClosed", err)
+	}
+	if state := manager.CompanionState(access); state.Jar == JarThread {
+		t.Fatal("the switch of a closed thread committed its jar")
+	}
+}
+
 // A switch whose saved copy cannot be written changes nothing: the jar stays,
 // the pages stay live, and a retry writes and switches.
 func TestASwitchThatCannotSaveKeepsTheJarAndThePages(t *testing.T) {
@@ -141,7 +239,7 @@ func TestASwitchThatCannotSaveKeepsTheJarAndThePages(t *testing.T) {
 	if err := os.WriteFile(manager.recordDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.SetJar(access, JarThread); err == nil {
+	if err := manager.SetJar(context.Background(), access, JarThread); err == nil {
 		t.Fatal("a switch whose saved copy failed reported success")
 	}
 	state := manager.CompanionState(access)
@@ -466,7 +564,7 @@ func TestASwitchFencesPopupAdoption(t *testing.T) {
 		engine.mu.Lock()
 		engine.onAttach = nil
 		engine.mu.Unlock()
-		if err := manager.SetJar(access, JarThread); err != nil {
+		if err := manager.SetJar(context.Background(), access, JarThread); err != nil {
 			t.Errorf("switch: %v", err)
 		}
 	}
@@ -498,11 +596,11 @@ func TestSettingTheJarWithNoTabsOnlyApplies(t *testing.T) {
 	if got, ok := findTab(manager, access, page.ID); !ok || got.Suspended {
 		t.Fatalf("re-setting the same jar touched the tab: %+v", got)
 	}
-	if err := manager.SetJar(access, "shared"); err == nil {
+	if err := manager.SetJar(context.Background(), access, "shared"); err == nil {
 		t.Fatal("an unknown jar was accepted")
 	}
 	noProject := Access{ThreadID: "b", Workspace: proj.one}
-	if err := manager.SetJar(noProject, JarProject); err == nil {
+	if err := manager.SetJar(context.Background(), noProject, JarProject); err == nil {
 		t.Fatal("a thread with no project chose the project jar")
 	}
 }
