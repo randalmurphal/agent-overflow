@@ -40,9 +40,6 @@ import (
 // its id, which reselects only when the active tab is gone
 // (repairActivePage), keep arrival order and never wait for a numbered one.
 
-// MountID names one mounted browser pane (AttachPane).
-type MountID string
-
 // Numbered is a command's place in its pane mount's order. Only NewNumbered
 // makes one, so every Numbered has a mount and an epoch and number from 1.
 type Numbered struct {
@@ -88,14 +85,14 @@ var errSelectionPassed = errors.New("browser: the pane this tab action came from
 // the m.mu hold that acts and releases it when done.
 func (m *Manager) awaitTurn(ctx context.Context, access Access, sel Numbered) (*turnorder.Turn, error) {
 	m.mu.Lock()
-	mount, ok := m.panes[string(sel.mount)]
+	mount, ok := m.panes[sel.mount]
 	if !ok || access.tb == nil || mount.owner != access.tb || access.tb.detached.Load() {
 		m.mu.Unlock()
 		return turnorder.PassedTurn(), nil
 	}
 	if mount.order == nil {
 		mount.order = turnorder.New(m.selectionGapTimer)
-		m.panes[string(sel.mount)] = mount
+		m.panes[sel.mount] = mount
 	}
 	order := mount.order
 	m.mu.Unlock()

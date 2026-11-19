@@ -819,7 +819,7 @@ func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 	popupDownload(manager, engine, "popup", "dl-running", opener)
 	popupDownload(manager, engine, "popup", "dl-done", opener)
 	manager.downloadProgress(progressOf("dl-done", downloadCompleted, 100))
-	manager.removeClosedPage(ids.PageHandle(opener))
+	manager.removeClosedPage(opener)
 	manager.removeClosedPage("popup")
 	for deadline := time.Now().Add(hostedTestDeadline); len(engine.cancels()) == 0; {
 		if time.Now().After(deadline) {
@@ -839,7 +839,7 @@ func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 func TestTheBrowsersCloseDropsParkedDownloads(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
 	popupDownload(manager, engine, "popup", "dl-1", opener)
-	manager.resolveParked("gone", nil, ids.PageHandle(opener))
+	manager.resolveParked("gone", nil, opener)
 	if err := manager.closeBrowser(t.Context()); err != nil {
 		t.Fatal(err)
 	}

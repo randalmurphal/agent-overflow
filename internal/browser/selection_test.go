@@ -98,7 +98,7 @@ func numbered(ctx context.Context, mount string, seq uint64) context.Context {
 // orderStats is what mount's order holds; zero when it has none.
 func orderStats(m *Manager, mount string) turnorder.Stats {
 	m.mu.Lock()
-	order := m.panes[mount].order
+	order := m.panes[MountID(mount)].order
 	m.mu.Unlock()
 	if order == nil {
 		return turnorder.Stats{}
@@ -132,7 +132,7 @@ func assertSelectionsSettled(t *testing.T, m *Manager) {
 	m.mu.Lock()
 	var mounts []string
 	for id := range m.panes {
-		mounts = append(mounts, id)
+		mounts = append(mounts, string(id))
 	}
 	m.mu.Unlock()
 	for _, id := range mounts {
@@ -161,7 +161,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		m, access, ids, oldMount := newSelectionManager(t)
 		// The user clicked b in the old pane; the request is held while the
 		// pane reconnects as a new mount, where the user clicks c.
-		m.DetachPane(oldMount)
+		m.DetachPane(MountID(oldMount))
 		next, err := m.AttachPane(access.Caller())
 		if err != nil {
 			t.Fatal(err)
@@ -368,7 +368,7 @@ func pauseAdmissions(m *Manager, mount string) (admitted chan Numbered, resume c
 // as a pane that reconnected would, and answers what the user then sees.
 func detachAndChooseElsewhere(t *testing.T, m *Manager, access Access, f pairFixture, mount string) (string, int) {
 	t.Helper()
-	m.DetachPane(mount)
+	m.DetachPane(MountID(mount))
 	next, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestADetachBetweenAdmissionAndCommit(t *testing.T) {
 		t.Run(kind.name, func(t *testing.T) {
 			m, access, fixture, mount := newPairManager(t)
 			m.mu.Lock()
-			order := m.panes[mount].order
+			order := m.panes[MountID(mount)].order
 			m.mu.Unlock()
 			admitted, resume := pauseAdmissions(m, mount)
 			done := deliver(func() error {
@@ -473,13 +473,13 @@ func TestADetachDropsTheOutstandingRecord(t *testing.T) {
 	clock.expire(t)
 	mustDeliver(t, third, "number 3")
 	m.mu.Lock()
-	order := m.panes[mount].order
+	order := m.panes[MountID(mount)].order
 	m.mu.Unlock()
 	skipped := order.Stats().Outstanding
 	if skipped != 2 {
 		t.Fatalf("%d numbers outstanding, want 2", skipped)
 	}
-	m.DetachPane(mount)
+	m.DetachPane(MountID(mount))
 	skipped = order.Stats().Outstanding
 	if skipped != 0 {
 		t.Fatalf("the detached mount kept %d outstanding numbers", skipped)
@@ -628,7 +628,7 @@ func TestADetachReleasesWaitingSelections(t *testing.T) {
 		return err
 	})
 	awaitWaiting(t, m, mount, 2)
-	m.DetachPane(mount)
+	m.DetachPane(MountID(mount))
 	mustDeliver(t, second, "number 2")
 	mustDeliver(t, third, "number 3")
 	if got := activeTab(m, access); got != before {

@@ -160,7 +160,7 @@ func (e *hostedEngine) Report(pageID ids.PageHandle, kind webview2host.ReportKin
 		if kind == webview2host.ReportFocusFailed {
 			failure = fmt.Errorf("browser: the page did not take keyboard focus: %s", report.Error)
 		}
-		e.events.PageFocusReported(pageID, report.Mount, report.Intent, failure)
+		e.events.PageFocusReported(pageID, MountID(report.Mount), report.Intent, failure)
 	case webview2host.ReportDownload:
 		e.acceptDownload(pageID, detail)
 	case webview2host.ReportPopup:

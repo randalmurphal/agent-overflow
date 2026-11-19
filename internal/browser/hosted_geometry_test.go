@@ -259,7 +259,7 @@ func TestPanePlacementCarriesTheReportSequence(t *testing.T) {
 	mount := f.attach(t)
 	rect := paneRect(800, 600)
 	rect.Seq = 9
-	if err := f.manager.SetPaneRect(mount, rect); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -269,7 +269,7 @@ func TestPanePlacementCarriesTheReportSequence(t *testing.T) {
 	if len(f.placements) == 0 {
 		t.Fatal("the page was never placed")
 	}
-	if last := f.placements[len(f.placements)-1]; last.Rect.Seq != 9 || last.Mount != mount {
+	if last := f.placements[len(f.placements)-1]; last.Rect.Seq != 9 || last.Mount != MountID(mount) {
 		t.Fatalf("placement = %+v, want the report's sequence 9 in mount %s", last, mount)
 	}
 }

@@ -844,7 +844,7 @@ func TestTheReaperKeepsThePageAPaneShows(t *testing.T) {
 		t.Fatal(err)
 	}
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
@@ -855,7 +855,7 @@ func TestTheReaperKeepsThePageAPaneShows(t *testing.T) {
 	}
 
 	rect.Visible = false
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
@@ -881,7 +881,7 @@ func TestTheReaperKeepsAPageSelectedDuringItsSuspension(t *testing.T) {
 		t.Fatal(err)
 	}
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatal(err)
 	}
 	release := engine.holdInfo()

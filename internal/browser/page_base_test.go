@@ -96,7 +96,7 @@ func newBaseManager(t *testing.T, showFirst bool) (*Manager, *baseLog, Access, s
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
-	if err := manager.SetPaneRect(mount.ID, baseRect(basePane)); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), baseRect(basePane)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	return manager, log, access, first.ID, second.ID, mount.ID
@@ -196,13 +196,13 @@ func TestAPaneColorChangeReachesHiddenBlankPages(t *testing.T) {
 	waitForBase(t, log, second, basePane)
 	_, documentBases := log.of(first)
 	_, blankBases := log.of(second)
-	if err := manager.SetPaneRect(mountID, baseRect(basePane)); err != nil {
+	if err := manager.SetPaneRect(MountID(mountID), baseRect(basePane)); err != nil {
 		t.Fatal(err)
 	}
 	if _, n := log.of(second); n != blankBases {
 		t.Fatalf("an unchanged pane color told the engine %d more bases", n-blankBases)
 	}
-	if err := manager.SetPaneRect(mountID, baseRect(basePaneDark)); err != nil {
+	if err := manager.SetPaneRect(MountID(mountID), baseRect(basePaneDark)); err != nil {
 		t.Fatal(err)
 	}
 	waitForBase(t, log, second, basePaneDark)
@@ -210,7 +210,7 @@ func TestAPaneColorChangeReachesHiddenBlankPages(t *testing.T) {
 		t.Fatalf("a pane color change told the document page %d bases", n-documentBases)
 	}
 	// A rect that is no color keeps the last one.
-	if err := manager.SetPaneRect(mountID, baseRect("transparent")); err != nil {
+	if err := manager.SetPaneRect(MountID(mountID), baseRect("transparent")); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := log.of(second); got != basePaneDark {
@@ -228,13 +228,13 @@ func TestThePresentingPanesColorIsTheBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.SetPaneRect(later.ID, baseRect(basePaneDark)); err != nil {
+	if err := manager.SetPaneRect(MountID(later.ID), baseRect(basePaneDark)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := log.of(handle); got != basePane {
 		t.Fatalf("a mount that does not present changed the base to %q", got)
 	}
-	manager.DetachPane(mountID)
+	manager.DetachPane(MountID(mountID))
 	waitForBase(t, log, handle, basePaneDark)
 }
 
@@ -334,7 +334,7 @@ func TestANewTabIsNotShownBeforeItsFirstBase(t *testing.T) {
 	}()
 	receiveWithin(t, entered, "the new tab's first base to be applied")
 	reported := make(chan error, 1)
-	go func() { reported <- manager.SetPaneRect(mountID, baseRect(basePane)) }()
+	go func() { reported <- manager.SetPaneRect(MountID(mountID), baseRect(basePane)) }()
 	time.Sleep(200 * time.Millisecond)
 	for _, event := range log.snapshot() {
 		if handle, ok := strings.CutPrefix(event, "show:"); ok && !slices.Contains(known, handle) {
@@ -354,7 +354,7 @@ func TestANewTabIsNotShownBeforeItsFirstBase(t *testing.T) {
 func TestARestoredPageTakesItsBaseBeforeItShows(t *testing.T) {
 	manager, log, access, _, secondID, mountID := newBaseManager(t, true)
 	suspendTab(t, manager, access, secondID)
-	if err := manager.SetPaneRect(mountID, baseRect(basePaneDark)); err != nil {
+	if err := manager.SetPaneRect(MountID(mountID), baseRect(basePaneDark)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)); err != nil {

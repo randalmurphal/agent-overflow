@@ -192,7 +192,7 @@ func TestAFocusIntentNeverReachesATabASwitchLeft(t *testing.T) {
 	switched := make(chan error, 1)
 	go func() { switched <- manager.ActivateCompanionPage(t.Context(), access, PageID(firstID)) }()
 	<-held
-	if err := manager.FocusCompanionPage(access, mount, PageID(secondID), 1); err != nil {
+	if err := manager.FocusCompanionPage(access, MountID(mount), PageID(secondID), 1); err != nil {
 		t.Fatalf("focus: %v", err)
 	}
 	close(release)

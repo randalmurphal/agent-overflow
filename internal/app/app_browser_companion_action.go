@@ -117,7 +117,7 @@ type companionCommand struct {
 	place    appbrowser.Numbered
 	numbered bool
 	// mount and intent name a page focus intent (focus kinds).
-	mount  string
+	mount  appbrowser.MountID
 	intent uint64
 	// consent is a jar switch's: confirmed when the user agreed that it
 	// closes the live tabs, otherwise refused while a tab is live. Set for
@@ -140,7 +140,7 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 		return companionCommand{}, fmt.Errorf("browser: unsupported companion action %q", truncateKind(action.Kind))
 	}
 	page := strings.TrimSpace(action.PageID)
-	mount := strings.TrimSpace(action.Mount)
+	mount := appbrowser.MountID(strings.TrimSpace(action.Mount))
 	refuse := func(why string) (companionCommand, error) {
 		return companionCommand{}, fmt.Errorf("%w: %s %s", errCompanionActionShape, name, why)
 	}
@@ -168,7 +168,7 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 		}
 		cmd.mount, cmd.intent = mount, action.Intent
 	case spec.target == targetActive || (spec.selects && (mount != "" || action.Select != 0 || action.Epoch != 0)):
-		place, err := appbrowser.NewNumbered(appbrowser.MountID(mount), action.Epoch, action.Select)
+		place, err := appbrowser.NewNumbered(mount, action.Epoch, action.Select)
 		if err != nil {
 			return companionCommand{}, fmt.Errorf("%w: %s: %w", errCompanionActionShape, name, err)
 		}

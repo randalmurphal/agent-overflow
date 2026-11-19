@@ -156,7 +156,7 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 	applied := make(chan string, 8)
 	manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	select {
@@ -200,7 +200,7 @@ func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 		{X: 1, Y: 1, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: false},
 		{X: 1, Y: 1, Width: 0, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true},
 	} {
-		if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+		if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 			t.Fatalf("set pane rect: %v", err)
 		}
 		for _, call := range engine.take() {
@@ -234,7 +234,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	var got []PanePlacement
 	engine.onBounds = func(placement PanePlacement) { got = append(got, placement) }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	if len(got) == 0 {
@@ -256,7 +256,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	engine.take()
 	clipped := rect
 	clipped.ClipX, clipped.ClipY, clipped.ClipWidth, clipped.ClipHeight = 10, 20, 800, 0.5
-	if err := manager.SetPaneRect(mount.ID, clipped); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), clipped); err != nil {
 		t.Fatalf("set clipped pane rect: %v", err)
 	}
 	for _, call := range engine.take() {
@@ -275,7 +275,7 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 	}
 	mount := attachSizedPane(t, manager, engine, access)
 
-	manager.DetachPane(mount)
+	manager.DetachPane(MountID(mount))
 	var hidden bool
 	for _, call := range engine.take() {
 		if call == "hide:"+secondHandle {
@@ -302,7 +302,7 @@ func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, 
 		t.Fatalf("attach pane: %v", err)
 	}
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	if got := <-applied; ThreadID(got) != access.ThreadID {
@@ -366,7 +366,7 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 		manager.syncPanePresentation(access.ThreadID)
 	}()
 	<-entered
-	manager.DetachPane(mount)
+	manager.DetachPane(MountID(mount))
 	close(release)
 	<-done
 	last := ""

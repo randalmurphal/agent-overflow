@@ -22,7 +22,7 @@ func TestPaneResizeLaysOutOnlyThePresentedPage(t *testing.T) {
 	mount := f.attach(t)
 	hidden := f.pages[0]
 	before := len(hidden.viewports)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -40,7 +40,7 @@ func TestPaneResizeLaysOutOnlyThePresentedPage(t *testing.T) {
 func TestALaggingPageTakesTheViewportBeforeAToolOperation(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -64,7 +64,7 @@ func TestALaggingPageTakesTheViewportBeforeAToolOperation(t *testing.T) {
 
 	// A page that cannot take the size fails the operation instead of
 	// answering at the wrong size.
-	if err := f.manager.SetPaneRect(mount, paneRect(900, 700)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(900, 700)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 900, 700)
@@ -85,7 +85,7 @@ func TestALaggingPageTakesTheViewportBeforeAToolOperation(t *testing.T) {
 func TestAResizeBetweenLookupAndLockIsAppliedBeforeTheOperation(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -111,7 +111,7 @@ func TestAResizeBetweenLookupAndLockIsAppliedBeforeTheOperation(t *testing.T) {
 		page.mu.Unlock()
 		t.Fatalf("the screenshot never waited on the page lock: %v", <-done)
 	}
-	if err := f.manager.SetPaneRect(mount, paneRect(900, 700)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(900, 700)); err != nil {
 		page.mu.Unlock()
 		t.Fatalf("set pane rect: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestAResizeBetweenLookupAndLockIsAppliedBeforeTheOperation(t *testing.T) {
 func TestAResizeDuringTheApplyIsAppliedBeforeTheOperation(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -143,7 +143,7 @@ func TestAResizeDuringTheApplyIsAppliedBeforeTheOperation(t *testing.T) {
 	hidden.mu.Lock()
 	hidden.viewportHook = func(w, h int) {
 		if w == 800 && h == 600 {
-			once.Do(func() { resized <- f.manager.SetPaneRect(mount, paneRect(900, 700)) })
+			once.Do(func() { resized <- f.manager.SetPaneRect(MountID(mount), paneRect(900, 700)) })
 		}
 	}
 	hidden.mu.Unlock()
@@ -170,7 +170,7 @@ func TestAResizeDuringTheApplyIsAppliedBeforeTheOperation(t *testing.T) {
 func TestASelectedPageShowsOnceAnOperationLaysItOut(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -245,7 +245,7 @@ func TestASelectedPageShowsOnceAnOperationLaysItOut(t *testing.T) {
 func TestALayoutLandingAsThePassHidesThePageStillShowsIt(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -392,7 +392,7 @@ func TestALaggingPageIsLaidOutBeforeItIsShown(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPaneFollowFixture(t)
 			mount := f.attach(t)
-			if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+			if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 				t.Fatalf("set pane rect: %v", err)
 			}
 			f.awaitActiveAt(t, 800, 600)
@@ -464,7 +464,7 @@ func TestAPageThatRefusesTheSizeIsStillShown(t *testing.T) {
 	f.pages[1].mu.Unlock()
 	mount := f.attach(t)
 	f.engine.take()
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitFollowIdle(t)
@@ -508,7 +508,7 @@ func TestADrainPushesStateOnceWhenItSettles(t *testing.T) {
 		}
 		break
 	}
-	if err := f.manager.SetPaneRect(mount, paneRect(700, 500)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(700, 500)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	select {
@@ -519,7 +519,7 @@ func TestADrainPushesStateOnceWhenItSettles(t *testing.T) {
 	// Two more sizes while the first pass is held: one more pass applies
 	// the newest.
 	for _, w := range []float64{750, 800} {
-		if err := f.manager.SetPaneRect(mount, paneRect(w, 600)); err != nil {
+		if err := f.manager.SetPaneRect(MountID(mount), paneRect(w, 600)); err != nil {
 			t.Fatalf("set pane rect: %v", err)
 		}
 	}

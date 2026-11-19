@@ -24,6 +24,14 @@ type PageID string
 // trim is the page id without the spaces around it a caller may send.
 func (id PageID) trim() PageID { return PageID(strings.TrimSpace(string(id))) }
 
+// MountID names one mounted browser pane (AttachPane): the mount a pane
+// detaches and reports rects with, which orders its commands
+// (Numbered.Mount) and owns its find and focus intents.
+type MountID string
+
+// trim is the mount id without the spaces around it a caller may send.
+func (id MountID) trim() MountID { return MountID(strings.TrimSpace(string(id))) }
+
 // DownloadKey names one download in its thread's list (ThreadDownload.ID),
 // which the pane's download actions pass back. The Manager numbers it as the
 // download is admitted; it is not the engine's id (downloadID).

@@ -68,7 +68,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			}
 			report := func(mount string, rect PaneRect) {
 				t.Helper()
-				if err := manager.SetPaneRect(mount, rect); err != nil {
+				if err := manager.SetPaneRect(MountID(mount), rect); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -141,7 +141,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			report(a, first)
 			expect("the presenter back on screen", a, first)
 
-			manager.DetachPane(a)
+			manager.DetachPane(MountID(a))
 			resized()
 			expect("the presenter detached", b, second)
 			a = attach()

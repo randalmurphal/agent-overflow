@@ -166,7 +166,7 @@ func TestAShowWhosePaneDetachesBeforeItsCommitDoesNothing(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("the show was never admitted")
 		}
-		m.DetachPane(mount.ID)
+		m.DetachPane(MountID(mount.ID))
 		close(resume)
 		mustShow(t, await(t, shown, "the show"), ShowPassed, "")
 		if got := tabIDs(m, access); !slices.Equal(got, before) || shownState(m, access) {
@@ -208,7 +208,7 @@ func TestAShowWhosePaneDetachesDuringASwitchDoesNothing(t *testing.T) {
 			}
 			// Time for the show to reach the gate, which it may not pass.
 			time.Sleep(50 * time.Millisecond)
-			manager.DetachPane(mount.ID)
+			manager.DetachPane(MountID(mount.ID))
 		}
 		err = manager.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed)
 		manager.switchWritten = nil

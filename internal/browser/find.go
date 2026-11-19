@@ -97,7 +97,7 @@ type findSession struct {
 	gen uint64
 	// owner and seq are the pane mount and sequence the running search
 	// belongs to; "" and 0 when none runs.
-	owner string
+	owner MountID
 	seq   uint64
 	// doc is the document epoch the search started on.
 	doc uint64
@@ -118,7 +118,7 @@ func (s *findSession) ownedBy(owner findOwner) bool {
 
 // heldThrough reports whether the running search is the mount's, at or
 // below the bound.
-func (s *findSession) heldThrough(mount string, through uint64) bool {
+func (s *findSession) heldThrough(mount MountID, through uint64) bool {
 	return s.active && s.owner == mount && s.seq <= through
 }
 
@@ -133,7 +133,7 @@ func (s *findSession) disown() { s.active, s.owner, s.seq = false, "", 0 }
 // findOwner is who a find action is for: a pane mount and a sequence, which
 // a stop reads as its bound.
 type findOwner struct {
-	mount string
+	mount MountID
 	seq   uint64
 }
 
@@ -153,7 +153,7 @@ type findEnds struct {
 func (s *findSession) identify(p *managedPage, state FindState) FindState {
 	state.PageID = string(p.id)
 	state.Incarnation = p.incarnation
-	state.Mount = s.owner
+	state.Mount = string(s.owner)
 	state.Seq = s.seq
 	state.Document = s.doc
 	state.Session = s.gen
@@ -207,7 +207,7 @@ func findSeed(selection string) string {
 // stop never restore a suspended page, and stop answers for a page that is
 // gone as for one with no search, still ending the mount's search on the
 // thread's other pages.
-func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, query, mount string, seq uint64) (FindState, error) {
+func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, query string, mount MountID, seq uint64) (FindState, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case FindStart, FindNext, FindPrev, FindStop:
@@ -220,7 +220,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, 
 	if pageID = pageID.trim(); pageID == "" {
 		return FindState{}, fmt.Errorf("browser: page id is required")
 	}
-	if mount = strings.TrimSpace(mount); mount == "" {
+	if mount = mount.trim(); mount == "" {
 		return FindState{}, fmt.Errorf("browser: a find belongs to a mounted browser pane")
 	}
 	if seq == 0 {
@@ -395,7 +395,7 @@ func (m *Manager) paneMountedLocked(threadID ThreadID) bool {
 }
 
 // mountOf reports whether mount is a pane mount of the thread's.
-func (m *Manager) mountOf(threadID ThreadID, mount string) bool {
+func (m *Manager) mountOf(threadID ThreadID, mount MountID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pane, ok := m.panes[mount]

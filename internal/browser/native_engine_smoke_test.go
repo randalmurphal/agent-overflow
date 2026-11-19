@@ -300,7 +300,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
 	// seq numbers the starts, as the pane's provider does.
 	var seq uint64
 	find := func(kind, query string) FindState {
@@ -308,7 +308,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 		if kind == FindStart {
 			seq++
 		}
-		state, err := manager.Find(ctx, access, PageID(page.ID), kind, query, mount.ID, seq)
+		state, err := manager.Find(ctx, access, PageID(page.ID), kind, query, MountID(mount.ID), seq)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
@@ -475,7 +475,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
 	eval := func(what, expression string) any {
 		t.Helper()
 		value, _, err := manager.Evaluate(ctx, access, PageID(page.ID), expression, nil)
@@ -588,7 +588,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		if kind == FindStart {
 			seq++
 		}
-		state, err := manager.Find(ctx, access, PageID(page.ID), kind, query, mount.ID, seq)
+		state, err := manager.Find(ctx, access, PageID(page.ID), kind, query, MountID(mount.ID), seq)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}

@@ -130,7 +130,7 @@ type Manager struct {
 	persistMu sync.Mutex
 	idleTimer *time.Timer
 	eventSink func(CompanionEvent)
-	panes     map[string]paneMount
+	panes     map[MountID]paneMount
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq uint64
 	// recentGen is the forget generation of the threads' recent addresses,
@@ -444,7 +444,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		admissions:     popupadmit.New(orderSlack),
 		disposing:      make(map[jarKey]chan struct{}),
 		recordDir:      filepath.Join(configDir, browserPageRecordDir),
-		panes:          make(map[string]paneMount),
+		panes:          make(map[MountID]paneMount),
 		threads:        make(map[ThreadID]*threadBrowser),
 		viewportSyncs:  make(map[ThreadID]*viewportSync),
 		artifactRoot:   filepath.Join(configDir, "browser-artifacts"),

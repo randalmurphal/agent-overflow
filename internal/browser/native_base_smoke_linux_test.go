@@ -73,10 +73,10 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
 	pane := color.RGBA{0x1e, 0x1e, 0x2e, 0xff}
 	white := color.RGBA{0xff, 0xff, 0xff, 0xff}
-	if err := manager.SetPaneRect(mount.ID, PaneRect{
+	if err := manager.SetPaneRect(MountID(mount.ID), PaneRect{
 		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
 		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
 	}); err != nil {
@@ -195,8 +195,8 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
-	if err := manager.SetPaneRect(mount.ID, PaneRect{
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
+	if err := manager.SetPaneRect(MountID(mount.ID), PaneRect{
 		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
 		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
 	}); err != nil {
@@ -301,8 +301,8 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
-	if err := manager.SetPaneRect(mount.ID, PaneRect{
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
+	if err := manager.SetPaneRect(MountID(mount.ID), PaneRect{
 		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
 		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
 	}); err != nil {
@@ -419,7 +419,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 	}
 	place := func(r PaneRect) {
 		t.Helper()
-		if err := manager.SetPaneRect(mount.ID, r); err != nil {
+		if err := manager.SetPaneRect(MountID(mount.ID), r); err != nil {
 			t.Fatalf("place the pane: %v", err)
 		}
 	}
@@ -477,7 +477,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 	activate(page.ID)
 	shows("1-switched-back", blue, true)
 
-	manager.DetachPane(mount.ID)
+	manager.DetachPane(MountID(mount.ID))
 	shows("2-pane-detached", blue, false)
 	if mount, err = manager.AttachPane(access.Caller()); err != nil {
 		t.Fatalf("mount the pane again: %v", err)

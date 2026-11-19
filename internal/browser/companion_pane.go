@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/browser/turnorder"
@@ -83,7 +82,7 @@ type PanePlacement struct {
 	PageWidth  int
 	PageHeight int
 	Scale      float64
-	Mount      string
+	Mount      MountID
 }
 
 // placePage fits a page of pageW x pageH CSS pixels inside a host rect with
@@ -167,7 +166,7 @@ func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
 	if len(state.Pages) == 0 {
 		return CompanionSubscription{}, fmt.Errorf("browser: thread has no open pages")
 	}
-	id := uuid.NewString()
+	id := MountID(uuid.NewString())
 	m.mu.Lock()
 	tb := m.currentLocked(caller.ThreadID)
 	if tb == nil {
@@ -181,7 +180,7 @@ func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
 	m.paneSeq++
 	m.panes[id] = paneMount{threadID: caller.ThreadID, owner: tb, seq: m.paneSeq}
 	m.mu.Unlock()
-	return CompanionSubscription{ID: id, State: state}, nil
+	return CompanionSubscription{ID: string(id), State: state}, nil
 }
 
 // DetachPane releases one pane mount. The presentation sync runs so an engine
@@ -189,7 +188,7 @@ func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
 // replaced the pane. A mount that remains for the thread becomes the
 // presenter if this one was it (presenterLocked) and hands the pages its
 // own size and color.
-func (m *Manager) DetachPane(id string) {
+func (m *Manager) DetachPane(id MountID) {
 	m.mu.Lock()
 	mount, ok := m.panes[id]
 	resize := false
@@ -245,7 +244,7 @@ func (m *Manager) notePaneSizeLocked(tb *threadBrowser, rect PaneRect) bool {
 // coalesces to one report per changed frame, so this path must stay cheap: a
 // bookkeeping write, one presentation sync, and while no viewport is pinned a
 // latest-wins request for the pages to take the rect's size (viewport.go).
-func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
+func (m *Manager) SetPaneRect(id MountID, rect PaneRect) error {
 	if rect.Width < 0 || rect.Height < 0 {
 		rect.Width, rect.Height = 0, 0
 	}
@@ -260,18 +259,18 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 		rect.ClipWidth, rect.ClipHeight = 0, 0
 	}
 	m.mu.Lock()
-	mount, ok := m.panes[strings.TrimSpace(id)]
+	mount, ok := m.panes[id.trim()]
 	resize := false
 	var recolor []*managedPage
 	if ok {
 		mount.rect = rect
 		mount.hasRect = true
-		m.panes[strings.TrimSpace(id)] = mount
+		m.panes[id.trim()] = mount
 		// The size is tracked whether or not the rect is paintable: a drag
 		// hides the view and the page must already be at the new size when
 		// the drop shows it again. Only the presenter's rect sizes the pages
 		// and colors their blank bases.
-		if presenter, _, _ := m.presenterLocked(mount.owner); presenter == strings.TrimSpace(id) {
+		if presenter, _, _ := m.presenterLocked(mount.owner); presenter == id.trim() {
 			resize = m.notePaneSizeLocked(mount.owner, rect)
 			recolor = m.notePaneColorLocked(mount.owner, rect)
 		}
@@ -306,8 +305,8 @@ func paneCanShow(mount paneMount) bool {
 // detaches, through a hidden or off-screen spell (a drag, a compact screen),
 // and a mount attached later never takes it. Only a mount the host window
 // attached exists here (BrowserCompanionPaneAttach). The caller holds m.mu.
-func (m *Manager) presenterLocked(tb *threadBrowser) (string, PaneRect, bool) {
-	id := ""
+func (m *Manager) presenterLocked(tb *threadBrowser) (MountID, PaneRect, bool) {
+	var id MountID
 	var mount paneMount
 	if tb == nil {
 		return "", PaneRect{}, false

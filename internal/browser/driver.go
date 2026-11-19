@@ -675,7 +675,7 @@ type engineEvents struct {
 	// hosted engine does: the launcher moves focus after the directive.
 	// mount and intent name the focus intent; err nil means the page took
 	// the keyboard.
-	PageFocusReported func(handle ids.PageHandle, mount string, intent uint64, err error)
+	PageFocusReported func(handle ids.PageHandle, mount MountID, intent uint64, err error)
 }
 
 // KeyPress is what an in-process engine gathers about a key press besides

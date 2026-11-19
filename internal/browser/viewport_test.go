@@ -169,7 +169,7 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 
 	// A fractional host rect lays the pages out at its whole-pixel floor and
 	// the pane shows them at 1:1: no scaling, page size equals the pane's.
-	if err := f.manager.SetPaneRect(mount, paneRect(800.7, 600.2)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800.7, 600.2)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
@@ -198,7 +198,7 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 		t.Fatalf("a pinned page wider than the pane must scale down: %+v", placement)
 	}
 	awaitStateEvent(t, f.events, func(event CompanionEvent) bool { return event.ViewportSet && event.ViewportWidth == 1000 })
-	if err := f.manager.SetPaneRect(mount, paneRect(900, 700)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(900, 700)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	info = f.session(t)
@@ -226,7 +226,7 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 
 	// Detaching the pane keeps the last size: hidden pages stay where the
 	// user last saw them, so screenshots with the pane closed match.
-	f.manager.DetachPane(mount)
+	f.manager.DetachPane(MountID(mount))
 	info = f.session(t)
 	if info.ViewportW != 900 || info.ViewportH != 700 || info.PaneW != 900 || info.PaneH != 700 {
 		t.Fatalf("detach must keep the last pane size: %+v", info)
@@ -236,7 +236,7 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 func TestPaneBelowTheMinimumLaysOutAtTheMinimumAndScalesDown(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(300, 200)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(300, 200)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, minCompanionWidth, minCompanionHeight)
@@ -258,7 +258,7 @@ func TestPaneResizeAppliesTheLatestSize(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	mount := f.attach(t)
 	for _, size := range [][2]float64{{700, 500}, {640, 480}, {1000, 800}} {
-		if err := f.manager.SetPaneRect(mount, paneRect(size[0], size[1])); err != nil {
+		if err := f.manager.SetPaneRect(MountID(mount), paneRect(size[0], size[1])); err != nil {
 			t.Fatalf("set pane rect: %v", err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestPaneSizeFailureReachesThePane(t *testing.T) {
 	f.pages[1].viewportErr = errors.New("engine refused")
 	f.pages[1].mu.Unlock()
 	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	deadline := time.After(5 * time.Second)
@@ -322,20 +322,20 @@ func TestViewportSetReportsAPageThatRefusesTheSize(t *testing.T) {
 func TestDetachingThePresenterHandsPagesToTheRemainingPane(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	first := f.attach(t)
-	if err := f.manager.SetPaneRect(first, paneRect(800, 600)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(first), paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	f.awaitActiveAt(t, 800, 600)
 
 	second := f.attach(t)
-	if err := f.manager.SetPaneRect(second, paneRect(900, 700)); err != nil {
+	if err := f.manager.SetPaneRect(MountID(second), paneRect(900, 700)); err != nil {
 		t.Fatalf("set second pane rect: %v", err)
 	}
 	if info := f.session(t); info.PaneW != 800 || info.PaneH != 600 {
 		t.Fatalf("a mount that does not present resized the pages: %+v", info)
 	}
 
-	f.manager.DetachPane(first)
+	f.manager.DetachPane(MountID(first))
 	f.awaitActiveAt(t, 900, 700)
 	if info := f.session(t); info.PaneW != 900 || info.PaneH != 700 || info.ViewportW != 900 {
 		t.Fatalf("detach must hand the pages the remaining pane's size: %+v", info)

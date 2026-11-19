@@ -48,7 +48,7 @@ func (e *hostedEngine) FocusPage(handle ids.PageHandle, req focusRequest) (focus
 	if !req.Live() {
 		return focusWithdrawn, nil
 	}
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: string(handle), Mount: req.Mount, Intent: req.Intent}) {
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: string(handle), Mount: string(req.Mount), Intent: req.Intent}) {
 		return focusNotPresented, fmt.Errorf("browser: the pane host could not be asked to focus page %s", handle)
 	}
 	return focusDispatched, nil
@@ -85,7 +85,7 @@ func (e *hostedEngine) SetPageBounds(handle ids.PageHandle, placement PanePlacem
 		CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
 		VW: rect.ViewportWidth, VH: rect.ViewportHeight,
 		DPR:   rect.DevicePixelRatio,
-		Mount: placement.Mount, PageW: placement.PageWidth, PageH: placement.PageHeight,
+		Mount: string(placement.Mount), PageW: placement.PageWidth, PageH: placement.PageHeight,
 		Seq: rect.Seq,
 	})
 	e.syncViewScale(handle)

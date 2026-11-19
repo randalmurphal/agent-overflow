@@ -68,7 +68,7 @@ func TestFocusCompanionPageFocusesThePresentedPage(t *testing.T) {
 	if calls := focusCalls(w.e.recordingPaneHost); !slices.Equal(calls, []string{"focus:" + w.handle(w.a, w.aPage)}) {
 		t.Fatalf("focus requests %v, want thread a's presented page alone", calls)
 	}
-	want := CompanionEvent{Kind: "focus", ThreadID: string(w.a.ThreadID), Mount: w.aMount, FocusIntent: 1}
+	want := CompanionEvent{Kind: "focus", ThreadID: string(w.a.ThreadID), Mount: string(w.aMount), FocusIntent: 1}
 	if got := events.all(); len(got) != 1 || got[0].Kind != want.Kind || got[0].ThreadID != want.ThreadID ||
 		got[0].Mount != want.Mount || got[0].FocusIntent != want.FocusIntent || got[0].Error != "" {
 		t.Fatalf("focus events %+v, want %+v", got, want)
@@ -461,7 +461,7 @@ func TestFocusCompanionPageReportsTheEnginesRefusal(t *testing.T) {
 		t.Fatalf("focus: %v", err)
 	}
 	got := events.all()
-	if len(got) != 1 || got[0].Mount != w.aMount || got[0].FocusIntent != 3 ||
+	if len(got) != 1 || MountID(got[0].Mount) != w.aMount || got[0].FocusIntent != 3 ||
 		!strings.Contains(got[0].Error, "view refused") || !strings.Contains(got[0].Error, w.aPage) {
 		t.Fatalf("refused focus events %+v", got)
 	}

@@ -216,12 +216,12 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 			visible := false
 			_, _ = manager.Visibility(context.Background(), access, &visible, "")
 		}
-		manager.DetachPane(mount.ID)
+		manager.DetachPane(appbrowser.MountID(mount.ID))
 	}()
 	// A native page with no mounted UI pane is deliberately parked at 1x1.
 	// Give the diagnostic a deterministic CSS rect so its capture remains
 	// meaningful even when a shell driver, rather than the frontend, invokes it.
-	if err := manager.SetPaneRect(mount.ID, appbrowser.PaneRect{
+	if err := manager.SetPaneRect(appbrowser.MountID(mount.ID), appbrowser.PaneRect{
 		X: 20, Y: 80, Width: 900, Height: 600,
 		ClipX: 20, ClipY: 80, ClipWidth: 900, ClipHeight: 600,
 		ViewportWidth: 1280, ViewportHeight: 800,

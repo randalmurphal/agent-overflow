@@ -309,7 +309,7 @@ func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
 	}
 	wantDownloads(t, manager, opener, "dl-1 completed 5")
 	manager.mu.Lock()
-	root := manager.listedPageLocked(ids.PageHandle(opener))
+	root := manager.listedPageLocked(opener)
 	manager.mu.Unlock()
 	path := root.downloads.list()[0].Path
 	if path == "" || path == file {

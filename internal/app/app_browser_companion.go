@@ -126,8 +126,8 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 		return appbrowser.CompanionSubscription{}, err
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(result.ID) }) {
-			a.browser.manager.DetachPane(result.ID)
+		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(appbrowser.MountID(result.ID)) }) {
+			a.browser.manager.DetachPane(appbrowser.MountID(result.ID))
 			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
 		}
 	}
@@ -139,7 +139,7 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) error {
 	transport.ConnStateFromContext(ctx).UnbindCleanup(companionPaneCleanupKey(paneID))
 	if a.browser.manager != nil {
-		a.browser.manager.DetachPane(paneID)
+		a.browser.manager.DetachPane(appbrowser.MountID(paneID))
 	}
 	return nil
 }
@@ -157,7 +157,7 @@ func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) 
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	return a.browser.manager.SetPaneRect(paneID, rect)
+	return a.browser.manager.SetPaneRect(appbrowser.MountID(paneID), rect)
 }
 
 // BrowserCompanionRevealPageFile opens the OS file manager with the local
@@ -360,7 +360,7 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if err != nil {
 		return appbrowser.FindState{}, err
 	}
-	state, err := a.browser.manager.Find(ctx, access, appbrowser.PageID(action.PageID), action.Kind, action.Query, action.Mount, action.Seq)
+	state, err := a.browser.manager.Find(ctx, access, appbrowser.PageID(action.PageID), action.Kind, action.Query, appbrowser.MountID(action.Mount), action.Seq)
 	if endErr := access.End(); endErr != nil {
 		return appbrowser.FindState{}, errors.Join(err, endErr)
 	}

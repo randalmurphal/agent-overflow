@@ -19,7 +19,7 @@ type findFixture struct {
 	manager *Manager
 	access  Access
 	pageID  string
-	mount   string
+	mount   MountID
 	// seq is the sequence of the fixture's newest start: each start takes
 	// the next one, as the pane's provider numbers its starts.
 	seq     uint64
@@ -98,7 +98,7 @@ func (f *findFixture) attach(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
-	f.mount = mount.ID
+	f.mount = MountID(mount.ID)
 }
 
 func (f *findFixture) page(t *testing.T, pageID string) *fakePage {
@@ -180,7 +180,7 @@ func (f *findFixture) noCall(t *testing.T) {
 // showing it closes on.
 func (f *findFixture) wantEnded(t *testing.T, after uint64) FindState {
 	t.Helper()
-	return f.wantEndedFor(t, after, f.mount)
+	return f.wantEndedFor(t, after, string(f.mount))
 }
 
 // wantEndedFor is wantEnded for the find mount owned.
@@ -746,7 +746,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Find(t.Context(), access, PageID(info.ID), "start", "alpha", pane.ID, 1); !errors.Is(err, errFindUnavailable) {
+	if _, err := manager.Find(t.Context(), access, PageID(info.ID), "start", "alpha", MountID(pane.ID), 1); !errors.Is(err, errFindUnavailable) {
 		t.Fatalf("find error = %v, want unavailable", err)
 	}
 
@@ -991,10 +991,10 @@ func TestFindDetachedDuringAnActionEndsItAfter(t *testing.T) {
 		}
 	})
 	got, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", owner, f.nextSeq())
-	if err != nil || got.Foreign || got.Mount != owner {
+	if err != nil || got.Foreign || MountID(got.Mount) != owner {
 		t.Fatalf("start by a mount detached during it = %+v, %v", got, err)
 	}
-	f.wantEndedFor(t, got.Session, owner)
+	f.wantEndedFor(t, got.Session, string(owner))
 	f.wantCall(t, "start alpha")
 	f.wantCall(t, "stop")
 	f.noCall(t)
@@ -1070,24 +1070,24 @@ func TestFindTakenOverByAnotherMount(t *testing.T) {
 	old, oldSeq := f.mount, f.seq
 	f.attach(t)
 	taken := f.find(t, "start", "beta")
-	if end := f.wantEndedFor(t, started.Session, old); end.Session >= taken.Session || end.Seq != oldSeq {
+	if end := f.wantEndedFor(t, started.Session, string(old)); end.Session >= taken.Session || end.Seq != oldSeq {
 		t.Fatalf("takeover end %+v against the new start %d", end, taken.Session)
 	}
 	f.wantCall(t, "start beta")
-	if taken.Mount != f.mount || taken.Seq != f.seq || !taken.Active {
+	if MountID(taken.Mount) != f.mount || taken.Seq != f.seq || !taken.Active {
 		t.Fatalf("start answered %+v", taken)
 	}
 	for _, kind := range []string{"stop", "next"} {
 		// Not the old owner's search: the answer is marked so and names the
 		// search's real owner.
 		state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", old, oldSeq+10)
-		if err != nil || state.Active || !state.Foreign || state.Mount != f.mount || state.Seq != f.seq {
+		if err != nil || state.Active || !state.Foreign || MountID(state.Mount) != f.mount || state.Seq != f.seq {
 			t.Fatalf("%s by the old owner = %+v, %v", kind, state, err)
 		}
 	}
 	f.noCall(t)
 	f.noEvent(t)
-	if state := f.find(t, "next", ""); !state.Active || state.Mount != f.mount {
+	if state := f.find(t, "next", ""); !state.Active || MountID(state.Mount) != f.mount {
 		t.Fatalf("new owner's step after the old owner's stop = %+v", state)
 	}
 	f.wantCall(t, "step")
@@ -1172,7 +1172,7 @@ func TestFindFromAGoneMountTakesNothingOver(t *testing.T) {
 		t.Fatalf("start from a gone mount: %v", err)
 	}
 	for _, kind := range []string{"next", "stop"} {
-		if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", gone, 99); err != nil || !state.Foreign || state.Mount != owner {
+		if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", gone, 99); err != nil || !state.Foreign || MountID(state.Mount) != owner {
 			t.Fatalf("%s from a gone mount = %+v, %v", kind, state, err)
 		}
 	}
@@ -1636,7 +1636,7 @@ func TestFindRefusesAStartNotAboveTheMountsLast(t *testing.T) {
 	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, 1); err != nil || !state.Active {
 		t.Fatalf("another mount's first start = %+v, %v", state, err)
 	}
-	f.wantEndedFor(t, started.Session, first)
+	f.wantEndedFor(t, started.Session, string(first))
 	f.wantCall(t, "start alpha")
 }
 

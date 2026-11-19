@@ -535,7 +535,7 @@ func newFindTableEnv(t *testing.T, base string) *findTableEnv {
 	t.Helper()
 	f := newFindFixture(t, "https://example.test/alpha-beta")
 	e := &findTableEnv{
-		f: f, mounts: map[string]string{"A": f.mount}, incs: map[uint64]uint64{},
+		f: f, mounts: map[string]string{"A": string(f.mount)}, incs: map[uint64]uint64{},
 		actions: map[string]int{}, lastStop: map[string]findStopRecord{},
 		failed: map[string]map[uint64]bool{"A": {}, "B": {}}, undelivered: map[string]uint64{},
 	}
@@ -549,8 +549,8 @@ func newFindTableEnv(t *testing.T, base string) *findTableEnv {
 	}
 	e.shown = f.pageID
 	f.attach(t)
-	e.mounts["B"] = f.mount
-	f.mount = e.mounts["A"]
+	e.mounts["B"] = string(f.mount)
+	f.mount = MountID(e.mounts["A"])
 	e.labels = map[string]string{e.mounts["A"]: "mount-A", e.mounts["B"]: "mount-B"}
 	e.providers = map[string]*findProvider{}
 	for _, label := range []string{"A", "B"} {
@@ -679,7 +679,7 @@ func (e *findTableEnv) run(t *testing.T, p *findProvider, call *findCall) {
 		ctx = expired
 	}
 	e.mu.Unlock()
-	state, err := e.f.manager.Find(ctx, e.f.access, PageID(intent.page), intent.kind, intent.query, p.mount, intent.seq)
+	state, err := e.f.manager.Find(ctx, e.f.access, PageID(intent.page), intent.kind, intent.query, MountID(p.mount), intent.seq)
 	e.settle()
 	var owner findOwner
 	if page, ok := e.livePages()[PageID(intent.page)]; ok {
@@ -800,10 +800,10 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		actions, lastStop := e.actions[string(id)], e.lastStop[string(id)]
 		e.mu.Unlock()
 		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, id) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
-			t.Errorf("%s: %s: a search of %s is left on a page not shown, or for a pane that is gone", name, page, e.labels[session.owner])
+			t.Errorf("%s: %s: a search of %s is left on a page not shown, or for a pane that is gone", name, page, e.labels[string(session.owner)])
 		}
 		if !session.active && (session.owner != "" || session.seq != 0) {
-			t.Errorf("%s: %s: no search runs, yet it names an owner %s/%d", name, page, e.labels[session.owner], session.seq)
+			t.Errorf("%s: %s: no search runs, yet it names an owner %s/%d", name, page, e.labels[string(session.owner)], session.seq)
 		}
 		if engine != (session.active || session.engine) {
 			t.Errorf("%s: %s: engine holds a search %v; the Manager's session active %v, engine owed %v", name, page, engine, session.active, session.engine)
@@ -821,7 +821,7 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 			t.Errorf("%s: provider %s has a stop retry left waiting", name, label)
 		}
 		session, live := sessions[p.page]
-		held := p.showing != 0 && live && session.ownedBy(findOwner{mount: p.mount, seq: p.showing})
+		held := p.showing != 0 && live && session.ownedBy(findOwner{mount: MountID(p.mount), seq: p.showing})
 		shows := p.showing != 0 && !p.pending && p.answered
 		stepping := shows && p.count != 0
 		if shows != held {
@@ -845,7 +845,7 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 			t.Errorf("%s: provider %s's pane shows a cleanup error %v; a stop through %d is undelivered", name, label, p.cleanup, e.undelivered[label])
 		}
 		for id, session := range sessions {
-			if session.active && session.owner == p.mount && (!held || id != p.page) {
+			if session.active && session.owner == MountID(p.mount) && (!held || id != p.page) {
 				t.Errorf("%s: provider %s: the Manager searches %s for its mount at sequence %d; the bar shows sequence %d on %s", name, label, e.pageLabel(id), session.seq, p.showing, e.pageLabel(p.page))
 			}
 		}
@@ -861,8 +861,8 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 	}
 	for _, answer := range e.answers {
 		if answer.state.Foreign {
-			if answer.state.Mount != answer.owner.mount || answer.state.Seq != answer.owner.seq {
-				t.Errorf("%s: %s answered Foreign naming %s/%d, the owner was %s/%d", name, answer.op, e.labels[answer.state.Mount], answer.state.Seq, e.labels[answer.owner.mount], answer.owner.seq)
+			if MountID(answer.state.Mount) != answer.owner.mount || answer.state.Seq != answer.owner.seq {
+				t.Errorf("%s: %s answered Foreign naming %s/%d, the owner was %s/%d", name, answer.op, e.labels[answer.state.Mount], answer.state.Seq, e.labels[string(answer.owner.mount)], answer.owner.seq)
 			}
 			continue
 		}
@@ -938,7 +938,7 @@ func findTableOps() []findTableOp {
 			e.switchTo(t, e.f.pageID)
 		}),
 		other("detach A", func(t *testing.T, e *findTableEnv) {
-			e.f.manager.DetachPane(e.mounts["A"])
+			e.f.manager.DetachPane(MountID(e.mounts["A"]))
 			e.settle()
 			e.deliver()
 			// The pane's provider closes what it held as it goes.
@@ -1173,7 +1173,7 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 				t.Error(err)
 			}
 		},
-		"detach A": func(_ *testing.T, e *findTableEnv) { e.f.manager.DetachPane(e.mounts["A"]) },
+		"detach A": func(_ *testing.T, e *findTableEnv) { e.f.manager.DetachPane(MountID(e.mounts["A"])) },
 	}
 	actions := []struct {
 		label, name string

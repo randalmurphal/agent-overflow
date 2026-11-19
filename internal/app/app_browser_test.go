@@ -264,7 +264,7 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 		},
 		unsubscribe: app.BrowserCompanionPaneDetach,
 		key:         companionPaneCleanupKey,
-		live:        func(id string) bool { return manager.SetPaneRect(id, appbrowser.PaneRect{}) == nil },
+		live:        func(id string) bool { return manager.SetPaneRect(appbrowser.MountID(id), appbrowser.PaneRect{}) == nil },
 		principal:   transport.ConnPrincipal{HostWindow: true},
 	})
 }
@@ -313,7 +313,7 @@ func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
 			if err != nil || pane.ID == "" {
 				t.Fatalf("attach = %+v, %v", pane, err)
 			}
-			manager.DetachPane(pane.ID)
+			manager.DetachPane(appbrowser.MountID(pane.ID))
 		})
 	}
 }

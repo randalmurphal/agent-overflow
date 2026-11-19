@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -41,7 +40,7 @@ const focusIntentMaxAge = webview2host.FocusIntentMaxAge
 // it still stands; an engine asks it on its UI thread, immediately before it
 // moves focus, so it must not wait on anything.
 type focusRequest struct {
-	Mount  string
+	Mount  MountID
 	Intent uint64
 	Live   func() bool
 }
@@ -64,7 +63,7 @@ const (
 // pageFocusIntent is one mount's current intent.
 type pageFocusIntent struct {
 	thread    ThreadID
-	mount     string
+	mount     MountID
 	pageID    PageID
 	id        uint64
 	armed     time.Time
@@ -83,7 +82,7 @@ type mountFocus struct {
 
 // mountFocusLocked answers a mounted pane's focus state, nil for a mount the
 // thread does not hold. The caller holds m.mu.
-func (m *Manager) mountFocusLocked(threadID ThreadID, mount string) *mountFocus {
+func (m *Manager) mountFocusLocked(threadID ThreadID, mount MountID) *mountFocus {
 	pane, ok := m.panes[mount]
 	if !ok || pane.threadID != threadID {
 		return nil
@@ -101,8 +100,8 @@ func (m *Manager) mountFocusLocked(threadID ThreadID, mount string) *mountFocus 
 // already withdrawn or superseded, a page that is gone, or an engine with no
 // native views does nothing. The outcome of a focus attempt arrives as a
 // Kind "focus" event (emitPageFocus).
-func (m *Manager) FocusCompanionPage(access Access, mount string, pageID PageID, intent uint64) error {
-	mount, pageID = strings.TrimSpace(mount), pageID.trim()
+func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID, intent uint64) error {
+	mount, pageID = mount.trim(), pageID.trim()
 	if mount == "" || pageID == "" || intent == 0 {
 		return errors.New("browser: a page focus needs its pane mount, page and intent")
 	}
@@ -132,8 +131,8 @@ func (m *Manager) FocusCompanionPage(access Access, mount string, pageID PageID,
 // WithdrawCompanionPageFocus withdraws the mount's focus intents numbered
 // up to intent: the user made another focus choice. A mount that is gone has
 // nothing to withdraw.
-func (m *Manager) WithdrawCompanionPageFocus(access Access, mount string, intent uint64) error {
-	mount = strings.TrimSpace(mount)
+func (m *Manager) WithdrawCompanionPageFocus(access Access, mount MountID, intent uint64) error {
+	mount = mount.trim()
 	if mount == "" || intent == 0 {
 		return errors.New("browser: a focus withdrawal needs its pane mount and intent")
 	}
@@ -241,8 +240,8 @@ func (m *Manager) hasTabLocked(tb *threadBrowser, pageID PageID) bool {
 // emitPageFocus tells the mount's pane how its focus intent ended: moved
 // into the page (err nil) or refused. The pane shows a refusal only while it
 // is the newest thing the user asked of the browser.
-func (m *Manager) emitPageFocus(threadID ThreadID, mount string, intent uint64, err error) {
-	event := CompanionEvent{Kind: "focus", ThreadID: string(threadID), Mount: mount, FocusIntent: intent}
+func (m *Manager) emitPageFocus(threadID ThreadID, mount MountID, intent uint64, err error) {
+	event := CompanionEvent{Kind: "focus", ThreadID: string(threadID), Mount: string(mount), FocusIntent: intent}
 	if err != nil {
 		event.Error = err.Error()
 	}
@@ -252,7 +251,7 @@ func (m *Manager) emitPageFocus(threadID ThreadID, mount string, intent uint64, 
 // pageFocusReported is engineEvents.PageFocusReported: the launcher's answer
 // to a focus it was asked for after FocusPage answered. It reaches the pane
 // mount that armed the intent, as a Kind "focus" event.
-func (m *Manager) pageFocusReported(handle ids.PageHandle, mount string, intent uint64, err error) {
+func (m *Manager) pageFocusReported(handle ids.PageHandle, mount MountID, intent uint64, err error) {
 	m.mu.Lock()
 	page := m.pageByHandleLocked(handle)
 	var owner ThreadID

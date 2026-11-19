@@ -187,7 +187,7 @@ func TestALateKeyboardCommandIsRefused(t *testing.T) {
 // active tab.
 func TestAKeyboardCloseAcrossAReattach(t *testing.T) {
 	m, access, ids, oldMount := newSelectionManager(t)
-	m.DetachPane(oldMount)
+	m.DetachPane(MountID(oldMount))
 	next, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)

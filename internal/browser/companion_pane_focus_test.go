@@ -97,7 +97,7 @@ type focusWorld struct {
 	a, b           Access
 	aPage, aOther  string
 	bPage          string
-	aMount, bMount string
+	aMount, bMount MountID
 }
 
 func (w *focusWorld) handle(access Access, pageID string) string {
@@ -141,13 +141,13 @@ func newFocusWorld(t *testing.T) *focusWorld {
 	for _, side := range []struct {
 		access Access
 		page   string
-		mount  *string
+		mount  *MountID
 	}{{w.a, w.aPage, &w.aMount}, {w.b, w.bPage, &w.bMount}} {
 		show := true
 		if _, err := m.Visibility(t.Context(), side.access, &show, PageID(side.page)); err != nil {
 			t.Fatalf("show %s: %v", side.access.ThreadID, err)
 		}
-		*side.mount = attachSizedPane(t, m, e.recordingPaneHost, side.access)
+		*side.mount = MountID(attachSizedPane(t, m, e.recordingPaneHost, side.access))
 	}
 	return w
 }
@@ -160,7 +160,7 @@ func remountPane(t *testing.T, m *Manager, access Access) string {
 	if err != nil {
 		t.Fatalf("mount the pane again: %v", err)
 	}
-	if err := m.SetPaneRect(mount.ID, visiblePaneRect); err != nil {
+	if err := m.SetPaneRect(MountID(mount.ID), visiblePaneRect); err != nil {
 		t.Fatalf("report the pane's rect: %v", err)
 	}
 	return mount.ID
@@ -197,7 +197,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			name: "the pane closed",
 			hide: func(t *testing.T, w *focusWorld) { w.m.DetachPane(w.aMount) },
 			show: func(t *testing.T, w *focusWorld) {
-				w.aMount = remountPane(t, w.m, w.a)
+				w.aMount = MountID(remountPane(t, w.m, w.a))
 			},
 		},
 		{
@@ -235,7 +235,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			keeps: true,
 			hide:  func(t *testing.T, w *focusWorld) { w.m.DetachPane(w.bMount) },
 			show: func(t *testing.T, w *focusWorld) {
-				w.bMount = remountPane(t, w.m, w.b)
+				w.bMount = MountID(remountPane(t, w.m, w.b))
 			},
 		},
 	} {

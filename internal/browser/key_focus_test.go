@@ -159,7 +159,7 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.manager.SetPaneRect(other.ID, offscreen); err != nil {
+			if err := f.manager.SetPaneRect(MountID(other.ID), offscreen); err != nil {
 				t.Fatal(err)
 			}
 			return string(f.fake.Handle())
@@ -214,7 +214,7 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 				t.Fatalf("routed %d chords, want 1", len(routed))
 			}
 			got := routed[0]
-			if got.Mount != f.mount || ThreadID(got.ThreadID) != f.access.ThreadID || got.Accelerator == nil || *got.Accelerator != bound {
+			if MountID(got.Mount) != f.mount || ThreadID(got.ThreadID) != f.access.ThreadID || got.Accelerator == nil || *got.Accelerator != bound {
 				t.Fatalf("routed %+v, want Ctrl+F to mount %s", got, f.mount)
 			}
 		})
