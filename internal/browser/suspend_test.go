@@ -862,6 +862,45 @@ func TestTheReaperKeepsThePageAPaneShows(t *testing.T) {
 	}
 }
 
+// A page the user selects while the reaper is suspending it, after the
+// reaper chose what to keep, stays live: the pane shows it.
+func TestTheReaperKeepsAPageSelectedDuringItsSuspension(t *testing.T) {
+	manager, engine := newRestoreManager(t, t.TempDir(), ManagerOptions{})
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	shown := mustOpen(t, manager, access, "https://example.test/shown")
+	other := mustOpen(t, manager, access, "https://example.test/other")
+	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), shown.ID); err != nil {
+		t.Fatal(err)
+	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
+	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+		t.Fatal(err)
+	}
+	release := engine.holdInfo()
+	defer release()
+	reaped := make(chan error, 1)
+	go func() { reaped <- manager.SuspendThread(context.Background(), access.ThreadID) }()
+	<-engine.reading
+	// The user selects the page whose address the reaper is reading.
+	selected := make(chan error, 1)
+	go func() { selected <- manager.ActivateCompanionPage(context.Background(), access, other.ID) }()
+	eventually(t, "the selection", func() bool { return manager.CompanionState(access).ActivePageID == other.ID })
+	release()
+	if err := <-reaped; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-selected; err != nil {
+		t.Fatal(err)
+	}
+	if ids := suspendedIDs(manager, access.ThreadID); len(ids) != 0 {
+		t.Fatalf("the reaper suspended %v; the pane shows %s", ids, other.ID)
+	}
+}
+
 // A reap of a thread with no page to suspend leaves its browser state alone:
 // no session entry, no event, and no write of a saved copy it never loaded.
 func TestSuspendingAThreadWithNoPagesTouchesNothing(t *testing.T) {

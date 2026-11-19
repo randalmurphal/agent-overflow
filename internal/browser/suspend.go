@@ -458,7 +458,8 @@ func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
 // did. It waits for the page's in-flight operation, reads the page's current
 // address, and moves it from its scope to the records in one m.mu hold, so a
 // lookup finds it as one or the other. A page closed meanwhile is left
-// closed; a page of a browser that began shutting down is left for Close to
+// closed; a page a mounted pane shows by then is left live; a page of a
+// browser that began shutting down is left for Close to
 // save; and a page whose records were cleared meanwhile (the browser turned
 // off, or its site data cleared, which close it) records nothing.
 func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error) {
@@ -486,7 +487,9 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 			break
 		}
 	}
-	if scope == nil || m.closed || m.recordsCleared != cleared {
+	// A page a mounted pane came to show meanwhile stays live, as it would
+	// have had it been shown from the start (SuspendThread).
+	if scope == nil || m.closed || m.recordsCleared != cleared || m.presentedPageLocked(p.owner) == p.id {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return false, nil
