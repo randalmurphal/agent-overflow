@@ -1,6 +1,10 @@
 package webview2host
 
-import "math"
+import (
+	"math"
+
+	"agent-overflow/internal/paneplace"
+)
 
 // rect is the Win32 RECT shape: pixel edges in some window's client
 // coordinates, right/bottom exclusive. It lives in a cross-platform file
@@ -45,13 +49,13 @@ type paneLayout struct {
 // resolvePaneLayout scales a CSS-pixel bounds rect by sx/sy and splits it
 // into the container and controller rectangles.
 //
-// Rounding is OUTWARD on every edge — floor for left/top, ceil for
-// right/bottom — and the controller's offset is derived from the SAME
-// rounded numbers as the container's origin. That pairing is the whole
-// point: rounding each rectangle independently would let a half-pixel
-// scale factor shave a 1px sliver off a shared edge, which reads as a
-// hairline of launcher background cutting across the page. Overhanging by
-// a pixel is invisible; clipping by one is not.
+// Every edge snaps to the nearest pixel by the shared rule
+// (paneplace.SnapEdge), so two rects that share an edge share a device
+// pixel and neither overlaps the other's hit area, and the controller's
+// offset is derived from the SAME snapped numbers as the container's
+// origin: an edge the clip shares with the full rect snaps to one pixel
+// for both, so no half-pixel scale factor can shave a 1px sliver of
+// launcher background across the page.
 //
 // A zero clip pair means unclipped: the clip IS the full rect, and the
 // controller then sits at the container's origin with the container's
@@ -62,16 +66,16 @@ func resolvePaneLayout(d paneBounds, sx, sy float64) paneLayout {
 		clipX, clipY, clipW, clipH = d.X, d.Y, d.W, d.H
 	}
 	container := rect{
-		Left:   floorInt32(clipX * sx),
-		Top:    floorInt32(clipY * sy),
-		Right:  ceilInt32((clipX + clipW) * sx),
-		Bottom: ceilInt32((clipY + clipH) * sy),
+		Left:   snapInt32(clipX * sx),
+		Top:    snapInt32(clipY * sy),
+		Right:  snapInt32((clipX + clipW) * sx),
+		Bottom: snapInt32((clipY + clipH) * sy),
 	}
 	full := rect{
-		Left:   floorInt32(d.X * sx),
-		Top:    floorInt32(d.Y * sy),
-		Right:  ceilInt32((d.X + d.W) * sx),
-		Bottom: ceilInt32((d.Y + d.H) * sy),
+		Left:   snapInt32(d.X * sx),
+		Top:    snapInt32(d.Y * sy),
+		Right:  snapInt32((d.X + d.W) * sx),
+		Bottom: snapInt32((d.Y + d.H) * sy),
 	}
 	return paneLayout{
 		Container: container,
@@ -90,20 +94,13 @@ func resolvePaneLayout(d paneBounds, sx, sy float64) paneLayout {
 // clamped here rather than left to wrap.
 const maxPaneDevicePX = 1 << 24
 
-func floorInt32(v float64) int32 { return clampInt32(math.Floor(v)) }
-func ceilInt32(v float64) int32  { return clampInt32(math.Ceil(v)) }
-
-func clampInt32(v float64) int32 {
-	switch {
-	case math.IsNaN(v):
+// snapInt32 snaps one scaled edge (paneplace.SnapEdge) within the Win32
+// range maxPaneDevicePX bounds.
+func snapInt32(v float64) int32 {
+	if math.IsNaN(v) {
 		return 0
-	case v > maxPaneDevicePX:
-		return maxPaneDevicePX
-	case v < -maxPaneDevicePX:
-		return -maxPaneDevicePX
-	default:
-		return int32(v)
 	}
+	return int32(paneplace.SnapEdge(math.Max(-maxPaneDevicePX, math.Min(v, maxPaneDevicePX))))
 }
 
 // paneColor is COREWEBVIEW2_COLOR's field order — A, R, G, B, one byte

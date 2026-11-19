@@ -1,6 +1,10 @@
 package webview2host
 
-import "testing"
+import (
+	"testing"
+
+	"agent-overflow/internal/paneplace"
+)
 
 func TestResolvePaneLayoutUnclippedPutsTheControllerAtTheContainerOrigin(t *testing.T) {
 	got := resolvePaneLayout(paneBounds{X: 10, Y: 20, W: 300, H: 400}, 1, 1)
@@ -79,16 +83,38 @@ func TestResolvePaneLayoutNeverClipsASharedEdgeByAFractionalPixel(t *testing.T) 
 	}
 }
 
-func TestResolvePaneLayoutRoundsOutward(t *testing.T) {
+func TestResolvePaneLayoutSnapsEachEdgeToTheNearestPixel(t *testing.T) {
 	got := resolvePaneLayout(paneBounds{X: 10, Y: 10, W: 100, H: 100}, 1.5, 1.5)
-	// 10*1.5 = 15 exactly; 110*1.5 = 165 exactly. Shift by a third of a
-	// pixel and both edges must move OUT, never in.
 	if got.Container != (rect{Left: 15, Top: 15, Right: 165, Bottom: 165}) {
 		t.Fatalf("container = %+v", got.Container)
 	}
-	got = resolvePaneLayout(paneBounds{X: 10.4, Y: 10.4, W: 100.2, H: 100.2}, 1, 1)
-	if got.Container != (rect{Left: 10, Top: 10, Right: 111, Bottom: 111}) {
-		t.Fatalf("container = %+v, want outward rounding on every edge", got.Container)
+	// The shared rule: floor(v + 0.5), halves up.
+	got = resolvePaneLayout(paneBounds{X: 10.4, Y: 10.5, W: 100.2, H: 100.2}, 1, 1)
+	if got.Container != (rect{Left: 10, Top: 11, Right: 111, Bottom: 111}) {
+		t.Fatalf("container = %+v, want each edge at its nearest pixel", got.Container)
+	}
+	for _, v := range []float64{-2.5, -0.5, 0.49, 0.5, 7, 10.5} {
+		layout := resolvePaneLayout(paneBounds{X: v, Y: v, W: 50, H: 50}, 1, 1)
+		if want := int32(paneplace.SnapEdge(v)); layout.Container.Left != want || layout.Container.Top != want {
+			t.Fatalf("edge %v snapped to %+v, want %d as paneplace.SnapEdge", v, layout.Container, want)
+		}
+	}
+}
+
+// Two panes stacked at fractional DPI share device coordinate 10.5 (7 CSS
+// pixels at 1.5): the upper's bottom and the lower's top snap to one pixel,
+// so neither's native rectangle covers a pixel of the other's.
+func TestResolvePaneLayoutAdjacentPanesDoNotOverlap(t *testing.T) {
+	upper := resolvePaneLayout(paneBounds{X: 0, Y: 0, W: 100, H: 7}, 1.5, 1.5)
+	lower := resolvePaneLayout(paneBounds{X: 0, Y: 7, W: 100, H: 50}, 1.5, 1.5)
+	if upper.Container.Bottom != lower.Container.Top {
+		t.Fatalf("the upper pane ends at %d and the lower starts at %d, want one shared edge",
+			upper.Container.Bottom, lower.Container.Top)
+	}
+	left := resolvePaneLayout(paneBounds{X: 0, Y: 0, W: 7, H: 100}, 1.5, 1.5)
+	right := resolvePaneLayout(paneBounds{X: 7, Y: 0, W: 50, H: 100}, 1.5, 1.5)
+	if left.Container.Right != right.Container.Left {
+		t.Fatalf("the left pane ends at %d and the right starts at %d", left.Container.Right, right.Container.Left)
 	}
 }
 
