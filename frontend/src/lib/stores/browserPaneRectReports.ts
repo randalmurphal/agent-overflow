@@ -75,6 +75,6 @@ function forgetPaneMount(mount: string): void {
 observeBrowserCompanion({
   mountEnded: forgetPaneMount,
   resetForTest: () => {
-    for (const mount of [...paneReports.keys()]) forgetPaneMount(mount);
+    for (const mount of paneReports.keys()) forgetPaneMount(mount);
   },
 });

@@ -50,7 +50,7 @@ function dropAddressFocus(threadId: string): void {
 }
 
 function dropAllAddressFocus(): void {
-  for (const threadId of [...armedAddressFocus.keys()]) dropAddressFocus(threadId);
+  for (const threadId of armedAddressFocus.keys()) dropAddressFocus(threadId);
 }
 
 /**

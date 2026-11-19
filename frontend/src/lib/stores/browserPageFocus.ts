@@ -143,7 +143,7 @@ function withdrawPageFocus(threadId: string): void {
 
 function onUserFocusChoice(event: Event): void {
   const target = event.target;
-  for (const [threadId, record] of [...pageFocusIntents]) {
+  for (const [threadId, record] of pageFocusIntents) {
     if (target instanceof Node && record.area.contains(target)) continue;
     withdrawPageFocus(threadId);
   }
@@ -171,13 +171,13 @@ observeBrowserCompanion({
   focusSettled: settlePageFocus,
   // Unmounting is a focus choice; the detach withdraws at the backend too.
   mountEnded: (mount) => {
-    for (const [threadId, record] of [...pageFocusIntents]) {
+    for (const [threadId, record] of pageFocusIntents) {
       if (record.mount === mount) withdrawPageFocus(threadId);
     }
     pageFocusSeqs.delete(mount);
   },
   resetForTest: () => {
-    for (const threadId of [...pageFocusIntents.keys()]) retirePageFocus(threadId);
+    for (const threadId of pageFocusIntents.keys()) retirePageFocus(threadId);
     pageFocusSeqs.clear();
   },
 });
