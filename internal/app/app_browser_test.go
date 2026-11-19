@@ -597,6 +597,41 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 	}
 }
 
+// A companion action that began before an archive or a handoff closed the
+// thread's pages closes the page it opens after that close, though the
+// thread's row is still there; an action begun after the close keeps its
+// page.
+func TestACompanionActionOverlappingAPageCloseLeavesNoPage(t *testing.T) {
+	t.Parallel()
+	app, manager := newBrowserTestApp(t)
+	thread, access := browserTestThread(t, app, "thread-companion-retired")
+
+	stale := app.beginCompanionAction(thread.ID)
+	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.endCompanionAction(stale); !errors.Is(err, errCompanionThreadClosed) {
+		t.Fatalf("the stale action ended with %v, want errCompanionThreadClosed", err)
+	}
+	if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
+		t.Fatalf("the closed thread owns %d browser pages", len(pages))
+	}
+
+	later := app.beginCompanionAction(thread.ID)
+	if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.endCompanionAction(later); err != nil {
+		t.Fatalf("an action begun after the close ended with %v", err)
+	}
+	if pages := manager.CompanionState(access).Pages; len(pages) != 1 {
+		t.Fatalf("an action begun after the close left %d pages, want its own", len(pages))
+	}
+}
+
 func newBrowserTestApp(t *testing.T) (*App, *appbrowser.Manager) {
 	t.Helper()
 	app := newTestAppWithStore(t)

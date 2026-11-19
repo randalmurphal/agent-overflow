@@ -81,36 +81,56 @@ func (m *Manager) writeRecordFilesLocked(threadIDs []string) error {
 	m.mu.Lock()
 	files := make([]pageRecordFile, 0, len(threadIDs))
 	for _, threadID := range threadIDs {
-		file := pageRecordFile{Version: pageRecordVersion, ThreadID: threadID}
-		for _, tab := range m.threadTabsLocked(threadID) {
-			if rec := tab.rec; rec != nil {
-				file.Pages = append(file.Pages, pageRecord{
-					ID: rec.id, URL: rec.url, Title: rec.title, Label: rec.label,
-					Order: rec.tabOrder, Created: rec.createdAt, LastUsed: rec.lastUse,
-				})
-			}
-		}
-		if session, ok := m.sessions[threadID]; ok {
-			file.ActivePageID = session.ActivePageID
-			file.Jar = savedJar(jarKindOf(session))
-		}
-		files = append(files, file)
+		files = append(files, m.recordFileLocked(threadID, false))
 	}
 	m.mu.Unlock()
 	var errs []error
 	for _, file := range files {
-		path := m.recordPath(file.ThreadID)
-		if len(file.Pages) == 0 && file.Jar == "" {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				errs = append(errs, fmt.Errorf("browser: remove saved pages: %w", err))
-			}
-			continue
-		}
-		if err := atomicfile.WriteJSON(path, file); err != nil {
-			errs = append(errs, fmt.Errorf("browser: save pages: %w", err))
+		if err := m.writeRecordFile(file); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// recordFileLocked is the saved copy of the thread as it is: its suspended
+// pages and, with withLive, its live pages as the records a suspension
+// makes of them (recordOf). The caller holds m.mu.
+func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFile {
+	file := pageRecordFile{Version: pageRecordVersion, ThreadID: threadID}
+	for _, tab := range m.threadTabsLocked(threadID) {
+		rec := tab.rec
+		if rec == nil && withLive && tab.live != nil {
+			rec = recordOf(tab.live, tab.live.cachedInfo())
+		}
+		if rec != nil {
+			file.Pages = append(file.Pages, pageRecord{
+				ID: rec.id, URL: rec.url, Title: rec.title, Label: rec.label,
+				Order: rec.tabOrder, Created: rec.createdAt, LastUsed: rec.lastUse,
+			})
+		}
+	}
+	if session, ok := m.sessions[threadID]; ok {
+		file.ActivePageID = session.ActivePageID
+		file.Jar = savedJar(jarKindOf(session))
+	}
+	return file
+}
+
+// writeRecordFile writes one thread's saved copy, or removes it when it
+// holds no page and the default jar. The caller holds persistMu.
+func (m *Manager) writeRecordFile(file pageRecordFile) error {
+	path := m.recordPath(file.ThreadID)
+	if len(file.Pages) == 0 && file.Jar == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("browser: remove saved pages: %w", err)
+		}
+		return nil
+	}
+	if err := atomicfile.WriteJSON(path, file); err != nil {
+		return fmt.Errorf("browser: save pages: %w", err)
+	}
+	return nil
 }
 
 // savedJar is a jar kind as a saved copy writes it: the default is omitted,

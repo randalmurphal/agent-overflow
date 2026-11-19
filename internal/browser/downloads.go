@@ -249,13 +249,25 @@ func safeArtifactName(name, fallback string) string {
 	return name
 }
 
-func uniqueArtifactPath(dir, name string) (string, error) {
-	for i := 0; i < 1000; i++ {
-		candidate := filepath.Join(dir, name)
-		if i > 0 {
-			ext := filepath.Ext(name)
-			candidate = filepath.Join(dir, fmt.Sprintf("%s-%d%s", strings.TrimSuffix(name, ext), i, ext))
+// artifactNames answers an artifact's name and its "-1", "-2" variants, by
+// index.
+func artifactNames(name string) func(i int) string {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	return func(i int) string {
+		if i == 0 {
+			return name
 		}
+		return fmt.Sprintf("%s-%d%s", stem, i, ext)
+	}
+}
+
+// uniqueArtifactPath answers the first variant of name not in dir. A caller
+// creates it exclusively; one that moves a file there uses placeNoReplace.
+func uniqueArtifactPath(dir, name string) (string, error) {
+	names := artifactNames(name)
+	for i := 0; i < 1000; i++ {
+		candidate := filepath.Join(dir, names(i))
 		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
 			return candidate, nil
 		} else if err != nil {

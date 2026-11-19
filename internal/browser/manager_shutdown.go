@@ -66,7 +66,9 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 
 // ClearSiteData closes every engine page first, then deletes the site data
 // (spec §4). The order is load-bearing: an engine still holding a profile open
-// would write its cookie jar back out over the cleared state.
+// would write its cookie jar back out over the cleared state. One startMu hold
+// spans the browser's close and both clears, so no page opens a profile
+// against the old site data before it is gone.
 //
 // Two halves, because two kinds of engine exist: the AO-owned profile tree is
 // deleted here (WebKitGTK keeps its data under it), and an engine whose data
@@ -76,31 +78,40 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // silently clears nothing on some platforms is not an option.
 // The recent addresses and closed tabs go with the pages (forgetAllPages).
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	if err := m.forgetAllPages(ctx, true); err != nil {
-		return err
-	}
-	var errs []error
-	if err := os.RemoveAll(m.profileDir); err != nil {
-		errs = append(errs, fmt.Errorf("browser: clear site data: %w", err))
-	}
-	if engine, ok := m.engine.(engineSiteData); ok {
-		if err := engine.ClearSiteData(ctx); err != nil {
-			errs = append(errs, err)
+	return m.forgetAllPages(ctx, true, func() error {
+		var errs []error
+		if err := os.RemoveAll(m.profileDir); err != nil {
+			errs = append(errs, fmt.Errorf("browser: clear site data: %w", err))
 		}
-	}
-	return errors.Join(errs...)
+		if engine, ok := m.engine.(engineSiteData); ok {
+			if err := engine.ClearSiteData(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	})
 }
 
 // forgetAllPages closes every page, suspended ones and their saved copies
 // included, stops the engine, and then forgets every thread's recent
 // addresses and closed tabs: an open still running then has no live page to
 // record on (recordRecentAddress), and a close the user made meanwhile is
-// forgotten too. keepJars keeps the threads' jar settings.
-func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
-	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
+// forgotten too. keepJars keeps the threads' jar settings. clear, when set,
+// runs once the browser closed without error, in the startMu hold of that
+// close, so no page opens before it ends.
+func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func() error) error {
+	err := m.forgetAllRecords(keepJars)
+	// Release an in-flight engine start first: it holds startMu.
+	m.engine.Interrupt()
+	m.startMu.Lock()
+	err = errors.Join(err, m.closeBrowserLocked(ctx))
+	if err == nil && clear != nil {
+		err = clear()
+	}
 	m.mu.Lock()
 	threads := m.forgetAllBrowsingLocked()
 	m.mu.Unlock()
+	m.startMu.Unlock()
 	// The closes pushed state before the forget; these carry its generation.
 	for _, threadID := range threads {
 		m.emitThreadState(threadID)
@@ -219,8 +230,9 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		m.idleTimer = nil
 	}
 	m.mu.Unlock()
-	// A popup not listed yet goes with the browser, its downloads with it.
-	m.dropParked()
+	// A popup not listed yet goes with the browser, its downloads with it;
+	// their files go once the engine writing them has stopped.
+	parkedFiles := m.dropParked(scopes)
 	for _, p := range pages {
 		m.endFind(p)
 	}
@@ -283,6 +295,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		case <-time.After(2 * time.Second):
 		}
 	}
+	removeStoppedDownloads(parkedFiles)
 	joined := make([]error, 0, len(errs)+1)
 	for len(errs) > 0 {
 		err := <-errs

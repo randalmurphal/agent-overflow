@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -12,9 +13,11 @@ import (
 // Each live page of the thread is suspended into the new jar: in one m.mu
 // hold the thread's jar generation advances and every live page moves to
 // closing and is replaced by a suspended record under the same id, tab
-// position, label and address, the active tab staying active. The records are
-// written to the saved copy before any teardown starts, so a shutdown or crash
-// during the switch loses no tab. The tabs come back through the ordinary
+// position, label and address, the active tab staying active. That hold
+// follows a write of the saved copy holding exactly those records and the new
+// jar, and no teardown starts before it, so a shutdown or crash during the
+// switch loses no tab, and a failed write changes nothing: the thread keeps
+// its jar and its pages, and a retry writes again. The tabs come back through the ordinary
 // restore path (resolvePage): the active one when the pane presents it or a
 // tool uses it, the others when selected or used. A restore fails as any
 // restore does, leaving its tab suspended with the error. Page state (forms,
@@ -48,25 +51,66 @@ func (m *Manager) SetJar(access Access, kind string) error {
 	}
 	threadID := access.ThreadID
 
-	type switchClose struct {
-		scope *jarScope
-		close *pageClose
-	}
-	m.mu.Lock()
-	if m.closed {
+	// persistMu is held from the first write to the commit, so no other
+	// write of the thread lands between them.
+	m.persistMu.Lock()
+	var written *pageRecordFile
+	var closes []switchClose
+	for {
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			m.persistMu.Unlock()
+			return fmt.Errorf("browser: manager closed")
+		}
+		info := m.sessionLocked(threadID)
+		if jarKindOf(info) == kind {
+			m.mu.Unlock()
+			m.persistMu.Unlock()
+			return nil
+		}
+		file := m.recordFileLocked(threadID, true)
+		file.ActivePageID, file.Jar = info.ActivePageID, savedJar(kind)
+		if written != nil && reflect.DeepEqual(*written, file) {
+			closes = m.switchJarLocked(threadID, info, kind)
+			m.mu.Unlock()
+			break
+		}
 		m.mu.Unlock()
-		return fmt.Errorf("browser: manager closed")
+		// The switch commits only once the saved copy holds exactly the
+		// tabs it leaves; a tab that changed during the write is written
+		// again.
+		if err := m.writeRecordFile(file); err != nil {
+			m.persistMu.Unlock()
+			return err
+		}
+		written = &file
 	}
-	info := m.sessionLocked(threadID)
-	if jarKindOf(info) == kind {
-		m.mu.Unlock()
-		return nil
+	m.persistMu.Unlock()
+	for _, c := range closes {
+		m.startClose(c.scope, c.close)
 	}
+	if len(closes) == 0 {
+		m.emitThreadState(threadID)
+	}
+	return nil
+}
+
+// switchClose is one page a jar switch closes, in its scope.
+type switchClose struct {
+	scope *jarScope
+	close *pageClose
+}
+
+// switchJarLocked commits a switch of the thread to kind: the generation
+// advances and each live page becomes a suspended record while it closes.
+// The caller holds m.mu and starts the closes after releasing it.
+func (m *Manager) switchJarLocked(threadID string, info SessionInfo, kind string) []switchClose {
 	info.Jar, info.jarGen, info.privateJar = kind, info.jarGen+1, ""
 	info.UpdatedAt = time.Now()
 	// The recent addresses and closed tabs were the old jar's browsing; an
 	// open still running in it records nothing (recordRecentAddress). The
-	// push below carries both.
+	// switch's push carries both.
 	m.forgetBrowsingLocked(threadID)
 	var closes []switchClose
 	for _, tab := range m.threadTabsLocked(threadID) {
@@ -95,14 +139,5 @@ func (m *Manager) SetJar(access Access, kind string) error {
 	}
 	info.jarTeardown = teardown
 	m.sessions[threadID] = info
-	m.mu.Unlock()
-
-	err := m.persistThreads([]string{threadID})
-	for _, c := range closes {
-		m.startClose(c.scope, c.close)
-	}
-	if len(closes) == 0 {
-		m.emitThreadState(threadID)
-	}
-	return err
+	return closes
 }

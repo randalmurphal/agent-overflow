@@ -458,7 +458,8 @@ func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
 // did. It waits for the page's in-flight operation, reads the page's current
 // address, and moves it from its scope to the records in one m.mu hold, so a
 // lookup finds it as one or the other. A page closed meanwhile is left
-// closed; a page of a browser that began shutting down is left for Close to
+// closed; a page a mounted pane shows by then is left live; a page of a
+// browser that began shutting down is left for Close to
 // save; and a page whose records were cleared meanwhile (the browser turned
 // off, or its site data cleared, which close it) records nothing.
 func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error) {
@@ -486,7 +487,9 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 			break
 		}
 	}
-	if scope == nil || m.closed || m.recordsCleared != cleared {
+	// A page a mounted pane came to show meanwhile stays live, as it would
+	// have had it been shown from the start (SuspendThread).
+	if scope == nil || m.closed || m.recordsCleared != cleared || m.presentedPageLocked(p.owner) == p.id {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return false, nil
@@ -537,21 +540,24 @@ func (m *Manager) saveOpenPages() error {
 	return m.writeRecordFilesLocked(threads)
 }
 
-// forgetRecord closes one suspended page: its record and its saved copy go.
-func (m *Manager) forgetRecord(threadID, pageID string, byUser bool) error {
-	m.mu.Lock()
+// forgetRecordLocked closes one suspended page: it drops the thread's record
+// of pageID, answering whether it had one, and the caller, which holds m.mu,
+// calls recordForgotten after releasing it, so the saved copy goes too.
+func (m *Manager) forgetRecordLocked(threadID, pageID string, byUser bool) bool {
 	rec := m.suspended[strings.TrimSpace(pageID)]
-	found := rec != nil && rec.owner == threadID
-	if found {
-		if byUser {
-			m.recordUserCloseLocked(threadID, rec.id)
-		}
-		m.dropRecordLocked(rec)
+	if rec == nil || rec.owner != threadID {
+		return false
 	}
-	m.mu.Unlock()
-	if !found {
-		return errPageNotFound
+	if byUser {
+		m.recordUserCloseLocked(threadID, rec.id)
 	}
+	m.dropRecordLocked(rec)
+	return true
+}
+
+// recordForgotten publishes a forgotten record of the thread and saves the
+// thread's records.
+func (m *Manager) recordForgotten(threadID string) error {
 	m.repairActivePage(threadID)
 	m.emitThreadState(threadID)
 	m.syncPanePresentation(threadID)

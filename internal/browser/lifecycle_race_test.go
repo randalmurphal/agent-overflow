@@ -54,6 +54,80 @@ func TestACloseRacingAFailedCreationLeavesNoHiddenTab(t *testing.T) {
 	}
 }
 
+// A close of a tab whose creation becomes a live page as the close runs
+// finds the tab in one state or the other: it never answers that the page
+// is not found, and the tab is gone.
+func TestACloseRacingACreationsPromotionFindsTheTab(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	// A page that stays keeps the profile across the iterations.
+	mustOpen(t, manager, access, "https://example.test/keep")
+	for i := range 2000 {
+		release := engine.hold(&engine.newPageGate)
+		created := async(func() error {
+			_, err := manager.NewCompanionPage(context.Background(), access, "")
+			return err
+		})
+		receive(t, engine.creating, "the engine page's creation")
+		id := tabIDs(manager, access)[1]
+		start := make(chan struct{})
+		closed := async(func() error {
+			<-start
+			return manager.closePage(context.Background(), access, id, false, false)
+		})
+		close(start)
+		release()
+		if err := await(t, created, "the creation"); err != nil && !errors.Is(err, errClosedWhileCreating) {
+			t.Fatalf("iteration %d: creation = %v", i, err)
+		}
+		if err := await(t, closed, "the close"); err != nil {
+			t.Fatalf("iteration %d: the close of a tab that existed throughout answered %v", i, err)
+		}
+		if got := tabIDs(manager, access); len(got) != 1 {
+			t.Fatalf("iteration %d: tabs %v after the close", i, got)
+		}
+	}
+}
+
+// A close of a suspended tab whose restore makes it live as the close runs
+// finds it as the record or as the page.
+func TestACloseRacingARestoreFindsTheTab(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	mustOpen(t, manager, access, "https://example.test/keep")
+	for i := range 1000 {
+		page := mustOpen(t, manager, access, "https://example.test/")
+		live, _, err := manager.lookupOwnedPage(access, page.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if moved, err := manager.suspendPage(context.Background(), live); err != nil || !moved {
+			t.Fatalf("iteration %d: suspend: %v", i, err)
+		}
+		release := engine.hold(&engine.newPageGate)
+		restored := async(func() error {
+			_, _, err := manager.resolvePage(context.Background(), access, page.ID, false)
+			return err
+		})
+		receive(t, engine.creating, "the restore's engine page")
+		start := make(chan struct{})
+		closed := async(func() error {
+			<-start
+			return manager.closePage(context.Background(), access, page.ID, false, false)
+		})
+		close(start)
+		release()
+		// The restore succeeds or finds its record forgotten; either is right.
+		_ = await(t, restored, "the restore")
+		if err := await(t, closed, "the close"); err != nil {
+			t.Fatalf("iteration %d: the close of a tab that existed throughout answered %v", i, err)
+		}
+		if got := tabIDs(manager, access); len(got) != 1 {
+			t.Fatalf("iteration %d: tabs %v after the close", i, got)
+		}
+	}
+}
+
 // Two closes of one live page that run at once both join its one teardown;
 // neither answers that the page is not found.
 func TestConcurrentClosesJoinOneTeardown(t *testing.T) {

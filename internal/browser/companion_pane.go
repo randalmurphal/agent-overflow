@@ -109,8 +109,9 @@ func placePage(rect PaneRect, pageW, pageH int) (PanePlacement, bool) {
 // so it carries DPI and webview zoom without either side knowing them; no
 // viewport means the rect is already in overlay pixels. The edges snap with
 // paneplace.Layout. The answered scale draws the page's CSS pixels at the
-// placement's scale in overlay pixels.
-func overlayPaneLayout(placement PanePlacement, overlayW, overlayH int) (paneplace.HostLayout, float64) {
+// placement's scale in overlay pixels; ok is false when no overlay pixel of
+// the page is visible, and the page is hidden then.
+func overlayPaneLayout(placement PanePlacement, overlayW, overlayH int) (layout paneplace.HostLayout, overlayScale float64, ok bool) {
 	rect := placement.Rect
 	sx, sy := 1.0, 1.0
 	if rect.ViewportWidth > 0 && overlayW > 0 {
@@ -123,11 +124,11 @@ func overlayPaneLayout(placement PanePlacement, overlayW, overlayH int) (panepla
 	if scale <= 0 {
 		scale = 1
 	}
-	layout := paneplace.Layout(paneplace.Rect{
+	layout, ok = paneplace.Layout(paneplace.Rect{
 		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
 		ClipX: rect.ClipX, ClipY: rect.ClipY, ClipW: rect.ClipWidth, ClipH: rect.ClipHeight,
 	}, sx, sy)
-	return layout, scale * sx
+	return layout, scale * sx, ok
 }
 
 // paneMount is one mounted pane surface: the frontend's claim that a host rect

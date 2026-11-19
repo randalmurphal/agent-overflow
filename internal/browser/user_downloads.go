@@ -153,7 +153,7 @@ func userDirsValue(value, home string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-// maxDownloadNameCollisions bounds the " (N)" walk.
+// maxDownloadNameCollisions bounds the walk over a name's variants.
 const maxDownloadNameCollisions = 1000
 
 // linkDownload is os.Link and renameDownload renameNoReplace: test seams
@@ -171,12 +171,9 @@ var errNoReplaceRename = errors.New("this platform has no rename that refuses to
 // publishDownload moves a finished download from its staged file into the
 // Downloads folder its staging directory is in, under the first free name
 // of the suggested one and its " (1)", " (2)" variants, as browsers name
-// them, and answers the published path and file. It never replaces a file:
-// it hard-links the staged file to a candidate, or, on a filesystem that
-// refuses hard links, renames it with a rename that refuses to replace;
-// either way a name that is taken (EEXIST) moves on to the next. Both stay
-// within one directory tree, so nothing is ever copied and nothing partial
-// ever has a public name. The caller's release of the staged file
+// them, and answers the published path and file. It never replaces a file
+// (placeNoReplace). Both names stay within one directory tree, so nothing
+// is ever copied and nothing partial ever has a public name. The caller's release of the staged file
 // (releaseStaged) removes a linked file's staged name. Where the filesystem
 // has neither, the download fails with the reason.
 func publishDownload(staged, suggested string) (path string, file os.FileInfo, err error) {
@@ -194,23 +191,36 @@ func publishDownload(staged, suggested string) (path string, file os.FileInfo, e
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", staged)
 	}
-	dir := filepath.Dir(stagingDir)
 	name := safeArtifactName(suggested, "download")
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
+	return placeNoReplace(staged, info, filepath.Dir(stagingDir), "the Downloads folder", func(i int) string {
+		if i == 0 {
+			return name
+		}
+		return fmt.Sprintf("%s (%d)%s", stem, i, ext)
+	})
+}
+
+// placeNoReplace gives the regular file source, whose Lstat is info, the
+// first name in dir that nobody holds, of name(0), name(1), ..., and
+// answers its path and file. It never replaces a file: it hard-links
+// source to a candidate, or, on a filesystem that refuses hard links,
+// renames it with a rename that refuses to replace; either way a name that
+// is taken (EEXIST) moves on to the next, so two placements at once never
+// take one name. A link leaves source's own name for the caller to remove.
+// where names dir in an error.
+func placeNoReplace(source string, info os.FileInfo, dir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
 	move := linkDownload
 	linking := true
 	for i := 0; i < maxDownloadNameCollisions; i++ {
-		candidate := filepath.Join(dir, name)
-		if i > 0 {
-			candidate = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
-		}
-		err := move(staged, candidate)
+		candidate := filepath.Join(dir, name(i))
+		err := move(source, candidate)
 		switch {
 		case err == nil:
 			moved, err := os.Lstat(candidate)
 			if err != nil {
-				return "", nil, fmt.Errorf("browser: save in the Downloads folder: %w", err)
+				return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 			}
 			if !os.SameFile(moved, info) {
 				return "", nil, fmt.Errorf("browser: %s changed while the download was saved there", candidate)
@@ -221,12 +231,12 @@ func publishDownload(staged, suggested string) (path string, file os.FileInfo, e
 			move, linking = renameDownload, false
 			i--
 		case !linking && noReplaceRenameRefused(err):
-			return "", nil, fmt.Errorf("browser: the Downloads folder %s supports neither hard links nor renames that refuse to replace a file, so the download is not saved there: %w", dir, err)
+			return "", nil, fmt.Errorf("browser: %s %s supports neither hard links nor renames that refuse to replace a file, so the download is not saved there: %w", where, dir, err)
 		default:
-			return "", nil, fmt.Errorf("browser: save in the Downloads folder: %w", err)
+			return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 		}
 	}
-	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxDownloadNameCollisions, name, dir)
+	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxDownloadNameCollisions, name(0), dir)
 }
 
 // linksRefused reports whether a link failed because the filesystem does

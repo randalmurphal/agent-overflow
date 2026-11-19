@@ -2,6 +2,7 @@ package browser
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -22,12 +23,14 @@ import (
 // the Manager's forget generation.
 //
 // The generation rides each thread's state push (CompanionEvent.RecentGen):
-// a client that cached a list drops it when the number moves, which a round
+// a client that cached a list drops it when the token changes, which a round
 // trip of jar names (worktree, private, worktree) cannot hide. It is
 // Manager-wide, so it never repeats after a thread's entry is deleted; a
 // forget on another thread costs a client one re-read at its next push.
-// It starts at the launch time, so a restarted backend does not repeat a
-// number a client still holds.
+// It crosses as a string token, the Manager's launch identity and the
+// count (recentGenTokenLocked): a JSON number past 2^53 loses its low
+// digits in JavaScript, and a restarted backend, counting again, never
+// repeats a token a client still holds.
 
 // maxRecentAddresses bounds a thread's list.
 const maxRecentAddresses = 50
@@ -129,6 +132,12 @@ func (m *Manager) forgetAllBrowsingLocked() []string {
 	clear(m.closedTabs)
 	m.recentGen++
 	return threads
+}
+
+// recentGenTokenLocked is the forget generation as a state push carries it.
+// The caller holds m.mu.
+func (m *Manager) recentGenTokenLocked() string {
+	return m.recentLaunch + "." + strconv.FormatUint(m.recentGen, 10)
 }
 
 // RecentAddresses answers the thread's recent addresses, newest first.

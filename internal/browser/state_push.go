@@ -99,7 +99,7 @@ func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (Comp
 	downloads := m.threadDownloadsLocked(threadID)
 	m.stateSeq++
 	seq := m.stateSeq
-	recentGen := m.recentGen
+	recentGen := m.recentGenTokenLocked()
 	m.mu.Unlock()
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), ClosedTabs: closedTabs, Downloads: downloads, Seq: seq}
 	if active != nil && active.owner == threadID {

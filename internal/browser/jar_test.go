@@ -41,6 +41,12 @@ type jarEngine struct {
 	// lastPage is the handle of the page NewPage created last.
 	lastPage string
 	cleared  atomic.Int64
+	// clearGate, when set, holds the engine's site-data clear, signalling
+	// clearing first; profileInClear records a profile created during it.
+	clearGate      chan struct{}
+	clearing       chan struct{}
+	inClear        atomic.Bool
+	profileInClear atomic.Bool
 }
 
 type jarProfile struct {
@@ -77,6 +83,9 @@ func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engine
 		e.profiling <- struct{}{}
 		<-gate
 	}
+	if e.inClear.Load() {
+		e.profileInClear.Store(true)
+	}
 	profile, err := e.fakeEngine.NewProfile(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -89,6 +98,15 @@ func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engine
 }
 
 func (e *jarEngine) ClearSiteData(context.Context) error {
+	e.inClear.Store(true)
+	defer e.inClear.Store(false)
+	e.mu.Lock()
+	gate := e.clearGate
+	e.mu.Unlock()
+	if gate != nil {
+		e.clearing <- struct{}{}
+		<-gate
+	}
 	e.cleared.Add(1)
 	return nil
 }
@@ -376,8 +394,8 @@ func TestWorktreeJarIsTodaysWorkspaceProfile(t *testing.T) {
 	manager.mu.Lock()
 	scope := manager.scopes[workspace]
 	manager.mu.Unlock()
-	if want := filepath.Join(dir, "browser-artifacts", "downloads", fmt.Sprintf("%x", digest[:12])); scope.downloadDir != want {
-		t.Fatalf("download directory = %q, want today's %q", scope.downloadDir, want)
+	if want := filepath.Join(dir, "browser-artifacts", "downloading", fmt.Sprintf("%x", digest[:12])); scope.downloadDir != want {
+		t.Fatalf("download directory = %q, want %q", scope.downloadDir, want)
 	}
 	if state := manager.CompanionState(access); state.Jar != JarWorktree {
 		t.Fatalf("state names jar %q, want worktree", state.Jar)
@@ -881,6 +899,41 @@ func TestAPrivateJarEndsWithTheBrowser(t *testing.T) {
 	after := pageJar(t, manager, openPage(t, manager, access, "https://example.test/").ID)
 	if after == before {
 		t.Fatalf("a private page after the clear reopened the cleared jar %q", before)
+	}
+}
+
+// A private tab opened while the thread's last private tab is still shutting
+// down opens a new jar: the closed tab's login is not the new tab's, and the
+// old profile finishes in its own jar.
+func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	setJar(t, manager, access, JarPrivate)
+	first := openPage(t, manager, access, "https://example.test/1")
+	old := pageJar(t, manager, first.ID)
+	release := engine.holdClose()
+	defer release()
+	closed := make(chan error, 1)
+	go func() { closed <- manager.ClosePage(context.Background(), access, first.ID) }()
+	eventually(t, "the closed tab leaves the tab set", func() bool { return len(manager.CompanionState(access).Pages) == 0 })
+
+	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/2").ID)
+	if next == old || !strings.HasPrefix(next, "private:a:") {
+		t.Fatalf("a private tab opened during the last one's teardown is in %q, want a new private jar", next)
+	}
+	if engine.profile(old).disposed.Load() {
+		t.Fatal("the old private jar was disposed before its page finished closing")
+	}
+	release()
+	if err := <-closed; err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !engine.profile(old).disposed.Load() {
+		t.Fatal("the old private jar outlived its last page's teardown")
+	}
+	if pageJar(t, manager, tabIDs(manager, access)[0]) != next {
+		t.Fatal("the old jar's teardown moved the new tab's jar")
 	}
 }
 

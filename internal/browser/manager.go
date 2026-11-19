@@ -128,10 +128,12 @@ type Manager struct {
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq  uint64
 	sessions map[string]SessionInfo
-	// recent is each thread's recent addresses, and recentGen their forget
-	// generation (recent.go).
-	recent    map[string][]RecentAddress
-	recentGen uint64
+	// recent is each thread's recent addresses, recentGen their forget
+	// generation, and recentLaunch this Manager's identity the generation's
+	// token carries (recent.go).
+	recent       map[string][]RecentAddress
+	recentGen    uint64
+	recentLaunch string
 	// viewportSyncs serializes viewport application per thread (viewport.go).
 	viewportSyncs map[string]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and
@@ -442,7 +444,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		findTimeout:   findActionTimeout,
 		closedTabs:    make(map[string]*closedTabs),
 		agentLinger:   agentActivityLinger,
-		recentGen:     uint64(time.Now().UnixNano()),
+		recentLaunch:  uuid.NewString(),
 	}
 	m.selectionGapTimer = newSelectionGapTimer
 	m.accelerators = opts.Accelerators
@@ -520,7 +522,7 @@ func (m *Manager) Reconfigure(config Config) error {
 		// disabled browser keeps no browser state, and a page restored into
 		// the other site-data mode would not be the page that was open. The
 		// threads' jar settings stay unless the browser is off.
-		return m.forgetAllPages(context.Background(), config.Enabled)
+		return m.forgetAllPages(context.Background(), config.Enabled, nil)
 	}
 	return nil
 }

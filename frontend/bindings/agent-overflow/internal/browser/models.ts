@@ -47,10 +47,10 @@ export class CompanionEvent {
 
     /**
      * RecentGen rides a Kind "state" event: the Manager's forget generation
-     * of recent addresses (recent.go). A client holding a thread's list
-     * drops it when this changes.
+     * of recent addresses (recent.go), an opaque token. A client holding a
+     * thread's list drops it when this changes.
      */
-    "recentGen"?: number;
+    "recentGen"?: string;
 
     /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed

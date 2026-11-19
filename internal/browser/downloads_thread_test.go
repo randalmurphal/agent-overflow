@@ -595,6 +595,56 @@ func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
 	}
 }
 
+// A download that starts while the list's bound is all running downloads
+// is listed and takes its progress; the list is back within its bound once
+// one settles.
+func TestADownloadPastABoundOfRunningOnesIsListed(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	frame := paneHandle(manager, access, page.ID)
+	for i := 0; i <= maxThreadDownloads; i++ {
+		id := fmt.Sprintf("dl-%d", i)
+		manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"})
+	}
+	newest := fmt.Sprintf("dl-%d", maxThreadDownloads)
+	manager.downloadProgress(downloadProgress{ID: newest, Received: 7, Total: 10, State: downloadInProgress})
+	listed := threadDownloads(manager, access)
+	if len(listed) != maxThreadDownloads+1 || listed[0].Name != newest+".bin" || listed[0].ReceivedBytes != 7 {
+		t.Fatalf("with %d running downloads the list holds %d, newest %+v; want all of them, the newest %s with its progress", maxThreadDownloads+1, len(listed), listed[0], newest)
+	}
+	manager.downloadProgress(downloadProgress{ID: "dl-0", State: downloadCanceled, Error: "the server closed the connection"})
+	if listed := threadDownloads(manager, access); len(listed) != maxThreadDownloads || listed[0].Name != newest+".bin" {
+		t.Fatalf("after one settled the list holds %d downloads, newest %q; want %d and the newest", len(listed), listed[0].Name, maxThreadDownloads)
+	}
+}
+
+// A reservation the workspace quota refuses leaves the quota as it was,
+// however the other jars of the workspace reserve and release meanwhile.
+func TestARefusedReservationNeverKeepsWorkspaceBytes(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	t.Cleanup(func() { _ = manager.Close() })
+	authority := &workspaceAuthority{}
+	// One reservation's room left.
+	start := int64(maxWorkspaceDownloadBytes - maxDownloadBytes)
+	authority.downloadBytes.Store(start)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 5000 {
+				entry := DownloadInfo{reservedBytes: maxDownloadBytes}
+				manager.reserveDownloadLocked(authority, &entry)
+				if entry.reservedBytes > 0 {
+					authority.downloadBytes.Add(-entry.reservedBytes)
+					manager.settleArtifactReservation(entry.reservedBytes, 0)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := authority.downloadBytes.Load(); got != start {
+		t.Fatalf("after every reservation ended the workspace holds %d bytes, want %d", got, start)
+	}
+}
+
 // A page's own log drops its oldest settled entries past maxPageDownloads,
 // never a running one, whose progress must still find it.
 func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {

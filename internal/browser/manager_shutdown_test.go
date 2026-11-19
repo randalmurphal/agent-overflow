@@ -6,7 +6,46 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
+
+// A page asked for while site data is being cleared opens only after both
+// clears end: a profile started in between would run on the old cookies and
+// have its store deleted, or rewritten, under it.
+func TestClearSiteDataHoldsNewPagesUntilBothClearsEnd(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	access := Access{ThreadID: "t", Workspace: t.TempDir()}
+	openPage(t, manager, access, "https://example.test/")
+
+	gate := make(chan struct{})
+	engine.mu.Lock()
+	engine.clearGate, engine.clearing = gate, make(chan struct{}, 1)
+	engine.mu.Unlock()
+	cleared := make(chan error, 1)
+	go func() { cleared <- manager.ClearSiteData(context.Background()) }()
+	<-engine.clearing
+
+	opened := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), access, "https://example.test/next", OpenOptions{})
+		opened <- err
+	}()
+	select {
+	case err := <-opened:
+		t.Fatalf("an open finished while the clear ran (err %v); it must wait for the clear", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(gate)
+	if err := <-cleared; err != nil {
+		t.Fatalf("clear site data: %v", err)
+	}
+	if err := <-opened; err != nil {
+		t.Fatalf("open after the clear: %v", err)
+	}
+	if engine.profileInClear.Load() {
+		t.Fatal("a profile was created while the site data was being cleared")
+	}
+}
 
 // uiThreadEngine is the fake engine claiming the caller is the UI thread, the
 // way the WebKit engines do when Wails runs ServiceShutdown on it. It records

@@ -552,16 +552,21 @@ func wkParkView(view unsafe.Pointer, slot int) {
 
 // wkPresentView moves the view over the placement's fitted rect, cropped to
 // its visible intersection. The page's viewport was set by SetViewport and
-// stays its bounds, so the fitted frame over those bounds is the scale.
+// stays its bounds, so the fitted frame over those bounds is the scale. A
+// placement with no backing pixel left to show hides the view instead.
 func wkPresentView(view wkView, placement PanePlacement) error {
 	rect := placement.Rect
-	return view.do(func(view unsafe.Pointer) {
-		C.ao_wkv_host_present(view, C.double(rect.X), C.double(rect.Y),
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) {
+		released = int(C.ao_wkv_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
 			C.double(rect.ClipX), C.double(rect.ClipY),
 			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
-			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight))
-	})
+			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight)))
+	}); err != nil {
+		return err
+	}
+	return focusReleaseError(released)
 }
 
 // wkSetViewBackground paints the page's base (pageBase), packed 0xRRGGBB,

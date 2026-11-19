@@ -84,8 +84,9 @@ per-platform no-op.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying
-  active, and the records are saved before any teardown starts, so a
-  shutdown or crash mid-switch loses no tab. The tabs come back through the
+  active, and the records are saved before the switch takes effect, so a
+  shutdown or crash mid-switch loses no tab, and a switch whose save fails
+  changes nothing and reports the failure. The tabs come back through the
   ordinary restore: the pane brings back the tab it shows, and the others
   return when selected or used, with the navigation policy applied and no
   page history. A tab that cannot come back stays suspended with the error.
@@ -821,7 +822,8 @@ JavaScript therefore does not inherit the MCP caller's file authority.
 `browser_open_file` resolves symlinks and permits files inside the thread's
 workspace or project root, and the workspace's own finished downloads, which
 the pane's downloads list opens from: under headless Chromium its AO-owned
-download directory; on every other engine the file of each finished
+directory of finished downloads, apart from where the engine writes running
+ones; on every other engine the file of each finished
 download of the workspace that AO still lists, in any thread's pane list
 or a live page's `browser_downloads`, while it is still the file the
 download wrote (device, inode, size and modification time), never the
@@ -898,7 +900,8 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   removes its own partial file, and the other desktop engines remove
   their staged file and the emptied staging folder. A staged file left
   by a run that ended mid-download is removed when a download of a later
-  run first uses the staging folder, once it is 24 hours old; a running
+  run first uses the staging folder, once it is 24 hours old; a file
+  there without a staged name is never removed, and a running
   download's file never is. A download another app process lets stall
   for 24 hours can lose its staged file that way and fails at its
   publish. Nothing that deletes a thread, clears site data, turns the

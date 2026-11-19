@@ -550,17 +550,20 @@ static CGFloat ao_snap_edge(CGFloat v, CGFloat backing) {
   return floor(v * backing + 0.5) / backing;
 }
 
-void ao_wkv_host_present(void *view, double x, double y, double width, double height,
-                         double clip_x, double clip_y, double clip_width, double clip_height,
-                         double vw, double vh) {
+static BOOL ao_view_holds_focus(NSView *view);
+static int ao_release_focus(BOOL held);
+
+int ao_wkv_host_present(void *view, double x, double y, double width, double height,
+                        double clip_x, double clip_y, double clip_width, double clip_height,
+                        double vw, double vh) {
   @autoreleasepool {
     if (ao_host == nil || view == NULL) {
-      return;
+      return 0;
     }
     NSView *v = (NSView *)view;
     NSView *clip = ao_clip_for(v);
     if (clip == nil) {
-      return;
+      return 0;
     }
     if ([v superview] != clip) {
       ao_wkv_host_unpark(view);
@@ -601,10 +604,12 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
     CGFloat cr = MIN(ao_snap_edge((CGFloat)(clip_x + clip_width) * sx, backing), fr);
     CGFloat cb = MIN(ao_snap_edge((CGFloat)(clip_y + clip_height) * sy, backing), fb);
     if (!(cr > cl) || !(cb > ct)) {
-      cl = fl;
-      ct = ft;
-      cr = fr;
-      cb = fb;
+      // No backing pixel of the page is left to show: the clip rounded away
+      // at this scale (paneplace.Layout's rule). Hidden, as a hide hides it,
+      // never shown unclipped over the pane.
+      BOOL held = ao_view_holds_focus(v);
+      [clip setHidden:YES];
+      return ao_release_focus(held);
     }
     CGFloat fx = fl;
     CGFloat fy = ft;
@@ -641,6 +646,7 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
     ao_place(v, NSMakeRect(fx - cx, childY, fw, fh));
     [v setHidden:NO];
     [clip setHidden:NO];
+    return 0;
   }
 }
 
