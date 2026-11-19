@@ -394,6 +394,12 @@ func downloadOpensInPage(name string) bool {
 	return false
 }
 
+// jarDownloadingDir is the artifact subtree an engine keeping downloads as
+// artifacts writes each jar's running downloads in (jarScope.downloadDir).
+// It is apart from the workspaces' directories, so a file authorizeFile
+// opens from one is a finished download AO moved there.
+const jarDownloadingDir = "downloading"
+
 // workspaceDownloadDir is the directory a workspace's finished downloads
 // are kept in (workspaceAuthority.downloadDir), for the canonical
 // workspace.

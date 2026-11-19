@@ -806,7 +806,8 @@ JavaScript therefore does not inherit the MCP caller's file authority.
 `browser_open_file` resolves symlinks and permits files inside the thread's
 workspace or project root, and the workspace's own finished downloads, which
 the pane's downloads list opens from: under headless Chromium its AO-owned
-download directory; on every other engine the file of each finished
+directory of finished downloads, apart from where the engine writes running
+ones; on every other engine the file of each finished
 download of the workspace that AO still lists, in any thread's pane list
 or a live page's `browser_downloads`, while it is still the file the
 download wrote (device, inode, size and modification time), never the

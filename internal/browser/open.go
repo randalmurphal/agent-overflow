@@ -270,11 +270,13 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 
 // createScope creates the profile of one jar. Its profile-level navigation
 // policy answers with the authority of the page a request's frame belongs
-// to, or its opener's (jarAllows).
+// to, or its opener's (jarAllows). The engine writes the jar's downloads
+// under jarDownloadingDir, apart from every workspace's finished ones, which
+// authorizeFile opens.
 func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := ""
 	if m.downloadsToArtifacts() {
-		downloadDir = filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
+		downloadDir = filepath.Join(m.artifactRoot, jarDownloadingDir, jarDirName(jar.key))
 		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}

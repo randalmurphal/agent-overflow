@@ -308,6 +308,29 @@ func TestAnArtifactDownloadNeverReplacesAFileTakingItsName(t *testing.T) {
 	}
 }
 
+// Of a workspace's artifact downloads only the finished files open: the
+// file the engine is still writing is not in the workspace's directory.
+func TestARunningArtifactDownloadIsNotOpenable(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	startDownload(t, manager, access, page, "done.bin", 10)
+	startDownload(t, manager, access, page, "running.bin", 10, "hold")
+	var done, running threadDownload
+	for _, row := range threadDownloads(manager, access) {
+		item, _ := manager.threadDownload(access.ThreadID, row.ID)
+		if row.Name == "done.bin" {
+			done = item
+		} else {
+			running = item
+		}
+	}
+	if _, err := manager.authorizeFile(access, done.path); err != nil {
+		t.Fatalf("the finished download does not open: %v", err)
+	}
+	if _, err := manager.authorizeFile(access, heldFile(t, manager, running.engineID)); err == nil {
+		t.Fatal("the file of a running download opens")
+	}
+}
+
 // With neither hard links nor a no-replace rename, or a staging directory
 // on another filesystem, the download fails on its row with the reason:
 // nothing is copied, nothing appears in Downloads, and the staged file goes.

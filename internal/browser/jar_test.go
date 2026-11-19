@@ -394,8 +394,8 @@ func TestWorktreeJarIsTodaysWorkspaceProfile(t *testing.T) {
 	manager.mu.Lock()
 	scope := manager.scopes[workspace]
 	manager.mu.Unlock()
-	if want := filepath.Join(dir, "browser-artifacts", "downloads", fmt.Sprintf("%x", digest[:12])); scope.downloadDir != want {
-		t.Fatalf("download directory = %q, want today's %q", scope.downloadDir, want)
+	if want := filepath.Join(dir, "browser-artifacts", "downloading", fmt.Sprintf("%x", digest[:12])); scope.downloadDir != want {
+		t.Fatalf("download directory = %q, want %q", scope.downloadDir, want)
 	}
 	if state := manager.CompanionState(access); state.Jar != JarWorktree {
 		t.Fatalf("state names jar %q, want worktree", state.Jar)
