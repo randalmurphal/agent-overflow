@@ -18,6 +18,7 @@ import { addPaneThreadMountedObserver, getAllPanes } from './panes.svelte';
 import { hasScope } from '../transport/scopes';
 import { isCompactLayout } from './layoutMode.svelte';
 import { createSequenceGate } from './snapshotStream';
+import { onWatchedThreadsComposed } from './watchedThreads';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
@@ -31,7 +32,8 @@ import { addErrorToast } from './toast.svelte';
 //
 // - The thread's accepted snapshot: the newest state admitted for it, which
 //   the chat header, the tab strip and the keyboard commands all read. A
-//   thread has one whether or not any pane is mounted.
+//   thread has one whether or not its browser pane is mounted, while a
+//   surface shows the thread.
 // - The pane's mount: the attachment a mounted pane holds (the entity
 //   store), which owns the mount id, the pane's failure and the detach.
 //
@@ -86,6 +88,8 @@ export interface BrowserCompanionObserver {
   focusSettled?(event: BrowserCompanionEvent): void;
   /** The thread's pane mount ended with its attachment. */
   mountEnded?(mount: BrowserMountId): void;
+  /** No surface shows the thread any more: drop what is kept for it. */
+  threadReleased?(threadId: string): void;
   /** resetBrowserCompanionForTest: drop all state, telling no one. */
   resetForTest?(): void;
 }
@@ -113,12 +117,41 @@ interface AcceptedState {
 // only when ITS thread's state changes. A known empty snapshot (no pages) is
 // data: the thread has no tab. The reads in flight, one per thread.
 const snapshots = createKeyedSignalRegistry<AcceptedState | null>(null);
-const stateReads = new Map<string, Promise<void>>();
+const stateReads = new Map<string, { readonly token: symbol; readonly promise: Promise<void> }>();
 
 // The transport can write a push published after a call returned ahead of
 // its reply. The backend numbers every snapshot, so the newest by that
 // number wins within a backend launch, whatever the arrival order.
 const stateOrder = createSequenceGate();
+
+// The threads whose browser state this window keeps: those a surface shows,
+// the last composed watched set (watchedThreads.ts; a browser pane's thread
+// is its source pane's). The channel carries every thread's state, so a
+// state for any other thread is not admitted, and a thread that leaves the
+// set loses its snapshot, its place in the order and its read in flight; a
+// surface that shows it again reads it again. Null until the first
+// composition, keeping every thread.
+let keptThreads: ReadonlySet<string> | null = null;
+
+function keepsThreadState(threadId: string): boolean {
+  return keptThreads === null || keptThreads.has(threadId);
+}
+
+onWatchedThreadsComposed((threadIds) => {
+  keptThreads = threadIds;
+  const released = new Set<string>();
+  for (const threadId of snapshots.keys()) if (!threadIds.has(threadId)) released.add(threadId);
+  for (const threadId of stateReads.keys()) if (!threadIds.has(threadId)) released.add(threadId);
+  for (const threadId of released) releaseThreadState(threadId);
+});
+
+function releaseThreadState(threadId: string): void {
+  snapshots.drop(threadId);
+  stateOrder.forget(threadId);
+  stateReads.delete(threadId);
+  findCleanupErrors.drop(threadId);
+  for (const observer of observers) observer.threadReleased?.(threadId);
+}
 
 /** The home connection's generation; an answer is admitted only in the one its call started in. */
 export function browserStateGeneration(): number {
@@ -341,7 +374,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
  */
 export function admitBrowserState(event: BrowserCompanionEvent, generation: number): void {
   if (event?.kind !== 'state' || !event.threadId) return;
-  if (generation !== connectionGeneration) return;
+  if (generation !== connectionGeneration || !keepsThreadState(event.threadId)) return;
   if (!stateOrder.admit(event.threadId, event.seq, getTransportHelloFor(HOME_BACKEND)?.launchId ?? '')) {
     // The held state is at least as new as this answer of the current
     // generation, so it is known in this generation too.
@@ -463,13 +496,17 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   // The read in flight may end in a generation that has since passed; the
   // caller is answered for the current one.
   const pending = stateReads.get(threadId);
-  if (pending) return pending.then(() => readBrowserCompanionState(threadId));
+  if (pending) return pending.promise.then(() => readBrowserCompanionState(threadId));
+  const token = Symbol('browser state read');
   // The async wrapper folds a SYNCHRONOUS throw from the binding into the
   // same failure path as a rejection.
   const read = (async () => {
     while (browserThreadSnapshot(threadId).status === 'unknown') {
       const generation = connectionGeneration;
       const state = await BrowserCompanionThreadState(threadId);
+      // Released while reading: no surface shows the thread, and one that
+      // shows it again reads it again.
+      if (stateReads.get(threadId)?.token !== token) return;
       // Not admitted when older than a state already admitted, which then
       // is the known one; or when an edge passed, and then read again.
       admitBrowserState(state, generation);
@@ -480,9 +517,9 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   })().finally(() => {
     // A failed read (backend restarting, thread gone) leaves the thread
     // unknown; the next mount or click reads again.
-    if (stateReads.get(threadId) === read) stateReads.delete(threadId);
+    if (stateReads.get(threadId)?.token === token) stateReads.delete(threadId);
   });
-  stateReads.set(threadId, read);
+  stateReads.set(threadId, { token, promise: read });
   return read;
 }
 
@@ -541,9 +578,15 @@ export function presentWantedBrowser(threadId: string): void {
 
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
+/** Test hook: the threads this window keeps browser state or a read for. */
+export function browserStateThreadsForTest(): string[] {
+  return [...new Set([...snapshots.keys(), ...stateReads.keys()])].sort();
+}
+
 export function resetBrowserCompanionForTest(): void {
   // An answer to a call a test started before the reset is not admitted after it.
   connectionGeneration += 1;
+  keptThreads = null;
   for (const observer of observers) observer.resetForTest?.();
   stateOrder.reset();
   snapshots.reset();

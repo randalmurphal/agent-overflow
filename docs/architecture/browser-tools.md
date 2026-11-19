@@ -116,6 +116,11 @@ per-platform no-op.
   thread's explicitly selected tab. No pixels cross the wire in either
   direction, so a hidden pane costs nothing and no connection can receive
   browser image data.
+- The host window receives every thread's state on
+  `browser:companion-state` and keeps it only for the threads a surface
+  shows (the watched threads): a thread that leaves them loses its snapshot,
+  its place in the state order and its read in flight, and a surface that
+  shows it again reads it again (`BrowserCompanionThreadState`).
 - Every page lays out at the thread's viewport whether or not a pane shows it.
   By default the viewport follows the mounted pane's host rect (whole CSS
   pixels, held within 320×240 and 1920×1200): the page fills the pane at 1:1

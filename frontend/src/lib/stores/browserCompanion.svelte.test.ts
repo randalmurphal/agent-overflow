@@ -9,6 +9,7 @@ import {
   browserPaneMountId,
   canUseNativeBrowser,
   hydrateBrowserCompanionState,
+  readBrowserCompanionState,
   reconcileBrowserCompanionForPane,
   refreshBrowserCompanionStates,
   resetBrowserCompanionForTest,
@@ -30,7 +31,8 @@ import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { getToasts, resetToastsForTest } from './toast.svelte';
-import { browserCompanionState } from './browserCompanion.svelte';
+import { browserCompanionState, browserStateThreadsForTest } from './browserCompanion.svelte';
+import { refreshWatchedThreads, registerWatchedThreadSource } from './watchedThreads';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -110,22 +112,27 @@ describe('browser companion state routing', () => {
     });
   });
 
-  it('reopens the pane in the host window when the thread is shown again after a switch away', () => {
-    applyBrowserCompanionState({
+  // The state of a thread no pane shows is not kept: shown again, it is
+  // read again, and the pane opens from that read.
+  it('reopens the pane in the host window when the thread is shown again after a switch away', async () => {
+    const shown = {
       kind: 'state',
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: true,
       pages: [page('file:///repo/demo.html', 'Demo')],
-    });
+    };
+    applyBrowserCompanionState(shown);
     expect(companionForSource('main', 'browser')?.kind).toBe('browser');
     closeCompanion('browser-main');
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async (threadId: string) => (threadId === 'thread-browser' ? shown : { kind: 'state', threadId, pages: [] })));
     getPane('main')!.replaceThread(makeThread({ id: 'other-thread' }));
     reconcileBrowserCompanionForPane('main', 'other-thread');
     expect(companionForSource('main', 'browser')).toBeNull();
     getPane('main')!.replaceThread(makeThread({ id: 'thread-browser' }));
     reconcileBrowserCompanionForPane('main', 'thread-browser');
-    expect(companionForSource('main', 'browser')?.kind).toBe('browser');
+    await vi.waitFor(() => expect(companionForSource('main', 'browser')?.kind).toBe('browser'));
+    expect(read).toHaveBeenCalledWith('thread-browser');
   });
 
   // The companion is a native view on the host; the compact screen never
@@ -185,16 +192,18 @@ describe('browser companion state routing', () => {
     expect(companionForSource('main', 'browser')).toBeNull();
   });
 
-  it('restores a live companion when its thread is mounted again', () => {
-    applyBrowserCompanionState({
+  it('restores a live companion when its thread is mounted again', async () => {
+    const live = {
       kind: 'state',
       threadId: 'returning-thread',
       visible: true,
       pages: [page('https://example.com', 'Example')],
-    });
+    };
+    applyBrowserCompanionState(live);
+    setBindingMock('BrowserCompanionThreadState', vi.fn(async () => live));
     createPane('main').replaceThread(makeThread({ id: 'returning-thread' }));
     reconcileBrowserCompanionForPane('main', 'returning-thread');
-    expect(companionForSource('main', 'browser')?.kind).toBe('browser');
+    await vi.waitFor(() => expect(companionForSource('main', 'browser')?.kind).toBe('browser'));
   });
 
   it('hides and restores the live companion without closing its pages', () => {
@@ -651,5 +660,63 @@ describe('tab lifecycle in the browser companion store', () => {
     expect(toasts).toHaveLength(1);
     expect(toasts[0].message).toContain('profile would not stop');
     expect(toasts[0].duration).toBe(0);
+  });
+});
+
+// The channel carries every thread's state; this window keeps it only for
+// the threads a surface shows (the watched set), so visiting threads leaves
+// nothing behind for the ones no surface shows any more.
+describe('browser state kept per surface', () => {
+  const page = { id: 'p', url: 'https://example.test/', title: 'P', canGoBack: false, canGoForward: false };
+  const state = (threadId: string, seq: number) => ({ kind: 'state', threadId, activePageId: 'p', visible: false, seq, pages: [page] });
+  let shown: Set<string>;
+  let unregister: () => void;
+  beforeEach(() => {
+    resetBrowserCompanionForTest();
+    shown = new Set();
+    unregister = registerWatchedThreadSource(() => shown);
+  });
+  afterEach(() => {
+    unregister();
+    resetBrowserCompanionForTest();
+  });
+
+  function show(...threadIds: string[]): void {
+    shown = new Set(threadIds);
+    refreshWatchedThreads();
+  }
+
+  it('keeps state only for the threads a surface shows, and orders a thread shown again afresh', () => {
+    for (let index = 0; index < 20; index += 1) {
+      show(`thread-${index}`);
+      applyBrowserCompanionState(state(`thread-${index}`, 5));
+    }
+    applyBrowserCompanionState(state('thread-unseen', 1));
+    expect(browserStateThreadsForTest()).toEqual(['thread-19']);
+
+    // Shown again, its next state is admitted whatever its number: the
+    // order it had was forgotten with it.
+    show('thread-19', 'thread-0');
+    applyBrowserCompanionState(state('thread-0', 1));
+    expect(browserThreadState('thread-0')?.seq).toBe(1);
+  });
+
+  it('drops a read in flight for a thread no surface shows, and reads again once one does', async () => {
+    const answers: Array<() => void> = [];
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn(() => new Promise((resolve) => answers.push(() => resolve(state('thread-a', 3))))));
+    show('thread-a');
+    const first = readBrowserCompanionState('thread-a');
+    show();
+    expect(browserStateThreadsForTest()).toEqual([]);
+    answers[0]();
+    await first;
+    expect(browserThreadState('thread-a')).toBeNull();
+
+    show('thread-a');
+    const second = readBrowserCompanionState('thread-a');
+    expect(read).toHaveBeenCalledTimes(2);
+    answers[1]();
+    await second;
+    expect(browserThreadState('thread-a')?.seq).toBe(3);
   });
 });

@@ -389,6 +389,9 @@ function unhandledSnapshot(snapshot: never): never {
 }
 
 observeBrowserCompanion({
+  threadReleased: (threadId) => {
+    browserActionCounts.delete(threadId);
+  },
   resetForTest: () => {
     browserActionCounts.clear();
     headerShows.clear();

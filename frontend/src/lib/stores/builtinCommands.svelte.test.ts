@@ -1,6 +1,7 @@
 // Focused tests for makeCommandContext — keeps palette / keybindings gates
 // honest about the live pane / terminal-focus state.
 
+import { refreshWatchedThreads } from './watchedThreads';
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
 import { render } from '@testing-library/svelte';
@@ -2981,6 +2982,9 @@ describe('compact-gated commands', () => {
     setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
     const pane = readyPane();
     registerPaneForTest('a', pane);
+    // A pane registered here composes no watched set; the browser keeps
+    // state only for the threads one names.
+    refreshWatchedThreads();
     setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
     const browser = openCompanion('a', 'browser')!;
     applyBrowserCompanionState({
@@ -3016,6 +3020,9 @@ describe('compact-gated commands', () => {
     setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
     const pane = readyPane();
     registerPaneForTest('a', pane);
+    // A pane registered here composes no watched set; the browser keeps
+    // state only for the threads one names.
+    refreshWatchedThreads();
     setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
     const browser = openCompanion('a', 'browser')!;
     applyBrowserCompanionState({
