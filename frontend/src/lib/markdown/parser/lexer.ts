@@ -7,6 +7,7 @@
  * mutating `Lexer.rules` at import time are literals in `engine/rules.ts` now.
  */
 import { Lexer } from './engine';
+import type { BareUrlRule, DestinationHook } from './engine/destination';
 import type { LexerOptions, MarkedToken, Token, TokenizerStartFunction, TokenizerThis, Tokens, TokensList } from './engine';
 import type { AlertToken } from './extensions/alert';
 import type { Footnote, FootnoteMaps, FootnoteToken } from './extensions/footnotes';
@@ -22,6 +23,7 @@ import type { AlignToken } from './extensions/align';
 import type { CitationToken } from './extensions/citations';
 import type { MdxToken } from './extensions/mdx';
 import type { DetailsSummaryToken, DetailsToken, HtmlInlineToken } from './extensions/embeddedHtml';
+import type { InlineDiffToken } from './extensions/inlineDiff';
 import type { HtmlRegionToken } from './extensions/htmlRegion';
 import { markedAlert } from './extensions/alert';
 import { markedFootnote, markedFootnoteBlock } from './extensions/footnotes';
@@ -82,6 +84,8 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
     extensions.forEach(({ level, name: _name, tokenizer, ...rest }) => {
         if (rest.linkText)
             options.linkText = rest.linkText;
+        if (rest.bareUrls)
+            options.bareUrls = rest.bareUrls;
         if ('start' in rest && rest.start) {
             if (level === 'block') {
                 options.extensions.startBlock.push(rest.start);
@@ -99,6 +103,9 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
             }
         }
     });
+    const destinations = destinationsOf(extensions);
+    if (destinations.length > 0)
+        options.destinations = Object.freeze(destinations);
     // Every bag this returns is shared across Lexer instances via the caches
     // below, and `lexer.options` is a public field — freeze so a write
     // through one instance throws instead of silently reconfiguring every
@@ -109,6 +116,19 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
     Object.freeze(options.extensions.startInline);
     Object.freeze(options.extensions);
     return Object.freeze(options);
+};
+/**
+ * The destination hooks of `extensions`, in list order: what the engine
+ * runs on every link and image it builds, and what a surface's HTML
+ * sanitizer runs on every `href` and `src` (`decideDestination`).
+ */
+export const destinationsOf = (extensions: readonly Extension[]): DestinationHook[] => {
+    const hooks: DestinationHook[] = [];
+    for (const extension of extensions) {
+        if (extension.destination)
+            hooks.push(extension.destination);
+    }
+    return hooks;
 };
 // Options objects are stateless and reusable across Lexer instances; cache them
 // per user-extension array (props are referentially stable across chunks) so the
@@ -305,13 +325,20 @@ export type Extension = {
     /** Sets the engine's `linkText` option. The last extension that has one wins. */
     linkText?: (written: string) => string;
     /**
+     * Claims a link or image destination (`DestinationHook`). Hooks run in
+     * list order on every link and image token, and the first claim wins.
+     */
+    destination?: DestinationHook;
+    /** Sets the engine's `bareUrls` option. The last extension that has one wins. */
+    bareUrls?: BareUrlRule;
+    /**
      * True only when this extension tokenizes `source` exactly as `previous`
      * did. A renderer holding output produced under `previous` may then keep
      * it. Absent, or false, means the output is rebuilt.
      */
     tokenizesAlike?: (previous: Extension, source: string) => boolean;
 };
-export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken | HtmlInlineToken | HtmlRegionToken | TCaption | CheckboxToken;
+export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken | HtmlInlineToken | HtmlRegionToken | InlineDiffToken | TCaption | CheckboxToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';
 
 /** marked's per-Lexer reference-link table. */
@@ -336,4 +363,4 @@ type LexOptions = LexerOptions & {
 	};
 };
 export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };
-export type { DetailsToken, DetailsSummaryToken, HtmlInlineToken, HtmlRegionToken };
+export type { DetailsToken, DetailsSummaryToken, HtmlInlineToken, HtmlRegionToken, InlineDiffToken };

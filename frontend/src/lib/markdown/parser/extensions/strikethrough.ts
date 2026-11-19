@@ -17,13 +17,13 @@
  * the first. Code spans, links and HTML bind tighter: a tilde inside one
  * is not a delimiter (`Lexer.maskInline`).
  *
- * A tokenizer sees one opener at a time, so it replays the rules from
- * there to the end of the run: the opener strikes up to the closer that
- * takes it, or is text. Openers before it are already decided and change
- * nothing after it. It runs ahead of the default extensions, so
- * subscript, which a forge does not have, never claims a tilde.
+ * The tildes of a whole inline run are paired in one left-to-right pass,
+ * cmark-gfm's, made once per run (`Lexer.inlineRun`); the tokenizer looks
+ * its position up. It runs ahead of the default extensions, so subscript,
+ * which a forge does not have, never claims a tilde.
  */
 import type { Token, Tokens, TokensList } from '../engine';
+import type { InlineRun } from '../engine/Lexer';
 import type { Extension } from '../lexer';
 
 const TILDE = 126;
@@ -78,30 +78,43 @@ const lastChar = (tokens: Token[] | TokensList): string => {
 };
 
 /**
- * Where the opener at 0 closes: the index of the closing run, or -1 when
- * it strikes nothing.
+ * The strikes of `run`: each opening run's offset to its closing run's
+ * offset. A run of one or two tildes that closes takes the nearest opener
+ * on the stack it does not pass over by the rule of 3; that opener, those
+ * above it and the closer leave the stack, and the pair strikes when their
+ * lengths are equal. A run that finds none is pushed when it opens.
+ * `bottom` holds, per closer kind (length, and whether it also opens), the
+ * stack height below which that kind's last search found nothing, so the
+ * pass is linear in the run.
  */
-const closerOf = (src: string, masked: string, opener: Run, before: string): number => {
-	const openers: Run[] = [opener];
-	let at = opener.length;
-	for (;;) {
-		at = masked.indexOf('~', at);
-		if (at === -1) return -1;
-		const run = tildeRun(src, masked, at, before);
-		at += run.length;
-		if (run.length > 2) continue;
-		if (run.closes) {
-			let index = openers.length - 1;
-			while (index >= 0 && oddMatch(openers[index], run)) index--;
-			if (index === 0) return openers[0].length === run.length ? run.at : -1;
-			if (index > 0) {
-				openers.length = index;
+const strikesOf = (run: InlineRun, before: string): Map<number, number> => {
+	const { src, masked } = run;
+	const strikes = new Map<number, number>();
+	const stack: Run[] = [];
+	const bottom = [0, 0, 0, 0];
+	for (let at = masked.indexOf('~'); at !== -1; ) {
+		const tilde = tildeRun(src, masked, at, before);
+		at = masked.indexOf('~', at + tilde.length);
+		if (tilde.length > 2) continue;
+		if (tilde.closes) {
+			const kind = (tilde.length - 1) * 2 + (tilde.opens ? 1 : 0);
+			let index = stack.length - 1;
+			while (index >= bottom[kind] && oddMatch(stack[index], tilde)) index--;
+			if (index >= bottom[kind]) {
+				if (stack[index].length === tilde.length) strikes.set(stack[index].at, tilde.at);
+				stack.length = index;
+				for (let k = 0; k < bottom.length; k++) bottom[k] = Math.min(bottom[k], index);
 				continue;
 			}
+			bottom[kind] = stack.length;
 		}
-		if (run.opens) openers.push(run);
+		if (tilde.opens) stack.push(tilde);
 	}
+	return strikes;
 };
+
+/** Each inline run's strikes, made at the tokenizer's first call in it. */
+const runStrikes = new WeakMap<InlineRun, Map<number, number>>();
 
 export const markedStrikethrough: Extension = {
 	name: 'strikethrough',
@@ -113,17 +126,27 @@ export const markedStrikethrough: Extension = {
 	},
 	tokenizer(src, tokens) {
 		if (src.charCodeAt(0) !== TILDE) return undefined;
-		const before = lastChar(tokens);
-		const opener = tildeRun(src, src, 0, before);
-		const close = opener.length <= 2 && opener.opens ? closerOf(src, this.lexer.maskInline(src), opener, before) : -1;
-		if (close === -1) {
-			const run: Tokens.Text = { type: 'text', raw: src.slice(0, opener.length), text: src.slice(0, opener.length) };
-			return run;
+		const run = this.lexer.inlineRun;
+		if (!run || run.src.length - run.at !== src.length) return undefined;
+		let strikes = runStrikes.get(run);
+		if (!strikes) {
+			// Before the run's start: what its tokens so far end with, read
+			// when the tokenizer is at that start.
+			strikes = strikesOf(run, run.at === 0 ? lastChar(tokens) : '\n');
+			runStrikes.set(run, strikes);
 		}
-		const text = src.slice(opener.length, close);
+		let length = 1;
+		while (src.charCodeAt(length) === TILDE) length++;
+		const close = strikes.get(run.at);
+		if (close === undefined) {
+			const text: Tokens.Text = { type: 'text', raw: src.slice(0, length), text: src.slice(0, length) };
+			return text;
+		}
+		const end = close - run.at;
+		const text = src.slice(length, end);
 		const del: Tokens.Del = {
 			type: 'del',
-			raw: src.slice(0, close + opener.length),
+			raw: src.slice(0, end + length),
 			text,
 			tokens: this.lexer.inlineTokens(text)
 		};

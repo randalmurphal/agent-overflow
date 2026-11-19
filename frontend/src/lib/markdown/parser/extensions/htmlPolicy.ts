@@ -33,6 +33,10 @@ export interface HtmlPolicy {
 	 * (GitHub). Otherwise the line starts an HTML block, as CommonMark
 	 * reads it. */
 	readonly imageLines: boolean;
+	/** An `<img>` its stripped wrappers (`<figure>`) leave at the top of an
+	 * HTML block is a paragraph of its own, so text after it starts a line
+	 * (GitHub). */
+	readonly imageParagraphs: boolean;
 }
 
 /** What both forges keep on an element whose rendering can carry it. */
@@ -58,7 +62,7 @@ const COMMON: [string, HtmlElementRule][] = [
 		[
 			'thead', 'tbody', 'tfoot', 'tr', 'span', 'b', 'strong', 'i', 'em', 'pre', 'sub', 'sup', 'kbd', 'del', 's',
 			'strike', 'ins', 'mark', 'q', 'var', 'ruby', 'rt', 'rp', 'br', 'hr', 'ul', 'blockquote', 'dl', 'dt', 'dd',
-			'summary'
+			'summary', 'section'
 		],
 		kept()
 	),
@@ -79,12 +83,12 @@ const GITLAB_IMAGE_FLOATS: [string, 'left' | 'right'][] = [
 
 const policy = (
 	entries: [string, HtmlElementRule][],
-	rest: { tagFilter: boolean; imageFloats: [string, 'left' | 'right'][]; imageLines: boolean }
+	rest: { tagFilter: boolean; imageFloats: [string, 'left' | 'right'][]; imageLines: boolean; imageParagraphs: boolean }
 ): HtmlPolicy => ({ ...rest, elements: new Map(entries), imageFloats: new Map(rest.imageFloats) });
 
 const POLICIES: Record<HtmlForge, HtmlPolicy> = {
-	github: policy(COMMON, { tagFilter: true, imageFloats: [], imageLines: true }),
-	gitlab: policy([...COMMON, ...GITLAB_ONLY], { tagFilter: false, imageFloats: GITLAB_IMAGE_FLOATS, imageLines: false })
+	github: policy(COMMON, { tagFilter: true, imageFloats: [], imageLines: true, imageParagraphs: true }),
+	gitlab: policy([...COMMON, ...GITLAB_ONLY], { tagFilter: false, imageFloats: GITLAB_IMAGE_FLOATS, imageLines: false, imageParagraphs: false })
 };
 
 /**
@@ -94,7 +98,8 @@ const POLICIES: Record<HtmlForge, HtmlPolicy> = {
 export const ANY_FORGE_HTML_POLICY: HtmlPolicy = policy([...COMMON, ...GITLAB_ONLY], {
 	tagFilter: false,
 	imageFloats: GITLAB_IMAGE_FLOATS,
-	imageLines: false
+	imageLines: false,
+	imageParagraphs: false
 });
 
 /** The policy of `forge`'s surface; `ANY_FORGE_HTML_POLICY` without one. */

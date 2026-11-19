@@ -36,7 +36,7 @@ describe('parseHtmlRegion', () => {
 		const parsed = parseHtmlRegion(region.parts, sanitized());
 		expect([...parsed.islands.values()]).toEqual([0]);
 		expect([...parsed.islands.keys()][0].parentElement?.localName).toBe('td');
-		expect(outline(htmlRegionNodes(parsed))).toEqual([
+		expect(outline(htmlRegionNodes(parsed, ['*']))).toEqual([
 			{
 				table: {},
 				children: [
@@ -61,10 +61,10 @@ describe('parseHtmlRegion', () => {
 		const parsed = parseHtmlRegion(region.parts, sanitized());
 		expect(parsed.root.querySelector('script, blink, [onclick], [onerror]')).toBeNull();
 		expect(parsed.root.querySelector('a')?.hasAttribute('href')).toBe(false);
-		expect(parsed.root.querySelector('img')?.hasAttribute('src')).toBe(false);
+		expect(parsed.root.querySelector('img[src]')).toBeNull();
 		expect(parsed.root.textContent).not.toContain('alert(2)');
 		expect(parsed.root.textContent).toContain('odd');
-		const nodes = htmlRegionNodes(parsed);
+		const nodes = htmlRegionNodes(parsed, ['*']);
 		expect(nodes).toHaveLength(1);
 		expect(nodes[0]).toMatchObject({ kind: 'element', tag: 'div', attrs: { align: 'center' } });
 		expect(Object.keys((nodes[0] as { attrs: object }).attrs)).toEqual(['align']);
@@ -83,7 +83,7 @@ describe('parseHtmlRegion', () => {
 				expect([...parsed.islands.values()], forged).toEqual([0]);
 				const [placeholder] = parsed.islands.keys();
 				expect(placeholder.textContent).toBe('');
-				const nodes = outline(htmlRegionNodes(parsed));
+				const nodes = outline(htmlRegionNodes(parsed, ['*']));
 				expect(JSON.stringify(nodes).match(/\[0\]/g)).toHaveLength(1);
 				expect(JSON.stringify(nodes)).toContain('forged');
 			}
@@ -92,18 +92,21 @@ describe('parseHtmlRegion', () => {
 		}
 	});
 
-	it('runs claimMedia over the whole region', () => {
+	it('runs the destination hooks over the whole region', () => {
 		const region = regionOf('<div align="center">\n<img alt="shot" src="/uploads/a.png">\n\n**caption**\n\n</div>');
 		const claims: string[] = [];
 		const parsed = parseHtmlRegion(
 			region.parts,
-			sanitized({ claimMedia: (_tag, src) => (claims.push(src), `claim:${src}`) })
+			sanitized({
+				destinations: [(token) => (claims.push(token.href), { ...token, href: `claim:${token.href}` })],
+				allowedImagePrefixes: ['claim:']
+			})
 		);
 		expect(claims).toEqual(['/uploads/a.png']);
 		const img = parsed.root.querySelector('img')!;
 		expect(img.getAttribute(MEDIA_CLAIM_ATTR)).toBe('claim:/uploads/a.png');
 		expect(img.hasAttribute('src')).toBe(false);
-		const [div] = htmlRegionNodes(parsed) as { children: HtmlRegionNode[] }[];
+		const [div] = htmlRegionNodes(parsed, ['*']) as { children: HtmlRegionNode[] }[];
 		expect(div.children.find((node) => node.kind === 'html' && node.html.includes(MEDIA_CLAIM_ATTR))).toBeDefined();
 	});
 
@@ -115,8 +118,8 @@ describe('parseHtmlRegion', () => {
 	});
 
 	it('keeps only allowlisted spine elements and attributes under renderHtml true', () => {
-		const region = regionOf('<div onclick="alert(1)" align="right">\n<section>\n\n**x**\n\n</section></div>');
-		expect(outline(htmlRegionNodes(parseHtmlRegion(region.parts, true)))).toEqual([
+		const region = regionOf('<div onclick="alert(1)" align="right">\n<center>\n\n**x**\n\n</center></div>');
+		expect(outline(htmlRegionNodes(parseHtmlRegion(region.parts, true), ['*']))).toEqual([
 			{ div: { align: 'right' }, children: ['\n', '\n\n', '[0]'] }
 		]);
 	});

@@ -6,6 +6,7 @@ import { chatMarkdownTheme } from '../../components/chat/markdown/streamdownThem
 import { EMBEDDED_HTML_EXTENSIONS } from '../parser/extensions/embeddedHtml';
 import { markedMediaImages } from '../parser/extensions/mediaImages';
 import type { ColorScheme } from '../parser/extensions/themedImages';
+import { sanitizeEmbeddedHtmlToken } from './htmlSanitize';
 
 // The renderer's own image element, with no host image snippet, on the
 // component and compact static paths (which hands an image to it).
@@ -64,5 +65,36 @@ describe.each([false, true])('the image element (compact static %s)', (compactSt
 			['video', 'https://example.invalid/v.webm'],
 			['audio', 'https://example.invalid/a.wav']
 		]);
+	});
+});
+
+// One decision for both paths (themedImages.ts#imageSrcFor): a source for
+// the reader's scheme paints; the fallback's `#gh-*-mode-only` gates only
+// the fallback.
+describe('a themed picture paints one src on the token and sanitizer paths', () => {
+	const DARK = '<source media="(prefers-color-scheme: dark)" srcset="https://example.invalid/dark.png">';
+	const LIGHT = '<source media="(prefers-color-scheme: light)" srcset="https://example.invalid/light.png">';
+	const REFUSED = '<source media="(prefers-color-scheme: dark)" srcset="javascript:alert(1)">';
+	const img = (fragment = '') => `<img alt="logo" src="https://example.invalid/fallback.png${fragment}">`;
+	const CASES: [string, string, string | null, string | null][] = [
+		['a dark source over a light-only fallback', DARK + img('#gh-light-mode-only'), 'dark.png', 'fallback.png#gh-light-mode-only'],
+		['a dark source over a dark-only fallback', DARK + img('#gh-dark-mode-only'), 'dark.png', null],
+		['a refused source over a light-only fallback', REFUSED + img('#gh-light-mode-only'), null, 'fallback.png#gh-light-mode-only'],
+		['a source per scheme', LIGHT + DARK + img(), 'dark.png', 'light.png']
+	];
+	const url = (name: string | null) => (name === null ? [] : [`https://example.invalid/${name}`]);
+
+	it.each(CASES)('%s', async (_name, inner, dark, light) => {
+		const picture = `<picture>${inner}</picture>`;
+		for (const [scheme, expected] of [['dark', dark], ['light', light]] as const) {
+			const sanitized = document.createElement('div');
+			sanitized.innerHTML = sanitizeEmbeddedHtmlToken({ raw: picture, block: true }, { colorScheme: () => scheme });
+			expect([...sanitized.querySelectorAll('img')].map((each) => each.getAttribute('src')), `sanitizer, ${scheme}`).toEqual(url(expected));
+			for (const compactStaticHtml of [false, true]) {
+				const token = await shown(`A ${picture} end`, scheme, compactStaticHtml);
+				expect(token.images.map(([src]) => src), `token, ${scheme}`).toEqual(url(expected));
+				expect(token.hidden).toBe(expected === null ? 1 : 0);
+			}
+		}
 	});
 });

@@ -123,6 +123,8 @@ const parseBlocksCached = (
     if (cache) {
         cache.lastBlockAppend = undefined;
         cache.lastPath = 'none';
+        cache.generation++;
+        cache.changedFrom = cache.raws.length;
         if (cache.alignStart !== alignStart) {
             cache.alignStart = alignStart;
             cache.content = '';

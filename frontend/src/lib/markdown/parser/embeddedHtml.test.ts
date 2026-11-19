@@ -72,24 +72,47 @@ describe('markedDetails', () => {
 		expect(tokens[0].type).toBe('html');
 	});
 
-	it('lexes a summary containing safe inline html', () => {
-		const details = detailsOf('<details>\n<summary><b>3 issues</b> found</summary>\nbody\n</details>');
-		const summary = details.tokens[0] as DetailsSummaryToken;
-		expect(summary.tokens.map((token) => (token as GenericToken).type)).toContain('strong');
+	// CommonMark: an HTML block runs to a blank line, and its lines are HTML.
+	const html = (raw: string) => ({ type: 'html', block: true, pre: false, raw, text: raw });
+
+	it.each([
+		['inline html', '<b>3 issues</b> found &amp; more'],
+		['block html', '<h3>Big <b>title</b></h3>'],
+		['Markdown syntax', '<ins>new</ins> and **bold** `code` <picture><img src="https://x/a.png"></picture>'],
+		['a tag in a code span', 'See `<div>` and **bold**']
+	])('hands a summary on its HTML block lines holding %s to the sanitizer whole', (_, inner) => {
+		for (const src of [
+			`<details>\n<summary>${inner}</summary>\n\nbody\n\n</details>`,
+			`<details><summary>${inner}</summary>\n\nbody\n\n</details>`,
+			`<details>\n\n<summary>${inner}</summary>\n\nbody\n\n</details>`
+		]) {
+			const details = detailsOf(src);
+			expect((details.tokens[0] as DetailsSummaryToken).tokens).toEqual([html(inner)]);
+			expect(details.tokens.slice(1).map((token) => token.type)).toEqual(['paragraph']);
+		}
 	});
 
-	it('hands a summary holding block html to the sanitizer whole', () => {
-		const details = detailsOf('<details>\n<summary><h3>Big <b>title</b></h3></summary>\n\nbody\n\n</details>');
-		const summary = details.tokens[0] as DetailsSummaryToken;
-		expect(summary.tokens).toEqual([
-			{ type: 'html', block: true, pre: false, raw: '<h3>Big <b>title</b></h3>', text: '<h3>Big <b>title</b></h3>' }
-		]);
+	it.each([
+		['Markdown syntax', 'body with **stars** and `code`'],
+		['snake_case', 'a snake_case_name here'],
+		['emphasis stars', '2 * 3 * 4']
+	])('hands a body line on its HTML block lines holding %s to the sanitizer', (_, line) => {
+		const details = detailsOf(`<details>\n<summary>Tight</summary>\n${line}\n</details>`);
+		expect(details.tokens.slice(1)).toEqual([html(`\n${line}\n`)]);
 	});
 
-	it('keeps lexing a summary of inline tags as markdown', () => {
-		const details = detailsOf('<details>\n<summary><ins>new</ins> and **bold** <picture><img src="https://x/a.png"></picture></summary>\n\nbody\n\n</details>');
-		const summary = details.tokens[0] as DetailsSummaryToken;
-		expect(summary.tokens.map((token) => (token as GenericToken).type)).toEqual(['htmlInline', 'text', 'strong', 'text', 'image']);
+	it('reads where the HTML block ends with CRLF line endings', () => {
+		// The lexer reads CRLF as LF.
+		expect(detailsOf('<details>\r\n<summary>S</summary>\r\nraw **x**\r\n</details>').tokens.slice(1)).toEqual([html('\nraw **x**\n')]);
+		const markdown = detailsOf('<details>\r\n<summary>S</summary>\r\n\r\nmarkdown **x**\r\n\r\n</details>');
+		expect(markdown.tokens.slice(1).map((token) => token.type)).toEqual(['paragraph']);
+	});
+
+	it('resumes Markdown after the blank line that ends the HTML block', () => {
+		const details = detailsOf('<details>\n<summary>S</summary>\nraw **one**\n\nmarkdown **two**\n</details>');
+		const [region] = details.tokens.slice(1) as unknown as { type: string; parts: (string | { type: string })[] }[];
+		expect(region.type).toBe('htmlRegion');
+		expect(region.parts.map((part) => (typeof part === 'string' ? part : part.type))).toEqual(['\nraw **one**\n\n', 'paragraph']);
 	});
 
 	it('renders a details with no summary as body-only children', () => {
@@ -142,13 +165,6 @@ describe('markedDetails', () => {
 		expect(blocks).toEqual([run, '\r\nafter']);
 		expect(lexEmbedded(blocks[0]).map((token) => token.type)).toEqual(['details']);
 		expect(lexEmbedded(`${run}\r\nafter`).map((token) => token.type)).toEqual(['details', 'paragraph']);
-	});
-
-	it('renders a summary that holds a tag only in a code span as Markdown', () => {
-		const details = detailsOf('<details>\n<summary>See `<div>` and **bold**</summary>\n\nbody\n\n</details>');
-		const summary = details.tokens[0] as DetailsSummaryToken;
-		expect(summary.tokens.map((token) => token.type)).toEqual(['text', 'codespan', 'text', 'strong']);
-		expect((summary.tokens[1] as GenericToken).text).toBe('<div>');
 	});
 
 	it('renders a summary set apart by blank lines as Markdown, as GitLab documents it', () => {

@@ -1,22 +1,24 @@
 // Inline extension that links what a forge links in a PR/MR body or comment:
 // issue, PR and MR references, mentions, commits and ranges, a pasted forge
-// URL in its short form, bare email addresses, GitLab wiki links, and a
-// relative link resolved where the forge resolves it. Every claim is an
-// ordinary `link` token with an absolute forge URL, so both render paths,
-// the click path and find need nothing new.
+// URL in its short form, bare email addresses and GitLab wiki links. Every
+// claim is an ordinary `link` token with an absolute forge URL, so both
+// render paths, the click path and find need nothing new. Its destination
+// hook resolves a relative link where the forge resolves it, however the
+// link was written (`DestinationHook`).
 //
 // A forge links a reference only when its target exists, which this page
 // cannot know. So a shape is linked only when it is unambiguous: `#12`,
 // `!12`, `owner/repo#12`, `@user`, a 40-hex SHA, and a short SHA that mixes
 // digits and letters (an ordinary word or number never does). A shape that
 // is also ordinary prose (`$5`, `%1`, `&1`, `~bug`, `project#1` for another
-// project) stays text.
+// project) stays text. A path segment that is `.` or `..` names no
+// project, so a path holding one is not a reference.
 //
 // Nothing links inside link text or a raw `<a>` (`inLinkText`, `inLink`),
 // and the engine consumes code spans, code blocks and HTML tags before any
 // position inside them reaches this tokenizer.
 
-import type { Extension, Token, Tokens, TokensList } from '../markdown';
+import type { DestinationHook, Extension, Token, Tokens, TokensList } from '../markdown';
 import { isOpenableScheme } from '../markdown';
 import type { ForgeAttachmentSource } from './forgeAttachments';
 
@@ -24,6 +26,9 @@ import type { ForgeAttachmentSource } from './forgeAttachments';
 const WORD = /[A-Za-z0-9_.+/-]/;
 /** Characters that may not precede a reference that opens with a word. */
 const NOT_BEFORE_WORD = /[A-Za-z0-9_.+/@:&#~-]/;
+/** Characters that may not precede an email address: its own local part's,
+ * which the forges scan back over for its start. */
+const NOT_BEFORE_EMAIL = /[A-Za-z0-9_.+/@&#~-]/;
 /** Characters that may not precede `#12`, `!12` or `@user`. */
 const NOT_BEFORE_SIGIL = /[A-Za-z0-9_/@.&`-]/;
 const WORD_CHAR = /[A-Za-z0-9_]/;
@@ -33,7 +38,7 @@ const WORD_CHAR = /[A-Za-z0-9_]/;
 // when the character before the window is not a word character (start()).
 // `!` and `[[` are stops of the engine's text rule too; a text run of HTML
 // (`Lexer.htmlTextTokens`) stops only here.
-const START = /[#@!]|\[\[|(?:^|[^A-Za-z0-9_.+/@:&#~-])(?:[A-Za-z0-9_][A-Za-z0-9_.+/-]*[#!@>]|[0-9a-f]{7}|GH-\d|mailto:|xmpp:|[A-Za-z][A-Za-z0-9+.-]*:\/\/)/g;
+const START = /[#@!]|\[\[|(?:^|[^A-Za-z0-9_.+/@:&#~-])(?:[A-Za-z0-9_][A-Za-z0-9_.+/-]*[#!@>]|[0-9a-f]{7}|GH-\d|mailto:|xmpp:|[A-Za-z][A-Za-z0-9+.-]*:\/\/)|:[A-Za-z0-9._+-]+@/g;
 
 const ISSUE = /^#([1-9]\d*)/;
 const MERGE_REQUEST = /^!([1-9]\d*)/;
@@ -54,6 +59,8 @@ const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 // GitLab links a URL of any scheme; the engine links http, https and ftp.
 const SCHEME_URL = /^([A-Za-z][A-Za-z0-9+.-]{1,31}):\/\/[^\s<]+/;
 const ENGINE_SCHEMES = /^(?:https?|ftp)$/i;
+/** A path segment that names no project: the browser folds it away. */
+const DOT_SEGMENT = /(?:^|\/)\.\.?(?:\/|$)/;
 
 /** Whether a reference may end at `index`: no word character follows. */
 function endsAt(src: string, index: number): boolean {
@@ -73,17 +80,6 @@ function shaEndsAt(src: string, index: number): boolean {
   const next = src[index];
   if (/[A-Za-z0-9_@/-]/.test(next)) return false;
   return !(next === '.' && /[A-Za-z0-9]/.test(src[index + 1] ?? ''));
-}
-
-/** Where an autolink ends, by the engine's rule: trailing punctuation and
- * an unbalanced `)` are left out. */
-function backpedal(url: string, rule: RegExp): string {
-  let previous;
-  do {
-    previous = url;
-    url = rule.exec(url)?.[0] ?? '';
-  } while (previous !== url);
-  return url;
 }
 
 function originOf(url: string): string | null {
@@ -109,26 +105,18 @@ function link(raw: string, href: string, children: Token[]): Tokens.Link {
   return { type: 'link', raw, href, title: null, text, tokens: children };
 }
 
-export interface ForgeReferences {
-  /** The inline extension. In a text run of HTML (`state.inHtmlText`) it
-   * links what the forge links in HTML text: references and mentions, and
-   * on GitLab a URL of any scheme and a wiki link. */
-  readonly extension: Extension;
-  /** Where the forge sends a relative href (an HTML `<a>`'s), or null for
-   * a fragment, a protocol-relative or a scheme href. */
-  readonly resolveHref: (href: string) => string | null;
-}
-
 /**
- * The references of one PR's surface. Their identity is the caller's to
- * hold per PR (chatMarkdownOptions.ts).
+ * The references of one PR's surface, as an inline extension. In a text run
+ * of HTML (`state.inHtmlText`) it links what the forge links in HTML text:
+ * references and mentions, and on GitLab a URL of any scheme and a wiki
+ * link. Its identity is the caller's to hold per PR (chatMarkdownOptions.ts).
  */
-export function buildForgeReferences(source: ForgeAttachmentSource): ForgeReferences {
+export function buildForgeReferences(source: ForgeAttachmentSource): Extension {
   const { pr, webBase } = source;
   const github = pr.forge === 'github';
   const origin = originOf(webBase) ?? originOf(`https://${pr.host}`);
   // With no forge address there is nothing to link to.
-  if (origin === null) return { extension: { name: 'forgeReference', level: 'inline', tokenizer: () => undefined }, resolveHref: () => null };
+  if (origin === null) return { name: 'forgeReference', level: 'inline', tokenizer: () => undefined };
   const host = new URL(origin).host.toLowerCase();
   const project = `${pr.namespace}/${pr.repo}`;
   const projectKey = project.toLowerCase();
@@ -145,6 +133,7 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
   // The path a reference names, or null when the written prefix is not a
   // project this rule may link.
   const referencedPath = (written: string): string | null => {
+    if (DOT_SEGMENT.test(written)) return null;
     const slash = written.includes('/');
     if (github) return slash ? (written.split('/').length === 2 ? written : null) : null;
     if (slash) return written;
@@ -222,16 +211,26 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
 
   // A relative href where the forge sends it: GitHub leaves it for the
   // browser to resolve against the page; GitLab resolves a path in the
-  // repository and leaves a query to the page.
+  // repository and leaves a query to the page. Null for a fragment or an
+  // absolute href (a scheme-relative one is already https).
   const resolveRelative = (href: string): string | null => {
     const trimmed = href.trim();
-    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('//') || SCHEME.test(trimmed)) return null;
+    if (trimmed === '' || trimmed.startsWith('#') || SCHEME.test(trimmed)) return null;
     try {
       if (github || trimmed.startsWith('?')) return new URL(trimmed, pageUrl).href;
       return new URL(trimmed.startsWith('/') ? trimmed.slice(1) : trimmed, blobBase).href;
     } catch {
       return null;
     }
+  };
+
+  // A relative link resolved, however it was written: inline, by reference,
+  // as an HTML `<a>`. A relative image stays as written: loading repository
+  // files is not this page's to do.
+  const destination: DestinationHook = (token) => {
+    if (token.type !== 'link') return undefined;
+    const href = resolveRelative(token.href);
+    return href === null ? undefined : { ...token, href };
   };
 
   // What the tokenizer last saw, so start() can tell whether a window that
@@ -281,8 +280,12 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
 
   // `html`: a text run of HTML, where an email address is text and GitLab
   // links a URL of every scheme (the engine's own are not there to).
-  const wordReference = (src: string, tokens: Token[] | TokensList, backpedalRule: RegExp, html: boolean): Tokens.Link | undefined => {
-    if (NOT_BEFORE_WORD.test(prevChar(tokens))) return undefined;
+  const wordReference = (src: string, tokens: Token[] | TokensList, urlEnd: (run: string) => string, html: boolean): Tokens.Link | undefined => {
+    const before = prevChar(tokens);
+    // An email address opens after a scheme-less `:` too (`contact:a@b.c`).
+    const email = html || NOT_BEFORE_EMAIL.test(before) ? null : EMAIL.exec(src);
+    if (email && before === ':') return emailLink(email[0]);
+    if (NOT_BEFORE_WORD.test(before)) return undefined;
     const first = src.charCodeAt(0);
     if (!html && (first === 109 /* m */ || first === 120 /* x */)) {
       const scheme = SCHEME_EMAIL.exec(src);
@@ -298,15 +301,11 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
         const engine = ENGINE_SCHEMES.test(url[1]);
         if ((engine && !html) || !isOpenableScheme(url[1].toLowerCase())) return undefined;
         // GitLab's filter for HTML text ends a URL at `>`.
-        const raw = backpedal(html ? url[0].split('>', 1)[0] : url[0], backpedalRule);
+        const raw = urlEnd(html ? url[0].split('>', 1)[0] : url[0]);
         return (engine ? shortenedUrl(raw, raw) : null) ?? link(raw, raw, [textToken(raw)]);
       }
     }
-    const email = html ? null : EMAIL.exec(src);
-    if (email) {
-      if (/[-_]$/.test(email[0])) return undefined;
-      return link(email[0], `mailto:${email[0]}`, [textToken(email[0])]);
-    }
+    if (email) return emailLink(email[0]);
     const path = PATH_REFERENCE.exec(src);
     if (path) return pathReference(src, path[1], path[2], path[0].length);
     const commits = COMMITS.exec(src);
@@ -315,7 +314,12 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
     return commitLink(commits[0], project, commits[1], commits[2]);
   };
 
+  // GFM extended email autolinks; one ending in `-` or `_` is text.
+  const emailLink = (address: string): Tokens.Link | undefined =>
+    /[-_]$/.test(address) ? undefined : link(address, `mailto:${address}`, [textToken(address)]);
+
   const pathReference = (src: string, written: string, sigil: string, end: number): Tokens.Link | undefined => {
+    if (DOT_SEGMENT.test(written)) return undefined;
     if (sigil === '>') {
       if (github || !written.includes('/') || !endsAt(src, end)) return undefined;
       return link(src.slice(0, end), `${origin}/${written}`, [textToken(src.slice(0, end))]);
@@ -378,11 +382,7 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
             return href === null ? undefined : link(wiki[0], href, [textToken(wiki[1])]);
           }
         }
-        if (html) return undefined;
-        const token = this.lexer.tokenizer.link(src);
-        if (!token || token.type !== 'link') return undefined;
-        const href = resolveRelative(token.href);
-        return href === null ? undefined : { ...token, type: 'link', href };
+        return undefined;
       }
       if (first === 60) {
         const email = ANGLE_EMAIL.exec(src);
@@ -394,8 +394,9 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
         const url = this.lexer.tokenizer.url(src);
         if (url) return shortenedUrl(url.raw, url.href) ?? undefined;
       }
-      return wordReference(src, tokens, this.lexer.tokenizer.rules.inline._backpedal, html);
+      return wordReference(src, tokens, (run) => this.lexer.tokenizer.urlEnd(run), html);
     },
+    destination,
   };
-  return { extension, resolveHref: resolveRelative };
+  return extension;
 }

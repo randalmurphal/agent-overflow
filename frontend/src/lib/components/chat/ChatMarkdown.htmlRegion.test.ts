@@ -100,7 +100,7 @@ describe('<ChatMarkdown embeddedHtml> html regions', () => {
     const body = container.querySelector('.markdown-body')!;
     expect(body.querySelector('script, blink, [onclick], [onerror], [data-markdown-island]')).toBeNull();
     expect(body.querySelector('a')?.hasAttribute('href')).toBe(false);
-    expect(body.querySelector('img')?.hasAttribute('src')).toBe(false);
+    expect(body.querySelector('img[src]')).toBeNull();
     // A script goes with its source; an element off the allowlist leaves its text.
     expect(body.textContent).not.toContain('__pwned');
     expect(body.textContent).toContain('odd');

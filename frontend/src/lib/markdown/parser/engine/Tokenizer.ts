@@ -15,6 +15,7 @@ import type { Rules } from './rules';
 import type { Lexer } from './Lexer';
 import type { Links, Tokens, Token } from './tokens';
 import type { LexerOptions } from './options';
+import { backpedalUrl, decideDestination } from './destination';
 
 /**
  * The link or image `cap` matched, or undefined for a link whose text holds
@@ -172,6 +173,21 @@ export class Tokenizer {
    */
   private linkText(written: string): string {
     return this.options.linkText ? this.options.linkText(written) : written.replace(this.rules.inline.anyPunctuation, '$1');
+  }
+
+  /**
+   * A link or image token as its destination decides it: its href
+   * canonical and claimed by the hosts' hooks (`decideDestination`). Every
+   * link or image this engine builds passes here, and an extension that
+   * builds one from other syntax (an HTML `<a>` or `<img>`) calls it.
+   */
+  destination<T extends Tokens.Link | Tokens.Image>(token: T): T {
+    return decideDestination(token, this.options.destinations, { inLink: this.lexer.state.inLink }) as T;
+  }
+
+  /** The URL a bare URL run holds, by the surface's rule (`bareUrls`). */
+  urlEnd(run: string): string {
+    return this.options.bareUrls ? this.options.bareUrls.end(run) : backpedalUrl(run);
   }
 
   blockquote(src: string): Tokens.Blockquote | undefined {
@@ -345,6 +361,7 @@ export class Tokenizer {
           const fencesBeginRegex = this.rules.other.fencesBeginRegex(indent);
           const headingBeginRegex = this.rules.other.headingBeginRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
+          const blockquoteBeginRegex = this.rules.other.blockquoteBeginRegex(indent);
 
           // Check if following lines should be included in List Item
           while (src) {
@@ -382,6 +399,11 @@ export class Tokenizer {
 
             // Horizontal rule found
             if (hrRegex.test(nextLine)) {
+              break;
+            }
+
+            // End list item if found start of blockquote
+            if (blockquoteBeginRegex.test(nextLine)) {
               break;
             }
 
@@ -718,10 +740,11 @@ export class Tokenizer {
         this.lexer.state.linkInText = true;
         return;
       }
-      return outputLink(cap, {
+      const token = outputLink(cap, {
         href: href ? this.linkText(href) : href,
         title: title ? this.linkText(title) : title,
       }, cap[0], this.lexer, this.rules);
+      return token && this.destination(token);
     }
   }
 
@@ -751,7 +774,8 @@ export class Tokenizer {
           text,
         };
       }
-      return outputLink(cap, link, cap[0], this.lexer, this.rules);
+      const token = outputLink(cap, link, cap[0], this.lexer, this.rules);
+      return token && this.destination(token);
     }
   }
 
@@ -872,7 +896,7 @@ export class Tokenizer {
       // scheme URL.
       const text = cap[1];
 
-      return {
+      return this.destination<Tokens.Link>({
         type: 'link',
         raw: cap[0],
         text,
@@ -884,7 +908,7 @@ export class Tokenizer {
             text,
           },
         ],
-      };
+      });
     }
   }
 
@@ -893,16 +917,14 @@ export class Tokenizer {
     if (cap = this.rules.inline.url.exec(src)) {
       // Same as `autolink`: the bare-email alternative is removed from the
       // rule, so only the extended `protocol://` / `www.` forms reach here.
-      let prevCapZero;
-      do {
-        prevCapZero = cap[0];
-        cap[0] = this.rules.inline._backpedal.exec(cap[0])?.[0] ?? '';
-      } while (prevCapZero !== cap[0]);
-      const text = cap[0];
-      const href = autolinkHref(cap[1] === 'www.' ? 'http://' + cap[0] : cap[0]);
-      return {
+      const www = cap[1] === 'www.';
+      if (this.options.bareUrls && !this.options.bareUrls.links(www ? 'http' : cap[1].slice(0, -3).toLowerCase())) return;
+      const text = this.urlEnd(cap[0]);
+      if (text === '') return;
+      const href = autolinkHref(www ? 'http://' + text : text);
+      return this.destination<Tokens.Link>({
         type: 'link',
-        raw: cap[0],
+        raw: text,
         text,
         href,
         tokens: [
@@ -912,7 +934,7 @@ export class Tokenizer {
             text,
           },
         ],
-      };
+      });
     }
   }
 

@@ -25,7 +25,7 @@ describe('github attachment shapes', () => {
     'HTTPS://GitHub.com/user-attachments/assets/ID',
     'http://github.com/user-attachments/assets/ID',
   ])('claims %s', (href) => {
-    expect(isForgeAttachmentHref('github', href)).toBe(true);
+    expect(isForgeAttachmentHref(GITHUB_PR, href)).toBe(true);
   });
 
   it.each([
@@ -40,11 +40,11 @@ describe('github attachment shapes', () => {
     'ftp://github.com/user-attachments/assets/id',
     '',
   ])('leaves %s alone', (href) => {
-    expect(isForgeAttachmentHref('github', href)).toBe(false);
+    expect(isForgeAttachmentHref(GITHUB_PR, href)).toBe(false);
   });
 
   it('never claims a github URL for a gitlab merge request', () => {
-    expect(isForgeAttachmentHref('gitlab', 'https://github.com/user-attachments/assets/x')).toBe(false);
+    expect(isForgeAttachmentHref(GITLAB_MR, 'https://github.com/user-attachments/assets/x')).toBe(false);
   });
 
   it('names the file segment when there is one, else the id', () => {
@@ -62,11 +62,17 @@ describe('gitlab upload shapes', () => {
     `/uploads/${HEX}/shot.png`,
     `/-/project/4711/uploads/${HEX}/shot.png`,
     `https://gitlab.com/group/sub/widget/uploads/${HEX}/shot.png`,
-    `https://gitlab.example.test/group/widget/uploads/${HEX}/report.pdf`,
-    `https://gitlab.example.test/-/project/4711/uploads/${HEX}/report.pdf`,
+    `https://GitLab.com/other/widget/uploads/${HEX}/report.pdf`,
+    `https://gitlab.com/-/project/4711/uploads/${HEX}/report.pdf`,
     `/uploads/${HEX}/shot.png?inline=false`,
   ])('claims %s', (href) => {
-    expect(isForgeAttachmentHref('gitlab', href)).toBe(true);
+    expect(isForgeAttachmentHref(GITLAB_MR, href)).toBe(true);
+  });
+
+  it('claims an absolute upload on a self-hosted MR host with a port', () => {
+    const mr = { ...GITLAB_MR, host: 'gitlab.example.test:8443' };
+    expect(isForgeAttachmentHref(mr, `https://gitlab.example.test:8443/group/widget/uploads/${HEX}/a.png`)).toBe(true);
+    expect(isForgeAttachmentHref(mr, `https://gitlab.example.test/group/widget/uploads/${HEX}/a.png`)).toBe(false);
   });
 
   it.each([
@@ -83,8 +89,13 @@ describe('gitlab upload shapes', () => {
     `https://gitlab.com/uploads/${HEX}/shot.png`,
     // Relative admits only the two project spellings, nothing deeper.
     `/group/widget/uploads/${HEX}/shot.png`,
+    // Another server: its path names no project on the MR's host, and a
+    // claim would spend the user's login on one the author chose.
+    `https://unrelated.invalid/other/private/uploads/${HEX}/shot.png`,
+    `https://unrelated.invalid/-/project/4711/uploads/${HEX}/shot.png`,
+    `https://gitlab.com.unrelated.invalid/group/sub/widget/uploads/${HEX}/shot.png`,
   ])('leaves %s alone', (href) => {
-    expect(isForgeAttachmentHref('gitlab', href)).toBe(false);
+    expect(isForgeAttachmentHref(GITLAB_MR, href)).toBe(false);
   });
 
   it('percent-decodes the upload name', () => {

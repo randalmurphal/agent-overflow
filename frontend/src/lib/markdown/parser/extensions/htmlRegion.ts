@@ -79,23 +79,30 @@ export const markedHtmlRegion: Extension = {
 		// Inside an HTML block of the measured run (after a details run that
 		// ended mid-block), the engine must read the same block here.
 		if (!region.blockStart && this.lexer.tokenizer.html(src)?.raw.length !== region.first) return undefined;
-
-		const parts: (string | Token)[] = [src.slice(0, region.first)];
-		const islands: Token[] = [];
-		const inside: Token[] = [];
-		bindBlockInside(this.lexer, inside, run, src, region.end, true);
-		// The ACTIVE lexer, so every extension (details, alerts) applies, and
-		// inline content fills when the outer lex drains.
-		for (const child of htmlBodyTokens(this.lexer, src.slice(region.first, region.end), inside)) {
-			if (child.type === 'html') {
-				const last = parts.length - 1;
-				if (typeof parts[last] === 'string') parts[last] += child.raw;
-				else parts.push(child.raw);
-			} else if (!SHOWS_NOTHING.has(child.type)) {
-				parts.push(child);
-				islands.push(child);
-			}
-		}
-		return { type: 'htmlRegion', raw: src.slice(0, region.end), parts, tokens: islands } satisfies HtmlRegionToken;
+		return htmlFragment(this.lexer, run, src, 0, region.first, region.end);
 	}
+};
+
+/**
+ * The raw HTML from `start` to `first` and the blocks after it to `end`,
+ * as one fragment around its Markdown islands.
+ */
+export const htmlFragment = (lexer: Lexer, run: BlockRun, src: string, start: number, first: number, end: number): HtmlRegionToken => {
+	const parts: (string | Token)[] = [src.slice(start, first)];
+	const islands: Token[] = [];
+	const inside: Token[] = [];
+	bindBlockInside(lexer, inside, run, src, end, true);
+	// The ACTIVE lexer, so every extension (details, alerts) applies, and
+	// inline content fills when the outer lex drains.
+	for (const child of htmlBodyTokens(lexer, src.slice(first, end), inside)) {
+		if (child.type === 'html') {
+			const last = parts.length - 1;
+			if (typeof parts[last] === 'string') parts[last] += child.raw;
+			else parts.push(child.raw);
+		} else if (!SHOWS_NOTHING.has(child.type)) {
+			parts.push(child);
+			islands.push(child);
+		}
+	}
+	return { type: 'htmlRegion', raw: src.slice(start, end), parts, tokens: islands };
 };

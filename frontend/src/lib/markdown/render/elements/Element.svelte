@@ -356,6 +356,15 @@
 	<summary data-streamdown-summary={id}>
 		{@render children()}
 	</summary>
+{:else if token.type === 'inlineDiff'}
+	<!-- GitLab's inline diff (parser/extensions/inlineDiff.ts); app.css paints the class. -->
+	<svelte:element
+		this={token.change === 'added' ? 'ins' : 'del'}
+		data-streamdown-inline-diff={id}
+		class={`md-inline-diff md-inline-diff-${token.change}`}
+	>
+		{@render children()}
+	</svelte:element>
 {:else if token.type === 'htmlInline'}
 	<!-- The tag is one of the parser's fixed names, never authored text. -->
 	<!-- Its attributes are the ones the HTML policy keeps (htmlPolicy.ts). -->

@@ -1,5 +1,6 @@
 import { render, waitFor } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import katexCss from 'katex/dist/katex.min.css?inline';
 import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ChatMarkdown from './ChatMarkdown.svelte';
@@ -32,15 +33,15 @@ beforeEach(() => {
   document.body.innerHTML = '';
 });
 
-async function mounted(source: string, forge: ForgeAttachmentSource | null, review = true): Promise<HTMLElement> {
+async function mounted(source: string, forge: ForgeAttachmentSource | null, review = true, streaming = false): Promise<HTMLElement> {
   const host = document.createElement('div');
   host.style.width = '600px';
   document.body.appendChild(host);
   const { container } = render(ChatMarkdown, {
     target: host,
     props: review
-      ? { source, pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: 'review-prose' }
-      : { source, pathRefs: EMPTY_PATH_REFS },
+      ? { source, pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: 'review-prose', streaming }
+      : { source, pathRefs: EMPTY_PATH_REFS, streaming },
     context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => forge]]),
   });
   await waitFor(() => expect(container.querySelector('.markdown-body')?.textContent).toContain('last line'));
@@ -64,6 +65,66 @@ describe('color chips', () => {
       expect(box.top).toBeGreaterThanOrEqual(code.top - 1);
       expect(box.bottom).toBeLessThanOrEqual(code.bottom + 1);
     }
+  });
+});
+
+describe('GitLab inline diff', () => {
+  // GitLab paints `.idiff` as a tinted highlight: no underline, no strike.
+  it.each([false, true])('highlights an addition and a removal at normal contrast (streaming %s)', async (streaming) => {
+    const root = await mounted('Diff {+ added +} and {- removed -} and ~~struck~~.\n\nlast line', GITLAB, true, streaming);
+    const paragraph = root.querySelector('p')!;
+    const [added, removed, struck] = [...paragraph.querySelectorAll('ins, del')];
+    expect([added.textContent, removed.textContent, struck.textContent]).toEqual([' added ', ' removed ', 'struck']);
+    const backgrounds = [added, removed].map((element) => getComputedStyle(element).backgroundColor);
+    for (const element of [added, removed]) {
+      const style = getComputedStyle(element);
+      expect(style.textDecorationLine).toBe('none');
+      expect(style.color).toBe(getComputedStyle(paragraph).color);
+    }
+    expect(backgrounds).not.toContain('rgba(0, 0, 0, 0)');
+    expect(backgrounds[0]).not.toBe(backgrounds[1]);
+    // A strikethrough still strikes.
+    expect(getComputedStyle(struck).textDecorationLine).toBe('line-through');
+  });
+});
+
+describe('display math in a paragraph', () => {
+  // The test config stubs KaTeX's stylesheet for every other test.
+  beforeAll(() => {
+    const style = document.createElement('style');
+    style.textContent = katexCss;
+    document.head.appendChild(style);
+    return () => style.remove();
+  });
+  const CAUCHY = String.raw`$$\left( \sum_{k=1}^n a_k b_k \right)^2 \leq \left( \sum_{k=1}^n a_k^2 \right) \left( \sum_{k=1}^n b_k^2 \right)$$`;
+  const SOURCES = [`**Title**\\\n${CAUCHY}`, 'text $$a^2+b^2=c^2$$ text'];
+
+  it.each([['GitHub', GITHUB], ['GitLab', GITLAB]] as const)('typesets $$…$$ on its own centered line on %s', async (_name, forge) => {
+    for (const source of SOURCES) {
+      document.body.innerHTML = '';
+      const root = await mounted(`${source}\n\nlast line`, forge);
+      const paragraph = root.querySelector('p')!;
+      await waitFor(() => expect(paragraph.querySelector('.katex-display .katex-base')).not.toBeNull());
+      // Phrasing content only, so an HTML parse would not split the paragraph.
+      expect(paragraph.querySelector('div, pre')).toBeNull();
+      // The text before the formula.
+      const before = document.createRange();
+      before.setStart(paragraph, 0);
+      before.setEndBefore(paragraph.querySelector('[data-math-source]')!);
+      const bases = [...paragraph.querySelectorAll<HTMLElement>('.katex-display .katex-base')].map((base) => base.getBoundingClientRect());
+      const left = Math.min(...bases.map((box) => box.left));
+      const right = Math.max(...bases.map((box) => box.right));
+      expect(Math.min(...bases.map((box) => box.top))).toBeGreaterThanOrEqual(before.getBoundingClientRect().bottom);
+      const column = paragraph.getBoundingClientRect();
+      expect(left).toBeGreaterThan(column.left + 20);
+      expect((left + right) / 2).toBeCloseTo((column.left + column.right) / 2, -1);
+    }
+  });
+
+  it('keeps the streaming host phrasing content', async () => {
+    const root = await mounted('text $$a^2+b^2=c^2$$ text last line', GITHUB, true, true);
+    expect(root.querySelector('p')!.querySelector('div, pre')).toBeNull();
+    expect(root.querySelector('p .math-inline')?.textContent).toBe('a^2+b^2=c^2');
   });
 });
 

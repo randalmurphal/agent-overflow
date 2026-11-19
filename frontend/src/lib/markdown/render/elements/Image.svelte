@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { useStreamdown } from '../context.svelte';
-	import { transformUrl } from './url';
-	import { urlScheme } from './urlSchemes';
+	import { transformMediaUrl, UNAVAILABLE_IMAGE_CLASS, unavailableImageText, unavailableImageTitle } from './url';
 	import { imageSizeOf } from '../imageSize';
 	import { imageAlt } from '../imageAlt';
 	import { imageSrcFor } from '../../parser/extensions/themedImages';
@@ -33,18 +32,16 @@
 	// markdown/AGENTS.md § URL and HTML boundary.
 	//
 	// A theme-specific image (parser/extensions/themedImages.ts) paints the
-	// src the reader's scheme selects, through the same gate; a source the
-	// gate refuses falls back to the image's own src. Hidden in this scheme,
-	// it paints nothing.
+	// src the reader's scheme selects, a source only through the same gate.
+	// Hidden in this scheme, it paints nothing.
 	const painted = $derived.by(() => {
 		const prefixes = streamdown.allowedImagePrefixes ?? [];
-		const chosen = imageSrcFor(token, streamdown.colorScheme);
-		if (chosen === null) return null;
-		if (chosen !== token.href) {
-			const url = transformUrl(chosen, prefixes);
-			if (url) return { href: chosen, url };
-		}
-		return { href: token.href, url: transformUrl(token.href, prefixes) };
+		const chosen = imageSrcFor(
+			token,
+			() => streamdown.colorScheme,
+			(src) => transformMediaUrl(src, prefixes) !== null
+		);
+		return chosen === null ? null : { href: chosen, url: transformMediaUrl(chosen, prefixes) };
 	});
 	const alt = $derived(imageAlt(token));
 	// What the image snippet reads: the painted src and the plain alt.
@@ -61,13 +58,7 @@
 	// An unapproved src is either a local path this surface cannot load
 	// (no workspace to resolve it against, the ordinary case on PR
 	// bodies) or an absolute URL the policy refused. Name which.
-	const unavailableTitle = $derived.by(() => {
-		const href = typeof token.href === 'string' ? token.href : '';
-		const scheme = href.startsWith('//') ? 'https' : urlScheme(href);
-		return scheme === null || scheme === 'file'
-			? `Cannot load from this surface: ${href}`
-			: `Blocked URL: ${href}`;
-	});
+	const unavailableTitle = $derived(unavailableImageTitle(typeof token.href === 'string' ? token.href : ''));
 </script>
 
 {#if token.href !== 'streamdown:incomplete-image'}
@@ -127,10 +118,8 @@
 		<span
 			data-streamdown-image-blocked={id}
 			data-find-skip
-			class="inline-block rounded bg-surface-2 px-3 py-1 text-sm text-secondary"
+			class={UNAVAILABLE_IMAGE_CLASS}
 			title={unavailableTitle}
-		>
-			[Image unavailable: {alt || 'No description'}]
-		</span>
+		>{unavailableImageText(alt)}</span>
 	{/if}
 {/if}

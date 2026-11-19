@@ -1,15 +1,19 @@
 /**
  * Document-level facts for a document rendered block by block.
  *
- * Each block a `parseBlocks` cache holds is read once, when its source
- * changes, for what other blocks need from it: reference definitions (in any
- * container, never inside code, as the grammar decides) and, on a forge
- * surface, footnote definitions and references, headings and GitLab's table
- * of contents markers. A source that only grows reads only its new blocks.
- * The fold over those facts is a `DocumentContext`: one `DocumentScope` per
- * rendered block (documentScope.ts), handed to that block's lex. An update
- * that changes no fact returns the previous context, so nothing downstream
- * re-lexes.
+ * Each block a `parseBlocks` cache holds is read, when its source changes,
+ * for what other blocks need from it: reference definitions (in any
+ * container, never inside code, as the grammar decides), which register
+ * during block tokenization, and, on a forge surface, footnote definitions
+ * and references, headings and GitLab's table of contents markers. Those
+ * come from a lex under the document's folded definitions, as the block
+ * renders, and are read again when a definition that lex read resolves
+ * differently. The fold over those facts is a `DocumentContext`: one
+ * `DocumentScope` per rendered block (documentScope.ts), handed to that
+ * block's lex. An update that changes no fact returns the previous context,
+ * so nothing downstream re-lexes; when the parse's changed tail
+ * (`ParseBlocksCache.changedFrom`) holds no fact and held none, that costs
+ * only the tail.
  *
  * Forge rules, from each forge's render: a heading's anchor is its text
  * lowercased with everything but letters, marks, numbers, `_`, `-` and spaces
@@ -26,7 +30,7 @@ import type { Links, Token } from './engine';
 import { getLexOptions, lex } from './lexer';
 import type { Extension } from './lexer';
 import type { ParseBlocksCache } from './parseBlocks.cache';
-import { forEachBlockToken, installDocumentScope, isTocMarker } from './documentScope';
+import { forEachBlockToken, installDocumentScope, isTocMarker, sameScopeReads } from './documentScope';
 import type { DocumentForge, DocumentScope, DocumentToc } from './documentScope';
 import { footnoteRefAnchor } from './extensions/footnotes';
 import type { Footnote } from './extensions/footnotes';
@@ -45,12 +49,24 @@ export interface DocumentContext {
 
 type Heading = { readonly slug: string; readonly text: string; readonly depth: number };
 
-interface BlockFacts {
-	readonly defs: readonly [string, Links[string]][];
+type Def = readonly [string, Links[string]];
+
+/** What a forge lex of one block under the document's definitions found. */
+interface InlineFacts {
 	readonly footnotes: readonly [string, readonly string[]][];
 	readonly refs: readonly string[];
 	readonly headings: readonly Heading[];
 	readonly markers: number;
+	/** The scope it lexed under, and the keys of it the lex read. */
+	readonly scope: DocumentScope;
+	readonly reads: ReadonlySet<string>;
+}
+
+/** What one raw holds for the rest of its document. */
+interface BlockFacts {
+	readonly defs: readonly Def[];
+	/** On a forge, its lex under the folded definitions; null until made. */
+	inline: InlineFacts | null;
 }
 
 export interface DocumentContextCache {
@@ -62,6 +78,12 @@ export interface DocumentContextCache {
 	/** The raw index of the document's first block (`firstRawIndex`). */
 	lead: number;
 	context: DocumentContext | null;
+	/** The block parse, and its `generation`, that `raws` were last read from. */
+	blocks: ParseBlocksCache | null;
+	generation: number;
+	/** The scopes a block's forge lex runs under (`first` false, true): the
+	 * folded definitions of `context`. */
+	factScopes: readonly [DocumentScope, DocumentScope] | null;
 }
 
 export const createDocumentContextCache = (): DocumentContextCache => ({
@@ -71,7 +93,10 @@ export const createDocumentContextCache = (): DocumentContextCache => ({
 	facts: [],
 	key: '',
 	lead: -1,
-	context: null
+	context: null,
+	blocks: null,
+	generation: 0,
+	factScopes: null
 });
 
 const FORGE_GATE = /\]:|\[\^|#|\[toc\]|\[\[_toc_\]\]|\n[ \t>]*[=-]/i;
@@ -125,23 +150,33 @@ export const headingSlug = (text: string): string =>
 /** The index of the first raw that holds more than blank lines, or -1. */
 const firstRawIndex = (raws: readonly string[]): number => raws.findIndex((raw) => raw.trim() !== '');
 
+const NO_DEFS: readonly Def[] = [];
+
+/** A block's facts with its definitions read; null when it can hold none. */
 const factsOf = (raw: string, extensions: Extension[], forge: DocumentForge, first: boolean): BlockFacts | null => {
 	if (!mayHoldFacts(raw, forge)) return null;
+	if (!raw.includes(']:')) return { defs: NO_DEFS, inline: null };
 	const lexer = new Lexer(getLexOptions(extensions));
-	// Its own footnote maps, never the ambient Streamdown context's.
-	lexer.footnotes = { refs: new Map(), footnotes: new Map() };
-	if (!forge) {
-		// Definitions register during block tokenization.
-		lexer.blockTokens(raw.replace(/\r\n?/g, '\n'), []);
-		const defs: [string, Links[string]][] = [];
-		for (const label in lexer.tokens.links) defs.push([label, lexer.tokens.links[label]]);
-		return defs.length > 0 ? { defs, footnotes: [], refs: [], headings: [], markers: 0 } : null;
+	if (forge) {
+		// Its own footnote maps, never the ambient Streamdown context's.
+		lexer.footnotes = { refs: new Map(), footnotes: new Map() };
+		installDocumentScope(lexer, scopeOf(forge, null, null, first));
 	}
-	// The forge's grammar, with every footnote reference read as one.
-	installDocumentScope(lexer, scopeOf(forge, null, null, first));
-	const tokens = lexer.lex(raw);
-	const defs: [string, Links[string]][] = [];
+	// Definitions register during block tokenization.
+	lexer.blockTokens(raw.replace(/\r\n?/g, '\n'), []);
+	const defs: Def[] = [];
 	for (const label in lexer.tokens.links) defs.push([label, lexer.tokens.links[label]]);
+	return { defs: defs.length > 0 ? defs : NO_DEFS, inline: null };
+};
+
+/** A forge block's facts read from its lex under `scope`, which holds the
+ * document's definitions, as the block renders. */
+const inlineFactsOf = (raw: string, extensions: Extension[], forge: DocumentForge, scope: DocumentScope): InlineFacts => {
+	const lexer = new Lexer(getLexOptions(extensions));
+	lexer.footnotes = { refs: new Map(), footnotes: new Map() };
+	// The forge's grammar, with every footnote reference read as one.
+	installDocumentScope(lexer, scope);
+	const tokens = lexer.lex(raw);
 	const footnotes: [string, readonly string[]][] = [];
 	const headings: Heading[] = [];
 	let markers = 0;
@@ -167,8 +202,14 @@ const factsOf = (raw: string, extensions: Extension[], forge: DocumentForge, fir
 		};
 		walk(tokens as TextToken[]);
 	}
-	if (defs.length === 0 && footnotes.length === 0 && refs.length === 0 && headings.length === 0 && markers === 0) return null;
-	return { defs, footnotes, refs, headings, markers };
+	return { footnotes, refs, headings, markers, scope, reads: lexer.documentReads ?? new Set() };
+};
+
+const holdsFact = (facts: BlockFacts | null | undefined): boolean => {
+	if (!facts) return false;
+	const inline = facts.inline;
+	return facts.defs.length > 0 ||
+		(inline !== null && (inline.footnotes.length > 0 || inline.refs.length > 0 || inline.headings.length > 0 || inline.markers > 0));
 };
 
 const scopeOf = (
@@ -271,34 +312,76 @@ export const documentContextOf = (
 		cache.key = '';
 		cache.lead = -1;
 		cache.context = null;
+		cache.factScopes = null;
 	}
 	const raws = blocks.raws;
+	// Every raw before `from` is one this cache read last time: the same
+	// parse, and nothing before its changed tail differs.
+	let from = 0;
+	if (cache.context !== null && cache.blocks === blocks) {
+		if (blocks.generation === cache.generation) from = raws.length;
+		else if (blocks.generation === cache.generation + 1) from = blocks.changedFrom;
+	}
+	cache.blocks = blocks;
+	cache.generation = blocks.generation;
 	const lead = firstRawIndex(raws);
-	for (let index = 0; index < raws.length; index++) {
+	// Whether the context is folded again: a fact or the first block may
+	// have changed, or a fact sits where block indexes may have moved.
+	let changed = cache.context === null || lead !== cache.lead || lead >= from;
+	if (lead !== cache.lead) from = 0;
+	for (let index = from; index < cache.facts.length; index++) if (holdsFact(cache.facts[index])) changed = true;
+	for (let index = from; index < raws.length; index++) {
 		if (cache.raws[index] === raws[index] && index < cache.facts.length && (index === lead) === (index === cache.lead)) continue;
 		cache.raws[index] = raws[index];
-		cache.facts[index] = factsOf(raws[index], extensions, forge, index === lead);
+		const facts = factsOf(raws[index], extensions, forge, index === lead);
+		cache.facts[index] = facts;
+		if (!facts) continue;
+		if (facts.defs.length > 0) changed = true;
+		// Under unchanged definitions, the scope the context folded.
+		else if (forge && !changed && cache.factScopes) {
+			facts.inline = inlineFactsOf(raws[index], extensions, forge, cache.factScopes[index === lead ? 1 : 0]);
+			if (holdsFact(facts)) changed = true;
+		}
 	}
 	cache.lead = lead;
 	cache.raws.length = raws.length;
 	cache.facts.length = raws.length;
+	if (!changed && cache.context) return cache.context;
 
 	const links: Links = Object.create(null);
 	let hasLinks = false;
-	const bodies = new Map<string, readonly string[]>();
-	const used = new Set<string>();
-	const seen = new Map<string, number>();
-	const headingIds: (readonly string[] | undefined)[] = [];
-	const headings: { text: string; depth: number; id: string }[] = [];
-	let lastMarker = -1;
 	for (let index = 0; index < raws.length; index++) {
-		const facts = cache.facts[index];
-		if (!facts) continue;
-		for (const [label, def] of facts.defs) {
+		for (const [label, def] of cache.facts[index]?.defs ?? NO_DEFS) {
 			if (label in links) continue;
 			links[label] = def;
 			hasLinks = true;
 		}
+	}
+	const sharedLinks = hasLinks ? links : null;
+	if (forge) {
+		const factScopes = [scopeOf(forge, sharedLinks, null, false), scopeOf(forge, sharedLinks, null, true)] as const;
+		cache.factScopes = factScopes;
+		// A block's facts are read again when a key its lex read resolves
+		// differently under these definitions.
+		for (let index = 0; index < raws.length; index++) {
+			const facts = cache.facts[index];
+			if (!facts) continue;
+			const scope = factScopes[index === lead ? 1 : 0];
+			if (facts.inline === null || !sameScopeReads(facts.inline.scope, scope, facts.inline.reads))
+				facts.inline = inlineFactsOf(raws[index], extensions, forge, scope);
+		}
+	}
+
+	const bodies = new Map<string, readonly string[]>();
+	const used = new Set<string>();
+	const seen = new Map<string, number>();
+	const headingIds: (readonly string[] | undefined)[] = [];
+	const markersAt: number[] = [];
+	const headings: { text: string; depth: number; id: string }[] = [];
+	let lastMarker = -1;
+	for (let index = 0; index < raws.length; index++) {
+		const facts = cache.facts[index]?.inline;
+		if (!facts) continue;
 		for (const [label, lines] of facts.footnotes) if (!bodies.has(label)) bodies.set(label, lines);
 		if (facts.headings.length > 0) {
 			const ids: string[] = [];
@@ -313,7 +396,10 @@ export const documentContextOf = (
 			}
 			headingIds[index] = ids;
 		}
-		if (facts.markers > 0) lastMarker = index;
+		if (facts.markers > 0) {
+			markersAt[index] = facts.markers;
+			lastMarker = index;
+		}
 	}
 	// Numbers and the references before each block, in document order.
 	const numbers = new Map<string, number>();
@@ -321,7 +407,7 @@ export const documentContextOf = (
 	const bases: (ReadonlyMap<string, number> | undefined)[] = [];
 	if (forge) {
 		for (let index = 0; index < raws.length; index++) {
-			const facts = cache.facts[index];
+			const facts = cache.facts[index]?.inline;
 			if (!facts || facts.refs.length === 0) continue;
 			const base = new Map<string, number>();
 			for (const label of facts.refs) {
@@ -341,7 +427,7 @@ export const documentContextOf = (
 	for (let index = 0; index < raws.length; index++) {
 		const ids = headingIds[index];
 		const base = bases[index];
-		const markers = cache.facts[index]?.markers ?? 0;
+		const markers = markersAt[index] ?? 0;
 		if (!ids && !base && markers === 0) continue;
 		key += `${index}:${blocks.blockIndexes[index]}:${ids?.join('\u0000') ?? ''}:${base ? [...base].join(',') : ''}:${markers}\u0001`;
 	}
@@ -354,7 +440,6 @@ export const documentContextOf = (
 	cache.key = key;
 
 	if (empty) return (cache.context = EMPTY_CONTEXTS[forge ?? 'chat']);
-	const sharedLinks = hasLinks ? links : null;
 	const sharedNumbers = forge ? numbers : null;
 	const after = scopeOf(forge, sharedLinks, sharedNumbers);
 	let tocList: Token | null | undefined;
@@ -378,7 +463,7 @@ export const documentContextOf = (
 			if (scope) return scope;
 			const ids = headingIds[rawIndex];
 			const base = bases[rawIndex];
-			const markers = cache.facts[rawIndex]?.markers ?? 0;
+			const markers = markersAt[rawIndex] ?? 0;
 			const first = rawIndex === lead;
 			scope = !ids && !base && markers === 0 && !first
 				? after

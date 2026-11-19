@@ -8,7 +8,7 @@ import * as extensionModule from '../../utils/forgeEmojiExtension';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
 import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
-import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
+import { parseForgeAttachmentHref, type ForgeAttachmentSource } from '../../utils/forgeAttachments';
 
 vi.mock('../../transport/deviceSession', () => ({
   fetchPairedComputer: async () => new Response('bytes', { status: 200 }),
@@ -108,10 +108,10 @@ describe('text in forge HTML', () => {
       { text: '#4', href: `${GL}/-/issues/4` },
       { text: '@group/sub', href: 'https://gitlab.com/group/sub' },
       { text: '#9', href: `${GL}/-/issues/9` },
+      // Admitted by the renderer's link rule, as in a paragraph.
+      { text: 'smb://x/y', href: 'smb://x/y' },
       { text: 'Home', href: `${GL}/-/wikis/Home` },
     ]);
-    // A link the policy refuses (a non-http scheme) shows its text.
-    expect(div.textContent).toContain('smb://x/y');
     expect(div.textContent).toContain('a@b.example');
   });
 
@@ -172,9 +172,13 @@ describe('links in forge HTML', () => {
       { text: 'doc', href: `${GL}/-/blob/HEAD/docs/a.md` },
       { text: 'root', href: `${GL}/-/blob/HEAD/x` },
       { text: 'query', href: `${GL}/-/merge_requests/3?q=1` },
-      { text: 'upload', href: `${GL}/uploads/${HEX}/f.pdf` },
+      // Claimed as the attachment a paragraph's link to it is.
+      { text: 'upload', href: expect.stringMatching(/^agent-overflow:forge\?/) },
       { text: 'script', href: null },
     ]);
+    const upload = [...gitlab.querySelectorAll('a')].find((a) => a.textContent === 'upload')!;
+    expect(parseForgeAttachmentHref(upload.getAttribute('href'))?.href).toBe(`/uploads/${HEX}/f.pdf`);
+    expect(upload.getAttribute('title')).toBe('Download f.pdf');
   });
 
   it('drops a relative href off a forge surface', async () => {

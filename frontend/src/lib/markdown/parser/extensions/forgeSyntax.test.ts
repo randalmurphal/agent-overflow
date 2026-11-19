@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { lex, parseBlocks, createParseBlocksCache, createProvenAppend, type Extension } from '../../index';
+import { Lexer } from '../engine';
 import { markedStrikethrough } from './strikethrough';
 import { markedInlineDiff } from './inlineDiff';
 import { markedMultilineBlockquote } from './multilineBlockquote';
@@ -29,6 +30,19 @@ type Tok = {
 const blocks = (source: string, extensions: Extension[]): Tok[] => lex(source, extensions) as unknown as Tok[];
 const inline = (source: string, extensions: Extension[]): Tok[] => blocks(source, extensions)[0]?.tokens ?? [];
 const rawSum = (tokens: Tok[]) => tokens.map((token) => token.raw).join('');
+
+/** The scans `run` makes: its calls to `String.prototype.indexOf` and `RegExp.prototype.test`. */
+const scans = (run: () => void): number => {
+	const indexOf = vi.spyOn(String.prototype, 'indexOf');
+	const test = vi.spyOn(RegExp.prototype, 'test');
+	try {
+		run();
+		return indexOf.mock.calls.length + test.mock.calls.length;
+	} finally {
+		indexOf.mockRestore();
+		test.mockRestore();
+	}
+};
 
 describe('GFM strikethrough', () => {
 	const ext = [markedStrikethrough];
@@ -84,6 +98,15 @@ describe('GFM strikethrough', () => {
 		// The rule of 3: a closer that may also open passes over an opener
 		// whose length makes three with its own.
 		['~~a~b~~', '<del>a~b</del>'],
+		// A closer takes the nearest opener even past an earlier one, and the
+		// openers above the one it takes are text.
+		['~~a~ b~~', '~~a~ b~~'],
+		['~~a ~b~~ c~', '~~a ~b~~ c~'],
+		['~a~~ b~', '~a~~ b~'],
+		['~x ~~y~ z~~', '~x ~~y~ z~~'],
+		['~x ~~y~ z', '~x ~~y~ z'],
+		['~~p~ q~ r~~', '~~p~ q~ r~~'],
+		['~one ~~two~~ three~', '<del>one <del>two</del> three</del>'],
 		// A link, a code span and an escape hide their tildes.
 		['~a [x~](https://example.invalid) b~', '<del>a x~ b</del>'],
 		['~a \\~ b~', '<del>a \\~ b</del>']
@@ -91,6 +114,40 @@ describe('GFM strikethrough', () => {
 		const tokens = inline(source, ext);
 		expect(struck(tokens)).toBe(shown);
 		expect(rawSum(tokens)).toBe(source);
+	});
+
+	it('masks a paragraph of unmatched openers once and scans it in linear work', () => {
+		const maskInline = vi.spyOn(Lexer.prototype, 'maskInline');
+		try {
+			inline('~word '.repeat(2000), ext);
+			// The paragraph's run, and nothing per opener.
+			expect(maskInline).toHaveBeenCalledTimes(1);
+		} finally {
+			maskInline.mockRestore();
+		}
+		const work = (n: number) => scans(() => inline('~word '.repeat(n), ext));
+		// Linear work grows 4x with 4x the openers; quadratic grows 16x.
+		expect(work(2000) / work(500)).toBeLessThan(5);
+	});
+
+	it('pairs closers that pass over many openers in linear time', () => {
+		const closers = (n: number) => ' ~x'.repeat(n) + ' a~~b'.repeat(n);
+		expect(struck(inline(closers(3), ext))).toBe(' ~x ~x ~x a<del>b a</del>b a~~b');
+		// Every other `~~` passes over all n openers unless a failed search
+		// bounds the next one. The same text with no closer walks no stack;
+		// unbounded, the walks cost about 9 times its lex at this size.
+		const time = (source: string) => {
+			let best = Infinity;
+			for (let round = 0; round < 3; round++) {
+				const start = performance.now();
+				inline(source, ext);
+				best = Math.min(best, performance.now() - start);
+			}
+			return best;
+		};
+		const n = 16000;
+		time(closers(1000));
+		expect(time(closers(n)) / time(' ~x'.repeat(n) + ' a--b'.repeat(n))).toBeLessThan(4);
 	});
 
 	it('runs ahead of subscript; agent chat keeps subscript and `~~`-only strikethrough', () => {
@@ -103,21 +160,20 @@ describe('GitLab inline diff', () => {
 	const ext = [markedInlineDiff];
 
 	it.each([
-		['{+ addition 1 +}', 'htmlInline', ' addition 1 '],
-		['[+ addition 2 +]', 'htmlInline', ' addition 2 '],
-		['{- deletion 3 -}', 'del', ' deletion 3 '],
-		['[- deletion 4 -]', 'del', ' deletion 4 '],
-		['{+ Text with escaped \\`backticks\\` inside +}', 'htmlInline', ' Text with escaped \\`backticks\\` inside ']
-	])('marks %s', (source, type, text) => {
+		['{+ addition 1 +}', 'added', ' addition 1 '],
+		['[+ addition 2 +]', 'added', ' addition 2 '],
+		['{- deletion 3 -}', 'removed', ' deletion 3 '],
+		['[- deletion 4 -]', 'removed', ' deletion 4 '],
+		['{+ Text with escaped \\`backticks\\` inside +}', 'added', ' Text with escaped \\`backticks\\` inside ']
+	])('marks %s', (source, change, text) => {
 		const [token] = inline(source, ext);
-		expect(token).toMatchObject({ type, raw: source, text });
-		if (type === 'htmlInline') expect(token.tag).toBe('ins');
+		expect(token).toMatchObject({ type: 'inlineDiff', change, raw: source, text });
 	});
 
 	it('marks a diff mid-sentence and keeps the run raws whole', () => {
 		const source = 'we {- removed -} the old and {+ added +} the new.';
 		const tokens = inline(source, ext);
-		expect(tokens.map((token) => token.type)).toEqual(['text', 'del', 'text', 'htmlInline', 'text']);
+		expect(tokens.map((token) => token.type)).toEqual(['text', 'inlineDiff', 'text', 'inlineDiff', 'text']);
 		expect(rawSum(tokens)).toBe(source);
 	});
 
@@ -133,8 +189,7 @@ describe('GitLab inline diff', () => {
 		['a closer on the next line', '{+ one\ntwo +}']
 	])('leaves %s as text', (_name, source) => {
 		const types = inline(source, ext).map((token) => token.type);
-		expect(types).not.toContain('htmlInline');
-		expect(types).not.toContain('del');
+		expect(types).not.toContain('inlineDiff');
 	});
 
 	it('is text in a code span and in agent chat', () => {
@@ -382,6 +437,16 @@ describe('GitLab description lists', () => {
 
 	it('is a paragraph in agent chat', () => {
 		expect(blocks('Fruits\n: apple', []).map((token) => token.type)).toEqual(['paragraph']);
+	});
+
+	it.each([
+		['a detail with many continuation lines', (n: number) => 'Term\n: detail\n' + 'continuation\n'.repeat(n)],
+		['many lists in one document', (n: number) => 'Term\n: detail\n\nprose\n\n'.repeat(n)],
+		['a run of headings ending in a `:` line', (n: number) => '# heading\n'.repeat(n) + ': detail\n']
+	])('scans %s in linear work', (_name, document) => {
+		const work = (n: number) => scans(() => blocks(document(n), ext)) + scans(() => parseBlocks(document(n), ext));
+		// Linear work grows 4x with 4x the lines; quadratic grows 16x.
+		expect(work(1600) / work(400)).toBeLessThan(5);
 	});
 });
 

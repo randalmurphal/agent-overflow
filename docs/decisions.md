@@ -927,21 +927,26 @@ and anti-changes that live only here:
   assets, and do not hide a reference the browser could open.
 - A PR/MR body or comment reads in the review pane as it reads on its
   forge, by that forge's own grammar; a form one forge leaves as text
-  stays text on its surface. Both: HTML wrappers around Markdown,
-  `<details>` in a quote or alert, safe inline tags, entity references,
+  stays text on its surface. Both: HTML wrappers around Markdown (text
+  on an HTML block's own lines, up to the first blank line, is HTML, so
+  Markdown syntax there is literal), `<details>` in a quote or alert,
+  safe inline tags, entity references,
   images in their line at their authored size and placement, emoji
   shortcodes, `~` strikethrough, color chips, `` $`…`$ `` and `math`
-  fence math, CommonMark list numbering, issue, PR/MR, commit, mention
+  fence math, `$$…$$` as display math, CommonMark list numbering, issue, PR/MR, commit, mention
   and email references linked by shape (the page cannot check that a
   target exists, so only shapes that cannot be prose link), relative
-  links resolved to the forge, a numbered footnotes section, and heading
+  links resolved to the forge however the link is written, a numbered
+  footnotes section, and heading
   anchors with `#name` jumps that stay inside the body clicked. GitHub:
   a single newline is a line break, an alert needs its marker alone on
-  the first line of a top-level quote, and a `<picture>` source or
-  `#gh-*-mode-only` image follows the app's light or dark theme. GitLab:
+  the first line of a top-level quote, a bare `ftp://` URL is text, and
+  a `<picture>` source or `#gh-*-mode-only` image follows the app's
+  light or dark theme. GitLab:
   the `{width=… height=…}` list, playable video and audio images,
-  inline diff, `>>>` quotes, front matter, `[~]` and table-cell tasks,
-  description lists, JSON tables, titled alerts and `[[_TOC_]]`. One
+  inline diff as a highlight, `>>>` quotes, front matter, `[~]` and table-cell tasks,
+  description lists, JSON tables, titled alerts, `[[_TOC_]]`, and a
+  bare URL that ends before an unbalanced `}` or `]`. One
   allowlist per forge decides which HTML elements and attributes
   survive, in a paragraph and in an HTML block alike: an element off it
   shows its text without the element, and scripts, styles, svg and
@@ -953,8 +958,10 @@ and anti-changes that live only here:
   italic quotes, footnote popovers). On every surface: reference-style
   links resolve across the whole message, a link inside a link leaves
   only the inner one linked, a fence's language is the first word of
-  its info string, a table column takes its authored alignment, and a
-  formula or diagram that cannot be drawn shows its source. Mechanism:
+  its info string, a table column takes its authored alignment, a
+  block quote written left of a list item's content ends the list, an
+  authored image never loads from the app's own origin, and a formula
+  or diagram that cannot be drawn shows its source. Mechanism:
   `frontend/src/lib/markdown/AGENTS.md`.
 - Forge reads and writes go directly over HTTPS with the token of the
   user's `gh`/`glab` login, read from the CLI at runtime and held in memory

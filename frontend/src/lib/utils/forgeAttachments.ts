@@ -166,9 +166,16 @@ function forgeShape(forge: Forge, href: string): ForgeHrefShape | null {
   return forge === 'github' ? githubShape(trimmed) : gitlabShape(trimmed);
 }
 
-/** Whether this forge would serve `href` as an attachment the CLI can fetch. */
-export function isForgeAttachmentHref(forge: Forge, href: string): boolean {
-  return forgeShape(forge, href) !== null;
+/**
+ * Whether `pr`'s forge would serve `href` as an attachment its login can
+ * fetch. An absolute GitLab upload must be on the MR's own host: the fetch
+ * asks that host for the project the path names, and a URL on another server
+ * names no project there (`internal/forgeattach` refuses it the same way).
+ */
+export function isForgeAttachmentHref(pr: Pick<PRRef, 'forge' | 'host'>, href: string): boolean {
+  const shape = forgeShape(pr.forge, href);
+  if (shape === null) return false;
+  return pr.forge !== 'gitlab' || shape.absolute === null || shape.absolute.host.toLowerCase() === pr.host.toLowerCase();
 }
 
 /** The attachment's display name: the `<name>` segment, else the trailing id. */

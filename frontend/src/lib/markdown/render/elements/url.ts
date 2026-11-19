@@ -1,4 +1,5 @@
 import { FILE_SCHEME, isOpenableScheme, urlScheme } from './urlSchemes';
+import { canonicalHref } from '../../parser/engine/destination';
 
 // WHATWG parsing strips leading and trailing C0 controls and spaces before
 // reading the scheme; the scheme checks here see the same string.
@@ -29,9 +30,7 @@ const trimUrl = (url: string): string => {
 export const parseUrl = (url: unknown): URL | null => {
     if (typeof url !== 'string')
         return null;
-    const trimmed = trimUrl(url);
-    if (trimmed.startsWith('//'))
-        return parseUrl(`https:${trimmed}`);
+    const trimmed = trimUrl(canonicalHref(url));
     if (urlScheme(trimmed) === null)
         return null;
     try {
@@ -91,6 +90,25 @@ export const transformUrl = (
 };
 
 /**
+ * The src an authored image, video or audio may fetch, or null: what
+ * `transformUrl` admits, except a URL on the page's own origin, which would
+ * make the app request itself (its transport and API). Every authored
+ * media src passes here, in both renderers and the HTML sanitizer; media
+ * the app mints itself (a fetched attachment's or local image's bytes)
+ * never does. Links are not fetches and use `transformUrl`.
+ */
+export const transformMediaUrl = (
+    url: unknown,
+    allowedPrefixes: string[]
+): string | null => {
+    const admitted = transformUrl(url, allowedPrefixes);
+    if (admitted === null || !/^https?:/i.test(admitted))
+        return admitted;
+    const page = globalThis.location?.origin;
+    return page !== undefined && new URL(admitted).origin === page ? null : admitted;
+};
+
+/**
  * How a link token renders. One answer for both renderers
  * (`Link.svelte` and `staticHtml.ts`), so they cannot fork.
  *
@@ -126,6 +144,22 @@ export const linkTagText = (href: unknown, allowedPrefixes: string[]): string =>
         ? BLOCKED_LINK_SUFFIX
         : '';
 
+/** A path, fragment, drive path or `file:` URL: a place this page cannot go, not a refused URL. */
+const isReference = (href: string): boolean => {
+    const scheme = urlScheme(trimUrl(canonicalHref(href)));
+    return scheme === null || scheme === FILE_SCHEME;
+};
+
+/**
+ * An image the gate refused, as both renderers and the HTML sanitizer show
+ * it: a chip, not a broken image, titled with what it named. Chrome, not
+ * the message's text, so find skips it (`data-find-skip`).
+ */
+export const UNAVAILABLE_IMAGE_CLASS = 'inline-block rounded bg-surface-2 px-3 py-1 text-sm text-secondary';
+export const unavailableImageText = (alt: string): string => `[Image unavailable: ${alt || 'No description'}]`;
+export const unavailableImageTitle = (href: string): string =>
+    isReference(href) ? `Cannot load from this surface: ${href}` : `Blocked URL: ${href}`;
+
 export type LinkHrefClass =
     | { kind: 'anchor'; href: string }
     | { kind: 'reference'; title: string }
@@ -141,9 +175,7 @@ export const classifyLinkHref = (
     const transformed = transformUrl(href, allowedPrefixes);
     if (transformed !== null) return { kind: 'anchor', href: transformed };
     const raw = typeof href === 'string' ? href : '';
-    const trimmed = trimUrl(raw);
-    const scheme = trimmed.startsWith('//') ? 'https' : urlScheme(trimmed);
-    if (scheme === null || scheme === FILE_SCHEME) {
+    if (isReference(raw)) {
         return { kind: 'reference', title: raw };
     }
     return { kind: 'blocked', title: `Blocked URL: ${raw}` };

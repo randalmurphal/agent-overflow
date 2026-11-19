@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MEDIA_CLAIM_ATTR, sanitizeEmbeddedHtmlToken, type SanitizeEmbeddedHtmlOptions } from './htmlSanitize';
 import type { ColorScheme } from '../parser/extensions/themedImages';
+import type { DestinationHook } from '../parser/engine/destination';
 
 // Theme-specific images and image placement in an HTML block.
 
@@ -11,6 +12,9 @@ const sanitized = (raw: string, options?: SanitizeEmbeddedHtmlOptions): HTMLElem
 };
 const srcs = (root: Element) => [...root.querySelectorAll('img')].map((img) => img.getAttribute('src'));
 const scheme = (value: ColorScheme) => ({ colorScheme: () => value });
+/** A host that claims `/uploads/` images, as the forge attachment hook does. */
+const claiming = (hook: DestinationHook = (token) => (token.type === 'image' && token.href.startsWith('/uploads/') ? { ...token, href: `claim:${token.href}` } : undefined)) =>
+	({ destinations: [hook], allowedImagePrefixes: ['https://', 'claim:'] }) satisfies SanitizeEmbeddedHtmlOptions;
 
 const PICTURE =
 	'<p align="center"><picture>' +
@@ -38,21 +42,24 @@ describe('a picture in an HTML block', () => {
 
 	it.each([
 		['a relative source', 'docs/dark.png'],
-		['a script source', 'javascript:alert(1)'],
-		['a protocol-relative source', '//example.invalid/dark.png']
+		['a script source', 'javascript:alert(1)']
 	])('paints the fallback over %s the img would not load', (_name, src) => {
 		const html = `<picture><source media="(prefers-color-scheme: dark)" srcset="${src}"><img src="https://example.invalid/default.png"></picture>`;
 		expect(srcs(sanitized(html, scheme('dark')))).toEqual(['https://example.invalid/default.png']);
 	});
 
+	it('paints a scheme-relative source as the https URL it names', () => {
+		const html = '<picture><source media="(prefers-color-scheme: dark)" srcset="//example.invalid/dark.png"><img src="https://example.invalid/default.png"></picture>';
+		expect(srcs(sanitized(html, scheme('dark')))).toEqual(['https://example.invalid/dark.png']);
+	});
+
 	it('claims a forge-hosted source as it claims a fallback', () => {
-		const claimMedia = vi.fn((_tag: string, src: string) => (src.startsWith('/uploads/') ? `claim:${src}` : null));
 		const html = '<picture><source media="(prefers-color-scheme: dark)" srcset="/uploads/dark.png"><img alt="logo" src="https://example.invalid/default.png"></picture>';
-		const root = sanitized(html, { claimMedia, colorScheme: () => 'dark' });
+		const root = sanitized(html, { ...claiming(), colorScheme: () => 'dark' });
 		const img = root.querySelector('img')!;
 		expect(img.getAttribute(MEDIA_CLAIM_ATTR)).toBe('claim:/uploads/dark.png');
 		expect(img.hasAttribute('src')).toBe(false);
-		expect(sanitized(html, { claimMedia, colorScheme: () => 'light' }).querySelector('img')!.getAttribute('src')).toBe(
+		expect(sanitized(html, { ...claiming(), colorScheme: () => 'light' }).querySelector('img')!.getAttribute('src')).toBe(
 			'https://example.invalid/default.png'
 		);
 	});
@@ -77,9 +84,9 @@ describe('a #gh-*-mode-only image in an HTML block', () => {
 	});
 
 	it('is hidden before it is claimed', () => {
-		const claimMedia = vi.fn(() => 'claim');
-		sanitized('<img src="/uploads/dark.png#gh-dark-mode-only">', { claimMedia, colorScheme: () => 'light' });
-		expect(claimMedia).not.toHaveBeenCalled();
+		const hook = vi.fn<DestinationHook>(() => undefined);
+		sanitized('<img src="/uploads/dark.png#gh-dark-mode-only">', { ...claiming(hook), colorScheme: () => 'light' });
+		expect(hook).not.toHaveBeenCalled();
 	});
 });
 
@@ -111,7 +118,7 @@ describe('image placement', () => {
 	});
 
 	it('keeps the placement on a claimed image for its host', () => {
-		const root = sanitized('<p><img src="/uploads/a.png" align="left" hspace="4"></p>', { claimMedia: () => 'claim' });
+		const root = sanitized('<p><img src="/uploads/a.png" align="left" hspace="4"></p>', claiming());
 		const img = root.querySelector('img')!;
 		expect([img.getAttribute('align'), img.getAttribute('hspace')]).toEqual(['left', '4']);
 	});

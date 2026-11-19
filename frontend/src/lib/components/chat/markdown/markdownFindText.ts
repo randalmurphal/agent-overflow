@@ -117,7 +117,7 @@ export const SHOWS: Record<StreamdownToken['type'], Shows> = {
   table: 'block', caption: 'block', checkbox: 'nothing', thead: 'inline', tbody: 'inline', tfoot: 'inline', tr: 'block',
   descriptionList: 'block', description: 'inline', descriptionTerm: 'block', descriptionDetail: 'block',
   detailsSummary: 'block',
-  strong: 'inline', em: 'inline', del: 'inline', sub: 'inline', sup: 'inline', mdx: 'inline', htmlInline: 'inline',
+  strong: 'inline', em: 'inline', del: 'inline', sub: 'inline', sup: 'inline', mdx: 'inline', htmlInline: 'inline', inlineDiff: 'inline',
   code: 'own', html: 'own', codespan: 'own', escape: 'own', footnoteRef: 'own', 'inline-citations': 'own',
   details: 'own', link: 'own', td: 'own', th: 'own', alert: 'own', text: 'own', htmlRegion: 'own',
 };

@@ -130,6 +130,8 @@ describe('thread find text', () => {
       'assistant 139', 'assistant 141',
       // A lone diagram.
       'assistant 146',
+      // Chat drops embedded HTML.
+      'assistant 150', 'assistant 151',
     ]);
     await expect(`${JSON.stringify({ rows }, null, 2)}\n`).toMatchFileSnapshot('../../../test/fixtures/findCandidateVectors.json');
   });

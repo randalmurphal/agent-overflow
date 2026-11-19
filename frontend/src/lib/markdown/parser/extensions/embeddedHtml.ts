@@ -10,9 +10,9 @@
  * every html token has exactly one of three fates:
  *
  *  - a STRUCTURAL token rendered by our own elements — `<details>` /
- *    `<summary>` become container tokens whose children are ordinary
- *    markdown tokens (the content inside a forge dropdown is markdown),
- *    and the safe inline pairs map onto the native inline tokens
+ *    `<summary>` become container tokens whose children are the HTML on
+ *    their HTML block's lines and the Markdown after it, and the safe
+ *    inline pairs map onto the native inline tokens
  *    (`<b>` → strong, `<a href>` → link, `<img>` and a `<picture>`'s
  *    fallback → image), which is what routes their hrefs/srcs through the
  *    existing render-layer URL policy; a safe inline tag with no native
@@ -27,10 +27,9 @@
  * comes from one pairing per run (`htmlRuns.ts`).
  */
 import type { Extension } from '../lexer';
-import { Lexer } from '../engine';
-import type { Token, Tokens } from '../engine';
+import type { Lexer, Token, Tokens } from '../engine';
 import { decodeHtmlEntities, markedHtmlEntities } from './htmlEntities';
-import { htmlBlockStart, markedHtmlRegion } from './htmlRegion';
+import { htmlBlockStart, htmlFragment, markedHtmlRegion } from './htmlRegion';
 import { attributeOf, readTag, scanTags, type HtmlTag } from './htmlTags';
 import { ANY_FORGE_HTML_POLICY, htmlPolicyOf, imageAlign, ruleAttributes, type HtmlPolicy } from './htmlPolicy';
 import type { DocumentForge } from '../documentScope';
@@ -40,6 +39,7 @@ import {
 	bindInlineInside,
 	boundBlockRun,
 	closeOf,
+	htmlBlockEnd,
 	htmlBodyTokens,
 	inlineRun,
 	isMeasuringBlocks,
@@ -47,7 +47,8 @@ import {
 	measureBlockRun,
 	measuredHtmlBlock,
 	pairOf,
-	recordInlineTag
+	recordInlineTag,
+	type BlockRun
 } from './htmlRuns';
 
 export type DetailsToken = {
@@ -79,48 +80,30 @@ const kept = (token: Token): boolean => token.type !== 'space' && token.type !==
 export const MAX_ELEMENT_NESTING = 64;
 const inlineNesting = new WeakMap<Lexer, number>();
 
-// GitLab's collapsible sections write a Markdown summary apart from its
-// tags by a blank line.
-const MARKDOWN_SUMMARY = /^[ \t]*\r?\n[ \t]*\r?\n/;
-
-/** Whether inline `text` holds a tag the inline tokenizer does not render, read from its tokens. */
-const holdsOtherHtml = (lexer: Lexer, text: string): boolean => {
-	if (!text.includes('<')) return false;
-	const probe = new Lexer(lexer.options);
-	probe.footnotes = { refs: new Map(), footnotes: new Map() };
-	probe.tokens.links = lexer.tokens.links;
-	const other = (tokens: Token[]): boolean =>
-		tokens.some((token) => {
-			if (token.type === 'html') {
-				const tag = readTag(token.raw, 0);
-				return tag !== null && !ANY_INLINE.claimed.has(tag.name);
-			}
-			const children = (token as { tokens?: Token[] }).tokens;
-			return Array.isArray(children) && other(children);
-		});
-	return other(probe.inlineTokens(text, []));
-};
-
 /**
- * A summary's content: a Markdown summary's blocks (a lone paragraph's
- * inline tokens); inline Markdown; or, when it holds block HTML
- * (`<h3>Title</h3>`), one HTML fragment the sanitizer renders whole, as a
- * forge does. A tag inside a code span is text.
+ * The content of a claimed element, `src` from `start` to `end`. The rest
+ * of the HTML block holding `start` is HTML, as CommonMark reads an HTML
+ * block to its blank line: Markdown syntax there is text, entities and
+ * inline tags are HTML. Markdown resumes after it, as a region's does
+ * (htmlRegion.ts). With nothing but whitespace on those lines, the content
+ * is the blocks the rest lexes to.
  */
-const summaryContent = (lexer: Lexer, inner: string, text: string): Token[] => {
-	if (MARKDOWN_SUMMARY.test(inner)) {
-		const blocks = lexer.blockTokens(text, []).filter(kept);
-		return blocks.length === 1 && blocks[0].type === 'paragraph' ? (blocks[0] as Tokens.Paragraph).tokens : blocks;
+const elementContent = (lexer: Lexer, run: BlockRun, src: string, start: number, end: number): Token[] => {
+	const first = Math.min(htmlBlockEnd(run, src, start) ?? start, end);
+	if (/\S/.test(src.slice(start, first))) {
+		if (first < end) return [htmlFragment(lexer, run, src, start, first, end)];
+		const html = src.slice(start, end);
+		return [{ type: 'html', block: true, pre: false, raw: html, text: html } satisfies Tokens.HTML];
 	}
-	if (holdsOtherHtml(lexer, text)) return [{ type: 'html', block: true, pre: false, raw: text, text }];
-	// Deferred inline lexing on the ACTIVE lexer, like the paragraph
-	// tokenizer: the array fills when lex() drains.
-	return lexer.inline(text, []);
+	const body: Token[] = [];
+	bindBlockInside(lexer, body, run, src, end, false);
+	return htmlBodyTokens(lexer, src.slice(start, end), body).filter(kept);
 };
 
 /**
  * A `<details>` run, from its start tag through the `</details>` that
- * closes it, as one token whose body is Markdown. The end tag is the one
+ * closes it, as one token whose summary and body are element content
+ * (`elementContent`). The end tag is the one
  * the run's pairing of HTML blocks gives (htmlRuns.ts), so one in a fence,
  * a comment, a script or a paragraph does not end it.
  */
@@ -164,22 +147,19 @@ export const markedDetails: Extension = {
 		if (summary && !summary.closing && summary.name === 'summary') {
 			const summaryClose = closeOf(run, src, summaryAt);
 			if (summaryClose && summaryClose.end <= close.start) {
-				const inner = src.slice(summary.end, summaryClose.start);
-				const text = inner.trim();
+				const content = elementContent(this.lexer, run, src, summary.end, summaryClose.start);
 				children.push({
 					type: 'detailsSummary',
 					raw: src.slice(open.end, summaryClose.end),
-					text,
-					tokens: summaryContent(this.lexer, inner, text)
+					text: src.slice(summary.end, summaryClose.start).trim(),
+					// A lone paragraph (GitLab's Markdown summary, set apart by
+					// blank lines) is its inline tokens.
+					tokens: content.length === 1 && content[0].type === 'paragraph' ? (content[0] as Tokens.Paragraph).tokens : content
 				} as DetailsSummaryToken);
 				bodyStart = summaryClose.end;
 			}
 		}
-		const body: Token[] = [];
-		bindBlockInside(this.lexer, body, run, src, close.start, false);
-		for (const child of htmlBodyTokens(this.lexer, src.slice(bodyStart, close.start), body)) {
-			if (kept(child)) children.push(child);
-		}
+		children.push(...elementContent(this.lexer, run, src, bodyStart, close.start));
 		return { type: 'details', raw, open: attributeOf(open, 'open') !== null, tokens: children } as DetailsToken;
 	}
 };
@@ -249,7 +229,6 @@ const inlineClaims = (policy: HtmlPolicy): InlineClaims => {
 	}
 	return { paired, claimed: new Set([...paired, 'picture', 'img']) };
 };
-const ANY_INLINE = inlineClaims(ANY_FORGE_HTML_POLICY);
 
 let inert: Document | undefined;
 /**
@@ -343,8 +322,10 @@ const embeddedInlineHtml = (policy: HtmlPolicy): Extension => {
 			if (src.charCodeAt(0) !== 60 /* < */) return undefined;
 			const tag = readTag(src, 0);
 			if (!tag || !claimed.has(tag.name)) return undefined;
-			if (tag.name === 'img') return tag.closing ? undefined : imageToken(policy, src.slice(0, tag.end), elementOf(src, tag));
-			if (tag.name === 'picture') return tag.closing ? undefined : pictureToken(policy, src, tag);
+			// An image's destination is decided as a Markdown image's is.
+			const decided = (image: EmbeddedImageToken | undefined) => image && this.lexer.tokenizer.destination(image);
+			if (tag.name === 'img') return tag.closing ? undefined : decided(imageToken(policy, src.slice(0, tag.end), elementOf(src, tag)));
+			if (tag.name === 'picture') return tag.closing ? undefined : decided(pictureToken(policy, src, tag));
 			if (isMeasuringInline(this.lexer)) {
 				recordInlineTag(this.lexer, src, tokens as Token[], tag);
 				return undefined;
@@ -397,7 +378,7 @@ const embeddedInlineHtml = (policy: HtmlPolicy): Extension => {
 						state.inLinkText = false;
 						state.linkInText = linkInText;
 					}
-					if (!nested) return { type: 'link', raw, href, title: anchor?.getAttribute('title') ?? null, text: inner, tokens: children };
+					if (!nested) return this.lexer.tokenizer.destination<Tokens.Link>({ type: 'link', raw, href, title: anchor?.getAttribute('title') ?? null, text: inner, tokens: children });
 				}
 			}
 			// An anchor with no `href` (a named jump target), one inside a link,
@@ -432,9 +413,6 @@ export const embeddedHtmlFor = (forge: DocumentForge): EmbeddedHtml => EMBEDDED_
 export interface EmbeddedHtml {
 	readonly extensions: readonly Extension[];
 	readonly policy: HtmlPolicy;
-	/** The inline tokenizer among `extensions`, which an app extension that
-	 * claims an `<img>` first reuses for its attribute parsing. */
-	readonly inline: Extension;
 }
 
 const LINE_END = /^[ \t]*(?:\r?\n|$)/;
@@ -462,9 +440,8 @@ const markedImageLines: Extension = {
 
 /** A surface whose extensions are built from the policy it carries. */
 const embeddedHtml = (policy: HtmlPolicy): EmbeddedHtml => {
-	const inline = embeddedInlineHtml(policy);
-	const extensions = [markedDetails, markedHtmlRegion, inline, markedHtmlEntities];
-	return { extensions: policy.imageLines ? [markedImageLines, ...extensions] : extensions, policy, inline };
+	const extensions = [markedDetails, markedHtmlRegion, embeddedInlineHtml(policy), markedHtmlEntities];
+	return { extensions: policy.imageLines ? [markedImageLines, ...extensions] : extensions, policy };
 };
 
 const EMBEDDED_HTML = {

@@ -58,10 +58,24 @@ export const pictureSources = (picture: Element): ColorSchemeSources => {
 	return sources;
 };
 
-/** The src `image` paints in `scheme`, or null when it is hidden there. */
-export const imageSrcFor = (image: ThemedImage, scheme: ColorScheme | undefined): string | null => {
-	if (scheme === undefined) return image.href;
+/**
+ * The src `image` paints in the reader's scheme, or null when it is hidden
+ * there; both renderers ask this. A source for the scheme paints when
+ * `paints` (the renderer's URL gate and host claim) accepts it. Otherwise
+ * the fallback src paints, unless its `#gh-*-mode-only` names the other
+ * scheme. `scheme` is read only for a themed image; undefined paints the
+ * image's own src.
+ */
+export const imageSrcFor = (
+	image: ThemedImage,
+	scheme: () => ColorScheme | undefined,
+	paints: (src: string) => boolean
+): string | null => {
 	const only = image.shownIn ?? colorSchemeOnly(image.href);
-	if (only !== null && only !== scheme) return null;
-	return image.sources?.[scheme] ?? image.href;
+	if (only === null && image.sources?.dark === undefined && image.sources?.light === undefined) return image.href;
+	const reader = scheme();
+	if (reader === undefined) return image.href;
+	const source = image.sources?.[reader];
+	if (source !== undefined && paints(source)) return source;
+	return only !== null && only !== reader ? null : image.href;
 };

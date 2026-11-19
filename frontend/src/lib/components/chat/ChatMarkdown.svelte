@@ -82,14 +82,9 @@
     ensureMarkdownCopyDelegate,
     ensurePathLinkClickDelegate,
   } from '../../utils/markdownEnhance';
-  import {
-    LOCAL_IMAGE_HREF_PREFIX,
-    buildPathLinkExtension,
-    type PathLinkMode,
-  } from '../../utils/pathLinkExtension';
+  import { buildPathLinkExtension, type PathLinkMode } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
-  import { FORGE_ATTACHMENT_HREF_PREFIX } from '../../utils/forgeAttachments';
-  import { CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
+  import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
   import {
     FORGE_ATTACHMENT_SOURCE_CONTEXT,
     type ForgeAttachmentSourceReader,
@@ -288,7 +283,7 @@
   // The forge attachment extensions, and the same claim for media the
   // parser never sees as a token: a forge wrapper (`<p align="center"><img
   // …>`, `<a href><img>`, a screenshot table, a `<details>` body) is ONE
-  // html block, so the sanitizer asks `claimMedia` per
+  // html block, so the sanitizer runs the same destination hooks per
   // `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a real
   // attachment host over each claim. Built by chatMarkdownOptions.ts, which
   // find's projection (markdownFindText.ts) builds its parse from too. The
@@ -329,15 +324,8 @@
   // `[click](agent-overflow:open?path=/etc/passwd)` cannot satisfy
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
-  // `data:` is a denied LINK scheme (it is a document the webview would
-  // evaluate), but an inline `data:image/…` src is just bytes for an <img>.
   const allowedLinkPrefixes = [...CHAT_LINK_PREFIXES];
-  const allowedImagePrefixes = [
-    '*',
-    LOCAL_IMAGE_HREF_PREFIX,
-    FORGE_ATTACHMENT_HREF_PREFIX,
-    'data:image/',
-  ];
+  const allowedImagePrefixes = [...CHAT_IMAGE_PREFIXES];
 
   // Diagram palette. Without a `mermaidConfig` the renderer falls back
   // to mermaid's built-in `'dark'`/`'default'` themes, which

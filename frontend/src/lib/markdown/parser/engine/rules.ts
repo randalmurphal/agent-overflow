@@ -112,6 +112,9 @@ export const other = {
   fencesBeginRegex: cachedIndentRegex((indent: number) => new RegExp(`^ {0,${indent}}(?:\`\`\`|~~~)`)),
   headingBeginRegex: cachedIndentRegex((indent: number) => new RegExp(`^ {0,${indent}}#`)),
   htmlBeginRegex: cachedIndentRegex((indent: number) => new RegExp(`^ {0,${indent}}<(?:[a-z].*>|!--)`, 'i')),
+  // PORTED from marked 17: a block quote opening left of the item's content
+  // ends the item (CommonMark), where it was read as a lazy continuation.
+  blockquoteBeginRegex: cachedIndentRegex((indent: number) => new RegExp(`^ {0,${indent}}>`)),
 };
 
 /**

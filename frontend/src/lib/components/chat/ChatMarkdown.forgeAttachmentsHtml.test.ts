@@ -277,8 +277,9 @@ describe('forge media inside an html block, with no forge source', () => {
     });
 
     await waitFor(() => expect(container.querySelector('p[align="center"]')).not.toBeNull());
-    // A path-relative src is refused by the sanitizer, as before.
-    expect(container.querySelector('img')!.hasAttribute('src')).toBe(false);
+    // A path-relative src is refused by the sanitizer: the unavailable chip.
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('[data-streamdown-image-blocked]')?.textContent).toBe('[Image unavailable: a shot]');
     expect(container.querySelector('[data-markdown-embedded-html]')).toBeNull();
     expect(rpc).not.toHaveBeenCalled();
   });

@@ -181,9 +181,12 @@ describe('forge math', () => {
 		expect(math(source, CHAT)).toEqual([['delimiters:', true]]);
 	});
 
-	it('reads $$…$$ inside a line as display math on GitLab only', () => {
-		expect(inline('inline $$a^2$$ here', GITLAB).find((token) => token.type === 'math')).toMatchObject({ isInline: false, displayMode: true });
-		expect(inline('inline $$a^2$$ here', GITHUB).find((token) => token.type === 'math')).toMatchObject({ isInline: true, displayMode: true });
+	it('reads $$…$$ inside a line as display math in the line on both forges', () => {
+		for (const forge of [GITHUB, GITLAB]) {
+			expect(inline('inline $$a^2$$ here', forge).find((token) => token.type === 'math')).toMatchObject({ isInline: true, displayMode: true });
+		}
+		// Agent chat typesets it at text size.
+		expect(inline('inline $$a^2$$ here', CHAT).find((token) => token.type === 'math')).toMatchObject({ isInline: true, displayMode: false });
 	});
 
 	it('keeps agent chat math as it was', () => {

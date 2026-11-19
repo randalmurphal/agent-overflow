@@ -1040,6 +1040,21 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--text-secondary);
 }
 
+/* GitLab's inline diff (`{+ +}`, `{- -}`): a highlight in the diff colors at
+   the diff gutter's strength (utils/diffLineTint.ts), neither underlined
+   nor struck. */
+.markdown-body .md-inline-diff {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 0.1875rem;
+}
+.markdown-body .md-inline-diff-added {
+  background-color: color-mix(in oklab, var(--success) 20%, transparent);
+}
+.markdown-body .md-inline-diff-removed {
+  background-color: color-mix(in oklab, var(--error) 20%, transparent);
+}
+
 /* A color chip's swatch (parser/extensions/colorChips.ts): its fill is the
    authored color, set inline. */
 .markdown-body [data-streamdown-color-swatch] {

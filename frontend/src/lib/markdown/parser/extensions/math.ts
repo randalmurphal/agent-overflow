@@ -131,7 +131,6 @@ export const markedMath: Extension[] = [
             if (match) {
                 const content = match[2];
                 const dollarCount = match[1]; // '$' or '$$'
-                const isDisplayMode = dollarCount === '$$';
                 // Only apply currency detection to single dollars
                 // Double dollars ($$) indicate explicit math intent
                 if (dollarCount === '$' && isCurrencyPattern(content, src, 0)) {
@@ -143,10 +142,11 @@ export const markedMath: Extension[] = [
                     singleDollarLooksLikeProse(content, src.charAt(match[0].length))) {
                     return;
                 }
+                // Agent chat typesets `$$…$$` in a paragraph at text size.
                 return {
                     type: 'math',
-                    isInline: true, // Inline tokenizer always produces inline math
-                    displayMode: isDisplayMode, // $$ = display mode styling, $ = inline styling
+                    isInline: true,
+                    displayMode: false,
                     raw: match[0],
                     text: content.trim()
                 };
@@ -173,7 +173,7 @@ const DOUBLE_DOLLAR = /^\$\$(?!\$)((?:[^$\n]|\\\$)+?)\$\$/;
 /**
  * The math a forge reads at `src`'s leading `$`, as both GitHub and GitLab
  * read it: `` $`…`$ `` (a code span between dollars); `$$…$$`, display math
- * on GitLab; and `$…$`, whose opening `$` has no space after it and whose
+ * in the paragraph's flow; and `$…$`, whose opening `$` has no space after it and whose
  * first unescaped `$` closes it when it has no space before it and no digit
  * after it, else there is no math here. GitHub reads the `$…$` content after
  * Markdown's backslash escapes; GitLab reads it as written.
@@ -198,7 +198,7 @@ const forgeMathAt = (src: string, forge: Forge): MathToken | undefined => {
     }
     const double = DOUBLE_DOLLAR.exec(src);
     if (double) {
-        return { type: 'math', raw: double[0], text: double[1].trim(), isInline: forge === 'github', displayMode: true };
+        return { type: 'math', raw: double[0], text: double[1].trim(), isInline: true, displayMode: true };
     }
     if (src.length < 3 || /\s|\$/.test(src[1]))
         return undefined;
@@ -301,6 +301,8 @@ export type MathToken = {
     type: 'math';
     raw: string;
     text: string;
+    /** In a paragraph's flow: its host is phrasing content (a `<span>`). */
     isInline: boolean;
+    /** Typeset as display math: its own centered line, full-size operators. */
     displayMode: boolean;
 };

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EMBEDDED_HTML_EXTENSIONS, lex } from '../../index';
 import { colorSchemeOnly, imageSrcFor, pictureSources } from './themedImages';
 
@@ -70,23 +70,36 @@ describe('colorSchemeOnly', () => {
 
 describe('imageSrcFor', () => {
 	const sources = { dark: 'https://example.invalid/dark.png' };
+	const any = () => true;
 	it('paints the scheme source, else the fallback', () => {
-		expect(imageSrcFor({ href: 'https://example.invalid/d.png', sources }, 'dark')).toBe('https://example.invalid/dark.png');
-		expect(imageSrcFor({ href: 'https://example.invalid/d.png', sources }, 'light')).toBe('https://example.invalid/d.png');
+		expect(imageSrcFor({ href: 'https://example.invalid/d.png', sources }, () => 'dark', any)).toBe('https://example.invalid/dark.png');
+		expect(imageSrcFor({ href: 'https://example.invalid/d.png', sources }, () => 'light', any)).toBe('https://example.invalid/d.png');
+	});
+
+	it('paints a source the renderer accepts before gating the fallback by its fragment', () => {
+		const image = { href: 'https://example.invalid/d.png#gh-light-mode-only', sources };
+		expect(imageSrcFor(image, () => 'dark', any)).toBe('https://example.invalid/dark.png');
+		expect(imageSrcFor(image, () => 'dark', () => false)).toBeNull();
 	});
 
 	it('hides an image in the scheme its fragment or claim does not name', () => {
 		const dark = 'https://example.invalid/d.png#gh-dark-mode-only';
-		expect(imageSrcFor({ href: dark }, 'light')).toBeNull();
-		expect(imageSrcFor({ href: dark }, 'dark')).toBe(dark);
-		expect(imageSrcFor({ href: 'agent-overflow:forge?x', shownIn: 'light' }, 'dark')).toBeNull();
-		expect(imageSrcFor({ href: 'agent-overflow:forge?x', shownIn: 'light' }, 'light')).toBe('agent-overflow:forge?x');
+		expect(imageSrcFor({ href: dark }, () => 'light', any)).toBeNull();
+		expect(imageSrcFor({ href: dark }, () => 'dark', any)).toBe(dark);
+		expect(imageSrcFor({ href: 'agent-overflow:forge?x', shownIn: 'light' }, () => 'dark', any)).toBeNull();
+		expect(imageSrcFor({ href: 'agent-overflow:forge?x', shownIn: 'light' }, () => 'light', any)).toBe('agent-overflow:forge?x');
 	});
 
 	it('paints the image itself without a scheme, as GitLab does', () => {
-		expect(imageSrcFor({ href: 'https://example.invalid/d.png#gh-dark-mode-only', sources }, undefined)).toBe(
+		expect(imageSrcFor({ href: 'https://example.invalid/d.png#gh-dark-mode-only', sources }, () => undefined, any)).toBe(
 			'https://example.invalid/d.png#gh-dark-mode-only'
 		);
+	});
+
+	it('reads the scheme only for a themed image', () => {
+		const scheme = vi.fn(() => 'dark' as const);
+		expect(imageSrcFor({ href: 'https://example.invalid/d.png' }, scheme, any)).toBe('https://example.invalid/d.png');
+		expect(scheme).not.toHaveBeenCalled();
 	});
 });
 

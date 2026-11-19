@@ -259,6 +259,66 @@ describe('extended autolinks on forge surfaces', () => {
   });
 });
 
+describe('a path holding a `.` or `..` segment', () => {
+  // The browser folds the segment away, so the link would name another project.
+  it.each([
+    [GITHUB, 'other/repo#7', 'other/repo#7', 'https://github.com/other/repo/issues/7'],
+    [GITLAB, 'group/a..b#1', 'a..b#1', 'https://gitlab.com/group/a..b/-/issues/1'],
+  ])('is not a reference (%#)', (source, control, text, href) => {
+    const dotted = 'owner/..#12 ../other#12 docs/../other#12 group/./widget#3 ./widget!4 a/..@0123abcd group/..> .#5';
+    expect(links(`${dotted} ${control}`, source)).toEqual([{ text, href }]);
+  });
+});
+
+describe('a bare URL', () => {
+  const SOURCE = [
+    'ftp://ftp.example.invalid/x',
+    'https://example.invalid/a} end',
+    'https://example.invalid/b] end',
+    'https://example.invalid/{c}',
+    "https://example.invalid/d'",
+    '"https://example.invalid/e"',
+    '(https://example.invalid/f)',
+    'https://example.invalid/g).',
+  ].join(' ');
+  const url = (path: string) => ({ text: `https://example.invalid/${path}`, href: `https://example.invalid/${path}` });
+  const ftp = { text: 'ftp://ftp.example.invalid/x', href: 'ftp://ftp.example.invalid/x' };
+  const rest = [url('{c}'), url('d'), url('e'), url('f'), url('g')];
+
+  it('keeps a trailing `}` or `]` on GitHub, which links no ftp URL', () => {
+    expect(links(SOURCE, GITHUB)).toEqual([url('a}'), url('b]'), ...rest]);
+  });
+
+  it('ends before an unbalanced `}` or `]` on GitLab, which links an ftp URL', () => {
+    expect(links(SOURCE, GITLAB)).toEqual([ftp, url('a'), url('b'), ...rest]);
+    // Of every scheme GitLab links.
+    expect(links('smb://host/a} end', GITLAB)).toEqual([{ text: 'smb://host/a', href: 'smb://host/a' }]);
+  });
+
+  it('keeps the engine rule in agent chat', () => {
+    expect(links(SOURCE, null)).toEqual([ftp, url('a}'), url('b]'), ...rest]);
+  });
+});
+
+describe('brackets that are not a link', () => {
+  it.each([GITHUB, GITLAB])('hide no email inside them (%#)', (source) => {
+    expect(links('contact: [contact:someone@example.invalid] and contact:other@example.invalid', source)).toEqual([
+      { text: 'someone@example.invalid', href: 'mailto:someone@example.invalid' },
+      { text: 'other@example.invalid', href: 'mailto:other@example.invalid' },
+    ]);
+  });
+
+  it('hide no autolink or emphasis in agent chat, where a plain bracket is still a citation', () => {
+    expect(links('[see https://example.invalid/x]', null)).toEqual([url('x]')]);
+    const [paragraph] = lex('[see *this*] and [1]', extensionsFor(null)) as unknown as { tokens: Token[] }[];
+    expect(paragraph.tokens.map((token) => token.type)).toEqual(['text', 'em', 'text', 'inline-citations']);
+  });
+
+  function url(path: string): Shown {
+    return { text: `https://example.invalid/${path}`, href: `https://example.invalid/${path}` };
+  }
+});
+
 describe('agent chat', () => {
   it('links no reference, mention, email or relative link', () => {
     expect(links(`#12 !12 @octo a@b.example <c@d.example> ${SHA} [[Home]] smb://x/y`, null)).toEqual([]);
@@ -268,7 +328,7 @@ describe('agent chat', () => {
 
 describe('the tokenizer contract', () => {
   it('claims nothing for a PR with no forge address', () => {
-    const { extension } = buildForgeReferences({ pr: { ...GITHUB.pr, host: '' }, backend: 'home', webBase: '' });
+    const extension = buildForgeReferences({ pr: { ...GITHUB.pr, host: '' }, backend: 'home', webBase: '' });
     expect(linksIn(lex('#12 @octo a@b.example', [extension]) as unknown as Token[])).toEqual([]);
   });
 
@@ -279,7 +339,7 @@ describe('the tokenizer contract', () => {
   });
 
   it('asks the tokenizer once per candidate inside a long word, not once per character', () => {
-    const { extension } = buildForgeReferences(GITHUB);
+    const extension = buildForgeReferences(GITHUB);
     let calls = 0;
     const counted: Extension = {
       ...extension,

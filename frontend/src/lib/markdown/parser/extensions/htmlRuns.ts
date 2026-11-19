@@ -152,6 +152,8 @@ type BlockPlan = {
 	tagEnds: number[];
 	/** The open element count after each of `tagEnds`. */
 	heights: number[];
+	/** Each HTML block of the run as plan keys, start then end, descending. */
+	blocks: number[];
 };
 
 type BlockMeasure = { depth: number; text: string; blocks: number[] };
@@ -189,7 +191,7 @@ export const measuredHtmlBlock = (lexer: Lexer, src: string): Tokens.HTML | unde
  */
 const pairBlocks = (text: string, blocks: number[], toSource: (offset: number) => number, length: number): BlockPlan => {
 	const keyOf = (offset: number) => length - toSource(offset);
-	const plan: BlockPlan = { openers: new Map(), closes: new Map(), tagEnds: [], heights: [] };
+	const plan: BlockPlan = { openers: new Map(), closes: new Map(), tagEnds: [], heights: [], blocks: [] };
 	// Plan keys at each open element's `<`: descending up the stack.
 	const open = new OpenElements<number>();
 	// Openers not yet closed, bases ascending.
@@ -197,6 +199,7 @@ const pairBlocks = (text: string, blocks: number[], toSource: (offset: number) =
 	for (let b = 0; b < blocks.length; b += 2) {
 		const start = blocks[b];
 		const html = text.slice(start, blocks[b + 1]);
+		plan.blocks.push(keyOf(start), keyOf(blocks[b + 1]));
 		const starts: number[] = [];
 		let first = 0;
 		while (html.charCodeAt(first) === 32) first++;
@@ -286,6 +289,26 @@ export const closeOf = (run: BlockRun, src: string, at: number): { start: number
 	const close = run.plan.closes.get(src.length - at + run.shift);
 	if (!close || close.end < run.shift) return undefined;
 	return { start: offsetOf(run, src, close.start), end: offsetOf(run, src, close.end) };
+};
+
+/**
+ * The end, as an offset into `src`, of the HTML block of the run that
+ * `src[at]` is inside, past its start; undefined when it is in none. Up to
+ * there the text is raw HTML (CommonMark: an HTML block runs to a blank line).
+ */
+export const htmlBlockEnd = (run: BlockRun, src: string, at: number): number | undefined => {
+	const key = src.length - at + run.shift;
+	const { blocks } = run.plan;
+	// The first block, in source order, that ends after `at`.
+	let low = 0;
+	let high = blocks.length / 2;
+	while (low < high) {
+		const mid = (low + high) >> 1;
+		if (blocks[2 * mid + 1] >= key) low = mid + 1;
+		else high = mid;
+	}
+	if (low === blocks.length / 2 || blocks[2 * low] <= key) return undefined;
+	return offsetOf(run, src, blocks[2 * low + 1]);
 };
 
 /** The open element count after the last tag that ends at or before the plan key `key`. */

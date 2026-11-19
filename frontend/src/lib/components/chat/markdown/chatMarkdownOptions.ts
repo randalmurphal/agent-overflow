@@ -2,12 +2,12 @@
 // renderer and find's projection of it (markdownFindText.ts) read the same
 // text: the parser extensions in their order, and the options the embedded
 // HTML sanitizer runs with. A surface that renders one PR's content
-// (FORGE_ATTACHMENT_SOURCE_CONTEXT) claims forge-hosted media as tokens
-// (`buildForgeAttachmentExtension`) and, inside an HTML block, through the
-// sanitizer's `claimMedia`, which drops a claimed video's children.
+// (FORGE_ATTACHMENT_SOURCE_CONTEXT) claims forge-hosted media and resolves
+// relative links with destination hooks, which the parse and, inside an
+// HTML block, the sanitizer both run (`destinationsOf`).
 
-import type { ClaimEmbeddedMedia, ColorScheme, Extension, SanitizeEmbeddedHtmlOptions } from '../../../markdown';
-import { embeddedHtmlFor, markedImageAttributes, markedMediaImages, markedSoftBreak } from '../../../markdown';
+import type { ColorScheme, Extension, SanitizeEmbeddedHtmlOptions } from '../../../markdown';
+import { destinationsOf, embeddedHtmlFor, markedImageAttributes, markedMediaImages, markedSoftBreak } from '../../../markdown';
 import {
   markedColorChips,
   markedCommonmarkList,
@@ -16,8 +16,10 @@ import {
   markedForgeGrammar,
   markedFrontMatter,
   markedGithubAlert,
+  markedGithubBareUrls,
   markedGithubMath,
   markedGitlabAlert,
+  markedGitlabBareUrls,
   markedGitlabMath,
   markedInapplicableTaskList,
   markedInlineDiff,
@@ -30,20 +32,22 @@ import { getResolvedTheme } from '../../../stores/themeMode.svelte';
 import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
 import { buildForgeReferences } from '../../../utils/forgeReferenceExtension';
 import { forgeHtmlOptions } from '../../../utils/forgeHtmlText';
-import { buildForgeAttachmentHref, isForgeAttachmentHref, type ForgeAttachmentSource } from '../../../utils/forgeAttachments';
+import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
+import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
 import { forgeEmojiGeneration, forgeEmojiSlot, resolveForgeEmoji } from '../../../utils/forgeEmoji.svelte';
 
-// Each forge's own Markdown syntax: GFM's `~text~` strikethrough and its
-// color chips on both, and GitLab's inline diff, `>>>` quotes, front
+// Each forge's own Markdown syntax: its bare URL autolinks, GFM's `~text~`
+// strikethrough and its color chips on both, and GitLab's inline diff, `>>>` quotes, front
 // matter, `[~]` tasks, task boxes in table cells, description lists and
 // JSON tables. Then each forge's list numbering (CommonMark's; GitLab's
 // task lists number the same way), alerts and math. GitLab's alerts follow
 // its `>>>` quotes, which claim a `>>>` line first. Neither forge reads
 // agent chat's own grammar (`markedForgeGrammar`).
 const FORGE_SYNTAX: Record<'github' | 'gitlab', readonly Extension[]> = {
-  github: [markedForgeGrammar, markedStrikethrough, markedColorChips, markedCommonmarkList, markedGithubAlert, ...markedGithubMath],
+  github: [markedForgeGrammar, markedGithubBareUrls, markedStrikethrough, markedColorChips, markedCommonmarkList, markedGithubAlert, ...markedGithubMath],
   gitlab: [
     markedForgeGrammar,
+    markedGitlabBareUrls,
     markedStrikethrough,
     markedCssColorChips,
     markedInlineDiff,
@@ -58,6 +62,9 @@ const FORGE_SYNTAX: Record<'github' | 'gitlab', readonly Extension[]> = {
   ],
 };
 
+/** The sanitizer admits an `href` or `src` by the renderer's own prefixes. */
+const HTML_PREFIXES = { allowedLinkPrefixes: [...CHAT_LINK_PREFIXES], allowedImagePrefixes: [...CHAT_IMAGE_PREFIXES] };
+
 export interface ChatMarkdownForgeOptions {
   /** The forge extensions, first in the list; none off a PR. The attachment
    * claims, then GitHub's soft-break `<br>` for embedded-HTML content or
@@ -68,7 +75,8 @@ export interface ChatMarkdownForgeOptions {
    * `embeddedHtml`. Their inline tokenizer keeps the elements the
    * sanitizer's `html.policy` keeps (`embeddedHtmlFor`). */
   readonly htmlExtensions: readonly Extension[] | undefined;
-  /** What the embedded HTML sanitizer runs with. */
+  /** What the embedded HTML sanitizer runs with: the policy, the
+   * extensions' destination hooks and the renderer's URL prefixes. */
   readonly html: SanitizeEmbeddedHtmlOptions | undefined;
   /** The reader's color scheme, which GitHub's theme-specific images
    * answer: the app's resolved theme, a reactive read. GitLab shows every
@@ -82,18 +90,16 @@ export interface ChatMarkdownForgeOptions {
 export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | undefined, embeddedHtml: boolean): ChatMarkdownForgeOptions {
   if (!source || (source.pr.forge !== 'github' && source.pr.forge !== 'gitlab')) {
     const any = embeddedHtml ? embeddedHtmlFor(null) : undefined;
-    return { extensions: undefined, htmlExtensions: any?.extensions, html: any && { policy: any.policy }, colorScheme: undefined };
+    return { extensions: undefined, htmlExtensions: any?.extensions, html: any && { policy: any.policy, ...HTML_PREFIXES }, colorScheme: undefined };
   }
   const { pr, backend, webBase } = source;
   const embedded = embeddedHtmlFor(pr.forge);
-  const claimMedia: ClaimEmbeddedMedia = (_tag, src) =>
-    isForgeAttachmentHref(pr.forge, src) ? buildForgeAttachmentHref({ href: src, pr, backend, webBase }) : null;
-  // References after attachments, which claim a relative `/uploads/` link
-  // the reference extension would otherwise resolve as a repository path.
+  // References after attachments, whose destination hook claims a relative
+  // `/uploads/` link the references' hook would resolve as a repository path.
   const references = buildForgeReferences(source);
   const attachments: readonly Extension[] = [
     ...buildForgeAttachmentExtension({ pr, backend, webBase, embeddedHtml }),
-    references.extension,
+    references,
   ];
   // GitHub renders a soft line break in a PR body or comment as <br>;
   // GitLab renders a space, as CommonMark does, and sizes an image by the
@@ -105,23 +111,22 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
   const emoji = forgeEmojiSlot(pr.forge);
   // Text and links inside HTML get what the forge gives them in a
   // paragraph: references, then emoji, read when a run is (forgeHtmlText.ts).
-  const htmlText = forgeHtmlOptions(source, references, () => [references.extension, resolveForgeEmoji(emoji)]);
+  const htmlText = forgeHtmlOptions(source, () => [references, resolveForgeEmoji(emoji)]);
   // Emoji shortcodes last: a module-constant slot that
   // `chatMarkdownExtensions` resolves once the name table has loaded.
+  const extensions = [...attachments, ...forgeOwn, ...FORGE_SYNTAX[pr.forge], emoji];
   return {
-    extensions: [...attachments, ...forgeOwn, ...FORGE_SYNTAX[pr.forge], emoji],
+    extensions,
     htmlExtensions: embeddedHtml ? embedded.extensions : undefined,
-    html: { policy: embedded.policy, claimMedia, colorScheme, ...htmlText },
+    html: { policy: embedded.policy, destinations: destinationsOf(extensions), colorScheme, ...HTML_PREFIXES, ...htmlText },
     colorScheme,
   };
 }
 
-/** ChatMarkdown's parser extensions in order. Forge attachments first,
- * then preview: both the path-link extension and the embedded-HTML pair
- * claim starts the forge one needs (`[`, `![`, `<img`, `<video`), and it
- * returns undefined for everything that is not a forge-shaped href, so
- * nothing behind it loses a token. Preview then precedes path links, which
- * claim every remaining `[…](…)`. */
+/** ChatMarkdown's parser extensions in order, which is the order their
+ * destination hooks claim in: forge attachments, then the forge's relative
+ * links, then preview, then path links. The forge's `<video>` tokenizer
+ * precedes the embedded-HTML pair, which would otherwise take its start. */
 export function chatMarkdownExtensions(parts: {
   forge: ChatMarkdownForgeOptions;
   preview?: Extension;

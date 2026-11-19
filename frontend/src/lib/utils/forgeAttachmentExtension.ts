@@ -1,100 +1,52 @@
-// Marked inline extension that claims forge-hosted attachment references in
-// PR/MR bodies and review comments, and rewrites them to the nonce-gated
-// `agent-overflow:forge?…` href the render and click paths recognize.
+// Claims forge-hosted attachments in PR/MR bodies and review comments, and
+// rewrites them to the nonce-gated `agent-overflow:forge?…` href the render
+// and click paths recognize. A claim is made ONLY for an href that is
+// forge-shaped for THIS PR's forge; anything else is left as written.
 //
-// Modelled on `pathLinkExtension.ts`: it runs at every inline position, and
-// it claims a token ONLY when the resolved href is forge-shaped for THIS
-// PR's forge. Anything else returns undefined, so the path-link extension,
-// the embedded-HTML extensions and marked's built-ins see the source exactly
-// as written. It is pushed FIRST in ChatMarkdown's extension list, because
-// the later ones claim overlapping starts (`[`, `<`) and would otherwise
-// take these tokens first.
+// Most of it is a destination hook (`destination`): the engine and the
+// HTML sanitizer run it on every link and image destination however it was
+// written, inline, by reference, as an HTML `<a>` or `<img>`, after a
+// `//host/x` destination became `https://host/x`. So
 //
-// Four shapes, matching what the two forges actually emit:
+//   ![alt](/uploads/<hex>/shot.png)   any image syntax   → claimed image
+//   [report.pdf](/uploads/<hex>/…)    any link syntax    → download link
+//   <picture> with a forge source     its sources        → rewritten
 //
-//   ![alt](/uploads/<hex>/shot.png)   markdown image  → image token
-//   [report.pdf](/uploads/<hex>/…)    markdown link   → link token (download)
-//   https://github.com/user-attachments/assets/<uuid>   bare URL → image token
-//   <img src=…> and <video …>         embedded HTML   → image token
+// and the tokenizers claim the two shapes that are not a link or image
+// destination: a bare GitHub attachment URL, and a `<video>`.
 //
 // A bare GitHub attachment URL becomes an IMAGE token on purpose: that one
 // spelling is how GitHub embeds both videos and pictures, and the host
 // renders by the kind the bytes turned out to be, so a video URL becomes a
 // player and an image URL a picture — what the forge itself does.
 //
-// A `<picture>` is claimed when its fallback or a color scheme's source is
-// forge-shaped; each forge-shaped src is rewritten and the rest are left for
-// the renderer's URL gate, which picks among them by the reader's scheme.
-// A claim keeps its authored URL's `#gh-*-mode-only` as `shownIn`, since the
-// rewritten href no longer ends in it.
-//
-// An image claimed inside link text carries `inLink: true`
-// (markdownImageSource.ts#claimedInLink), so the host keeps the author's
-// link the one control whatever the bytes turn out to be. GitLab's
-// `{width=…}` list after a claim is `markedImageAttributes`'s, as after
-// any image.
+// A claim keeps its authored URL's `#gh-*-mode-only` as `shownIn`, since
+// the rewritten href no longer ends in it. An image claimed inside link
+// text carries `inLink: true` (markdownImageSource.ts#claimedInLink), so
+// the host keeps the author's link the one control whatever the bytes turn
+// out to be. GitLab's `{width=…}` list after a claim is
+// `markedImageAttributes`'s, as after any image.
 
-import type { ColorScheme, ColorSchemeSources, EmbeddedImageToken, Token, Tokens, TokensList } from '../markdown';
-import { colorSchemeOnly, embeddedHtmlFor } from '../markdown';
+import type { ColorScheme, ColorSchemeSources, DestinationHook, EmbeddedImageToken, Extension, Tokens } from '../markdown';
+import { colorSchemeOnly, type Lexer } from '../markdown';
 import { fileSaveAction } from './fileSaveAction';
 import {
   buildForgeAttachmentHref,
   browserUrlForForgeAttachment,
+  FORGE_ATTACHMENT_HREF_PREFIX,
   forgeAttachmentName,
   isForgeAttachmentHref,
   type ForgeAttachmentSource,
 } from './forgeAttachments';
 
-interface ForgeAttachmentInlineExtension {
-  name: 'forgeAttachment';
-  level: 'inline';
-  start(src: string): number | undefined;
-  tokenizer(
-    this: unknown,
-    src: string,
-    tokens: Token[] | TokensList,
-  ): GenericLinkToken | GenericImageToken | undefined;
-}
-
-interface ForgeAttachmentBlockExtension {
-  name: 'forgeAttachmentBlock';
-  level: 'block';
-  tokenizer(this: unknown, src: string, tokens: Token[] | TokensList): ParagraphToken | undefined;
-}
-
-/** A one-element paragraph wrapping a claimed block-level embed. */
-interface ParagraphToken extends Tokens.Paragraph {
-  type: 'paragraph';
-}
-
-interface GenericLinkToken extends Tokens.Link {
-  type: 'link';
-}
-
-interface GenericImageToken extends Tokens.Image {
-  type: 'image';
-  /** An embedded `<img>`'s authored size and placement (EmbeddedImageToken). */
-  width?: string | null;
-  height?: string | null;
-  align?: string | null;
-  hspace?: string | null;
+type ClaimedImage = Tokens.Image & Partial<Pick<EmbeddedImageToken, 'width' | 'height' | 'align' | 'hspace'>> & {
   /** A `<picture>`'s per-scheme sources, forge-shaped ones rewritten. */
   sources?: ColorSchemeSources;
   /** The scheme the authored URL's `#gh-*-mode-only` shows it in. */
   shownIn?: ColorScheme;
   /** Claimed inside link text (markdownImageSource.ts#claimedInLink). */
   inLink?: true;
-}
-
-interface ForgeTokenizerContext {
-  lexer?: {
-    state?: { inLink?: boolean };
-    tokenizer?: {
-      link?: (src: string) => Tokens.Link | Tokens.Image | undefined;
-      url?: (src: string) => Tokens.Link | undefined;
-    };
-  };
-}
+};
 
 // The two bare-URL openings GitHub writes. Both are scanned in ONE pass, and
 // the match must start the line or follow a boundary character so a URL glued
@@ -102,15 +54,7 @@ interface ForgeTokenizerContext {
 // routinely arrives with a capitalized host.
 const BARE_GITHUB_URL_SCAN =
   /(?:^|[\s(<[{'"`])(https?:\/\/(?:github\.com\/user-attachments\/|private-user-images\.githubusercontent\.com\/))/gi;
-// Fallback URL run for an engine whose `url()` tokenizer is a no-op (gfm
-// off). Same boundary GFM autolinks use, minus the trailing punctuation a
-// sentence leaves behind.
-const BARE_URL_RUN = /^https?:\/\/[^\s<>)]+/i;
-const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
 
-// An image as the embedded-HTML tokenizer reads one: a bare `<img>`, or
-// the `<picture>` whose fallback it is.
-const IMG_OPEN = /^<(?:img|picture)\b/i;
 const VIDEO_OPEN = /^<video\b((?:[^>"'\n]|"[^"]*"|'[^']*')*)>/i;
 const VIDEO_CLOSE = /<\/video\s*>/i;
 const SOURCE_TAG = /<source\b((?:[^>"'\n]|"[^"]*"|'[^']*')*)>/i;
@@ -129,16 +73,12 @@ function attrOf(attrs: string, name: string): string | null {
  * source (agent chat, settings previews) build none and behave exactly as
  * before.
  *
- * Two of them, because a forge writes an embed in two positions. Inline is
- * the general case. The BLOCK one claims a `<video …></video>` alone on its
- * line, which the sanitizer, having no `<video>` element, would drop. A
- * lone `<img>` line is the surface's (embeddedHtml.ts `imageLines`): a
- * paragraph whose inline lex reaches the inline extension on GitHub, an
- * HTML block whose image the sanitizer's `claimMedia` hands back on GitLab.
+ * Two of them, because a forge writes a `<video>` in two positions. The
+ * inline one carries the destination hook and claims bare URLs and an
+ * inline `<video>`; the BLOCK one claims a `<video …></video>` alone on its
+ * line, which the sanitizer, having no `<video>` element, would drop.
  */
-export function buildForgeAttachmentExtension(
-  opts: ForgeAttachmentSource & { embeddedHtml: boolean },
-): [ForgeAttachmentInlineExtension, ...ForgeAttachmentBlockExtension[]] {
+export function buildForgeAttachmentExtension(opts: ForgeAttachmentSource & { embeddedHtml: boolean }): Extension[] {
   const { pr, backend, webBase, embeddedHtml } = opts;
   const forge = pr.forge;
 
@@ -157,8 +97,8 @@ export function buildForgeAttachmentExtension(
   };
 
   // `label` is a Markdown label's inline tokens, from which the renderer
-  // takes the plain alt (render/imageAlt.ts); none for an attribute's alt.
-  const imageToken = (raw: string, href: string, alt: string, inLink = false, label: Token[] = []): GenericImageToken => {
+  // takes the plain alt (render/imageAlt.ts).
+  const claimedImage = (raw: string, href: string, alt: string, inLink: boolean, label: Tokens.Image['tokens']): ClaimedImage => {
     const shownIn = colorSchemeOnly(href);
     return {
       type: 'image',
@@ -172,131 +112,97 @@ export function buildForgeAttachmentExtension(
     };
   };
 
-  const inline: ForgeAttachmentInlineExtension = {
-    name: 'forgeAttachment',
-    level: 'inline',
-    start(src) {
-      // Marked's inline text rule already stops unconditionally at `[` and
-      // `<`, so those positions reach the tokenizer without help. A bare URL
-      // is the one shape that needs a bound, and one scan answers both hosts.
-      BARE_GITHUB_URL_SCAN.lastIndex = 0;
-      const match = BARE_GITHUB_URL_SCAN.exec(src);
-      return match ? match.index + match[0].length - match[1].length : undefined;
-    },
-    tokenizer(this: unknown, src) {
-      const first = src.charCodeAt(0);
-      // Opening-character check before any parsing: the tokenizer runs at
-      // every candidate position in every block.
-      if (first !== 91 /* [ */ && first !== 33 /* ! */ && first !== 60 /* < */
-        && first !== 104 /* h */ && first !== 72 /* H */) return undefined;
-      const ctx = this as ForgeTokenizerContext;
-      // Inside link text only a picture is claimed, as a linked badge or
-      // screenshot is: a link holds no link, a player is interactive
-      // content no anchor may hold, and a bare URL there is the link's
-      // label, which marked's own `url` rule leaves as text too.
-      const inLink = ctx.lexer?.state?.inLink === true;
-
-      if (first === 91 || first === 33) {
-        const image = src.startsWith('![');
-        if (!image && (inLink || first !== 91)) return undefined;
-        return markdownToken(src, ctx, inLink);
-      }
-      if (first === 60) {
-        if (!embeddedHtml) return undefined;
-        if (IMG_OPEN.test(src)) return embeddedImageToken(src, ctx, inLink);
-        if (!inLink && VIDEO_OPEN.test(src)) return videoToken(src);
-        return undefined;
-      }
-      if (inLink) return undefined;
-      return bareUrlToken(src, ctx);
-    },
-  };
-
-  if (!embeddedHtml) return [inline];
-
-  const block: ForgeAttachmentBlockExtension = {
-    name: 'forgeAttachmentBlock',
-    level: 'block',
-    tokenizer(this: unknown, src) {
-      if (src.charCodeAt(0) !== 60 /* < */) return undefined;
-      const embed = VIDEO_OPEN.test(src) ? videoToken(src) : undefined;
-      if (!embed) return undefined;
-      // Only a LONE tag is a block. Anything else on the line makes it a
-      // paragraph, and the inline tokenizer owns that case.
-      const trailing = /^[ \t]*(?:\r?\n|$)/.exec(src.slice(embed.raw.length));
-      if (!trailing) return undefined;
-      return {
-        type: 'paragraph',
-        raw: src.slice(0, embed.raw.length + trailing[0].length),
-        text: embed.raw,
-        tokens: [embed],
-      };
-    },
-  };
-  return [inline, block];
-
-  function markdownToken(
-    src: string,
-    ctx: ForgeTokenizerContext,
-    inLink: boolean,
-  ): GenericLinkToken | GenericImageToken | undefined {
-    const token = ctx.lexer?.tokenizer?.link?.(src);
-    if (!token || (token.type !== 'link' && token.type !== 'image')) return undefined;
-    const href = typeof token.href === 'string' ? token.href : '';
-    if (!isForgeAttachmentHref(forge, href)) return undefined;
-    if (token.type === 'image') return imageToken(token.raw, href, token.text ?? '', inLink, token.tokens);
-    return {
-      ...token,
-      type: 'link',
-      href: rewrite(href),
-      title: linkTitle(href),
-    } as GenericLinkToken;
-  }
-
-  function embeddedImageToken(
-    src: string,
-    ctx: ForgeTokenizerContext,
-    inLink: boolean,
-  ): GenericImageToken | undefined {
-    // Delegate to the forge's embedded-HTML inline tokenizer so `<img>`
-    // attribute parsing has one implementation and reads the forge's
-    // policy. It answers an image token or nothing.
-    const token = embeddedHtmlFor(forge).inline.tokenizer!.call(
-      ctx as never,
-      src,
-      [],
-    ) as EmbeddedImageToken | undefined;
-    if (!token || token.type !== 'image') return undefined;
-    const href = typeof token.href === 'string' ? token.href : '';
-    const claimed = isForgeAttachmentHref(forge, href);
+  // Inside link text only a picture is claimed, as a linked badge or
+  // screenshot is: a link holds no link.
+  const destination: DestinationHook = (token, { inLink }) => {
+    if (token.type === 'link') {
+      if (inLink || !isForgeAttachmentHref(pr, token.href)) return undefined;
+      return { ...token, href: rewrite(token.href), title: linkTitle(token.href) };
+    }
+    const image = token as ClaimedImage;
+    const claimed = isForgeAttachmentHref(pr, image.href);
+    // A `<picture>` is claimed when a color scheme's source is forge-shaped
+    // too; the other sources are left for the renderer's URL gate.
     let sources: ColorSchemeSources | undefined;
     let claimsSource = false;
-    if (token.sources) {
+    if (image.sources) {
       sources = {};
       for (const scheme of ['dark', 'light'] as const) {
-        const src = token.sources[scheme];
+        const src = image.sources[scheme];
         if (src === undefined) continue;
-        const forgeShaped = isForgeAttachmentHref(forge, src);
+        const forgeShaped = isForgeAttachmentHref(pr, src);
         claimsSource ||= forgeShaped;
         sources[scheme] = forgeShaped ? rewrite(src) : src;
       }
     }
     if (!claimed && !claimsSource) return undefined;
     // The authored size and placement go with the claim (render/imageSize.ts).
-    const base = claimed
-      ? imageToken(token.raw, href, token.text ?? '', inLink)
-      : { ...token, tokens: [], ...(inLink ? { inLink: true as const } : {}) };
     return {
-      ...base,
-      width: token.width,
-      height: token.height,
-      align: token.align,
-      hspace: token.hspace,
+      ...image,
+      ...(claimed ? claimedImage(image.raw, image.href, image.text ?? '', inLink, image.tokens) : inLink ? { inLink: true as const } : {}),
       ...(sources ? { sources } : {}),
     };
-  }
+  };
 
-  function videoToken(src: string): GenericImageToken | undefined {
+  const inline: Extension = {
+    name: 'forgeAttachment',
+    level: 'inline',
+    destination,
+    start(src) {
+      // The engine's inline text rule already stops at `<`, so a video
+      // reaches the tokenizer without help. A bare URL is the one shape
+      // that needs a bound, and one scan answers both hosts.
+      BARE_GITHUB_URL_SCAN.lastIndex = 0;
+      const match = BARE_GITHUB_URL_SCAN.exec(src);
+      return match ? match.index + match[0].length - match[1].length : undefined;
+    },
+    tokenizer(src) {
+      const first = src.charCodeAt(0);
+      // Opening-character check before any parsing: the tokenizer runs at
+      // every candidate position in every block.
+      if (first !== 60 /* < */ && first !== 104 /* h */ && first !== 72 /* H */) return undefined;
+      // Inside link text a player is interactive content no anchor may
+      // hold, and a bare URL there is the link's label, which the engine's
+      // own `url` rule leaves as text too.
+      if (this.lexer.state.inLink) return undefined;
+      if (first === 60) return embeddedHtml ? videoToken(this.lexer, src) : undefined;
+      // GitLab surfaces never claim a github.com URL: the fetch would use the
+      // wrong CLI, and a `glab` login says nothing about github.com.
+      if (forge !== 'github') return undefined;
+      // The engine's own autolink boundary, so a bare attachment URL ends
+      // exactly where the engine would have ended it.
+      const url = this.lexer.tokenizer.url(src);
+      if (!url || !isForgeAttachmentHref(pr, url.raw)) return undefined;
+      return claimedImage(url.raw, url.raw, '', false, []);
+    },
+  };
+
+  if (!embeddedHtml) return [inline];
+
+  const block: Extension = {
+    name: 'forgeAttachmentBlock',
+    level: 'block',
+    tokenizer(src) {
+      if (src.charCodeAt(0) !== 60 /* < */) return undefined;
+      const embed = videoToken(this.lexer, src);
+      if (!embed) return undefined;
+      // Only a LONE tag is a block. Anything else on the line makes it a
+      // paragraph, and the inline tokenizer owns that case.
+      const trailing = /^[ \t]*(?:\r?\n|$)/.exec(src.slice(embed.raw.length));
+      if (!trailing) return undefined;
+      const paragraph: Tokens.Paragraph = {
+        type: 'paragraph',
+        raw: src.slice(0, embed.raw.length + trailing[0].length),
+        text: embed.raw,
+        tokens: [embed],
+      };
+      return paragraph;
+    },
+  };
+  return [inline, block];
+
+  /** A `<video>` whose src (or first `<source src>`) the destination rule claims, as the image it plays. */
+  function videoToken(lexer: Lexer, src: string): ClaimedImage | undefined {
     const open = VIDEO_OPEN.exec(src);
     if (!open) return undefined;
     const rest = src.slice(open[0].length);
@@ -312,28 +218,9 @@ export function buildForgeAttachmentExtension(
       const source = SOURCE_TAG.exec(rest.slice(0, close.index));
       if (source) href = attrOf(source[1] ?? '', 'src');
     }
-    if (href === null || !isForgeAttachmentHref(forge, href)) return undefined;
-    return imageToken(raw, href, attrOf(attrs, 'title') ?? '');
-  }
-
-  function bareUrlToken(
-    src: string,
-    ctx: ForgeTokenizerContext,
-  ): GenericImageToken | undefined {
-    // GitLab surfaces never claim a github.com URL: the fetch would use the
-    // wrong CLI, and a `glab` login says nothing about github.com.
-    if (forge !== 'github') return undefined;
-    // The engine's own autolink boundary when it has one (gfm), so a bare
-    // attachment URL ends exactly where marked would have ended it.
-    const engineToken = ctx.lexer?.tokenizer?.url?.(src);
-    let raw = engineToken?.raw ?? '';
-    if (raw === '') {
-      const run = BARE_URL_RUN.exec(src);
-      if (!run) return undefined;
-      raw = run[0].replace(TRAILING_PUNCTUATION, '');
-      if (raw === '') return undefined;
-    }
-    if (!isForgeAttachmentHref('github', raw)) return undefined;
-    return imageToken(raw, raw, '');
+    if (href === null) return undefined;
+    const image: ClaimedImage = { type: 'image', raw, href, title: null, text: attrOf(attrs, 'title') ?? '', tokens: [] };
+    const decided = lexer.tokenizer.destination(image);
+    return decided.href.startsWith(FORGE_ATTACHMENT_HREF_PREFIX) ? decided : undefined;
   }
 }

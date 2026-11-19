@@ -176,6 +176,11 @@ export const CORPUS = [
   '```mermaid title="flow"\ngraph TD\n  A --> B\n```',
   'Invalid: $\\frac{1}{$ and $`\\undefinedmacro`$',
   'Label: ~1, ~bug, ~"feature request", ~"priority::high", group/project~bug, /group/project~bug',
+  // The lines of an HTML block are HTML; Markdown resumes after a blank line.
+  '<details open><summary>Inline summary with `code` and **bold**</summary>\n<b>Bold</b> &amp; <code>x</code> and snake_case_name and 2 * 3 * 4\n\nmarkdown **after** words\n</details>',
+  '<details open>\n<summary>Tight</summary>\nbody with **stars** and `code`\n</details>',
+  '<figure><img src="https://example.invalid/f.png" alt="fig"><figcaption>Figure caption</figcaption></figure>\n\n<section><img src="https://example.invalid/s.png" alt="s">Section text</section>',
+  'Display $$a^2+b^2=c^2$$ in a line',
 ];
 
 // Markdown pieces whose reading depends on what is around them, for the

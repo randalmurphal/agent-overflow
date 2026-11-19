@@ -47,7 +47,9 @@ function buildBoundaryRegexes(maxIndent: number) {
         hr: new RegExp(`^ {0,${maxIndent}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`),
         fences: new RegExp(`^ {0,${maxIndent}}(?:\`\`\`|~~~)`),
         heading: new RegExp(`^ {0,${maxIndent}}#`),
-        html: new RegExp(`^ {0,${maxIndent}}<[a-z].*>`, 'i')
+        html: new RegExp(`^ {0,${maxIndent}}<[a-z].*>`, 'i'),
+        // A block quote opening left of the item's content ends the item.
+        quote: new RegExp(`^ {0,${maxIndent}}>`)
     };
 }
 const LIST_BOUNDARY_TABLE = [0, 1, 2, 3].map(buildBoundaryRegexes);
@@ -340,7 +342,7 @@ export function parseListSource(
             endEarly = true;
         }
         if (!endEarly) {
-            const { nextBullet, hr, fences, heading, html } = LIST_BOUNDARY_TABLE[Math.min(3, indent - 1)];
+            const { nextBullet, hr, fences, heading, html, quote } = LIST_BOUNDARY_TABLE[Math.min(3, indent - 1)];
             let sawBlankLine = false;
             // Check if following lines should be included in List Item
             while (src) {
@@ -355,7 +357,8 @@ export function parseListSource(
                     heading.test(nextLineWithoutTabs) ||
                     html.test(nextLineWithoutTabs) ||
                     nextBullet.test(nextLineWithoutTabs) ||
-                    hr.test(nextLineWithoutTabs))
+                    hr.test(nextLineWithoutTabs) ||
+                    quote.test(nextLineWithoutTabs))
                     break;
                 // A blank line followed by a dedented non-bullet line ends the item:
                 // that line starts a new top-level block (a bullet after a blank line

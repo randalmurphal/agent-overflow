@@ -1956,7 +1956,7 @@
       "toolName": "",
       "payload": null,
       "runs": [
-        "Inline [[_TOC_]] after."
+        "Inline [[TOC]] after."
       ]
     },
     {
@@ -1994,6 +1994,47 @@
     {
       "name": "assistant 149",
       "kind": "assistant_text",
+      "summary": "<details open><summary>Inline summary with `code` and **bold**</summary>\n<b>Bold</b> &amp; <code>x</code> and snake_case_name and 2 * 3 * 4\n\nmarkdown **after** words\n</details>",
+      "meta": "{}",
+      "toolName": "",
+      "payload": null,
+      "runs": [
+        "markdown after words"
+      ]
+    },
+    {
+      "name": "assistant 150",
+      "kind": "assistant_text",
+      "summary": "<details open>\n<summary>Tight</summary>\nbody with **stars** and `code`\n</details>",
+      "meta": "{}",
+      "toolName": "",
+      "payload": null,
+      "runs": []
+    },
+    {
+      "name": "assistant 151",
+      "kind": "assistant_text",
+      "summary": "<figure><img src=\"https://example.invalid/f.png\" alt=\"fig\"><figcaption>Figure caption</figcaption></figure>\n\n<section><img src=\"https://example.invalid/s.png\" alt=\"s\">Section text</section>",
+      "meta": "{}",
+      "toolName": "",
+      "payload": null,
+      "runs": []
+    },
+    {
+      "name": "assistant 152",
+      "kind": "assistant_text",
+      "summary": "Display $$a^2+b^2=c^2$$ in a line",
+      "meta": "{}",
+      "toolName": "",
+      "payload": null,
+      "runs": [
+        "Display ",
+        " in a line"
+      ]
+    },
+    {
+      "name": "assistant 153",
+      "kind": "assistant_text",
       "summary": "<table><tr><td><details><summary>word x Needle</summary>word needle word x</details></td><td>needleneedle Needle</td></tr></table>\n\n> [!NOTE]\n> needle needle",
       "meta": "{}",
       "toolName": "",
@@ -2004,7 +2045,7 @@
       ]
     },
     {
-      "name": "assistant 150",
+      "name": "assistant 154",
       "kind": "assistant_text",
       "summary": "<div><video src=\"https://example.com/v.mp4\">needleneedle needleneedle x x</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"Needle needle Needle needleneedle\"> needleneedle x needleneedle word</div>\n\n<details open><summary>x needleneedle</summary>\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needleneedle x<details><summary>needleneedle word</summary>word needle Needle</details></video></div>\n\n</details>\n\n> [!TIP]\n> Needle\n\n[center]\nNeedle needle\n\n<details open><summary>needle word needleneedle</summary>\n\n<div><script>needleneedle word needleneedle needleneedle()</script><foo>x word</foo><!-- needle needleneedle --> word x needle</div>\n\n</details>\n<details open><summary>x Needle x x</summary>\n\nx\n\n</details>",
       "meta": "{}",
@@ -2018,7 +2059,7 @@
       ]
     },
     {
-      "name": "assistant 151",
+      "name": "assistant 155",
       "kind": "assistant_text",
       "summary": "- needleneedle\n- ``` Needle ```\n\nneedle [word](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![word needle Needle](/uploads/0123456789abcdef0123456789abcdef/a.png) x Needle needleneedle\n\n<details><summary>Needle needle needle</summary>\n\n- needleneedle\n- <div><script>needle x()</script><foo>needle word needle</foo><!-- x needleneedle x word --> word</div>\n\n</details>",
       "meta": "{}",
@@ -2033,7 +2074,7 @@
       ]
     },
     {
-      "name": "assistant 152",
+      "name": "assistant 156",
       "kind": "assistant_text",
       "summary": "- word Needle needle\n- [right] needleneedle  <details><summary>Needle needleneedle Needle</summary>  <div><video src=\"https://example.com/v.mp4\">Needle x</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"x\"> x</div>  </details> [/right]\n\n<details><summary>x</summary>\n\n- word needleneedle\n- <details><summary>x needle needle Needle</summary>  > [!NOTE] > x Needle word  </details>\n\n</details>\n<details open><summary>Needle needleneedle x needle</summary>\n\nneedle\n\n</details>\n\n<table><tr><td><details open><summary>needle needle</summary>needle needleneedle</details></td><td>needleneedle x word Needle</td></tr></table>\n\n<div><video src=\"https://example.com/v.mp4\">needle Needle word Needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"word x x\"> word Needle</div>\n\n[center]\nneedle\n\nword needleneedle word",
       "meta": "{}",
@@ -2049,7 +2090,7 @@
       ]
     },
     {
-      "name": "assistant 153",
+      "name": "assistant 157",
       "kind": "assistant_text",
       "summary": "```\nx x word needleneedle\n```\n\n[right]\nNeedle Needle word needleneedle\n\n- needleneedle needleneedle needleneedle Needle\n- <details open><summary>needle x word</summary>  <div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needleneedle word word needle<details><summary>x</summary>Needle</details></video></div>  </details> <details open><summary>x word needleneedle word</summary>  x x needle x  </details>\n[/right]",
       "meta": "{}",
@@ -2062,7 +2103,7 @@
       ]
     },
     {
-      "name": "assistant 154",
+      "name": "assistant 158",
       "kind": "assistant_text",
       "summary": "<details open><summary>word Needle x needleneedle</summary>\n\nneedleneedle needle Needle\n\n</details>\n\n| Needle x needleneedle | b |\n| --- | --- |\n| needle Needle word | `needle` |",
       "meta": "{}",
@@ -2077,7 +2118,7 @@
       ]
     },
     {
-      "name": "assistant 155",
+      "name": "assistant 159",
       "kind": "assistant_text",
       "summary": "<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">Needle needleneedle word<details><summary>needleneedle</summary>word</details></video></div>\n\nNeedle needle word needle [needle word word](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![needle Needle Needle needle](/uploads/0123456789abcdef0123456789abcdef/a.png) word\n\n- Needle needleneedle needleneedle Needle\n- [center] needle x needle Needle  | needleneedle Needle word | b | | --- | --- | | needleneedle | `word word x needleneedle` | [/right]\n\n| needleneedle needleneedle x | b |\n| --- | --- |\n| needle | `x word Needle` |\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">Needle needleneedle x needle<details><summary>needleneedle x word</summary>needleneedle</details></video></div>",
       "meta": "{}",
@@ -2095,7 +2136,7 @@
       ]
     },
     {
-      "name": "assistant 156",
+      "name": "assistant 160",
       "kind": "assistant_text",
       "summary": "<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needleneedle Needle word<details><summary>Needle needle</summary>Needle needleneedle word word</details></video></div>\n\nword word [needleneedle needleneedle word](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![word](/uploads/0123456789abcdef0123456789abcdef/a.png) Needle Needle\n\n<table><tr><td><details><summary>x</summary>needleneedle</details></td><td>x</td></tr></table>",
       "meta": "{}",
@@ -2107,7 +2148,7 @@
       ]
     },
     {
-      "name": "assistant 157",
+      "name": "assistant 161",
       "kind": "assistant_text",
       "summary": "<table><tr><td><details><summary>word</summary>Needle needle Needle</details></td><td>Needle needle word Needle</td></tr></table>\n\n```\nneedleneedle word word\n```\n\n<details><summary>x x Needle</summary>\n\n| x x x x | b |\n| --- | --- |\n| needle x word needle | `word` |\n\n</details>\n<details open><summary>word</summary>\n\nword needle\n\n</details>\n\n<details><summary>needle needleneedle Needle</summary>\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">word x word word<details><summary>word x needle Needle</summary>word</details></video></div>\n\n</details>\n<details open><summary>needleneedle x Needle x</summary>\n\nneedleneedle\n\n</details>\n\n<details open><summary>needle Needle x</summary>\n\n<table><tr><td><details open><summary>needle Needle</summary>needleneedle needleneedle x</details></td><td>x</td></tr></table>\n\n</details>",
       "meta": "{}",
@@ -2124,7 +2165,7 @@
       ]
     },
     {
-      "name": "assistant 158",
+      "name": "assistant 162",
       "kind": "assistant_text",
       "summary": "<table><tr><td><details><summary>word word x needle</summary>x needle needleneedle word</details></td><td>needleneedle x word word</td></tr></table>\n\n| x x x | b |\n| --- | --- |\n| Needle Needle needle | `x` |",
       "meta": "{}",
@@ -2138,7 +2179,7 @@
       ]
     },
     {
-      "name": "assistant 159",
+      "name": "assistant 163",
       "kind": "assistant_text",
       "summary": "<table><tr><td><details open><summary>needleneedle x</summary>Needle needle</details></td><td>x word Needle</td></tr></table>\n\n<table><tr><td><details open><summary>x needle</summary>needleneedle x needle Needle</details></td><td>Needle</td></tr></table>\n\n> [!TIP]\n> x x word\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">Needle Needle Needle<details><summary>needle Needle</summary>needle Needle x</details></video></div>\n\n<details><summary>needleneedle</summary>\n\n> [!TIP]\n> word\n\n</details>\n<details><summary>needleneedle Needle x word</summary>\n\nx needle needle\n\n</details>",
       "meta": "{}",
@@ -2153,7 +2194,7 @@
       ]
     },
     {
-      "name": "assistant 160",
+      "name": "assistant 164",
       "kind": "assistant_text",
       "summary": "<details><summary>needle x</summary>\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">x needleneedle needle word<details><summary>word word</summary>needle needleneedle</details></video></div>\n\n</details>\n<details open><summary>word word</summary>\n\nword x needle\n\n</details>\n\n```\nx Needle word Needle\n```\n\n<table><tr><td><details><summary>needle x needle</summary>needle x needleneedle Needle</details></td><td>needle x</td></tr></table>\n\n- word\n- <div><video src=\"https://example.com/v.mp4\">word word Needle Needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needle x x needle\"> needle</div>",
       "meta": "{}",
@@ -2166,7 +2207,7 @@
       ]
     },
     {
-      "name": "assistant 161",
+      "name": "assistant 165",
       "kind": "assistant_text",
       "summary": "<details open><summary>Needle needle</summary>\n\n<div><script>needleneedle x needleneedle()</script><foo>x word Needle</foo><!-- word needleneedle --> word needleneedle</div>\n\n</details>\n<details><summary>x needleneedle x x</summary>\n\nx Needle\n\n</details>\n\n<div><video src=\"https://example.com/v.mp4\">needle x needleneedle needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"word\"> word x Needle needleneedle</div>\n\n> [!WARNING]\n> word needle\n\n```\nneedleneedle x needle word\n```",
       "meta": "{}",
@@ -2180,7 +2221,7 @@
       ]
     },
     {
-      "name": "assistant 162",
+      "name": "assistant 166",
       "kind": "assistant_text",
       "summary": "<div><script>needleneedle Needle Needle needleneedle()</script><foo>x needle Needle needleneedle</foo><!-- Needle needle Needle --> needleneedle word</div>\n\n> [!NOTE]\n> x needleneedle needleneedle Needle\n\nneedleneedle needle word needle [Needle needle x](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![needle x](/uploads/0123456789abcdef0123456789abcdef/a.png) Needle",
       "meta": "{}",
@@ -2194,7 +2235,7 @@
       ]
     },
     {
-      "name": "assistant 163",
+      "name": "assistant 167",
       "kind": "assistant_text",
       "summary": "- word Needle x needle\n- <div><script>x Needle x x()</script><foo>x Needle Needle</foo><!-- needleneedle Needle needle needleneedle --> word needleneedle word Needle</div>\n\n<details open><summary>word</summary>\n\n[center]\nNeedle Needle x x\n\n<div><script>needleneedle Needle needleneedle word()</script><foo>needleneedle needle</foo><!-- word x x word --> needleneedle needleneedle word word</div>\n[/center]\n\n</details>\n\n<div><video src=\"https://example.com/v.mp4\">needleneedle word needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needleneedle word\"> x needle</div>",
       "meta": "{}",
@@ -2206,7 +2247,7 @@
       ]
     },
     {
-      "name": "assistant 164",
+      "name": "assistant 168",
       "kind": "assistant_text",
       "summary": "[center]\nneedle x x Needle\n\n<details><summary>needle x</summary>\n\n```\nx\n```\n\n</details>\n[/right]\n\n<details><summary>needleneedle needleneedle</summary>\n\n```\nx needle word\n```\n\n</details>\n<details open><summary>needle needleneedle</summary>\n\nneedle\n\n</details>\n\n| needle x needleneedle | b |\n| --- | --- |\n| needleneedle Needle x needleneedle | `word needle Needle` |\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">Needle needleneedle needleneedle needleneedle<details><summary>needleneedle x</summary>needleneedle</details></video></div>\n\n<table><tr><td><details open><summary>x needle x needle</summary>needleneedle word</details></td><td>Needle needleneedle word</td></tr></table>",
       "meta": "{}",
@@ -2224,7 +2265,7 @@
       ]
     },
     {
-      "name": "assistant 165",
+      "name": "assistant 169",
       "kind": "assistant_text",
       "summary": "<details><summary>x</summary>\n\n[right]\nword Needle needleneedle\n\n[right]\nneedle\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">word<details><summary>x x needle</summary>word</details></video></div>\n[/right]\n[/center]\n\n</details>\n<details open><summary>needle x needleneedle needleneedle</summary>\n\nneedleneedle x word\n\n</details>\n\n<table><tr><td><details><summary>needle</summary>x</details></td><td>needleneedle</td></tr></table>\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needle word needleneedle<details><summary>Needle x x</summary>x</details></video></div>",
       "meta": "{}",
@@ -2237,7 +2278,7 @@
       ]
     },
     {
-      "name": "assistant 166",
+      "name": "assistant 170",
       "kind": "assistant_text",
       "summary": "<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needleneedle<details><summary>needle</summary>word word needle</details></video></div>\n\n```\nx\n```",
       "meta": "{}",
@@ -2248,7 +2289,7 @@
       ]
     },
     {
-      "name": "assistant 167",
+      "name": "assistant 171",
       "kind": "assistant_text",
       "summary": "<details open><summary>word needleneedle x Needle</summary>\n\n<div><video src=\"https://example.com/v.mp4\">word word</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needle x x\"> x needle x needle</div>\n\n</details>\n<details open><summary>x</summary>\n\nNeedle x needle\n\n</details>\n\n<details><summary>word needleneedle Needle</summary>\n\n```\nNeedle needleneedle Needle word\n```\n\n</details>\n<details><summary>word word needleneedle</summary>\n\nNeedle Needle needle\n\n</details>\n\n<details><summary>x needleneedle needleneedle x</summary>\n\n- needle Needle x\n- > [!WARNING] > needle\n\n</details>\n<details open><summary>x needle Needle</summary>\n\nneedleneedle needle word needle\n\n</details>\n\n> [!NOTE]\n> word needle needle x\n\n[center]\nNeedle needle needle needle\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needleneedle word<details><summary>Needle Needle needle needleneedle</summary>Needle</details></video></div>\n[/right]",
       "meta": "{}",
@@ -2268,7 +2309,7 @@
       ]
     },
     {
-      "name": "assistant 168",
+      "name": "assistant 172",
       "kind": "assistant_text",
       "summary": "needleneedle\n\n<div><video src=\"https://example.com/v.mp4\">Needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needleneedle Needle word x\"> needle needleneedle</div>\n\n[center]\nneedleneedle x\n\n[center]\nNeedle Needle\n\n<div><video src=\"https://example.com/v.mp4\">needleneedle Needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"word x\"> needle Needle x needle</div>\n[/center]\n[/center]\n\nNeedle Needle [Needle x](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![needle needle](/uploads/0123456789abcdef0123456789abcdef/a.png) needleneedle needleneedle\n\n<details open><summary>needle x word x</summary>\n\n<div><video src=\"https://example.com/v.mp4\">Needle Needle needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needle Needle\"> x word</div>\n\n</details>\n<details open><summary>needleneedle x x word</summary>\n\nNeedle Needle\n\n</details>",
       "meta": "{}",
@@ -2284,7 +2325,7 @@
       ]
     },
     {
-      "name": "assistant 169",
+      "name": "assistant 173",
       "kind": "assistant_text",
       "summary": "- word word needle word\n- <div><video src=\"https://example.com/v.mp4\">needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"x\"> x</div>\n\n- Needle needleneedle\n- | word needle | b | | --- | --- | | word x | `Needle x` |",
       "meta": "{}",
@@ -2300,7 +2341,7 @@
       ]
     },
     {
-      "name": "assistant 170",
+      "name": "assistant 174",
       "kind": "assistant_text",
       "summary": "<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">Needle x word Needle<details><summary>word</summary>x</details></video></div>\n\n[center]\nword needle x\n\n<table><tr><td><details open><summary>needle needle word needle</summary>Needle needle</details></td><td>Needle</td></tr></table>\n[/center]\n\n> [!NOTE]\n> x Needle needleneedle needleneedle\n\n<div><video src=\"https://example.com/v.mp4\">Needle needleneedle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"Needle\"> word Needle word</div>",
       "meta": "{}",
@@ -2313,7 +2354,7 @@
       ]
     },
     {
-      "name": "assistant 171",
+      "name": "assistant 175",
       "kind": "assistant_text",
       "summary": "| word word | b |\n| --- | --- |\n| needleneedle needleneedle x Needle | `needleneedle needle needle` |\n\n<details open><summary>Needle word Needle</summary>\n\n<details open><summary>needle</summary>\n\n<div><video src=\"https://example.com/v.mp4\">word Needle needleneedle x</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needle x Needle needleneedle\"> Needle needle</div>\n\n</details>\n<details><summary>word word word</summary>\n\nneedleneedle needleneedle\n\n</details>\n\n</details>\n\n<div><script>needle word()</script><foo>needle Needle Needle</foo><!-- word needleneedle needle Needle --> word Needle Needle needle</div>\n\n> [!TIP]\n> needleneedle word word\n\n| needle needle word needleneedle | b |\n| --- | --- |\n| needleneedle Needle Needle | `x` |",
       "meta": "{}",
@@ -2334,7 +2375,7 @@
       ]
     },
     {
-      "name": "assistant 172",
+      "name": "assistant 176",
       "kind": "assistant_text",
       "summary": "```\nx Needle\n```\n\n```\nneedleneedle needle word word\n```\n\nx Needle word\n\nneedleneedle needleneedle needle [needle needleneedle](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![Needle](/uploads/0123456789abcdef0123456789abcdef/a.png) needle needleneedle needleneedle\n\n```\nneedleneedle needleneedle\n```",
       "meta": "{}",
@@ -2350,7 +2391,7 @@
       ]
     },
     {
-      "name": "assistant 173",
+      "name": "assistant 177",
       "kind": "assistant_text",
       "summary": "[right]\nNeedle x Needle needleneedle\n\n<details><summary>Needle x</summary>\n\n- needleneedle x needleneedle\n- ``` needleneedle ```\n\n</details>\n[/right]\n\n| x x | b |\n| --- | --- |\n| Needle | `x needleneedle` |\n\nNeedle\n\n<div><video src=\"https://example.com/v.mp4\">x needle</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"needle\"> needleneedle needleneedle word x</div>\n\n<details><summary>x needleneedle</summary>\n\nneedle needle needle Needle [x](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![word Needle needleneedle needle](/uploads/0123456789abcdef0123456789abcdef/a.png) needleneedle needleneedle\n\n</details>\n<details open><summary>word x needleneedle</summary>\n\nneedle needleneedle needleneedle\n\n</details>",
       "meta": "{}",
@@ -2371,7 +2412,7 @@
       ]
     },
     {
-      "name": "assistant 174",
+      "name": "assistant 178",
       "kind": "assistant_text",
       "summary": "<table><tr><td><details open><summary>word</summary>x needleneedle word</details></td><td>x</td></tr></table>\n\nword x word [needleneedle Needle needle](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![needleneedle needleneedle word](/uploads/0123456789abcdef0123456789abcdef/a.png) word\n\n<div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">x needle<details><summary>Needle word</summary>Needle needleneedle x</details></video></div>\n\n<div><script>word Needle needleneedle needleneedle()</script><foo>needleneedle needle</foo><!-- Needle needleneedle Needle needle --> Needle word x</div>",
       "meta": "{}",
@@ -2383,7 +2424,7 @@
       ]
     },
     {
-      "name": "assistant 175",
+      "name": "assistant 179",
       "kind": "assistant_text",
       "summary": "- Needle x Needle x\n- <div><video src=\"/uploads/0123456789abcdef0123456789abcdef/clip.mp4\">needleneedle x Needle<details><summary>Needle word Needle Needle</summary>Needle needleneedle needle</details></video></div>\n\n| x x word word | b |\n| --- | --- |\n| Needle x | `needleneedle needleneedle` |",
       "meta": "{}",
@@ -2398,7 +2439,7 @@
       ]
     },
     {
-      "name": "assistant 176",
+      "name": "assistant 180",
       "kind": "assistant_text",
       "summary": "needle word [word x](/uploads/0123456789abcdef0123456789abcdef/r.pdf) ![needle needleneedle](/uploads/0123456789abcdef0123456789abcdef/a.png) x\n\n<details open><summary>needleneedle</summary>\n\n<div><script>x()</script><foo>x</foo><!-- needle x needle word --> word x word word</div>\n\n</details>\n<details open><summary>x</summary>\n\nneedle needle word\n\n</details>\n\n| Needle Needle | b |\n| --- | --- |\n| needleneedle Needle | `needleneedle Needle` |",
       "meta": "{}",
@@ -2415,7 +2456,7 @@
       ]
     },
     {
-      "name": "assistant 177",
+      "name": "assistant 181",
       "kind": "assistant_text",
       "summary": "```\nNeedle Needle needleneedle\n```\n\n| word Needle x | b |\n| --- | --- |\n| x | `Needle x` |",
       "meta": "{}",
@@ -2430,7 +2471,7 @@
       ]
     },
     {
-      "name": "assistant 178",
+      "name": "assistant 182",
       "kind": "assistant_text",
       "summary": "- needle Needle word\n- <table><tr><td><details open><summary>needle needleneedle word</summary>needle</details></td><td>word x needle</td></tr></table>\n\n<details open><summary>needleneedle Needle needleneedle</summary>\n\n<div><video src=\"https://example.com/v.mp4\">Needle x word</video> <img src=\"/uploads/0123456789abcdef0123456789abcdef/a.png\" alt=\"word\"> needleneedle needleneedle</div>\n\n</details>",
       "meta": "{}",
@@ -2441,7 +2482,7 @@
       ]
     },
     {
-      "name": "assistant 179",
+      "name": "assistant 183",
       "kind": "assistant_text",
       "summary": "{\"answer\":\"raw json needle\",\"items\":[1,2]}",
       "meta": "{}",

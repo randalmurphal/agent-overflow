@@ -21,10 +21,16 @@ const svg = (width: number, height: number) =>
 // An 80x20 badge and a 4:1 banner, inline so the page needs no network.
 const BADGE = `data:image/svg+xml;base64,${btoa(svg(80, 20))}`;
 const BANNER = `data:image/svg+xml;base64,${btoa(svg(400, 100))}`;
-// The same two over http(s), the only scheme the sanitizer and the bare
-// renderer load: served by the test server. Built at run time, since the
-// bundler inlines a small asset it can see as a data: URL.
-const fixture = (name: string) => `${location.origin}/src/test/fixtures/images/${name}`;
+// The same two over http(s), the only scheme the bare renderer loads:
+// served by the test server under its other loopback name, since an
+// authored image never loads from the page's own origin. Built at run
+// time, since the bundler inlines a small asset it can see as a data: URL.
+const servedOrigin = (): string => {
+  const url = new URL(location.origin);
+  url.hostname = url.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
+  return url.origin;
+};
+const fixture = (name: string) => `${servedOrigin()}/src/test/fixtures/images/${name}`;
 const SERVED: Record<string, string> = {
   [BADGE]: fixture('badge-80x20.svg'),
   [BANNER]: fixture('banner-400x100.svg'),

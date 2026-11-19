@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SHORT_CODESPAN_CLASS, SHORT_CODESPAN_MAX_LENGTH } from './codespan';
-import { htmlRegionNodes, parseHtmlRegion, sanitizeEmbeddedHtmlToken } from './htmlSanitize';
+import { htmlRegionNodes, parseHtmlRegion, sanitizeEmbeddedHtmlToken, type SanitizeEmbeddedHtmlOptions } from './htmlSanitize';
+import type { DestinationHook } from '../parser/engine/destination';
+import { UNAVAILABLE_IMAGE_CLASS, unavailableImageTitle } from './elements/url';
 import { htmlPolicyOf } from '../parser/extensions/htmlPolicy';
 
 // The allowlist sanitizer behind `renderHtml` on embedded-HTML surfaces.
@@ -11,6 +13,9 @@ import { htmlPolicyOf } from '../parser/extensions/htmlPolicy';
 
 const block = (raw: string) => sanitizeEmbeddedHtmlToken({ raw, block: true });
 const inline = (raw: string) => sanitizeEmbeddedHtmlToken({ raw, block: false });
+/** The renderers' chip for an image whose src the gate refuses. */
+const unavailable = (src: string, alt = '', title = `Cannot load from this surface: ${src}`) =>
+	`<span data-streamdown-image-blocked="" data-find-skip="" class="${UNAVAILABLE_IMAGE_CLASS}" title="${title}">[Image unavailable: ${alt || 'No description'}]</span>`;
 
 describe('sanitizeEmbeddedHtmlToken', () => {
 	it('keeps an html table with its structural attributes', () => {
@@ -73,10 +78,12 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 		expect(out).not.toContain('javascript');
 	});
 
-	it('never emits a path-relative or protocol-relative src/href', () => {
-		expect(block('<img src="/design/x.png">')).toBe('<img>');
-		expect(block('<img src="//evil.example/x.png">')).toBe('<img>');
+	it('never emits a path-relative src/href, and reads a scheme-relative one as https', () => {
+		expect(block('<img src="/design/x.png">')).toBe(unavailable('/design/x.png'));
 		expect(block('<p><a href="/etc/passwd">x</a></p>')).toBe('<p><a>x</a></p>');
+		expect(block('<img src="//cdn.example/x.png"><a href="//cdn.example/p">p</a>')).toBe(
+			'<img src="https://cdn.example/x.png"><a href="https://cdn.example/p">p</a>'
+		);
 	});
 
 	it('reads a URL as the browser does, so no value resolves against the page', () => {
@@ -84,8 +91,10 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 		// to the URL parser: the value is relative, whatever follows it.
 		for (const lead of ['&#160;', '\u00a0', '\ufeff', '\u2028', '&nbsp;', 'x']) {
 			const url = `${lead}https://example.invalid/../../../x.svg`;
-			expect(block(`<img src="${url}">`)).toBe('<img>');
-			expect(block(`<picture><img src="${url}"></picture>`)).toBe('<img>');
+			const parsed = url.replace('&#160;', '\u00a0').replace('&nbsp;', '\u00a0');
+			const chip = unavailable(parsed, '', unavailableImageTitle(parsed));
+			expect(block(`<img src="${url}">`)).toBe(chip);
+			expect(block(`<picture><img src="${url}"></picture>`)).toBe(chip);
 			expect(block(`<p><a href="${url}">x</a></p>`)).toBe('<p><a>x</a></p>');
 		}
 		expect(block('<p><a href="https://">x</a></p>')).toBe('<p><a>x</a></p>');
@@ -104,7 +113,7 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 			expect(block(`<p><a href="${authored}">x</a><img src="${authored}"></p>`)).toBe(
 				`<p><a href="${canonical}">x</a><img src="${canonical}"></p>`
 			);
-			const nodes = htmlRegionNodes(parseHtmlRegion([`<a href="${authored}">`, { type: 'paragraph' }, '</a>'], true));
+			const nodes = htmlRegionNodes(parseHtmlRegion([`<a href="${authored}">`, { type: 'paragraph' }, '</a>'], true), ['http://', 'https://']);
 			expect(nodes).toMatchObject([{ kind: 'element', tag: 'a', attrs: { href: canonical } }]);
 		}
 	});
@@ -118,7 +127,7 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 			['https://example.invalid/x', true]
 		] as const) {
 			// `true` keeps authored attributes, so only this check stands.
-			const nodes = htmlRegionNodes(parseHtmlRegion([`<a href="${href}" title="t">`, island, '</a>'], true));
+			const nodes = htmlRegionNodes(parseHtmlRegion([`<a href="${href}" title="t">`, island, '</a>'], true), ['*']);
 			expect(nodes).toEqual([
 				{ kind: 'element', tag: 'a', attrs: kept ? { href, title: 't' } : { title: 't' }, children: [{ kind: 'island', index: 0 }] }
 			]);
@@ -128,7 +137,7 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 	it('renders an element named after an Object.prototype member as its children', () => {
 		for (const tag of ['constructor', 'tostring', 'valueof', 'hasownproperty', '__proto__']) {
 			expect(block(`<${tag}>in <b>bold</b></${tag}>`)).toBe('in <b>bold</b>');
-			const nodes = htmlRegionNodes(parseHtmlRegion([`<${tag}>`, { type: 'paragraph' }, `</${tag}>`], true));
+			const nodes = htmlRegionNodes(parseHtmlRegion([`<${tag}>`, { type: 'paragraph' }, `</${tag}>`], true), ['*']);
 			expect(nodes).toEqual([{ kind: 'island', index: 0 }]);
 		}
 	});
@@ -192,7 +201,9 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 	});
 
 	it('still refuses an unsafe src inside a picture', () => {
-		expect(block('<picture><img src="javascript:alert(1)" onerror="x()" alt="a"></picture>')).toBe('<img alt="a">');
+		expect(block('<picture><img src="javascript:alert(1)" onerror="x()" alt="a"></picture>')).toBe(
+			unavailable('javascript:alert(1)', 'a', 'Blocked URL: javascript:alert(1)')
+		);
 	});
 
 	it('keeps the align of a heading', () => {
@@ -257,53 +268,53 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 	});
 });
 
-// The app seam. A host that fetches certain media itself marks it here and
-// hydrates the marker later; everything the hook declines keeps the exact
-// output the cases above assert.
-describe('sanitizeEmbeddedHtmlToken with a claimMedia hook', () => {
+// The app seam. A host that fetches certain media itself claims it with a
+// destination hook, and the sanitizer marks it for the host to hydrate;
+// everything the hook declines keeps the exact output the cases above assert.
+describe('sanitizeEmbeddedHtmlToken with a destination hook', () => {
 	const calls: Array<[string, string]> = [];
-	const claimUploads = (tag: 'img' | 'video' | 'source', src: string): string | null => {
-		calls.push([tag, src]);
-		return src.includes('/uploads/') ? `claim(${src})` : null;
+	const claimUploads: DestinationHook = (token) => {
+		calls.push([token.type, token.href]);
+		return token.type === 'image' && token.href.includes('/uploads/') ? { ...token, href: `app:claim?${token.href}` } : undefined;
 	};
-	const claimed = (raw: string) =>
-		sanitizeEmbeddedHtmlToken({ raw, block: true }, { claimMedia: claimUploads });
+	const OPTIONS: SanitizeEmbeddedHtmlOptions = { destinations: [claimUploads], allowedImagePrefixes: ['https://', 'app:claim?'] };
+	const claimed = (raw: string) => sanitizeEmbeddedHtmlToken({ raw, block: true }, OPTIONS);
 
 	beforeEach(() => {
 		calls.length = 0;
 	});
 
-	it('claims a path-relative img the plain sanitizer would have stripped', () => {
+	it('claims a path-relative img the plain sanitizer would have refused', () => {
 		expect(claimed('<img src="/uploads/abc/a.png" alt="a shot" width="200">')).toBe(
-			'<img data-markdown-media-claim="claim(/uploads/abc/a.png)" alt="a shot" width="200">'
+			'<img data-markdown-media-claim="app:claim?/uploads/abc/a.png" alt="a shot" width="200">'
 		);
-		expect(calls).toEqual([['img', '/uploads/abc/a.png']]);
+		expect(calls).toEqual([['image', '/uploads/abc/a.png']]);
 	});
 
 	it('keeps an unclaimed img exactly as the plain sanitizer renders it', () => {
 		expect(claimed('<img src="https://img.shields.io/b.svg" alt="b">')).toBe(
 			'<img src="https://img.shields.io/b.svg" alt="b">'
 		);
-		expect(claimed('<img src="/design/x.png">')).toBe('<img>');
+		expect(claimed('<img src="/design/x.png">')).toBe(unavailable('/design/x.png'));
 	});
 
 	it('claims media inside the wrappers a forge actually writes', () => {
 		expect(claimed('<p align="center"><img src="/uploads/abc/a.png"></p>')).toBe(
-			'<p align="center"><img data-markdown-media-claim="claim(/uploads/abc/a.png)"></p>'
+			'<p align="center"><img data-markdown-media-claim="app:claim?/uploads/abc/a.png"></p>'
 		);
 		expect(
 			claimed('<table><tr><td><img src="/uploads/abc/a.png"></td></tr></table>')
-		).toContain('<td><img data-markdown-media-claim="claim(/uploads/abc/a.png)"></td>');
+		).toContain('<td><img data-markdown-media-claim="app:claim?/uploads/abc/a.png"></td>');
 		expect(
 			claimed('<a href="https://example.test/p"><img src="/uploads/abc/a.png"></a>')
 		).toBe(
-			'<a href="https://example.test/p"><img data-markdown-media-claim="claim(/uploads/abc/a.png)"></a>'
+			'<a href="https://example.test/p"><img data-markdown-media-claim="app:claim?/uploads/abc/a.png"></a>'
 		);
 	});
 
 	it('replaces a claimed video with a placeholder and drops its children', () => {
 		expect(claimed('<video src="/uploads/abc/clip.mp4" controls>fallback</video>')).toBe(
-			'<span data-markdown-media-claim="claim(/uploads/abc/clip.mp4)" data-markdown-media-kind="video"></span>'
+			'<span data-markdown-media-claim="app:claim?/uploads/abc/clip.mp4" data-markdown-media-kind="video"></span>'
 		);
 	});
 
@@ -311,9 +322,9 @@ describe('sanitizeEmbeddedHtmlToken with a claimMedia hook', () => {
 		expect(
 			claimed('<video controls><source src="/uploads/abc/clip.mp4" type="video/mp4"></video>')
 		).toBe(
-			'<span data-markdown-media-claim="claim(/uploads/abc/clip.mp4)" data-markdown-media-kind="video"></span>'
+			'<span data-markdown-media-claim="app:claim?/uploads/abc/clip.mp4" data-markdown-media-kind="video"></span>'
 		);
-		expect(calls).toEqual([['source', '/uploads/abc/clip.mp4']]);
+		expect(calls).toEqual([['image', '/uploads/abc/clip.mp4']]);
 	});
 
 	it('leaves an unclaimed video to the policy for an element off the allowlist', () => {
@@ -322,18 +333,32 @@ describe('sanitizeEmbeddedHtmlToken with a claimMedia hook', () => {
 		expect(out).not.toContain('data-markdown-media-claim');
 	});
 
-	it('never lets a claim reach an href or src attribute', () => {
+	it('admits a claim only by the image prefixes, never as a src', () => {
 		const out = sanitizeEmbeddedHtmlToken(
 			{ raw: '<img src="/uploads/abc/a.png">', block: true },
-			{ claimMedia: () => 'javascript:alert(1)' }
+			{ destinations: [(token) => ({ ...token, href: 'javascript:alert(1)' })] }
 		);
-		expect(out).toBe('<img data-markdown-media-claim="javascript:alert(1)">');
+		expect(out).toBe(unavailable('javascript:alert(1)', '', 'Blocked URL: javascript:alert(1)'));
 		expect(out).not.toContain('src=');
+	});
+
+	it('decides an href by the same hooks and the link prefixes', () => {
+		const resolve: DestinationHook = (token) =>
+			token.type === 'link' && token.href.startsWith('./') ? { ...token, href: `app:open?${token.href}`, title: 'Open' } : undefined;
+		const options = { destinations: [resolve], allowedLinkPrefixes: ['https://', 'app:open?'] };
+		expect(sanitizeEmbeddedHtmlToken({ raw: '<p><a href="./a.md">a</a></p>', block: true }, options)).toBe(
+			'<p><a href="app:open?./a.md" title="Open">a</a></p>'
+		);
+		// A prefix the renderer would not admit is not written.
+		expect(sanitizeEmbeddedHtmlToken({ raw: '<p><a href="./a.md">a</a></p>', block: true }, { destinations: [resolve] })).toBe(
+			'<p><a>a</a></p>'
+		);
 	});
 
 	it('changes nothing when no hook is passed', () => {
 		expect(sanitizeEmbeddedHtmlToken({ raw: '<img src="/uploads/abc/a.png">', block: true })).toBe(
-			'<img>'
+			unavailable('/uploads/abc/a.png')
 		);
 	});
 });
+

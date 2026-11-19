@@ -16,12 +16,20 @@
  * An escaped opener is text. The chat grammar's citations are text on a
  * forge, so a citation token counts as text here.
  *
- * Insertion is an `ins` htmlInline token and deletion a `del` token, which
- * every renderer and find's projection already show.
+ * Each is an `inlineDiff` token: `<ins>` or `<del>` highlighted as GitLab
+ * paints `.idiff`, not underlined or struck as an authored `<ins>` or a
+ * strikethrough is.
  */
-import type { Token, Tokens } from '../engine';
+import type { Token } from '../engine';
 import type { Extension } from '../lexer';
-import type { HtmlInlineToken } from './embeddedHtml';
+
+export type InlineDiffToken = {
+	type: 'inlineDiff';
+	raw: string;
+	text: string;
+	change: 'added' | 'removed';
+	tokens: Token[];
+};
 
 const CLOSERS: Record<string, string> = { '{+': '+}', '[+': '+]', '{-': '-}', '[-': '-]' };
 // A construct that can open inside the content and close after it.
@@ -78,11 +86,7 @@ export const markedInlineDiff: Extension = {
 				checking = false;
 			}
 		}
-		if (src.charCodeAt(1) === 45 /* - */) {
-			const del: Tokens.Del = { type: 'del', raw, text, tokens };
-			return del;
-		}
-		const ins: HtmlInlineToken = { type: 'htmlInline', raw, tag: 'ins', attrs: {}, text, tokens };
-		return ins;
+		const change = src.charCodeAt(1) === 45 /* - */ ? 'removed' : 'added';
+		return { type: 'inlineDiff', raw, text, change, tokens } satisfies InlineDiffToken;
 	}
 };

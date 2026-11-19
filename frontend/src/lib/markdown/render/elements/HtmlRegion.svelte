@@ -14,7 +14,7 @@
 
 	const nodes = $derived.by(() => {
 		const renderHtml = streamdown.renderHtml;
-		return renderHtml ? htmlRegionNodes(parseHtmlRegion(token.parts, renderHtml)) : [];
+		return renderHtml ? htmlRegionNodes(parseHtmlRegion(token.parts, renderHtml), streamdown.allowedLinkPrefixes ?? []) : [];
 	});
 	const islands = $derived(token.tokens as StreamdownToken[]);
 

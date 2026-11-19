@@ -107,6 +107,39 @@ describe('same-document links', () => {
     expect(first.scroller.scrollTop).toBe(0);
   });
 
+  it.each([['GitHub', GITHUB], ['GitLab', GITLAB]] as const)('opens the closed disclosures around a %s target, in its own body only', async (_name, forge) => {
+    const source = [
+      '[Jump](#target)',
+      '',
+      filler('Hidden'),
+      '',
+      '<details>',
+      '<summary>Outer</summary>',
+      '',
+      '<details>',
+      '<summary>Inner</summary>',
+      '',
+      '## Target',
+      '',
+      '</details>',
+      '',
+      '</details>',
+      '',
+      filler('After'),
+    ].join('\n');
+    const outer = outerScroller();
+    const first = await mountBody(outer, source, forge);
+    const second = await mountBody(outer, source, forge);
+    const closed = (root: Element) => [...root.querySelectorAll('details')].filter((details) => !details.open).length;
+    expect(closed(second.root)).toBe(2);
+
+    second.root.querySelector<HTMLAnchorElement>('a[data-md-fragment][href="#target"]')!.click();
+    expect(closed(second.root)).toBe(0);
+    expect(closed(first.root)).toBe(2);
+    expect(Math.abs(top(second.root.querySelector('[data-md-anchor="target"]')!, second.scroller))).toBeLessThan(1);
+    expect(first.scroller.scrollTop).toBe(0);
+  });
+
   it("follows GitLab's table of contents", async () => {
     const outer = outerScroller();
     const { scroller, root } = await mountBody(outer, BODY('Only'), GITLAB);

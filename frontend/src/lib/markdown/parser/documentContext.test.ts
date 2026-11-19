@@ -1,16 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { lex, lexFootnoteDefinitions, parseBlocks } from './index';
 import { createParseBlocksCache } from './parseBlocks.cache';
+import type { ParseBlocksCache } from './parseBlocks.cache';
+import { Lexer } from './engine';
 import { createDocumentContextCache, documentContextOf, headingSlug } from './documentContext';
-import type { DocumentContext } from './documentContext';
+import type { DocumentContext, DocumentContextCache } from './documentContext';
 import { sameScopeReads } from './documentScope';
-import type { DocumentForge } from './documentScope';
+import type { DocumentForge, DocumentScope } from './documentScope';
 import { lexCapture, markedForgeGrammar } from './lexer';
 import type { Extension, StreamdownToken } from './lexer';
 import { markedHtmlEntities } from './extensions/htmlEntities';
 import { createProvenAppend } from './provenAppend';
 import { incrementalLex } from './incrementalLex';
 import { createIncrementalLexCache } from './incrementalLex.cache';
+
+// One list for every call: a new one resets a context cache.
+const NO_EXTENSIONS: Extension[] = [];
 
 type Walked = { type: string; href?: string; title?: string | null; text?: string; anchor?: string; number?: number; label?: string; tokens?: Walked[] };
 
@@ -251,6 +256,161 @@ describe('heading anchors', () => {
 	it('are absent in agent chat', () => {
 		const { tokens } = lexDocument('# Title\n\n[x]: https://example.invalid/', null);
 		expect(all(tokens.flat(), 'heading')[0].anchor).toBeUndefined();
+	});
+});
+
+describe('a heading written with a reference link', () => {
+	const SOURCE = '# [Title][ref]\n\n[ref]: https://example.org\n\n[[_TOC_]]';
+
+	it.each(['github', 'gitlab'] as const)('takes its anchor from the link text (%s)', (forge) => {
+		const { tokens } = lexDocument(SOURCE, forge);
+		const [heading] = all(tokens.flat(), 'heading');
+		expect(heading.anchor).toBe('title');
+		expect(all(heading.tokens ?? [], 'link').map((link) => [link.text, link.href])).toEqual([['Title', 'https://example.org']]);
+	});
+
+	it("lists the link text in GitLab's table of contents", () => {
+		const list = lexDocument(SOURCE, 'gitlab').tokens.flat().find((token) => token.type === 'list') as Walked;
+		expect(all(list.tokens ?? [], 'link').map((link) => [link.text, link.href])).toEqual([['Title', '#title']]);
+	});
+
+	/** A document parsed and folded by appends, as chat streams one. */
+	const stream = (forge: DocumentForge) => {
+		const blocks = createParseBlocksCache();
+		const cache = createDocumentContextCache();
+		let source = '';
+		return {
+			/** Appends `more` and folds the document again. */
+			append(more: string): DocumentContext {
+				const append = createProvenAppend(source, more);
+				source = append.next;
+				parseBlocks(source, NO_EXTENSIONS, blocks, append);
+				return documentContextOf(blocks, NO_EXTENSIONS, cache, forge);
+			},
+			/** The heading anchors of the blocks lexed under `context`. */
+			anchors: (context: DocumentContext) =>
+				all(blocks.blocks.flatMap((block, index) => lex(block, [], context.scope(index))), 'heading').map((heading) => heading.anchor)
+		};
+	};
+
+	it('takes the link text once a later update defines the reference', () => {
+		const document = stream('gitlab');
+		expect(document.anchors(document.append('# [Title][ref]\n\nProse.\n\n'))).toEqual(['titleref']);
+		expect(document.anchors(document.append('[ref]: https://example.org\n'))).toEqual(['title']);
+	});
+
+	it('reads no block again for a definition no block read', () => {
+		const document = stream('gitlab');
+		const before = document.append('# [Title][ref]\n\n[ref]: https://example.org\n\nProse.\n\n');
+		// The fold's lexes, by source.
+		const lexSpy = vi.spyOn(Lexer.prototype, 'lex');
+		let duplicate: DocumentContext;
+		let unrelated: DocumentContext;
+		let lexed: string[];
+		try {
+			// The first definition of a label wins: this one changes nothing.
+			duplicate = document.append('[REF]: https://example.invalid/other\n\n');
+			unrelated = document.append('[other]: https://example.invalid/other\n');
+			lexed = lexSpy.mock.calls.map(([src]) => src);
+		} finally {
+			lexSpy.mockRestore();
+		}
+		expect(duplicate).toBe(before);
+		expect(unrelated.scope(0).links?.other?.href).toBe('https://example.invalid/other');
+		expect(document.anchors(unrelated)).toEqual(['title']);
+		// Only the appended definitions were read, never the heading.
+		expect(lexed.length).toBeGreaterThan(0);
+		expect(lexed.filter((src) => !/^\[(REF|other)\]: /.test(src))).toEqual([]);
+	});
+});
+
+describe('the document context on appends', () => {
+	/** Counts what `run` reads per raw: the raws of `blocks` and their facts in `cache`. */
+	const rawReads = (blocks: ParseBlocksCache, cache: DocumentContextCache, run: () => void): number => {
+		const { raws } = blocks;
+		const { facts } = cache;
+		let reads = 0;
+		const counted: ProxyHandler<unknown[]> = {
+			get(target, key, receiver) {
+				if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
+				return Reflect.get(target, key, receiver);
+			}
+		};
+		blocks.raws = new Proxy(raws, counted) as string[];
+		cache.facts = new Proxy(facts, counted) as typeof facts;
+		try {
+			run();
+		} finally {
+			blocks.raws = raws;
+			cache.facts = facts;
+		}
+		return reads;
+	};
+
+	it.each([null, 'gitlab'] as const)('reads only the changed tail after 3,000 committed paragraphs (%s)', (forge) => {
+		const blocks = createParseBlocksCache();
+		const cache = createDocumentContextCache();
+		let source = '';
+		const commit = (more: string) => {
+			const append = createProvenAppend(source, more);
+			source = append.next;
+			parseBlocks(source, NO_EXTENSIONS, blocks, append);
+		};
+		commit('Use [x] and [y].\n\n[y]: https://example.invalid/y\n\n');
+		let context = documentContextOf(blocks, NO_EXTENSIONS, cache, forge);
+		for (let n = 0; n < 3000; n++) {
+			commit(`Paragraph ${n}.\n\n`);
+			context = documentContextOf(blocks, NO_EXTENSIONS, cache, forge);
+		}
+		commit('One more.\n\n');
+		let next: DocumentContext | undefined;
+		expect(rawReads(blocks, cache, () => (next = documentContextOf(blocks, NO_EXTENSIONS, cache, forge)))).toBeLessThan(20);
+		expect(next).toBe(context);
+		// A block appended after the context was made gets the document's scope.
+		expect(next!.scope(blocks.blocks.length - 1).links?.y?.href).toBe('https://example.invalid/y');
+		commit('[x]: https://example.invalid/x\n');
+		const defined = documentContextOf(blocks, NO_EXTENSIONS, cache, forge);
+		expect(defined).not.toBe(context);
+		const [use] = lex(blocks.blocks[0], [], defined.scope(0));
+		expect(all([use], 'link').map((link) => link.href)).toEqual(['https://example.invalid/x', 'https://example.invalid/y']);
+	});
+
+	/** A scope as plain data. */
+	const shape = (scope: DocumentScope) => ({
+		forge: scope.forge,
+		links: scope.links ? Object.entries(scope.links) : null,
+		footnotes: scope.footnotes ? [...scope.footnotes] : null,
+		footnoteBase: scope.footnoteBase ? [...scope.footnoteBase] : null,
+		headingIds: scope.headingIds,
+		toc: scope.toc ? [scope.toc.at, scope.toc.key] : null,
+		first: scope.first
+	});
+
+	const DOCUMENT = [
+		'\n# Intro [link][a]\n\nUse [a] and a note[^n].\n\n[[_TOC_]]\n\n',
+		'Prose without facts.\n\n- a list\n- of two\n\n[a]: https://example.invalid/a\n\n',
+		'## Intro [link][a]\n\nMore prose.\n\n[^n]: The note.\n\n',
+		'Later [b] and again[^n].\n\n```\n[b]: https://example.invalid/code\n```\n\n[b]: https://example.invalid/b\n\nEnd.\n'
+	].join('');
+
+	it.each([null, 'github', 'gitlab'] as const)('scopes every block as a fresh fold does, at every chunk size (%s)', (forge) => {
+		for (const size of [1, 3, 7, 16, 50]) {
+			const blocks = createParseBlocksCache();
+			const cache = createDocumentContextCache();
+			let source = '';
+			for (let at = 0; at < DOCUMENT.length; at += size) {
+				const append = createProvenAppend(source, DOCUMENT.slice(at, at + size));
+				source = append.next;
+				parseBlocks(source, NO_EXTENSIONS, blocks, append);
+				const context = documentContextOf(blocks, NO_EXTENSIONS, cache, forge);
+				const freshBlocks = createParseBlocksCache();
+				parseBlocks(source, [], freshBlocks);
+				const fresh = documentContextOf(freshBlocks, [], createDocumentContextCache(), forge);
+				for (let index = 0; index <= blocks.blocks.length; index++)
+					expect(shape(context.scope(index)), `${size} ${JSON.stringify(source)} ${index}`).toEqual(shape(fresh.scope(index)));
+				expect(context.footnoteSection).toBe(fresh.footnoteSection);
+			}
+		}
 	});
 });
 

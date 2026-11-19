@@ -376,6 +376,15 @@ export function renderStaticTokenHtml(
 					break;
 				}
 
+				// Mirrors Element.svelte.
+				case 'inlineDiff': {
+					const tag = token.change === 'added' ? 'ins' : 'del';
+					output.push(`<${tag} data-streamdown-inline-diff="${dataId}" class="md-inline-diff md-inline-diff-${token.change}">`);
+					if (!render(children)) return false;
+					output.push(`</${tag}>`);
+					break;
+				}
+
 				// Mirrors Element.svelte: the tag is one of the parser's fixed
 				// names (HTML_INLINE_TAGS), never authored text.
 				case 'htmlInline':

@@ -86,10 +86,13 @@ export {
   parseHtmlRegion,
   sanitizeEmbeddedHtmlToken,
 } from './render/htmlSanitize';
-export type {
-  ClaimEmbeddedMedia,
-  SanitizeEmbeddedHtmlOptions,
-} from './render/htmlSanitize';
+export type { SanitizeEmbeddedHtmlOptions } from './render/htmlSanitize';
+// The destination seam: the hooks a surface's extensions claim links and
+// images with, which the engine and the HTML sanitizer both run.
+export { destinationsOf } from './parser/lexer';
+export type { DestinationContext, DestinationHook } from './parser/engine/destination';
+// Each forge's bare URL autolinks.
+export { markedGithubBareUrls, markedGitlabBareUrls } from './parser/extensions/bareUrls';
 export { imageSizeOf } from './render/imageSize';
 export type { ImageSize } from './render/imageSize';
 export { acquireDocumentInteraction } from './render/documentInteraction';

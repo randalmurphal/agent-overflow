@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Token } from '../parser/engine';
+import type { DestinationHook } from '../parser/engine/destination';
 import { htmlRegionNodes, parseHtmlRegion, sanitizeEmbeddedHtmlToken, type SanitizeEmbeddedHtmlOptions } from './htmlSanitize';
 import { htmlPolicyOf } from '../parser/extensions/htmlPolicy';
 
 // The sanitizer's host hooks: `text` turns a text run into inline tokens,
-// `href` resolves a relative link, `anchors` draws same-document jumps.
+// `destinations` decide an href or src, `anchors` draws same-document jumps.
 // Whatever a hook returns renders under the allowlist and URL policy.
 
 const block = (raw: string, options: SanitizeEmbeddedHtmlOptions) => sanitizeEmbeddedHtmlToken({ raw, block: true }, options);
@@ -64,24 +65,36 @@ describe('the text hook', () => {
     const emoji: SanitizeEmbeddedHtmlOptions['text'] = () => [
       { type: 'image', raw: ':s:', href: '/uploads/s.png', text: ':s:', title: ':s:', tokens: [], width: '20', height: '20' } as Token,
     ];
-    const out = block('<p>:s:</p>', { text: emoji, claimMedia: (_tag, src) => (src === '/uploads/s.png' ? 'claim:s' : null) });
+    const out = block('<p>:s:</p>', {
+      text: emoji,
+      destinations: [(token) => (token.href === '/uploads/s.png' ? { ...token, href: 'claim:s' } : undefined)],
+      allowedImagePrefixes: ['claim:'],
+    });
     expect(out).toBe('<p><img data-markdown-media-claim="claim:s" alt=":s:" title=":s:" width="20" height="20"></p>');
   });
 });
 
-describe('the href hook', () => {
-  it('resolves an href the policy refuses, and its answer passes the same policy', () => {
-    const href = vi.fn((authored: string) => (authored === 'bad' ? 'javascript:alert(1)' : `https://example.invalid/base/${authored}`));
-    expect(block('<a href="docs/a b.md">d</a><a href="bad">b</a><a href="https://example.invalid/x">x</a>', { href })).toBe(
-      '<a href="https://example.invalid/base/docs/a%20b.md">d</a><a>b</a><a href="https://example.invalid/x">x</a>',
-    );
-    expect(href.mock.calls.map(([authored]) => authored)).toEqual(['docs/a b.md', 'bad']);
+describe('the destination hooks', () => {
+  // A relative link resolved, as the forge reference hook resolves one.
+  const resolve = vi.fn<DestinationHook>((token) =>
+    token.type !== 'link' || /^[a-z]+:/.test(token.href)
+      ? undefined
+      : { ...token, href: token.href === 'bad' ? 'javascript:alert(1)' : `https://example.invalid/base/${token.href}` },
+  );
+  beforeEach(() => {
+    resolve.mockClear();
   });
 
-  it('is not asked for an image source', () => {
-    const href = vi.fn(() => 'https://example.invalid/i.png');
-    expect(block('<img src="i.png">', { href })).toBe('<img>');
-    expect(href).not.toHaveBeenCalled();
+  it('decide every href, and their answer passes the same policy', () => {
+    expect(block('<a href="docs/a b.md">d</a><a href="bad">b</a><a href="https://example.invalid/x">x</a>', { destinations: [resolve] })).toBe(
+      '<a href="https://example.invalid/base/docs/a%20b.md">d</a><a>b</a><a href="https://example.invalid/x">x</a>',
+    );
+    expect(resolve.mock.calls.map(([token]) => token.href)).toEqual(['docs/a b.md', 'bad', 'https://example.invalid/x']);
+  });
+
+  it('decide an image source as an image, which a link resolver leaves', () => {
+    expect(block('<img src="i.png">', { destinations: [resolve] })).not.toContain('src=');
+    expect(resolve.mock.calls.map(([token]) => token.type)).toEqual(['image']);
   });
 });
 
@@ -102,7 +115,7 @@ describe('same-document jumps', () => {
     const parsed = parseHtmlRegion(['<div id="top"><a href="#top">', {}, '</a></div>'], (token) =>
       sanitizeEmbeddedHtmlToken(token, { anchors: { ids: true } }),
     );
-    const [div] = htmlRegionNodes(parsed);
+    const [div] = htmlRegionNodes(parsed, ['*']);
     expect(div).toMatchObject({ kind: 'element', tag: 'div', attrs: { 'data-md-anchor': 'top' } });
     const [anchor] = (div as { children: unknown[] }).children;
     expect(anchor).toMatchObject({ kind: 'element', tag: 'a', attrs: { 'data-md-fragment': '', href: '#top' } });

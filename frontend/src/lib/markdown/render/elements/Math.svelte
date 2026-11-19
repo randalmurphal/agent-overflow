@@ -50,7 +50,7 @@
 			return '';
 		}
 		const code = token.text;
-		const displayMode = !token.isInline;
+		const displayMode = token.displayMode;
 		const cacheKey = `${displayMode ? 'b' : 'i'}:${code}`;
 
 		const cached = _katexHtmlCache.get(cacheKey);
@@ -85,6 +85,8 @@
 	const failed = $derived(html === null ? { [RENDER_FAILED_ATTR]: '' } : {});
 </script>
 
+<!-- Display math in a paragraph is KaTeX's display box, which is spans
+     laid out as a centered block, inside the inline host. -->
 {#if token.isInline}
 	<span data-streamdown-inline-math={id} class={streamdown.theme.math.inline} {...failed}>
 		{#if html === null}<SourceText text={token.text} inline />{:else}{@html html}{/if}

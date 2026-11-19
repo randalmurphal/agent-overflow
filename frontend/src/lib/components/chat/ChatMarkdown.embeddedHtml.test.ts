@@ -33,7 +33,8 @@ describe('<ChatMarkdown> embedded HTML', () => {
       expect(details?.hasAttribute('open')).toBe(false);
       const summary = details?.querySelector('summary');
       expect(summary?.textContent).toContain('3 issues');
-      expect(summary?.querySelector('strong')).not.toBeNull();
+      // A summary on its HTML block's lines is HTML: the sanitizer keeps <b>.
+      expect(summary?.querySelector('b')?.textContent).toBe('3 issues');
       // Markdown inside the dropdown still parses as markdown.
       expect(details?.querySelector('p strong')?.textContent).toBe('markdown');
       expect(details?.querySelector('sub')?.textContent).toBe('inline html');

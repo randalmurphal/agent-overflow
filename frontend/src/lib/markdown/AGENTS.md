@@ -41,8 +41,20 @@ volatile block on every append.
 
 Path-relative links or images never render as raw anchors or image sources.
 Render them only after `transformUrl` approval, or as a non-navigable reference.
-`//host/x` resolves to `https:`, never to the page origin. Hosts that support
-path, image or preview actions claim those tokens with parser extensions.
+An authored image, video or audio src passes `transformMediaUrl`, which also
+refuses the page's own origin; media the app mints (fetched attachment or
+local image bytes) never passes it.
+
+A link or image destination is decided once, by
+`parser/engine/destination.ts#decideDestination`: `//host/x` becomes
+`https://host/x`, never the page origin, then the extensions' `destination`
+hooks run in list order and the first claim wins (a forge-relative link
+resolved, a forge attachment, a local path, a preview). The engine runs it
+on every inline, reference and autolink token, an extension that builds a
+link or image from other syntax (an HTML `<a>` or `<img>`) calls
+`Tokenizer.destination`, and the sanitizer runs the same hooks
+(`destinationsOf`) on every `href` and `src`. Do not claim a destination
+in a tokenizer of its own.
 
 The `*` wildcard admits every scheme except the deny-list in
 `render/elements/urlSchemes.ts` and `file:`; `internal/externalurl` mirrors the
@@ -64,13 +76,12 @@ tracked container open until a later HTML block is one `htmlRegion` token
 (`parser/extensions/htmlRegion.ts`). Its HTML is sanitized and parsed once
 around a nonce-marked placeholder per Markdown island, as a forge sanitizes a
 whole document; `HtmlRegion.svelte` renders island-free HTML through the same
-`html` snippet as an html token. `embeddedHtmlFor(forge).inline` is
-exposed on its own so an app extension that must claim an `<img>` first
-reuses this attribute parsing instead of re-implementing it. Media inside a
-wrapper the extension does not claim reaches the sanitizer's `claimMedia`
-option: a host returning a claim gets the element without its `src`, marked
-with `data-markdown-media-claim`, and owns the injection through the `html`
-snippet. See
+`html` snippet as an html token. The sanitizer admits an `href` or `src`
+by the renderer's own prefixes and rules (`classifyLinkHref`,
+`transformMediaUrl`), and shows a refused image as the renderers' unavailable
+chip. An image whose src a destination hook changed is a claim: the element
+comes without its `src`, marked with `data-markdown-media-claim`, and the
+host owns the injection through the `html` snippet. See
 [`remote-access-boundaries.md`](../../../../docs/specs/remote-access-boundaries.md).
 
 A theme-specific image (a `<picture>` color-scheme source, a
@@ -104,7 +115,11 @@ backed tokens such as Mermaid, including when highlight caches are warm.
   GitLab's table of contents; which block opens the document) and hands
   each block a `DocumentScope`. A
   block's lex records the keys it read; a renderer rebuilds kept output only
-  when one resolves differently. Forge anchors are `data-md-anchor` and
+  when one resolves differently, and the context reads a block's facts again
+  under the same rule. Facts read from inline tokens come from a lex under
+  the folded definitions, as the block renders. An append whose changed
+  tail (`ParseBlocksCache.changedFrom`) holds no fact costs only the tail.
+  Forge anchors are `data-md-anchor` and
   same-document links `data-md-fragment`, never `id` or a navigating href;
   chat resolves them inside the clicked `.markdown-body`.
 - Mermaid and math elements publish parser-owned source values. Code source
@@ -134,9 +149,10 @@ selectors. Scope Markdown styles to Markdown-owned markup.
 - A forge surface's extensions hold `markedForgeGrammar`: every lex and
   block split under them, alignment included, leaves agent chat's own
   grammar (`CHAT_GRAMMAR` in `parser/lexer.ts`) out.
-- A destination or title is resolved by the engine's `linkText` option, which
-  an extension sets. Build link tokens from `tokenizer.link` so every host
-  claim reads a destination the same way.
+- A destination or title as written is resolved by the engine's `linkText`
+  option, which an extension sets; where it goes is the destination rule
+  (URL and HTML boundary). Bare URL autolinks follow the `bareUrls` option,
+  which each forge's extension sets.
 - A block extension that can claim a run opening in a sealed block (a wrapper
   closed by a later append) sets `reopensSealedBlocks`, which disables
   `parseBlocks` append reuse.
@@ -155,6 +171,11 @@ selectors. Scope Markdown styles to Markdown-owned markup.
 - A delimiter rule reads runs in `Lexer.maskInline`, where code spans, links,
   HTML and escapes hide their delimiters; the forge strikethrough pairs
   tildes by CommonMark's delimiter-run rules there.
+- A rule that scans ahead of its position reads the run in progress
+  (`Lexer.inlineRun`, `Lexer.blockRun`) and keys what it learns on that
+  object, so the run is scanned once rather than from every position: the
+  forge strikethrough pairs a run's tildes in one pass, and description
+  lists remember a scan that found no `:` line.
 
 ## Validation
 

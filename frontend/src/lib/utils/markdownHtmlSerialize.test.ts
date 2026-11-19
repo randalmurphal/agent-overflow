@@ -283,8 +283,8 @@ describe('markdownToClipboardHtml — hostile input', () => {
     }
   });
 
-  it('renders a protocol-relative link as plain text', () => {
-    expect(markdownToClipboardHtml('[x](//evil.test/p)')).toBe('<p>x</p>');
+  it('renders a protocol-relative link as the https link it names, as the renderers do', () => {
+    expect(markdownToClipboardHtml('[x](//example.test/p)')).toBe('<p><a href="https://example.test/p">x</a></p>');
   });
 
   it('renders a schemeless relative link as plain text', () => {

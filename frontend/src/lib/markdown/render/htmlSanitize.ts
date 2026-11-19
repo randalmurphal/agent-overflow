@@ -21,18 +21,21 @@
  *    tag shows nothing.
  *  - The policy's `tagFilter` is GFM's disallowed raw HTML rule, which
  *    GitHub applies: `TAG_FILTERED` tags show as their source text.
- *  - `href` / `src` accept absolute http(s) only, mirroring the
- *    security boundary in AGENTS.md, and are written as the URL parser
- *    read them: no value reaches an anchor or img attribute that the
- *    browser could resolve against the page. With `anchors`, a `#name`
- *    href is a same-document link (`data-md-fragment`), the one other
- *    href written, and an anchor name a `data-md-anchor`, never an `id`.
+ *  - An `href` or `src` is decided as a Markdown link's or image's
+ *    destination is (`decideDestination` with the surface's
+ *    `destinations`), then admitted by the renderers' own rules
+ *    (`classifyLinkHref`, `transformMediaUrl`) with the surface's
+ *    prefixes, and written as the URL parser read it: no value reaches an
+ *    anchor or img attribute that the browser could resolve against the
+ *    page. An image it refuses is the renderers' unavailable chip. With
+ *    `anchors`, a `#name` href is a same-document link
+ *    (`data-md-fragment`), the one other href written, and an anchor name
+ *    a `data-md-anchor`, never an `id`.
  *
- * Three host hooks keep a surface's rules in the surface: `claimMedia`
- * (below), `href`, which resolves a relative link, and `text`, which turns
- * a text run into inline tokens (references, emoji). What a hook returns is
- * data this file renders under the same allowlist and URL policy, never
- * markup.
+ * Two host hooks keep a surface's rules in the surface: `destinations`
+ * (below) and `text`, which turns a text run into inline tokens
+ * (references, emoji). What a hook returns is data this file renders
+ * under the same allowlist and URL policy, never markup.
  *
  * The output string is injected via `{@html}` by `Element.svelte`'s html
  * branch, inside `.markdown-body`, whose cascade already styles tables,
@@ -43,34 +46,59 @@
  * per Markdown island, parsed and sanitized once, so the browser's parser
  * balances wrappers that open in one block and close in another.
  *
- * `claimMedia` is the app seam for media. A host that fetches certain media
- * itself (forge-hosted attachments, whose bytes this page cannot read
- * directly) returns an opaque claim for a matching `src`; the element is
- * then emitted WITHOUT that `src`, carrying the claim in a data
- * attribute for the host to hydrate. The claim is an app-owned string,
- * never a URL this file resolves, fetches or writes to an href.
+ * Media a host fetches itself (forge-hosted attachments, whose bytes this
+ * page cannot read directly) is claimed by a destination hook, which
+ * rewrites the src to an app href the image prefixes admit; the element is
+ * then emitted WITHOUT a `src`, carrying the claim in a data attribute for
+ * the host to hydrate. The claim is never a URL this file fetches.
  */
 
 import type { MarkedToken, Token, Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
 import { imageSizeOf } from './imageSize';
-import { colorSchemeOnly, pictureSources, type ColorScheme } from '../parser/extensions/themedImages';
+import { imageSrcFor, pictureSources, type ColorScheme } from '../parser/extensions/themedImages';
 import { ANY_FORGE_HTML_POLICY, imageAlign, ruleAttributes, type HtmlPolicy } from '../parser/extensions/htmlPolicy';
+import { canonicalHref, decideDestination, type DestinationHook } from '../parser/engine/destination';
+import {
+	classifyLinkHref,
+	transformMediaUrl,
+	UNAVAILABLE_IMAGE_CLASS,
+	unavailableImageText,
+	unavailableImageTitle
+} from './elements/url';
+
+/** Without the surface's prefixes: absolute http(s) only. */
+const HTTP_ONLY: string[] = ['http://', 'https://'];
 
 /**
- * The canonical form of an absolute http(s) URL, or null. Parsed with no
- * base, as the token renderers' `parseUrl` does, and emitted as parsed: the
- * authored spelling can still resolve against the page (`http:/path` on an
- * http page, a U+00A0 before the scheme), the parsed one cannot.
+ * Where an `<a>` with `href` goes: its destination decided and admitted
+ * as a Markdown link's, written as the URL parser read it (the authored
+ * spelling can still resolve against the page, `http:/path` on an http
+ * page, the parsed one cannot), with the title a host's claim gives it.
  */
-const absoluteHttpUrl = (value: string): string | null => {
-	let url: URL;
-	try {
-		url = new URL(value);
-	} catch {
-		return null;
-	}
-	return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+const linkTarget = (
+	href: string,
+	title: string | null,
+	options: SanitizeEmbeddedHtmlOptions | undefined
+): { href: string; title: string | null } | null => {
+	const token = decideDestination({ type: 'link', raw: '', href, title, text: '', tokens: [] }, options?.destinations, { inLink: false });
+	const decided = classifyLinkHref(token.href, options?.allowedLinkPrefixes ?? HTTP_ONLY);
+	return decided.kind === 'anchor' ? { href: decided.href, title: token.title ?? null } : null;
+};
+
+/** What an image or video `src` paints: its URL, a host's claim, or the unavailable chip. */
+type MediaTarget = { kind: 'src'; src: string } | { kind: 'claim'; claim: string } | { kind: 'unavailable'; title: string };
+
+/**
+ * `src` decided as a Markdown image's destination and admitted by the
+ * renderers' media rule. A host hook that changed it claims it.
+ */
+const mediaTarget = (src: string, options: SanitizeEmbeddedHtmlOptions | undefined, inLink: boolean): MediaTarget => {
+	const token = decideDestination({ type: 'image', raw: '', href: src, title: null, text: '', tokens: [] }, options?.destinations, { inLink });
+	const url = transformMediaUrl(token.href, options?.allowedImagePrefixes ?? HTTP_ONLY);
+	if (url !== null && token.href !== canonicalHref(src)) return { kind: 'claim', claim: url };
+	if (url !== null && /^(?:https?|data):/i.test(url)) return { kind: 'src', src: url };
+	return { kind: 'unavailable', title: unavailableImageTitle(token.href) };
 };
 
 /**
@@ -104,15 +132,23 @@ const ANCHOR_ATTR = 'data-md-anchor';
 const anchorOf = (element: Element, anchors: { readonly ids: boolean }): string | null =>
 	(element.localName === 'a' ? element.getAttribute('name') : null) || (anchors.ids ? element.getAttribute('id') : null) || null;
 
+/** The decided `href` or `src` of an element, and the title a claim gives it. */
+interface DecidedUrls {
+	href?: string | null;
+	src?: string | null;
+	title?: string | null;
+}
+
 /**
- * The attributes of `element` its policy rule keeps, a URL in its canonical
- * form, and with `options` its jump markers and an href resolved by the
- * `href` hook.
+ * The attributes of `element` its policy rule keeps, with `urls` its
+ * decided `href` and `src` (dropped when absent), and with `options` its
+ * jump markers.
  */
 const keptAttributes = (
 	element: Element,
 	allowed: readonly string[],
-	options?: SanitizeEmbeddedHtmlOptions
+	options: SanitizeEmbeddedHtmlOptions | undefined,
+	urls: DecidedUrls
 ): [name: string, value: string][] => {
 	const kept: [string, string][] = [];
 	const listStyle = element.localName === 'ol' || element.localName === 'ul' ? listStyleOf(element) : undefined;
@@ -122,10 +158,10 @@ const keptAttributes = (
 			kept.push([FRAGMENT_ATTR, ''], [name, authored]);
 			continue;
 		}
-		const resolved = name === 'href' || name === 'src' ? absoluteHttpUrl(authored) : authored;
-		const value = resolved === null && name === 'href' && options?.href ? absoluteHttpUrl(options.href(authored) ?? '') : resolved;
-		if (value !== null) kept.push([name, value]);
+		const value = name === 'href' || name === 'src' ? urls[name] : name === 'title' ? (urls.title ?? authored) : authored;
+		if (value !== null && value !== undefined) kept.push([name, value]);
 	}
+	if (urls.title && allowed.includes('title') && !kept.some(([name]) => name === 'title')) kept.push(['title', urls.title]);
 	const anchor = options?.anchors ? anchorOf(element, options.anchors) : null;
 	if (anchor !== null) kept.push([ANCHOR_ATTR, anchor]);
 	return kept;
@@ -137,19 +173,16 @@ const CLAIMED_IMG_ATTRS = ['alt', 'title', 'width', 'height', 'align', 'hspace']
 export const MEDIA_CLAIM_ATTR = 'data-markdown-media-claim';
 export const MEDIA_KIND_ATTR = 'data-markdown-media-kind';
 
-/**
- * Returns an app-owned claim for media the host renders itself, or null to
- * leave the element to the rules above. Called with the `src` exactly as
- * authored, before the absolute-http(s) check, so a path-relative forge
- * upload can be claimed.
- */
-export type ClaimEmbeddedMedia = (
-	tag: 'img' | 'video' | 'source',
-	src: string
-) => string | null;
-
 export interface SanitizeEmbeddedHtmlOptions {
-	claimMedia?: ClaimEmbeddedMedia;
+	/**
+	 * The surface's destination hooks (`destinationsOf` its extensions):
+	 * every `href` and `src` is decided by them as the same destination in
+	 * Markdown is. A hook that changes an image's src claims the element.
+	 */
+	destinations?: readonly DestinationHook[];
+	/** The renderers' link and image prefixes (`transformUrl`). Absent: absolute http(s) only. */
+	allowedLinkPrefixes?: string[];
+	allowedImagePrefixes?: string[];
 	/**
 	 * The reader's color scheme, which picks a `<picture>`'s source and
 	 * hides a `#gh-*-mode-only` image in the other scheme
@@ -162,12 +195,6 @@ export interface SanitizeEmbeddedHtmlOptions {
 	 * inline tokenizer of the same surface reads the same one. Absent:
 	 * `ANY_FORGE_HTML_POLICY`. */
 	policy?: HtmlPolicy;
-	/**
-	 * An `<a>`'s href the policy refuses as written (a relative path) as
-	 * the URL the surface sends it to, or null to drop it. The answer
-	 * passes the same policy.
-	 */
-	href?: (authored: string) => string | null;
 	/**
 	 * Same-document jumps as the Markdown renderers draw them on a forge
 	 * (parser/documentScope.ts): `<a href="#x">` is a `data-md-fragment`
@@ -195,7 +222,7 @@ const scopeIn = (tag: string, scope: TextScope): TextScope =>
 	scope === 'literal' || LITERAL_TEXT.has(tag) ? 'literal' : tag === 'a' || tag === 'kbd' ? 'unlinkable' : scope;
 
 /** Appends `tokens` to `parent` as the nodes they name, for the policy to read as authored HTML. */
-const appendTokenNodes = (tokens: readonly Token[], parent: Node, doc: Document): void => {
+const appendTokenNodes = (tokens: readonly Token[], parent: Node, doc: Document, options: SanitizeEmbeddedHtmlOptions | undefined): void => {
 	for (const each of tokens) {
 		const token = each as MarkedToken;
 		switch (token.type) {
@@ -211,14 +238,14 @@ const appendTokenNodes = (tokens: readonly Token[], parent: Node, doc: Document)
 			}
 			case 'link': {
 				// A link this policy refuses is its text, not a bare `<a>`.
-				if (absoluteHttpUrl(token.href) === null) {
-					appendTokenNodes(token.tokens, parent, doc);
+				if (linkTarget(token.href, token.title ?? null, options) === null) {
+					appendTokenNodes(token.tokens, parent, doc, options);
 					break;
 				}
 				const anchor = doc.createElement('a');
 				anchor.setAttribute('href', token.href);
 				if (token.title) anchor.setAttribute('title', token.title);
-				appendTokenNodes(token.tokens, anchor, doc);
+				appendTokenNodes(token.tokens, anchor, doc, options);
 				parent.appendChild(anchor);
 				break;
 			}
@@ -240,16 +267,14 @@ const appendTokenNodes = (tokens: readonly Token[], parent: Node, doc: Document)
 	}
 };
 
-/** A `<video>`'s source: its own attribute, else its first `<source src>`. */
-const videoClaim = (element: Element, claimMedia: ClaimEmbeddedMedia): string | null => {
-	const own = element.getAttribute('src');
-	if (own !== null) {
-		const claimed = claimMedia('video', own);
-		if (claimed !== null) return claimed;
+/** A host's claim on a `<video>`: on its own src, else its first `<source src>`; null for none. */
+const videoClaim = (element: Element, options: SanitizeEmbeddedHtmlOptions | undefined, inLink: boolean): string | null => {
+	for (const src of [element.getAttribute('src'), element.querySelector('source[src]')?.getAttribute('src')]) {
+		if (src === null || src === undefined) continue;
+		const target = mediaTarget(src, options, inLink);
+		if (target.kind === 'claim') return target.claim;
 	}
-	const source = element.querySelector('source[src]');
-	const src = source?.getAttribute('src');
-	return src === null || src === undefined ? null : claimMedia('source', src);
+	return null;
 };
 
 const escapeHtml = (text: string): string =>
@@ -258,18 +283,35 @@ const escapeHtml = (text: string): string =>
 /** Marks an island placeholder in a region's HTML: `${nonce}:${index}`. */
 const ISLAND_ATTR = 'data-markdown-island';
 
-/** Whether the img branch below would paint `src`: claimed, or absolute http(s). */
-const paintsSrc = (src: string, claimMedia: ClaimEmbeddedMedia | undefined): boolean =>
-	(claimMedia?.('img', src) ?? null) !== null || absoluteHttpUrl(src) !== null;
+/** Whether the img branch below would paint `src`: claimed, or admitted. */
+const paintsSrc = (src: string, options: SanitizeEmbeddedHtmlOptions | undefined): boolean =>
+	mediaTarget(src, options, false).kind !== 'unavailable';
+
+/** An `<a>`'s decided href and the title a claim gives it. */
+const anchorUrls = (element: Element, options: SanitizeEmbeddedHtmlOptions | undefined): DecidedUrls => {
+	const href = element.getAttribute('href');
+	const target = href === null ? null : linkTarget(href, element.getAttribute('title'), options);
+	return { href: target?.href ?? null, title: target?.title ?? null };
+};
+
+/** Inside an `<a href>` of the HTML being sanitized. */
+const inAnchor = (element: Element): boolean => element.parentElement?.closest('a[href]') != null;
+
+/**
+ * Where `parent` sits under the policy's `imageParagraphs`: the top of a
+ * block, the top with a stripped element's children in its place, or
+ * anywhere else (and every place without the rule).
+ */
+type Placement = 'top' | 'stripped' | 'nested';
 
 const sanitizeInto = (
 	source: Node,
 	parent: Element,
 	options: SanitizeEmbeddedHtmlOptions | undefined,
 	islands: string | undefined,
-	scope: TextScope
+	scope: TextScope,
+	placement: Placement
 ): void => {
-	const claimMedia = options?.claimMedia;
 	const colorScheme = options?.colorScheme;
 	for (const child of source.childNodes) {
 		if (child.nodeType === Node.TEXT_NODE) {
@@ -281,13 +323,13 @@ const sanitizeInto = (
 			}
 			// Read as authored HTML, whose text is not asked again.
 			const nodes = parent.ownerDocument.createDocumentFragment();
-			appendTokenNodes(tokens, nodes, parent.ownerDocument);
-			sanitizeInto(nodes, parent, options, islands, 'literal');
+			appendTokenNodes(tokens, nodes, parent.ownerDocument, options);
+			sanitizeInto(nodes, parent, options, islands, 'literal', 'nested');
 			continue;
 		}
 		if (child.nodeType !== Node.ELEMENT_NODE) continue; // comments, PIs
-		const element = child as Element;
-		const tag = element.tagName.toLowerCase();
+		let element = child as Element;
+		let tag = element.tagName.toLowerCase();
 		// A placeholder carries this call's nonce, which authored HTML cannot
 		// know; any other `data-markdown-island` is stripped below.
 		if (islands !== undefined && tag === 'div' && element.getAttribute(ISLAND_ATTR)?.startsWith(`${islands}:`)) {
@@ -296,71 +338,81 @@ const sanitizeInto = (
 			parent.append(clean);
 			continue;
 		}
-		if (tag === 'img' && colorScheme) {
-			const only = colorSchemeOnly(element.getAttribute('src') ?? '');
-			if (only !== null && only !== colorScheme()) continue;
+		// A `<picture>` is its fallback `<img>`, as the inline tokenizer reads
+		// it; its `<source>` elements only offer a src.
+		const picture = tag === 'picture' ? element : null;
+		if (picture) {
+			const img = picture.querySelector('img');
+			if (!img) continue;
+			element = img;
+			tag = 'img';
 		}
-		if (claimMedia && (tag === 'img' || tag === 'video')) {
-			const src = tag === 'img' ? element.getAttribute('src') : null;
-			const claim =
-				tag === 'img'
-					? src === null
-						? null
-						: claimMedia('img', src)
-					: videoClaim(element, claimMedia);
-			if (claim !== null) {
-				if (tag === 'img') {
-					// Same element the unclaimed path emits for a src this
-					// file refuses, so an un-hydrated claim degrades to
-					// today's output rather than to a broken URL.
-					// The host reads the kept `width`/`height` for the size.
-					const clean = parent.ownerDocument.createElement('img');
-					clean.setAttribute(MEDIA_CLAIM_ATTR, claim);
-					for (const name of CLAIMED_IMG_ATTRS) {
-						const value = name === 'align' ? imageAlign(options?.policy ?? ANY_FORGE_HTML_POLICY, element) : element.getAttribute(name);
-						if (value !== null) clean.setAttribute(name, value);
-					}
-					parent.append(clean);
-				} else {
-					// `video` is not allowlisted, so there is no element to
-					// keep: the placeholder carries the claim and the host
-					// decides what the bytes are. Children (sources, the
-					// fallback text) belong to a player this page cannot
-					// feed, so they are dropped with it.
-					const clean = parent.ownerDocument.createElement('span');
-					clean.setAttribute(MEDIA_CLAIM_ATTR, claim);
-					clean.setAttribute(MEDIA_KIND_ATTR, 'video');
-					parent.append(clean);
+		// An img's src as a Markdown image's: the one the reader's scheme
+		// paints (themedImages.ts), then painted, claimed or the unavailable
+		// chip. An img with no src is a void element.
+		const authored = tag === 'img' ? element.getAttribute('src') : null;
+		const src =
+			authored === null || !colorScheme
+				? authored
+				: imageSrcFor({ href: authored, sources: picture ? pictureSources(picture) : undefined }, colorScheme, (candidate) =>
+						paintsSrc(candidate, options)
+					);
+		if (authored !== null && src === null) continue;
+		const media = src === null ? undefined : mediaTarget(src, options, inAnchor(element));
+		// The policy's `imageParagraphs`: an image its stripped wrappers left
+		// at the top of a block is a paragraph of its own. GitHub keeps a
+		// `<picture>`, so the image in one is not at the top.
+		const host =
+			tag === 'img' && !picture && placement === 'stripped' ? parent.appendChild(parent.ownerDocument.createElement('p')) : parent;
+		if (media?.kind === 'unavailable') {
+			const chip = parent.ownerDocument.createElement('span');
+			chip.setAttribute('data-streamdown-image-blocked', '');
+			chip.setAttribute('data-find-skip', '');
+			chip.setAttribute('class', UNAVAILABLE_IMAGE_CLASS);
+			chip.setAttribute('title', media.title);
+			chip.textContent = unavailableImageText(element.getAttribute('alt') ?? '');
+			host.append(chip);
+			continue;
+		}
+		const claim = media?.kind === 'claim' ? media.claim : tag === 'video' ? videoClaim(element, options, inAnchor(element)) : null;
+		if (claim !== null) {
+			if (tag === 'img') {
+				// The host reads the kept `width`/`height` for the size.
+				const clean = parent.ownerDocument.createElement('img');
+				clean.setAttribute(MEDIA_CLAIM_ATTR, claim);
+				for (const name of CLAIMED_IMG_ATTRS) {
+					const value = name === 'align' ? imageAlign(options?.policy ?? ANY_FORGE_HTML_POLICY, element) : element.getAttribute(name);
+					if (value !== null) clean.setAttribute(name, value);
 				}
-				continue;
-			}
-		}
-		if (tag === 'picture') {
-			// The fallback `<img>`, painting the source the reader's scheme
-			// selects when its src is one the img would paint (see the inline
-			// tokenizer's `picture` branch); the `<source>` elements are dropped.
-			const img = element.querySelector('img');
-			if (img) {
-				const chosen = img.cloneNode(true) as Element;
-				const sources = colorScheme ? pictureSources(element) : {};
-				const candidate =
-					colorScheme && (sources.dark ?? sources.light) !== undefined ? sources[colorScheme()] : undefined;
-				if (candidate !== undefined && paintsSrc(candidate, claimMedia)) chosen.setAttribute('src', candidate);
-				const only = element.ownerDocument.createDocumentFragment();
-				only.append(chosen);
-				sanitizeInto(only, parent, options, islands, scope);
+				host.append(clean);
+			} else {
+				// `video` is not allowlisted, so there is no element to
+				// keep: the placeholder carries the claim and the host
+				// decides what the bytes are. Children (sources, the
+				// fallback text) belong to a player this page cannot
+				// feed, so they are dropped with it.
+				const clean = parent.ownerDocument.createElement('span');
+				clean.setAttribute(MEDIA_CLAIM_ATTR, claim);
+				clean.setAttribute(MEDIA_KIND_ATTR, 'video');
+				parent.append(clean);
 			}
 			continue;
 		}
 		const allowedAttrs = (options?.policy ?? ANY_FORGE_HTML_POLICY).elements.get(tag);
 		if (allowedAttrs === 'remove') continue;
 		if (allowedAttrs === undefined) {
-			// A template's children are its content fragment.
-			sanitizeInto(tag === 'template' ? (element as HTMLTemplateElement).content : element, parent, options, islands, scope);
+			// An HTML template's children are its content fragment; a
+			// `template` in MathML is an ordinary element.
+			const content = tag === 'template' ? (element as Partial<HTMLTemplateElement>).content : undefined;
+			sanitizeInto(content ?? element, parent, options, islands, scope, placement === 'nested' ? 'nested' : 'stripped');
 			continue;
 		}
 		const clean = parent.ownerDocument.createElement(tag);
-		for (const [name, value] of keptAttributes(element, allowedAttrs, options)) clean.setAttribute(name, value);
+		const urls: DecidedUrls =
+			tag === 'a'
+				? anchorUrls(element, options)
+				: { src: media?.kind === 'src' ? media.src : null };
+		for (const [name, value] of keptAttributes(element, allowedAttrs, options, urls)) clean.setAttribute(name, value);
 		if (tag === 'img') {
 			// No wrapper: a percentage is the image's own width.
 			const size = imageSizeOf(
@@ -384,8 +436,8 @@ const sanitizeInto = (
 			const className = codespanClass('', element.textContent ?? '');
 			if (className !== '') clean.setAttribute('class', className);
 		}
-		parent.append(clean);
-		sanitizeInto(element, clean, options, islands, scopeIn(tag, scope));
+		host.append(clean);
+		sanitizeInto(element, clean, options, islands, scopeIn(tag, scope), 'nested');
 	}
 };
 
@@ -399,11 +451,13 @@ export const sanitizeEmbeddedHtmlToken = (
 ): string => {
 	const raw = token.raw;
 	if (raw.replace(COMMENTS_AND_SPACE, '') === '') return '';
-	const html = (options?.policy ?? ANY_FORGE_HTML_POLICY).tagFilter ? filterTags(raw) : raw;
+	const policy = options?.policy ?? ANY_FORGE_HTML_POLICY;
+	const html = policy.tagFilter ? filterTags(raw) : raw;
 	const doc = new DOMParser().parseFromString(html, 'text/html');
 	const out = doc.createElement('div');
 	// Only a block's text is asked: an inline tag token's is its own source.
-	sanitizeInto(doc.body, out, options, token.islands, token.block ? 'linkable' : 'literal');
+	const placement = token.block && policy.imageParagraphs ? 'top' : 'nested';
+	sanitizeInto(doc.body, out, options, token.islands, token.block ? 'linkable' : 'literal', placement);
 	// A start tag alone is an empty element, which shows nothing.
 	if (!token.block && out.textContent === '' && out.querySelector('br, hr, img, wbr') === null) return '';
 	return out.innerHTML;
@@ -454,7 +508,8 @@ export const parseHtmlRegion = (
 	const source: HtmlRegionSource = { type: 'html', block: true, pre: false, raw: html, text: html, islands: id };
 	const doc = new DOMParser().parseFromString(renderHtml === true ? html : renderHtml(source), 'text/html');
 	const root = doc.createElement('div');
-	root.append(...doc.body.childNodes);
+	// One node per call: a spread turns the child count into an argument count.
+	while (doc.body.firstChild) root.append(doc.body.firstChild);
 	const islands = new Map<Element, number>();
 	const seen = new Set<number>();
 	for (const element of root.querySelectorAll(`div[${ISLAND_ATTR}]`)) {
@@ -485,7 +540,12 @@ const serialize = (node: Node): string =>
 			? escapeHtml(node.textContent ?? '')
 			: '';
 
-export const htmlRegionNodes = ({ root, islands }: ParsedHtmlRegion): HtmlRegionNode[] => {
+/**
+ * `linkPrefixes` are the renderer's: an anchor holding an island keeps an
+ * href they admit, as the sanitizer wrote it (`renderHtml === true` keeps
+ * authored ones, so this check stands alone there).
+ */
+export const htmlRegionNodes = ({ root, islands }: ParsedHtmlRegion, linkPrefixes: string[]): HtmlRegionNode[] => {
 	const spine = new Set<Node>();
 	for (const placeholder of islands.keys()) {
 		for (let node = placeholder.parentNode; node && node !== root; node = node.parentNode) spine.add(node);
@@ -520,7 +580,11 @@ export const htmlRegionNodes = ({ root, islands }: ParsedHtmlRegion): HtmlRegion
 				out.push(...nodesOf(element));
 				continue;
 			}
-			const attrs = Object.fromEntries(keptAttributes(element, allowed));
+			const authoredHref = element.getAttribute('href');
+			const admitted = authoredHref === null ? null : classifyLinkHref(authoredHref, linkPrefixes);
+			const attrs = Object.fromEntries(
+				keptAttributes(element, allowed, undefined, { href: admitted?.kind === 'anchor' ? admitted.href : null, src: null })
+			);
 			// The sanitizer's jump markers stand, with the `#name` href of a fragment link.
 			const anchor = element.getAttribute(ANCHOR_ATTR);
 			if (anchor !== null) attrs[ANCHOR_ATTR] = anchor;

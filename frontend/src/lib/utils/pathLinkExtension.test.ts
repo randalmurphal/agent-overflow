@@ -27,6 +27,7 @@ function lex(text: string, extension: ReturnType<typeof buildPathLinkExtension>)
       startBlock: [],
       startInline: [extension.start],
     },
+    destinations: [extension.destination],
     // marked's options bag carries more fields, but the inline lexer
     // only reads what we listed above.
   } as never);
@@ -135,9 +136,9 @@ describe('buildPathLinkExtension', () => {
       // Prose paths are never invented without the server allowlist…
       expect(findLinks(lex('see src/foo.ts here', ext))).toHaveLength(0);
       // …but a path-shaped markdown-link href is still rewritten.
-      const links = findLinks(lex('[notes](/home/user/notes.md)', ext));
-      expect(links).toHaveLength(1);
-      expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+      const links = findLinks(lex('[notes](/home/user/notes.md) [more][n] [notes]\n\n[n]: /home/user/more.md\n[notes]: /home/user/notes.md', ext));
+      expect(links).toHaveLength(3);
+      for (const link of links) expect(link.href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
     }
   });
 

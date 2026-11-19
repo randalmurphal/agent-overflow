@@ -41,6 +41,8 @@ export const createParseBlocksCache = (observeLex?: ParseBlocksLexObserver): Par
     trailingBlock: null,
     lastBlockAppend: undefined,
     lastPath: 'none',
+    generation: 0,
+    changedFrom: 0,
     observeLex
 });
 export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: number): void => {
@@ -52,6 +54,7 @@ export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: num
             break;
         }
     }
+    cache.changedFrom = Math.min(cache.changedFrom, rawLength);
     cache.raws.length = rawLength;
     cache.alignAfter.length = rawLength;
     cache.keep.length = rawLength;
@@ -63,6 +66,7 @@ export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: num
 };
 export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: boolean, start: number): number => {
     const rawIndex = cache.raws.length;
+    cache.changedFrom = Math.min(cache.changedFrom, rawIndex);
     cache.rawStarts.push(start);
     cache.raws.push(raw);
     cache.alignAfter.push(alignAfterRaw(cache, raw, rawIndex));
@@ -81,6 +85,7 @@ export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: 
 };
 export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, raw: string): void => {
     const previous = cache.raws[rawIndex];
+    cache.changedFrom = Math.min(cache.changedFrom, rawIndex);
     cache.raws[rawIndex] = raw;
     // Only the trailing raw is replaced, and never a marker's.
     cache.alignAfter[rawIndex] = alignAfterRaw(cache, raw, rawIndex);
@@ -387,6 +392,11 @@ export type ParseBlocksCache = {
     } | null;
     /** proven append applied to the last rendered block by the latest call */
     lastBlockAppend?: ProvenAppend;
+    /** counts parses; with `changedFrom`, what changed since a given one */
+    generation: number;
+    /** the first raw index the latest parse changed: every raw before it is
+     * the previous parse's, unchanged; `raws.length` when none changed */
+    changedFrom: number;
     /** debug breadcrumb for the latest parseBlocks path */
     lastPath: 'none' | 'unchanged' | 'full' | 'initial-boundary' | 'append-tail' | 'paragraph-append' | 'line-block-append' | 'list-line-append' | 'table-line-append' | 'list-descent' | 'table-descent' | 'fence-append';
     /** optional diagnostic observer invoked for each marked block-lexer call */

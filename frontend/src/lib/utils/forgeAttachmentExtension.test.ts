@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { embeddedHtmlFor, Lexer, markedImageAttributes, type Token } from '../markdown';
+import { destinationsOf, embeddedHtmlFor, Lexer, markedImageAttributes, type Extension, type Token } from '../markdown';
 import { buildForgeAttachmentExtension } from './forgeAttachmentExtension';
 import { parseForgeAttachmentHref } from './forgeAttachments';
 import { buildPathLinkExtension } from './pathLinkExtension';
@@ -15,7 +15,7 @@ const GITHUB_PR: PRRef = { forge: 'github', host: 'github.com', namespace: 'acme
 const GITLAB_MR: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group/sub', repo: 'widget', number: 3 };
 const GITLAB_WEB = 'https://gitlab.example.test/group/sub/widget/-/merge_requests/3';
 
-type Ext = { level: 'inline' | 'block'; tokenizer: unknown; start?: unknown };
+type Ext = { level: 'inline' | 'block'; tokenizer?: unknown; start?: unknown };
 
 /**
  * Drive the real lexer with the extension list ChatMarkdown builds, in the
@@ -27,13 +27,14 @@ function lex(text: string, extensions: Ext[]): Token[] {
   const lexer = new Lexer({
     gfm: true,
     extensions: {
-      block: extensions.filter((e) => e.level === 'block').map((e) => e.tokenizer),
-      inline: extensions.filter((e) => e.level === 'inline').map((e) => e.tokenizer),
+      block: extensions.filter((e) => e.level === 'block' && e.tokenizer).map((e) => e.tokenizer),
+      inline: extensions.filter((e) => e.level === 'inline' && e.tokenizer).map((e) => e.tokenizer),
       childTokens: {},
       renderers: {},
       startBlock: [],
       startInline: extensions.map((e) => e.start).filter(Boolean),
     },
+    destinations: destinationsOf(extensions as Extension[]),
   } as never);
   return lexer.lex(text) as Token[];
 }
@@ -204,10 +205,11 @@ describe('bare GitHub attachment URLs', () => {
       webBase: '',
       embeddedHtml: true,
     });
-    expect(inline.start('text https://github.com/user-attachments/assets/x')).toBe(5);
-    expect(inline.start('no attachment here')).toBeUndefined();
+    const start = (src: string) => inline.start!.call({} as never, src);
+    expect(start('text https://github.com/user-attachments/assets/x')).toBe(5);
+    expect(start('no attachment here')).toBeUndefined();
     // Glued into a longer word: not a reference, so not a bound.
-    expect(inline.start('xhttps://github.com/user-attachments/assets/x')).toBeUndefined();
+    expect(start('xhttps://github.com/user-attachments/assets/x')).toBeUndefined();
   });
 });
 
@@ -280,9 +282,11 @@ describe('embedded HTML', () => {
     expect(claimed(lex(source, fullStack(GITLAB_MR, '', false)))).toEqual([]);
   });
 
-  it('leaves an <a> to the embedded-HTML extension', () => {
+  it('claims an <a> to an upload as the Markdown link to it is claimed', () => {
     const source = `x <a href="/uploads/${HEX}/report.pdf">report</a>`;
-    expect(claimed(lex(source, fullStack(GITLAB_MR)))).toEqual([]);
+    expect(claimed(lex(source, fullStack(GITLAB_MR)))).toEqual([
+      { type: 'link', raw: `<a href="/uploads/${HEX}/report.pdf">report</a>`, text: 'report', title: 'Download report.pdf', href: `/uploads/${HEX}/report.pdf` },
+    ]);
   });
 });
 
