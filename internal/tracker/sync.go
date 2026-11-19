@@ -78,12 +78,20 @@ type History struct {
 }
 
 // IssueHistory is one issue's status, sprint, estimate and assignee
-// changes, each list oldest first. They are complete from CompleteFrom,
-// zero meaning from the issue's creation: a value before that time is
-// unknown, never inferred from the absence of a change.
+// changes, each list oldest first.
+//
+// They are complete from CompleteFrom, zero meaning from the issue's
+// creation: a value before that time is unknown, never inferred from the
+// absence of a change.
+//
+// They are final through CompleteTo, which a provider always sets: a
+// tracker may record a change some time after it is made, so a change made
+// after CompleteTo may be missing. A caller reads an issue's history again
+// while the issue's update time is later than the CompleteTo it holds.
 type IssueHistory struct {
 	Issue        IssueID
 	CompleteFrom time.Time
+	CompleteTo   time.Time
 	Status       []StatusChange
 	Sprint       []SprintChange
 	Estimate     []EstimateChange

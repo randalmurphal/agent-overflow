@@ -31,6 +31,12 @@ func (s Schema) customType() string {
 	return s.Custom
 }
 
+// RichText reports a field whose value is a document: the client writes
+// a Text input to it as Markdown and FieldValue.RichText reads it. It is
+// the rule the client's value builder follows (the description, the
+// environment and textarea custom fields).
+func (s Schema) RichText() bool { return kindOf(s) == kindRich }
+
 // Field is one entry of the site's field catalog.
 type Field struct {
 	ID          string   `json:"id"`

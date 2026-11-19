@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/trackerapi"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
 // outcome is what an answer proves about a write.
@@ -35,7 +37,7 @@ func (o outcome) String() string { return [...]string{"applied", "refused", "unk
 // and the errors stay on the returned error.
 func TestMutationOutcome(t *testing.T) {
 	t.Parallel()
-	issue := issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)
+	issue := lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)
 	payloads := []struct{ name, data string }{
 		{"missing", `null`},
 		{"null result", `{"result":null}`},
@@ -62,7 +64,7 @@ func TestMutationOutcome(t *testing.T) {
 	}
 	for _, p := range payloads {
 		for k, kind := range errorKinds {
-			f := newFake(t, exchange{op: "ArchiveIssue", vars: `{"id":"WEB-1"}`, body: `{"data":` + p.data + kind.errors + `}`})
+			f := newFake(t, lineartest.Exchange{Op: "ArchiveIssue", Vars: `{"id":"WEB-1"}`, Body: `{"data":` + p.data + kind.errors + `}`})
 			_, err := f.client(t).ArchiveIssue(context.Background(), "WEB-1")
 			if got := outcomeOf(err); got != want[p.name][k] {
 				t.Errorf("%s, %s: %s, want %s (%v)", p.name, kind.name, got, want[p.name][k], err)
@@ -93,7 +95,7 @@ func TestMutationOutcomeOtherAnswers(t *testing.T) {
 		{"not JSON", 200, `{"data":`, unknown},
 		{"success without entity", 200, `{"data":{"result":{"success":true,"value":null}}}`, unknown},
 	} {
-		f := newFake(t, exchange{op: "ArchiveIssue", vars: `{"id":"WEB-1"}`, status: tc.status, body: tc.body})
+		f := newFake(t, lineartest.Exchange{Op: "ArchiveIssue", Vars: `{"id":"WEB-1"}`, Status: tc.status, Body: tc.body})
 		_, err := f.client(t).ArchiveIssue(context.Background(), "WEB-1")
 		if got := outcomeOf(err); got != tc.want {
 			t.Errorf("%s: %s, want %s (%v)", tc.name, got, tc.want, err)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -46,7 +47,7 @@ func TestRawRichTextKeepsTheProtections(t *testing.T) {
 	if _, stale := errors.AsType[*StaleError](err); !ok || se.Step != StepCheck || !stale || !trackerapi.WriteNotApplied(err) {
 		t.Fatalf("a raw document over a concurrent change: %v", err)
 	}
-	if n := f.count("PUT", "/rest/api/3/issue/10001"); n != 0 {
+	if n := f.Count("PUT", "/rest/api/3/issue/10001"); n != 0 {
 		t.Errorf("%d writes over a concurrent change", n)
 	}
 }
@@ -58,9 +59,9 @@ func TestRawRichTextOverNothing(t *testing.T) {
 	desc := storedDesc(t, nil)
 	f, c := editSite(t, desc)
 	raw := docJSON(t, adf.Doc(para("new")))
-	f.on("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"fields":{"description":`+raw+`}}`)
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+raw+`}}`)(w, r, b)
+	f.On("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"fields":{"description":`+raw+`}}`)
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+raw+`}}`)(w, r, b)
 	})
 	plan, err := c.PlanEdit(t.Context(), rawDesc(raw, false))
 	if err != nil {
@@ -99,7 +100,7 @@ func TestRawRichTextMustBeADocument(t *testing.T) {
 			t.Errorf("summary %s: got %v", raw, err)
 		}
 	}
-	if n := f.count("PUT", "/rest/api/3/issue/10001"); n != 0 {
+	if n := f.Count("PUT", "/rest/api/3/issue/10001"); n != 0 {
 		t.Errorf("%d writes", n)
 	}
 }
@@ -109,7 +110,7 @@ func TestRawRichTextMustBeADocument(t *testing.T) {
 // document, empty paragraphs or whitespace are all refused, while an
 // optional field takes the empty document.
 func TestRequiredRichTextIsNotEmptied(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	env := meta("environment", "Environment", Schema{Type: "string", System: "environment"})
 	env.Required = true
@@ -130,7 +131,7 @@ func TestRequiredRichTextIsNotEmptied(t *testing.T) {
 	if v, err := c.Value(t.Context(), env, empty["a raw empty document"], ValueOptions{}); err != nil || string(v.Fields) != `{"type":"doc","version":1,"content":[]}` {
 		t.Errorf("an optional field emptied raw: %+v %v", v, err)
 	}
-	if n := len(f.requests()); n != 0 {
+	if n := len(f.Requests()); n != 0 {
 		t.Errorf("%d requests", n)
 	}
 }

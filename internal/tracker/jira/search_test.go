@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"agent-overflow/internal/tracker/jira/jiratest"
 )
 
 func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) }
@@ -18,12 +20,12 @@ func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) 
 // token again when repeat is set, and warning on the page warnOn names
 // (-1 for none). A client that asks for more than ten pages is looping:
 // the test fails and the page is refused, so the loop ends.
-func searchPages(t *testing.T, failOn string, repeat bool, warnOn int) handler {
+func searchPages(t *testing.T, failOn string, repeat bool, warnOn int) jiratest.Handler {
 	var calls atomic.Int32
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if calls.Add(1) > 10 {
 			t.Error("the client kept asking for pages")
-			reply(400, `{}`)(w, r, b)
+			jiratest.Reply(400, `{}`)(w, r, b)
 			return
 		}
 		var req struct {
@@ -39,7 +41,7 @@ func searchPages(t *testing.T, failOn string, repeat bool, warnOn int) handler {
 			t.Errorf("request %s", b)
 		}
 		if failOn != "" && req.NextPageToken == failOn {
-			reply(400, `{"errorMessages":["The token is not valid"]}`)(w, r, b)
+			jiratest.Reply(400, `{"errorMessages":["The token is not valid"]}`)(w, r, b)
 			return
 		}
 		page := map[string]int{"": 0, "t1": 1, "t2": 2}[req.NextPageToken]
@@ -55,29 +57,29 @@ func searchPages(t *testing.T, failOn string, repeat bool, warnOn int) handler {
 		if page == warnOn {
 			warnings = `[{"type":"RESULTS_TRUNCATED","message":"cut"}]`
 		}
-		reply(200, fmt.Sprintf(`{"issues":[{"id":"%d","key":"WEB-%d","fields":{"summary":"a"}},{"id":"%d","key":"WEB-%d","fields":{"summary":"b"}}],
+		jiratest.Reply(200, fmt.Sprintf(`{"issues":[{"id":"%d","key":"WEB-%d","fields":{"summary":"a"}},{"id":"%d","key":"WEB-%d","fields":{"summary":"b"}}],
 			"nextPageToken":%s,"isLast":%v,"warnings":%s}`,
 			2*page, 2*page, 2*page+1, 2*page+1, next, last, warnings))(w, r, b)
 	}
 }
 
 func TestSearchAllPagesToTheEnd(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/search/jql", searchPages(t, "", false, 0))
+	f.On("POST", "/rest/api/3/search/jql", searchPages(t, "", false, 0))
 	q := SearchQuery{JQL: "project = " + QuoteJQL("WEB"), Fields: []string{"summary", "status"}}
 	page, err := c.Search(t.Context(), q)
 	if err != nil || len(page.Issues) != 2 || page.NextPageToken != "t1" || page.Warnings[0] != (SearchWarning{"RESULTS_TRUNCATED", "cut"}) {
 		t.Fatalf("got %+v %v", page, err)
 	}
-	f.on("POST", "/rest/api/3/search/jql", searchPages(t, "", false, -1))
+	f.On("POST", "/rest/api/3/search/jql", searchPages(t, "", false, -1))
 	all, err := c.SearchAll(t.Context(), q, 0)
 	if err != nil || len(all.Issues) != 6 || all.Issues[5].Key != "WEB-5" || !all.Complete {
 		t.Fatalf("got %d issues, complete %v, %v", len(all.Issues), all.Complete, err)
 	}
 	// At 5 the last page holds more than was asked for, and is cut.
 	for limit, complete := range map[int]bool{3: false, 5: false, 6: true, 7: true} {
-		f.on("POST", "/rest/api/3/search/jql", searchPages(t, "", false, -1))
+		f.On("POST", "/rest/api/3/search/jql", searchPages(t, "", false, -1))
 		some, err := c.SearchAll(t.Context(), q, limit)
 		if err != nil || len(some.Issues) != min(limit, 6) || some.Complete != complete {
 			t.Errorf("limit %d: %d issues, complete %v, %v", limit, len(some.Issues), some.Complete, err)
@@ -88,9 +90,9 @@ func TestSearchAllPagesToTheEnd(t *testing.T) {
 // TestSearchAllKeepsWarnings proves a warning on the last page, such as
 // results cut short, reaches the caller and marks the result incomplete.
 func TestSearchAllKeepsWarnings(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/search/jql", searchPages(t, "", false, 2))
+	f.On("POST", "/rest/api/3/search/jql", searchPages(t, "", false, 2))
 	all, err := c.SearchAll(t.Context(), SearchQuery{JQL: `project = "WEB"`, Fields: []string{"summary", "status"}}, 0)
 	if err != nil || len(all.Issues) != 6 || all.Complete || len(all.Warnings) != 1 || all.Warnings[0].Message != "cut" {
 		t.Fatalf("got %+v %v", all, err)
@@ -98,9 +100,9 @@ func TestSearchAllKeepsWarnings(t *testing.T) {
 }
 
 func TestSearchAllFailureMidWayKeepsWhatWasRead(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/search/jql", searchPages(t, "t2", false, 0))
+	f.On("POST", "/rest/api/3/search/jql", searchPages(t, "t2", false, 0))
 	q := SearchQuery{JQL: `project = "WEB"`, Fields: []string{"summary", "status"}}
 	all, err := c.SearchAll(t.Context(), q, 0)
 	if err == nil || len(all.Issues) != 4 || all.Complete || len(all.Warnings) != 1 {
@@ -109,14 +111,14 @@ func TestSearchAllFailureMidWayKeepsWhatWasRead(t *testing.T) {
 }
 
 func TestSearchAllRefusesARepeatedToken(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/search/jql", searchPages(t, "", true, -1))
+	f.On("POST", "/rest/api/3/search/jql", searchPages(t, "", true, -1))
 	q := SearchQuery{JQL: `project = "WEB"`, Fields: []string{"summary", "status"}}
 	if _, err := c.SearchAll(t.Context(), q, 0); err == nil || !strings.Contains(err.Error(), "repeated") {
 		t.Fatalf("got %v", err)
 	}
-	if n := f.count("POST", "/rest/api/3/search/jql"); n != 2 {
+	if n := f.Count("POST", "/rest/api/3/search/jql"); n != 2 {
 		t.Errorf("%d pages, want 2", n)
 	}
 }
@@ -132,14 +134,14 @@ func TestSearchPageEnds(t *testing.T) {
 		"no isLast":     `{"issues":[{"id":"1","key":"WEB-1"}]}`,
 		"empty, a next": `{"issues":[],"nextPageToken":"t1","isLast":false}`,
 	} {
-		f := newFake(t)
+		f := jiratest.NewServer(t)
 		c := newTestClient(t, f)
-		f.on("POST", "/rest/api/3/search/jql", reply(200, body))
+		f.On("POST", "/rest/api/3/search/jql", jiratest.Reply(200, body))
 		all, err := c.SearchAll(t.Context(), q, 0)
 		if err == nil || all.Complete {
 			t.Errorf("%s: got %+v %v", name, all, err)
 		}
-		if n := f.count("POST", "/rest/api/3/search/jql"); n != 1 {
+		if n := f.Count("POST", "/rest/api/3/search/jql"); n != 1 {
 			t.Errorf("%s: %d pages", name, n)
 		}
 		if name == "empty, a next" {
@@ -157,10 +159,10 @@ func isAnswerErr(err error) bool {
 }
 
 func TestSearchCancellation(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	ctx, cancel := context.WithCancel(t.Context())
-	f.on("POST", "/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		cancel()
 		<-r.Context().Done()
 	})
@@ -170,11 +172,11 @@ func TestSearchCancellation(t *testing.T) {
 }
 
 func TestCountIssues(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/search/approximate-count", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"jql":"assignee = currentUser()"}`)
-		reply(200, `{"count":1234}`)(w, r, b)
+	f.On("POST", "/rest/api/3/search/approximate-count", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"jql":"assignee = currentUser()"}`)
+		jiratest.Reply(200, `{"count":1234}`)(w, r, b)
 	})
 	n, err := c.CountIssues(t.Context(), "assignee = currentUser()")
 	if err != nil || n != 1234 {
@@ -183,13 +185,13 @@ func TestCountIssues(t *testing.T) {
 }
 
 func TestBulkFetchBatches(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	var refs []string
 	for i := range 150 {
 		refs = append(refs, fmt.Sprintf("WEB-%d", i+1))
 	}
-	f.on("POST", "/rest/api/3/issue/bulkfetch", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/issue/bulkfetch", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var req struct {
 			Refs   []string `json:"issueIdsOrKeys"`
 			Fields []string `json:"fields"`
@@ -199,19 +201,19 @@ func TestBulkFetchBatches(t *testing.T) {
 			t.Errorf("request of %d refs, fields %v", len(req.Refs), req.Fields)
 		}
 		if req.Refs[0] == "WEB-101" {
-			reply(200, `{"issues":[{"id":"1","key":"WEB-101","fields":{"summary":"x"}}],"issueErrors":[{"id":"2","errorMessage":"retry"}]}`)(w, r, b)
+			jiratest.Reply(200, `{"issues":[{"id":"1","key":"WEB-101","fields":{"summary":"x"}}],"issueErrors":[{"id":"2","errorMessage":"retry"}]}`)(w, r, b)
 			return
 		}
-		reply(200, `{"issues":[{"id":"3","key":"WEB-1","fields":{"summary":"y"}}],"issueErrors":[]}`)(w, r, b)
+		jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-1","fields":{"summary":"y"}}],"issueErrors":[]}`)(w, r, b)
 	})
 	res, err := c.BulkFetch(t.Context(), refs, "summary")
 	if err != nil || len(res.Issues) != 2 || len(res.Failed) != 1 || res.Failed[0].Message != "retry" || res.Complete {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	if n := f.count("POST", "/rest/api/3/issue/bulkfetch"); n != 2 {
+	if n := f.Count("POST", "/rest/api/3/issue/bulkfetch"); n != 2 {
 		t.Errorf("%d requests, want 2", n)
 	}
-	f.on("POST", "/rest/api/3/issue/bulkfetch", reply(200, `{"issues":[{"id":"3","key":"WEB-1"},{"id":"4","key":"WEB-2"}]}`))
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-1"},{"id":"4","key":"WEB-2"}]}`))
 	if res, err := c.BulkFetch(t.Context(), []string{"WEB-1", "4"}); err != nil || !res.Complete {
 		t.Errorf("every issue returned: %+v %v", res, err)
 	}
@@ -219,7 +221,7 @@ func TestBulkFetchBatches(t *testing.T) {
 		t.Errorf("an issue missing: %+v %v", res, err)
 	}
 	// A failure is incomplete even when the issues returned number the refs.
-	f.on("POST", "/rest/api/3/issue/bulkfetch", reply(200, `{"issues":[{"id":"3","key":"WEB-1"},{"id":"4","key":"WEB-2"}],"issueErrors":[{"id":"5","errorMessage":"retry"}]}`))
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-1"},{"id":"4","key":"WEB-2"}],"issueErrors":[{"id":"5","errorMessage":"retry"}]}`))
 	if res, err := c.BulkFetch(t.Context(), []string{"WEB-1", "WEB-2"}); err != nil || res.Complete {
 		t.Errorf("an issue failed: %+v %v", res, err)
 	}
@@ -232,7 +234,7 @@ func TestBulkFetchBatches(t *testing.T) {
 // later batch or another case, is sent once, so the issues returned
 // cannot stand in for one that is missing.
 func TestBulkFetchRepeatedReference(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	var refs []string
 	for i := range 100 {
@@ -241,7 +243,7 @@ func TestBulkFetchRepeatedReference(t *testing.T) {
 	// WEB-1 again in the second batch, beside WEB-101, which is missing.
 	refs = append(refs, "web-1", "WEB-101")
 	sent := map[string]int{}
-	f.on("POST", "/rest/api/3/issue/bulkfetch", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/issue/bulkfetch", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var req struct {
 			Refs []string `json:"issueIdsOrKeys"`
 		}
@@ -256,7 +258,7 @@ func TestBulkFetchRepeatedReference(t *testing.T) {
 				issues = append(issues, fmt.Sprintf(`{"id":"%s","key":"WEB-%s"}`, id, id))
 			}
 		}
-		reply(200, `{"issues":[`+strings.Join(issues, ",")+`]}`)(w, r, b)
+		jiratest.Reply(200, `{"issues":[`+strings.Join(issues, ",")+`]}`)(w, r, b)
 	})
 	res, err := c.BulkFetch(t.Context(), refs)
 	if err != nil || res.Complete || len(res.Issues) != 100 {
@@ -295,4 +297,68 @@ func TestQuoteJQL(t *testing.T) {
 	if got := QuoteJQLList("A", `B"`); got != `("A", "B\"")` {
 		t.Errorf("list: %s", got)
 	}
+}
+
+// TestQuoteJQLText proves typed text after ~ is searched for as words:
+// every character of the text search syntax arrives escaped, the
+// operator words arrive in lower case, and the result is still one JQL
+// literal.
+func TestQuoteJQLText(t *testing.T) {
+	for in, want := range map[string]string{
+		`login bug`:            `"login bug"`,
+		`win*`:                 `"win\\*"`,
+		`a?`:                   `"a\\?"`,
+		`+jira -japan`:         `"\\+jira \\-japan"`,
+		`x && y || !z`:         `"x \\&\\& y \\|\\| \\!z"`,
+		`(a OR b) AND NOT c`:   `"\\(a or b\\) and not c"`,
+		`"exact phrase"`:       `"\\\"exact phrase\\\""`,
+		`fuzzy~ boost^2`:       `"fuzzy\\~ boost\\^2"`,
+		`[1 TO 5] {a} f:v /r/`: `"\\[1 TO 5\\] \\{a\\} f\\:v \\/r\\/"`,
+		`back\slash`:           `"back\\\\slash"`,
+		`ANDROID ORDER NOTE`:   `"ANDROID ORDER NOTE"`,
+		"tab\there":            `"tab\there"`,
+	} {
+		if got := QuoteJQLText(in); got != want {
+			t.Errorf("QuoteJQLText(%q) = %s, want %s", in, got, want)
+		}
+	}
+	// Every syntax character, alone or repeated, reaches the text query
+	// escaped: undoing QuoteJQL leaves each one behind a backslash.
+	for _, r := range textSyntax {
+		for _, in := range []string{string(r), "a" + string(r) + string(r) + "b"} {
+			lit := QuoteJQLText(in)
+			text := unquoteJQL(t, lit)
+			for i := 0; i < len(text); i++ {
+				c := text[i]
+				if c == '\\' {
+					i++ // the escaped character
+					continue
+				}
+				if strings.IndexByte(textSyntax, c) >= 0 {
+					t.Errorf("QuoteJQLText(%q) = %s leaves %q unescaped", in, lit, c)
+				}
+			}
+		}
+	}
+}
+
+// unquoteJQL undoes QuoteJQL: the text query inside the literal.
+func unquoteJQL(t *testing.T, lit string) string {
+	t.Helper()
+	if len(lit) < 2 || lit[0] != '"' || lit[len(lit)-1] != '"' {
+		t.Fatalf("%s is not one JQL literal", lit)
+	}
+	var b strings.Builder
+	for i := 1; i < len(lit)-1; i++ {
+		c := lit[i]
+		if c == '"' {
+			t.Fatalf("%s ends early at %d", lit, i)
+		}
+		if c == '\\' {
+			i++
+			c = lit[i]
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }

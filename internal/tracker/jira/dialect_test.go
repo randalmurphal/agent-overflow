@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/secret"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -82,9 +83,9 @@ func TestDialectRateLimited(t *testing.T) {
 // TestDialectThroughTransport proves the dialect reaches callers: field
 // errors on a StatusError, and a refused login marked on a 200.
 func TestDialectThroughTransport(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("PUT", "/rest/api/3/issue/WEB-1/assignee", reply(400, `{"errorMessages":[],"errors":{"assignee":"User cannot be assigned"}}`))
+	f.On("PUT", "/rest/api/3/issue/WEB-1/assignee", jiratest.Reply(400, `{"errorMessages":[],"errors":{"assignee":"User cannot be assigned"}}`))
 	err := c.Assign(t.Context(), "WEB-1", "acc-user1")
 	se, ok := errors.AsType[*trackerapi.StatusError](err)
 	if !ok || se.Fields["assignee"] != "User cannot be assigned" {
@@ -93,7 +94,7 @@ func TestDialectThroughTransport(t *testing.T) {
 	if !trackerapi.WriteNotApplied(err) {
 		t.Error("a 400 is a refusal")
 	}
-	f.on("GET", "/rest/api/3/myself", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+	f.On("GET", "/rest/api/3/myself", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		w.Header().Set("X-Seraph-LoginReason", "AUTHENTICATED_FAILED")
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -111,11 +112,11 @@ func isAuth(err error) bool {
 // exactly the rate limit headers Jira documents, scrubbed of the
 // credential, and no other header.
 func TestOnAnswerGetsTheRateLimitHeaders(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	var mu sync.Mutex
 	var got []http.Header
 	c, err := New(Options{
-		BaseURL: f.srv.URL, Version: "test",
+		BaseURL: f.URL(), Version: "test",
 		Credentials: trackerapi.StaticCredentials(trackerapi.Basic("user1@example.com", secret.New([]byte(testToken)))),
 		OnAnswer: func(status int, h http.Header) {
 			mu.Lock()
@@ -134,7 +135,7 @@ func TestOnAnswerGetsTheRateLimitHeaders(t *testing.T) {
 		"X-Beta-RateLimit-Limit", "X-Beta-RateLimit-Remaining", "X-Beta-RateLimit-Reset",
 		"X-Beta-RateLimit-NearLimit", "X-Beta-RateLimit-Reason",
 	}
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		for i, name := range documented {
 			w.Header().Set(name, "v"+strconv.Itoa(i))
 		}
@@ -142,7 +143,7 @@ func TestOnAnswerGetsTheRateLimitHeaders(t *testing.T) {
 		w.Header().Set("Location", "https://example.com/"+testToken)
 		w.Header().Set("Set-Cookie", "session=1")
 		w.Header().Set("X-Request-Id", "abc")
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
 	if _, err := c.Myself(t.Context()); err != nil {
 		t.Fatal(err)

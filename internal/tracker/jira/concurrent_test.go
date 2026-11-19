@@ -9,21 +9,22 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // TestConcurrentCalls runs reads, cached lookups and drops together; the
 // race detector checks the client's shared state.
 func TestConcurrentCalls(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1", reply(200, fullIssueJSON))
-	f.on("GET", "/rest/api/3/issue/WEB-404", reply(404, `{}`))
-	f.on("GET", myselfURL, reply(200, userOneJSON))
-	f.on("GET", "/rest/api/3/field", reply(200, catalogJSON))
-	f.on("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", "/rest/api/3/issue/WEB-1", jiratest.Reply(200, fullIssueJSON))
+	f.On("GET", "/rest/api/3/issue/WEB-404", jiratest.Reply(404, `{}`))
+	f.On("GET", myselfURL, jiratest.Reply(200, userOneJSON))
+	f.On("GET", "/rest/api/3/field", jiratest.Reply(200, catalogJSON))
+	f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		id := r.URL.Query().Get("accountId")
-		reply(200, fmt.Sprintf(`{"accountId":%q,"displayName":"User","active":true}`, id))(w, r, b)
+		jiratest.Reply(200, fmt.Sprintf(`{"accountId":%q,"displayName":"User","active":true}`, id))(w, r, b)
 	})
 	var wg sync.WaitGroup
 	errs := make(chan error, 200)
@@ -67,7 +68,7 @@ func TestConcurrentCalls(t *testing.T) {
 // closed and on one whose context ended, and wants each to fail at the
 // guard before any work: nothing reaches the site, a cache hit included.
 func TestEveryCallPassesTheGuard(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	ended, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -129,19 +130,19 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 			}
 		}
 	}
-	if n := len(f.requests()); n != 0 {
-		t.Errorf("%d requests reached the site: %v", n, f.requests())
+	if n := len(f.Requests()); n != 0 {
+		t.Errorf("%d requests reached the site: %v", n, f.Requests())
 	}
 }
 
 // TestConcurrentAgileCalls runs board configuration reads, drops, sprint
 // listings and ranks together under the race detector.
 func TestConcurrentAgileCalls(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", boardConfigURL, reply(200, boardConfigBody))
-	f.on("GET", "/rest/agile/1.0/board/3/sprint", reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"}]}`))
-	f.on("PUT", rankURL, func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(http.StatusNoContent) })
+	f.On("GET", boardConfigURL, jiratest.Reply(200, boardConfigBody))
+	f.On("GET", "/rest/agile/1.0/board/3/sprint", jiratest.Reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"}]}`))
+	f.On("PUT", rankURL, func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(http.StatusNoContent) })
 	var wg sync.WaitGroup
 	errs := make(chan error, 200)
 	for i := range 40 {
@@ -175,10 +176,10 @@ func TestConcurrentAgileCalls(t *testing.T) {
 }
 
 func TestCancelEndsACall(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	entered := make(chan struct{})
-	f.on("POST", "/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+	f.On("POST", "/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		close(entered)
 		<-r.Context().Done()
 	})
@@ -196,10 +197,10 @@ func TestCancelEndsACall(t *testing.T) {
 }
 
 func TestCloseEndsCalls(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	entered := make(chan struct{})
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		close(entered)
 		<-r.Context().Done()
 	})

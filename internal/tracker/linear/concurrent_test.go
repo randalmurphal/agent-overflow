@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/trackerapi"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
 // One client serves many goroutines at once: reads, writes and the
@@ -15,13 +17,13 @@ import (
 func TestConcurrentCalls(t *testing.T) {
 	t.Parallel()
 	const n = 16
-	var script []exchange
+	var script []lineartest.Exchange
 	for i := range n {
 		id := fmt.Sprintf("WEB-%d", i)
 		script = append(script,
-			exchange{op: "Viewer", body: viewerData, header: map[string]string{"X-Complexity": "2"}},
-			exchange{op: "UpdateIssue", vars: fmt.Sprintf(`{"id":%q,"input":{"title":"Title %d"}}`, id, i),
-				body: issueResult(issueJSON("issue-"+id, id, "2026-11-02T10:00:00.000Z", 1))},
+			lineartest.Exchange{Op: "Viewer", Body: viewerData, Header: map[string]string{"X-Complexity": "2"}},
+			lineartest.Exchange{Op: "UpdateIssue", Vars: fmt.Sprintf(`{"id":%q,"input":{"title":"Title %d"}}`, id, i),
+				Body: issueResult(lineartest.IssueJSON("issue-"+id, id, "2026-11-02T10:00:00.000Z", 1))},
 		)
 	}
 	c := newFake(t, script...).client(t)
@@ -56,8 +58,8 @@ func TestCancellation(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{}, 2)
 	f := newFake(t,
-		exchange{op: "Viewer", wait: true, arrived: started},
-		exchange{op: "UpdateIssue", vars: `{"id":"WEB-1","input":{"title":"x"}}`, wait: true, arrived: started},
+		lineartest.Exchange{Op: "Viewer", Wait: true, Arrived: started},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"WEB-1","input":{"title":"x"}}`, Wait: true, Arrived: started},
 	)
 	c := f.client(t)
 	for _, call := range []func(context.Context) error{
@@ -85,7 +87,7 @@ func TestCancellation(t *testing.T) {
 	}
 	c.Close()
 	_, err := c.Teams(context.Background())
-	if _, ok := errors.AsType[*trackerapi.NotSentError](err); !ok {
+	if _, ok := errors.AsType[*trackerapi.NotSentError](err); !ok || errors.Is(err, trackerapi.ErrInvalidInput) {
 		t.Errorf("a call after Close: %v", err)
 	}
 }

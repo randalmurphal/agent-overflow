@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -31,18 +32,18 @@ func TestApplyCreateWithImage(t *testing.T) {
 	if len(pv.Images) != 1 || pv.Images[0].Size != int64(len(pngBytes)) || pv.Images[0].Name != "a.png" {
 		t.Fatalf("images %+v", pv.Images)
 	}
-	if n := len(f.requests()); n != 2 {
+	if n := len(f.Requests()); n != 2 {
 		t.Fatalf("planning sent %d requests, want only the metadata reads", n)
 	}
-	f.on("POST", "/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if !strings.Contains(string(b), `[image: a.png]`) || strings.Contains(string(b), pendingPrefix) {
 			t.Errorf("the create must carry the stand-in, not a placeholder: %s", b)
 		}
-		reply(201, `{"id":"10001","key":"WEB-1"}`)(w, r, b)
+		jiratest.Reply(201, `{"id":"10001","key":"WEB-1"}`)(w, r, b)
 	})
 	var uploads atomic.Int32
 	imageRoutes(t, f, "10001", &uploads)
-	f.on("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var body struct {
 			Fields map[string]json.RawMessage `json:"fields"`
 		}
@@ -83,24 +84,24 @@ func TestApplyCreateImageFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.on("POST", "/rest/api/3/issue", reply(201, `{"id":"10001","key":"WEB-1"}`))
+			f.On("POST", "/rest/api/3/issue", jiratest.Reply(201, `{"id":"10001","key":"WEB-1"}`))
 			var uploads atomic.Int32
 			imageRoutes(t, f, "10001", &uploads)
-			f.on("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+			f.On("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 			if tc.failAt == "" {
 				if err := os.Remove(filepath.Join(dir, "a.png")); err != nil {
 					t.Fatal(err)
 				}
 			} else {
 				method, path, _ := strings.Cut(tc.failAt, " ")
-				f.on(method, path, reply(tc.status, `{"errorMessages":["no"]}`))
+				f.On(method, path, jiratest.Reply(tc.status, `{"errorMessages":["no"]}`))
 			}
 			res, err := c.ApplyCreate(t.Context(), plan)
 			se, ok := errors.AsType[*StepError](err)
 			if !ok || se.Step != tc.step || se.OutcomeUnknown() != tc.unknown {
 				t.Fatalf("got %v", err)
 			}
-			if (res.Key == "WEB-1") != tc.created || (f.count("POST", "/rest/api/3/issue") == 1) != tc.created {
+			if (res.Key == "WEB-1") != tc.created || (f.Count("POST", "/rest/api/3/issue") == 1) != tc.created {
 				t.Errorf("created %v, want %v", res.Key, tc.created)
 			}
 		})
@@ -141,16 +142,16 @@ func TestApplyEditImageFailures(t *testing.T) {
 				}
 			}
 			var uploads atomic.Int32
-			f.on("POST", "/rest/api/3/issue/10001/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			f.On("POST", "/rest/api/3/issue/10001/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
 				n := uploads.Add(1)
 				if n == 2 && tc.upload != 200 {
-					reply(tc.upload, `{}`)(w, r, b)
+					jiratest.Reply(tc.upload, `{}`)(w, r, b)
 					return
 				}
-				reply(200, `[{"id":"50`+string('0'+rune(n))+`","filename":"x.png"}]`)(w, r, b)
+				jiratest.Reply(200, `[{"id":"50`+string('0'+rune(n))+`","filename":"x.png"}]`)(w, r, b)
 			})
 			mediaRoutes(f)
-			f.on("PUT", "/rest/api/3/issue/10001", reply(tc.put, `{"errorMessages":["x"]}`))
+			f.On("PUT", "/rest/api/3/issue/10001", jiratest.Reply(tc.put, `{"errorMessages":["x"]}`))
 			res, err := c.ApplyEdit(t.Context(), plan)
 			se, ok := errors.AsType[*StepError](err)
 			if !ok || se.Step != tc.step || se.OutcomeUnknown() != tc.unknown || len(res.Uploaded) != tc.uploaded {
@@ -161,7 +162,7 @@ func TestApplyEditImageFailures(t *testing.T) {
 					t.Errorf("a changed image: %v after %d uploads", err, uploads.Load())
 				}
 			}
-			if n := f.count("PUT", "/rest/api/3/issue/10001"); n != tc.wantPuts {
+			if n := f.Count("PUT", "/rest/api/3/issue/10001"); n != tc.wantPuts {
 				t.Errorf("%d writes, want %d", n, tc.wantPuts)
 			}
 		})

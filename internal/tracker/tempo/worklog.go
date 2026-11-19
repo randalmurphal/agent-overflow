@@ -172,7 +172,7 @@ func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Wor
 	}
 	r, err := q.request()
 	if err != nil {
-		return &trackerapi.NotSentError{Err: fmt.Errorf("tempo: list worklogs: %w", err)}
+		return trackerapi.InvalidInput(fmt.Errorf("tempo: list worklogs: %w", err))
 	}
 	var fnErr error
 	err = pages(ctx, c.http, r, func(resp *trackerapi.Response, raw []worklogJSON) error {
@@ -220,7 +220,7 @@ func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {
 		return Worklog{}, err
 	}
 	if id <= 0 {
-		return Worklog{}, &trackerapi.NotSentError{Err: fmt.Errorf("tempo: read worklog: %d is not a worklog ID", id)}
+		return Worklog{}, trackerapi.InvalidInput(fmt.Errorf("tempo: read worklog: %d is not a worklog ID", id))
 	}
 	var raw worklogJSON
 	resp, err := c.http.JSON(ctx, trackerapi.Request{Path: path("4/worklogs", strconv.FormatInt(id, 10))}, &raw)

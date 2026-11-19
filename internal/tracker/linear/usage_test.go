@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
 // Usage follows every answer, failed ones included: a 429 reporting no
@@ -17,11 +19,11 @@ import (
 func TestUsageAfterFailedAnswers(t *testing.T) {
 	t.Parallel()
 	f := newFake(t,
-		exchange{op: "Viewer", body: viewerData, header: map[string]string{
+		lineartest.Exchange{Op: "Viewer", Body: viewerData, Header: map[string]string{
 			"X-Complexity": "3", "X-Ratelimit-Requests-Remaining": "1", "X-Ratelimit-Requests-Reset": "4000000000000",
 		}},
-		exchange{op: "Teams", vars: `{"first":100}`, status: http.StatusBadGateway, body: "<html>bad gateway</html>"},
-		exchange{op: "Viewer", status: http.StatusTooManyRequests, body: limitBody, header: map[string]string{
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100}`, Status: http.StatusBadGateway, Body: "<html>bad gateway</html>"},
+		lineartest.Exchange{Op: "Viewer", Status: http.StatusTooManyRequests, Body: limitBody, Header: map[string]string{
 			"Retry-After": "30", "X-Ratelimit-Requests-Remaining": "0", "X-Ratelimit-Requests-Reset": "4000000000000",
 		}},
 	)
@@ -57,16 +59,16 @@ func isRateLimited(err error) bool {
 // holds the other answer, and the page must not take it from there.
 func TestPageUsageIsItsOwnAnswer(t *testing.T) {
 	t.Parallel()
-	page := data(pageJSON([]string{issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)}, false, "c9"))
+	page := lineartest.Data(lineartest.PageJSON([]string{lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)}, false, "c9"))
 	vars := func(after string) string {
 		return `{"first":100,"after":"` + after + `","sort":[{"manual":{"order":"Ascending"}}]}`
 	}
 	otherDone := make(chan struct{})
 	headersSent := make(chan struct{})
 	f := newFake(t,
-		exchange{op: "Issues", vars: vars("a"), body: page, header: map[string]string{"X-Complexity": "11"},
-			beforeBody: func() { close(headersSent); <-otherDone }},
-		exchange{op: "Issues", vars: vars("b"), body: page, header: map[string]string{"X-Complexity": "22"}},
+		lineartest.Exchange{Op: "Issues", Vars: vars("a"), Body: page, Header: map[string]string{"X-Complexity": "11"},
+			BeforeBody: func() { close(headersSent); <-otherDone }},
+		lineartest.Exchange{Op: "Issues", Vars: vars("b"), Body: page, Header: map[string]string{"X-Complexity": "22"}},
 	)
 	c := f.client(t)
 	ctx := context.Background()

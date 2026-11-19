@@ -314,6 +314,9 @@ type NumberChange struct{ From, To *float64 }
 type HistoryEntry struct {
 	ID        string
 	CreatedAt time.Time
+	// UpdatedAt is later than CreatedAt when Linear changed the entry
+	// after writing it.
+	UpdatedAt time.Time
 	ActorID   string
 	State     *Change
 	Assignee  *Change

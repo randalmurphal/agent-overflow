@@ -225,24 +225,53 @@ func (c *Client) explain(ctx context.Context, err error) error {
 	return err
 }
 
-// notSent is a refusal made before any request was sent.
+// notSent is the client's refusal of its input before any request was
+// sent; it matches trackerapi.ErrInvalidInput.
 func notSent(format string, args ...any) error {
-	return &trackerapi.NotSentError{Err: fmt.Errorf("jira: "+format, args...)}
+	return trackerapi.InvalidInput(fmt.Errorf("jira: "+format, args...))
 }
 
-// notSentErr marks err, a failure before a write was sent (the client's
-// own refusal, a read the write depends on, a local step, an ended
-// context), as a *trackerapi.NotSentError, so the write reads as not
-// applied while errors.As still finds the cause. An error already marked
-// is returned as it is.
+// notSentErr marks err, a failure before a write was sent, as a
+// *trackerapi.NotSentError, so the write reads as not applied while
+// errors.As still finds the cause. A call that failed (failedCall: a read
+// the write depends on, an ended context) is marked only that. Any other
+// failure is the client refusing the write as given (its own check, a
+// typed refusal such as *StaleError, *MatchError, *MissingFieldsError or
+// *adf.LossError, a local file it cannot use) and also matches
+// trackerapi.ErrInvalidInput. An error already marked is returned as it
+// is.
 func notSentErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if _, ok := err.(*trackerapi.NotSentError); ok {
+	switch _, marked := err.(*trackerapi.NotSentError); {
+	case err == nil || marked:
 		return err
+	case failedCall(err):
+		return &trackerapi.NotSentError{Err: err}
 	}
-	return &trackerapi.NotSentError{Err: err}
+	return trackerapi.InvalidInput(err)
+}
+
+// failedCall reports an error from a call that failed rather than from a
+// refusal of the input: an ended context, the tracker's answer (an error
+// status, a refused credential, a rate limit, an answer that did not read
+// or was too large), a transient failure, or a call the transport did
+// not make. An error that already holds a refusal of the input is not
+// one.
+func failedCall(err error) bool {
+	if errors.Is(err, trackerapi.ErrInvalidInput) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return hasType[*trackerapi.NotSentError](err) || hasType[*trackerapi.StatusError](err) ||
+		hasType[*trackerapi.AuthError](err) || hasType[*trackerapi.RateLimitedError](err) ||
+		hasType[*trackerapi.TransientError](err) || hasType[*trackerapi.BodyTooLargeError](err) ||
+		hasType[*AnswerError](err) || hasType[*UnconfirmedError](err)
+}
+
+func hasType[T error](err error) bool {
+	_, ok := errors.AsType[T](err)
+	return ok
 }
 
 var (

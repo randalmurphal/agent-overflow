@@ -1,126 +1,13 @@
 package linear
 
 import (
-	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
-	"slices"
-	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
-
-// pollStore is a fake workspace answering a poll as Linear does: issues
-// in update order with keyset cursors. It predicts the variables of the
-// next request from what it answered, so the fake checks each request
-// exactly.
-type pollStore struct {
-	mu      sync.Mutex
-	updated map[string]time.Time // issue ID to updatedAt
-	pages   int                  // pages answered
-	// onPage runs before page n (from 1) is computed.
-	onPage func(n int, s *pollStore)
-	// refuseCursor, when set, refuses the next request carrying a cursor.
-	refuseCursor bool
-	// wantSince and wantAfter are the next request's expected bounds;
-	// floor is the latest update time delivered.
-	wantSince, floor time.Time
-	wantAfter        string
-}
-
-func newPollStore(since time.Time) *pollStore {
-	return &pollStore{updated: map[string]time.Time{}, wantSince: since, floor: since}
-}
-
-func (s *pollStore) expected() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	after := ""
-	if s.wantAfter != "" {
-		after = fmt.Sprintf(`,"after":%q`, s.wantAfter)
-	}
-	return fmt.Sprintf(`{"first":100%s,"sort":[{"updatedAt":{"order":"Ascending"}}],"includeArchived":true,`+
-		`"filter":{"and":[{"team":{"id":{"in":["team-web"]}}},{"updatedAt":{"gte":%q}}]}}`, after, formatTime(s.wantSince))
-}
-
-// script is n exchanges answered by the store.
-func (s *pollStore) script(n int) []exchange {
-	out := make([]exchange, n)
-	for i := range out {
-		out[i] = exchange{op: "Issues", varsFn: s.expected, respond: s.respond}
-	}
-	return out
-}
-
-func (s *pollStore) respond(raw json.RawMessage) string {
-	var vars struct {
-		After string `json:"after"`
-	}
-	if err := json.Unmarshal(raw, &vars); err != nil {
-		panic(err)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.refuseCursor && vars.After != "" {
-		s.refuseCursor = false
-		s.wantSince, s.wantAfter = s.floor, ""
-		return `{"data":null,"errors":[{"message":"Invalid cursor","path":["page"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`
-	}
-	s.pages++
-	if s.onPage != nil {
-		s.onPage(s.pages, s)
-	}
-	rows := s.after(s.wantSince, vars.After)
-	end := min(issuePage, len(rows))
-	var nodes []string
-	cursor := ""
-	for _, r := range rows[:end] {
-		nodes = append(nodes, issueJSON(r.id, "WEB-"+r.id, formatTime(r.at), 1))
-		s.floor = maxTime(s.floor, r.at)
-		cursor = r.at.UTC().Format(time.RFC3339Nano) + "|" + r.id
-	}
-	if end < len(rows) {
-		s.wantAfter = cursor
-	} else {
-		s.wantSince, s.wantAfter = s.floor, ""
-	}
-	return data(pageJSON(nodes, end < len(rows), cursor))
-}
-
-type pollRow struct {
-	id string
-	at time.Time
-}
-
-// after is the issues updated at or after since, past the keyset cursor.
-func (s *pollStore) after(since time.Time, cursor string) []pollRow {
-	var rows []pollRow
-	for id, at := range s.updated {
-		if !at.Before(since) {
-			rows = append(rows, pollRow{id, at})
-		}
-	}
-	slices.SortFunc(rows, func(a, b pollRow) int { return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.id, b.id)) })
-	if cursor == "" {
-		return rows
-	}
-	at, id, _ := strings.Cut(cursor, "|")
-	t, _ := time.Parse(time.RFC3339Nano, at)
-	start := 0
-	for start < len(rows) && (rows[start].at.Before(t) || (rows[start].at.Equal(t) && rows[start].id <= id)) {
-		start++
-	}
-	return rows[start:]
-}
-
-func maxTime(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-	return a
-}
 
 // drain polls page by page, each page through a new client as a process
 // restarted after every page would, until a walk ends. It returns every
@@ -158,11 +45,11 @@ func TestPollCohortLargerThanAPage(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	since := at.Add(-time.Hour)
-	store := newPollStore(since)
+	store := lineartest.NewPollStore("team-web", true, issuePage, since)
 	for i := range 101 {
-		store.updated[fmt.Sprintf("%03d", i)] = at
+		store.Updated[fmt.Sprintf("%03d", i)] = at
 	}
-	f := newFake(t, store.script(4)...)
+	f := newFake(t, store.Script(4)...)
 	seen, next, restarted := drain(t, f, PollCursor{Since: since})
 	if len(seen) != 101 || restarted {
 		t.Fatalf("%d issues delivered, restarted %t", len(seen), restarted)
@@ -183,14 +70,14 @@ func TestPollRefusedCursorRestartsAtFloor(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	since := at.Add(-time.Hour)
-	store := newPollStore(since)
+	store := lineartest.NewPollStore("team-web", true, issuePage, since)
 	for i := range 101 {
-		store.updated[fmt.Sprintf("%03d", i)] = at
+		store.Updated[fmt.Sprintf("%03d", i)] = at
 	}
-	store.updated["early"] = since.Add(time.Minute)
-	store.refuseCursor = true
+	store.Updated["early"] = since.Add(time.Minute)
+	store.RefuseCursor = true
 	// Page 1, the refused cursor, the restarted page 1, page 2.
-	f := newFake(t, store.script(4)...)
+	f := newFake(t, store.Script(4)...)
 	seen, next, restarted := drain(t, f, PollCursor{Since: since})
 	if len(seen) != 102 || !restarted {
 		t.Fatalf("%d issues delivered, restarted %t", len(seen), restarted)
@@ -206,18 +93,18 @@ func TestPollIssueUpdatedDuringWalk(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	since := base.Add(-time.Hour)
-	store := newPollStore(since)
+	store := lineartest.NewPollStore("team-web", true, issuePage, since)
 	for i := range 250 {
-		store.updated[fmt.Sprintf("%03d", i)] = base.Add(time.Duration(i) * time.Minute)
+		store.Updated[fmt.Sprintf("%03d", i)] = base.Add(time.Duration(i) * time.Minute)
 	}
 	later := base.Add(24 * time.Hour)
-	store.onPage = func(n int, s *pollStore) {
+	store.OnPage = func(n int, s *lineartest.PollStore) {
 		if n == 2 {
-			s.updated["150"] = later                  // not read yet
-			s.updated["010"] = later.Add(time.Second) // read on page 1
+			s.Updated["150"] = later                  // not read yet
+			s.Updated["010"] = later.Add(time.Second) // read on page 1
 		}
 	}
-	f := newFake(t, store.script(3)...)
+	f := newFake(t, store.Script(3)...)
 	seen, next, _ := drain(t, f, PollCursor{Since: since})
 	if len(seen) != 250 {
 		t.Errorf("%d distinct issues delivered, want 250", len(seen))
@@ -241,10 +128,10 @@ func TestPollIssuesEmptyAndOtherErrors(t *testing.T) {
 	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	nested := `{"data":null,"errors":[{"message":"bad","path":["page","nodes",0,"project"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`
 	f := newFake(t,
-		exchange{op: "Issues", vars: `{"first":100,"sort":[{"updatedAt":{"order":"Ascending"}}]}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "Issues", vars: `{"first":100,"sort":[{"updatedAt":{"order":"Ascending"}}],"filter":{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "Issues", vars: `{"first":100,"after":"c1","sort":[{"updatedAt":{"order":"Ascending"}}],"filter":{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}}`, body: nested},
-		exchange{op: "Issues", vars: `{"first":100,"after":"c2","sort":[{"updatedAt":{"order":"Ascending"}}],"filter":{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}}`, status: 500, body: `{"errors":[{"message":"boom"}]}`},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"sort":[{"updatedAt":{"order":"Ascending"}}]}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"sort":[{"updatedAt":{"order":"Ascending"}}],"filter":{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"after":"c1","sort":[{"updatedAt":{"order":"Ascending"}}],"filter":{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}}`, Body: nested},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"after":"c2","sort":[{"updatedAt":{"order":"Ascending"}}],"filter":{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
 	)
 	c := f.client(t)
 	p, err := c.PollIssues(context.Background(), PollQuery{})

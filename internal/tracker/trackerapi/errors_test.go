@@ -116,6 +116,31 @@ func TestNotSentErrors(t *testing.T) {
 	if _, ok := errors.AsType[*NotSentError](err); !ok || !WriteNotApplied(err) {
 		t.Fatalf("name lookup failure: %v, want a *NotSentError", err)
 	}
+	if errors.Is(err, ErrInvalidInput) {
+		t.Errorf("a call the transport could not send matches ErrInvalidInput: %v", err)
+	}
+	c.Close()
+	_, err = c.Do(t.Context(), Request{Method: http.MethodPost, Path: "issue", Body: map[string]string{}})
+	if !errors.Is(err, errClosed) || errors.Is(err, ErrInvalidInput) {
+		t.Errorf("a closed client: %v", err)
+	}
+}
+
+// TestInvalidInput proves a client's refusal of its input is a
+// *NotSentError that matches ErrInvalidInput, keeps its message and
+// cause, and is the outermost outcome WriteNotApplied judges.
+func TestInvalidInput(t *testing.T) {
+	cause := &StatusError{Status: 404}
+	err := fmt.Errorf("wrap: %w", InvalidInput(fmt.Errorf("issue named twice: %w", cause)))
+	if _, ok := errors.AsType[*NotSentError](err); !ok || !errors.Is(err, ErrInvalidInput) || !WriteNotApplied(err) {
+		t.Fatalf("got %v", err)
+	}
+	if !errors.Is(err, ErrNotFound) || err.Error() != "wrap: issue named twice: "+cause.Error() {
+		t.Errorf("cause or message lost: %v", err)
+	}
+	if errors.Is(&NotSentError{Err: errors.New("x")}, ErrInvalidInput) {
+		t.Error("a plain *NotSentError matches ErrInvalidInput")
+	}
 }
 
 func TestTransientErrors(t *testing.T) {

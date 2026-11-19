@@ -3,8 +3,12 @@ package linear
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 func issueResult(issue string) string {
@@ -13,12 +17,12 @@ func issueResult(issue string) string {
 
 func TestCreateIssue(t *testing.T) {
 	t.Parallel()
-	issue := issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", -5)
+	issue := lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", -5)
 	f := newFake(t,
-		exchange{op: "CreateIssue", body: issueResult(issue), vars: `{"input":{"teamId":"team-web","title":"Fix the login page",` +
+		lineartest.Exchange{Op: "CreateIssue", Body: issueResult(issue), Vars: `{"input":{"teamId":"team-web","title":"Fix the login page",` +
 			`"description":"Steps:\n1. open","stateId":"state-todo","assigneeId":null,"priority":0,"estimate":0,` +
 			`"labelIds":["label-bug"],"cycleId":"cycle-1","projectId":"project-1","parentId":"WEB-0"}}`},
-		exchange{op: "CreateIssue", body: issueResult(issue), vars: `{"input":{"teamId":"team-web","title":"Minimal"}}`},
+		lineartest.Exchange{Op: "CreateIssue", Body: issueResult(issue), Vars: `{"input":{"teamId":"team-web","title":"Minimal"}}`},
 	)
 	c := f.client(t)
 	got, err := c.CreateIssue(context.Background(), CreateIssueInput{
@@ -44,15 +48,15 @@ func TestCreateIssue(t *testing.T) {
 // clearing a description or the labels sends what Linear clears with.
 func TestUpdateIssueOptionalStates(t *testing.T) {
 	t.Parallel()
-	issue := issueResult(issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1))
+	issue := issueResult(lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1))
 	f := newFake(t,
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"title":"New title"}}`},
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"assigneeId":null,"estimate":null,"cycleId":null,"projectId":null,"parentId":null}}`},
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"assigneeId":"user-2","estimate":0,"priority":0,"cycleId":"cycle-2","stateId":"state-done","teamId":"team-app"}}`},
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"description":"","labelIds":[]}}`},
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"addedLabelIds":["label-a"],"removedLabelIds":["label-b"]}}`},
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"labelIds":[]}}`},
-		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"labelIds":[]}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"title":"New title"}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"assigneeId":null,"estimate":null,"cycleId":null,"projectId":null,"parentId":null}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"assigneeId":"user-2","estimate":0,"priority":0,"cycleId":"cycle-2","stateId":"state-done","teamId":"team-app"}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"description":"","labelIds":[]}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"addedLabelIds":["label-a"],"removedLabelIds":["label-b"]}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"labelIds":[]}}`},
+		lineartest.Exchange{Op: "UpdateIssue", Body: issue, Vars: `{"id":"WEB-1","input":{"labelIds":[]}}`},
 	)
 	c := f.client(t)
 	ctx := context.Background()
@@ -68,6 +72,38 @@ func TestUpdateIssueOptionalStates(t *testing.T) {
 	} {
 		if _, err := c.UpdateIssue(ctx, "WEB-1", in); err != nil {
 			t.Errorf("%+v: %v", in, err)
+		}
+	}
+}
+
+// A due date is sent as a calendar day on create and update, and Null
+// clears it; a value that is not a calendar day is refused before
+// sending.
+func TestDueDate(t *testing.T) {
+	t.Parallel()
+	issue := lineartest.Result(lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1))
+	f := newFake(t,
+		lineartest.Exchange{Op: "CreateIssue", Vars: `{"input":{"teamId":"team-web","title":"T","dueDate":"2026-12-01"}}`, Body: issue},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"WEB-1","input":{"dueDate":"2027-01-31"}}`, Body: issue},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"WEB-1","input":{"dueDate":null}}`, Body: issue},
+	)
+	c := f.client(t)
+	ctx := context.Background()
+	if _, err := c.CreateIssue(ctx, CreateIssueInput{TeamID: "team-web", Title: "T", DueDate: Set(Date("2026-12-01"))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.UpdateIssue(ctx, "WEB-1", UpdateIssueInput{DueDate: Set(Date("2027-01-31"))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.UpdateIssue(ctx, "WEB-1", UpdateIssueInput{DueDate: Null[Date]()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []Date{"", "2026-02-30", "2026-1-5", "01/12/2026", "2026-12-01T00:00:00Z"} {
+		if _, err := c.UpdateIssue(ctx, "WEB-1", UpdateIssueInput{DueDate: Set(bad)}); !errors.Is(err, trackerapi.ErrInvalidInput) {
+			t.Errorf("update %q: %v", bad, err)
+		}
+		if _, err := c.CreateIssue(ctx, CreateIssueInput{TeamID: "t", Title: "x", DueDate: Set(bad)}); !errors.Is(err, trackerapi.ErrInvalidInput) {
+			t.Errorf("create %q: %v", bad, err)
 		}
 	}
 }
@@ -143,7 +179,7 @@ func TestWriteValidation(t *testing.T) {
 		err := call()
 		if err == nil {
 			t.Errorf("%s: no error", name)
-		} else if !WriteNotApplied(err) || !strings.HasPrefix(err.Error(), "linear ") {
+		} else if !WriteNotApplied(err) || !errors.Is(err, trackerapi.ErrInvalidInput) || !strings.HasPrefix(err.Error(), "linear ") {
 			t.Errorf("%s: %v is not a named refusal before sending", name, err)
 		}
 	}
@@ -151,12 +187,12 @@ func TestWriteValidation(t *testing.T) {
 
 func TestArchiveUnarchiveDelete(t *testing.T) {
 	t.Parallel()
-	archived := strings.Replace(issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1), `"archivedAt":null`, `"archivedAt":"2026-11-02T10:00:00.000Z"`, 1)
+	archived := strings.Replace(lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1), `"archivedAt":null`, `"archivedAt":"2026-11-02T10:00:00.000Z"`, 1)
 	f := newFake(t,
-		exchange{op: "ArchiveIssue", vars: `{"id":"WEB-1"}`, body: issueResult(archived)},
-		exchange{op: "UnarchiveIssue", vars: `{"id":"WEB-1"}`, body: issueResult(issueJSON("issue-1", "WEB-1", "2026-11-02T10:01:00.000Z", 1))},
-		exchange{op: "DeleteIssue", vars: `{"id":"WEB-1"}`, body: `{"data":{"result":{"success":true}}}`},
-		exchange{op: "DeleteIssue", vars: `{"id":"WEB-2","permanently":true}`, body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "ArchiveIssue", Vars: `{"id":"WEB-1"}`, Body: issueResult(archived)},
+		lineartest.Exchange{Op: "UnarchiveIssue", Vars: `{"id":"WEB-1"}`, Body: issueResult(lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:01:00.000Z", 1))},
+		lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-1"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-2","permanently":true}`, Body: `{"data":{"result":{"success":true}}}`},
 	)
 	c := f.client(t)
 	ctx := context.Background()
@@ -175,18 +211,17 @@ func TestArchiveUnarchiveDelete(t *testing.T) {
 	}
 }
 
-const commentJSON = `{"id":"comment-2","issue":{"id":"issue-1"},"parent":{"id":"comment-1"},"user":{"id":"user-1"},"body":"Agreed, **ship it**.",` +
-	`"url":"https://linear.app/example/issue/WEB-1#comment-2","createdAt":"2026-11-02T10:00:00.000Z","updatedAt":"2026-11-02T10:00:00.000Z","editedAt":null,"resolvedAt":null}`
+var commentJSON = lineartest.NewComment().JSON()
 
 func TestComments(t *testing.T) {
 	t.Parallel()
 	f := newFake(t,
-		exchange{op: "CreateComment", vars: `{"input":{"issueId":"WEB-1","body":"Agreed, **ship it**.","parentId":"comment-1"}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
-		exchange{op: "CreateComment", vars: `{"input":{"issueId":"WEB-1","body":"Top level"}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
-		exchange{op: "UpdateComment", vars: `{"id":"comment-2","input":{"body":"Edited"}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
-		exchange{op: "UpdateComment", vars: `{"id":"comment-2","input":{"body":""}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
-		exchange{op: "DeleteComment", vars: `{"id":"comment-2"}`, body: `{"data":{"result":{"success":true}}}`},
-		exchange{op: "DeleteComment", vars: `{"id":"comment-3"}`, body: `{"data":{"result":{"success":false}}}`},
+		lineartest.Exchange{Op: "CreateComment", Vars: `{"input":{"issueId":"WEB-1","body":"Agreed, **ship it**.","parentId":"comment-1"}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
+		lineartest.Exchange{Op: "CreateComment", Vars: `{"input":{"issueId":"WEB-1","body":"Top level"}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
+		lineartest.Exchange{Op: "UpdateComment", Vars: `{"id":"comment-2","input":{"body":"Edited"}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
+		lineartest.Exchange{Op: "UpdateComment", Vars: `{"id":"comment-2","input":{"body":""}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
+		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-3"}`, Body: `{"data":{"result":{"success":false}}}`},
 	)
 	c := f.client(t)
 	ctx := context.Background()
@@ -217,14 +252,12 @@ func TestRelationsLinksAndCycles(t *testing.T) {
 	t.Parallel()
 	relation := `{"id":"rel-1","type":"blocks","issue":{"id":"issue-1","identifier":"WEB-1","title":"A","state":{"id":"s"}},"relatedIssue":{"id":"issue-2","identifier":"WEB-2","title":"B","state":{"id":"s"}}}`
 	attachment := `{"id":"att-1","issue":{"id":"issue-1"},"title":"Pull request 12","subtitle":"Open","url":"https://git.example.com/web/pull/12","sourceType":"api","creator":{"id":"user-1"},"createdAt":"2026-11-02T10:00:00.000Z","updatedAt":"2026-11-02T10:00:00.000Z"}`
-	cycle := `{"id":"cycle-2","number":2,"name":null,"description":null,"team":{"id":"team-web"},"startsAt":"2026-11-16T00:00:00.000Z","endsAt":"2026-11-30T00:00:00.000Z",` +
-		`"completedAt":null,"archivedAt":null,"isActive":true,"isFuture":false,"isPast":false,"isNext":false,"isPrevious":false,"progress":0,` +
-		`"scopeHistory":[3],"completedScopeHistory":[0],"inProgressScopeHistory":[0],"issueCountHistory":[2],"completedIssueCountHistory":[0]}`
+	cycle := lineartest.Cycle{ID: "cycle-2", Number: 2, Team: "team-web", StartsAt: "2026-11-16T00:00:00.000Z", EndsAt: "2026-11-30T00:00:00.000Z", Active: true}.JSON()
 	f := newFake(t,
-		exchange{op: "CreateRelation", vars: `{"input":{"issueId":"WEB-1","relatedIssueId":"WEB-2","type":"blocks"}}`, body: `{"data":{"result":{"success":true,"value":` + relation + `}}}`},
-		exchange{op: "DeleteRelation", vars: `{"id":"rel-1"}`, body: `{"data":{"result":{"success":true}}}`},
-		exchange{op: "LinkURL", vars: `{"input":{"issueId":"WEB-1","url":"https://git.example.com/web/pull/12","title":"Pull request 12","subtitle":"Open"}}`, body: `{"data":{"result":{"success":true,"value":` + attachment + `}}}`},
-		exchange{op: "StartUpcomingCycle", vars: `{"id":"cycle-2"}`, body: `{"data":{"result":{"success":true,"value":` + cycle + `}}}`},
+		lineartest.Exchange{Op: "CreateRelation", Vars: `{"input":{"issueId":"WEB-1","relatedIssueId":"WEB-2","type":"blocks"}}`, Body: `{"data":{"result":{"success":true,"value":` + relation + `}}}`},
+		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-1"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "LinkURL", Vars: `{"input":{"issueId":"WEB-1","url":"https://git.example.com/web/pull/12","title":"Pull request 12","subtitle":"Open"}}`, Body: `{"data":{"result":{"success":true,"value":` + attachment + `}}}`},
+		lineartest.Exchange{Op: "StartUpcomingCycle", Vars: `{"id":"cycle-2"}`, Body: `{"data":{"result":{"success":true,"value":` + cycle + `}}}`},
 	)
 	c := f.client(t)
 	ctx := context.Background()

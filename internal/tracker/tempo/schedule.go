@@ -65,7 +65,7 @@ func (c *Client) Schedule(ctx context.Context, accountID string, from, to Date) 
 		return nil, err
 	}
 	if err := checkRange(accountID, from, to); err != nil {
-		return nil, &trackerapi.NotSentError{Err: fmt.Errorf("tempo: read schedule: %w", err)}
+		return nil, trackerapi.InvalidInput(fmt.Errorf("tempo: read schedule: %w", err))
 	}
 	var raw scheduleJSON
 	r := trackerapi.Request{
@@ -160,7 +160,7 @@ func (c *Client) Approval(ctx context.Context, accountID string, day Date) (Appr
 
 func (c *Client) approval(ctx context.Context, accountID string, day Date) (Approval, error) {
 	if err := checkRange(accountID, day, day); err != nil {
-		return Approval{}, &trackerapi.NotSentError{Err: err}
+		return Approval{}, trackerapi.InvalidInput(err)
 	}
 	var raw approvalJSON
 	r := trackerapi.Request{

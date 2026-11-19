@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -55,18 +56,18 @@ func TestEmptyAnswerWrites(t *testing.T) {
 			undocumented = http.StatusAccepted
 		}
 		for _, status := range append([]int{undocumented}, tc.documented...) {
-			f := newFake(t)
+			f := jiratest.NewServer(t)
 			c := newTestClient(t, f)
-			f.on("GET", "/rest/api/3/issueLinkType", reply(200, `{"issueLinkTypes":[{"id":"10000","name":"Blocks","inward":"is blocked by","outward":"blocks"}]}`))
-			f.on("GET", "/rest/api/3/issue/WEB-1/transitions", reply(200, transitionsJSON))
-			f.on(tc.method, tc.path, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			f.On("GET", "/rest/api/3/issueLinkType", jiratest.Reply(200, `{"issueLinkTypes":[{"id":"10000","name":"Blocks","inward":"is blocked by","outward":"blocks"}]}`))
+			f.On("GET", "/rest/api/3/issue/WEB-1/transitions", jiratest.Reply(200, transitionsJSON))
+			f.On(tc.method, tc.path, func(w http.ResponseWriter, r *http.Request, b []byte) {
 				if r.URL.RawQuery != tc.query {
 					t.Errorf("%s: query %q", tc.name, r.URL.RawQuery)
 				}
 				if tc.body == "" && len(b) != 0 {
 					t.Errorf("%s: a body %s", tc.name, b)
 				} else if tc.body != "" {
-					wantJSON(t, b, tc.body)
+					jiratest.WantJSON(t, b, tc.body)
 				}
 				w.WriteHeader(status)
 			})
@@ -114,14 +115,14 @@ func TestEditAnswers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.on("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
-			wantQuery(t, r, "returnIssue", "true")
-			wantJSON(t, b, `{"fields":{"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"new"}]}]}}}`)
+		f.On("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			jiratest.WantQuery(t, r, "returnIssue", "true")
+			jiratest.WantJSON(t, b, `{"fields":{"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"new"}]}]}}}`)
 			if tc.status == http.StatusNoContent {
 				w.WriteHeader(tc.status)
 				return
 			}
-			reply(tc.status, tc.body)(w, r, b)
+			jiratest.Reply(tc.status, tc.body)(w, r, b)
 		})
 		res, err := c.ApplyEdit(t.Context(), plan)
 		if (err != nil) != tc.fail || (res.Issue != nil) != tc.issue {
@@ -148,10 +149,10 @@ func TestEditAnswers(t *testing.T) {
 // a transient failure; the group's outcome is unknown, the batch stops,
 // and no error text repeats the credential.
 func TestRankAnswerReadFailsOnTheCredential(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"issues":["`+strings.Join(webIssues(1, 50), `","`)+`"],"rankBeforeIssue":"WEB-500"}`)
+	f.On("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"issues":["`+strings.Join(webIssues(1, 50), `","`)+`"],"rankBeforeIssue":"WEB-500"}`)
 		conn, rw, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			t.Errorf("hijack: %v", err)
@@ -196,7 +197,7 @@ func TestRankAnswerReadFailsOnTheCredential(t *testing.T) {
 	if !joined {
 		t.Error("the transport's error holds no multi-error, so this test proves nothing about walking one")
 	}
-	if n := f.count("PUT", rankURL); n != 1 {
+	if n := f.Count("PUT", rankURL); n != 1 {
 		t.Errorf("%d groups sent", n)
 	}
 }

@@ -3,6 +3,8 @@ package linear
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -10,12 +12,21 @@ import (
 // criterion any listed value matches. The zero value selects every issue.
 // It is sent as the schema's IssueFilter input, never as query text.
 type IssueFilter struct {
-	Teams      []string // team IDs
-	States     []string // workflow state IDs
-	StateTypes []StateType
-	Cycle      Match
-	Assignee   Match
-	Project    Match
+	// IDs selects issues by ID (Issue.ID, a lowercase UUID); any other
+	// spelling is refused before sending, since Linear would fail the
+	// whole read on it.
+	IDs []string
+	// Identifiers selects issues by their current identifier, such as
+	// WEB-12: team key (case ignored) and number. An identifier the issue
+	// had before it moved team does not match. Anything ParseIdentifier
+	// refuses is refused before sending.
+	Identifiers []string
+	Teams       []string // team IDs
+	States      []string // workflow state IDs
+	StateTypes  []StateType
+	Cycle       Match
+	Assignee    Match
+	Project     Match
 	// Parent selects sub-issues of the listed issues, or top-level
 	// issues with None.
 	Parent Match
@@ -38,6 +49,8 @@ type (
 	issueFilterInput struct {
 		And       []issueFilterInput `json:"and,omitempty"`
 		Or        []issueFilterInput `json:"or,omitempty"`
+		ID        *idComparator      `json:"id,omitempty"`
+		Number    *numberComparator  `json:"number,omitempty"`
 		Team      *entityFilter      `json:"team,omitempty"`
 		State     *stateFilterInput  `json:"state,omitempty"`
 		Cycle     *entityFilter      `json:"cycle,omitempty"`
@@ -49,7 +62,14 @@ type (
 	}
 	entityFilter struct {
 		ID   *idComparator `json:"id,omitempty"`
+		Key  *keyCompare   `json:"key,omitempty"`
 		Null *bool         `json:"null,omitempty"`
+	}
+	keyCompare struct {
+		EqIgnoreCase string `json:"eqIgnoreCase"`
+	}
+	numberComparator struct {
+		In []int `json:"in"`
 	}
 	idComparator struct {
 		Eq string   `json:"eq,omitempty"`
@@ -76,6 +96,21 @@ func idIn(ids []string) *idComparator { return &idComparator{In: ids} }
 func (f IssueFilter) input() (*issueFilterInput, error) {
 	var and []issueFilterInput
 	add := func(clause issueFilterInput) { and = append(and, clause) }
+	for _, id := range f.IDs {
+		if !IsIssueID(id) {
+			return nil, fmt.Errorf("IDs holds %q, not an issue ID (a lowercase UUID)", id)
+		}
+	}
+	if len(f.IDs) > 0 {
+		add(issueFilterInput{ID: idIn(f.IDs)})
+	}
+	if len(f.Identifiers) > 0 {
+		clause, err := identifierClause(f.Identifiers)
+		if err != nil {
+			return nil, err
+		}
+		add(clause)
+	}
 	if err := checkIDs("Teams", f.Teams); err != nil {
 		return nil, err
 	}
@@ -154,6 +189,61 @@ func (m Match) clause(name string, set func(*issueFilterInput, *entityFilter)) (
 		return none, true, nil
 	}
 	return issueFilterInput{}, false, nil
+}
+
+// identifierClause selects issues by identifier: one alternative per
+// team key, matching the key with case ignored and any of its numbers.
+func identifierClause(identifiers []string) (issueFilterInput, error) {
+	var keys []string
+	numbers := map[string][]int{}
+	for _, s := range identifiers {
+		key, n, ok := ParseIdentifier(s)
+		if !ok {
+			return issueFilterInput{}, fmt.Errorf("the identifiers hold %q, not an issue identifier", s)
+		}
+		key = strings.ToUpper(key)
+		if _, seen := numbers[key]; !seen {
+			keys = append(keys, key)
+		}
+		if !slices.Contains(numbers[key], n) {
+			numbers[key] = append(numbers[key], n)
+		}
+	}
+	or := make([]issueFilterInput, 0, len(keys))
+	for _, key := range keys {
+		or = append(or, issueFilterInput{
+			Team:   &entityFilter{Key: &keyCompare{EqIgnoreCase: key}},
+			Number: &numberComparator{In: numbers[key]},
+		})
+	}
+	return issueFilterInput{Or: or}, nil
+}
+
+// ParseIdentifier splits an issue identifier such as WEB-12 into its
+// team key and number. The key is ASCII letters and digits; the number
+// is a positive decimal of at most nine digits with no sign or leading
+// zero. ok is false for anything else.
+func ParseIdentifier(s string) (teamKey string, number int, ok bool) {
+	i := strings.LastIndexByte(s, '-')
+	if i <= 0 || i == len(s)-1 {
+		return "", 0, false
+	}
+	key, digits := s[:i], s[i+1:]
+	for _, r := range key {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return "", 0, false
+		}
+	}
+	if digits[0] == '0' || len(digits) > 9 {
+		return "", 0, false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return "", 0, false
+		}
+		number = number*10 + int(r-'0')
+	}
+	return key, number, true
 }
 
 func checkIDs(name string, ids []string) error {

@@ -223,9 +223,10 @@ func buildNamedList(_ context.Context, _ *builder, f FieldMeta, in Input, v *Val
 	return out, nil
 }
 
-// buildIssue reads the issue named, so a typo fails before anything is
-// sent and the display names it, and sends the key Jira returned (an
-// issue that moved answers under its new key).
+// buildIssue reads the issue named by key or ID, so a typo fails before
+// anything is sent and the display names it, and sends the ID Jira
+// returned, which stays the issue's when it moves project and its key
+// changes.
 func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	ref := strings.TrimSpace(in.texts[0])
 	if err := checkIssue(ref); err != nil {
@@ -235,8 +236,11 @@ func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 	if err != nil {
 		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
 	}
+	if !numericRE.MatchString(is.ID) {
+		return nil, &AnswerError{Message: fmt.Sprintf("issue %s came without its numeric ID", ref)}
+	}
 	v.Display = is.Key + " " + is.Summary
-	return map[string]string{"key": is.Key}, nil
+	return map[string]string{"id": is.ID}, nil
 }
 
 // buildSprint takes a sprint's numeric ID, or the name of an open sprint

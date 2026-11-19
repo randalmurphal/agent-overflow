@@ -242,7 +242,7 @@ func (stored Worklog) outcome(op Op, p *prepared) Outcome {
 
 func refusedBefore(what string, problems []Problem) Outcome {
 	invalid := &InvalidError{Problems: problems}
-	return Outcome{Status: Refused, Problems: problems, Err: fmt.Errorf("tempo: %s: %w", what, &trackerapi.NotSentError{Err: invalid})}
+	return Outcome{Status: Refused, Problems: problems, Err: fmt.Errorf("tempo: %s: %w", what, trackerapi.InvalidInput(invalid))}
 }
 
 // failed classes a write's error.

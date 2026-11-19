@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // A write returns what Linear stored. When it fails, WriteNotApplied
@@ -28,6 +29,8 @@ type CreateIssueInput struct {
 	CycleID   Optional[string]
 	ProjectID Optional[string] // Null keeps a sub-issue out of its parent's project
 	ParentID  Optional[string] // an issue ID or identifier
+	// DueDate is a calendar day, YYYY-MM-DD; Null leaves none.
+	DueDate Optional[Date]
 }
 
 // issueInput is the wire form of IssueCreateInput and IssueUpdateInput;
@@ -49,6 +52,7 @@ type issueInput struct {
 	SortOrder         Optional[float64]  `json:"sortOrder,omitzero"`
 	PrioritySortOrder Optional[float64]  `json:"prioritySortOrder,omitzero"`
 	SubIssueSortOrder Optional[float64]  `json:"subIssueSortOrder,omitzero"`
+	DueDate           Optional[Date]     `json:"dueDate,omitzero"`
 }
 
 var opCreateIssue = newMutation("CreateIssue", `mutation CreateIssue($input: IssueCreateInput!) {
@@ -90,9 +94,13 @@ func (in CreateIssueInput) wire() (issueInput, error) {
 	if in.Priority.IsNull() {
 		return issueInput{}, errors.New("the priority cannot be null; set PriorityNone")
 	}
+	if err := checkDate(in.DueDate); err != nil {
+		return issueInput{}, err
+	}
 	w := issueInput{
 		TeamID: Set(in.TeamID), Title: Set(in.Title), StateID: in.StateID, AssigneeID: in.AssigneeID,
 		Priority: in.Priority, Estimate: in.Estimate, CycleID: in.CycleID, ProjectID: in.ProjectID, ParentID: in.ParentID,
+		DueDate: in.DueDate,
 	}
 	if in.Description != "" {
 		w.Description = Set(in.Description)
@@ -146,6 +154,8 @@ type UpdateIssueInput struct {
 	// TeamID moves the issue to another team, which gives it a new
 	// identifier; cannot be cleared.
 	TeamID Optional[string]
+	// DueDate is a calendar day, YYYY-MM-DD; Null clears it.
+	DueDate Optional[Date]
 }
 
 var opUpdateIssue = newMutation("UpdateIssue", `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
@@ -191,6 +201,9 @@ func (in UpdateIssueInput) wire() (issueInput, error) {
 	case !in.LabelIDs.IsZero() && (len(in.AddedLabelIDs) > 0 || len(in.RemovedLabelIDs) > 0):
 		return issueInput{}, errors.New("LabelIDs cannot be combined with AddedLabelIDs or RemovedLabelIDs")
 	}
+	if err := checkDate(in.DueDate); err != nil {
+		return issueInput{}, err
+	}
 	for _, list := range []struct {
 		name string
 		ids  []string
@@ -203,7 +216,7 @@ func (in UpdateIssueInput) wire() (issueInput, error) {
 		Title: in.Title, Description: in.Description, StateID: in.StateID, AssigneeID: in.AssigneeID,
 		Priority: in.Priority, Estimate: in.Estimate, LabelIDs: in.LabelIDs, AddedLabelIDs: in.AddedLabelIDs,
 		RemovedLabelIDs: in.RemovedLabelIDs, CycleID: in.CycleID, ProjectID: in.ProjectID, ParentID: in.ParentID,
-		TeamID: in.TeamID,
+		TeamID: in.TeamID, DueDate: in.DueDate,
 	}
 	if in.Description.IsNull() {
 		w.Description = Set("")
@@ -222,7 +235,18 @@ func (w issueInput) empty() bool {
 		w.AssigneeID.IsZero() && w.Priority.IsZero() && w.Estimate.IsZero() && w.LabelIDs.IsZero() &&
 		len(w.AddedLabelIDs) == 0 && len(w.RemovedLabelIDs) == 0 && w.CycleID.IsZero() &&
 		w.ProjectID.IsZero() && w.ParentID.IsZero() && w.SortOrder.IsZero() &&
-		w.PrioritySortOrder.IsZero() && w.SubIssueSortOrder.IsZero()
+		w.PrioritySortOrder.IsZero() && w.SubIssueSortOrder.IsZero() && w.DueDate.IsZero()
+}
+
+// checkDate refuses a set date that is not a calendar day, YYYY-MM-DD.
+func checkDate(d Optional[Date]) error {
+	if !d.IsSet() {
+		return nil
+	}
+	if t, err := time.Parse(time.DateOnly, string(d.Value())); err != nil || t.Format(time.DateOnly) != string(d.Value()) {
+		return fmt.Errorf("due date %q is not a calendar day, YYYY-MM-DD", d.Value())
+	}
+	return nil
 }
 
 var opArchiveIssue = newMutation("ArchiveIssue", `mutation ArchiveIssue($id: String!) {

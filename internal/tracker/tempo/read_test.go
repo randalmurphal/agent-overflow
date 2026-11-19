@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/tracker/tempo/tempotest"
 )
 
 func TestDate(t *testing.T) {
@@ -77,9 +79,9 @@ func TestTimeOfDay(t *testing.T) {
 }
 
 func TestSchedule(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/user-schedule/acc-user1", q("from", "2026-12-24", "to", "2026-12-26"), "", 200, `{"self":"x","metadata":{"count":3},"results":[
+	f.On("GET", "/4/user-schedule/acc-user1", q("from", "2026-12-24", "to", "2026-12-26"), "", 200, `{"self":"x","metadata":{"count":3},"results":[
 	 {"date":"2026-12-24","requiredSeconds":14400,"type":"WORKING_DAY"},
 	 {"date":"2026-12-25","requiredSeconds":0,"type":"HOLIDAY","holiday":{"self":"x","id":3,"schemeId":1,"name":"Holiday 1","description":"A day off","durationSeconds":28800,"date":"2026-12-25","type":"FIXED"}},
 	 {"date":"2026-12-26","requiredSeconds":0,"type":"NON_WORKING_DAY"}]}`)
@@ -101,9 +103,9 @@ func TestSchedule(t *testing.T) {
 }
 
 func TestApproval(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "APPROVED"))
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "APPROVED"))
 	got, err := c.Approval(context.Background(), "acc-user1", mustDate(t, "2026-11-04"))
 	if err != nil {
 		t.Fatal(err)
@@ -117,11 +119,11 @@ func TestApproval(t *testing.T) {
 }
 
 func TestAccounts(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"statuses":["OPEN"]}`, 200, pageOf(0, true,
+	f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"statuses":["OPEN"]}`, 200, pageOf(0, true,
 		`{"self":"x","id":1,"key":"ACME","name":"Acme","status":"OPEN","global":false,"lead":{"accountId":"acc-user1"}}`))
-	f.on("POST", "/4/accounts/search", q("offset", "1", "limit", "1000"), `{"statuses":["OPEN"]}`, 200, pageOf(1, false,
+	f.On("POST", "/4/accounts/search", q("offset", "1", "limit", "1000"), `{"statuses":["OPEN"]}`, 200, pageOf(1, false,
 		`{"self":"x","id":2,"key":"INT","name":"Internal","status":"OPEN","global":true}`))
 	got, err := c.Accounts(context.Background(), AccountQuery{Statuses: []AccountStatus{AccountOpen}})
 	if err != nil {
@@ -134,13 +136,13 @@ func TestAccounts(t *testing.T) {
 }
 
 func TestAccountsBound(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	items := make([]string, maxAccounts+1)
 	for i := range items {
 		items[i] = `{"id":1,"key":"A","name":"A","status":"OPEN"}`
 	}
-	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{}`, 200, pageOf(0, false, items...))
+	f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{}`, 200, pageOf(0, false, items...))
 	if _, err := c.Accounts(context.Background(), AccountQuery{}); err == nil {
 		t.Fatal("a listing over the bound was returned")
 	}
@@ -209,16 +211,16 @@ func TestTimestamps(t *testing.T) {
 		}
 	}
 
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	approval := `{"self":"x","actions":{},"worklogs":{"self":"x"},"user":{"accountId":"acc-user1"},"period":{"from":"2026-11-02","to":"2026-11-08"},
 "requiredSeconds":0,"timeSpentSeconds":0,"status":{"key":"OPEN","updatedAt":"2022-01-01"}}`
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, approval)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, approval)
 	got, err := c.Approval(context.Background(), "acc-user1", mustDate(t, "2026-11-04"))
 	if err != nil || !got.Changed.Equal(time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("approval with a date-only updatedAt: %+v %v", got, err)
 	}
-	f.on("GET", "/4/worklogs/44", nil, "", 200, `{"tempoWorklogId":44,"issue":{"id":10001},"author":{"accountId":"acc-user1"},
+	f.On("GET", "/4/worklogs/44", nil, "", 200, `{"tempoWorklogId":44,"issue":{"id":10001},"author":{"accountId":"acc-user1"},
 "startDate":"2026-11-04","timeSpentSeconds":60,"createdAt":"2026-11-04","updatedAt":"2026-11-05T08:00:00Z","attributes":{"values":[]}}`)
 	w, err := c.Worklog(context.Background(), 44)
 	if err != nil || !w.Created.Equal(time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)) {

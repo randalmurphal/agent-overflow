@@ -6,15 +6,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/tracker/tempo/tempotest"
 )
 
 // siteFixture serves the attributes, and the approvals of the three
 // weeks the checks read: approved, open and waiting for approval.
-func siteFixture(f *fakeTempo) {
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-03", "to", "2026-11-03"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "APPROVED"))
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-17", "to", "2026-11-17"), "", 200, approvalJSONFor("2026-11-16", "2026-11-22", "IN_REVIEW"))
+func siteFixture(f *tempotest.Server) {
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-03", "to", "2026-11-03"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "APPROVED"))
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-17", "to", "2026-11-17"), "", 200, approvalJSONFor("2026-11-16", "2026-11-22", "IN_REVIEW"))
 }
 
 type want struct {
@@ -32,15 +34,15 @@ func kinds(ps []Problem) []want {
 }
 
 func TestValidateRules(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	c := testClient(t, f, issues)
 	siteFixture(f)
-	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["ACME","OLD","GONE","NOPE"]}`, 200, pageOf(0, false,
+	f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["ACME","OLD","GONE","NOPE"]}`, 200, pageOf(0, false,
 		`{"id":1,"key":"ACME","name":"Acme","status":"OPEN","global":false}`,
 		`{"id":2,"key":"OLD","name":"Old","status":"CLOSED","global":false}`,
 		`{"id":3,"key":"GONE","name":"Gone","status":"ARCHIVED","global":true}`))
-	f.on("GET", "/4/globalconfiguration", nil, "", 200, `{"allowLoggingOnClosedAccount":false,"approvalPeriod":"WEEK","approvalWeekStart":1,"numberOfDaysAllowedIntoFuture":30,"planApprovalEnabled":false,"weekStart":1}`)
+	f.On("GET", "/4/globalconfiguration", nil, "", 200, `{"allowLoggingOnClosedAccount":false,"approvalPeriod":"WEEK","approvalWeekStart":1,"numberOfDaysAllowedIntoFuture":30,"planApprovalEnabled":false,"weekStart":1}`)
 
 	day := Start{Date: mustDate(t, "2026-11-10"), Time: mustClock(t, "09:00:00")}
 	cat := AttributeValue{Key: "_Category_", Value: "dev"}
@@ -128,14 +130,14 @@ func TestValidateRules(t *testing.T) {
 // TestValidateInactiveAccountsAllowed: Tempo's one setting lets a
 // worklog name a closed or an archived account.
 func TestValidateInactiveAccountsAllowed(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["OLD","GONE"]}`, 200, pageOf(0, false,
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["OLD","GONE"]}`, 200, pageOf(0, false,
 		`{"id":2,"key":"OLD","name":"Old","status":"CLOSED","global":false}`,
 		`{"id":3,"key":"GONE","name":"Gone","status":"ARCHIVED","global":false}`))
-	f.on("GET", "/4/globalconfiguration", nil, "", 200, `{"allowLoggingOnClosedAccount":true,"weekStart":7}`)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
+	f.On("GET", "/4/globalconfiguration", nil, "", 200, `{"allowLoggingOnClosedAccount":true,"weekStart":7}`)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
 	op := func(account string) Op {
 		return CreateOp(Draft{
 			Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")}, Spent: time.Hour,
@@ -158,10 +160,10 @@ func TestValidateInactiveAccountsAllowed(t *testing.T) {
 }
 
 func TestValidateReadFailure(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "OPEN"))
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "OPEN"))
 	reports, err := c.Validate(context.Background(), []Op{CreateOp(Draft{
 		Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")}, Spent: time.Hour,
 		Attributes: []AttributeValue{{"_Category_", "dev"}},

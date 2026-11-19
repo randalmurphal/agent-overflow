@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -28,9 +29,9 @@ const (
 )
 
 // boardPages answers the board listing with n boards, two a page.
-func boardPages(t *testing.T, n int) handler {
+func boardPages(t *testing.T, n int) jiratest.Handler {
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "maxResults", "50")
+		jiratest.WantQuery(t, r, "maxResults", "50")
 		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
 		var values string
 		for i := start; i < min(start+2, n); i++ {
@@ -39,18 +40,18 @@ func boardPages(t *testing.T, n int) handler {
 			}
 			values += fmt.Sprintf(`{"id":%d,"name":"Board %d","type":"scrum","location":{"projectId":10000,"projectKey":"WEB"}}`, i+1, i+1)
 		}
-		reply(200, fmt.Sprintf(`{"startAt":%d,"total":%d,"isLast":%v,"values":[%s]}`, start, n, start+2 >= n, values))(w, r, b)
+		jiratest.Reply(200, fmt.Sprintf(`{"startAt":%d,"total":%d,"isLast":%v,"values":[%s]}`, start, n, start+2 >= n, values))(w, r, b)
 	}
 }
 
 func TestBoards(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	pages := boardPages(t, 5)
-	f.on("GET", boardsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "projectKeyOrId", "WEB")
-		wantQuery(t, r, "type", "scrum,kanban")
-		wantQuery(t, r, "name", "Board")
+	f.On("GET", boardsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "projectKeyOrId", "WEB")
+		jiratest.WantQuery(t, r, "type", "scrum,kanban")
+		jiratest.WantQuery(t, r, "name", "Board")
 		pages(w, r, b)
 	})
 	q := BoardQuery{Project: "WEB", Types: []BoardType{BoardScrum, BoardKanban}, Name: "Board"}
@@ -63,7 +64,7 @@ func TestBoards(t *testing.T) {
 	if err != nil || some.Complete || len(some.Boards) != 3 {
 		t.Fatalf("limited: %+v %v", some, err)
 	}
-	before := len(f.requests())
+	before := len(f.Requests())
 	for name, bad := range map[string]BoardQuery{
 		"a type":     {Types: []BoardType{"Scrum"}},
 		"a limit":    {Limit: -1},
@@ -74,15 +75,15 @@ func TestBoards(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if len(f.requests()) != before {
+	if len(f.Requests()) != before {
 		t.Error("a refused listing was sent")
 	}
 }
 
 func TestBoardConfig(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", boardConfigURL, reply(200, boardConfigBody))
+	f.On("GET", boardConfigURL, jiratest.Reply(200, boardConfigBody))
 	cfg, err := c.BoardConfig(t.Context(), 3)
 	if err != nil {
 		t.Fatal(err)
@@ -104,11 +105,11 @@ func TestBoardConfig(t *testing.T) {
 	if err != nil || again.Columns[2].StatusIDs[0] != "10001" || again.DoneStatusIDs()[0] != "10001" {
 		t.Fatalf("a cached configuration changed: %+v %v", again, err)
 	}
-	if n := f.count("GET", boardConfigURL); n != 1 {
+	if n := f.Count("GET", boardConfigURL); n != 1 {
 		t.Errorf("%d reads, want 1", n)
 	}
 	c.ForgetBoards()
-	if _, err := c.BoardConfig(t.Context(), 3); err != nil || f.count("GET", boardConfigURL) != 2 {
+	if _, err := c.BoardConfig(t.Context(), 3); err != nil || f.Count("GET", boardConfigURL) != 2 {
 		t.Errorf("after ForgetBoards: %v", err)
 	}
 	if _, err := c.BoardConfig(t.Context(), 0); !trackerapi.WriteNotApplied(err) {
@@ -119,20 +120,20 @@ func TestBoardConfig(t *testing.T) {
 // TestBoardConfigReadInFlightIsFenced proves a configuration read that
 // was in flight when ForgetBoards dropped the cache is not kept.
 func TestBoardConfigReadInFlightIsFenced(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", boardConfigURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if f.count("GET", boardConfigURL) == 1 {
+	f.On("GET", boardConfigURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if f.Count("GET", boardConfigURL) == 1 {
 			c.ForgetBoards()
 		}
-		reply(200, boardConfigBody)(w, r, b)
+		jiratest.Reply(200, boardConfigBody)(w, r, b)
 	})
 	for range 2 {
 		if _, err := c.BoardConfig(t.Context(), 3); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := f.count("GET", boardConfigURL); n != 2 {
+	if n := f.Count("GET", boardConfigURL); n != 2 {
 		t.Errorf("%d reads, want 2: the read in flight was kept", n)
 	}
 }

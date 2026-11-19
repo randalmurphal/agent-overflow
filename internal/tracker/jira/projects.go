@@ -203,6 +203,25 @@ func (c *Client) ProjectStatuses(ctx context.Context, project string) ([]TypeSta
 	return out, nil
 }
 
+// Statuses returns the site's statuses that are in an active workflow of
+// a project the user can browse, in one unpaged read. Jira's bulk read
+// by ID (GET statuses) needs project administration, so this is the
+// read that names a status outside any one project.
+func (c *Client) Statuses(ctx context.Context) ([]Status, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
+	var found []statusJSON
+	if err := c.get(ctx, "status", nil, &found); err != nil {
+		return nil, fmt.Errorf("jira: list statuses: %w", err)
+	}
+	out := make([]Status, len(found))
+	for i, s := range found {
+		out[i] = s.status()
+	}
+	return out, nil
+}
+
 // Priorities returns the site's priorities, reading every page.
 func (c *Client) Priorities(ctx context.Context) ([]Priority, error) {
 	if err := c.admit(ctx); err != nil {

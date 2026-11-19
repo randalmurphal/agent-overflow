@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/secret"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -25,34 +26,34 @@ func (s *rotatingCredentials) Credential(context.Context) (*trackerapi.Credentia
 
 // markSite is a fake site that answers every issue with 404 and the
 // sign-in check by user: myself[user] is its status.
-func markSite(t *testing.T, myself map[string]int) *fakeJira {
-	f := newFake(t)
-	f.on("GET", issuePath404, reply(404, `{}`))
-	f.on("DELETE", "/rest/api/3/attachment/404", reply(404, `{}`))
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+func markSite(t *testing.T, myself map[string]int) *jiratest.Server {
+	f := jiratest.NewServer(t)
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
+	f.On("DELETE", "/rest/api/3/attachment/404", jiratest.Reply(404, `{}`))
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		user, _, _ := r.BasicAuth()
 		status, ok := myself[user]
 		if !ok {
 			t.Errorf("sign-in check under %q", user)
 		}
 		if status == 200 {
-			reply(200, userOneJSON)(w, r, b)
+			jiratest.Reply(200, userOneJSON)(w, r, b)
 			return
 		}
-		reply(status, `{"errorMessages":["Client must be authenticated"]}`)(w, r, b)
+		jiratest.Reply(status, `{"errorMessages":["Client must be authenticated"]}`)(w, r, b)
 	})
 	return f
 }
 
 // markClient is a client on f reading src, whose OnAnswer is onAnswer
 // with the client in hand.
-func markClient(t *testing.T, f *fakeJira, src trackerapi.CredentialSource, onAnswer func(c *Client, status int)) *Client {
+func markClient(t *testing.T, f *jiratest.Server, src trackerapi.CredentialSource, onAnswer func(c *Client, status int)) *Client {
 	t.Helper()
 	var (
 		mu sync.Mutex
 		c  *Client
 	)
-	opts := Options{BaseURL: f.srv.URL, Version: "test", Credentials: src}
+	opts := Options{BaseURL: f.URL(), Version: "test", Credentials: src}
 	if onAnswer != nil {
 		opts.OnAnswer = func(status int, _ http.Header) {
 			mu.Lock()

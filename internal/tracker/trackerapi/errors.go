@@ -34,6 +34,27 @@ type NotSentError struct{ Err error }
 func (e *NotSentError) Error() string { return e.Err.Error() }
 func (e *NotSentError) Unwrap() error { return e.Err }
 
+// ErrInvalidInput is matched, through errors.Is, by the error of a call
+// a tracker client refused before sending because its input is wrong or
+// cannot apply as given. Such an error is also a *NotSentError; this
+// tells it from a call that was not sent for another reason (a closed
+// client, an ended call, a credential that could not be read).
+var ErrInvalidInput = errors.New("trackerapi: invalid input")
+
+// InvalidInput is a client's refusal of its input before sending: a
+// *NotSentError, with err's message, that matches ErrInvalidInput and
+// still unwraps to err.
+func InvalidInput(err error) error {
+	return &NotSentError{Err: inputError{err}}
+}
+
+// inputError marks a refused input without changing its message.
+type inputError struct{ err error }
+
+func (e inputError) Error() string      { return e.err.Error() }
+func (e inputError) Unwrap() error      { return e.err }
+func (inputError) Is(target error) bool { return target == ErrInvalidInput }
+
 // AuthError is the tracker refusing the credential: a 401 after the
 // credential was read again, or an answer the dialect marks as a refused
 // login (Status is then the answer's, which can be a 2xx). Err is the

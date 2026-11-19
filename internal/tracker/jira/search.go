@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -272,7 +273,7 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 // JQL: a backslash and a double quote are escaped, and a line break, a
 // carriage return and a tab are written as \n, \r and \t. After the ~
 // operator the literal is also a text search query, whose own syntax
-// (wildcards, "-") is not escaped here.
+// (wildcards, "-") is not escaped here; QuoteJQLText escapes it.
 func QuoteJQL(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 2)
@@ -294,6 +295,39 @@ func QuoteJQL(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// textSyntax are the characters Jira's text search reads as syntax after
+// the ~ operator: the operators + - && || !, grouping ( ), phrase quotes,
+// the wildcards * and ?, fuzzy ~ and boost ^ (ignored by Jira Cloud but
+// still parsed), and the range { } [ ], field : and regular expression /
+// delimiters of the Lucene syntax it descends from, with the backslash
+// that escapes them. Source: Atlassian, "Search for work items using the
+// text field" and "What is advanced search in Jira Cloud?", Restricted
+// words and characters (support.atlassian.com, read 2026-11-19).
+const textSyntax = `+-&|!(){}[]^"~*?:\/`
+
+// textOperators are the words Jira's text search reads as operators; it
+// does so only in capitals, and its terms ignore case.
+var textOperators = regexp.MustCompile(`\b(AND|OR|NOT)\b`)
+
+// QuoteJQLText writes s as the JQL string literal of a text search, the
+// value after the ~ operator, so typed text is searched for as words and
+// never acts as a wildcard or an operator: each character textSyntax holds
+// is escaped with a backslash, the words AND, OR and NOT are written in
+// lower case, which finds the same words, and the result is quoted with
+// QuoteJQL, which escapes those backslashes again for JQL.
+func QuoteJQLText(s string) string {
+	s = textOperators.ReplaceAllStringFunc(s, strings.ToLower)
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		if strings.ContainsRune(textSyntax, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return QuoteJQL(b.String())
 }
 
 // QuoteJQLList writes ss as a parenthesized list of JQL string literals,

@@ -7,21 +7,18 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/trackerapi"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
-const teamJSON = `{"id":"team-%s","key":"%s","name":"Web","description":null,"timezone":"Europe/Dublin",` +
-	`"issueEstimationType":"fibonacci","issueEstimationExtended":false,"issueEstimationAllowZero":true,"defaultIssueEstimate":1,` +
-	`"cyclesEnabled":true,"cycleDuration":2,"activeCycle":{"id":"cycle-1"},"triageEnabled":true,"defaultIssueState":{"id":"state-backlog"},` +
-	`"triageIssueState":{"id":"state-triage"},"setIssueSortOrderOnStateChange":"first","archivedAt":null,"updatedAt":"2026-11-01T09:00:00.000Z"}`
-
-func team(key string) string { return strings.ReplaceAll(teamJSON, "%s", key) }
+func team(key string) string { return lineartest.NewTeam(key).JSON() }
 
 // A catalog read pages to the end with the cursor each page returns.
 func TestTeamsPagesToTheEnd(t *testing.T) {
 	t.Parallel()
 	f := newFake(t,
-		exchange{op: "Teams", vars: `{"first":100}`, body: data(pageJSON([]string{team("WEB")}, true, "cursor-1"))},
-		exchange{op: "Teams", vars: `{"first":100,"after":"cursor-1"}`, body: data(pageJSON([]string{team("APP")}, false, ""))},
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100}`, Body: lineartest.Data(lineartest.PageJSON([]string{team("WEB")}, true, "cursor-1"))},
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100,"after":"cursor-1"}`, Body: lineartest.Data(lineartest.PageJSON([]string{team("APP")}, false, ""))},
 	)
 	teams, err := f.client(t).Teams(context.Background())
 	if err != nil {
@@ -43,8 +40,8 @@ func TestTeamsPagesToTheEnd(t *testing.T) {
 func TestCatalogMidWalkFailure(t *testing.T) {
 	t.Parallel()
 	f := newFake(t,
-		exchange{op: "Teams", vars: `{"first":100}`, body: data(pageJSON([]string{team("WEB")}, true, "cursor-1"))},
-		exchange{op: "Teams", vars: `{"first":100,"after":"cursor-1"}`, status: 400, body: inputBody},
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100}`, Body: lineartest.Data(lineartest.PageJSON([]string{team("WEB")}, true, "cursor-1"))},
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100,"after":"cursor-1"}`, Status: 400, Body: inputBody},
 	)
 	teams, err := f.client(t).Teams(context.Background())
 	if teams != nil || !strings.Contains(err.Error(), "1 items were read before it") {
@@ -55,13 +52,13 @@ func TestCatalogMidWalkFailure(t *testing.T) {
 	}
 
 	stuck := newFake(t,
-		exchange{op: "Teams", vars: `{"first":100}`, body: data(pageJSON([]string{team("WEB")}, true, "cursor-1"))},
-		exchange{op: "Teams", vars: `{"first":100,"after":"cursor-1"}`, body: data(pageJSON([]string{team("WEB")}, true, "cursor-1"))},
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100}`, Body: lineartest.Data(lineartest.PageJSON([]string{team("WEB")}, true, "cursor-1"))},
+		lineartest.Exchange{Op: "Teams", Vars: `{"first":100,"after":"cursor-1"}`, Body: lineartest.Data(lineartest.PageJSON([]string{team("WEB")}, true, "cursor-1"))},
 	)
 	if _, err := stuck.client(t).Teams(context.Background()); err == nil || !strings.Contains(err.Error(), "did not advance") {
 		t.Errorf("a repeated cursor: %v", err)
 	}
-	noCursor := newFake(t, exchange{op: "Teams", vars: `{"first":100}`, body: data(pageJSON(nil, true, ""))})
+	noCursor := newFake(t, lineartest.Exchange{Op: "Teams", Vars: `{"first":100}`, Body: lineartest.Data(lineartest.PageJSON(nil, true, ""))})
 	if _, err := noCursor.client(t).Teams(context.Background()); err == nil || !strings.Contains(err.Error(), "without a cursor") {
 		t.Errorf("a next page without a cursor: %v", err)
 	}
@@ -69,27 +66,25 @@ func TestCatalogMidWalkFailure(t *testing.T) {
 
 func TestCatalogReads(t *testing.T) {
 	t.Parallel()
-	state := `{"id":"state-todo","name":"Todo","color":"#aaa","description":null,"type":"unstarted","position":1,"team":{"id":"team-web"},"archivedAt":null}`
-	user := `{"id":"user-2","name":"User 2","displayName":"user2","email":"user2@example.com","avatarUrl":"https://example.com/a.png","active":true,"admin":true,"guest":false,"app":false,"isMe":false}`
-	label := `{"id":"label-bug","name":"Bug","color":"#f00","description":null,"isGroup":false,"parent":{"id":"label-type"},"team":null,"archivedAt":null}`
-	project := `{"id":"project-1","name":"Launch","url":"https://linear.app/example/project/launch","status":{"id":"ps-1","name":"In Progress","type":"started"},` +
-		`"lead":{"id":"user-1"},"startDate":"2026-11-01","targetDate":null,"completedAt":null,"canceledAt":null,"archivedAt":null,"updatedAt":"2026-11-01T09:00:00.000Z"}`
-	cycle := `{"id":"cycle-1","number":1,"name":"Sprint 1","description":null,"team":{"id":"team-web"},"startsAt":"2026-11-02T00:00:00.000Z","endsAt":"2026-11-16T00:00:00.000Z",` +
-		`"completedAt":null,"archivedAt":null,"isActive":false,"isFuture":false,"isPast":true,"isNext":false,"isPrevious":true,"progress":0.5,` +
-		`"scopeHistory":[3,5],"completedScopeHistory":[0,2],"inProgressScopeHistory":[1,1],"issueCountHistory":[2,3],"completedIssueCountHistory":[0,1]}`
+	state := lineartest.State{ID: "state-todo", Name: "Todo", Type: "unstarted", Position: 1, Team: "team-web"}.JSON()
+	user := lineartest.User{ID: "user-2", Name: "User 2", DisplayName: "user2", Email: "user2@example.com", Active: true, Admin: true}.JSON()
+	label := lineartest.Label{ID: "label-bug", Name: "Bug", Parent: "label-type"}.JSON()
+	project := lineartest.Project{ID: "project-1", Name: "Launch", Lead: "user-1", StartDate: "2026-11-01"}.JSON()
+	cycle := lineartest.Cycle{ID: "cycle-1", Number: 1, Name: "Sprint 1", Team: "team-web", StartsAt: "2026-11-02T00:00:00.000Z",
+		EndsAt: "2026-11-16T00:00:00.000Z", Past: true, Previous: true}.JSON()
 	f := newFake(t,
-		exchange{op: "WorkflowStates", vars: `{"teamId":"team-web","first":100}`, body: data(pageJSON([]string{state}, false, ""))},
-		exchange{op: "Users", vars: `{"first":100}`, body: data(pageJSON([]string{user}, false, ""))},
-		exchange{op: "Users", vars: `{"first":100,"includeDisabled":true}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "TeamMembers", vars: `{"teamId":"team-web","first":100}`, body: `{"data":{"node":{` + pageJSON([]string{user}, false, "") + `}}}`},
-		exchange{op: "Labels", vars: `{"first":100,"filter":{"or":[{"team":{"id":{"eq":"team-web"}}},{"team":{"null":true}}]}}`, body: data(pageJSON([]string{label}, false, ""))},
-		exchange{op: "Labels", vars: `{"first":100}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "Projects", vars: `{"first":100,"filter":{"accessibleTeams":{"some":{"id":{"eq":"team-web"}}}}}`, body: data(pageJSON([]string{project}, false, ""))},
-		exchange{op: "Projects", vars: `{"first":100,"includeArchived":true}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "Cycles", vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}},"isPast":{"eq":true}}}`, body: data(pageJSON([]string{cycle}, false, ""))},
-		exchange{op: "Cycles", vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}},"isActive":{"eq":true}},"includeArchived":true}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "Cycles", vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}},"isFuture":{"eq":true}}}`, body: data(pageJSON(nil, false, ""))},
-		exchange{op: "Cycles", vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}}}}`, body: data(pageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "WorkflowStates", Vars: `{"teamId":"team-web","first":100}`, Body: lineartest.Data(lineartest.PageJSON([]string{state}, false, ""))},
+		lineartest.Exchange{Op: "Users", Vars: `{"first":100}`, Body: lineartest.Data(lineartest.PageJSON([]string{user}, false, ""))},
+		lineartest.Exchange{Op: "Users", Vars: `{"first":100,"includeDisabled":true}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "TeamMembers", Vars: `{"teamId":"team-web","first":100}`, Body: `{"data":{"node":{` + lineartest.PageJSON([]string{user}, false, "") + `}}}`},
+		lineartest.Exchange{Op: "Labels", Vars: `{"first":100,"filter":{"or":[{"team":{"id":{"eq":"team-web"}}},{"team":{"null":true}}]}}`, Body: lineartest.Data(lineartest.PageJSON([]string{label}, false, ""))},
+		lineartest.Exchange{Op: "Labels", Vars: `{"first":100}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "Projects", Vars: `{"first":100,"filter":{"accessibleTeams":{"some":{"id":{"eq":"team-web"}}}}}`, Body: lineartest.Data(lineartest.PageJSON([]string{project}, false, ""))},
+		lineartest.Exchange{Op: "Projects", Vars: `{"first":100,"includeArchived":true}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "Cycles", Vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}},"isPast":{"eq":true}}}`, Body: lineartest.Data(lineartest.PageJSON([]string{cycle}, false, ""))},
+		lineartest.Exchange{Op: "Cycles", Vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}},"isActive":{"eq":true}},"includeArchived":true}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "Cycles", Vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}},"isFuture":{"eq":true}}}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "Cycles", Vars: `{"first":50,"filter":{"team":{"id":{"eq":"team-web"}}}}`, Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
 	)
 	c := f.client(t)
 	ctx := context.Background()

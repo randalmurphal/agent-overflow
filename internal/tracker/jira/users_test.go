@@ -9,15 +9,16 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 func TestUserIsCachedAndForgotten(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "accountId", "acc-user1")
-		reply(200, userOneJSON)(w, r, b)
+	f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "accountId", "acc-user1")
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
 	for range 2 {
 		u, err := c.User(t.Context(), "acc-user1")
@@ -25,14 +26,14 @@ func TestUserIsCachedAndForgotten(t *testing.T) {
 			t.Fatalf("got %+v, %v", u, err)
 		}
 	}
-	if n := f.count("GET", "/rest/api/3/user"); n != 1 {
+	if n := f.Count("GET", "/rest/api/3/user"); n != 1 {
 		t.Errorf("%d reads, want 1 then the cache", n)
 	}
 	c.ForgetUsers()
 	if _, err := c.User(t.Context(), "acc-user1"); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.count("GET", "/rest/api/3/user"); n != 2 {
+	if n := f.Count("GET", "/rest/api/3/user"); n != 2 {
 		t.Errorf("ForgetUsers kept the user: %d reads", n)
 	}
 }
@@ -40,15 +41,15 @@ func TestUserIsCachedAndForgotten(t *testing.T) {
 // TestForgetUsersBeatsAReadInFlight proves a read that started before
 // ForgetUsers stores nothing when it ends after it.
 func TestForgetUsersBeatsAReadInFlight(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	entered, release := make(chan struct{}), make(chan struct{})
-	f.on("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if c.users.epoch() == 0 {
 			close(entered)
 			<-release
 		}
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
 	done := make(chan error)
 	go func() {
@@ -91,9 +92,9 @@ func TestCacheIsBoundedAndFenced(t *testing.T) {
 }
 
 func TestMyself(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", myselfURL, reply(200, userOneJSON))
+	f.On("GET", myselfURL, jiratest.Reply(200, userOneJSON))
 	u, err := c.Myself(t.Context())
 	if err != nil || u.AccountID != "acc-user1" {
 		t.Fatalf("got %+v %v", u, err)
@@ -102,7 +103,7 @@ func TestMyself(t *testing.T) {
 
 // userSearch answers user/search: by account ID from byID, and by query
 // from the list byQuery names, windowed by startAt and maxResults.
-func userSearch(t *testing.T, byID map[string]string, byQuery map[string][]string) handler {
+func userSearch(t *testing.T, byID map[string]string, byQuery map[string][]string) jiratest.Handler {
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
 		q := r.URL.Query()
 		if id := q.Get("accountId"); id != "" {
@@ -110,10 +111,10 @@ func userSearch(t *testing.T, byID map[string]string, byQuery map[string][]strin
 				t.Error("a user search by both query and account ID")
 			}
 			if u, ok := byID[id]; ok {
-				reply(200, `[`+u+`]`)(w, r, b)
+				jiratest.Reply(200, `[`+u+`]`)(w, r, b)
 				return
 			}
-			reply(200, `[]`)(w, r, b)
+			jiratest.Reply(200, `[]`)(w, r, b)
 			return
 		}
 		all := byQuery[q.Get("query")]
@@ -121,10 +122,10 @@ func userSearch(t *testing.T, byID map[string]string, byQuery map[string][]strin
 		max, _ := strconv.Atoi(q.Get("maxResults"))
 		end := min(start+max, len(all), maxUserSearch)
 		if start >= end {
-			reply(200, `[]`)(w, r, b)
+			jiratest.Reply(200, `[]`)(w, r, b)
 			return
 		}
-		reply(200, `[`+strings.Join(all[start:end], ",")+`]`)(w, r, b)
+		jiratest.Reply(200, `[`+strings.Join(all[start:end], ",")+`]`)(w, r, b)
 	}
 }
 
@@ -133,9 +134,9 @@ func person(id, name string, active bool, kind string) string {
 }
 
 func TestFindUser(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-user2": userTwoJSON}, map[string][]string{
+	f.On("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-user2": userTwoJSON}, map[string][]string{
 		"User 1":            {userOneJSON, person("acc-user10", "User 10", true, "atlassian")},
 		"Twin":              {person("acc-a", "Twin", true, "atlassian"), person("acc-b", "twin", true, "atlassian")},
 		"user2@example.com": {userTwoJSON},
@@ -165,7 +166,7 @@ func TestFindUser(t *testing.T) {
 // search was read to its end: a second exact match past the first page
 // makes it ambiguous, and a window Jira cuts makes it unprovable.
 func TestFindUserWalksTheWholeWindow(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	many := func(n int, twinAt int) []string {
 		out := make([]string, n)
@@ -179,7 +180,7 @@ func TestFindUserWalksTheWholeWindow(t *testing.T) {
 		return out
 	}
 	byQuery := map[string][]string{"Sam": many(101, 100)}
-	f.on("GET", "/rest/api/3/user/search", userSearch(t, nil, byQuery))
+	f.On("GET", "/rest/api/3/user/search", userSearch(t, nil, byQuery))
 	_, err := c.FindUser(t.Context(), "Sam")
 	if me, ok := errors.AsType[*MatchError](err); !ok || !me.Ambiguous || len(me.Candidates) != 2 {
 		t.Errorf("a twin at 101: %v", err)
@@ -195,21 +196,21 @@ func TestFindUserWalksTheWholeWindow(t *testing.T) {
 	}
 	// A search that ignores startAt hands out its first page again: the
 	// walk fails at the repeat rather than read the window through.
-	before := f.count("GET", "/rest/api/3/user/search")
-	f.on("GET", "/rest/api/3/user/search", reply(200, `[`+person("acc-first", "Sam Smith", true, "atlassian")+`]`))
+	before := f.Count("GET", "/rest/api/3/user/search")
+	f.On("GET", "/rest/api/3/user/search", jiratest.Reply(200, `[`+person("acc-first", "Sam Smith", true, "atlassian")+`]`))
 	_, err = c.FindUser(t.Context(), "Sam Smith")
-	if err == nil || !strings.Contains(err.Error(), "repeated") || f.count("GET", "/rest/api/3/user/search")-before != 2 {
-		t.Errorf("a repeated page: %v after %d pages", err, f.count("GET", "/rest/api/3/user/search")-before)
+	if err == nil || !strings.Contains(err.Error(), "repeated") || f.Count("GET", "/rest/api/3/user/search")-before != 2 {
+		t.Errorf("a repeated page: %v after %d pages", err, f.Count("GET", "/rest/api/3/user/search")-before)
 	}
 }
 
 // TestFindUserByIDIsEligibleOnly proves an account ID, from the cache
 // or a search, names only an active user who is not an app.
 func TestFindUserByIDIsEligibleOnly(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-bot": person("acc-bot", "Bot", true, "app")}, nil))
-	f.on("GET", "/rest/api/3/user", reply(200, person("acc-gone", "Gone", false, "atlassian")))
+	f.On("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-bot": person("acc-bot", "Bot", true, "app")}, nil))
+	f.On("GET", "/rest/api/3/user", jiratest.Reply(200, person("acc-gone", "Gone", false, "atlassian")))
 	if _, err := c.User(t.Context(), "acc-gone"); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +225,7 @@ func TestFindUserByIDIsEligibleOnly(t *testing.T) {
 // 400 without one of issueKey, issueId or project, and 400 unless exactly
 // one of query and accountId is sent. assignable holds the users who can
 // be assigned, by account ID; a query matches the start of their names.
-func assignableSearch(t *testing.T, assignable map[string]string, names map[string]string) handler {
+func assignableSearch(t *testing.T, assignable map[string]string, names map[string]string) jiratest.Handler {
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
 		q := r.URL.Query()
 		scopes := 0
@@ -235,7 +236,7 @@ func assignableSearch(t *testing.T, assignable map[string]string, names map[stri
 		}
 		if scopes == 0 || q.Has("query") == q.Has("accountId") {
 			t.Errorf("a request the spec refuses: %s", r.URL.RawQuery)
-			reply(400, `{"errorMessages":["query or accountId is missing"]}`)(w, r, b)
+			jiratest.Reply(400, `{"errorMessages":["query or accountId is missing"]}`)(w, r, b)
 			return
 		}
 		var out []string
@@ -245,18 +246,18 @@ func assignableSearch(t *testing.T, assignable map[string]string, names map[stri
 			}
 		}
 		slices.Sort(out)
-		reply(200, "["+strings.Join(out, ",")+"]")(w, r, b)
+		jiratest.Reply(200, "["+strings.Join(out, ",")+"]")(w, r, b)
 	}
 }
 
 func TestAssignableUsers(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	search := assignableSearch(t, map[string]string{"acc-user1": userOneJSON}, map[string]string{"acc-user1": "User 1"})
-	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "project", "WEB")
-		wantQuery(t, r, "startAt", "50")
-		wantQuery(t, r, "maxResults", "50")
+	f.On("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "project", "WEB")
+		jiratest.WantQuery(t, r, "startAt", "50")
+		jiratest.WantQuery(t, r, "maxResults", "50")
 		search(w, r, b)
 	})
 	for _, q := range []AssignableQuery{{Project: "WEB", Query: "User", StartAt: 50}, {Project: "WEB", AccountID: "acc-user1", StartAt: 50}} {
@@ -273,7 +274,7 @@ func TestAssignableUsers(t *testing.T) {
 			t.Errorf("%+v: want a refusal before sending, got %v", q, err)
 		}
 	}
-	if n := f.count("GET", "/rest/api/3/user/assignable/search"); n != 2 {
+	if n := f.Count("GET", "/rest/api/3/user/assignable/search"); n != 2 {
 		t.Errorf("%d requests, want 2", n)
 	}
 }
@@ -281,12 +282,12 @@ func TestAssignableUsers(t *testing.T) {
 // TestAssignableUsersNamesTheIssueRightly proves an issue ID is sent as
 // issueId and a key as issueKey.
 func TestAssignableUsersNamesTheIssueRightly(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	var got []string
-	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		got = append(got, "id="+r.URL.Query().Get("issueId")+" key="+r.URL.Query().Get("issueKey"))
-		reply(200, `[]`)(w, r, b)
+		jiratest.Reply(200, `[]`)(w, r, b)
 	})
 	for _, ref := range []string{"10001", "WEB-1"} {
 		if _, err := c.AssignableUsers(t.Context(), AssignableQuery{Issue: ref, Query: "User"}); err != nil {

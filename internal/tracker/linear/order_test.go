@@ -6,6 +6,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
 func f64(v float64) *float64 { return &v }
@@ -233,11 +235,11 @@ func equalFloats(a, b []float64) bool {
 
 func TestMoveIssue(t *testing.T) {
 	t.Parallel()
-	issue := issueResult(issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1.5))
+	issue := issueResult(lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1.5))
 	f := newFake(t,
-		exchange{op: "UpdateIssue", vars: `{"id":"WEB-1","input":{"sortOrder":1.5}}`, body: issue},
-		exchange{op: "UpdateIssue", vars: `{"id":"WEB-1","input":{"prioritySortOrder":-11.5}}`, body: issue},
-		exchange{op: "UpdateIssue", vars: `{"id":"WEB-1","input":{"subIssueSortOrder":0}}`, body: issue},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"WEB-1","input":{"sortOrder":1.5}}`, Body: issue},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"WEB-1","input":{"prioritySortOrder":-11.5}}`, Body: issue},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"WEB-1","input":{"subIssueSortOrder":0}}`, Body: issue},
 	)
 	c := f.client(t)
 	ctx := context.Background()
@@ -265,8 +267,8 @@ func TestMoveIssue(t *testing.T) {
 func TestRenumberIssuesPartialFailure(t *testing.T) {
 	t.Parallel()
 	f := newFake(t,
-		exchange{op: "UpdateIssue", vars: `{"id":"` + uuid1 + `","input":{"sortOrder":1}}`, body: issueResult(issueJSON(uuid1, "WEB-1", "2026-11-02T10:00:00.000Z", 1))},
-		exchange{op: "UpdateIssue", vars: `{"id":"` + uuid2 + `","input":{"sortOrder":2}}`, status: 500, body: `{"errors":[{"message":"boom"}]}`},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"` + uuid1 + `","input":{"sortOrder":1}}`, Body: issueResult(lineartest.IssueJSON(uuid1, "WEB-1", "2026-11-02T10:00:00.000Z", 1))},
+		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"` + uuid2 + `","input":{"sortOrder":2}}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
 	)
 	got, err := f.client(t).RenumberIssues(context.Background(), RenumberInput{
 		Field: OrderSort, IssueIDs: []string{uuid1, uuid2, uuid3}, Before: f64(0), After: f64(4),

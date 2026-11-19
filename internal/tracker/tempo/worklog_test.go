@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/tempo/tempotest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 func TestWorklogPagesToTheEnd(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	c := testClient(t, f, issues)
 	base := q("from", "2026-11-09", "to", "2026-11-15", "limit", "1000")
@@ -26,13 +27,13 @@ func TestWorklogPagesToTheEnd(t *testing.T) {
 		}
 		return v
 	}
-	f.on("GET", "/4/worklogs/user/acc-user1", at("0"), "", 200, pageOf(0, true,
+	f.On("GET", "/4/worklogs/user/acc-user1", at("0"), "", 200, pageOf(0, true,
 		wl{id: 1, issue: 10001, author: "acc-user1", date: "2026-11-09", start: "09:00:00", spent: 3600, billable: seconds64(3600), desc: "Review", attrs: [][2]string{{"_Category_", "dev"}}}.json(),
 		wl{id: 2, issue: 10001, author: "acc-user1", date: "2026-11-09", start: "10:00:00", spent: 1800}.json()))
-	f.on("GET", "/4/worklogs/user/acc-user1", at("2"), "", 200, pageOf(2, true,
+	f.On("GET", "/4/worklogs/user/acc-user1", at("2"), "", 200, pageOf(2, true,
 		wl{id: 3, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 900}.json(),
 		wl{id: 4, issue: 99999, author: "acc-user1", date: "2026-11-10", start: "13:15:00", spent: 600}.json()))
-	f.on("GET", "/4/worklogs/user/acc-user1", at("4"), "", 200, pageOf(4, false,
+	f.On("GET", "/4/worklogs/user/acc-user1", at("4"), "", 200, pageOf(4, false,
 		wl{id: 5, issue: 20007, author: "acc-user1", date: "2026-11-11", start: "08:00:00", spent: 7200}.json()))
 
 	var sizes []int
@@ -75,11 +76,11 @@ func TestWorklogPagesToTheEnd(t *testing.T) {
 }
 
 func TestWorklogsFailureMidPage(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000"), "", 200,
+	f.On("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000"), "", 200,
 		pageOf(0, true, wl{id: 1, issue: 10001, author: "acc-user1", date: "2026-11-09", spent: 60}.json()))
-	f.on("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "1", "limit", "1000"), "", 400,
+	f.On("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "1", "limit", "1000"), "", 400,
 		`{"errors":[{"message":"offset out of range"}]}`)
 	day := mustDate(t, "2026-11-09")
 	var seen int
@@ -94,9 +95,9 @@ func TestWorklogsFailureMidPage(t *testing.T) {
 }
 
 func TestWorklogsRefusesAStalledPage(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000"), "", 200,
+	f.On("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000"), "", 200,
 		pageOf(0, true))
 	day := mustDate(t, "2026-11-09")
 	if _, err := c.Worklogs(context.Background(), WorklogQuery{Author: "acc-user1", From: day, To: day}); err == nil {
@@ -105,9 +106,9 @@ func TestWorklogsRefusesAStalledPage(t *testing.T) {
 }
 
 func TestWorklogPagesCallbackErrorStops(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/worklogs/user/acc%2Fuser1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000", "updatedFrom", "2026-11-09T07:00:00Z"), "", 200,
+	f.On("GET", "/4/worklogs/user/acc%2Fuser1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000", "updatedFrom", "2026-11-09T07:00:00Z"), "", 200,
 		pageOf(0, true, wl{id: 1, issue: 10001, author: "acc/user1", date: "2026-11-09", spent: 60}.json()))
 	day := mustDate(t, "2026-11-09")
 	stop := errors.New("stop")
@@ -121,7 +122,7 @@ func TestWorklogPagesCallbackErrorStops(t *testing.T) {
 }
 
 func TestWorklogQueryChecks(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	d1, d2 := mustDate(t, "2026-11-09"), mustDate(t, "2026-11-10")
 	for _, query := range []WorklogQuery{
@@ -136,20 +137,20 @@ func TestWorklogQueryChecks(t *testing.T) {
 }
 
 func TestWorklogResolverFailure(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	issues.err = errors.New("jira is down")
 	c := testClient(t, f, issues)
-	f.on("GET", "/4/worklogs/42", nil, "", 200, wl{id: 42, issue: 10001, author: "acc-user1", date: "2026-11-09", spent: 60}.json())
+	f.On("GET", "/4/worklogs/42", nil, "", 200, wl{id: 42, issue: 10001, author: "acc-user1", date: "2026-11-09", spent: 60}.json())
 	if _, err := c.Worklog(context.Background(), 42); !errors.Is(err, issues.err) {
 		t.Fatalf("err %v", err)
 	}
 }
 
 func TestWorklogRefusesABadRecord(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/worklogs/43", nil, "", 200, wl{id: 43, issue: 10001, author: "acc-user1", date: "09/11/2026", spent: 60}.json())
+	f.On("GET", "/4/worklogs/43", nil, "", 200, wl{id: 43, issue: 10001, author: "acc-user1", date: "09/11/2026", spent: 60}.json())
 	if _, err := c.Worklog(context.Background(), 43); err == nil {
 		t.Fatal("a worklog with a bad date was accepted")
 	}
@@ -158,14 +159,14 @@ func TestWorklogRefusesABadRecord(t *testing.T) {
 // TestDecodeErrorsAreScrubbed: text an answer supplies that ends up in an
 // error is scrubbed of the credential the request carried.
 func TestDecodeErrorsAreScrubbed(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/worklogs/45", nil, "", 200, wl{id: 45, issue: 10001, author: "acc-user1", date: "x" + testToken, spent: 60}.json())
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200,
+	f.On("GET", "/4/worklogs/45", nil, "", 200, wl{id: 45, issue: 10001, author: "acc-user1", date: "x" + testToken, spent: 60}.json())
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200,
 		`{"period":{"from":"`+testToken+`","to":"2026-11-08"}}`)
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
 		`{"key":"_Category_","name":"Cat `+testToken+`","type":"STATIC_LIST","required":true,"values":["dev","x`+testToken+`"],"names":{"dev":"Dev `+testToken+`"}}`))
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
 	ctx := context.Background()
 	_, err := c.Worklog(ctx, 45)
 	if err == nil || strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), secret.Redacted) {

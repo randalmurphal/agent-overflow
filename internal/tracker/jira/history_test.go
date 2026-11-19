@@ -10,22 +10,23 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 const bulkChangelogURL = "/rest/api/3/changelog/bulkfetch"
 
 func TestChangelog(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1/changelog", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "maxResults", "100")
+	f.On("GET", "/rest/api/3/issue/WEB-1/changelog", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "maxResults", "100")
 		if r.URL.Query().Get("startAt") == "0" {
-			reply(200, `{"startAt":0,"total":2,"isLast":false,"values":[{"id":"100","author":`+userOneJSON+`,"created":"2026-11-02T09:00:00.000+0000",
+			jiratest.Reply(200, `{"startAt":0,"total":2,"isLast":false,"values":[{"id":"100","author":`+userOneJSON+`,"created":"2026-11-02T09:00:00.000+0000",
 				"items":[{"field":"status","fieldId":"status","fieldtype":"jira","from":"1","fromString":"To Do","to":"3","toString":"In Progress"}]}]}`)(w, r, b)
 			return
 		}
-		reply(200, `{"startAt":1,"total":2,"isLast":true,"values":[{"id":"101","created":"2026-11-03T09:00:00.000+0000",
+		jiratest.Reply(200, `{"startAt":1,"total":2,"isLast":true,"values":[{"id":"101","created":"2026-11-03T09:00:00.000+0000",
 			"items":[{"field":"assignee","fieldId":"assignee","fieldtype":"jira","from":null,"to":"acc-user1","toString":"User 1"}]}]}`)(w, r, b)
 	})
 	log, err := c.Changelog(t.Context(), "WEB-1")
@@ -115,7 +116,7 @@ func (s *bulkSite) handle(w http.ResponseWriter, r *http.Request, b []byte) {
 		logs = append(logs, fmt.Sprintf(`{"issueId":"%d","changeHistories":[{"id":"%d","created":%s,"items":[%s]}]}`,
 			10000+n, n, created, strings.Join(items, ",")))
 	}
-	reply(200, `{"issueChangeLogs":[`+strings.Join(logs, ",")+`]`+next+`}`)(w, r, b)
+	jiratest.Reply(200, `{"issueChangeLogs":[`+strings.Join(logs, ",")+`]`+next+`}`)(w, r, b)
 }
 
 // TestBulkChangelogsSplits asks for 1001 issues and 11 fields: four
@@ -124,7 +125,7 @@ func (s *bulkSite) handle(w http.ResponseWriter, r *http.Request, b []byte) {
 // entry, split across the field groups, joined again with one item per
 // field.
 func TestBulkChangelogsSplits(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	issues := webIssues(1, 1001)
 	var fields []string
@@ -132,13 +133,13 @@ func TestBulkChangelogsSplits(t *testing.T) {
 		fields = append(fields, fmt.Sprintf("customfield_%d", 10001+i))
 	}
 	site := &bulkSite{t: t, asked: map[string]int{}}
-	f.on("POST", bulkChangelogURL, site.handle)
+	f.On("POST", bulkChangelogURL, site.handle)
 	res, err := c.BulkChangelogs(t.Context(), ChangelogQuery{Issues: issues, Fields: fields})
 	if err != nil || !res.Complete {
 		t.Fatalf("got %v", err)
 	}
 	want := []string{"1000 issues, 10 fields", "1000 issues, 1 fields", "1 issues, 10 fields", "1 issues, 1 fields"}
-	if strings.Join(site.shapes, "\n") != strings.Join(want, "\n") || f.count("POST", bulkChangelogURL) != 6 {
+	if strings.Join(site.shapes, "\n") != strings.Join(want, "\n") || f.Count("POST", bulkChangelogURL) != 6 {
 		t.Errorf("requests\n%s", strings.Join(site.shapes, "\n"))
 	}
 	if len(site.asked) != len(issues)*len(fields) || len(res.ByIssue) != len(issues) {
@@ -171,13 +172,13 @@ func TestBulkChangelogsSplits(t *testing.T) {
 // groups keeps a problem found in any part: here its time does not parse
 // in the second answer.
 func TestBulkChangelogsJoinKeepsProblems(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	var fields []string
 	for i := range 11 {
 		fields = append(fields, fmt.Sprintf("customfield_%d", 10001+i))
 	}
-	f.on("POST", bulkChangelogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", bulkChangelogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var req bulkRequest
 		if err := json.Unmarshal(b, &req); err != nil || strings.Join(req.Issues, ",") != "WEB-1" || req.Max != 1000 || req.Token != "" {
 			t.Errorf("a request %s", b)
@@ -190,7 +191,7 @@ func TestBulkChangelogsJoinKeepsProblems(t *testing.T) {
 		default:
 			t.Errorf("fields %v", req.Fields)
 		}
-		reply(200, fmt.Sprintf(`{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"1","created":%s,"items":[{"fieldId":%q,"to":"x"}]}]}]}`,
+		jiratest.Reply(200, fmt.Sprintf(`{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"1","created":%s,"items":[{"fieldId":%q,"to":"x"}]}]}]}`,
 			created, req.Fields[0]))(w, r, b)
 	})
 	res, err := c.BulkChangelogs(t.Context(), ChangelogQuery{Issues: []string{"WEB-1"}, Fields: fields})
@@ -204,25 +205,25 @@ func TestBulkChangelogsJoinKeepsProblems(t *testing.T) {
 // first, whatever order the pages hold them in, and entries of the same
 // time in numeric ID order.
 func TestBulkChangelogsOrder(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	entry := func(id, created string) string {
 		return fmt.Sprintf(`{"id":%q,"created":%q,"items":[{"fieldId":"status","to":"3"}]}`, id, created)
 	}
-	f.on("POST", bulkChangelogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", bulkChangelogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var req bulkRequest
 		if err := json.Unmarshal(b, &req); err != nil || strings.Join(req.Issues, ",") != "WEB-1" || len(req.Fields) != 0 || req.Max != 1000 {
 			t.Errorf("a request %s", b)
 		}
 		if req.Token == "" {
-			reply(200, `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[`+
+			jiratest.Reply(200, `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[`+
 				entry("10", "2026-11-02T09:00:00.000+0000")+","+entry("11", "2026-11-01T09:00:00.000+0000")+`]}],"nextPageToken":"more"}`)(w, r, b)
 			return
 		}
 		if req.Token != "more" {
 			t.Errorf("token %q", req.Token)
 		}
-		reply(200, `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[`+entry("9", "2026-11-02T09:00:00.000+0000")+`]}]}`)(w, r, b)
+		jiratest.Reply(200, `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[`+entry("9", "2026-11-02T09:00:00.000+0000")+`]}]}`)(w, r, b)
 	})
 	res, err := c.BulkChangelogs(t.Context(), ChangelogQuery{Issues: []string{"WEB-1"}})
 	var ids []string
@@ -265,33 +266,33 @@ func TestBulkChangelogsPageEnds(t *testing.T) {
 		"a repeated token": `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"2","created":"2026-11-01T09:00:00.000+0000","items":[]}]}],"nextPageToken":"t1"}`,
 		"an empty page":    `{"issueChangeLogs":[],"nextPageToken":"t2"}`,
 	} {
-		f := newFake(t)
+		f := jiratest.NewServer(t)
 		c := newTestClient(t, f)
 		n := 0
-		f.on("POST", bulkChangelogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		f.On("POST", bulkChangelogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 			if n++; n > 3 {
 				t.Error("the client kept asking for pages")
-				reply(400, `{}`)(w, r, b)
+				jiratest.Reply(400, `{}`)(w, r, b)
 				return
 			}
 			switch n {
 			case 1:
-				reply(200, `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"1","created":"2026-11-01T09:00:00.000+0000","items":[]}]}],"nextPageToken":"t1"}`)(w, r, b)
+				jiratest.Reply(200, `{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"1","created":"2026-11-01T09:00:00.000+0000","items":[]}]}],"nextPageToken":"t1"}`)(w, r, b)
 				return
 			case 3:
 				// A last page: only the guard against the bad second page
 				// fails the walk.
-				reply(200, `{"issueChangeLogs":[]}`)(w, r, b)
+				jiratest.Reply(200, `{"issueChangeLogs":[]}`)(w, r, b)
 				return
 			}
-			reply(200, second)(w, r, b)
+			jiratest.Reply(200, second)(w, r, b)
 		})
 		res, err := c.BulkChangelogs(t.Context(), ChangelogQuery{Issues: []string{"WEB-1"}})
 		if err == nil || res.Complete || len(res.ByIssue["10001"]) == 0 {
 			t.Errorf("%s: %+v %v", name, res, err)
 		}
 	}
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	for name, q := range map[string]ChangelogQuery{
 		"no issues":      {},

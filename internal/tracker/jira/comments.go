@@ -174,7 +174,7 @@ func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience
 		return nil, false, err
 	}
 	if is.Project == nil {
-		return nil, false, notSent("cannot tell which project %s is in, so not who a comment reaches", issue)
+		return nil, false, &AnswerError{Message: fmt.Sprintf("%s came without its project, so who a comment reaches is not known", issue)}
 	}
 	p := *is.Project
 	if p.TypeKey == "" {

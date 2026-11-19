@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -44,12 +45,12 @@ var (
 // TestValueEveryKind builds one value of every kind and checks the JSON
 // sent and the display.
 func TestValueEveryKind(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/user/search", userSearch(t, nil, map[string][]string{"User 1": {userOneJSON}, "User 2": {userTwoJSON}}))
-	f.on("GET", "/rest/api/3/issue/WEB-100", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "fields", "summary")
-		reply(200, `{"id":"10000","key":"WEB-100","fields":{"summary":"Login epic"}}`)(w, r, b)
+	f.On("GET", "/rest/api/3/user/search", userSearch(t, nil, map[string][]string{"User 1": {userOneJSON}, "User 2": {userTwoJSON}}))
+	f.On("GET", "/rest/api/3/issue/WEB-100", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "fields", "summary")
+		jiratest.Reply(200, `{"id":"10000","key":"WEB-100","fields":{"summary":"Login epic"}}`)(w, r, b)
 	})
 	for _, tc := range []struct {
 		f       FieldMeta
@@ -74,7 +75,7 @@ func TestValueEveryKind(t *testing.T) {
 		{cascadeField, Text("Hardware"), `{"id":"200"}`, "Hardware"},
 		{priorityField, Text("high"), `{"id":"1"}`, "High"},
 		{versionsField, Texts("2.0", "1.0"), `[{"id":"31"},{"id":"30"}]`, "2.0, 1.0"},
-		{parentField, Text("WEB-100"), `{"key":"WEB-100"}`, "WEB-100 Login epic"},
+		{parentField, Text("WEB-100"), `{"id":"10000"}`, "WEB-100 Login epic"},
 		{sprintField, Text("42"), `42`, "sprint 42"},
 		{teamField, Text("team-uuid-1"), `"team-uuid-1"`, "team team-uuid-1"},
 		{ownerField, Text("User 1"), `{"accountId":"acc-user1"}`, "User 1"},
@@ -90,12 +91,12 @@ func TestValueEveryKind(t *testing.T) {
 		if v.Update != nil || v.Display != tc.display || v.FieldID != tc.f.ID {
 			t.Errorf("%s: update %s display %q", tc.f.Name, v.Update, v.Display)
 		}
-		wantJSON(t, v.Fields, tc.json)
+		jiratest.WantJSON(t, v.Fields, tc.json)
 	}
 }
 
 func TestValueClear(t *testing.T) {
-	c := newTestClient(t, newFake(t))
+	c := newTestClient(t, jiratest.NewServer(t))
 	for _, tc := range []struct {
 		f              FieldMeta
 		fields, update string
@@ -122,7 +123,7 @@ func TestValueClear(t *testing.T) {
 // TestValueRefusals proves every check that fails before sending, each
 // as a *trackerapi.NotSentError.
 func TestValueRefusals(t *testing.T) {
-	c := newTestClient(t, newFake(t))
+	c := newTestClient(t, jiratest.NewServer(t))
 	addOnly := labelsField
 	addOnly.Operations = []string{"add"}
 	for name, tc := range map[string]struct {
@@ -158,7 +159,7 @@ func TestValueRefusals(t *testing.T) {
 }
 
 func TestValueMatchErrors(t *testing.T) {
-	c := newTestClient(t, newFake(t))
+	c := newTestClient(t, jiratest.NewServer(t))
 	_, err := c.Value(t.Context(), colorField, Text("RED"), ValueOptions{})
 	me, ok := errors.AsType[*MatchError](err)
 	if !ok || !me.Ambiguous || len(me.Candidates) != 2 {
@@ -172,9 +173,9 @@ func TestValueMatchErrors(t *testing.T) {
 }
 
 func TestValuePriorityWithoutAllowedValues(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/priority/search", reply(200, `{"values":[{"id":"1","name":"High"},{"id":"2","name":"Low"}],"isLast":true}`))
+	f.On("GET", "/rest/api/3/priority/search", jiratest.Reply(200, `{"values":[{"id":"1","name":"High"},{"id":"2","name":"Low"}],"isLast":true}`))
 	bare := meta("priority", "Priority", Schema{Type: "priority", System: "priority"})
 	v, err := c.Value(t.Context(), bare, Text("Low"), ValueOptions{})
 	if err != nil || string(v.Fields) != `{"id":"2"}` {
@@ -183,27 +184,27 @@ func TestValuePriorityWithoutAllowedValues(t *testing.T) {
 }
 
 func TestValueNamesUncheckedWithoutAllowedValues(t *testing.T) {
-	c := newTestClient(t, newFake(t))
+	c := newTestClient(t, jiratest.NewServer(t))
 	bare := meta("components", "Components", Schema{Type: "array", Items: "component", System: "components"})
 	v, err := c.Value(t.Context(), bare, Texts("Web", "API"), ValueOptions{})
 	if err != nil || len(v.Warnings) != 1 {
 		t.Fatalf("got %v %v", v, err)
 	}
-	wantJSON(t, v.Fields, `[{"name":"Web"},{"name":"API"}]`)
+	jiratest.WantJSON(t, v.Fields, `[{"name":"Web"},{"name":"API"}]`)
 }
 
 // TestValueAssigneeMustBeAssignable proves the assignee is checked with
 // the assignable endpoint by account ID however the user was named: by
 // name, by account ID, or from the cache.
 func TestValueAssigneeMustBeAssignable(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-user1": userOneJSON}, map[string][]string{"User 2": {userTwoJSON}}))
+	f.On("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-user1": userOneJSON}, map[string][]string{"User 2": {userTwoJSON}}))
 	// Only User 2 can be assigned. The check must ask by account ID: the
 	// fake refuses a request without one, as Jira does.
 	search := assignableSearch(t, map[string]string{"acc-user2": userTwoJSON}, nil)
-	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "issueKey", "WEB-1")
+	f.On("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "issueKey", "WEB-1")
 		if !r.URL.Query().Has("accountId") {
 			t.Error("the scoped check does not ask by account ID")
 		}
@@ -219,14 +220,14 @@ func TestValueAssigneeMustBeAssignable(t *testing.T) {
 			t.Errorf("a user who cannot be assigned: %v", err)
 		}
 	}
-	if n := f.count("GET", "/rest/api/3/user/assignable/search"); n != 3 {
+	if n := f.Count("GET", "/rest/api/3/user/assignable/search"); n != 3 {
 		t.Errorf("%d scoped checks, want 3", n)
 	}
 	// An answer listing only someone else does not vouch for the user.
-	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "issueKey", "WEB-1")
-		wantQuery(t, r, "accountId", "acc-user1")
-		reply(200, "["+userTwoJSON+"]")(w, r, b)
+	f.On("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "issueKey", "WEB-1")
+		jiratest.WantQuery(t, r, "accountId", "acc-user1")
+		jiratest.Reply(200, "["+userTwoJSON+"]")(w, r, b)
 	})
 	if _, err := c.Value(t.Context(), assignee, Text("acc-user1"), ValueOptions{Issue: "WEB-1"}); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("an answer naming another user: %v", err)
@@ -234,13 +235,19 @@ func TestValueAssigneeMustBeAssignable(t *testing.T) {
 }
 
 func TestValueParentMissing(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-999", reply(404, `{"errorMessages":["Issue does not exist"]}`))
-	f.on("GET", myselfURL, reply(200, userOneJSON))
+	f.On("GET", "/rest/api/3/issue/WEB-999", jiratest.Reply(404, `{"errorMessages":["Issue does not exist"]}`))
+	f.On("GET", myselfURL, jiratest.Reply(200, userOneJSON))
 	_, err := c.Value(t.Context(), parentField, Text("WEB-999"), ValueOptions{})
 	if !errors.Is(err, trackerapi.ErrNotFound) {
 		t.Fatalf("got %v", err)
+	}
+	// A parent read without its numeric ID cannot be sent by ID.
+	f.On("GET", "/rest/api/3/issue/WEB-100", jiratest.Reply(200, `{"key":"WEB-100","fields":{"summary":"Login epic"}}`))
+	v, err := c.Value(t.Context(), parentField, Text("WEB-100"), ValueOptions{})
+	if _, ok := errors.AsType[*AnswerError](err); !ok || v.Fields != nil {
+		t.Errorf("a parent without its ID: %+v %v", v, err)
 	}
 }
 
@@ -279,6 +286,9 @@ func TestKindOfEverySchema(t *testing.T) {
 		}
 		if _, ok := rules[tc.want]; !ok {
 			t.Errorf("kind %d has no rule", tc.want)
+		}
+		if tc.s.RichText() != (tc.want == kindRich) {
+			t.Errorf("%+v: RichText %v", tc.s, tc.s.RichText())
 		}
 	}
 }

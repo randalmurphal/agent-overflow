@@ -10,12 +10,14 @@ import (
 
 	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker/trackerapi"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
-// escapedKey is testKey as JSON may spell it inside a string, its first
+// escapedKey is lineartest.Key as JSON may spell it inside a string, its first
 // underscore written as a \u escape, which a text scrub of the raw body
 // cannot match.
-var escapedKey = strings.Replace(testKey, "_", `\`+"u005f", 1)
+var escapedKey = strings.Replace(lineartest.Key, "_", `\`+"u005f", 1)
 
 type scrubCase struct {
 	name   string
@@ -30,7 +32,7 @@ type scrubCase struct {
 // and a 401 the transport takes as a refused key.
 func scrubCases() []scrubCase {
 	var cases []scrubCase
-	for _, key := range []string{testKey, escapedKey} {
+	for _, key := range []string{lineartest.Key, escapedKey} {
 		bodies := map[string]string{
 			"message, code, type and path": `{"data":null,"errors":[{"message":"bad ` + key + `","path":["` + key + `"],` +
 				`"extensions":{"code":"` + key + `","type":"` + key + `","userError":true}}]}`,
@@ -43,7 +45,7 @@ func scrubCases() []scrubCase {
 				cases = append(cases, scrubCase{name: fmt.Sprintf("%s, %s, HTTP %d", key, what, status), status: status, body: body})
 			}
 		}
-		issue := strings.Replace(issueJSON("issue-1", "WEB-1", "KEY", 1), `"updatedAt":"KEY"`, `"updatedAt":"`+key+`"`, 1)
+		issue := strings.Replace(lineartest.IssueJSON("issue-1", "WEB-1", "KEY", 1), `"updatedAt":"KEY"`, `"updatedAt":"`+key+`"`, 1)
 		cases = append(cases, scrubCase{name: key + ", decoder quote", status: http.StatusOK, body: `{"data":{"issue":` + issue + `}}`, issue: true})
 	}
 	return cases
@@ -58,10 +60,10 @@ func TestAnswerTextIsScrubbed(t *testing.T) {
 	for _, tc := range scrubCases() {
 		var err error
 		if tc.issue {
-			f := newFake(t, exchange{op: "Issue", vars: `{"id":"WEB-1"}`, status: tc.status, body: tc.body})
+			f := newFake(t, lineartest.Exchange{Op: "Issue", Vars: `{"id":"WEB-1"}`, Status: tc.status, Body: tc.body})
 			_, err = f.client(t).Issue(context.Background(), "WEB-1")
 		} else {
-			f := newFake(t, exchange{op: "Viewer", status: tc.status, body: tc.body})
+			f := newFake(t, lineartest.Exchange{Op: "Viewer", Status: tc.status, Body: tc.body})
 			_, err = f.client(t).Viewer(context.Background())
 		}
 		if err == nil {
@@ -80,7 +82,7 @@ func TestAnswerTextIsScrubbed(t *testing.T) {
 		// The transport's message for a 401 shows the presentable message
 		// only, so the raw one leaves no trace to redact.
 		shown := tc.status != http.StatusUnauthorized || !strings.Contains(tc.name, "raw message")
-		if strings.Contains(text, testKey) || (shown && !strings.Contains(text, secret.Redacted)) {
+		if strings.Contains(text, lineartest.Key) || (shown && !strings.Contains(text, secret.Redacted)) {
 			t.Errorf("%s: %s", tc.name, text)
 		}
 	}
@@ -107,7 +109,7 @@ func TestNotFoundOnlyAtRoot(t *testing.T) {
 		{"write root", "ArchiveIssue", missing(`"path":["result"],`), true},
 		{"write nested", "ArchiveIssue", missing(`"path":["result","value"],`), false},
 	} {
-		f := newFake(t, exchange{op: tc.op, vars: `{"id":"WEB-1"}`, body: tc.body})
+		f := newFake(t, lineartest.Exchange{Op: tc.op, Vars: `{"id":"WEB-1"}`, Body: tc.body})
 		c := f.client(t)
 		var err error
 		if tc.op == "Issue" {
@@ -130,12 +132,12 @@ func TestNotFoundOnlyAtRoot(t *testing.T) {
 func TestRetryOnlyQueries(t *testing.T) {
 	t.Parallel()
 	limited := `{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}`
-	unavailable := exchange{status: http.StatusServiceUnavailable, header: map[string]string{"Retry-After": "0"}, body: `{"errors":[{"message":"busy"}]}`}
-	rateLimited := exchange{body: limited, header: map[string]string{"Retry-After": "0"}}
-	reset := exchange{reset: true}
-	for name, failure := range map[string]exchange{"503": unavailable, "rate limit on 200": rateLimited, "reset": reset} {
+	unavailable := lineartest.Exchange{Status: http.StatusServiceUnavailable, Header: map[string]string{"Retry-After": "0"}, Body: `{"errors":[{"message":"busy"}]}`}
+	rateLimited := lineartest.Exchange{Body: limited, Header: map[string]string{"Retry-After": "0"}}
+	reset := lineartest.Exchange{Reset: true}
+	for name, failure := range map[string]lineartest.Exchange{"503": unavailable, "rate limit on 200": rateLimited, "reset": reset} {
 		mutation := failure
-		mutation.op, mutation.vars = "ArchiveIssue", `{"id":"WEB-1"}`
+		mutation.Op, mutation.Vars = "ArchiveIssue", `{"id":"WEB-1"}`
 		f := newFake(t, mutation)
 		ctx := trackerapi.WithInteractive(context.Background())
 		if _, err := f.client(t).ArchiveIssue(ctx, "WEB-1"); err == nil {
@@ -143,8 +145,8 @@ func TestRetryOnlyQueries(t *testing.T) {
 		}
 
 		query := failure
-		query.op = "Viewer"
-		f = newFake(t, query, exchange{op: "Viewer", body: viewerData})
+		query.Op = "Viewer"
+		f = newFake(t, query, lineartest.Exchange{Op: "Viewer", Body: viewerData})
 		if _, err := f.client(t).Viewer(ctx); err != nil {
 			t.Errorf("%s: the query was not sent again: %v", name, err)
 		}

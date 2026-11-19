@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/tempo/tempotest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -27,19 +28,19 @@ func createBody(issue int64, desc string) string {
 }
 
 func TestApplyOutcomes(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	c := testClient(t, f, issues)
 	openWeek(f)
 	record := Worklog{ID: 70, Issue: Issue{ID: 10002, Key: "WEB-2"}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
 		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "dev"}}}
-	f.on("POST", "/4/worklogs", nil, createBody(10001, "first"), 200, wl{id: 101, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600, desc: "first"}.json())
-	f.on("PUT", "/4/worklogs/70", nil,
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "first"), 200, wl{id: 101, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600, desc: "first"}.json())
+	f.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","timeSpentSeconds":5400,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`,
 		400, `{"errors":[{"message":"Period is closed"}]}`)
-	f.on("POST", "/4/worklogs", nil, createBody(20007, "lost"), 500, `{"errors":[{"message":"internal"}]}`)
-	f.on("POST", "/4/worklogs", nil, createBody(10001, "after"), 200, wl{id: 102, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600, desc: "after"}.json())
-	f.on("DELETE", "/4/worklogs/71", nil, "", 204, "")
+	f.On("POST", "/4/worklogs", nil, createBody(20007, "lost"), 500, `{"errors":[{"message":"internal"}]}`)
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "after"), 200, wl{id: 102, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600, desc: "after"}.json())
+	f.On("DELETE", "/4/worklogs/71", nil, "", 204, "")
 
 	bad := weekDraft(t, "WEB-2", "bad")
 	bad.Attributes = []AttributeValue{{"_Category_", "lunch"}}
@@ -80,19 +81,19 @@ func TestApplyOutcomes(t *testing.T) {
 	if !reflect.DeepEqual(idCalls, [][]string{{"WEB-1", "WEB-2", "APP-7"}}) {
 		t.Errorf("the resolver was asked %v, want one call for the batch", idCalls)
 	}
-	writes := slices.DeleteFunc(f.requests(), func(r string) bool { return r[:3] == "GET" })
+	writes := slices.DeleteFunc(f.Requests(), func(r string) bool { return r[:3] == "GET" })
 	if want := []string{"POST /4/worklogs", "PUT /4/worklogs/70", "POST /4/worklogs", "POST /4/worklogs", "DELETE /4/worklogs/71"}; !slices.Equal(writes, want) {
 		t.Errorf("writes %v, want %v", writes, want)
 	}
 }
 
 func TestApplyStopsWhenCancelled(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	openWeek(f)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	f.on("POST", "/4/worklogs", nil, createBody(10001, "one"), 200, wl{id: 1, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600}.json()).during = cancel
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "one"), 200, wl{id: 1, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600}.json()).During = cancel
 	refused := weekDraft(t, "WEB-1", "refused")
 	refused.Spent = 0
 	out := c.Apply(ctx, []Op{
@@ -113,7 +114,7 @@ func TestApplyStopsWhenCancelled(t *testing.T) {
 }
 
 func TestApplyCancelledBeforeChecks(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -128,12 +129,12 @@ func TestApplyCancelledBeforeChecks(t *testing.T) {
 // the ops that name an issue by key; an op naming its issue by ID is
 // checked in full and sent.
 func TestApplyResolverFailure(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	issues.err = errors.New("jira is down")
 	c := testClient(t, f, issues)
 	openWeek(f)
-	f.on("POST", "/4/worklogs", nil, createBody(10002, "y"), 200, stored(81))
+	f.On("POST", "/4/worklogs", nil, createBody(10002, "y"), 200, stored(81))
 	byID := weekDraft(t, "", "y")
 	byID.Issue = Issue{ID: 10002}
 	out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x")), CreateOp(byID)})
@@ -155,10 +156,10 @@ func (s cancellingSource) Credential(context.Context) (*trackerapi.Credential, e
 }
 
 func TestApplyCancelledWhileWaitingToSend(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	opts, err := transportOptions(Options{BaseURL: f.srv.URL, Version: "test", Credentials: cancellingSource{cancel}, Issues: newIssues()})
+	opts, err := transportOptions(Options{BaseURL: f.URL(), Version: "test", Credentials: cancellingSource{cancel}, Issues: newIssues()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,10 +195,10 @@ func (s closingSource) Credential(context.Context) (*trackerapi.Credential, erro
 // TestApplyClosedWhileWaitingToSend: a write Close stops before it is
 // sent is NotAttempted, as the Close contract says, not Refused.
 func TestApplyClosedWhileWaitingToSend(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	var c *Client
 	src := closingSource{c: &c, closed: make(chan struct{})}
-	opts, err := transportOptions(Options{BaseURL: f.srv.URL, Version: "test", Credentials: src, Issues: newIssues()})
+	opts, err := transportOptions(Options{BaseURL: f.URL(), Version: "test", Credentials: src, Issues: newIssues()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +214,11 @@ func TestApplyClosedWhileWaitingToSend(t *testing.T) {
 }
 
 func TestApplyStoredRecordUnreadable(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	openWeek(f)
 	var sent atomic.Int32
-	f.on("POST", "/4/worklogs", nil, createBody(10001, "x"), 200, wl{id: 5, issue: 10001, author: "acc-user1", date: "10/11/2026", spent: 3600}.json()).during = func() { sent.Add(1) }
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "x"), 200, wl{id: 5, issue: 10001, author: "acc-user1", date: "10/11/2026", spent: 3600}.json()).During = func() { sent.Add(1) }
 	out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x"))})[0]
 	if out.Status != Unknown || trackerapi.WriteNotApplied(out.Err) || sent.Load() != 1 {
 		t.Fatalf("%+v, sent %d", out, sent.Load())

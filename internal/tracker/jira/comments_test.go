@@ -9,25 +9,26 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // commentSite is WEB-1 in a project of typeKey.
-func commentSite(t *testing.T, typeKey string) (*fakeJira, *Client) {
-	f := newFake(t)
+func commentSite(t *testing.T, typeKey string) (*jiratest.Server, *Client) {
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "fields", "project")
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"`+typeKey+`"}}}`)(w, r, b)
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "fields", "project")
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"`+typeKey+`"}}}`)(w, r, b)
 	})
 	return f, c
 }
 
-func storedCommentReply(body string) handler { return storedComment(201, body) }
+func storedCommentReply(body string) jiratest.Handler { return storedComment(201, body) }
 
 // storedComment is the answer status with comment 900 holding body.
-func storedComment(status int, body string) handler {
-	return reply(status, `{"id":"900","author":`+userOneJSON+`,"body":`+body+`,"created":"2026-11-16T10:00:00.000+0000","updated":"2026-11-16T10:00:00.000+0000","jsdPublic":false}`)
+func storedComment(status int, body string) jiratest.Handler {
+	return jiratest.Reply(status, `{"id":"900","author":`+userOneJSON+`,"body":`+body+`,"created":"2026-11-16T10:00:00.000+0000","updated":"2026-11-16T10:00:00.000+0000","jsdPublic":false}`)
 }
 
 func TestAddCommentAudience(t *testing.T) {
@@ -45,7 +46,7 @@ func TestAddCommentAudience(t *testing.T) {
 		{"service_desk", AudienceInternal, true, false},
 	} {
 		f, c := commentSite(t, tc.typeKey)
-		f.on("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		f.On("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
 			var body struct {
 				Body       json.RawMessage  `json:"body"`
 				Properties []map[string]any `json:"properties"`
@@ -55,13 +56,13 @@ func TestAddCommentAudience(t *testing.T) {
 				t.Errorf("%s %d: properties %s", tc.typeKey, tc.audience, b)
 			}
 			if tc.props {
-				wantJSON(t, b, `{"body":`+string(body.Body)+`,"properties":[{"key":"sd.public.comment","value":{"internal":true}}]}`)
+				jiratest.WantJSON(t, b, `{"body":`+string(body.Body)+`,"properties":[{"key":"sd.public.comment","value":{"internal":true}}]}`)
 			}
 			storedCommentReply(string(body.Body))(w, r, b)
 		})
 		res, err := c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "Looking into it", Audience: tc.audience})
 		if tc.refused {
-			if !trackerapi.WriteNotApplied(err) || f.count("POST", "/rest/api/3/issue/WEB-1/comment") != 0 {
+			if !trackerapi.WriteNotApplied(err) || !errors.Is(err, trackerapi.ErrInvalidInput) || f.Count("POST", "/rest/api/3/issue/WEB-1/comment") != 0 {
 				t.Errorf("%s %d: want a refusal before sending, got %v", tc.typeKey, tc.audience, err)
 			}
 			continue
@@ -70,11 +71,20 @@ func TestAddCommentAudience(t *testing.T) {
 			t.Errorf("%s %d: got %+v %v", tc.typeKey, tc.audience, res, err)
 		}
 	}
+	// An issue read without its project is Jira's answer falling short,
+	// not the caller's input: not sent, and not invalid.
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	f.On("GET", "/rest/api/3/issue/WEB-1", jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{}}`))
+	_, err := c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "Looking into it"})
+	if !trackerapi.WriteNotApplied(err) || errors.Is(err, trackerapi.ErrInvalidInput) || f.Count("POST", "/rest/api/3/issue/WEB-1/comment") != 0 {
+		t.Errorf("an issue without its project: %v", err)
+	}
 }
 
 func TestAddCommentRefusesBlankAndMissesNothing(t *testing.T) {
 	f, c := commentSite(t, "software")
-	f.on("GET", "/rest/api/3/user/search", reply(200, `[]`))
+	f.On("GET", "/rest/api/3/user/search", jiratest.Reply(200, `[]`))
 	for name, md := range map[string]string{"blank": "  \n", "only a comment": "<!-- x -->", "unknown mention": "hi @[Nobody Here]"} {
 		_, err := c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: md})
 		if !trackerapi.WriteNotApplied(err) {
@@ -85,10 +95,10 @@ func TestAddCommentRefusesBlankAndMissesNothing(t *testing.T) {
 
 func TestAddCommentWithImageAndMention(t *testing.T) {
 	f, c := commentSite(t, "software")
-	f.on("GET", "/rest/api/3/user/search", userSearch(t, nil, map[string][]string{"User 2": {userTwoJSON}}))
+	f.On("GET", "/rest/api/3/user/search", userSearch(t, nil, map[string][]string{"User 2": {userTwoJSON}}))
 	var uploads atomic.Int32
 	imageRoutes(t, f, "WEB-1", &uploads)
-	f.on("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if !strings.Contains(string(b), `"id":"0f1e2d3c-0000-4000-8000-000000000501"`) || !strings.Contains(string(b), `"id":"acc-user2"`) {
 			t.Errorf("comment %s", b)
 		}
@@ -103,20 +113,20 @@ func TestAddCommentWithImageAndMention(t *testing.T) {
 	if err != nil || len(res.Uploaded) != 1 || res.Comment == nil {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	order := strings.Join(f.requests(), " | ")
+	order := strings.Join(f.Requests(), " | ")
 	if strings.Index(order, "attachments") > strings.Index(order, "POST /rest/api/3/issue/WEB-1/comment") {
 		t.Errorf("the image must be attached before the comment: %s", order)
 	}
 }
 
 func TestCommentsPage(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "startAt", "1")
-		wantQuery(t, r, "maxResults", "2")
-		wantQuery(t, r, "orderBy", "created")
-		reply(200, `{"startAt":1,"total":3,"comments":[
+	f.On("GET", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "startAt", "1")
+		jiratest.WantQuery(t, r, "maxResults", "2")
+		jiratest.WantQuery(t, r, "orderBy", "created")
+		jiratest.Reply(200, `{"startAt":1,"total":3,"comments":[
 			{"id":"901","author":`+userOneJSON+`,"body":{"type":"doc","version":1,"content":[]},"created":"2026-11-16T10:00:00.000+0000","jsdPublic":true},
 			{"id":"902","body":null,"visibility":{"type":"role","value":"Developers"},"created":"2026-11-16T11:00:00.000+0000","updated":"later"}]}`)(w, r, b)
 	})
@@ -134,17 +144,17 @@ func TestCommentsPage(t *testing.T) {
 
 // editCommentSite is comment 900 on WEB-1 holding body, restricted to a
 // role.
-func editCommentSite(t *testing.T, body *adf.Node) (*fakeJira, *Client) {
-	f := newFake(t)
+func editCommentSite(t *testing.T, body *adf.Node) (*jiratest.Server, *Client) {
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":`+docJSON(t, body)+`,"visibility":{"type":"role","value":"Developers"}}`))
+	f.On("GET", "/rest/api/3/issue/WEB-1/comment/900", jiratest.Reply(200, `{"id":"900","body":`+docJSON(t, body)+`,"visibility":{"type":"role","value":"Developers"}}`))
 	return f, c
 }
 
 func TestEditComment(t *testing.T) {
 	f, c := editCommentSite(t, layoutDoc())
 	md := strings.Replace(adf.ToMarkdown(layoutDoc()), "right", "RIGHT", 1)
-	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var body struct {
 			Body       json.RawMessage `json:"body"`
 			Visibility json.RawMessage `json:"visibility"`
@@ -165,7 +175,7 @@ func TestEditComment(t *testing.T) {
 	}
 	// The same body again sends nothing.
 	res, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: adf.ToMarkdown(layoutDoc())})
-	if err != nil || res.Comment == nil || !res.Unchanged || f.count("PUT", "/rest/api/3/issue/WEB-1/comment/900") != 1 {
+	if err != nil || res.Comment == nil || !res.Unchanged || f.Count("PUT", "/rest/api/3/issue/WEB-1/comment/900") != 1 {
 		t.Errorf("an unchanged edit: %+v %v", res, err)
 	}
 }
@@ -174,9 +184,9 @@ func TestEditComment(t *testing.T) {
 // comment is an unknown outcome that reports no comment.
 func TestEditCommentAnswerNamesAnother(t *testing.T) {
 	f, c := editCommentSite(t, adf.Doc(para("old")))
-	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"new"}]}]},"visibility":{"type":"role","value":"Developers"}}`)
-		reply(200, `{"id":"901","body":{"type":"doc","version":1,"content":[]}}`)(w, r, b)
+	f.On("PUT", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"new"}]}]},"visibility":{"type":"role","value":"Developers"}}`)
+		jiratest.Reply(200, `{"id":"901","body":{"type":"doc","version":1,"content":[]}}`)(w, r, b)
 	})
 	res, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: "new"})
 	se, ok := errors.AsType[*StepError](err)
@@ -210,10 +220,10 @@ func TestEditCommentRefusals(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := f.count("PUT", "/rest/api/3/issue/WEB-1/comment/900"); n != 0 {
+	if n := f.Count("PUT", "/rest/api/3/issue/WEB-1/comment/900"); n != 0 {
 		t.Errorf("%d writes", n)
 	}
-	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":{"type":"doc","version":1,"content":[]}}`))
+	f.On("PUT", "/rest/api/3/issue/WEB-1/comment/900", jiratest.Reply(200, `{"id":"900","body":{"type":"doc","version":1,"content":[]}}`))
 	if _, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: flattened, AcceptLoss: true}); err != nil {
 		t.Errorf("accepted loss: %v", err)
 	}
@@ -228,24 +238,24 @@ func TestEditCommentChecksLast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		f.on("GET", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":`+docJSON(t, adf.Doc(para("changed")))+`}`))
-		reply(200, userOneJSON)(w, r, b)
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		f.On("GET", "/rest/api/3/issue/WEB-1/comment/900", jiratest.Reply(200, `{"id":"900","body":`+docJSON(t, adf.Doc(para("changed")))+`}`))
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
 	_, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: "thanks @[me]", From: &read})
 	if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) {
 		t.Fatalf("got %v", err)
 	}
 	want := []string{"GET /rest/api/3/issue/WEB-1/comment/900", "GET " + myselfURL, "GET /rest/api/3/issue/WEB-1/comment/900"}
-	if got := f.requests(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := f.Requests(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("requests\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
 func TestDeleteComment(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("DELETE", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	f.On("DELETE", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	if err := c.DeleteComment(t.Context(), "WEB-1", "900"); err != nil {
 		t.Fatal(err)
 	}

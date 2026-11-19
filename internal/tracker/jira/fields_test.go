@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/tracker/jira/jiratest"
 )
 
 const catalogJSON = `[
@@ -14,9 +16,9 @@ const catalogJSON = `[
 ]`
 
 func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/field", reply(200, catalogJSON))
+	f.On("GET", "/rest/api/3/field", jiratest.Reply(200, catalogJSON))
 	for range 2 {
 		fs, err := c.Fields(t.Context())
 		if err != nil || len(fs) != 2 || fs[1].Schema.CustomID != 10001 || fs[1].Schema.customType() != "float" {
@@ -24,7 +26,7 @@ func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 		}
 		fs[0].Name = "changed by a caller"
 	}
-	if n := f.count("GET", "/rest/api/3/field"); n != 1 {
+	if n := f.Count("GET", "/rest/api/3/field"); n != 1 {
 		t.Errorf("%d reads, want 1", n)
 	}
 	fs, _ := c.Fields(t.Context())
@@ -35,7 +37,7 @@ func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 	if _, err := c.Fields(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.count("GET", "/rest/api/3/field"); n != 2 {
+	if n := f.Count("GET", "/rest/api/3/field"); n != 2 {
 		t.Errorf("ForgetFields kept the catalog: %d reads", n)
 	}
 }
@@ -43,13 +45,13 @@ func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 // TestForgetFieldsDuringALoad proves a catalog read that started before
 // ForgetFields stores nothing.
 func TestForgetFieldsDuringALoad(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/field", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if f.count("GET", "/rest/api/3/field") == 1 {
+	f.On("GET", "/rest/api/3/field", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if f.Count("GET", "/rest/api/3/field") == 1 {
 			c.ForgetFields()
 		}
-		reply(200, catalogJSON)(w, r, b)
+		jiratest.Reply(200, catalogJSON)(w, r, b)
 	})
 	if _, err := c.Fields(t.Context()); err != nil {
 		t.Fatal(err)
@@ -57,24 +59,24 @@ func TestForgetFieldsDuringALoad(t *testing.T) {
 	if _, err := c.Fields(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.count("GET", "/rest/api/3/field"); n != 2 {
+	if n := f.Count("GET", "/rest/api/3/field"); n != 2 {
 		t.Errorf("a load that raced ForgetFields was stored: %d reads", n)
 	}
 }
 
 func TestCreateMetaPagesAndKeys(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "maxResults", "200")
+	f.On("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "maxResults", "200")
 		if r.URL.Query().Get("startAt") == "0" {
-			reply(200, `{"issueTypes":[{"id":"1","name":"Task"}],"total":2}`)(w, r, b)
+			jiratest.Reply(200, `{"issueTypes":[{"id":"1","name":"Task"}],"total":2}`)(w, r, b)
 			return
 		}
-		wantQuery(t, r, "startAt", "1")
-		reply(200, `{"createMetaIssueType":[{"id":"2","name":"Bug"}],"total":2}`)(w, r, b)
+		jiratest.WantQuery(t, r, "startAt", "1")
+		jiratest.Reply(200, `{"createMetaIssueType":[{"id":"2","name":"Bug"}],"total":2}`)(w, r, b)
 	})
-	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1", reply(200, `{"total":2,"results":[
+	f.On("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1", jiratest.Reply(200, `{"total":2,"results":[
 		{"fieldId":"summary","key":"summary","name":"Summary","required":true,"schema":{"type":"string","system":"summary"},"operations":["set"]},
 		{"fieldId":"priority","key":"priority","name":"Priority","required":false,"schema":{"type":"priority","system":"priority"},"operations":["set"],
 		 "allowedValues":[{"id":"1","name":"High"},{"id":2,"name":"Low"}],"hasDefaultValue":true}]}`))
@@ -96,15 +98,15 @@ func TestCreateMetaPagesAndKeys(t *testing.T) {
 }
 
 func TestCreateMetaEmptyPageStops(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if f.count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes") > 10 {
+	f.On("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if f.Count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes") > 10 {
 			t.Error("the client kept asking for pages")
-			reply(400, `{}`)(w, r, b)
+			jiratest.Reply(400, `{}`)(w, r, b)
 			return
 		}
-		reply(200, `{"issueTypes":[],"total":3}`)(w, r, b)
+		jiratest.Reply(200, `{"issueTypes":[],"total":3}`)(w, r, b)
 	})
 	if _, err := c.CreateIssueTypes(t.Context(), "WEB"); err == nil {
 		t.Error("an empty page short of the total must fail, not loop")
@@ -114,9 +116,9 @@ func TestCreateMetaEmptyPageStops(t *testing.T) {
 // TestFieldCatalogCopiesShareNothing proves a catalog handed out shares
 // no memory with the cache or with another caller's copy.
 func TestFieldCatalogCopiesShareNothing(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/field", reply(200, catalogJSON))
+	f.On("GET", "/rest/api/3/field", jiratest.Reply(200, catalogJSON))
 	first, err := c.Fields(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -146,9 +148,9 @@ func TestFieldIDWinsOverName(t *testing.T) {
 }
 
 func TestEditMetaAndScreenLookup(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1/editmeta", reply(200, `{"fields":{
+	f.On("GET", "/rest/api/3/issue/WEB-1/editmeta", jiratest.Reply(200, `{"fields":{
 		"customfield_10002":{"key":"customfield_10002","name":"Team","required":false,"schema":{"type":"team","custom":"com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team"},"operations":["set"]},
 		"customfield_10003":{"key":"customfield_10003","name":"team","required":false,"schema":{"type":"string"},"operations":["set"]},
 		"labels":{"key":"labels","name":"Labels","required":false,"schema":{"type":"array","items":"string","system":"labels"},"operations":["add","set","remove"]}}}`))

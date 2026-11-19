@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/secret"
+	"agent-overflow/internal/tracker/tempo/tempotest"
 )
 
 // escToken is testToken as JSON writes it with its first letter escaped:
@@ -30,20 +31,20 @@ func scrubbed(t *testing.T, values map[string]string) {
 // TestDecodedTextIsScrubbed: every string a result keeps from an answer
 // is scrubbed of the credential after it is decoded.
 func TestDecodedTextIsScrubbed(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	ctx := context.Background()
-	f.on("GET", "/4/worklogs/46", nil, "", 200, `{"tempoWorklogId":46,"issue":{"id":10001},"author":{"accountId":"a`+escToken+`"},
+	f.On("GET", "/4/worklogs/46", nil, "", 200, `{"tempoWorklogId":46,"issue":{"id":10001},"author":{"accountId":"a`+escToken+`"},
 "startDate":"2026-11-10","timeSpentSeconds":3600,"description":"d`+escToken+`",
 "attributes":{"values":[{"key":"k`+escToken+`","value":"v`+escToken+`"}]},"createdAt":"2026-11-02T08:00:00Z","updatedAt":"2026-11-03T09:30:00Z"}`)
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
 		`{"key":"k`+escToken+`","name":"n`+escToken+`","type":"t`+escToken+`","required":false,"values":["v`+escToken+`"],"names":{"v`+escToken+`":"o`+escToken+`"}}`))
-	f.on("GET", "/4/globalconfiguration", nil, "", 200, `{"approvalPeriod":"p`+escToken+`"}`)
-	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), "{}", 200, pageOf(0, false,
+	f.On("GET", "/4/globalconfiguration", nil, "", 200, `{"approvalPeriod":"p`+escToken+`"}`)
+	f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), "{}", 200, pageOf(0, false,
 		`{"id":1,"key":"k`+escToken+`","name":"n`+escToken+`","status":"s`+escToken+`","global":false}`))
-	f.on("GET", "/4/user-schedule/acc-user1", q("from", "2026-12-25", "to", "2026-12-25"), "", 200, `{"results":[
+	f.On("GET", "/4/user-schedule/acc-user1", q("from", "2026-12-25", "to", "2026-12-25"), "", 200, `{"results":[
  {"date":"2026-12-25","requiredSeconds":0,"type":"t`+escToken+`","holiday":{"name":"n`+escToken+`","description":"d`+escToken+`","durationSeconds":28800,"type":"FIXED"}}]}`)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, `{"period":{"from":"2026-11-02","to":"2026-11-08"},
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, `{"period":{"from":"2026-11-02","to":"2026-11-08"},
 "reviewer":{"accountId":"r`+escToken+`"},"status":{"key":"s`+escToken+`","actor":{"accountId":"a`+escToken+`"},"updatedAt":"2026-11-08"}}`)
 
 	w, err := c.Worklog(ctx, 46)
@@ -91,15 +92,15 @@ func TestDecodedTextIsScrubbed(t *testing.T) {
 // change sends back, and a check names in a problem, carries no
 // credential; nor does Tempo's own refusal.
 func TestReadValuesInProblemsAreScrubbed(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	ctx := context.Background()
-	f.on("GET", "/4/worklogs/47", nil, "", 200, `{"tempoWorklogId":47,"issue":{"id":10001},"author":{"accountId":"acc-user1"},
+	f.On("GET", "/4/worklogs/47", nil, "", 200, `{"tempoWorklogId":47,"issue":{"id":10001},"author":{"accountId":"acc-user1"},
 "startDate":"2026-11-10","timeSpentSeconds":3600,"description":"",
 "attributes":{"values":[{"key":"_Category_","value":"dev"},{"key":"_Units_","value":"`+escToken+`"},{"key":"k`+escToken+`","value":"v"}]},
 "createdAt":"2026-11-02T08:00:00Z","updatedAt":"2026-11-03T09:30:00Z"}`)
 	openWeek(f)
-	f.on("POST", "/4/worklogs", nil, createBody(10001, "x"), 400, `{"errors":[{"message":"refused `+escToken+`"}]}`)
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "x"), 400, `{"errors":[{"message":"refused `+escToken+`"}]}`)
 
 	w, err := c.Worklog(ctx, 47)
 	if err != nil {

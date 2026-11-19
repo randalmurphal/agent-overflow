@@ -2,15 +2,22 @@ package linear
 
 import "time"
 
-// issueFields costs about 11 complexity points per issue: 23 scalars at
-// 0.1 and seven { id } objects at 1.1. Related entities are selected by
-// ID only; the catalog calls supply their names.
-const issueFields = `fragment IssueFields on Issue {
+// issueSelection is what every read of an issue selects. By Linear's
+// documented rule it costs about 10 complexity points per issue: 23
+// scalars at 0.1 and seven { id } objects at 1.1. Related entities are
+// selected by ID only; the catalog calls supply their names.
+const issueSelection = `
   id identifier number title description url branchName
   priority estimate sortOrder prioritySortOrder subIssueSortOrder
   team { id } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
   labelIds dueDate createdAt updatedAt startedAt completedAt canceledAt archivedAt trashed
-}`
+`
+
+const issueFields = `fragment IssueFields on Issue {` + issueSelection + `}`
+
+// issueSearchFields is issueSelection on a search result, a type of its
+// own with the same fields, which wireIssue decodes too.
+const issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + issueSelection + `}`
 
 type wireIssue struct {
 	ID                string     `json:"id"`
@@ -141,7 +148,7 @@ func (w wireRelation) typed() Relation {
 
 // historyFields selects the changes HistoryEntry types, by ID.
 const historyFields = `fragment HistoryFields on IssueHistory {
-  id createdAt actorId
+  id createdAt updatedAt actorId
   fromStateId toStateId fromAssigneeId toAssigneeId fromCycleId toCycleId
   fromProjectId toProjectId fromParentId toParentId fromTeamId toTeamId
   fromEstimate toEstimate fromPriority toPriority fromTitle toTitle
@@ -151,6 +158,7 @@ const historyFields = `fragment HistoryFields on IssueHistory {
 type wireHistory struct {
 	ID              string    `json:"id"`
 	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 	ActorID         string    `json:"actorId"`
 	FromStateID     *string   `json:"fromStateId"`
 	ToStateID       *string   `json:"toStateId"`
@@ -177,7 +185,7 @@ type wireHistory struct {
 
 func (w wireHistory) typed() HistoryEntry {
 	return HistoryEntry{
-		ID: w.ID, CreatedAt: w.CreatedAt, ActorID: w.ActorID,
+		ID: w.ID, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ActorID: w.ActorID,
 		State: change(w.FromStateID, w.ToStateID), Assignee: change(w.FromAssigneeID, w.ToAssigneeID),
 		Cycle: change(w.FromCycleID, w.ToCycleID), Project: change(w.FromProjectID, w.ToProjectID),
 		Parent: change(w.FromParentID, w.ToParentID), Team: change(w.FromTeamID, w.ToTeamID),

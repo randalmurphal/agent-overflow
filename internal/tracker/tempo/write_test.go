@@ -7,21 +7,22 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/tempo/tempotest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // openWeek serves the attributes and an open approval for 2026-11-10.
-func openWeek(f *fakeTempo) {
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN")).repeat = true
+func openWeek(f *tempotest.Server) {
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN")).Repeat = true
 }
 
 func TestCreate(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	c := testClient(t, f, issues)
 	openWeek(f)
-	f.on("POST", "/4/worklogs", nil,
+	f.On("POST", "/4/worklogs", nil,
 		`{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-10","startTime":"09:00:00","timeSpentSeconds":5400,
 		  "description":"Code review","attributes":[{"key":"_Category_","value":"dev"}]}`,
 		200, wl{id: 100, issue: 10001, author: "acc-user1", date: "2026-11-10", start: "09:00:00", spent: 5400, billable: seconds64(5400), desc: "Code review", attrs: [][2]string{{"_Category_", "dev"}}}.json())
@@ -40,27 +41,30 @@ func TestCreate(t *testing.T) {
 }
 
 func TestCreateRefusedBeforeSending(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	openWeek(f)
 	_, err := c.Create(context.Background(), Draft{
 		Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")}, Spent: time.Hour,
 	})
 	invalid, ok := errors.AsType[*InvalidError](err)
-	if !ok || !trackerapi.WriteNotApplied(err) || len(invalid.Problems) != 1 || invalid.Problems[0].Code != Missing {
+	if !ok || !trackerapi.WriteNotApplied(err) || !errors.Is(err, trackerapi.ErrInvalidInput) || len(invalid.Problems) != 1 || invalid.Problems[0].Code != Missing {
 		t.Fatalf("err %v", err)
+	}
+	if _, err := c.Worklog(context.Background(), -1); !errors.Is(err, trackerapi.ErrInvalidInput) {
+		t.Errorf("a worklog ID that is not one: %v", err)
 	}
 }
 
 // TestUpdateKeepsWhatItDoesNotChange reads a worklog and changes its time
 // alone: everything else goes back as read.
 func TestUpdateKeepsWhatItDoesNotChange(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	openWeek(f)
-	f.on("GET", "/4/worklogs/70", nil, "", 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", start: "13:00:00",
+	f.On("GET", "/4/worklogs/70", nil, "", 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", start: "13:00:00",
 		spent: 3600, billable: seconds64(1800), desc: "Planning", attrs: [][2]string{{"_Category_", "mtg"}, {"_Note_", "keep"}}}.json())
-	f.on("PUT", "/4/worklogs/70", nil,
+	f.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","startTime":"13:00:00","timeSpentSeconds":7200,
 		  "billableSeconds":1800,"description":"Planning","attributes":[{"key":"_Category_","value":"mtg"},{"key":"_Note_","value":"keep"}]}`,
 		200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", start: "13:00:00", spent: 7200, billable: seconds64(1800), desc: "Planning",
@@ -146,10 +150,10 @@ func deref(d *time.Duration) any {
 }
 
 func TestDelete(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("DELETE", "/4/worklogs/71", nil, "", 204, "")
-	f.on("DELETE", "/4/worklogs/72", nil, "", 404, `{"errors":{"message":"Worklog cannot be found"}}`)
+	f.On("DELETE", "/4/worklogs/71", nil, "", 204, "")
+	f.On("DELETE", "/4/worklogs/72", nil, "", 404, `{"errors":{"message":"Worklog cannot be found"}}`)
 	ctx := context.Background()
 	if err := c.Delete(ctx, 71); err != nil {
 		t.Fatal(err)
@@ -166,14 +170,14 @@ func TestDelete(t *testing.T) {
 // TestUpdateNotMoved: an update that names another issue and comes back
 // stored on the old one is neither applied nor a refusal.
 func TestUpdateNotMoved(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	openWeek(f)
 	from := Worklog{ID: 70, Issue: Issue{ID: 10002, Key: "WEB-2"}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
 		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "dev"}}}
 	body := `{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-10","timeSpentSeconds":3600,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`
-	f.on("PUT", "/4/worklogs/70", nil, body, 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
-	f.on("PUT", "/4/worklogs/71", nil, body, 200, wl{id: 71, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
+	f.On("PUT", "/4/worklogs/70", nil, body, 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
+	f.On("PUT", "/4/worklogs/71", nil, body, 200, wl{id: 71, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
 	out := c.Apply(context.Background(), []Op{
 		UpdateOp(Change{From: from, Issue: &Issue{Key: "WEB-1"}}),
 		UpdateOp(Change{From: func() Worklog { w := from; w.ID = 71; return w }(), Issue: &Issue{Key: "WEB-1"}}),
@@ -190,10 +194,10 @@ func TestUpdateNotMoved(t *testing.T) {
 }
 
 func TestWriteRedirectIsUnknown(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	e := f.on("DELETE", "/4/worklogs/73", nil, "", 302, "")
-	e.header = map[string][]string{"Location": {f.srv.URL + "/4/worklogs/74"}}
+	e := f.On("DELETE", "/4/worklogs/73", nil, "", 302, "")
+	e.Header = map[string][]string{"Location": {f.URL() + "/4/worklogs/74"}}
 	out := c.Apply(context.Background(), []Op{DeleteOp(73)})[0]
 	if se, ok := errors.AsType[*trackerapi.StatusError](out.Err); out.Status != Unknown || !ok || se.Status != 302 || trackerapi.WriteNotApplied(out.Err) {
 		t.Fatalf("%+v", out)

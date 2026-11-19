@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -27,14 +28,14 @@ func worklogJSONWith(comment, visibility string) string {
 }
 
 func TestAddWorklog(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	started := time.Date(2026, 11, 16, 9, 30, 0, 0, time.FixedZone("", 3600))
-	f.on("POST", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "adjustEstimate", "manual")
-		wantQuery(t, r, "reduceBy", "90m")
-		wantJSON(t, b, `{"started":"2026-11-16T09:30:00.000+0100","timeSpentSeconds":5400,"comment":`+docJSON(t, adf.Doc(para("Fixed it")))+`}`)
-		reply(201, worklogJSONWith(docJSON(t, adf.Doc(para("Fixed it"))), "null"))(w, r, b)
+	f.On("POST", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "adjustEstimate", "manual")
+		jiratest.WantQuery(t, r, "reduceBy", "90m")
+		jiratest.WantJSON(t, b, `{"started":"2026-11-16T09:30:00.000+0100","timeSpentSeconds":5400,"comment":`+docJSON(t, adf.Doc(para("Fixed it")))+`}`)
+		jiratest.Reply(201, worklogJSONWith(docJSON(t, adf.Doc(para("Fixed it"))), "null"))(w, r, b)
 	})
 	wl, err := c.AddWorklog(t.Context(), WorklogInput{Issue: "WEB-1", Started: started, TimeSpent: 90 * time.Minute, Markdown: "Fixed it", Estimate: ReduceRemaining(90 * time.Minute)})
 	if err != nil || wl.ID != "300" || wl.TimeSpent != 90*time.Minute || !wl.Started.Equal(started) || wl.Comment == nil {
@@ -54,7 +55,7 @@ func TestAddWorklog(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := f.count("POST", worklogsURL); n != 1 {
+	if n := f.Count("POST", worklogsURL); n != 1 {
 		t.Errorf("%d writes", n)
 	}
 }
@@ -81,11 +82,11 @@ func TestWorklogAnswerForms(t *testing.T) {
 		`<html>ok</html>`:                                     {201, "", false, "", true},
 		`{"id":"300"}`:                                        {200, "", false, "", true},
 	} {
-		f := newFake(t)
+		f := jiratest.NewServer(t)
 		c := newTestClient(t, f)
-		f.on("POST", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-			wantJSON(t, b, `{"started":"2026-11-16T09:30:00.000+0000","timeSpentSeconds":60}`)
-			reply(want.status, body)(w, r, b)
+		f.On("POST", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			jiratest.WantJSON(t, b, `{"started":"2026-11-16T09:30:00.000+0000","timeSpentSeconds":60}`)
+			jiratest.Reply(want.status, body)(w, r, b)
 		})
 		wl, err := c.AddWorklog(t.Context(), WorklogInput{Issue: "WEB-1", Started: time.Date(2026, 11, 16, 9, 30, 0, 0, time.UTC), TimeSpent: time.Minute})
 		if (err != nil) != want.err || wl.ID != want.id || (problemIn(wl.Problems, want.problem) != nil) != (want.problem != "") {
@@ -105,19 +106,19 @@ func TestWorklogAnswerForms(t *testing.T) {
 // worklogSite serves worklog 300 as stored holds it, and its update.
 type worklogSite struct {
 	t      *testing.T
-	f      *fakeJira
+	f      *jiratest.Server
 	c      *Client
 	stored atomic.Pointer[string]
 	put    func(r *http.Request, b []byte) string
 }
 
 func newWorklogSite(t *testing.T, comment, visibility string) *worklogSite {
-	s := &worklogSite{t: t, f: newFake(t)}
+	s := &worklogSite{t: t, f: jiratest.NewServer(t)}
 	s.c = newTestClient(t, s.f)
 	body := worklogJSONWith(comment, visibility)
 	s.stored.Store(&body)
-	s.f.on("GET", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) { reply(200, *s.stored.Load())(w, r, b) })
-	s.f.on("PUT", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) { reply(200, s.put(r, b))(w, r, b) })
+	s.f.On("GET", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) { jiratest.Reply(200, *s.stored.Load())(w, r, b) })
+	s.f.On("PUT", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) { jiratest.Reply(200, s.put(r, b))(w, r, b) })
 	return s
 }
 
@@ -134,8 +135,8 @@ func TestUpdateWorklog(t *testing.T) {
 	md := strings.Replace(adf.ToMarkdown(layoutDoc()), "left", "LEFT", 1)
 	edited := strings.Replace(docJSON(t, layoutDoc()), "left", "LEFT", 1)
 	s.put = func(r *http.Request, b []byte) string {
-		wantQuery(t, r, "adjustEstimate", "leave")
-		wantJSON(t, b, `{"timeSpentSeconds":3600,"comment":`+edited+`,"visibility":`+visibility+`}`)
+		jiratest.WantQuery(t, r, "adjustEstimate", "leave")
+		jiratest.WantJSON(t, b, `{"timeSpentSeconds":3600,"comment":`+edited+`,"visibility":`+visibility+`}`)
 		return worklogJSONWith(edited, visibility)
 	}
 	in := WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: time.Hour, Markdown: &md, Estimate: LeaveEstimate()}
@@ -170,7 +171,7 @@ func TestUpdateWorklog(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := s.f.count("PUT", worklog300); n != 1 {
+	if n := s.f.Count("PUT", worklog300); n != 1 {
 		t.Errorf("%d writes", n)
 	}
 }
@@ -187,7 +188,7 @@ func TestUpdateWorklogAbsentComment(t *testing.T) {
 	s.stored.Store(&added)
 	md := "mine"
 	_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, Markdown: &md})
-	if _, ok := errors.AsType[*StaleError](err); !ok || s.f.count("PUT", worklog300) != 0 {
+	if _, ok := errors.AsType[*StaleError](err); !ok || s.f.Count("PUT", worklog300) != 0 {
 		t.Fatalf("a comment added since an absent one was read: %v", err)
 	}
 }
@@ -210,7 +211,7 @@ func TestUpdateWorklogStaleParts(t *testing.T) {
 		}
 		s.stored.Store(&now)
 		_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: time.Hour})
-		if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) || s.f.count("PUT", worklog300) != 0 {
+		if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) || s.f.Count("PUT", worklog300) != 0 {
 			t.Errorf("%s changed: %v", name, err)
 		}
 	}
@@ -237,14 +238,14 @@ func TestUpdateWorklogUnreadableComment(t *testing.T) {
 		}
 	}
 	s.put = func(r *http.Request, b []byte) string {
-		wantQuery(t, r, "adjustEstimate", "auto")
-		wantJSON(t, b, `{"timeSpentSeconds":3600}`)
+		jiratest.WantQuery(t, r, "adjustEstimate", "auto")
+		jiratest.WantJSON(t, b, `{"timeSpentSeconds":3600}`)
 		return worklogJSONWith("5", "null")
 	}
 	if _, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: time.Hour}); err != nil {
 		t.Errorf("a time change: %v", err)
 	}
-	if n := s.f.count("PUT", worklog300); n != 1 {
+	if n := s.f.Count("PUT", worklog300); n != 1 {
 		t.Errorf("%d writes", n)
 	}
 }
@@ -277,7 +278,7 @@ func TestUpdateWorklogStoredValues(t *testing.T) {
 func TestUpdateWorklogAnswerNamesAnother(t *testing.T) {
 	s := newWorklogSite(t, "null", "null")
 	s.put = func(r *http.Request, b []byte) string {
-		wantJSON(t, b, `{"timeSpentSeconds":3600}`)
+		jiratest.WantJSON(t, b, `{"timeSpentSeconds":3600}`)
 		return strings.Replace(worklogJSONWith("null", "null"), `"id":"300"`, `"id":"301"`, 1)
 	}
 	res, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Unchecked: true, TimeSpent: time.Hour})
@@ -295,17 +296,17 @@ func TestUpdateWorklogChecksLast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	s.f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		changed := worklogJSONWith(docJSON(t, adf.Doc(para("changed while the mention resolved"))), "null")
 		s.stored.Store(&changed)
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
 	md := "thanks @[me]"
 	_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, Markdown: &md})
-	if _, ok := errors.AsType[*StaleError](err); !ok || s.f.count("PUT", worklog300) != 0 {
+	if _, ok := errors.AsType[*StaleError](err); !ok || s.f.Count("PUT", worklog300) != 0 {
 		t.Fatalf("a change during the mention's read: %v", err)
 	}
-	if got := s.f.requests(); got[len(got)-1] != "GET "+worklog300 || got[len(got)-2] != "GET "+myselfURL {
+	if got := s.f.Requests(); got[len(got)-1] != "GET "+worklog300 || got[len(got)-2] != "GET "+myselfURL {
 		t.Errorf("requests %v", got)
 	}
 }
@@ -315,23 +316,23 @@ func TestUpdateWorklogChecksLast(t *testing.T) {
 func TestUpdateWorklogEstimateOnly(t *testing.T) {
 	s := newWorklogSite(t, "null", "null")
 	s.put = func(r *http.Request, b []byte) string {
-		wantQuery(t, r, "adjustEstimate", "new")
-		wantQuery(t, r, "newEstimate", "120m")
-		wantJSON(t, b, `{"timeSpentSeconds":5400}`)
+		jiratest.WantQuery(t, r, "adjustEstimate", "new")
+		jiratest.WantQuery(t, r, "newEstimate", "120m")
+		jiratest.WantJSON(t, b, `{"timeSpentSeconds":5400}`)
 		return worklogJSONWith("null", "null")
 	}
 	res, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Unchecked: true, Estimate: SetRemaining(2 * time.Hour)})
-	if err != nil || res.Unchanged || s.f.count("PUT", worklog300) != 1 {
+	if err != nil || res.Unchanged || s.f.Count("PUT", worklog300) != 1 {
 		t.Fatalf("got %+v %v", res, err)
 	}
 }
 
 func TestDeleteWorklog(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("DELETE", worklog300, func(w http.ResponseWriter, r *http.Request, _ []byte) {
-		wantQuery(t, r, "adjustEstimate", "manual")
-		wantQuery(t, r, "increaseBy", "30m")
+	f.On("DELETE", worklog300, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		jiratest.WantQuery(t, r, "adjustEstimate", "manual")
+		jiratest.WantQuery(t, r, "increaseBy", "30m")
 		w.WriteHeader(204)
 	})
 	if err := c.DeleteWorklog(t.Context(), "WEB-1", "300", IncreaseRemaining(30*time.Minute)); err != nil {
@@ -348,17 +349,17 @@ func TestDeleteWorklog(t *testing.T) {
 }
 
 func TestWorklogs(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	after := time.UnixMilli(1762074000000)
-	f.on("GET", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "startedAfter", "1762074000000")
+	f.On("GET", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "startedAfter", "1762074000000")
 		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
 		var logs []string
 		for i := start; i < min(start+2, 3); i++ {
 			logs = append(logs, fmt.Sprintf(`{"id":"%d","started":"2026-11-16T09:30:00.000+0100","timeSpentSeconds":60}`, 300+i))
 		}
-		reply(200, fmt.Sprintf(`{"startAt":%d,"total":3,"worklogs":[%s]}`, start, strings.Join(logs, ",")))(w, r, b)
+		jiratest.Reply(200, fmt.Sprintf(`{"startAt":%d,"total":3,"worklogs":[%s]}`, start, strings.Join(logs, ",")))(w, r, b)
 	})
 	list, err := c.Worklogs(t.Context(), WorklogQuery{Issue: "WEB-1", StartedAfter: after})
 	if err != nil || !list.Complete || len(list.Worklogs) != 3 || list.Worklogs[2].ID != "302" {
@@ -368,7 +369,7 @@ func TestWorklogs(t *testing.T) {
 		"no total":      `{"worklogs":[{"id":"300","started":"2026-11-16T09:30:00.000+0100"}]}`,
 		"an empty page": `{"total":3,"worklogs":[]}`,
 	} {
-		f.on("GET", worklogsURL, reply(200, body))
+		f.On("GET", worklogsURL, jiratest.Reply(200, body))
 		if list, err := c.Worklogs(t.Context(), WorklogQuery{Issue: "WEB-1"}); err == nil || list.Complete {
 			t.Errorf("%s: %+v %v", name, list, err)
 		}
@@ -376,14 +377,14 @@ func TestWorklogs(t *testing.T) {
 }
 
 func TestWorklogChanges(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/worklog/updated", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", "/rest/api/3/worklog/updated", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		switch r.URL.Query().Get("since") {
 		case "1000":
-			reply(200, `{"values":[{"worklogId":300,"updatedTime":1500}],"since":1000,"until":2000,"lastPage":false}`)(w, r, b)
+			jiratest.Reply(200, `{"values":[{"worklogId":300,"updatedTime":1500}],"since":1000,"until":2000,"lastPage":false}`)(w, r, b)
 		case "2000":
-			reply(200, `{"values":[{"worklogId":301,"updatedTime":2500}],"since":2000,"until":3000,"lastPage":true}`)(w, r, b)
+			jiratest.Reply(200, `{"values":[{"worklogId":301,"updatedTime":2500}],"since":2000,"until":3000,"lastPage":true}`)(w, r, b)
 		default:
 			t.Errorf("since %s", r.URL.Query().Get("since"))
 		}
@@ -392,7 +393,7 @@ func TestWorklogChanges(t *testing.T) {
 	if err != nil || !got.Complete || len(got.Changes) != 2 || got.Changes[1].ID != 301 || got.Until.UnixMilli() != 3000 {
 		t.Fatalf("got %+v %v", got, err)
 	}
-	f.on("GET", "/rest/api/3/worklog/deleted", reply(200, `{"values":[],"since":1000,"until":1000,"lastPage":false}`))
+	f.On("GET", "/rest/api/3/worklog/deleted", jiratest.Reply(200, `{"values":[],"since":1000,"until":1000,"lastPage":false}`))
 	if got, err := c.DeletedWorklogs(t.Context(), time.UnixMilli(1000)); err == nil || got.Complete {
 		t.Errorf("a page that does not move on: %+v %v", got, err)
 	}
@@ -402,13 +403,13 @@ func TestWorklogChanges(t *testing.T) {
 }
 
 func TestWorklogsByID(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	ids := make([]int64, 1001)
 	for i := range ids {
 		ids[i] = int64(i + 1)
 	}
-	f.on("POST", "/rest/api/3/worklog/list", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/worklog/list", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		var req struct{ IDs []int64 }
 		if err := json.Unmarshal(b, &req); err != nil || len(req.IDs) > 1000 {
 			t.Errorf("a request of %d IDs: %v", len(req.IDs), err)
@@ -419,13 +420,13 @@ func TestWorklogsByID(t *testing.T) {
 		}
 		// One answer names worklog 1 again, which is not counted twice.
 		logs = append(logs, `{"id":"1","started":"2026-11-16T09:30:00.000+0100"}`)
-		reply(200, "["+strings.Join(logs, ",")+"]")(w, r, b)
+		jiratest.Reply(200, "["+strings.Join(logs, ",")+"]")(w, r, b)
 	})
 	list, err := c.WorklogsByID(t.Context(), ids)
 	if err != nil || !list.Complete || len(list.Worklogs) != 1001 {
 		t.Fatalf("got %d worklogs, complete %v, %v", len(list.Worklogs), list.Complete, err)
 	}
-	f.on("POST", "/rest/api/3/worklog/list", reply(200, `[{"id":"1","started":"2026-11-16T09:30:00.000+0100"},{"id":"1","started":"2026-11-16T09:30:00.000+0100"}]`))
+	f.On("POST", "/rest/api/3/worklog/list", jiratest.Reply(200, `[{"id":"1","started":"2026-11-16T09:30:00.000+0100"},{"id":"1","started":"2026-11-16T09:30:00.000+0100"}]`))
 	if list, err := c.WorklogsByID(t.Context(), []int64{1, 2}); err != nil || list.Complete {
 		t.Errorf("one worklog twice for two named: %+v %v", list, err)
 	}

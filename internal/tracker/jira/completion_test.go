@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -20,12 +21,14 @@ const (
 )
 
 // completionSite is sprint 7, active on board 3, with 60 issues in
-// progress (WEB-1 to WEB-60) and two done (WEB-61, WEB-62); sprint 8 is
-// future. The sprint's issues come in pages of 40; an issue a move took
-// out is no longer listed, and an issue in added is listed from the
-// second full listing on, as one added to the sprint after the first.
+// progress (WEB-1 to WEB-60, IDs 10001 to 10060) and two done (WEB-61,
+// WEB-62); sprint 8 is future. The sprint's issues come in pages of 40;
+// an issue a move took out, by ID, is no longer listed, and an issue in
+// added is listed from the second full listing on, as one added to the
+// sprint after the first, with ID 20000 and on.
 type completionSite struct {
-	*fakeJira
+	*jiratest.Server
+	t *testing.T
 	c *Client
 
 	mu       sync.Mutex
@@ -35,21 +38,21 @@ type completionSite struct {
 }
 
 func newCompletionSite(t *testing.T) *completionSite {
-	f := newFake(t)
-	s := &completionSite{fakeJira: f, c: newTestClient(t, f)}
-	f.on("GET", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
-	f.on("GET", sprint8URL, reply(200, `{"id":8,"name":"Sprint 2","state":"future","originBoardId":3}`))
-	f.on("GET", boardConfigURL, reply(200, boardConfigBody))
-	f.on("GET", sprint7IssuesURL, s.listing)
-	f.on("POST", sprint8URL+"/issue", s.move)
-	f.on("POST", backlogIssueURL, s.move)
+	f := jiratest.NewServer(t)
+	s := &completionSite{Server: f, t: t, c: newTestClient(t, f)}
+	f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
+	f.On("GET", sprint8URL, jiratest.Reply(200, `{"id":8,"name":"Sprint 2","state":"future","originBoardId":3}`))
+	f.On("GET", boardConfigURL, jiratest.Reply(200, boardConfigBody))
+	f.On("GET", sprint7IssuesURL, s.listing)
+	f.On("POST", sprint8URL+"/issue", s.move)
+	f.On("POST", backlogIssueURL, s.move)
 	return s
 }
 
 // listing serves one page of the sprint's issues.
 func (s *completionSite) listing(w http.ResponseWriter, r *http.Request, b []byte) {
 	t := s.t
-	wantQuery(t, r, "fields", "status")
+	jiratest.WantQuery(t, r, "fields", "status")
 	start := 0
 	if tok := r.URL.Query().Get("nextPageToken"); tok != "" {
 		if _, err := fmt.Sscanf(tok, "from-%d", &start); err != nil {
@@ -61,7 +64,7 @@ func (s *completionSite) listing(w http.ResponseWriter, r *http.Request, b []byt
 	var all []string
 	for i := 1; i <= 62; i++ {
 		key := fmt.Sprintf("WEB-%d", i)
-		if slices.Contains(s.moved, key) {
+		if slices.Contains(s.moved, fmt.Sprint(10000+i)) {
 			continue
 		}
 		status := "3"
@@ -81,7 +84,7 @@ func (s *completionSite) listing(w http.ResponseWriter, r *http.Request, b []byt
 		next = "null"
 		s.listings++
 	}
-	reply(200, fmt.Sprintf(`{"issues":[%s],"nextPageToken":%s,"isLast":%v}`, strings.Join(all[start:end], ","), next, last))(w, r, b)
+	jiratest.Reply(200, fmt.Sprintf(`{"issues":[%s],"nextPageToken":%s,"isLast":%v}`, strings.Join(all[start:end], ","), next, last))(w, r, b)
 }
 
 // move records a move's issues, which leave the sprint, and answers 204.
@@ -107,16 +110,21 @@ func (s *completionSite) movedIssues() []string {
 // close, in that order.
 func TestCompleteSprint(t *testing.T) {
 	s := newCompletionSite(t)
-	s.on("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"state":"closed"}`)
-		reply(200, `{"id":7,"name":"Sprint 1","state":"closed","completeDate":"2026-11-16T09:00:00.000Z"}`)(w, r, b)
+	s.On("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"state":"closed"}`)
+		jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"closed","completeDate":"2026-11-16T09:00:00.000Z"}`)(w, r, b)
 	})
 	res, err := s.c.CompleteSprint(t.Context(), SprintCompletion{Sprint: 7, MoveTo: 8})
 	if err != nil || !res.Closed || res.Sprint == nil || res.Sprint.State != SprintClosed || res.Sprint.Done.IsZero() || len(res.Remaining) != 0 {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	if moved := s.movedIssues(); strings.Join(res.Unfinished, ",") != strings.Join(webIssues(1, 60), ",") || strings.Join(moved, ",") != strings.Join(webIssues(1, 60), ",") || len(res.Moves.Done()) != 60 {
-		t.Errorf("unfinished %v, moved %v", res.Unfinished, moved)
+	want60 := make([]SprintIssue, 60)
+	for i := range want60 {
+		want60[i] = SprintIssue{ID: fmt.Sprint(10001 + i), Key: fmt.Sprintf("WEB-%d", i+1)}
+	}
+	ids60 := sprintIssueIDs(want60)
+	if moved := s.movedIssues(); !slices.Equal(res.Unfinished, want60) || !slices.Equal(moved, ids60) || !slices.Equal(res.Moves.Done(), ids60) {
+		t.Errorf("unfinished %v, moved %v, done %v", res.Unfinished, moved, res.Moves.Done())
 	}
 	want := []string{
 		"GET " + sprint7URL, "GET " + sprint8URL, "GET " + boardConfigURL,
@@ -124,7 +132,7 @@ func TestCompleteSprint(t *testing.T) {
 		"POST " + sprint8URL + "/issue", "POST " + sprint8URL + "/issue",
 		"GET " + sprint7IssuesURL, "POST " + sprint7URL,
 	}
-	if got := s.requests(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := s.Requests(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("requests\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
@@ -133,11 +141,11 @@ func TestCompleteSprint(t *testing.T) {
 // backlog when no sprint is named.
 func TestCompleteSprintToTheBacklog(t *testing.T) {
 	s := newCompletionSite(t)
-	s.on("POST", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"closed"}`))
+	s.On("POST", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"closed"}`))
 	if res, err := s.c.CompleteSprint(t.Context(), SprintCompletion{Sprint: 7}); err != nil || !res.Closed {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	if n, moved := s.count("POST", backlogIssueURL), s.movedIssues(); n != 2 || strings.Join(moved, ",") != strings.Join(webIssues(1, 60), ",") {
+	if n, moved := s.Count("POST", backlogIssueURL), s.movedIssues(); n != 2 || len(moved) != 60 || moved[0] != "10001" || moved[59] != "10060" {
 		t.Errorf("%d backlog moves of %v", n, moved)
 	}
 }
@@ -153,20 +161,20 @@ func TestCompleteSprintAddedMeanwhile(t *testing.T) {
 	if !ok || se.Step != StepSprint || !trackerapi.WriteNotApplied(err) || res.Closed || res.Sprint != nil {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	if strings.Join(res.Remaining, ",") != "WEB-70" || len(res.Moves.Done()) != 60 {
+	if !slices.Equal(res.Remaining, []SprintIssue{{ID: "20000", Key: "WEB-70"}}) || len(res.Moves.Done()) != 60 {
 		t.Errorf("remaining %v, moves %+v", res.Remaining, res.Moves)
 	}
-	if s.count("POST", sprint7URL) != 0 {
+	if s.Count("POST", sprint7URL) != 0 {
 		t.Error("the sprint was closed")
 	}
 	// A listing after the moves that fails keeps the sprint open too.
 	s = newCompletionSite(t)
-	s.on("POST", sprint8URL+"/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	s.On("POST", sprint8URL+"/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		s.move(w, r, b)
-		s.on("GET", sprint7IssuesURL, reply(500, `{}`))
+		s.On("GET", sprint7IssuesURL, jiratest.Reply(500, `{}`))
 	})
 	res, err = s.c.CompleteSprint(t.Context(), SprintCompletion{Sprint: 7, MoveTo: 8})
-	if se, ok := errors.AsType[*StepError](err); !ok || se.Step != StepSprint || res.Closed || s.count("POST", sprint7URL) != 0 {
+	if se, ok := errors.AsType[*StepError](err); !ok || se.Step != StepSprint || res.Closed || s.Count("POST", sprint7URL) != 0 {
 		t.Fatalf("a failed listing after the moves: %+v %v", res, err)
 	}
 }
@@ -187,9 +195,9 @@ func TestCompleteSprintMoveFails(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := newCompletionSite(t)
 			n := 0
-			s.on("POST", sprint8URL+"/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			s.On("POST", sprint8URL+"/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
 				if n++; n-1 == tc.failOn {
-					reply(tc.status, `{"errorMessages":["no"]}`)(w, r, b)
+					jiratest.Reply(tc.status, `{"errorMessages":["no"]}`)(w, r, b)
 					return
 				}
 				s.move(w, r, b)
@@ -204,7 +212,7 @@ func TestCompleteSprintMoveFails(t *testing.T) {
 			if tc.failOn == 0 && res.Moves.Issues[59].Outcome != OutcomeNotSent {
 				t.Errorf("the move after an unknown one: %v", res.Moves.Issues[59].Outcome)
 			}
-			if s.count("POST", sprint7URL) != 0 {
+			if s.Count("POST", sprint7URL) != 0 {
 				t.Error("the sprint was closed")
 			}
 		})
@@ -229,9 +237,9 @@ func TestCompleteSprintCloseAnswers(t *testing.T) {
 		{`<html>closed</html>`, false, false, true, false},
 	} {
 		s := newCompletionSite(t)
-		s.on("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-			wantJSON(t, b, `{"state":"closed"}`)
-			reply(200, tc.body)(w, r, b)
+		s.On("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			jiratest.WantJSON(t, b, `{"state":"closed"}`)
+			jiratest.Reply(200, tc.body)(w, r, b)
 		})
 		res, err := s.c.CompleteSprint(t.Context(), SprintCompletion{Sprint: 7, MoveTo: 8})
 		if res.Closed != tc.closed || (err != nil) != tc.err || (res.Sprint != nil) != tc.closed {
@@ -251,40 +259,51 @@ func TestCompleteSprintCloseAnswers(t *testing.T) {
 	}
 }
 
-// TestCompleteSprintRefusals proves every check runs before any write.
+// TestCompleteSprintRefusals proves every check runs before any write,
+// and that only a refusal of the request is invalid input: a read of
+// Jira that failed or fell short is not.
 func TestCompleteSprintRefusals(t *testing.T) {
+	answers := []string{"a warned listing", "an issue no status", "a listing that fails", "an issue no ID"}
 	cases := map[string]struct {
 		in    SprintCompletion
-		route func(f *fakeJira)
+		route func(f *jiratest.Server)
 	}{
-		"into itself":       {SprintCompletion{Sprint: 7, MoveTo: 7}, nil},
-		"a negative board":  {SprintCompletion{Sprint: 7, Board: -1}, nil},
-		"a future sprint":   {SprintCompletion{Sprint: 7}, func(f *fakeJira) { f.on("GET", sprint7URL, reply(200, `{"id":7,"state":"future","originBoardId":3}`)) }},
-		"into a closed one": {SprintCompletion{Sprint: 7, MoveTo: 8}, func(f *fakeJira) { f.on("GET", sprint8URL, reply(200, `{"id":8,"state":"closed"}`)) }},
-		"no done column": {SprintCompletion{Sprint: 7}, func(f *fakeJira) {
-			f.on("GET", boardConfigURL, reply(200, `{"id":3,"columnConfig":{"columns":[{"name":"All"}]}}`))
+		"into itself":      {SprintCompletion{Sprint: 7, MoveTo: 7}, nil},
+		"a negative board": {SprintCompletion{Sprint: 7, Board: -1}, nil},
+		"a future sprint": {SprintCompletion{Sprint: 7}, func(f *jiratest.Server) {
+			f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"state":"future","originBoardId":3}`))
 		}},
-		"a warned listing": {SprintCompletion{Sprint: 7}, func(f *fakeJira) {
-			f.on("GET", sprint7IssuesURL, reply(200, `{"issues":[],"isLast":true,"warningMessages":["cut"]}`))
+		"into a closed one": {SprintCompletion{Sprint: 7, MoveTo: 8}, func(f *jiratest.Server) { f.On("GET", sprint8URL, jiratest.Reply(200, `{"id":8,"state":"closed"}`)) }},
+		"no done column": {SprintCompletion{Sprint: 7}, func(f *jiratest.Server) {
+			f.On("GET", boardConfigURL, jiratest.Reply(200, `{"id":3,"columnConfig":{"columns":[{"name":"All"}]}}`))
 		}},
-		"an issue no status": {SprintCompletion{Sprint: 7}, func(f *fakeJira) {
-			f.on("GET", sprint7IssuesURL, reply(200, `{"issues":[{"id":"1","key":"WEB-1","fields":{}}],"isLast":true}`))
+		"a warned listing": {SprintCompletion{Sprint: 7}, func(f *jiratest.Server) {
+			f.On("GET", sprint7IssuesURL, jiratest.Reply(200, `{"issues":[],"isLast":true,"warningMessages":["cut"]}`))
 		}},
-		"a listing that fails": {SprintCompletion{Sprint: 7}, func(f *fakeJira) {
-			f.on("GET", sprint7IssuesURL, reply(500, `{}`))
+		"an issue no status": {SprintCompletion{Sprint: 7}, func(f *jiratest.Server) {
+			f.On("GET", sprint7IssuesURL, jiratest.Reply(200, `{"issues":[{"id":"1","key":"WEB-1","fields":{}}],"isLast":true}`))
+		}},
+		"a listing that fails": {SprintCompletion{Sprint: 7}, func(f *jiratest.Server) {
+			f.On("GET", sprint7IssuesURL, jiratest.Reply(500, `{}`))
+		}},
+		"an issue no ID": {SprintCompletion{Sprint: 7}, func(f *jiratest.Server) {
+			f.On("GET", sprint7IssuesURL, jiratest.Reply(200, `{"issues":[{"key":"WEB-1","fields":{"status":{"id":"3"}}}],"isLast":true}`))
 		}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := newCompletionSite(t)
 			if tc.route != nil {
-				tc.route(s.fakeJira)
+				tc.route(s.Server)
 			}
 			res, err := s.c.CompleteSprint(t.Context(), tc.in)
 			if !trackerapi.WriteNotApplied(err) || res.Closed {
 				t.Fatalf("got %+v %v", res, err)
 			}
-			for _, r := range s.requests() {
+			if invalid := errors.Is(err, trackerapi.ErrInvalidInput); invalid == slices.Contains(answers, name) {
+				t.Errorf("invalid input %v: %v", invalid, err)
+			}
+			for _, r := range s.Requests() {
 				if !strings.HasPrefix(r, "GET ") {
 					t.Errorf("a write was sent: %s", r)
 				}

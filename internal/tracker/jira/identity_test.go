@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -21,27 +22,27 @@ type tokenState struct{ revoked atomic.Bool }
 
 func (s *tokenState) myself(w http.ResponseWriter, r *http.Request, b []byte) {
 	if s.revoked.Load() {
-		reply(401, `{"errorMessages":["Client must be authenticated"]}`)(w, r, b)
+		jiratest.Reply(401, `{"errorMessages":["Client must be authenticated"]}`)(w, r, b)
 		return
 	}
-	reply(200, userOneJSON)(w, r, b)
+	jiratest.Reply(200, userOneJSON)(w, r, b)
 }
 
 // TestSequentialNotFoundsEachCheck proves nothing is reused between
 // checks: every 404 is decided by a check that started after it.
 func TestSequentialNotFoundsEachCheck(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	tokens := &tokenState{}
-	f.on("GET", myselfURL, tokens.myself)
-	f.on("GET", issuePath404, reply(404, `{"errorMessages":["Issue does not exist or you do not have permission to see it."]}`))
+	f.On("GET", myselfURL, tokens.myself)
+	f.On("GET", issuePath404, jiratest.Reply(404, `{"errorMessages":["Issue does not exist or you do not have permission to see it."]}`))
 	for range 3 {
 		_, err := c.GetIssue(t.Context(), "WEB-404")
 		if !errors.Is(err, trackerapi.ErrNotFound) || isAuth(err) {
 			t.Fatalf("got %v, want not found", err)
 		}
 	}
-	if n := f.count("GET", myselfURL); n != 3 {
+	if n := f.Count("GET", myselfURL); n != 3 {
 		t.Fatalf("three 404s in turn made %d checks, want 3", n)
 	}
 }
@@ -49,11 +50,11 @@ func TestSequentialNotFoundsEachCheck(t *testing.T) {
 // TestRevokedRightAfterConfirmedNotFound proves a 404 right after a
 // confirmed one, once the credential is revoked, is an AuthError.
 func TestRevokedRightAfterConfirmedNotFound(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	tokens := &tokenState{}
-	f.on("GET", myselfURL, tokens.myself)
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", myselfURL, tokens.myself)
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	if _, err := c.GetIssue(t.Context(), "WEB-404"); !errors.Is(err, trackerapi.ErrNotFound) {
 		t.Fatal(err)
 	}
@@ -70,16 +71,16 @@ func TestRevokedRightAfterConfirmedNotFound(t *testing.T) {
 // TestNotFoundCheckCannotLoop proves a sign-in check answered with 404
 // fails as unconfirmed, after exactly one check, and is not "not found".
 func TestNotFoundCheckCannotLoop(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", myselfURL, reply(404, `{}`))
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", myselfURL, jiratest.Reply(404, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	_, err := c.GetIssue(t.Context(), "WEB-404")
 	ue, ok := errors.AsType[*UnconfirmedError](err)
 	if !ok || errors.Is(err, trackerapi.ErrNotFound) || ue.NotFound == nil || ue.NotFound.Status != 404 {
 		t.Fatalf("got %v", err)
 	}
-	if n := f.count("GET", myselfURL); n != 1 {
+	if n := f.Count("GET", myselfURL); n != 1 {
 		t.Errorf("%d checks, want 1", n)
 	}
 }
@@ -88,10 +89,10 @@ func TestNotFoundCheckCannotLoop(t *testing.T) {
 // applied whatever the sign-in check says, while the 404 still does not
 // read as "not found" and the check's own failure stays reachable.
 func TestUnconfirmedWriteWasNotApplied(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", myselfURL, reply(500, `{"errorMessages":["down"]}`))
-	f.on("DELETE", "/rest/api/3/issueLink/77", reply(404, `{}`))
+	f.On("GET", myselfURL, jiratest.Reply(500, `{"errorMessages":["down"]}`))
+	f.On("DELETE", "/rest/api/3/issueLink/77", jiratest.Reply(404, `{}`))
 	err := c.UnlinkIssues(t.Context(), "77")
 	ue, ok := errors.AsType[*UnconfirmedError](err)
 	if !ok || errors.Is(err, trackerapi.ErrNotFound) {
@@ -180,18 +181,18 @@ func newGate(t *testing.T) (<-chan struct{}, func()) {
 // the next, so a burst of N costs two, not N.
 func TestNotFoundBurstCostsTwoChecks(t *testing.T) {
 	const n = 8
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
 	var checks atomic.Int32
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if checks.Add(1) == 1 {
 			<-release
 		}
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := range errs {
@@ -216,15 +217,15 @@ func TestNotFoundBurstCostsTwoChecks(t *testing.T) {
 // TestCallerThatGivesUpLeavesTheCheck proves a waiter that stops waiting
 // does not end the check for the others sharing it.
 func TestCallerThatGivesUpLeavesTheCheck(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		<-release
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	quitter, quit := context.WithCancel(t.Context())
 	quitErr, stayErr := make(chan error, 1), make(chan error, 1)
 	go func() {
@@ -252,22 +253,22 @@ func TestCallerThatGivesUpLeavesTheCheck(t *testing.T) {
 // runs: it must not join that check, and the new credential's refusal
 // decides it.
 func TestForgetDetachesTheCheckInFlight(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
 	oldEntered := make(chan struct{})
 	var checks atomic.Int32
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if checks.Add(1) == 1 {
 			close(oldEntered)
 			<-release
-			reply(200, userOneJSON)(w, r, b)
+			jiratest.Reply(200, userOneJSON)(w, r, b)
 			return
 		}
-		reply(401, `{}`)(w, r, b)
+		jiratest.Reply(401, `{}`)(w, r, b)
 	})
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	first := make(chan error, 1)
 	go func() {
 		_, err := c.GetIssue(t.Context(), "WEB-404")
@@ -303,14 +304,14 @@ func TestForgetDetachesTheCheckInFlight(t *testing.T) {
 // ForgetCredential, ending while the new credential's check runs, does
 // not displace that check or start the one queued behind it early.
 func TestDetachedCheckLeavesTheNewOne(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	oldGate, openOld := newGate(t)
 	laterGate, openNew := newGate(t)
 	entered := make(chan struct{}, 3)
 	var checks atomic.Int32
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		n := checks.Add(1)
 		entered <- struct{}{}
 		switch n {
@@ -319,9 +320,9 @@ func TestDetachedCheckLeavesTheNewOne(t *testing.T) {
 		case 2:
 			<-laterGate
 		}
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	errs := make(chan error, 3)
 	notFound := func() {
 		_, err := c.GetIssue(t.Context(), "WEB-404")
@@ -368,19 +369,19 @@ func TestDetachedCheckLeavesTheNewOne(t *testing.T) {
 // when the credential is dropped, since no later check can speak for the
 // credential their requests carried.
 func TestForgetEndsQueuedNotFounds(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
 	// The running check's request is on the wire before the credential
 	// is dropped, so it was drawn under the same read as the 404s.
 	sent := make(chan struct{}, 1)
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		sent <- struct{}{}
 		<-release
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
-	f.on("GET", issuePath404, reply(404, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
@@ -408,16 +409,16 @@ func TestForgetEndsQueuedNotFounds(t *testing.T) {
 }
 
 func TestAuthErrorDetachesTheCheck(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		<-release
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
-	f.on("GET", issuePath404, reply(404, `{}`))
-	f.on("GET", "/rest/api/3/field", reply(401, `{}`))
+	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
+	f.On("GET", "/rest/api/3/field", jiratest.Reply(401, `{}`))
 	first := make(chan error, 1)
 	go func() {
 		_, err := c.GetIssue(t.Context(), "WEB-404")
@@ -442,7 +443,7 @@ func TestAuthErrorDetachesTheCheck(t *testing.T) {
 // TestNotFoundAfterCloseStartsNoCheck covers a 404 that lands as the
 // client closes: nothing is sent and the 404 stays unconfirmed.
 func TestNotFoundAfterCloseStartsNoCheck(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	c.Close()
@@ -455,7 +456,7 @@ func TestNotFoundAfterCloseStartsNoCheck(t *testing.T) {
 	if joins.distinct() != 0 {
 		t.Error("a check started after Close")
 	}
-	if n := f.count("GET", myselfURL); n != 0 {
+	if n := f.Count("GET", myselfURL); n != 0 {
 		t.Errorf("%d checks after Close", n)
 	}
 }

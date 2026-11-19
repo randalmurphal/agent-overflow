@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -15,35 +16,35 @@ const backlogURL = "/rest/software/1.0/board/3/backlog"
 
 // listPages answers a list with three pages of two issues, tokens t1 and
 // t2; page(n) may replace the nth page's body.
-func listPages(t *testing.T, page func(n int) string) handler {
+func listPages(t *testing.T, page func(n int) string) jiratest.Handler {
 	n := 0
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if n++; n > 10 {
 			t.Error("the client kept asking for pages")
-			reply(400, `{}`)(w, r, b)
+			jiratest.Reply(400, `{}`)(w, r, b)
 			return
 		}
 		at := map[string]int{"": 0, "t1": 1, "t2": 2}[r.URL.Query().Get("nextPageToken")]
 		if body := page(at); body != "" {
-			reply(200, body)(w, r, b)
+			jiratest.Reply(200, body)(w, r, b)
 			return
 		}
 		next := fmt.Sprintf(`"t%d"`, at+1)
 		if at == 2 {
 			next = "null"
 		}
-		reply(200, fmt.Sprintf(`{"issues":[{"id":"%d","key":"WEB-%d"},{"id":"%d","key":"WEB-%d"}],"nextPageToken":%s,"isLast":%v}`,
+		jiratest.Reply(200, fmt.Sprintf(`{"issues":[{"id":"%d","key":"WEB-%d"},{"id":"%d","key":"WEB-%d"}],"nextPageToken":%s,"isLast":%v}`,
 			2*at+1, 2*at+1, 2*at+2, 2*at+2, next, at == 2))(w, r, b)
 	}
 }
 
 func TestListIssuesToTheEnd(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	pages := listPages(t, func(int) string { return "" })
-	f.on("GET", backlogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "jql", `assignee = "acc-user1"`)
-		wantQuery(t, r, "maxResults", "100")
+	f.On("GET", backlogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "jql", `assignee = "acc-user1"`)
+		jiratest.WantQuery(t, r, "maxResults", "100")
 		if got := r.URL.Query()["fields"]; strings.Join(got, ",") != "summary,status" {
 			t.Errorf("fields %v", got)
 		}
@@ -54,7 +55,7 @@ func TestListIssuesToTheEnd(t *testing.T) {
 	if err != nil || !all.Complete || len(all.Issues) != 6 || all.Issues[5].Key != "WEB-6" {
 		t.Fatalf("got %d issues, complete %v, %v", len(all.Issues), all.Complete, err)
 	}
-	f.on("GET", backlogURL, listPages(t, func(int) string { return "" }))
+	f.On("GET", backlogURL, listPages(t, func(int) string { return "" }))
 	some, err := c.ListAllIssues(t.Context(), ListQuery{List: BacklogIssues(3)}, 3)
 	if err != nil || some.Complete || len(some.Issues) != 3 {
 		t.Fatalf("limited: %d issues, complete %v, %v", len(some.Issues), some.Complete, err)
@@ -84,9 +85,9 @@ func TestListPageEnds(t *testing.T) {
 			return ""
 		},
 	} {
-		f := newFake(t)
+		f := jiratest.NewServer(t)
 		c := newTestClient(t, f)
-		f.on("GET", backlogURL, listPages(t, page))
+		f.On("GET", backlogURL, listPages(t, page))
 		all, err := c.ListAllIssues(t.Context(), ListQuery{List: BacklogIssues(3)}, 0)
 		// The pages before the bad one are kept: two issues, and the
 		// repeated token's page too.
@@ -98,13 +99,13 @@ func TestListPageEnds(t *testing.T) {
 			t.Errorf("%s: %d issues, complete %v, %v", name, len(all.Issues), all.Complete, err)
 		}
 	}
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", backlogURL, reply(200, `{"issues":[{"id":"3","key":"WEB-3"}],"isLast":false}`))
+	f.On("GET", backlogURL, jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-3"}],"isLast":false}`))
 	if _, err := c.ListIssues(t.Context(), ListQuery{List: BacklogIssues(3)}); !isAnswerErr(err) {
 		t.Errorf("one page: %v", err)
 	}
-	f.on("GET", backlogURL, reply(200, `{"issues":[],"isLast":true,"warningMessages":["The JQL was cut"]}`))
+	f.On("GET", backlogURL, jiratest.Reply(200, `{"issues":[],"isLast":true,"warningMessages":["The JQL was cut"]}`))
 	all, err := c.ListAllIssues(t.Context(), ListQuery{List: BacklogIssues(3)}, 0)
 	if err != nil || all.Complete || len(all.Warnings) != 1 || all.Warnings[0].Message != "The JQL was cut" {
 		t.Errorf("a warning: %+v %v", all, err)
@@ -113,11 +114,11 @@ func TestListPageEnds(t *testing.T) {
 
 // TestListCancelledMidWalk keeps the pages read before the cancel.
 func TestListCancelledMidWalk(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	ctx, cancel := context.WithCancel(t.Context())
 	pages := listPages(t, func(int) string { return "" })
-	f.on("GET", backlogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", backlogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if r.URL.Query().Get("nextPageToken") == "t1" {
 			cancel()
 			<-r.Context().Done()
@@ -132,7 +133,7 @@ func TestListCancelledMidWalk(t *testing.T) {
 }
 
 func TestListPaths(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	for path, l := range map[string]IssueList{
 		"/rest/software/1.0/board/3/issue":          BoardIssues(3),
@@ -140,8 +141,8 @@ func TestListPaths(t *testing.T) {
 		"/rest/software/1.0/board/3/sprint/7/issue": BoardSprintIssues(3, 7),
 		"/rest/software/1.0/epic/WEB-9/issue":       EpicIssues("WEB-9"),
 	} {
-		f.on("GET", path, reply(200, `{"issues":[],"isLast":true}`))
-		if _, err := c.ListIssues(t.Context(), ListQuery{List: l}); err != nil || f.count("GET", path) != 1 {
+		f.On("GET", path, jiratest.Reply(200, `{"issues":[],"isLast":true}`))
+		if _, err := c.ListIssues(t.Context(), ListQuery{List: l}); err != nil || f.Count("GET", path) != 1 {
 			t.Errorf("%s: %v", path, err)
 		}
 	}
@@ -158,11 +159,11 @@ func TestListPaths(t *testing.T) {
 }
 
 func TestCountListIssues(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", backlogURL+"/approximate-count", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "jql", "type = Bug")
-		reply(200, `{"count":42}`)(w, r, b)
+	f.On("GET", backlogURL+"/approximate-count", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "jql", "type = Bug")
+		jiratest.Reply(200, `{"count":42}`)(w, r, b)
 	})
 	if n, err := c.CountListIssues(t.Context(), BacklogIssues(3), "type = Bug"); err != nil || n != 42 {
 		t.Fatalf("got %d %v", n, err)

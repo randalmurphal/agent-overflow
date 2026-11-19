@@ -38,7 +38,10 @@ func (b BoardConfig) Estimate(is *Issue) (value float64, set bool, err error) {
 
 // EstimateValue is an estimate SetEstimate writes: Points for a board
 // estimating in a number field, TimeEstimate for one estimating by
-// original time, or NoEstimate. The zero EstimateValue is refused.
+// original time, or NoEstimate. Zero points and zero time are both an
+// estimate of zero, sent as "0" and "0m"; only NoEstimate clears, sent
+// as null. The estimation endpoint's documentation names no special
+// meaning for zero (unmeasured). The zero EstimateValue is refused.
 type EstimateValue struct {
 	kind   estimateKind
 	points float64
@@ -54,10 +57,12 @@ const (
 	estimateNone
 )
 
-// Points is an estimate in a number field, such as story points.
+// Points is an estimate in a number field, such as story points: zero
+// or more.
 func Points(n float64) EstimateValue { return EstimateValue{kind: estimatePoints, points: n} }
 
-// TimeEstimate is an original time estimate, in whole minutes.
+// TimeEstimate is an original time estimate in whole minutes, zero or
+// more.
 func TimeEstimate(d time.Duration) EstimateValue { return EstimateValue{kind: estimateTime, time: d} }
 
 // NoEstimate clears the estimate.
@@ -158,7 +163,7 @@ func estimateText(cfg BoardConfig, v EstimateValue) (*string, error) {
 		if !byTime {
 			return nil, fmt.Errorf("board %d estimates in %s; give Points", cfg.BoardID, cfg.Estimation.FieldName)
 		}
-		if v.time <= 0 || v.time%time.Minute != 0 {
+		if v.time < 0 || v.time%time.Minute != 0 {
 			return nil, fmt.Errorf("%s is not a whole number of minutes", v.time)
 		}
 		s = strconv.FormatInt(int64(v.time/time.Minute), 10) + "m"

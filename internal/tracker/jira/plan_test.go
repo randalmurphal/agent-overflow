@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -28,11 +30,11 @@ const createMetaFields = `{"total":5,"fields":[
 ]}`
 
 // createSite routes the create metadata of project WEB.
-func createSite(t *testing.T) (*fakeJira, *Client) {
-	f := newFake(t)
+func createSite(t *testing.T) (*jiratest.Server, *Client) {
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", reply(200, `{"issueTypes":[{"id":"1","name":"Task"},{"id":"2","name":"Bug"}],"total":2}`))
-	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1", reply(200, createMetaFields))
+	f.On("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", jiratest.Reply(200, `{"issueTypes":[{"id":"1","name":"Task"},{"id":"2","name":"Bug"}],"total":2}`))
+	f.On("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1", jiratest.Reply(200, createMetaFields))
 	return f, c
 }
 
@@ -51,11 +53,11 @@ func TestPlanAndApplyCreate(t *testing.T) {
 	if pv.IssueType.Name != "Task" || len(pv.Fields) != 4 || pv.Fields[1].Display != "Steps **here**\n" || len(pv.Images) != 0 {
 		t.Fatalf("plan %+v", pv)
 	}
-	f.on("POST", "/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"fields":{"project":{"key":"WEB"},"issuetype":{"id":"1"},"summary":"Fix the login page",
+	f.On("POST", "/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"fields":{"project":{"key":"WEB"},"issuetype":{"id":"1"},"summary":"Fix the login page",
 			"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Steps "},{"type":"text","text":"here","marks":[{"type":"strong"}]}]}]},
 			"priority":{"id":"1"},"labels":["frontend"]}}`)
-		reply(201, `{"id":"10001","key":"WEB-1","self":"x"}`)(w, r, b)
+		jiratest.Reply(201, `{"id":"10001","key":"WEB-1","self":"x"}`)(w, r, b)
 	})
 	// Changing the preview changes nothing the plan sends.
 	pv.Fields[0].FieldID, pv.Project = "summary2", "APP"
@@ -63,7 +65,7 @@ func TestPlanAndApplyCreate(t *testing.T) {
 	if err != nil || res.Key != "WEB-1" || res.ID != "10001" {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	if _, err := c.ApplyCreate(t.Context(), plan); !trackerapi.WriteNotApplied(err) || f.count("POST", "/rest/api/3/issue") != 1 {
+	if _, err := c.ApplyCreate(t.Context(), plan); !trackerapi.WriteNotApplied(err) || f.Count("POST", "/rest/api/3/issue") != 1 {
 		t.Errorf("a plan applied twice: %v", err)
 	}
 }
@@ -91,7 +93,7 @@ func TestApplyCreateAnswerUnreadable(t *testing.T) {
 		{201, `{"id":"10001","fields":"not one"}`},
 		{200, `{"id":"10001","key":"WEB-1"}`},
 	} {
-		f.on("POST", "/rest/api/3/issue", reply(answer.status, answer.body))
+		f.On("POST", "/rest/api/3/issue", jiratest.Reply(answer.status, answer.body))
 		res, err := c.ApplyCreate(t.Context(), plan)
 		se, ok := errors.AsType[*StepError](err)
 		if !ok || se.Step != StepCreate || se.Applied() || !se.OutcomeUnknown() || trackerapi.WriteNotApplied(err) {
@@ -111,7 +113,7 @@ func TestApplyCreateAnswerUnreadable(t *testing.T) {
 // unknown is not sent again through the copy, for a create and an edit.
 func TestPlanCopyIsTheSamePlan(t *testing.T) {
 	f, c := createSite(t)
-	f.on("POST", "/rest/api/3/issue", reply(500, `{"errorMessages":["down"]}`))
+	f.On("POST", "/rest/api/3/issue", jiratest.Reply(500, `{"errorMessages":["down"]}`))
 	in := CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}
 	for range 2 {
 		plan, err := c.PlanCreate(t.Context(), in)
@@ -129,13 +131,13 @@ func TestPlanCopyIsTheSamePlan(t *testing.T) {
 			}
 		}
 	}
-	if n := f.count("POST", "/rest/api/3/issue"); n != 2 {
+	if n := f.Count("POST", "/rest/api/3/issue"); n != 2 {
 		t.Errorf("%d creates sent for two plans", n)
 	}
 
 	desc := storedDesc(t, adf.Doc(para("old")))
 	ef, ec := editSite(t, desc)
-	ef.on("PUT", "/rest/api/3/issue/10001", reply(500, `{}`))
+	ef.On("PUT", "/rest/api/3/issue/10001", jiratest.Reply(500, `{}`))
 	plan, err := ec.PlanEdit(t.Context(), EditInput{Issue: "WEB-1", Fields: []FieldInput{{Field: "Summary", Value: Text("New")}}})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +152,7 @@ func TestPlanCopyIsTheSamePlan(t *testing.T) {
 			t.Errorf("an edit applied again: %v", err)
 		}
 	}
-	if n := ef.count("PUT", "/rest/api/3/issue/10001"); n != 1 {
+	if n := ef.Count("PUT", "/rest/api/3/issue/10001"); n != 1 {
 		t.Errorf("%d edits sent for one plan", n)
 	}
 	var zero CreatePlan
@@ -163,24 +165,25 @@ func TestPlanCreateRefusals(t *testing.T) {
 	_, c := createSite(t)
 	_, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "Task"})
 	mf, ok := errors.AsType[*MissingFieldsError](err)
-	if !ok || len(mf.Fields) != 1 || mf.Fields[0].ID != "summary" {
+	if !ok || len(mf.Fields) != 1 || mf.Fields[0].ID != "summary" || !errors.Is(err, trackerapi.ErrInvalidInput) {
 		t.Errorf("missing summary: %v", err)
 	}
 	_, err = c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "Epic"})
-	if me, ok := errors.AsType[*MatchError](err); !ok || len(me.Candidates) != 2 {
+	if me, ok := errors.AsType[*MatchError](err); !ok || len(me.Candidates) != 2 || !errors.Is(err, trackerapi.ErrInvalidInput) {
 		t.Errorf("unknown type: %v", err)
 	}
 	for name, fields := range map[string][]FieldInput{
 		"reserved field": {{Field: "Summary", Value: Text("x")}, {Field: "project", Value: Text("APP")}},
 		"set twice":      {{Field: "Summary", Value: Text("x")}, {Field: "summary", Value: Text("y")}},
 		"off screen":     {{Field: "Summary", Value: Text("x")}, {Field: "Sprint", Value: Text("1")}},
+		"no match":       {{Field: "Summary", Value: Text("x")}, {Field: "Priority", Value: Text("Urgent")}},
 	} {
 		_, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "Task", Fields: fields})
-		if !trackerapi.WriteNotApplied(err) {
+		if !trackerapi.WriteNotApplied(err) || !errors.Is(err, trackerapi.ErrInvalidInput) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	other := newTestClient(t, newFake(t))
+	other := newTestClient(t, jiratest.NewServer(t))
 	plan, err := c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}})
 	if err != nil {
 		t.Fatal(err)
@@ -190,9 +193,51 @@ func TestPlanCreateRefusals(t *testing.T) {
 	}
 }
 
+// TestNotSentIsNotInvalid proves a write not sent for a reason other than
+// its input (an ended call, a closed client, a read it depends on that
+// failed) does not match trackerapi.ErrInvalidInput, while a stale plan,
+// refused at the check step, does.
+func TestNotSentIsNotInvalid(t *testing.T) {
+	f, c := createSite(t)
+	in := CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := c.PlanCreate(ctx, in); !trackerapi.WriteNotApplied(err) || errors.Is(err, trackerapi.ErrInvalidInput) {
+		t.Errorf("an ended call: %v", err)
+	}
+	f.On("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes/1", jiratest.Reply(500, `{}`))
+	if _, err := c.PlanCreate(t.Context(), in); err == nil || errors.Is(err, trackerapi.ErrInvalidInput) {
+		t.Errorf("a failed read: %v", err)
+	}
+	c.Close()
+	if _, err := c.PlanCreate(t.Context(), in); !trackerapi.WriteNotApplied(err) || errors.Is(err, trackerapi.ErrInvalidInput) {
+		t.Errorf("a closed client: %v", err)
+	}
+
+	desc := storedDesc(t, adf.Doc(para("old")))
+	f, c = editSite(t, desc)
+	plan, err := c.PlanEdit(t.Context(), EditInput{Issue: "WEB-1", Fields: []FieldInput{{Field: "description", Value: Text("new")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := docJSON(t, adf.Doc(para("changed")))
+	desc.Store(&other)
+	if _, err := c.ApplyEdit(t.Context(), plan); !errors.Is(err, trackerapi.ErrInvalidInput) || f.Count("PUT", "/rest/api/3/issue/10001") != 0 {
+		t.Errorf("a stale plan: %v", err)
+	}
+
+	// A read a write depends on that failed marks the write not sent,
+	// not invalid.
+	f, c = estimateSite(t)
+	f.On("GET", boardConfigURL, jiratest.Reply(500, `{"errorMessages":["down"]}`))
+	if _, _, err := c.SetEstimate(t.Context(), EstimateInput{Issue: "WEB-1", Board: 3, Value: Points(1)}); !trackerapi.WriteNotApplied(err) || errors.Is(err, trackerapi.ErrInvalidInput) {
+		t.Errorf("a failed read before the write: %v", err)
+	}
+}
+
 // imageRoutes routes an upload of a.png to issue and its media redirect.
-func imageRoutes(t *testing.T, f *fakeJira, issue string, uploads *atomic.Int32) {
-	f.on("POST", "/rest/api/3/issue/"+issue+"/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
+func imageRoutes(t *testing.T, f *jiratest.Server, issue string, uploads *atomic.Int32) {
+	f.On("POST", "/rest/api/3/issue/"+issue+"/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if r.Header.Get("X-Atlassian-Token") != "no-check" {
 			t.Error("an upload without the anti-XSRF header")
 		}
@@ -201,15 +246,15 @@ func imageRoutes(t *testing.T, f *fakeJira, issue string, uploads *atomic.Int32)
 			t.Errorf("uploaded %q (%d bytes)", name, len(content))
 		}
 		n := uploads.Add(1)
-		reply(200, `[{"id":"50`+string('0'+rune(n))+`","filename":"a.png","mimeType":"image/png","size":30}]`)(w, r, b)
+		jiratest.Reply(200, `[{"id":"50`+string('0'+rune(n))+`","filename":"a.png","mimeType":"image/png","size":30}]`)(w, r, b)
 	})
 	mediaRoutes(f)
 }
 
 // mediaRoutes routes the media redirects of attachments 501 and 502.
-func mediaRoutes(f *fakeJira) {
+func mediaRoutes(f *jiratest.Server) {
 	for _, id := range []string{"501", "502"} {
-		f.on("GET", "/rest/api/3/attachment/content/"+id, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		f.On("GET", "/rest/api/3/attachment/content/"+id, func(w http.ResponseWriter, r *http.Request, b []byte) {
 			w.Header().Set("Location", "https://api.media.example.com/file/0f1e2d3c-0000-4000-8000-000000000"+id+"/binary?token=signed")
 			w.WriteHeader(http.StatusSeeOther)
 		})
@@ -233,18 +278,18 @@ func multipartFile(t *testing.T, r *http.Request, body []byte) (string, []byte) 
 }
 
 // editSite is WEB-1 (ID 10001) holding desc as its description.
-func editSite(t *testing.T, desc *atomic.Pointer[string]) (*fakeJira, *Client) {
-	f := newFake(t)
+func editSite(t *testing.T, desc *atomic.Pointer[string]) (*jiratest.Server, *Client) {
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1/editmeta", reply(200, `{"fields":{
+	f.On("GET", "/rest/api/3/issue/WEB-1/editmeta", jiratest.Reply(200, `{"fields":{
 		"summary":{"key":"summary","name":"Summary","required":true,"schema":{"type":"string","system":"summary"},"operations":["set"]},
 		"description":{"key":"description","name":"Description","required":false,"schema":{"type":"string","system":"description"},"operations":["set"]},
 		"parent":{"key":"parent","name":"Parent","required":false,"schema":{"type":"issuelink","system":"parent"},"operations":["set"]}}}`))
 	issue := func(w http.ResponseWriter, r *http.Request, b []byte) {
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"summary":"S","description":`+*desc.Load()+`}}`)(w, r, b)
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"summary":"S","description":`+*desc.Load()+`}}`)(w, r, b)
 	}
-	f.on("GET", "/rest/api/3/issue/WEB-1", issue)
-	f.on("GET", "/rest/api/3/issue/10001", issue)
+	f.On("GET", "/rest/api/3/issue/WEB-1", issue)
+	f.On("GET", "/rest/api/3/issue/10001", issue)
 	return f, c
 }
 
@@ -269,8 +314,8 @@ func TestPlanAndApplyEditKeepsWhatMarkdownCannotShow(t *testing.T) {
 	if pv := plan.Preview(); pv.IssueID != "10001" || len(pv.Fields) != 2 {
 		t.Fatalf("plan %+v", pv)
 	}
-	f.on("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "returnIssue", "true")
+	f.On("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "returnIssue", "true")
 		var body struct {
 			Fields map[string]json.RawMessage `json:"fields"`
 			Update map[string]json.RawMessage `json:"update"`
@@ -283,7 +328,7 @@ func TestPlanAndApplyEditKeepsWhatMarkdownCannotShow(t *testing.T) {
 		if string(body.Update["parent"]) != `[{"set":{"none":true}}]` || body.Fields["parent"] != nil {
 			t.Errorf("parent: %s", b)
 		}
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+d+`}}`)(w, r, b)
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+d+`}}`)(w, r, b)
 	})
 	res, err := c.ApplyEdit(t.Context(), plan)
 	if err != nil || res.Issue == nil || res.Issue.Description == nil || res.Unchanged {
@@ -299,7 +344,7 @@ func TestPlanEditFieldSetTwice(t *testing.T) {
 	if !trackerapi.WriteNotApplied(err) || !strings.Contains(fmt.Sprint(err), "twice") {
 		t.Errorf("got %v", err)
 	}
-	if n := f.count("GET", "/rest/api/3/issue/WEB-1"); n != 0 {
+	if n := f.Count("GET", "/rest/api/3/issue/WEB-1"); n != 0 {
 		t.Errorf("read the issue for a plan already refused: %d", n)
 	}
 }
@@ -315,9 +360,9 @@ func TestEditPlanTargetIsFixed(t *testing.T) {
 	}
 	pv := plan.Preview()
 	pv.IssueID, pv.Fields[0].FieldID = "10002", "description"
-	f.on("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"fields":{"summary":"New"}}`)
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"summary":"New"}}`)(w, r, b)
+	f.On("PUT", "/rest/api/3/issue/10001", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"fields":{"summary":"New"}}`)
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"summary":"New"}}`)(w, r, b)
 	})
 	if _, err := c.ApplyEdit(t.Context(), plan); err != nil {
 		t.Fatal(err)
@@ -355,8 +400,8 @@ func TestPlanEditUnchangedSendsNothing(t *testing.T) {
 	if err != nil || len(plan.Preview().Fields) != 0 || len(plan.Preview().Unchanged) != 1 {
 		t.Fatalf("got %+v %v", plan, err)
 	}
-	before := len(f.requests())
-	if res, err := c.ApplyEdit(t.Context(), plan); err != nil || res.Issue != nil || !res.Unchanged || len(f.requests()) != before {
+	before := len(f.Requests())
+	if res, err := c.ApplyEdit(t.Context(), plan); err != nil || res.Issue != nil || !res.Unchanged || len(f.Requests()) != before {
 		t.Errorf("an empty plan sent something: %v", err)
 	}
 }
@@ -376,7 +421,7 @@ func TestStalePlanIsRefused(t *testing.T) {
 	if _, stale := errors.AsType[*StaleError](err); !ok || se.Step != StepCheck || !stale || se.OutcomeUnknown() {
 		t.Fatalf("got %v", err)
 	}
-	if f.count("PUT", "/rest/api/3/issue/10001") != 0 {
+	if f.Count("PUT", "/rest/api/3/issue/10001") != 0 {
 		t.Error("a stale plan was written")
 	}
 	// The Markdown says which document it was written from.
@@ -398,7 +443,7 @@ func TestStaleClearIsRefused(t *testing.T) {
 	other := docJSON(t, adf.Doc(para("written meanwhile")))
 	desc.Store(&other)
 	_, err = c.ApplyEdit(t.Context(), plan)
-	if _, stale := errors.AsType[*StaleError](err); !stale || f.count("PUT", "/rest/api/3/issue/10001") != 0 {
+	if _, stale := errors.AsType[*StaleError](err); !stale || f.Count("PUT", "/rest/api/3/issue/10001") != 0 {
 		t.Fatalf("a clear over a concurrent change: %v", err)
 	}
 	// Clearing an empty field changes nothing.

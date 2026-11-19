@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
+
+	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
 const (
@@ -20,7 +22,7 @@ const (
 
 func TestViewer(t *testing.T) {
 	t.Parallel()
-	f := newFake(t, exchange{op: "Viewer", body: viewerData, header: map[string]string{
+	f := newFake(t, lineartest.Exchange{Op: "Viewer", Body: viewerData, Header: map[string]string{
 		"X-Complexity": "3", "X-Ratelimit-Requests-Limit": "2500", "X-Ratelimit-Requests-Remaining": "2499",
 		"X-Ratelimit-Requests-Reset": "1800000000000", "X-Ratelimit-Complexity-Limit": "3000000",
 		"X-Ratelimit-Complexity-Remaining": "2999997", "X-Ratelimit-Complexity-Reset": "1800000000500",
@@ -51,7 +53,7 @@ func TestViewer(t *testing.T) {
 func TestAuthenticationError(t *testing.T) {
 	t.Parallel()
 	for _, status := range []int{http.StatusUnauthorized, http.StatusBadRequest, http.StatusOK} {
-		f := newFake(t, exchange{op: "Viewer", status: status, body: authBody})
+		f := newFake(t, lineartest.Exchange{Op: "Viewer", Status: status, Body: authBody})
 		_, err := f.client(t).Viewer(context.Background())
 		auth, ok := errors.AsType[*trackerapi.AuthError](err)
 		if !ok {
@@ -68,7 +70,7 @@ func TestAuthenticationError(t *testing.T) {
 // *Error over the transport's StatusError, not a refused login.
 func TestBearerPrefixInputError(t *testing.T) {
 	t.Parallel()
-	f := newFake(t, exchange{op: "Viewer", status: http.StatusBadRequest, body: inputBody})
+	f := newFake(t, lineartest.Exchange{Op: "Viewer", Status: http.StatusBadRequest, Body: inputBody})
 	_, err := f.client(t).Viewer(context.Background())
 	e, ok := errors.AsType[*Error](err)
 	if !ok || e.Status != 400 || len(e.Errors) != 1 || e.Errors[0].Code != CodeInput || !e.Errors[0].UserError {
@@ -89,7 +91,7 @@ func TestBearerPrefixInputError(t *testing.T) {
 // a background call made while it is closed fails without a request.
 func TestRateLimitedRetryAfter(t *testing.T) {
 	t.Parallel()
-	f := newFake(t, exchange{op: "Viewer", status: http.StatusTooManyRequests, body: limitBody, header: map[string]string{
+	f := newFake(t, lineartest.Exchange{Op: "Viewer", Status: http.StatusTooManyRequests, Body: limitBody, Header: map[string]string{
 		"Retry-After": "30", "X-Ratelimit-Requests-Remaining": "0", "X-Ratelimit-Requests-Reset": "4000000000000",
 	}})
 	c := f.client(t)
@@ -115,7 +117,7 @@ func TestRateLimitedReset(t *testing.T) {
 	t.Parallel()
 	reset := time.UnixMilli(4000000000123)
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadRequest, http.StatusOK} {
-		f := newFake(t, exchange{op: "Viewer", status: status, body: limitBody, header: map[string]string{
+		f := newFake(t, lineartest.Exchange{Op: "Viewer", Status: status, Body: limitBody, Header: map[string]string{
 			"X-Ratelimit-Requests-Remaining": "100", "X-Ratelimit-Requests-Reset": "4000000000999",
 			"X-Ratelimit-Complexity-Remaining": "0", "X-Ratelimit-Complexity-Reset": "4000000000123",
 		}})
@@ -157,7 +159,7 @@ func TestGraphQLErrors(t *testing.T) {
 	t.Parallel()
 	partial := `{"data":{"viewer":{"id":"user-1"},"organization":null},` +
 		`"errors":[{"message":"Internal","path":["organization",0],"extensions":{"type":"internal error","code":"INTERNAL_ERROR","userError":false}}]}`
-	f := newFake(t, exchange{op: "Viewer", body: partial})
+	f := newFake(t, lineartest.Exchange{Op: "Viewer", Body: partial})
 	_, err := f.client(t).Viewer(context.Background())
 	e, ok := errors.AsType[*Error](err)
 	if !ok {
@@ -176,7 +178,7 @@ func TestNotFound(t *testing.T) {
 	t.Parallel()
 	body := `{"data":null,"errors":[{"message":"Entity not found: Issue","path":["issue"],"extensions":{"type":"invalid input","code":"INPUT_ERROR","userError":true,"userPresentableMessage":"Could not find referenced Issue."}}]}`
 	for _, status := range []int{http.StatusOK, http.StatusBadRequest} {
-		f := newFake(t, exchange{op: "Issue", vars: `{"id":"WEB-404"}`, status: status, body: body})
+		f := newFake(t, lineartest.Exchange{Op: "Issue", Vars: `{"id":"WEB-404"}`, Status: status, Body: body})
 		_, err := f.client(t).Issue(context.Background(), "WEB-404")
 		if !errors.Is(err, trackerapi.ErrNotFound) {
 			t.Errorf("HTTP %d: %v does not match ErrNotFound", status, err)

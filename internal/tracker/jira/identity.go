@@ -164,7 +164,7 @@ func (c *Client) confirmSignedIn(ctx context.Context) (trackerapi.CredentialMark
 	id.mu.Lock()
 	if id.closed {
 		id.mu.Unlock()
-		return trackerapi.CredentialMark{}, notSent("the client is closed")
+		return trackerapi.CredentialMark{}, &trackerapi.NotSentError{Err: errors.New("jira: the client is closed")}
 	}
 	var f *signInCheck
 	switch {

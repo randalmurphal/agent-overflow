@@ -100,16 +100,34 @@ type SprintCompletion struct {
 	Board int64
 }
 
+// SprintIssue is an issue of a sprint by its numeric ID and its key.
+type SprintIssue struct {
+	ID  string
+	Key string
+}
+
 // CompletionResult is how far a completion got: the unfinished issues
 // found, what their moves did, the unfinished issues still in the sprint
 // after the moves (which keep it open), and whether it was closed.
 type CompletionResult struct {
-	Unfinished []string
+	// Unfinished are the issues found unfinished, in rank order. The moves
+	// send them by ID, so Moves reports each under its ID, in the same
+	// order.
+	Unfinished []SprintIssue
 	Moves      BatchResult
-	Remaining  []string
+	Remaining  []SprintIssue
 	Closed     bool
 	// Sprint is the sprint as Jira stored it once closed.
 	Sprint *Sprint
+}
+
+// sprintIssueIDs are the IDs of issues.
+func sprintIssueIDs(issues []SprintIssue) []string {
+	out := make([]string, len(issues))
+	for i, is := range issues {
+		out[i] = is.ID
+	}
+	return out
 }
 
 // CompleteSprint completes an active sprint. Jira's API takes no
@@ -117,7 +135,7 @@ type CompletionResult struct {
 // the sprint, the destination, the board's done column and every issue of
 // the sprint, refusing before any write when one of them is not as
 // needed; moves the issues whose status is not in the done column to
-// MoveTo or the backlog; lists the sprint's issues again; and closes the
+// MoveTo or the backlog, by ID; lists the sprint's issues again; and closes the
 // sprint only when every move was done and no unfinished issue is left
 // in it. An unfinished issue added meanwhile is in Remaining, with the
 // sprint left open, so the caller can run the completion again. Jira
@@ -142,7 +160,7 @@ func (c *Client) CompleteSprint(ctx context.Context, in SprintCompletion) (Compl
 		return res, notSentErr(fmt.Errorf("jira: complete sprint %d: %w", in.Sprint, err))
 	}
 	if len(res.Unfinished) > 0 {
-		w := batchWrite{step: StepMove, path: agilePath + "backlog/issue", method: http.MethodPost, issues: res.Unfinished}
+		w := batchWrite{step: StepMove, path: agilePath + "backlog/issue", method: http.MethodPost, issues: sprintIssueIDs(res.Unfinished)}
 		if in.MoveTo > 0 {
 			w.path = agilePath + "sprint/" + strconv.FormatInt(in.MoveTo, 10) + "/issue"
 		}
@@ -210,23 +228,28 @@ func (c *Client) completionChecks(ctx context.Context, in SprintCompletion) ([]s
 	return done, nil
 }
 
-// unfinishedIssues lists every issue of sprint and returns the keys of
-// those whose status is not in done, in rank order.
-func (c *Client) unfinishedIssues(ctx context.Context, sprint int64, done []string) ([]string, error) {
+// unfinishedIssues lists every issue of sprint and returns those whose
+// status is not in done, in rank order. A listing Jira warned about, or
+// an issue listed without its status or numeric ID, is an *AnswerError:
+// the unfinished issues are not known, or a move could not name one.
+func (c *Client) unfinishedIssues(ctx context.Context, sprint int64, done []string) ([]SprintIssue, error) {
 	list, err := c.listAll(ctx, ListQuery{List: SprintIssues(sprint), Fields: []string{"status"}}, 0)
 	if err != nil {
 		return nil, err
 	}
 	if !list.Complete {
-		return nil, notSent("the sprint's issues were not all listed (%d warnings), so its unfinished issues are not known", len(list.Warnings))
+		return nil, &AnswerError{Message: fmt.Sprintf("the sprint's issues were not all listed (%d warnings), so its unfinished issues are not known", len(list.Warnings))}
 	}
-	var out []string
+	var out []SprintIssue
 	for _, is := range list.Issues {
 		if is.Status == nil {
-			return nil, notSent("%s came without a status, so whether it is done is not known", is.Key)
+			return nil, &AnswerError{Message: fmt.Sprintf("%s came without a status, so whether it is done is not known", is.Key)}
+		}
+		if !numericRE.MatchString(is.ID) {
+			return nil, &AnswerError{Message: fmt.Sprintf("the sprint listed %s without its numeric ID", is.Key)}
 		}
 		if !slices.Contains(done, is.Status.ID) {
-			out = append(out, is.Key)
+			out = append(out, SprintIssue{ID: is.ID, Key: is.Key})
 		}
 	}
 	return out, nil

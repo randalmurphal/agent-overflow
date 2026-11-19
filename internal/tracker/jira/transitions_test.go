@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -18,11 +19,11 @@ const transitionsJSON = `{"transitions":[
  {"id":"41","name":"Reopen","to":{"id":"1","name":"To Do","statusCategory":{"key":"new"}},"isAvailable":false}
 ]}`
 
-func transitionSite(t *testing.T, typeKey string) (*fakeJira, *Client) {
+func transitionSite(t *testing.T, typeKey string) (*jiratest.Server, *Client) {
 	f, c := commentSite(t, typeKey)
-	f.on("GET", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "expand", "transitions.fields")
-		reply(200, transitionsJSON)(w, r, b)
+	f.On("GET", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "expand", "transitions.fields")
+		jiratest.Reply(200, transitionsJSON)(w, r, b)
 	})
 	return f, c
 }
@@ -37,8 +38,8 @@ func TestTransitionsDecode(t *testing.T) {
 
 func TestTransitionWithFieldAndComment(t *testing.T) {
 	f, c := transitionSite(t, "software")
-	f.on("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"transition":{"id":"31"},"fields":{"resolution":{"id":"1"}},
+	f.On("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"transition":{"id":"31"},"fields":{"resolution":{"id":"1"}},
 			"update":{"comment":[{"add":{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Done now"}]}]}}}]}}`)
 		w.WriteHeader(204)
 	})
@@ -54,21 +55,21 @@ func TestTransitionWithFieldAndComment(t *testing.T) {
 // moved.
 func TestTransitionOnServiceDesk(t *testing.T) {
 	f, c := transitionSite(t, "service_desk")
-	f.on("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"transition":{"id":"21"}}`)
+	f.On("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"transition":{"id":"21"}}`)
 		w.WriteHeader(204)
 	})
-	f.on("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if !strings.Contains(string(b), "sd.public.comment") {
 			t.Errorf("comment %s", b)
 		}
-		reply(500, `{}`)(w, r, b)
+		jiratest.Reply(500, `{}`)(w, r, b)
 	})
 	_, err := c.Transition(t.Context(), TransitionInput{Issue: "WEB-1", Transition: "Start", Comment: "Working on it"})
 	if !trackerapi.WriteNotApplied(err) {
 		t.Errorf("a service desk comment without an audience: %v", err)
 	}
-	if n := f.count("POST", "/rest/api/3/issue/WEB-1/transitions"); n != 0 {
+	if n := f.Count("POST", "/rest/api/3/issue/WEB-1/transitions"); n != 0 {
 		t.Fatalf("moved before the audience was checked: %d", n)
 	}
 	res, err := c.Transition(t.Context(), TransitionInput{Issue: "WEB-1", Transition: "21", Comment: "Working on it", Audience: AudienceInternal})
@@ -95,7 +96,7 @@ func TestTransitionRefusals(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := f.count("POST", "/rest/api/3/issue/WEB-1/transitions"); n != 0 {
+	if n := f.Count("POST", "/rest/api/3/issue/WEB-1/transitions"); n != 0 {
 		t.Errorf("%d moves sent", n)
 	}
 }
@@ -103,22 +104,22 @@ func TestTransitionRefusals(t *testing.T) {
 // TestTransitionLossCheck proves a rich text field on a transition screen
 // gets the same loss check as an edit.
 func TestTransitionLossCheck(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1/transitions", reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
+	f.On("GET", "/rest/api/3/issue/WEB-1/transitions", jiratest.Reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
 		"description":{"key":"description","name":"Description","schema":{"type":"string","system":"description"},"operations":["set"]}}}]}`))
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "fields", "description")
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+docJSON(t, layoutDoc())+`}}`)(w, r, b)
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "fields", "description")
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+docJSON(t, layoutDoc())+`}}`)(w, r, b)
 	})
-	f.on("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	f.On("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	flattened := strings.NewReplacer("<!-- layout -->\n\n", "", "<!-- column 50% -->\n\n", "", "<!-- /column -->\n\n", "", "<!-- /layout -->\n", "").
 		Replace(adf.ToMarkdown(layoutDoc()))
 	in := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "description", Value: Text(flattened)}}}
 	if _, err := c.Transition(t.Context(), in); !errors.As(err, new(*adf.LossError)) || !trackerapi.WriteNotApplied(err) {
 		t.Fatalf("loss: %v", err)
 	}
-	if n := f.count("POST", "/rest/api/3/issue/WEB-1/transitions"); n != 0 {
+	if n := f.Count("POST", "/rest/api/3/issue/WEB-1/transitions"); n != 0 {
 		t.Fatalf("%d moves sent", n)
 	}
 	in.AcceptLoss = true
@@ -132,34 +133,34 @@ func TestTransitionLossCheck(t *testing.T) {
 // a change to the field made while it is read is caught, and nothing is
 // moved.
 func TestTransitionChecksLast(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	var desc atomic.Pointer[string]
 	first := docJSON(t, adf.Doc(para("first")))
 	desc.Store(&first)
-	f.on("GET", "/rest/api/3/issue/WEB-1/transitions", reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
+	f.On("GET", "/rest/api/3/issue/WEB-1/transitions", jiratest.Reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
 		"description":{"key":"description","name":"Description","schema":{"type":"string","system":"description"},"operations":["set"]}}}]}`))
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		switch fields := r.URL.Query().Get("fields"); fields {
 		case "description":
-			reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+*desc.Load()+`}}`)(w, r, b)
+			jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+*desc.Load()+`}}`)(w, r, b)
 		case "project":
-			reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"software"}}}`)(w, r, b)
+			jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"software"}}}`)(w, r, b)
 		default:
 			t.Errorf("fields %q", fields)
 		}
 	})
-	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		changed := docJSON(t, adf.Doc(para("changed")))
 		desc.Store(&changed)
-		reply(200, userOneJSON)(w, r, b)
+		jiratest.Reply(200, userOneJSON)(w, r, b)
 	})
 	in := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "description", Value: Text("new text")}}, Comment: "thanks @[me]"}
 	_, err := c.Transition(t.Context(), in)
 	if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) {
 		t.Fatalf("got %v", err)
 	}
-	got := f.requests()
+	got := f.Requests()
 	if tail := strings.Join(got[len(got)-2:], " | "); tail != "GET "+myselfURL+" | GET /rest/api/3/issue/WEB-1" {
 		t.Errorf("requests %s", strings.Join(got, " | "))
 	}
@@ -173,17 +174,17 @@ func TestTransitionRequiredFieldsBeforeUploads(t *testing.T) {
 	var resolution atomic.Pointer[string]
 	empty, fixed := `null`, `{"id":"1","name":"Fixed"}`
 	resolution.Store(&empty)
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if r.URL.Query().Get("fields") == "project" {
-			reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"software"}}}`)(w, r, b)
+			jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"software"}}}`)(w, r, b)
 			return
 		}
-		wantQuery(t, r, "fields", "resolution")
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"resolution":`+*resolution.Load()+`}}`)(w, r, b)
+		jiratest.WantQuery(t, r, "fields", "resolution")
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"resolution":`+*resolution.Load()+`}}`)(w, r, b)
 	})
 	var uploads atomic.Int32
 	imageRoutes(t, f, "WEB-1", &uploads)
-	f.on("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	f.On("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	in := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Comment: "![a](a.png)", ImageDir: imageDir(t, map[string][]byte{"a.png": pngBytes})}
 	_, err := c.Transition(t.Context(), in)
 	if mf, ok := errors.AsType[*MissingFieldsError](err); !ok || mf.Fields[0].ID != "resolution" || !trackerapi.WriteNotApplied(err) {
@@ -199,10 +200,10 @@ func TestTransitionRequiredFieldsBeforeUploads(t *testing.T) {
 }
 
 func TestAssignAndUnassign(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	var bodies []string
-	f.on("PUT", "/rest/api/3/issue/WEB-1/assignee", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", "/rest/api/3/issue/WEB-1/assignee", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		bodies = append(bodies, string(b))
 		w.WriteHeader(204)
 	})

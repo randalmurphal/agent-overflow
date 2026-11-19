@@ -8,31 +8,32 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 const estimateURL = "/rest/agile/1.0/issue/WEB-1/estimation"
 
 // estimateSite is boards 3 (story points) and 4 (original time).
-func estimateSite(t *testing.T) (*fakeJira, *Client) {
-	f := newFake(t)
+func estimateSite(t *testing.T) (*jiratest.Server, *Client) {
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", boardConfigURL, reply(200, boardConfigBody))
-	f.on("GET", "/rest/agile/1.0/board/4/configuration", reply(200, `{"id":4,"type":"scrum","estimation":{"type":"field","field":{"fieldId":"timeoriginalestimate","displayName":"Original estimate"}}}`))
-	f.on("GET", "/rest/agile/1.0/board/5/configuration", reply(200, `{"id":5,"type":"scrum","estimation":{"type":"issueCount"}}`))
+	f.On("GET", boardConfigURL, jiratest.Reply(200, boardConfigBody))
+	f.On("GET", "/rest/agile/1.0/board/4/configuration", jiratest.Reply(200, `{"id":4,"type":"scrum","estimation":{"type":"field","field":{"fieldId":"timeoriginalestimate","displayName":"Original estimate"}}}`))
+	f.On("GET", "/rest/agile/1.0/board/5/configuration", jiratest.Reply(200, `{"id":5,"type":"scrum","estimation":{"type":"issueCount"}}`))
 	return f, c
 }
 
 func TestSetEstimate(t *testing.T) {
 	f, c := estimateSite(t)
 	var bodies []string
-	f.on("PUT", estimateURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", estimateURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		bodies = append(bodies, r.URL.Query().Get("boardId")+" "+string(b))
 		field := "customfield_10016"
 		if r.URL.Query().Get("boardId") == "4" {
 			field = "timeoriginalestimate"
 		}
-		reply(200, `{"fieldId":"`+field+`","value":"5.5"}`)(w, r, b)
+		jiratest.Reply(200, `{"fieldId":"`+field+`","value":"5.5"}`)(w, r, b)
 	})
 	field, stored, err := c.SetEstimate(t.Context(), EstimateInput{Issue: "WEB-1", Board: 3, Value: Points(5.5)})
 	if err != nil || field != "customfield_10016" || stored != "5.5" {
@@ -41,12 +42,14 @@ func TestSetEstimate(t *testing.T) {
 	for _, in := range []EstimateInput{
 		{Issue: "WEB-1", Board: 4, Value: TimeEstimate(90 * time.Minute)},
 		{Issue: "WEB-1", Board: 3, Value: NoEstimate()},
+		{Issue: "WEB-1", Board: 3, Value: Points(0)},
+		{Issue: "WEB-1", Board: 4, Value: TimeEstimate(0)},
 	} {
 		if _, _, err := c.SetEstimate(t.Context(), in); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := []string{`3 {"value":"5.5"}`, `4 {"value":"90m"}`, `3 {"value":null}`}
+	want := []string{`3 {"value":"5.5"}`, `4 {"value":"90m"}`, `3 {"value":null}`, `3 {"value":"0"}`, `4 {"value":"0m"}`}
 	if strings.Join(bodies, "\n") != strings.Join(want, "\n") {
 		t.Errorf("sent\n%s", strings.Join(bodies, "\n"))
 	}
@@ -56,16 +59,17 @@ func TestSetEstimate(t *testing.T) {
 		"no value":         {Issue: "WEB-1", Board: 3},
 		"NaN":              {Issue: "WEB-1", Board: 3, Value: Points(math.NaN())},
 		"negative":         {Issue: "WEB-1", Board: 3, Value: Points(-1)},
+		"negative time":    {Issue: "WEB-1", Board: 4, Value: TimeEstimate(-time.Minute)},
 		"part of a minute": {Issue: "WEB-1", Board: 4, Value: TimeEstimate(90 * time.Second)},
 		"no field":         {Issue: "WEB-1", Board: 5, Value: Points(1)},
 		"no board":         {Issue: "WEB-1", Value: Points(1)},
 		"a bad issue":      {Issue: "x/y", Board: 3, Value: Points(1)},
 	} {
-		if _, _, err := c.SetEstimate(t.Context(), in); !trackerapi.WriteNotApplied(err) {
+		if _, _, err := c.SetEstimate(t.Context(), in); !trackerapi.WriteNotApplied(err) || !errors.Is(err, trackerapi.ErrInvalidInput) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := f.count("PUT", estimateURL); n != 3 {
+	if n := f.Count("PUT", estimateURL); n != 5 {
 		t.Errorf("%d writes", n)
 	}
 }
@@ -96,10 +100,10 @@ func TestSetEstimateAnswers(t *testing.T) {
 		{201, `{"fieldId":"customfield_10016","value":"2"}`, "", "", false, true},
 	} {
 		f, c := estimateSite(t)
-		f.on("PUT", estimateURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-			wantQuery(t, r, "boardId", "3")
-			wantJSON(t, b, `{"value":"2"}`)
-			reply(tc.status, tc.body)(w, r, b)
+		f.On("PUT", estimateURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			jiratest.WantQuery(t, r, "boardId", "3")
+			jiratest.WantJSON(t, b, `{"value":"2"}`)
+			jiratest.Reply(tc.status, tc.body)(w, r, b)
 		})
 		field, stored, err := c.SetEstimate(t.Context(), EstimateInput{Issue: "WEB-1", Board: 3, Value: Points(2)})
 		if field != tc.field || stored != tc.stored || (err != nil) != tc.err {

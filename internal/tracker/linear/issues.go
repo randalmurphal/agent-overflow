@@ -3,6 +3,7 @@ package linear
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // Page sizes of the issue reads. A page of issues costs about 1,100
@@ -33,11 +34,18 @@ const (
 	orderUpdatedOldest
 )
 
+// maxIssuePage is the largest page Linear serves
+// (https://linear.app/developers/pagination).
+const maxIssuePage = 250
+
 // IssueQuery selects and orders issues.
 type IssueQuery struct {
 	Filter          IssueFilter
 	Order           IssueOrder
 	IncludeArchived bool
+	// Limit is the page size, 1 to 250; zero means 100. A page's cost
+	// grows with it.
+	Limit int
 }
 
 var opIssues = newQuery("Issues", "page", `query Issues($filter: IssueFilter, $sort: [IssueSortInput!], $includeArchived: Boolean, $first: Int!, $after: String) {
@@ -103,7 +111,88 @@ func issueVars(q IssueQuery, after string) (issuesVars, error) {
 	if err != nil {
 		return issuesVars{}, err
 	}
-	return issuesVars{pageVars{First: issuePage, After: after}, filter, sort, q.IncludeArchived}, nil
+	first, err := pageSize(q.Limit)
+	if err != nil {
+		return issuesVars{}, err
+	}
+	return issuesVars{pageVars{First: first, After: after}, filter, sort, q.IncludeArchived}, nil
+}
+
+// pageSize is the first argument of an issue page of limit; zero is
+// issuePage.
+func pageSize(limit int) (int, error) {
+	switch {
+	case limit == 0:
+		return issuePage, nil
+	case limit < 0 || limit > maxIssuePage:
+		return 0, fmt.Errorf("a page holds 1 to %d issues, not %d", maxIssuePage, limit)
+	}
+	return limit, nil
+}
+
+var opIssueSummary = newQuery("IssueSummary", "issue", `query IssueSummary($id: String!) {
+  issue(id: $id) { ...IssueFields }
+}
+`+issueFields)
+
+// IssueSummary returns one issue by its ID or its identifier, archived or
+// not, without what Issue adds: about 10 points against Issue's 286. A
+// missing or invisible issue matches trackerapi.ErrNotFound.
+func (c *Client) IssueSummary(ctx context.Context, idOrIdentifier string) (*Issue, error) {
+	if idOrIdentifier == "" {
+		return nil, invalid(opIssueSummary.name, "an issue ID or identifier is required")
+	}
+	var data struct {
+		Issue *wireIssue `json:"issue"`
+	}
+	if _, err := c.call(ctx, opIssueSummary, idVars{idOrIdentifier}, &data); err != nil {
+		return nil, err
+	}
+	if data.Issue == nil {
+		return nil, fmt.Errorf("linear %s: the answer holds no issue", opIssueSummary.name)
+	}
+	issue := data.Issue.typed()
+	return &issue, nil
+}
+
+// SearchQuery is a full-text search of issues' titles and descriptions.
+type SearchQuery struct {
+	// Term is the text to find, passed to Linear as a value; required.
+	Term string
+	// TeamID limits the search to one team; empty searches every team.
+	TeamID          string
+	IncludeArchived bool
+	// Limit is the page size, 1 to 250; zero means 100.
+	Limit int
+}
+
+var opSearchIssues = newQuery("SearchIssues", "page", `query SearchIssues($term: String!, $teamId: String, $includeArchived: Boolean, $first: Int!, $after: String) {
+  page: searchIssues(term: $term, teamId: $teamId, includeArchived: $includeArchived, first: $first, after: $after) {
+    nodes { ...IssueSearchFields } pageInfo { hasNextPage endCursor }
+  }
+}
+`+issueSearchFields).withMaxBody(issueBodyBytes)
+
+type searchVars struct {
+	pageVars
+	Term            string `json:"term"`
+	TeamID          string `json:"teamId,omitempty"`
+	IncludeArchived bool   `json:"includeArchived,omitempty"`
+}
+
+// SearchIssues returns the page of issues q's term matches that follows
+// after, in Linear's order of relevance; Linear's text-search syntax, if
+// any, is Linear's to read. Pass the same q for every page of one search.
+func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) (Page[Issue], error) {
+	if strings.TrimSpace(q.Term) == "" {
+		return Page[Issue]{}, invalid(opSearchIssues.name, "a search term is required")
+	}
+	first, err := pageSize(q.Limit)
+	if err != nil {
+		return Page[Issue]{}, invalid(opSearchIssues.name, "%w", err)
+	}
+	vars := searchVars{pageVars{First: first, After: after}, q.Term, q.TeamID, q.IncludeArchived}
+	return fetchPage(ctx, c, opSearchIssues, vars, wireIssue.typed)
 }
 
 var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
@@ -211,8 +300,10 @@ var opIssueHistory = newQuery("IssueHistory", "node", `query IssueHistory($id: S
 
 // IssueHistory returns the page of an issue's recorded changes after the
 // cursor after, newest first (Linear's default order).
-// Changes made in the first minutes after creation are recorded as part
-// of the creation, not as entries.
+// Changes made in a window after creation that ends between 2m30s and 3m
+// (measured by TestLiveHistoryFoldBisect) are folded into the creation,
+// not entries, and an entry can be recorded a few seconds after its
+// change.
 func (c *Client) IssueHistory(ctx context.Context, issueID, after string) (Page[HistoryEntry], error) {
 	if issueID == "" {
 		return Page[HistoryEntry]{}, invalid("IssueHistory", "an issue ID is required")

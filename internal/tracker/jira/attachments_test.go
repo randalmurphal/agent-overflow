@@ -8,13 +8,14 @@ import (
 	"testing"
 
 	"agent-overflow/internal/secret"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
 func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/issue/WEB-1/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("POST", "/rest/api/3/issue/WEB-1/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if r.Header.Get("X-Atlassian-Token") != "no-check" {
 			t.Error("no anti-XSRF header")
 		}
@@ -22,7 +23,7 @@ func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 		if name != "log.txt" || string(content) != "line one\n" {
 			t.Errorf("uploaded %q %q", name, content)
 		}
-		reply(200, `[{"id":"501","filename":"log.txt","mimeType":"text/plain","size":9,"created":"2026-11-16T10:00:00.000+0000","author":`+userOneJSON+`}]`)(w, r, b)
+		jiratest.Reply(200, `[{"id":"501","filename":"log.txt","mimeType":"text/plain","size":9,"created":"2026-11-16T10:00:00.000+0000","author":`+userOneJSON+`}]`)(w, r, b)
 	})
 	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "log.txt", Content: strings.NewReader("line one\n")})
 	if err != nil || len(got) != 1 || got[0].ID != "501" || got[0].Author == nil || got[0].Created.IsZero() {
@@ -38,7 +39,7 @@ func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 			t.Errorf("%+v: %v", bad, err)
 		}
 	}
-	if n := f.count("POST", "/rest/api/3/issue/WEB-1/attachments"); n != 1 {
+	if n := f.Count("POST", "/rest/api/3/issue/WEB-1/attachments"); n != 1 {
 		t.Errorf("%d uploads sent", n)
 	}
 }
@@ -46,9 +47,9 @@ func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 // TestAttachUnreadableAnswerKeepsTheIDs proves an upload Jira stored
 // whose answer does not decode still names what was stored, by ID.
 func TestAttachUnreadableAnswerKeepsTheIDs(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/issue/WEB-1/attachments", reply(200, `[{"id":"501","size":"big"},{"id":502,"size":"big"}]`))
+	f.On("POST", "/rest/api/3/issue/WEB-1/attachments", jiratest.Reply(200, `[{"id":"501","size":"big"},{"id":502,"size":"big"}]`))
 	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("a")})
 	se, ok := errors.AsType[*StepError](err)
 	if !ok || !se.Applied() || len(got) != 2 || got[0].ID != "501" || got[1].ID != "502" {
@@ -57,14 +58,14 @@ func TestAttachUnreadableAnswerKeepsTheIDs(t *testing.T) {
 }
 
 func TestAttachmentsListAndDelete(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "fields", "attachment")
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"attachment":[{"id":"501","filename":"a.png","size":3,"created":"2026-11-16T09:00:00.000+0000"},
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "fields", "attachment")
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"attachment":[{"id":"501","filename":"a.png","size":3,"created":"2026-11-16T09:00:00.000+0000"},
 			{"id":"502","filename":"b.png","size":4,"created":"yesterday"},{"id":"503","filename":"c.png","size":5}]}}`)(w, r, b)
 	})
-	f.on("DELETE", "/rest/api/3/attachment/501", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	f.On("DELETE", "/rest/api/3/attachment/501", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	got, err := c.Attachments(t.Context(), "WEB-1")
 	if err != nil || len(got) != 3 || got[0].Filename != "a.png" || got[0].Created.IsZero() || len(got[0].Problems) != 0 {
 		t.Fatalf("got %+v %v", got, err)
@@ -80,10 +81,10 @@ func TestAttachmentsListAndDelete(t *testing.T) {
 }
 
 func TestDownloadAttachmentIsBounded(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "redirect", "false")
+	f.On("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "redirect", "false")
 		_, _ = w.Write([]byte("0123456789"))
 	})
 	var buf bytes.Buffer
@@ -95,18 +96,18 @@ func TestDownloadAttachmentIsBounded(t *testing.T) {
 	if _, ok := errors.AsType[*trackerapi.BodyTooLargeError](err); !ok || buf.Len() > 4 {
 		t.Errorf("over the limit: %v after %d bytes", err, buf.Len())
 	}
-	f.on("GET", "/rest/api/3/attachment/content/502", reply(404, `{}`))
-	f.on("GET", myselfURL, reply(200, userOneJSON))
+	f.On("GET", "/rest/api/3/attachment/content/502", jiratest.Reply(404, `{}`))
+	f.On("GET", myselfURL, jiratest.Reply(200, userOneJSON))
 	if err := c.DownloadAttachment(t.Context(), "502", &buf, 10); !errors.Is(err, trackerapi.ErrNotFound) {
 		t.Errorf("missing: %v", err)
 	}
 }
 
 func TestAttachmentMediaID(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	const media = "0f1e2d3c-4b5a-4c6d-8e7f-a0b1c2d3e4f5"
-	f.on("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+	f.On("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		w.Header().Set("Location", "https://api.media.example.com/file/"+media+"/binary?token=signed&client=x")
 		w.WriteHeader(http.StatusSeeOther)
 	})
@@ -117,7 +118,7 @@ func TestAttachmentMediaID(t *testing.T) {
 	// Only a canonical UUID is a media ID, so a segment that carries the
 	// credential, or any other text, is neither returned nor quoted.
 	for _, seg := range []string{testToken, "0f1e2d3c-media", media + "x", "0f1e2d3c4b5a4c6d8e7fa0b1c2d3e4f5"} {
-		f.on("GET", "/rest/api/3/attachment/content/504", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		f.On("GET", "/rest/api/3/attachment/content/504", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 			w.Header().Set("Location", "https://api.media.example.com/file/"+seg+"/binary")
 			w.WriteHeader(http.StatusSeeOther)
 		})
@@ -129,7 +130,7 @@ func TestAttachmentMediaID(t *testing.T) {
 	// A credential shaped like a media ID is scrubbed from the redirect
 	// before it is read, so it fails the check and is never returned.
 	uuidSecret, err := New(Options{
-		BaseURL: f.srv.URL, Version: "test",
+		BaseURL: f.URL(), Version: "test",
 		Credentials: trackerapi.StaticCredentials(trackerapi.Basic("user1@example.com", secret.New([]byte(media)))),
 	})
 	if err != nil {
@@ -140,14 +141,14 @@ func TestAttachmentMediaID(t *testing.T) {
 	if err == nil || got != "" || strings.Contains(err.Error(), media) {
 		t.Errorf("a media ID that is the credential: got %q %v", got, err)
 	}
-	f.on("GET", "/rest/api/3/attachment/content/502", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+	f.On("GET", "/rest/api/3/attachment/content/502", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		w.Header().Set("Location", "https://api.media.example.com/elsewhere")
 		w.WriteHeader(http.StatusSeeOther)
 	})
 	if _, err := c.AttachmentMediaID(t.Context(), "502"); err == nil {
 		t.Error("a redirect naming no media file")
 	}
-	f.on("GET", "/rest/api/3/attachment/content/503", reply(200, `{}`))
+	f.On("GET", "/rest/api/3/attachment/content/503", jiratest.Reply(200, `{}`))
 	if _, err := c.AttachmentMediaID(t.Context(), "503"); err == nil {
 		t.Error("an answer that is not a redirect")
 	}

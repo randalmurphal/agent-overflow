@@ -157,9 +157,11 @@ func mutateStored[W, T any](ctx context.Context, c *Client, op operation, vars a
 }
 
 // invalid is a call refused before sending, for an input it can tell is
-// wrong. It is a *trackerapi.NotSentError, so WriteNotApplied holds.
+// wrong (ErrNoRoom included). It is a *trackerapi.NotSentError, so
+// WriteNotApplied holds, and matches trackerapi.ErrInvalidInput, which
+// tells it from a call the transport could not send.
 func invalid(call, format string, args ...any) error {
-	return &trackerapi.NotSentError{Err: fmt.Errorf("linear "+call+": "+format, args...)}
+	return trackerapi.InvalidInput(fmt.Errorf("linear "+call+": "+format, args...))
 }
 
 // transportError types a failed call. An error answer carrying GraphQL

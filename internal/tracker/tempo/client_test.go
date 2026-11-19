@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/tempo/tempotest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -65,24 +66,24 @@ func TestDialectProblem(t *testing.T) {
 }
 
 func TestErrorClasses(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	ctx := context.Background()
 
-	f.on("GET", "/4/worklogs/5", nil, "", 400, `{"errors":[{"message":"bad id"}]}`)
+	f.On("GET", "/4/worklogs/5", nil, "", 400, `{"errors":[{"message":"bad id"}]}`)
 	_, err := c.Worklog(ctx, 5)
 	se, ok := errors.AsType[*trackerapi.StatusError](err)
 	if !ok || se.Status != 400 || se.Message != "bad id" {
 		t.Fatalf("400: %v", err)
 	}
 
-	f.on("GET", "/4/worklogs/6", nil, "", 404, `{"errors":{"message":"Worklog not found"}}`)
+	f.On("GET", "/4/worklogs/6", nil, "", 404, `{"errors":{"message":"Worklog not found"}}`)
 	if _, err := c.Worklog(ctx, 6); !errors.Is(err, trackerapi.ErrNotFound) {
 		t.Fatalf("404: %v", err)
 	}
 
 	// A 401 is read again once, then refused.
-	f.on("GET", "/4/worklogs/7", nil, "", 401, `<html>Unauthorized</html>`).repeat = true
+	f.On("GET", "/4/worklogs/7", nil, "", 401, `<html>Unauthorized</html>`).Repeat = true
 	if _, err := c.Worklog(ctx, 7); !isType[*trackerapi.AuthError](err) {
 		t.Fatalf("401: %v", err)
 	}
@@ -93,10 +94,10 @@ func TestErrorClasses(t *testing.T) {
 }
 
 func TestRateLimitClosesGate(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	e := f.on("GET", "/4/worklogs/8", nil, "", 429, `{"errors":[{"message":"Too many requests"}]}`)
-	e.header = http.Header{"Retry-After": {"30"}}
+	e := f.On("GET", "/4/worklogs/8", nil, "", 429, `{"errors":[{"message":"Too many requests"}]}`)
+	e.Header = http.Header{"Retry-After": {"30"}}
 	before := time.Now()
 	_, err := c.Worklog(context.Background(), 8)
 	limited, ok := errors.AsType[*trackerapi.RateLimitedError](err)
@@ -117,13 +118,13 @@ func TestRateLimitClosesGate(t *testing.T) {
 }
 
 func TestCloseRefusesLaterCalls(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
 	c.Close()
 	if _, err := c.Attributes(context.Background()); !isType[*trackerapi.NotSentError](err) {
 		t.Fatalf("attributes after Close: %v", err)
 	}
-	if _, err := c.Worklog(context.Background(), 1); !isType[*trackerapi.NotSentError](err) {
+	if _, err := c.Worklog(context.Background(), 1); !isType[*trackerapi.NotSentError](err) || errors.Is(err, trackerapi.ErrInvalidInput) {
 		t.Fatalf("worklog after Close: %v", err)
 	}
 }

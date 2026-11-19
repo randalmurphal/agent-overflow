@@ -250,7 +250,7 @@ func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue,
 	seen := make(map[string]bool, len(in.IssueIDs))
 	for _, id := range in.IssueIDs {
 		switch {
-		case !canonicalUUID(id):
+		case !IsIssueID(id):
 			return nil, invalid("RenumberIssues", "IssueIDs holds %q, not an issue ID (a lowercase UUID)", id)
 		case seen[id]:
 			return nil, invalid("RenumberIssues", "IssueIDs names %s twice", id)
@@ -277,9 +277,10 @@ func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue,
 	return out, nil
 }
 
-// canonicalUUID reports a UUID in Linear's spelling of its IDs: 36
-// characters, lowercase hexadecimal digits in groups of 8-4-4-4-12.
-func canonicalUUID(s string) bool {
+// IsIssueID reports a UUID in Linear's spelling of its IDs: 36
+// characters, lowercase hexadecimal digits in groups of 8-4-4-4-12. Each
+// issue has one such ID; its identifier (WEB-1) is not one.
+func IsIssueID(s string) bool {
 	if len(s) != 36 {
 		return false
 	}

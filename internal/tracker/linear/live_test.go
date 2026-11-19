@@ -6,10 +6,13 @@
 //
 //	LINEAR_LIVE_KEY_FILE=/path/to/key go test -tags linearlive -run TestLive -v -count=1 ./internal/tracker/linear
 //
-// It creates three issues titled "agent-overflow live check ..." and
+// It creates five issues titled "agent-overflow live check ..." and
 // archives and trashes each of them when it ends, whether or not a step
-// failed. It logs every call's outcome and rate limit headers, never the
-// key.
+// failed; one of them a step trashes itself. It logs every call's outcome
+// and rate limit headers, never the key, and each answer to an open
+// question as a line starting MEASURE: (live_measure_test.go). It waits
+// about a minute for the history fold, makes under 100 requests and
+// takes under four minutes.
 
 package linear
 
@@ -33,26 +36,8 @@ import (
 const liveKeyEnv = "LINEAR_LIVE_KEY_FILE"
 
 func TestLive(t *testing.T) {
-	path := os.Getenv(liveKeyEnv)
-	if path == "" {
-		t.Skipf("%s is not set", liveKeyEnv)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read the key file: %v", err)
-	}
-	key := secret.New(bytes.TrimSpace(raw))
-	clear(raw)
-	// Registered first, so the key is zeroed after every client is closed.
-	t.Cleanup(key.Zero)
-	creds := trackerapi.StaticCredentials(trackerapi.Key(key))
-	c, err := New(Options{Version: "live-check", Credentials: creds})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Registered next, so it runs after the cleanup of every issue below.
-	t.Cleanup(c.Close)
-	l := &live{t: t, c: c, creds: creds}
+	l := newLive(t)
+	c := l.c
 
 	var viewer *Viewer
 	l.must("Viewer", func(ctx context.Context) (err error) { viewer, err = c.Viewer(ctx); return err })
@@ -93,7 +78,7 @@ func TestLive(t *testing.T) {
 		t.Cleanup(func() { l.cleanup(issue) })
 		t.Logf("created %s sortOrder %v", issue.Identifier, issue.SortOrder)
 		// RenumberIssues accepts only this spelling of an issue ID.
-		if !canonicalUUID(issue.ID) {
+		if !IsIssueID(issue.ID) {
 			t.Errorf("issue ID %q is not a lowercase UUID", issue.ID)
 		}
 	}
@@ -122,6 +107,32 @@ func TestLive(t *testing.T) {
 		}
 		return nil
 	})
+	l.checkAdditions(team, viewer, states, stamp)
+}
+
+// newLive reads the key from the file liveKeyEnv names, skipping the
+// test when it is unset, and opens a client. The key's zeroing is
+// registered first and the client's close next, so both run after the
+// cleanup of every issue a step creates.
+func newLive(t *testing.T) *live {
+	path := os.Getenv(liveKeyEnv)
+	if path == "" {
+		t.Skipf("%s is not set", liveKeyEnv)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the key file: %v", err)
+	}
+	key := secret.New(bytes.TrimSpace(raw))
+	clear(raw)
+	t.Cleanup(key.Zero)
+	creds := trackerapi.StaticCredentials(trackerapi.Key(key))
+	c, err := New(Options{Version: "live-check", Credentials: creds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	return &live{t: t, c: c, creds: creds}
 }
 
 // live runs the check's steps, logging each.

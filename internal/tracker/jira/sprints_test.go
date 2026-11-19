@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -15,11 +16,11 @@ const (
 )
 
 func TestSprints(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", "/rest/agile/1.0/board/3/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "state", "active,future")
-		reply(200, `{"isLast":true,"values":[
+	f.On("GET", "/rest/agile/1.0/board/3/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "state", "active,future")
+		jiratest.Reply(200, `{"isLast":true,"values":[
 			{"id":7,"name":"Sprint 1","state":"active","originBoardId":3,"startDate":"2026-11-02T09:00:00.000+01:00","endDate":"2026-11-16T09:00:00.000+01:00"},
 			{"id":8,"name":"Sprint 2","state":"future","originBoardId":3}]}`)(w, r, b)
 	})
@@ -43,7 +44,7 @@ func TestSprints(t *testing.T) {
 	}
 	// A date that does not parse is a problem of that sprint, which stays
 	// listed with its other dates.
-	f.on("GET", "/rest/agile/1.0/board/4/sprint", reply(200, `{"isLast":true,"values":[{"id":9,"name":"x","state":"active","startDate":"soon","endDate":"2026-11-16T09:00:00.000Z","completeDate":""}]}`))
+	f.On("GET", "/rest/agile/1.0/board/4/sprint", jiratest.Reply(200, `{"isLast":true,"values":[{"id":9,"name":"x","state":"active","startDate":"soon","endDate":"2026-11-16T09:00:00.000Z","completeDate":""}]}`))
 	list, err = c.Sprints(t.Context(), SprintQuery{Board: 4})
 	if err != nil || len(list.Sprints) != 1 {
 		t.Fatalf("a date that does not parse: %+v %v", list, err)
@@ -54,12 +55,12 @@ func TestSprints(t *testing.T) {
 }
 
 func TestCreateSprint(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	start := time.Date(2026, 11, 16, 9, 0, 0, 0, time.FixedZone("", 3600))
-	f.on("POST", "/rest/agile/1.0/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"name":"Sprint 1","originBoardId":3,"goal":"Ship","startDate":"2026-11-16T09:00:00.000+01:00","endDate":"2026-11-30T09:00:00.000+01:00"}`)
-		reply(201, sprint7JSON)(w, r, b)
+	f.On("POST", "/rest/agile/1.0/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"name":"Sprint 1","originBoardId":3,"goal":"Ship","startDate":"2026-11-16T09:00:00.000+01:00","endDate":"2026-11-30T09:00:00.000+01:00"}`)
+		jiratest.Reply(201, sprint7JSON)(w, r, b)
 	})
 	s, err := c.CreateSprint(t.Context(), SprintInput{Board: 3, Name: "Sprint 1", Goal: "Ship", Start: start, End: start.Add(14 * 24 * time.Hour)})
 	if err != nil || s.ID != 7 || s.State != SprintFuture {
@@ -74,7 +75,7 @@ func TestCreateSprint(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := f.count("POST", "/rest/agile/1.0/sprint"); n != 1 {
+	if n := f.Count("POST", "/rest/agile/1.0/sprint"); n != 1 {
 		t.Errorf("%d creates", n)
 	}
 }
@@ -99,11 +100,11 @@ func TestSprintWriteAnswers(t *testing.T) {
 		{201, `not json`, 0, false, true},
 		{200, `{"id":7,"name":"Sprint 1"}`, 0, false, true},
 	} {
-		f := newFake(t)
+		f := jiratest.NewServer(t)
 		c := newTestClient(t, f)
-		f.on("POST", "/rest/agile/1.0/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
-			wantJSON(t, b, `{"name":"Sprint 1","originBoardId":3}`)
-			reply(tc.status, tc.body)(w, r, b)
+		f.On("POST", "/rest/agile/1.0/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			jiratest.WantJSON(t, b, `{"name":"Sprint 1","originBoardId":3}`)
+			jiratest.Reply(tc.status, tc.body)(w, r, b)
 		})
 		s, err := c.CreateSprint(t.Context(), SprintInput{Board: 3, Name: "Sprint 1"})
 		if s.ID != tc.id || (err != nil) != tc.err {
@@ -122,10 +123,10 @@ func TestSprintWriteAnswers(t *testing.T) {
 		}
 	}
 	// An update's answer must name the sprint updated.
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`))
-	f.on("POST", sprint7URL, reply(200, `{"id":8,"name":"Sprint A","state":"active"}`))
+	f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`))
+	f.On("POST", sprint7URL, jiratest.Reply(200, `{"id":8,"name":"Sprint A","state":"active"}`))
 	name := "Sprint A"
 	s, err := c.UpdateSprint(t.Context(), SprintUpdate{ID: 7, Name: &name})
 	if se, ok := errors.AsType[*StepError](err); !ok || se.Applied() || !se.OutcomeUnknown() || s.ID != 0 {
@@ -134,13 +135,13 @@ func TestSprintWriteAnswers(t *testing.T) {
 }
 
 func TestStartSprint(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	start := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
-	f.on("GET", sprint7URL, reply(200, sprint7JSON))
-	f.on("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"state":"active","startDate":"2026-11-16T09:00:00.000Z","endDate":"2026-11-30T09:00:00.000Z"}`)
-		reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`)(w, r, b)
+	f.On("GET", sprint7URL, jiratest.Reply(200, sprint7JSON))
+	f.On("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"state":"active","startDate":"2026-11-16T09:00:00.000Z","endDate":"2026-11-30T09:00:00.000Z"}`)
+		jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`)(w, r, b)
 	})
 	if _, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start}); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("no end date: %v", err)
@@ -149,22 +150,22 @@ func TestStartSprint(t *testing.T) {
 	if err != nil || s.State != SprintActive {
 		t.Fatalf("got %+v %v", s, err)
 	}
-	f.on("GET", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`))
+	f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`))
 	if _, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: start.Add(time.Hour)}); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("an active sprint: %v", err)
 	}
-	if n := f.count("POST", sprint7URL); n != 1 {
+	if n := f.Count("POST", sprint7URL); n != 1 {
 		t.Errorf("%d writes", n)
 	}
 }
 
 func TestUpdateSprint(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("GET", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"active","startDate":"2026-11-16T09:00:00.000Z","endDate":"2026-11-30T09:00:00.000Z"}`))
-	f.on("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"name":"Sprint A","endDate":"2026-12-01T09:00:00.000Z"}`)
-		reply(200, `{"id":7,"name":"Sprint A","state":"active"}`)(w, r, b)
+	f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active","startDate":"2026-11-16T09:00:00.000Z","endDate":"2026-11-30T09:00:00.000Z"}`))
+	f.On("POST", sprint7URL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"name":"Sprint A","endDate":"2026-12-01T09:00:00.000Z"}`)
+		jiratest.Reply(200, `{"id":7,"name":"Sprint A","state":"active"}`)(w, r, b)
 	})
 	name := "Sprint A"
 	end := time.Date(2026, 12, 1, 9, 0, 0, 0, time.UTC)
@@ -182,19 +183,19 @@ func TestUpdateSprint(t *testing.T) {
 			t.Errorf("%s: %v", what, err)
 		}
 	}
-	f.on("GET", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"closed"}`))
+	f.On("GET", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"closed"}`))
 	if _, err := c.UpdateSprint(t.Context(), SprintUpdate{ID: 7, End: &end}); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("a closed sprint's dates: %v", err)
 	}
-	if n := f.count("POST", sprint7URL); n != 1 {
+	if n := f.Count("POST", sprint7URL); n != 1 {
 		t.Errorf("%d writes", n)
 	}
 }
 
 func TestDeleteSprint(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("DELETE", sprint7URL, func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	f.On("DELETE", sprint7URL, func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	if err := c.DeleteSprint(t.Context(), 7); err != nil {
 		t.Fatal(err)
 	}
@@ -205,27 +206,27 @@ func TestDeleteSprint(t *testing.T) {
 
 // sprintBoards is a site whose project WEB has scrum boards 3 and 4,
 // sharing sprint 7, and whose issue WEB-1 is in WEB.
-func sprintBoards(t *testing.T, f *fakeJira) {
-	f.on("GET", boardsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "projectKeyOrId", "WEB")
-		wantQuery(t, r, "type", "scrum")
-		reply(200, `{"isLast":true,"values":[{"id":3,"name":"A","type":"scrum"},{"id":4,"name":"B","type":"scrum"}]}`)(w, r, b)
+func sprintBoards(t *testing.T, f *jiratest.Server) {
+	f.On("GET", boardsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "projectKeyOrId", "WEB")
+		jiratest.WantQuery(t, r, "type", "scrum")
+		jiratest.Reply(200, `{"isLast":true,"values":[{"id":3,"name":"A","type":"scrum"},{"id":4,"name":"B","type":"scrum"}]}`)(w, r, b)
 	})
-	f.on("GET", "/rest/agile/1.0/board/3/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "state", "active,future")
-		reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"},{"id":8,"name":"Sprint 2","state":"future"}]}`)(w, r, b)
+	f.On("GET", "/rest/agile/1.0/board/3/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "state", "active,future")
+		jiratest.Reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"},{"id":8,"name":"Sprint 2","state":"future"}]}`)(w, r, b)
 	})
-	f.on("GET", "/rest/agile/1.0/board/4/sprint", reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"},{"id":9,"name":"sprint 2","state":"future"},{"id":10,"name":"Next","state":"future"},{"id":11,"name":"Next","state":"future"}]}`))
-	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "fields", "project")
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","name":"Web"}}}`)(w, r, b)
+	f.On("GET", "/rest/agile/1.0/board/4/sprint", jiratest.Reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"},{"id":9,"name":"sprint 2","state":"future"},{"id":10,"name":"Next","state":"future"},{"id":11,"name":"Next","state":"future"}]}`))
+	f.On("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "fields", "project")
+		jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","name":"Web"}}}`)(w, r, b)
 	})
 }
 
 // TestSprintByName resolves a sprint named on a value: one match (a
 // sprint two boards share counts once), several, none.
 func TestSprintByName(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	sprintBoards(t, f)
 	v, err := c.Value(t.Context(), sprintField, Text("Sprint 1"), ValueOptions{Issue: "WEB-1"})

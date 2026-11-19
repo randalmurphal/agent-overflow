@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/secret"
+	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -62,7 +63,7 @@ func (s *batchSite) handle(w http.ResponseWriter, r *http.Request, raw []byte) {
 		w.WriteHeader(status)
 		return
 	}
-	reply(status, body)(w, r, raw)
+	jiratest.Reply(status, body)(w, r, raw)
 }
 
 // multiStatus is a 207 answering issues, refusing those in refuse; key
@@ -85,7 +86,7 @@ func multiStatus(issues []string, refuse map[string]bool, key func(string) strin
 // one after the last issue ranked so far, and every issue's outcome is
 // reported in the caller's order.
 func TestRankChainsGroups(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	refused := map[string]bool{"WEB-50": true, "WEB-51": true, "WEB-100": true, "WEB-120": true}
 	site := &batchSite{t: t, answer: func(n int, b batchBody) (int, string) {
@@ -95,7 +96,7 @@ func TestRankChainsGroups(t *testing.T) {
 		}
 		return http.StatusMultiStatus, multiStatus(b.Issues, refused, key)
 	}}
-	f.on("PUT", rankURL, site.handle)
+	f.On("PUT", rankURL, site.handle)
 	issues := webIssues(1, 120)
 	res, err := c.Rank(t.Context(), RankInput{Issues: issues, Position: RankBefore("WEB-500"), RankFieldID: 10019})
 	be, ok := errors.AsType[*BatchError](err)
@@ -131,11 +132,11 @@ func TestRankChainsGroups(t *testing.T) {
 // caller named by ID through its issueId, a number in the answer, and a
 // refused entry, 503 included, is refused.
 func TestRankEntriesByID(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"issues":["10","11","12"],"rankAfterIssue":"WEB-500"}`)
-		reply(207, `{"entries":[{"issueId":10,"issueKey":"WEB-10","status":204},{"issueId":11,"issueKey":"WEB-11","status":400,"errors":["no"]},
+	f.On("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"issues":["10","11","12"],"rankAfterIssue":"WEB-500"}`)
+		jiratest.Reply(207, `{"entries":[{"issueId":10,"issueKey":"WEB-10","status":204},{"issueId":11,"issueKey":"WEB-11","status":400,"errors":["no"]},
 			{"issueId":12,"issueKey":"WEB-12","status":503,"errors":["later"]}]}`)(w, r, b)
 	})
 	res, err := c.Rank(t.Context(), RankInput{Issues: []string{"10", "11", "12"}, Position: RankAfter("WEB-500")})
@@ -150,10 +151,10 @@ func TestRankEntriesByID(t *testing.T) {
 
 // TestRankAllDone is the plain success: 204 for each group, no error.
 func TestRankAllDone(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	site := &batchSite{t: t, answer: func(int, batchBody) (int, string) { return http.StatusNoContent, "" }}
-	f.on("PUT", rankURL, site.handle)
+	f.On("PUT", rankURL, site.handle)
 	res, err := c.Rank(t.Context(), RankInput{Issues: webIssues(1, 60), Position: RankAfter("WEB-500")})
 	if err != nil || len(res.Done()) != 60 {
 		t.Fatalf("got %+v %v", res, err)
@@ -224,16 +225,16 @@ func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			f := newFake(t)
+			f := jiratest.NewServer(t)
 			c := newTestClient(t, f)
-			f.on("GET", myselfURL, reply(200, userOneJSON))
+			f.On("GET", myselfURL, jiratest.Reply(200, userOneJSON))
 			site := &batchSite{t: t, answer: func(n int, b batchBody) (int, string) {
 				if n != 1 {
 					return http.StatusNoContent, ""
 				}
 				return tc.status, tc.body(b.Issues)
 			}}
-			f.on("PUT", rankURL, site.handle)
+			f.On("PUT", rankURL, site.handle)
 			res, err := c.Rank(t.Context(), RankInput{Issues: webIssues(1, 120), Position: RankBefore("WEB-500")})
 			be, ok := errors.AsType[*BatchError](err)
 			if !ok || be.Err == nil || be.Unknown != tc.unknown || be.NotSent != 20 {
@@ -299,7 +300,7 @@ func TestRankEntryIdentities(t *testing.T) {
 		"the same ID twice":             {[]string{entry(10001, "WEB-1", 204), entry(10002, "WEB-2", 204)}, entry(10003, "WEB-50", 204), "", 1},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newFake(t)
+			f := jiratest.NewServer(t)
 			c := newTestClient(t, f)
 			site := &batchSite{t: t, answer: func(n int, b batchBody) (int, string) {
 				if n > 0 {
@@ -311,7 +312,7 @@ func TestRankEntryIdentities(t *testing.T) {
 				}
 				return http.StatusMultiStatus, `{"entries":[` + strings.Join(entries, ",") + `]}`
 			}}
-			f.on("PUT", rankURL, site.handle)
+			f.On("PUT", rankURL, site.handle)
 			res, err := c.Rank(t.Context(), RankInput{Issues: issues, Position: RankBefore("WEB-500")})
 			if want := (batchBody{Issues: issues[:50], Before: "WEB-500"}); len(site.bodies) == 0 || fmt.Sprint(site.bodies[0]) != fmt.Sprint(want) {
 				t.Errorf("sent %v", site.bodies)
@@ -334,10 +335,10 @@ func TestRankEntryIdentities(t *testing.T) {
 // is refused even when the sign-in check that follows the 404 fails
 // before it is sent: the outcome is the write's own, not the check's.
 func TestRankRefusedGroupAfterAFailedCheck(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := markClient(t, f, &failingReread{}, nil)
 	site := &batchSite{t: t, answer: func(int, batchBody) (int, string) { return http.StatusNotFound, `{"errorMessages":["no"]}` }}
-	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		c.ForgetCredential()
 		site.handle(w, r, b)
 	})
@@ -346,7 +347,7 @@ func TestRankRefusedGroupAfterAFailedCheck(t *testing.T) {
 	if _, unconfirmed := errors.AsType[*UnconfirmedError](err); !ok || !unconfirmed || be.Refused != 50 || be.NotSent != 70 || !trackerapi.WriteNotApplied(err) {
 		t.Fatalf("got %+v %v", be, err)
 	}
-	if res.Issues[0].Outcome != OutcomeRefused || res.Issues[50].Outcome != OutcomeNotSent || f.count("GET", myselfURL) != 0 {
+	if res.Issues[0].Outcome != OutcomeRefused || res.Issues[50].Outcome != OutcomeNotSent || f.Count("GET", myselfURL) != 0 {
 		t.Errorf("outcomes %v %v", res.Issues[0], res.Issues[50])
 	}
 }
@@ -354,11 +355,11 @@ func TestRankRefusedGroupAfterAFailedCheck(t *testing.T) {
 // TestRankCancelledMidSequence cancels while the second group is in
 // flight: its outcome is unknown and the third is not sent.
 func TestRankCancelledMidSequence(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	ctx, cancel := context.WithCancel(t.Context())
 	site := &batchSite{t: t, answer: func(int, batchBody) (int, string) { return http.StatusNoContent, "" }}
-	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if site.n() == 1 {
 			site.handle(httpDiscard{}, r, b)
 			cancel()
@@ -375,7 +376,7 @@ func TestRankCancelledMidSequence(t *testing.T) {
 	if res.Issues[49].Outcome != OutcomeDone || res.Issues[50].Outcome != OutcomeUnknown || res.Issues[119].Outcome != OutcomeNotSent {
 		t.Errorf("outcomes %v %v %v", res.Issues[49], res.Issues[50], res.Issues[119])
 	}
-	if n := f.count("PUT", rankURL); n != 2 {
+	if n := f.Count("PUT", rankURL); n != 2 {
 		t.Errorf("%d groups sent", n)
 	}
 }
@@ -394,10 +395,10 @@ func (s *failingReread) Credential(context.Context) (*trackerapi.Credential, err
 // sending (here the credential cannot be read again after the first
 // group dropped it) is not sent, not refused, and stops the batch.
 func TestRankGroupNotSent(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := markClient(t, f, &failingReread{}, nil)
 	site := &batchSite{t: t, answer: func(int, batchBody) (int, string) { return http.StatusNoContent, "" }}
-	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+	f.On("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		c.ForgetCredential()
 		site.handle(w, r, b)
 	})
@@ -412,7 +413,7 @@ func TestRankGroupNotSent(t *testing.T) {
 	if want := []batchBody{{Issues: webIssues(1, 50), Before: "WEB-500"}}; fmt.Sprint(site.bodies) != fmt.Sprint(want) {
 		t.Errorf("sent %v", site.bodies)
 	}
-	if n := f.count("PUT", rankURL); n != 1 {
+	if n := f.Count("PUT", rankURL); n != 1 {
 		t.Errorf("%d groups sent", n)
 	}
 }
@@ -433,7 +434,7 @@ func (httpDiscard) WriteHeader(int)             {}
 
 // TestBatchRefusals proves what a batch refuses before sending.
 func TestBatchRefusals(t *testing.T) {
-	f := newFake(t)
+	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	for name, in := range map[string]RankInput{
 		"no issues":        {Position: RankBefore("WEB-9")},
@@ -457,7 +458,7 @@ func TestBatchRefusals(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if n := len(f.requests()); n != 0 {
+	if n := len(f.Requests()); n != 0 {
 		t.Errorf("%d requests sent", n)
 	}
 }

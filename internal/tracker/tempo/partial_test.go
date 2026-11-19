@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/tracker/tempo/tempotest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -27,39 +28,39 @@ func approvalQuery(day string) map[string][]string { return q("from", day, "to",
 func TestCheckFailureIsPerOp(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(f *fakeTempo)
+		setup func(f *tempotest.Server)
 		ops   func(t *testing.T) []Op
 		body  string // the second op's create, which is sent
 	}{
-		{"accounts", func(f *fakeTempo) {
+		{"accounts", func(f *tempotest.Server) {
 			openWeek(f)
-			f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["ACME"]}`, 500, internalError).repeat = true
+			f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["ACME"]}`, 500, internalError).Repeat = true
 		}, func(t *testing.T) []Op {
 			return []Op{CreateOp(accountDraft(t, "a", "ACME")), CreateOp(weekDraft(t, "WEB-1", "b"))}
 		}, createBody(10001, "b")},
-		{"settings", func(f *fakeTempo) {
+		{"settings", func(f *tempotest.Server) {
 			openWeek(f)
-			f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["OLD","ACME"]}`, 200, pageOf(0, false,
+			f.On("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["OLD","ACME"]}`, 200, pageOf(0, false,
 				`{"id":1,"key":"ACME","name":"Acme","status":"OPEN","global":false}`,
-				`{"id":2,"key":"OLD","name":"Old","status":"CLOSED","global":false}`)).repeat = true
-			f.on("GET", "/4/globalconfiguration", nil, "", 500, internalError).repeat = true
+				`{"id":2,"key":"OLD","name":"Old","status":"CLOSED","global":false}`)).Repeat = true
+			f.On("GET", "/4/globalconfiguration", nil, "", 500, internalError).Repeat = true
 		}, func(t *testing.T) []Op {
 			return []Op{CreateOp(accountDraft(t, "a", "OLD")), CreateOp(accountDraft(t, "b", "ACME"))}
 		}, accountBody("b", "ACME")},
-		{"approvals", func(f *fakeTempo) {
-			f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-			f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-10"), "", 500, internalError).repeat = true
-			f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-17"), "", 200, approvalJSONFor("2026-11-16", "2026-11-22", "OPEN")).repeat = true
+		{"approvals", func(f *tempotest.Server) {
+			f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+			f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-10"), "", 500, internalError).Repeat = true
+			f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-17"), "", 200, approvalJSONFor("2026-11-16", "2026-11-22", "OPEN")).Repeat = true
 		}, func(t *testing.T) []Op {
 			return []Op{CreateOp(dayDraft(t, "a", "2026-11-10")), CreateOp(dayDraft(t, "b", "2026-11-17"))}
 		}, `{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-17","timeSpentSeconds":3600,"description":"b","attributes":[{"key":"_Category_","value":"dev"}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFake(t)
+			f := tempotest.NewServer(t, testToken)
 			c := testClient(t, f, newIssues())
 			tc.setup(f)
-			f.on("POST", "/4/worklogs", nil, tc.body, 200, stored(90))
+			f.On("POST", "/4/worklogs", nil, tc.body, 200, stored(90))
 			ops := tc.ops(t)
 			reports, err := c.Validate(context.Background(), ops)
 			if err != nil {
@@ -87,11 +88,11 @@ func TestCheckFailureIsPerOp(t *testing.T) {
 // period read holds, whose own read failed, goes unchecked. A refused
 // date is read once.
 func TestApprovalPeriodsStayKnown(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "APPROVED"))
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-17"), "", 403, forbiddenHTML)
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "APPROVED"))
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-17"), "", 403, forbiddenHTML)
 	ops := []Op{
 		CreateOp(dayDraft(t, "a", "2026-11-10")),
 		CreateOp(dayDraft(t, "b", "2026-11-17")),
@@ -118,11 +119,11 @@ func TestApprovalPeriodsStayKnown(t *testing.T) {
 // TestFailedDateHeldByALaterPeriod: a date whose own read failed is still
 // judged by a period another date's read returned.
 func TestFailedDateHeldByALaterPeriod(t *testing.T) {
-	f := newFake(t)
+	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-16"), "", 500, internalError).repeat = true
-	f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-17"), "", 200, approvalJSONFor("2026-11-16", "2026-11-22", "APPROVED"))
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-16"), "", 500, internalError).Repeat = true
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-17"), "", 200, approvalJSONFor("2026-11-16", "2026-11-22", "APPROVED"))
 	reports, err := c.Validate(context.Background(), []Op{CreateOp(dayDraft(t, "a", "2026-11-16")), CreateOp(dayDraft(t, "b", "2026-11-17"))})
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +163,7 @@ func TestOpRulesAlwaysRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFake(t)
+			f := tempotest.NewServer(t, testToken)
 			issues := newIssues()
 			issues.err = tc.resolver
 			c := testClient(t, f, issues)
@@ -170,8 +171,8 @@ func TestOpRulesAlwaysRun(t *testing.T) {
 			if tc.status != 200 {
 				resp = internalError
 			}
-			f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", tc.status, resp).repeat = true
-			f.on("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
+			f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", tc.status, resp).Repeat = true
+			f.On("GET", "/4/timesheet-approvals/user/acc-user1", approvalQuery("2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
 			reports, err := c.Validate(context.Background(), []Op{CreateOp(draft(t))})
 			if err != nil {
 				t.Fatal(err)
@@ -224,7 +225,7 @@ func TestClosedClientFailsAtAdmission(t *testing.T) {
 		}
 	}
 	t.Run("closed", func(t *testing.T) {
-		f := newFake(t)
+		f := tempotest.NewServer(t, testToken)
 		issues := newIssues()
 		c := testClient(t, f, issues)
 		c.Close()
@@ -236,7 +237,7 @@ func TestClosedClientFailsAtAdmission(t *testing.T) {
 		if ids, keys := issues.calls(); len(ids)+len(keys) != 0 {
 			t.Errorf("IssueIDs called after Close: %v %v", ids, keys)
 		}
-		if r := f.requests(); len(r) != 0 {
+		if r := f.Requests(); len(r) != 0 {
 			t.Errorf("requests after Close: %v", r)
 		}
 	})

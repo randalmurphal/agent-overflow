@@ -153,7 +153,10 @@ Other:
   `ORDER BY updated ASC` sorted 100 issues at millisecond precision, and
   `ORDER BY updated ASC, id ASC` is accepted. A key or ID in `key in (...)`
   or `id in (...)` that names no issue is left out of a 200 answer with no
-  warning.
+  warning. The board issue list (`/rest/software/1.0/board/{id}/issue`)
+  reads the same JQL: the millisecond literal, the two-key order, and
+  `updated > T OR updated >= T AND id > N` to resume after one row, with
+  or without parentheses around the `AND`.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
@@ -193,8 +196,23 @@ Source for schema facts: the
   update first, which the polling walk relies on. A new issue gets a
   `sortOrder` below every existing one (three created in a row: -10,
   -1080, -1986), and `issueUpdate` with a `sortOrder` between two
-  neighbors places it between them in the manual order. An issue edited
-  seconds after it was created has no `history` entries for those edits.
+  neighbors places it between them in the manual order.
+- Measured on 2026-11-19 with the live history checks
+  (`live_fold_test.go`, `live_bisect_test.go`). A change made within a
+  window after an issue's creation is folded into the creation and never
+  becomes a `history` entry: priority changes at +2m30s and earlier were
+  never recorded and those at +3m and later were, and an assignee change at
+  +5s and a state change at +3m45s agree. An entry can first appear a few
+  seconds after its change (5 s seen). Three edits 5 s apart, well after
+  creation, were three entries that did not change afterwards. A page of
+  issues is charged by what it returns, not by `first`: `first: 100` holding
+  two issues cost 9 points where the documented rule gives 1,201, and the
+  histories of two issues in one request cost 324. Archived and trashed
+  issues are left out of a poll and a list unless `includeArchived` is set,
+  and then carry `archivedAt`, with `trashed` true for the trashed one.
+  `dueDate: null` clears a due date. A team key matches with
+  `eqIgnoreCase`. A new title was found by `searchIssues` two seconds
+  after its create.
   A page's end cursor continues the walk from a second client, and an
   issue updated after the cursor was taken arrives on that continuation.
   Reported cost per request: a mutation 2 to 8 points; one page of three
