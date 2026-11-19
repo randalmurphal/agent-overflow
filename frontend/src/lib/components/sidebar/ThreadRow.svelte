@@ -187,12 +187,12 @@
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
 
-  function handleClick(e?: MouseEvent) {
+  function handleClick(e?: MouseEvent, newPane = !!e && (e.metaKey || e.ctrlKey)) {
     if (editing) return;
     // A mouse click is an unambiguous "I'm picking THIS thread" — drop
     // the visual cursor so it doesn't drift from where the user is.
     clearSidebarCursor();
-    if (e && (e.metaKey || e.ctrlKey)) {
+    if (newPane) {
       void openThreadInNewPane(thread);
       return;
     }
@@ -209,8 +209,9 @@
     else void openThreadFromNavigation(thread);
   }
 
-  // Enter and Space open the row as they would a native button.
-  const rowKeys = roleButtonKeys(() => handleClick());
+  // Enter and Space open the row as they would a native button, and
+  // Ctrl/Cmd with them opens a new pane, as a modified click does.
+  const rowKeys = roleButtonKeys((event) => handleClick(undefined, event.metaKey || event.ctrlKey));
 
   function startRename() {
     editing = true;
