@@ -4,10 +4,19 @@
 # errcheck, govet, ineffassign, staticcheck and unused. No findings are
 # excluded here: an unchecked Close in this repo is a real finding under
 # its cleanup rule, not noise.
+#
+# exhaustive is on in its strict form: a switch over an enum names every
+# constant, and a default case does not stand in for one. It reports at the
+# switch, so under the new-issues gate a constant added to an enum is caught
+# only in switches the change touches until the backlog is cleared.
 version: "2"
 
 run:
   timeout: 20m
+
+linters:
+  enable:
+    - exhaustive
 
 issues:
   max-issues-per-linter: 0
