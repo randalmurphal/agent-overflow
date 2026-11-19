@@ -92,7 +92,7 @@ func spawnSchema(shape Shape) map[string]any {
 	computerIDProperty(shape, properties, "the project the thread should run in")
 	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
 	if shape.Paired() {
-		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
+		description += " With computer_id the thread is created on that computer, runs on its account, and project_id must name one of its projects."
 	}
 	return tool("thread_spawn", description, properties, "prompt")
 }

@@ -189,7 +189,7 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 			t.Errorf("paired=%v: placement does not state the owned default: %s", shape.Paired(), placement)
 		}
 		for name, text := range texts {
-			for _, stale := range []string{"visible", "the user sees it in the sidebar"} {
+			for _, stale := range []string{"visible", "the user sees it in the sidebar", "appears in its sidebar"} {
 				if strings.Contains(text, stale) {
 					t.Errorf("paired=%v: thread_spawn %s still says %q: %s", shape.Paired(), name, stale, text)
 				}
