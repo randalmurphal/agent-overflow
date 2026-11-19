@@ -384,7 +384,7 @@ func TestCodexAssistantRegistersTheMemoryHooks(t *testing.T) {
 		t.Fatalf("thread/start hooks = %q, want %q", got, want)
 	}
 	restart()
-	if err := os.WriteFile(filepath.Join(memory.HomeDir(row.Home), "a.md"), []byte("---\ndescription: a new fact\ntype: ruling\nsource: user\nconfirmed: 2026-10-20\n---\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(memory.HomeDir(row.Home), "a.md"), []byte("---\ndescription: a new fact\ntype: ruling\nsource: user: said so\nconfirmed: 2026-10-20\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	restart()

@@ -115,7 +115,7 @@ subfolders are not facts. The file opens with frontmatter:
 ---
 description: Release notes are drafted in the release issue, not in the repo.
 type: convention
-source: user, 2026-10-21
+source: user: "Draft release notes in the release issue, never in the repo."
 confirmed: 2026-10-21
 ---
 Optional body: detail an agent reads when it opens the file.
@@ -123,9 +123,9 @@ Optional body: detail an agent reads when it opens the file.
 
 | Key | Required | Meaning |
 |---|---|---|
-| `description` | yes | One line; the index shows it |
+| `description` | yes | One line a future session acts on; the index shows it |
 | `type` | yes | One of the types below |
-| `source` | yes | Who said it or how it was verified |
+| `source` | yes | `user:` and the user's words, or `verified:` and the command run or the file and line read. A `ruling` or `preference` is always `user:` |
 | `confirmed` | yes | `YYYY-MM-DD`, the day it was last verified true |
 | `expires` | no | `YYYY-MM-DD`; after it the index leaves the fact out |
 | `until` | no | A plain-language end condition; an agent that sees it met deletes the fact |
@@ -145,8 +145,11 @@ Types, in index order:
 Other keys are ignored; keys and types are matched without regard to
 case, so `Type` and `type` are the same key. Frontmatter that does not open on the first line, does not close
 in the first 16 KiB, sets a key twice, lacks a required key, names an
-unknown type or a malformed date makes the fact malformed: it is left
-out of every index and reported to the scope's assistants. A fact whose
+unknown type or a malformed date, or gives a `source` of neither form
+makes the fact malformed: it is left out of every index and reported to
+the scope's assistants. The source forms are what the app can check of a
+fact's evidence: a fact an agent only thought worth keeping has neither
+the user's words nor a check to name. A fact whose
 `expires` date is before the backend's local date at delivery is left
 out and reported, so an assistant deletes it. A file whose name an
 index line cannot show (invalid UTF-8, a control or format
@@ -370,20 +373,31 @@ An assistant's assigned projects' folders are additional directories too
 The rules are a few lines at the top of the delivery, the same for every
 session that writes, naming only the scopes that session may write:
 
-- Save a fact only if a future session would act differently knowing
-  it, it is confirmed (verified, or the user said it), no file, doc or
-  code already holds it, and it outlives the current task. Never save
-  progress, plans, task notes or anything temporary.
-- One fact per file, with the frontmatter above.
-- Update the existing fact instead of adding a near-duplicate. Delete a
-  fact the moment it is shown wrong. Bump `confirmed` when you rely on a
-  fact and it holds.
+- Most sessions save nothing.
+- A fact is written only after an event: the user gave a rule, a
+  correction, a preference, a condition that holds for now, or where
+  something lives; a check caught a problem, or a miss got through;
+  something failed or misled the session, and no file warns of it. What
+  the session did, plans, noticed, concluded itself or learned by
+  reading the repository is not a fact.
+- It is saved only when all of these hold: a future session would act
+  differently, and the description says how; the user said it or the
+  session verified it, and `source` quotes which; no file, doc or code
+  already holds it; it stays true after the task.
+- A fact that a contributor to the repository would need too belongs
+  in its docs: the session proposes that change and gives the fact an
+  `until` that names it.
+- One fact per file, with the frontmatter above. The index is read
+  before a fact is added: the fact on the subject is updated, never a
+  second one beside it. A fact is deleted the moment it is shown wrong.
+  `confirmed` is set to today when a session relies on a fact and it
+  holds.
 - Scope: the home for the assistant's role, the project for the
   project, the user only for how the user decides. A user's correction
   is a project `ruling` or a user `preference`. A check that caught a
   problem, or a miss that got through, becomes a project `verification`.
-- When a human contributor would need it too, propose a change to the
-  repository's docs instead.
+- An assistant checks a new or changed line it did not write: it opens
+  the fact and deletes it when it fails these rules.
 
 ## Maintenance warnings
 

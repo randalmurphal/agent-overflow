@@ -68,9 +68,9 @@ func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 				t.Fatal(err)
 			}
 			userDir := memory.UserDir(app.configDir)
-			writeHomeFile(t, projectDir, "build.md", "---\ndescription: Build with make.\ntype: convention\nsource: user\nconfirmed: 2026-10-20\n---\n")
+			writeHomeFile(t, projectDir, "build.md", "---\ndescription: Build with make.\ntype: convention\nsource: user: said so\nconfirmed: 2026-10-20\n---\n")
 			writeHomeFile(t, projectDir, "broken.md", "no frontmatter\n")
-			writeHomeFile(t, userDir, "terse.md", "---\ndescription: Prefers short answers.\ntype: preference\nsource: user\nconfirmed: 2026-10-20\n---\n")
+			writeHomeFile(t, userDir, "terse.md", "---\ndescription: Prefers short answers.\ntype: preference\nsource: user: said so\nconfirmed: 2026-10-20\n---\n")
 			noMemory := func(label string) {
 				t.Helper()
 				started := start(t)

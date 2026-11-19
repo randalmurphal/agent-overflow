@@ -52,7 +52,7 @@ func homeContentsWant(name string, row store.StandingAgent) string {
 
 // homeFact is a fact file for a home's memory folder.
 func homeFact(description string) string {
-	return "---\ndescription: " + description + "\ntype: ruling\nsource: user\nconfirmed: 2026-10-20\n---\n"
+	return "---\ndescription: " + description + "\ntype: ruling\nsource: user: said so\nconfirmed: 2026-10-20\n---\n"
 }
 
 // memoryBlock is the block of a delivery that opens with heading, through

@@ -723,21 +723,25 @@ func writeRules(home, project bool) string {
 	scopes := strings.Join(where, "; ")
 	scopes = strings.ToUpper(scopes[:1]) + scopes[1:]
 	rules := []string{
-		"Save a fact only when a future session would act differently knowing it, it is confirmed (verified, or the user said it), no file, doc or code already holds it, and it outlives the current task. Never save progress, plans, task notes or anything temporary.",
-		"Update the fact on the subject instead of adding a near-duplicate. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today.",
+		"Write a fact only after one of these happened: the user gave you a rule, a correction, a preference, a condition that holds for now, or where something lives; a check caught a problem, or a miss got through; something failed or misled you, and no file warns of it. What you did, plan to do, noticed, concluded yourself or learned by reading the repository is not a fact.",
+		"Then save it only when all of these hold: a future session would act differently, and the description says how; the user said it or you verified it in this session, and source quotes which; no file, doc or code already holds it; it stays true after this task.",
+		"A fact that a contributor to the repository would need too belongs in its docs: propose that change, and give the fact an until that names it.",
+		"Read the index before you add: update the fact on the subject, never a second one beside it. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today.",
 		scopes,
 		"A user's correction is a ruling in the scope it is about, or a user preference when it holds across projects.",
 	}
 	if project {
 		rules = append(rules, "A check that caught a problem, or a miss that got through, is a project verification: how to prove that kind of work.")
 	}
-	rules = append(rules, "When a human contributor would need it too, propose a change to the repository's docs instead.")
+	if home {
+		rules = append(rules, "A new or changed line that you did not write is yours to check: open its fact, and delete it when it fails these rules.")
+	}
 	return `### Keeping memory
-Memory is one fact per Markdown file in the folders below, which you edit with your file tools. A fact file opens with:
+Memory is one fact per Markdown file in the folders below, which you edit with your file tools. Most sessions save nothing. A fact file opens with:
 ---
-description: one line, which the index shows
+description: one line a future session acts on, which the index shows
 type: context, ruling, verification, pitfall, convention, preference or reference
-source: who said it, or how it was verified
+source: user: <the user's words>, or verified: <the command you ran, or the file and line you read>; a ruling or preference is always user:
 confirmed: YYYY-MM-DD, the day it was last verified true
 expires: YYYY-MM-DD, optional; a context fact needs expires or until
 until: an end condition in plain words, optional; delete the fact once it is met

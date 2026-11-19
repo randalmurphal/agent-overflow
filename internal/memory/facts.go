@@ -53,18 +53,21 @@ func readDayOf(now time.Time) readDay {
 type factType struct {
 	name  string
 	label string
+	// userSaid marks a type that records the user's own decision, whose
+	// source is the user's words and never a check.
+	userSaid bool
 }
 
 // factTypes are the types a fact can have, in the order an index lists them
 // (docs/specs/memory.md, "Facts").
 var factTypes = []factType{
-	{"context", "Context"},
-	{"ruling", "Rulings"},
-	{"verification", "Verification"},
-	{"pitfall", "Pitfalls"},
-	{"convention", "Conventions"},
-	{"preference", "Preferences"},
-	{"reference", "References"},
+	{name: "context", label: "Context"},
+	{name: "ruling", label: "Rulings", userSaid: true},
+	{name: "verification", label: "Verification"},
+	{name: "pitfall", label: "Pitfalls"},
+	{name: "convention", label: "Conventions"},
+	{name: "preference", label: "Preferences", userSaid: true},
+	{name: "reference", label: "References"},
 }
 
 // contextType is the index of the type whose facts an index never cuts.
@@ -228,6 +231,14 @@ func parseFact(text string, bounded bool) (fact, error) {
 		}
 		return fact{}, fmt.Errorf("its type %s is not one of %s", quote(fields["type"]), joinWords(names, "or"))
 	}
+	const userWords = "its source does not open with `user:` and the user's words"
+	switch user := evidence(fields["source"], "user:"); {
+	case user:
+	case factTypes[kind].userSaid:
+		return fact{}, fmt.Errorf("%s, which a %s needs", userWords, factTypes[kind].name)
+	case !evidence(fields["source"], "verified:"):
+		return fact{}, errors.New(userWords + ", or `verified:` and the command run or the file and line read")
+	}
 	for _, key := range []string{"confirmed", "expires"} {
 		if value := fields[key]; value != "" {
 			if _, err := time.Parse(dateLayout, value); err != nil {
@@ -242,6 +253,12 @@ func parseFact(text string, bounded bool) (fact, error) {
 		until:       oneLine(fields["until"], untilRunes),
 		confirmed:   fields["confirmed"],
 	}, nil
+}
+
+// evidence reports a source that opens with label, in any case, and goes on
+// to say something.
+func evidence(source, label string) bool {
+	return len(source) > len(label) && strings.EqualFold(source[:len(label)], label) && strings.TrimSpace(source[len(label):]) != ""
 }
 
 // frontmatter reads the `key: value` lines between a first line `---` and

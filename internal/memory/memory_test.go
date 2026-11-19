@@ -52,9 +52,14 @@ func write(t *testing.T, dir, name, text string) {
 
 // factText is a well-formed fact.
 func factText(kind, description string, extra ...string) string {
-	lines := []string{"---", "description: " + description, "type: " + kind, "source: user", "confirmed: 2026-10-20"}
+	lines := []string{"---", "description: " + description, "type: " + kind, "source: user: said so", "confirmed: 2026-10-20"}
 	lines = append(lines, extra...)
 	return strings.Join(append(lines, "---", "Body the index never shows."), "\n") + "\n"
+}
+
+// sourced is a fact of kind whose source is source.
+func sourced(kind, source string, extra ...string) string {
+	return strings.Replace(factText(kind, "d", extra...), "source: user: said so", "source: "+source, 1)
 }
 
 // build is plan's delivery, its parts joined in order.
@@ -203,11 +208,16 @@ func TestFactFrontmatter(t *testing.T) {
 		"set twice":         {"---\ntype: ruling\ntype: pitfall\n---\n", "its frontmatter sets `type` twice"},
 		"set twice in case": {"---\ntype: ruling\nType: pitfall\n---\n", "its frontmatter sets `type` twice"},
 		"missing keys":      {"---\ndescription: d\ntype: ruling\n---\n", "its frontmatter has no source or confirmed"},
-		"empty value":       {"---\ndescription: \"\"\ntype: ruling\nsource: s\nconfirmed: 2026-10-01\n---\n", "its frontmatter has no description"},
+		"empty value":       {"---\ndescription: \"\"\ntype: ruling\nsource: user: s\nconfirmed: 2026-10-01\n---\n", "its frontmatter has no description"},
 		"unknown type":      {factText("decision", "d"), "its type `decision` is not one of context, ruling, verification, pitfall, convention, preference or reference"},
 		"bad confirmed":     {strings.Replace(factText("ruling", "d"), "2026-10-20", "Oct 20", 1), "its confirmed `Oct 20` is not a date written YYYY-MM-DD"},
 		"bad expires":       {factText("context", "d", "expires: 2026-13-01"), "its expires `2026-13-01` is not a date written YYYY-MM-DD"},
 		"unclosed at 16 K":  {"---\ndescription: d\n" + strings.Repeat("# filler\n", factReadBytes/9+1), ""},
+		"source of no kind": {sourced("pitfall", "noticed while reading the module"), "its source does not open with `user:` and the user's words, or `verified:` and the command run or the file and line read"},
+		"bare user":         {sourced("pitfall", "user"), "its source does not open with `user:` and the user's words, or `verified:` and the command run or the file and line read"},
+		"user said nothing": {sourced("pitfall", "user:"), "its source does not open with `user:` and the user's words, or `verified:` and the command run or the file and line read"},
+		"checked ruling":    {sourced("ruling", "verified: ran make test"), "its source does not open with `user:` and the user's words, which a ruling needs"},
+		"guessed taste":     {sourced("preference", "verified: the user accepted two short replies"), "its source does not open with `user:` and the user's words, which a preference needs"},
 	} {
 		_, err := parseFact(tc.text, name == "unclosed at 16 K")
 		if name == "unclosed at 16 K" {
@@ -217,7 +227,12 @@ func TestFactFrontmatter(t *testing.T) {
 			t.Errorf("%s: %v; want %q", name, err, tc.want)
 		}
 	}
-	got, err := parseFact("---\n# a comment\n\nDescription:  'Quoted,   folded\tline' \nTYPE: Ruling\nsource: user\nConfirmed: 2026-10-20\nowner: ignored\nuntil: the 2.4 release ships\n---\n", false)
+	for _, text := range []string{sourced("verification", "verified: ran make go-test"), sourced("pitfall", "Verified: internal/x.go:12"), sourced("context", "user: freeze until Friday", "expires: 2026-12-01")} {
+		if _, err := parseFact(text, false); err != nil {
+			t.Errorf("%q: %v", text, err)
+		}
+	}
+	got, err := parseFact("---\n# a comment\n\nDescription:  'Quoted,   folded\tline' \nTYPE: Ruling\nSource: User:  'do it'\nConfirmed: 2026-10-20\nowner: ignored\nuntil: the 2.4 release ships\n---\n", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +400,9 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 		}
 		if got := strings.Contains(rules, "Your memory folder"); got != tc.home {
 			t.Errorf("%s: rules name the home = %v", name, got)
+		}
+		if got := strings.Contains(rules, "line that you did not write is yours to check"); got != tc.home {
+			t.Errorf("%s: rules hand over other sessions' facts to check = %v", name, got)
 		}
 		if !strings.Contains(rules, "the user folder holds only how the user decides") && !strings.Contains(rules, "The user folder holds only how the user decides") {
 			t.Errorf("%s: rules do not name the user folder", name)

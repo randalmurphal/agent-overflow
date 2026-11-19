@@ -438,7 +438,7 @@ func TestAnOldConfirmedDateIsShownAndDelivered(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
 	confirmed := func(date string) string {
-		return "---\ndescription: Deploys go through CI.\ntype: ruling\nsource: user\nconfirmed: " + date + "\n---\n"
+		return "---\ndescription: Deploys go through CI.\ntype: ruling\nsource: user: said so\nconfirmed: " + date + "\n---\n"
 	}
 	write(t, s.project, "fresh.md", confirmed(day.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout)))
 	write(t, s.project, "old.md", confirmed("2026-07-22"))

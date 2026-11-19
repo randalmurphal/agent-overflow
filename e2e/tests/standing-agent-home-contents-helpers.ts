@@ -67,7 +67,7 @@ const INSTRUCTIONS = `${ROLE}\n\nGrants: none.\n`;
 
 /** A fact file: its frontmatter, confirmed on a fixed day. */
 function fact(description: string, type = 'ruling', extra = ''): string {
-  return `---\ndescription: ${description}\ntype: ${type}\nsource: user\nconfirmed: 2026-10-20\n${extra}---\n`;
+  return `---\ndescription: ${description}\ntype: ${type}\nsource: user: said so\nconfirmed: 2026-10-20\n${extra}---\n`;
 }
 
 /**
