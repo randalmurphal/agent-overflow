@@ -514,12 +514,41 @@ describe('the Agents segment', () => {
     await fireEvent.click(within(rows[2]).getByTestId('agent-tray-row-details'));
     expect(within(rows[2]).getByTestId('agent-tray-row-digest').id).toBe('agent-tray-row-digest-past-p2');
     const more = view.getByTestId('activity-rail-agents-past-more');
-    expect(more.textContent?.trim()).toBe('Show 20 more…');
-    await fireEvent.click(more);
-    await waitFor(() => expect(within(list).getAllByTestId('agent-tray-row')).toHaveLength(28));
-    expect(view.getByTestId('activity-rail-agents-past-more').textContent?.trim()).toBe('Show 2 more…');
+    expect(more.textContent?.trim()).toBe('Show 20 more of 22…');
+    expect(view.queryByTestId('activity-rail-agents-past-less')).toBeNull();
+    for (let round = 0; round < 2; round++) {
+      await fireEvent.click(view.getByTestId('activity-rail-agents-past-more'));
+      await waitFor(() => expect(within(list).getAllByTestId('agent-tray-row')).toHaveLength(28));
+      expect(view.getByTestId('activity-rail-agents-past-more').textContent?.trim()).toBe('Show 2 more…');
+      // Show less goes back to the first page; the count stays.
+      await fireEvent.click(view.getByTestId('activity-rail-agents-past-less'));
+      await waitFor(() => expect(within(list).getAllByTestId('agent-tray-row')).toHaveLength(8));
+      expect(within(list).getAllByTestId('agent-tray-row').map((r) => r.dataset.token)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']);
+      expect(view.queryByTestId('activity-rail-agents-past-less')).toBeNull();
+      expect(view.getByTestId('activity-rail-agents-past-more').textContent?.trim()).toBe('Show 20 more of 22…');
+      expect(view.getByTestId('activity-rail-agents-past-count').textContent).toBe('30');
+    }
     await fireEvent.click(pastToggle);
     expect(view.queryByTestId('activity-rail-agents-past')).toBeNull();
+  });
+
+  it('says how many Past rows are left beside the next page only when more than a page is left', async () => {
+    const ledger = (count: number) => (caller: string) => Array.from({ length: count }, (_, index) => row(`p${index}`, {
+      callerThreadId: caller, state: 'finished', settledAt: Date.now() - index,
+    }));
+    const { view, toggle } = await openTray(() => [], ledger(8 + 20 + 1));
+    await fireEvent.click(toggle);
+    await fireEvent.click(await view.findByTestId('activity-rail-agents-past-toggle'));
+    const more = await view.findByTestId('activity-rail-agents-past-more');
+    expect(more.textContent?.trim()).toBe('Show 20 more of 21…');
+    await fireEvent.click(more);
+    await waitFor(() => expect(view.getByTestId('activity-rail-agents-past-more').textContent?.trim()).toBe('Show 1 more…'));
+    view.unmount();
+
+    // The segment stays open across the mount.
+    const exact = await openTray(() => [], ledger(8 + 20));
+    await fireEvent.click(await exact.view.findByTestId('activity-rail-agents-past-toggle'));
+    expect((await exact.view.findByTestId('activity-rail-agents-past-more')).textContent?.trim()).toBe('Show 20 more…');
   });
 
   it('shows for a thread whose agents are all past, with no count, and collapses Past when the body closes', async () => {

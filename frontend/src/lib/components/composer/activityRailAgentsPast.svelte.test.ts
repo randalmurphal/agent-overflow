@@ -121,6 +121,95 @@ describe('the Agents segment\'s Past', () => {
     expect(readPast).toHaveBeenCalledTimes(3);
   });
 
+  it('goes back to its first page on Show less, dropping the rows after it, and pages on from there again', async () => {
+    const { controller, readPast } = await mount({ past: () => ledger(40) });
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.canShowLess).toBe(false);
+    expect(controller.past.hiddenCount).toBe(40 - PAST_FIRST_PAGE);
+    const firstPage = ledger(PAST_FIRST_PAGE).map((r) => r.token);
+    const last = ledger(PAST_FIRST_PAGE)[PAST_FIRST_PAGE - 1];
+    for (let round = 0; round < 2; round++) {
+      controller.past.showMore();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(readPast, `round ${round}`).toHaveBeenLastCalledWith('thread-a', { settledAt: last.settledAt, token: last.token }, PAST_MORE_PAGE);
+      expect(controller.past.rows).toHaveLength(PAST_FIRST_PAGE + PAST_MORE_PAGE);
+      expect(controller.past.canShowLess).toBe(true);
+      expect(controller.past.hiddenCount).toBe(40 - PAST_FIRST_PAGE - PAST_MORE_PAGE);
+
+      readPast.mockClear();
+      controller.past.showLess();
+      expect(controller.past.rows.map((r) => r.token), `round ${round}`).toEqual(firstPage);
+      expect(controller.past.canShowLess).toBe(false);
+      expect(controller.past.moreCount).toBe(PAST_MORE_PAGE);
+      expect(controller.past.hiddenCount).toBe(40 - PAST_FIRST_PAGE);
+      expect(controller.past.total).toBe(40);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(readPast, 'Show less read the ledger').not.toHaveBeenCalled();
+    }
+
+    // Every row shown, then less: the next page is offered again.
+    controller.past.showMore();
+    await vi.advanceTimersByTimeAsync(0);
+    controller.past.showMore();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.moreCount).toBe(0);
+    expect(controller.past.hiddenCount).toBe(0);
+    controller.past.showLess();
+    expect(controller.past.rows.map((r) => r.token)).toEqual(firstPage);
+    expect(controller.past.moreCount).toBe(PAST_MORE_PAGE);
+
+    // A ledger cue rereads only the first page it shows now.
+    readPast.mockClear();
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(readPast).toHaveBeenCalledTimes(1);
+    expect(controller.past.rows.map((r) => r.token)).toEqual(firstPage);
+  });
+
+  // Past open on two pages, with every later read held until released.
+  async function heldAfterShowMore() {
+    const mounted = await mount({ past: () => ledger(40) });
+    const { controller, readPast } = mounted;
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    controller.past.showMore();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.rows).toHaveLength(PAST_FIRST_PAGE + PAST_MORE_PAGE);
+    const held: Array<() => void> = [];
+    const answer = pages(() => ledger(40));
+    readPast.mockImplementation((id: unknown, after: unknown, limit: unknown) => new Promise((resolve) => {
+      held.push(() => resolve(answer(id as string, after as Cursor, limit as number)));
+    }));
+    return { ...mounted, held, answer };
+  }
+
+  it('lands nothing from a Show more that answers after Show less', async () => {
+    const { controller, held } = await heldAfterShowMore();
+    controller.past.showMore();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(held).toHaveLength(1);
+    controller.past.showLess();
+    expect(controller.past.loadingMore).toBe(false);
+    held[0]();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(controller.past.rows.map((r) => r.token), 'the Show more landed after Show less').toEqual(ledger(PAST_FIRST_PAGE).map((r) => r.token));
+    expect(controller.past.moreCount).toBe(PAST_MORE_PAGE);
+  });
+
+  it('lands nothing from a reread of the rows Show less dropped, and reads its first page again', async () => {
+    const { controller, readPast, held, answer } = await heldAfterShowMore();
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(held).toHaveLength(1);
+    controller.past.showLess();
+    readPast.mockImplementation(answer as never);
+    held[0]();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(controller.past.rows.map((r) => r.token), 'the reread put the dropped rows back').toEqual(ledger(PAST_FIRST_PAGE).map((r) => r.token));
+    expect(controller.past.hiddenCount).toBe(40 - PAST_FIRST_PAGE);
+  });
+
   it('picks up a row of its own that settles, without reading for a running row\'s activity', async () => {
     const settledRows: ThreadAgentRow[] = [];
     const { controller, readPast } = await mount({ open: [row('child')], past: () => settledRows });
