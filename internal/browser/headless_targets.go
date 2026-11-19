@@ -21,19 +21,7 @@ import (
 func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	logf := p.engine.logf
 	targets := newHeadlessTargets(p)
-	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, logf))
-	// A popup's main frame id is its target id, which is its handle. A
-	// download in a popup whose targetCreated the record has not handled
-	// yet names no popup and is refused; Chromium sends the target's
-	// creation before the navigation that downloads. One whose destroy the
-	// record handled first still names it (downloadOwners).
-	downloads.popup = func(frame string) downloadStart {
-		owners := targets.downloadOwners(frame)
-		if len(owners) < 2 {
-			return downloadStart{}
-		}
-		return downloadStart{Popup: frame, Openers: owners[1:], Profile: p.handle}
-	}
+	downloads := p.downloadTracker(browserCtx, targets)
 	if err := downloads.subscribe(browserCtx, logf); err != nil {
 		return err
 	}
@@ -61,6 +49,27 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 		return err
 	}
 	return onBrowserEvent(browserCtx, target.TargetDestroyed, logf, targets.destroyed)
+}
+
+// downloadTracker is the tracker of the downloads of the browser connected
+// on browserCtx. A popup's main frame id is its target id, which is its
+// handle. Chromium sends a popup's creation before the navigation that
+// downloads, but the start can be handled first: a start that names no
+// popup and that the Manager refuses waits up to ownerWait for the record
+// to name the frame's opener, then is offered again or refused. One whose
+// popup's destroy the record handled first still names it
+// (downloadOwners).
+func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *headlessTargets) *downloadTracker {
+	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, p.engine.logf))
+	downloads.popup = func(frame string) downloadStart {
+		owners := targets.downloadOwners(frame)
+		if len(owners) < 2 {
+			return downloadStart{}
+		}
+		return downloadStart{Popup: frame, Openers: owners[1:], Profile: p.handle}
+	}
+	downloads.lifetime, downloads.ownerWait = browserCtx, p.engine.ownerWait
+	return downloads
 }
 
 // targetCrashed reports a page of this profile whose renderer died; the

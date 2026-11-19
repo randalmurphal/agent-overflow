@@ -918,6 +918,8 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 		started = append(started, start.ID)
 		return start.ID == "G-kept"
 	}
+	// A refused start that names no popup waits this long for one first.
+	engine.ownerWait = 50 * time.Millisecond
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 	if _, err := profile.ensureBrowser(); err != nil {
 		t.Fatalf("launch: %v", err)
