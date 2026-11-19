@@ -324,7 +324,7 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
  * until a newer read answers.
  */
 function askPendingAgain(backend: BackendKey): void {
-  for (const [threadId, read] of [...pending]) {
+  for (const [threadId, read] of Array.from(pending)) {
     if (read.backend !== backend) continue;
     pending.delete(threadId);
     ensureAgentWakes(threadId);

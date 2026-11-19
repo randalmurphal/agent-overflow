@@ -124,7 +124,7 @@ function ask(threadId: string, tokens: readonly string[]): void {
 }
 
 function flush(): void {
-  for (const [threadId, tokens] of [...due]) {
+  for (const [threadId, tokens] of Array.from(due)) {
     if (reading.has(threadId)) continue;
     due.delete(threadId);
     void read(threadId, [...tokens]);
@@ -193,7 +193,7 @@ function trim(thread: SvelteMap<string, Ledger>, order: Set<string>, watching: R
 /** Every cached thread of `backend` reads again: its frames may have been lost, or a read failed while it was away. */
 function readComputerAgain(backend: string): void {
   // A snapshot: asking moves each thread to the end of recency.
-  for (const [threadId, order] of [...recency]) {
+  for (const [threadId, order] of Array.from(recency)) {
     const owner = threadBackend(threadId);
     if (owner === undefined || owner === backend) ask(threadId, [...order]);
   }

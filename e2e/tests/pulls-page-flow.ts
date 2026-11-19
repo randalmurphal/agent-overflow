@@ -288,11 +288,16 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       // the row waits on others, reviewed by the viewer, with GitLab's touch
       // of the merge request just after the note not read as a reply.
       if (compact) await page.getByTestId('pulls-back').click();
+      // Dated from now: the backend reads the viewer's activity of the last
+      // 30 days, and a comment older than that window is not seen as its
+      // review.
       const [first, ...rest] = seeded.gitlab.pulls!;
+      const commentedAt = Date.now() - 24 * 60 * 60 * 1000;
+      const at = (ms: number) => new Date(commentedAt + ms).toISOString();
       const reviewed = {
         ...first,
-        comments: [...(first.comments ?? []), { author: VIEWER, body: 'Why one retry and not three?', createdAt: '2026-10-20T15:00:00Z' }],
-        updatedAt: '2026-10-20T15:00:00.400Z',
+        comments: [...(first.comments ?? []), { author: VIEWER, body: 'Why one retry and not three?', createdAt: at(0) }],
+        updatedAt: at(400),
       };
       await seedForge(harness, [{ ...seeded.gitlab, pulls: [reviewed, ...rest] }]);
       await expect(rowState(page, 101)).toHaveText('Reviewed by you', { timeout: 20_000 });
@@ -300,7 +305,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       // The author answers a minute later: the viewer's turn again.
       await seedForge(harness, [{
         ...seeded.gitlab,
-        pulls: [{ ...reviewed, comments: [...reviewed.comments, { author: 'sabossedgh', body: 'Three would hide a dead endpoint.', createdAt: '2026-10-20T15:01:00Z' }], updatedAt: '2026-10-20T15:01:00Z' }, ...rest],
+        pulls: [{ ...reviewed, comments: [...reviewed.comments, { author: 'sabossedgh', body: 'Three would hide a dead endpoint.', createdAt: at(60_000) }], updatedAt: at(60_000) }, ...rest],
       }]);
       await expect(rowState(page, 101)).toHaveText('Author replied', { timeout: 20_000 });
       await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');

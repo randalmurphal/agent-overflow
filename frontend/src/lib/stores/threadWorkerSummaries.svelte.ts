@@ -203,13 +203,13 @@ async function readComputer(backend: BackendKey): Promise<void> {
     for (const row of listed.values()) land(row.threadId, backend, seq, row.open, row.needYou);
     // The computer listed every thread with an open worker: one it left
     // out has none.
-    for (const [threadId, owner] of [...owners]) {
+    for (const [threadId, owner] of Array.from(owners)) {
       if (owner === backend && !listed.has(threadId)) land(threadId, backend, seq, 0, 0);
     }
     snapshots.set(backend, seq);
     // The computer's answer stands for every thread of it.
     if ((failedComputers.get(backend) ?? 0) <= seq) failedComputers.delete(backend);
-    for (const threadId of [...failedThreads.keys()]) answeredFor(threadId, backend, seq);
+    for (const threadId of Array.from(failedThreads.keys())) answeredFor(threadId, backend, seq);
     recovered();
   } catch (err) {
     if (isPassiveConnectionFailure(err) || !current()) return;
@@ -278,13 +278,13 @@ onThreadAgentRowsChanged((change, backend) => {
 });
 
 onBackendDetached(({ backendId }) => {
-  for (const [threadId, owner] of [...due]) if (owner === backendId) due.delete(threadId);
-  for (const [threadId, read] of [...failedThreads]) if (read.backend === backendId) failedThreads.delete(threadId);
+  for (const [threadId, owner] of Array.from(due)) if (owner === backendId) due.delete(threadId);
+  for (const [threadId, read] of Array.from(failedThreads)) if (read.backend === backendId) failedThreads.delete(threadId);
   failedComputers.delete(backendId as BackendKey);
   bulkDue.delete(backendId as BackendKey);
   recovered();
   snapshots.delete(backendId as BackendKey);
-  for (const [threadId, owner] of [...owners]) {
+  for (const [threadId, owner] of Array.from(owners)) {
     if (owner !== backendId) continue;
     owners.delete(threadId);
     landed.delete(threadId);

@@ -63,7 +63,7 @@ describe('<ActivityRail>', () => {
     resetSendQueue();
     __resetLiveTodoUiPrefsForTest();
     __resetActivityRailUiPrefsForTest();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     // No agents: an unanswered read would show the Agents segment's error.
     setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
