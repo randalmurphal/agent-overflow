@@ -136,20 +136,18 @@ func (p *headlessProfile) CancelDownload(id string) error {
 	return nil
 }
 
-// cancelRefusedDownload cancels a download the Manager refused and removes
-// the file Chromium names by its id in the download directory: a download
-// that finished before the cancel took effect left its whole file there,
-// and the Manager, which keeps no row for it or a settled one, ignores
-// that finish. The file goes whether or not the cancel succeeded.
-func (p *headlessProfile) cancelRefusedDownload(id string) error {
-	err := p.CancelDownload(id)
+// removeDownloadFile removes the file Chromium names by download id in
+// the download directory, for a download the Manager did not take
+// (downloadTracker), once nothing writes it: a download that finished
+// before its cancel took effect left its whole file there. No caller
+// waits on it, so a failure is logged.
+func (p *headlessProfile) removeDownloadFile(id string) {
 	if p.downloadDir == "" {
-		return err
+		return
 	}
-	if removeErr := os.Remove(filepath.Join(p.downloadDir, filepath.Base(id))); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-		err = errors.Join(err, fmt.Errorf("browser: remove the refused download's file: %w", removeErr))
+	if err := os.Remove(filepath.Join(p.downloadDir, filepath.Base(id))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		p.engine.logf("browser: profile %s: remove the file of download %s no page took: %v", p.handle, id, err)
 	}
-	return err
 }
 
 // Dispose destroys the profile and everything in it: cancelling the browser

@@ -452,7 +452,8 @@ behave as a desktop browser's:
   browser), which settles it at once and releases any reservation; a
   download that starts on a page already leaving is refused to the engine
   and never listed; headless Chromium cancels a refused download at once
-  and removes the file of one that finished before its cancel; an end the engine reports on its own is `failed`, with
+  and removes its file when its end arrives or its browser has stopped,
+  so one that finished before its cancel leaves nothing; an end the engine reports on its own is `failed`, with
   the engine's reason when it gives one, and so is a download whose
   Downloads folder cannot be created or written. Where the file goes is
   in [Browser hardening](#browser-hardening).
@@ -1086,7 +1087,8 @@ the popup no `window.opener`. A page whose `window.close()` the engine
 honors (on WebView2, a popup or a page with one history entry) closes its
 tab. A popup that closes before its tab is listed never becomes one, even
 if its page also crashed; one whose page only crashed is listed as a
-crashed tab. On
+crashed tab, never shown live first, also when AO could not attach to its
+page. On
 WebView2 the launcher answers the page's `NewWindowRequested` with a hidden
 controller of its own in the opener's profile, starting at the opener's
 bounds, so no window of WebView2's own opens and `window.opener` and

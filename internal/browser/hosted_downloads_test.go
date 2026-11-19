@@ -95,11 +95,13 @@ func newDownloadHostedEngine(t *testing.T) (*hostedEngine, *directiveSink, *host
 }
 
 // testSnapshotNumbers numbers the snapshots a test sends without one, per
-// engine and download, as the launcher numbers them.
+// engine and download, as the launcher numbers them. The map holds each
+// engine, so no later test's engine takes its address and continues its
+// numbers.
 var testSnapshotNumbers = struct {
 	sync.Mutex
-	last map[string]uint64
-}{last: map[string]uint64{}}
+	last map[*hostedEngine]map[string]uint64
+}{last: map[*hostedEngine]map[string]uint64{}}
 
 // settleReports waits until the engine has processed every report of
 // pageID it accepted, or of every page when pageID is empty.
@@ -141,10 +143,14 @@ func reportDownload(t *testing.T, engine *hostedEngine, pageID string, report we
 func sendDownload(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) {
 	t.Helper()
 	if report.Seq == 0 && report.State != webview2host.DownloadUnknown {
-		key := fmt.Sprintf("%p/%s", engine, report.ID)
 		testSnapshotNumbers.Lock()
-		testSnapshotNumbers.last[key]++
-		report.Seq = testSnapshotNumbers.last[key]
+		numbers := testSnapshotNumbers.last[engine]
+		if numbers == nil {
+			numbers = map[string]uint64{}
+			testSnapshotNumbers.last[engine] = numbers
+		}
+		numbers[report.ID]++
+		report.Seq = numbers[report.ID]
 		testSnapshotNumbers.Unlock()
 	}
 	detail, err := report.Encode()

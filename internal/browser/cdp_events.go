@@ -10,6 +10,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -218,43 +219,103 @@ func (t *cdpLoadTracker) observe(loading bool) (bool, uint64) {
 }
 
 // frameTracker is the set of frames a page has, which downloads are routed
-// by, from Page.frameAttached, frameNavigated and frameDetached in the
-// order the browser sent them and the frame tree read at the page's
-// attach at its place among them (cdpPage.lifecycle). An attach or a
-// navigation makes a frame live, a detach makes it gone, and the tree
-// replaces the set: it reflects every event sent before its reply, and
-// the events after it apply on top. The page's own frames bound it.
+// by, from the page session's frame and target events in the order the
+// browser sent them and the frame tree read at the page's attach at its
+// place among them (cdpPage.lifecycle).
+//
+// A frame the page's own renderer hosts is local: Page.frameAttached or
+// frameNavigated makes it live, frameDetached for its removal makes it
+// gone, and the tree replaces the set: it reflects every event sent before
+// its reply, and the events after it apply on top. A cross-site iframe
+// moves to a renderer of its own: Chromium attaches its iframe target to
+// the page's session (Target.attachedToTarget, the target id being the
+// frame id) and then detaches the frame from the page's renderer with
+// reason swap, and the tree no longer names it. Such a frame is remote,
+// the page's from its target's attach to its target's detach, and the
+// swap leaves its local entry as it is, so a frame that swaps back in is
+// still the page's. Frames inside a remote frame's own renderer are
+// reported only on its own session, which nothing here reads, so they are
+// not the page's. The page's own frames bound both sets.
 type frameTracker struct {
-	mu   sync.RWMutex
-	live map[cdp.FrameID]struct{}
+	mu    sync.RWMutex
+	local map[cdp.FrameID]struct{}
+	// remote is each out-of-process frame by the session of its iframe
+	// target, and remoteFrames how many sessions name each.
+	remote       map[target.SessionID]cdp.FrameID
+	remoteFrames map[cdp.FrameID]int
 }
 
 func newFrameTracker() *frameTracker {
-	return &frameTracker{live: make(map[cdp.FrameID]struct{})}
+	return &frameTracker{
+		local:  make(map[cdp.FrameID]struct{}),
+		remote: make(map[target.SessionID]cdp.FrameID), remoteFrames: make(map[cdp.FrameID]int),
+	}
 }
 
 func (t *frameTracker) attached(id cdp.FrameID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.live[id] = struct{}{}
+	t.local[id] = struct{}{}
 }
 
-func (t *frameTracker) detached(id cdp.FrameID) {
+// detached applies a Page.frameDetached: a frame removed is gone, and one
+// swapped into a renderer of its own stays the page's.
+func (t *frameTracker) detached(id cdp.FrameID, reason page.FrameDetachedReason) {
+	switch reason {
+	case page.FrameDetachedReasonSwap:
+		return
+	case page.FrameDetachedReasonRemove:
+	default:
+		// A reason this protocol version does not name ends the frame in
+		// the page's renderer, as a removal does.
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.live, id)
+	delete(t.local, id)
 }
 
-// reset makes the set the frames of tree.
+// targetAttached applies a Target.attachedToTarget on the page's session:
+// an iframe target is an out-of-process frame of the page.
+func (t *frameTracker) targetAttached(session target.SessionID, info *target.Info) {
+	if info == nil || info.Type != "iframe" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, known := t.remote[session]; known {
+		return
+	}
+	frame := cdp.FrameID(info.TargetID)
+	t.remote[session] = frame
+	t.remoteFrames[frame]++
+}
+
+// targetDetached applies a Target.detachedFromTarget on the page's
+// session: the frame its iframe target was is no longer remote.
+func (t *frameTracker) targetDetached(session target.SessionID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	frame, ok := t.remote[session]
+	if !ok {
+		return
+	}
+	delete(t.remote, session)
+	if t.remoteFrames[frame]--; t.remoteFrames[frame] <= 0 {
+		delete(t.remoteFrames, frame)
+	}
+}
+
+// reset makes the local set the frames of tree. The tree names none of
+// the remote frames, which their targets keep.
 func (t *frameTracker) reset(tree *page.FrameTree) {
-	live := make(map[cdp.FrameID]struct{})
+	local := make(map[cdp.FrameID]struct{})
 	var walk func(*page.FrameTree)
 	walk = func(node *page.FrameTree) {
 		if node == nil {
 			return
 		}
 		if node.Frame != nil {
-			live[node.Frame.ID] = struct{}{}
+			local[node.Frame.ID] = struct{}{}
 		}
 		for _, child := range node.ChildFrames {
 			walk(child)
@@ -262,13 +323,13 @@ func (t *frameTracker) reset(tree *page.FrameTree) {
 	}
 	walk(tree)
 	t.mu.Lock()
-	t.live = live
+	t.local = local
 	t.mu.Unlock()
 }
 
 func (t *frameTracker) owns(id cdp.FrameID) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	_, ok := t.live[id]
-	return ok
+	_, local := t.local[id]
+	return local || t.remoteFrames[id] > 0
 }

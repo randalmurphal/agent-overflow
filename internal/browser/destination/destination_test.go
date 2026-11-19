@@ -3,6 +3,9 @@ package destination
 import (
 	"slices"
 	"testing"
+	"time"
+
+	"agent-overflow/internal/browser/uicall"
 )
 
 // Each decision is taken once, by its completion or by the close, and a
@@ -37,30 +40,33 @@ func TestDecisionsAreTakenOnce(t *testing.T) {
 // it taken by the profile's close, or never ran because the UI loop went;
 // a dispatch that timed out is tried again while the UI loop is there.
 func TestSettleReleasesAClaimNoDecisionTook(t *testing.T) {
-	ran := func(fn func()) bool { fn(); return true }
-	timedOut := func(func()) bool { return false }
+	// A loop runs a closure posted to it at once, or never.
+	const runs, drops = true, false
 	cases := []struct {
 		name         string
-		dispatches   []func(func()) bool
+		posts        []bool
 		take         bool
 		gone         bool
 		wantReleases int
 		wantComplete int
 	}{
-		{"completed and taken", []func(func()) bool{ran}, true, false, 0, 1},
-		{"completed after the close took it", []func(func()) bool{ran}, false, false, 1, 1},
-		{"the UI loop gone", []func(func()) bool{timedOut}, true, true, 1, 0},
-		{"timed out, then completed", []func(func()) bool{timedOut, ran}, true, false, 0, 1},
+		{"completed and taken", []bool{runs}, true, false, 0, 1},
+		{"completed after the close took it", []bool{runs}, false, false, 1, 1},
+		{"the UI loop gone", []bool{drops}, true, true, 1, 0},
+		{"timed out, then completed", []bool{drops, runs}, true, false, 0, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			releases, completes, n := 0, 0, 0
-			dispatch := func(fn func()) bool {
-				d := tc.dispatches[min(n, len(tc.dispatches)-1)]
+			post := func(fn func()) {
+				run := tc.posts[min(n, len(tc.posts)-1)]
 				n++
-				return d(fn)
+				if run {
+					fn()
+				}
 			}
-			Settle(dispatch, func() bool { return tc.gone },
+			thread := uicall.NewThread(post, func() bool { return true }, time.Millisecond)
+			Settle(thread, func() bool { return tc.gone },
 				func() Staged { return Staged{Path: "/staged", Claim: NewClaim(func() { releases++ })} },
 				func(Staged) bool { completes++; return tc.take })
 			if releases != tc.wantReleases || completes != tc.wantComplete {

@@ -178,6 +178,11 @@ func (m *Manager) runAdoption(popup enginePopup) {
 	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p))
 	if err != nil {
 		log.Printf("browser: adopt popup %s: %v", popup.Handle, err)
+		// Its admission decides even so: a popup whose process ended
+		// before its attach failed is the crashed tab its crash makes it.
+		if m.listUnattachedPopup(scope, p, popup) {
+			reserved = false
+		}
 		m.discardPopup(popup.Handle)
 		return
 	}
@@ -202,25 +207,37 @@ func (m *Manager) runAdoption(popup enginePopup) {
 	// a close never takes the tab before its downloads are in it.
 	m.parkMu.Lock()
 	m.mu.Lock()
-	// The opener may have closed meanwhile, with its thread's other pages. A
-	// jar switch is one such close: it moves every live page of the thread
-	// to closing in the hold that advances the generation, so a live opener
-	// is always in its thread's current jar and the popup is too. The caps
-	// were taken at admission by the reservation the listing ends. The
-	// commit, in the same hold, reads what ended the popup before it: a
-	// close refuses it, a crash alone lists it crashed.
-	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil {
+	// The opener may have closed meanwhile, with its thread's other pages
+	// (popupListableLocked). The caps were taken at admission by the
+	// reservation the listing ends. The commit, in the same hold, reads
+	// what ended the popup before it: a close refuses it, a crash alone
+	// lists it crashed, never live first.
+	if !m.popupListableLocked(scope, popup) {
 		m.mu.Unlock()
 		m.parkMu.Unlock()
 		driver.Close()
 		return
 	}
 	verdict := m.admissions.Commit(popupadmit.Handle(popup.Handle))
-	if verdict.Kind() == popupadmit.Refuse {
+	switch verdict.Kind() {
+	case popupadmit.List:
+	case popupadmit.ListCrashed:
+		listedCrashed, released := m.listCrashedPopupLocked(scope, p, popup.Handle, verdict.CrashReason())
+		reserved = !listedCrashed
+		m.mu.Unlock()
+		m.parkMu.Unlock()
+		driver.Close()
+		if listedCrashed {
+			m.crashedPopupListed(p, released)
+		}
+		return
+	case popupadmit.Refuse:
 		m.mu.Unlock()
 		m.parkMu.Unlock()
 		driver.Close()
 		return
+	default:
+		panic("browser: a popup commit of unknown kind")
 	}
 	delete(scope.creating, p)
 	m.adopting[popup.Handle] = nil
@@ -243,10 +260,83 @@ func (m *Manager) runAdoption(popup enginePopup) {
 	m.parkMu.Unlock()
 	// A new tab.
 	m.pageAdded(p)
+	if m.pageAdopted != nil {
+		m.pageAdopted()
+	}
+}
+
+// popupListableLocked answers whether a popup may still be listed in
+// scope: its jar is still open and its opener still a tab of it. A jar
+// switch moves every live page of the thread to closing in the hold that
+// advances the generation, so a live opener is always in its thread's
+// current jar and the popup is too. The caller holds m.mu.
+func (m *Manager) popupListableLocked(scope *jarScope, popup enginePopup) bool {
+	return m.scopes[scope.jar.key] == scope && pageWithHandle(scope, popup.Opener) != nil
+}
+
+// listUnattachedPopup commits the admission of a popup whose attach
+// failed, and lists it as a crashed tab when its process was seen to end
+// first (popupadmit.Registry.CommitUnattached). It answers whether it did,
+// which ends the popup's reservation.
+func (m *Manager) listUnattachedPopup(scope *jarScope, p *managedPage, popup enginePopup) bool {
+	m.parkMu.Lock()
+	m.mu.Lock()
+	if !m.popupListableLocked(scope, popup) {
+		m.mu.Unlock()
+		m.parkMu.Unlock()
+		return false
+	}
+	verdict := m.admissions.CommitUnattached(popupadmit.Handle(popup.Handle))
+	listed, released := false, (*jarScope)(nil)
 	if verdict.Kind() == popupadmit.ListCrashed {
-		// Its process ended before its listing: the tab is a crashed one,
-		// as any listed page's would be.
-		m.pageCrashed(popup.Handle, verdict.CrashReason())
+		listed, released = m.listCrashedPopupLocked(scope, p, popup.Handle, verdict.CrashReason())
+	}
+	m.mu.Unlock()
+	m.parkMu.Unlock()
+	if listed {
+		m.crashedPopupListed(p, released)
+	}
+	return listed
+}
+
+// listCrashedPopupLocked lists popup p, whose process ended before its
+// listing, as the crashed tab it is: a suspended record carrying the
+// failure (crash.go), in the hold that ends its reservation, with no live
+// listing before it. What it downloaded goes to its opener's tab
+// (finishAdoption). As a crash of a listed page does, it lists nothing
+// while the Manager closes or forgets every page. It answers whether it
+// listed the popup, and the jar to dispose when the reservation was the
+// last thing holding it. The caller holds m.parkMu and m.mu.
+func (m *Manager) listCrashedPopupLocked(scope *jarScope, p *managedPage, handle, reason string) (bool, *jarScope) {
+	if m.closed || m.forgettingLocked() {
+		return false, nil
+	}
+	delete(scope.creating, p)
+	m.adopting[handle] = nil
+	m.commitHeldInfoLocked(p, handle)
+	rec := recordOf(p, p.cachedInfo())
+	rec.failure = crashFailure(reason)
+	m.suspended[p.id] = rec
+	if m.releaseScopeLocked(scope) {
+		return true, scope
+	}
+	return true, nil
+}
+
+// crashedPopupListed publishes a popup listed crashed
+// (listCrashedPopupLocked), as a crash of a listed page publishes its tab,
+// and saves its thread's tabs.
+func (m *Manager) crashedPopupListed(p *managedPage, released *jarScope) {
+	log.Printf("browser: popup %s of thread %s crashed before its listing", p.id, p.owner)
+	if released != nil {
+		m.disposeReleased(endedDownloads{}, released, p.owner, p.id)
+	}
+	m.ensureActivePage(p.owner, p.id)
+	m.emitThreadState(p.owner)
+	m.syncPanePresentation(p.owner)
+	if err := m.persistThreads([]string{p.owner}); err != nil {
+		// The tab is in memory; only a restart before the next save loses it.
+		log.Printf("browser: popup %s crashed: save the thread's pages: %v", p.id, err)
 	}
 	if m.pageAdopted != nil {
 		m.pageAdopted()

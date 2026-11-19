@@ -119,12 +119,16 @@ Headless Chromium runs with its popup blocker off, so a window a page opens
 with no gesture is a popup there as on WebView2. On the hosted engine a
 popup is the launcher's report (`hosted_popups.go`), attached only on its
 opener's connection, within the attach timeout, and canceled by its close.
-Every engine reports a popup, and any page's close and crash, as it
-observes them and holds none back: the Manager records each in the
-popup's admission (`popupadmit`) before it acts, and the listing's one
-commit decides the tab (a close refuses it, a crash alone lists it
-crashed); a listed page's close and crash run in report order
-(`engine_pages.go`). A WebKit popup view's close and crash handlers are
+Every engine reports a popup before anything else of it, and any page's
+close and crash as it observes them, holding none back: the Manager
+records each in the popup's admission (`popupadmit`) before it acts, and
+the listing's one commit decides the tab (a close refuses it, a crash
+alone lists it as a crashed tab from its first push, also when its attach
+then fails); a listed page's close and crash run in report order
+(`engine_pages.go`). An admission is kept while its popup is pending or
+listed or a popup of it is, so a download finds the nearest open
+ancestor however many popups come and go; only ended ones go to a bounded
+history, past which a popup's ancestry is unknown, never empty. A WebKit popup view's close and crash handlers are
 installed at its creation, and until its adoption it names itself by its
 popup number. A hosted page is one record with one state
 (`hosted_pages.go`): it admits downloads from its bind or popup report
@@ -140,10 +144,12 @@ hosted engine. A request whose owner does not resolve yet is answered at
 once with what a page with no workspace's authority may open (`jarAllows`);
 only one that needs an owner's authority waits up to `requestOwnerWait`
 for it, then is refused (`awaitRequestOwner`). A CDP page reads its frame
-events, its main frame's loading and its frame tree read at attach from
-one input in the browser's order (`cdporder`, which both CDP engines
-connect through), so neither needs a time window or event counts, and it
-installs no interception of its own. chromedp gives no ordered join of
+events, the attach and detach of its cross-site iframes' targets, its
+main frame's loading and its frame tree read at attach from one input in
+the browser's order (`cdporder`, which both CDP engines connect through),
+so neither needs a time window or event counts, a cross-site iframe stays
+the page's across its move to a renderer of its own (`frameTracker`), and
+it installs no interception of its own. chromedp gives no ordered join of
 methods; do not add per-method subscriptions for state two methods share.
 Every CDP page attach, a created page's or a popup's, is bounded by the
 engine's attach timeout, ends with its caller's cancel, and ends at the
@@ -155,18 +161,24 @@ The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes
 only the title path; never observe a document's whole subtree from it.
 
-Outside `cdporder`, chromedp delivers each event method on its own
-subscription, so handlers run in no fixed order across methods. State fed
-there by several methods, such as a connection's targets, must settle the
-same way under any interleaving and bound what it keeps for unmatched
-events (`cdp_targets.go`).
+A headless browser's target and download events come from one input in
+the browser's order too (`cdporder.WatchBrowser`, `headlessProfile.subscribe`),
+so a popup's creation is handled before its crash, its destroy and its
+downloads. Outside `cdporder`, chromedp delivers each event method on its
+own subscription, so handlers run in no fixed order across methods. State
+fed there by several methods, such as the hosted connection's targets,
+must settle the same way under any interleaving and bound what it keeps
+for unmatched events (`cdp_targets.go`).
 
-All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
-`wkDo`. Do not call either while holding a lock reachable from a native
-callback. A closure posted to the UI thread carries ids and looks the
-profile or download up there (`withProfileOnUI`, `withDownloadOnUI`); an
-action whose answer is reported runs through `uicall.Run`, which never runs
-it after it answered withdrawn. A download's destination decision is held
+All GTK/WebKit and AppKit/WKWebView calls go through `uiThread`
+(`native_uithread.go`, a `uicall.Thread`): `Run` for an operation, which
+never runs it after it answered withdrawn, and `Release` for giving up
+what is held, which is never withdrawn. Nothing else in this package posts
+to the UI thread; the forbidigo rule in `.golangci.yml` refuses any other
+call of Wails' `Invoke*`. Do not call `uiThread` while holding a lock
+reachable from a native callback. A closure posted to the UI thread
+carries ids and looks the profile or download up there
+(`withProfileOnUI`, `withDownloadOnUI`). A download's destination decision is held
 by its profile from WebKit's hand-over until its completion or the
 profile's close takes it, once (`internal/browser/destination`). Native
 callbacks carry integer IDs, never Go pointers. Keep shared page-operation
@@ -245,7 +257,9 @@ its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a
 lost report or cancel never leaves a row running; headless Chromium's arrive over
-CDP (`headless_downloads.go`). Preserve the denial of sensitive website
+CDP (`headless_downloads.go`), which keeps each download from its start to
+its end, and the file of one the Manager did not take until its end
+arrives or the browser has stopped, then removes it. Preserve the denial of sensitive website
 permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and

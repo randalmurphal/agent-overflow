@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/uicall"
 )
 
 // TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree holds a real
@@ -77,7 +79,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 		t.Fatal("the download was never staged")
 	}
 	answered := make(chan bool, 1)
-	go func() { answered <- gtkDo(func() {}) }()
+	go func() { answered <- uiThread.Run(func() {}) == uicall.Ran }()
 	select {
 	case ran := <-answered:
 		if !ran {

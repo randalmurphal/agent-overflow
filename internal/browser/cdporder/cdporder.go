@@ -13,7 +13,8 @@
 // copies each watched message, as it is read, to the queue of the session
 // that watches it (Watch). A watched command's reply is queued at its
 // place too, so a snapshot read at a session's start sits between the
-// events it reflects and the events after it.
+// events it reflects and the events after it. Every watcher of a session
+// gets each message it watches, a command's reply as much as an event.
 //
 // Reading the connection never waits: a queue grows while its handler is
 // behind, as chromedp's own subscriptions do.
@@ -24,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -153,6 +155,36 @@ func Watch(ctx context.Context, methods []string, handle func(Message)) error {
 	return nil
 }
 
+// WatchBrowser is Watch for the browser-level session of the browser ctx
+// is connected to (its first subscription or call connects it), whose
+// target events and download events need the browser's order as much as a
+// page's frame events do.
+func WatchBrowser(ctx context.Context, methods []string, handle func(Message)) error {
+	c := chromedp.FromContext(ctx)
+	if c == nil {
+		return chromedp.ErrInvalidContext
+	}
+	if c.Browser == nil {
+		return ErrNotConnected
+	}
+	a, ok := c.Allocator.(*Allocator)
+	if !ok {
+		return ErrUnordered
+	}
+	tap := a.tap(c.Browser)
+	if tap == nil {
+		return ErrUnordered
+	}
+	// The browser-level session sends its messages with no session id.
+	stop := tap.Watch("", methods, handle)
+	context.AfterFunc(ctx, stop)
+	return nil
+}
+
+// ErrNotConnected is WatchBrowser's answer for a context whose browser is
+// not connected yet.
+var ErrNotConnected = errors.New("cdporder: the context's browser is not connected yet")
+
 // Tap is a chromedp.Transport that copies the watched messages it reads to
 // their sessions' queues before chromedp sees them.
 type Tap struct {
@@ -164,9 +196,12 @@ type Tap struct {
 	pending map[int64]pendingReply
 }
 
+// pendingReply is a watched command awaiting its reply, and every queue
+// watching the command on its session when it was sent: each gets the
+// reply, as each gets the session's events it watches.
 type pendingReply struct {
 	method string
-	queue  *queue
+	queues []*queue
 }
 
 // NewTap wraps transport.
@@ -201,8 +236,11 @@ func (t *Tap) Watch(session target.SessionID, methods []string, handle func(Mess
 				delete(t.sessions, session)
 			}
 			for id, p := range t.pending {
-				if p.queue == q {
+				p.queues = slices.DeleteFunc(p.queues, func(w *queue) bool { return w == q })
+				if len(p.queues) == 0 {
 					delete(t.pending, id)
+				} else {
+					t.pending[id] = p
 				}
 			}
 			t.mu.Unlock()
@@ -212,14 +250,18 @@ func (t *Tap) Watch(session target.SessionID, methods []string, handle func(Mess
 }
 
 // Write notes a watched command before it is sent, so its reply, which
-// can only follow, finds its queue.
+// can only follow, finds the queues watching it.
 func (t *Tap) Write(ctx context.Context, msg *cdproto.Message) error {
 	if msg.Method != "" {
 		t.mu.Lock()
+		var watchers []*queue
 		for q := range t.sessions[msg.SessionID] {
 			if q.watches(string(msg.Method)) {
-				t.pending[msg.ID] = pendingReply{method: string(msg.Method), queue: q}
+				watchers = append(watchers, q)
 			}
+		}
+		if len(watchers) > 0 {
+			t.pending[msg.ID] = pendingReply{method: string(msg.Method), queues: watchers}
 		}
 		t.mu.Unlock()
 	}
@@ -246,11 +288,13 @@ func (t *Tap) Read(ctx context.Context, msg *cdproto.Message) error {
 			return nil
 		}
 		delete(t.pending, msg.ID)
-		reply := Message{Method: p.method, Params: bytes.Clone(msg.Result), Reply: true}
-		if msg.Error != nil {
-			reply.Err = msg.Error
+		for _, q := range p.queues {
+			reply := Message{Method: p.method, Params: bytes.Clone(msg.Result), Reply: true}
+			if msg.Error != nil {
+				reply.Err = msg.Error
+			}
+			q.push(reply)
 		}
-		p.queue.push(reply)
 	}
 	return nil
 }

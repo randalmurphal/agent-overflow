@@ -16,9 +16,26 @@ import (
 	"agent-overflow/internal/procutil/procutiltest"
 )
 
+// heldAdoption is an engine's PopupOpened that admits each popup at once,
+// as an engine reports a popup before anything else of it (engineEvents),
+// and adopts it only after hold, so the popup decides its first
+// navigations with no page: the window a profile's policy covers. It
+// returns at once, as the Manager's does. The real-engine smokes use it.
+func heldAdoption(manager *Manager, hold time.Duration) func(enginePopup) {
+	return func(popup enginePopup) {
+		if !manager.announcePopup(popup) {
+			return
+		}
+		go func() {
+			time.Sleep(hold)
+			manager.runAdoption(popup)
+		}()
+	}
+}
+
 // TestHeadlessChromiumRealPopupDownloadsAndNesting drives a real Chromium's
 // popups through the Manager, against a loopback server. A popup whose
-// first navigation is a download, held from the Manager for a second,
+// first navigation is a download, its adoption held for a second,
 // downloads and closes before its tab is listed: the download is listed,
 // finished, in its opener's tab. A popup a popup opens becomes a tab of the
 // same thread, one the popup opens with no gesture while it is still held
@@ -67,13 +84,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	if !ok {
 		t.Fatalf("no headless engine: %T", manager.engine)
 	}
-	adopt := engine.events.PopupOpened
-	engine.events.PopupOpened = func(popup enginePopup) {
-		go func() {
-			time.Sleep(time.Second)
-			adopt(popup)
-		}()
-	}
+	engine.events.PopupOpened = heldAdoption(manager, time.Second)
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
 			t.Errorf("close manager: %v", err)

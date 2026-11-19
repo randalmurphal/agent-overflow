@@ -39,8 +39,9 @@ type fakeDownloadRequest struct {
 	fail  bool
 }
 
-// fakeDownload is a held download: its total, for the report its cancel
-// makes, and its file.
+// fakeDownload is a running download, kept from before its first report
+// until whoever takes it reports its end: its total, for the report its
+// cancel makes, and its file.
 type fakeDownload struct {
 	total int64
 	file  string
@@ -109,17 +110,23 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 	if err := os.WriteFile(file, make([]byte, half), 0o600); err != nil {
 		return fail(err)
 	}
+	// Cancellable from its first report on: a cancel made while the
+	// progress is handled takes the download and reports its end, and the
+	// download goes no further.
+	p.mu.Lock()
+	if p.held == nil {
+		p.held = make(map[string]fakeDownload)
+	}
+	p.held[id] = fakeDownload{total: request.bytes, file: file}
+	p.mu.Unlock()
 	events.DownloadProgress(downloadProgress{ID: id, Received: float64(half), Total: float64(request.bytes), State: downloadInProgress})
-	switch {
-	case request.hold:
-		p.mu.Lock()
-		if p.held == nil {
-			p.held = make(map[string]fakeDownload)
-		}
-		p.held[id] = fakeDownload{total: request.bytes, file: file}
-		p.mu.Unlock()
+	if request.hold {
 		return nil
-	case request.fail:
+	}
+	if _, running := p.takeHeld(id); !running {
+		return nil
+	}
+	if request.fail {
 		if err := os.Remove(file); err != nil {
 			return fmt.Errorf("browser: remove the failed fake download: %w", err)
 		}
@@ -174,10 +181,7 @@ func (p *fakeProfile) reportFinish(id string, total int64, file string) {
 // file, as WebView2 does there. Any other id has already been let go, and
 // its terminal report is out or on the way.
 func (p *fakeProfile) CancelDownload(id string) error {
-	p.mu.Lock()
-	held, ok := p.held[id]
-	delete(p.held, id)
-	p.mu.Unlock()
+	held, ok := p.takeHeld(id)
 	if !ok {
 		return errDownloadEnded
 	}
@@ -199,10 +203,7 @@ func (p *fakeProfile) CancelDownload(id string) error {
 // file is complete, the engine's record of it is released, and only then is
 // the finish reported.
 func (p *fakeProfile) finishHeld(id string) error {
-	p.mu.Lock()
-	held, ok := p.held[id]
-	delete(p.held, id)
-	p.mu.Unlock()
+	held, ok := p.takeHeld(id)
 	if !ok {
 		return fmt.Errorf("browser: %s is not a held fake download", id)
 	}
@@ -214,4 +215,15 @@ func (p *fakeProfile) finishHeld(id string) error {
 	}
 	p.reportFinish(id, held.total, held.file)
 	return nil
+}
+
+// takeHeld takes the running download id, once: whoever takes it (its
+// cancel, its finish, or the download's own run past its first report)
+// reports its end.
+func (p *fakeProfile) takeHeld(id string) (fakeDownload, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	held, ok := p.held[id]
+	delete(p.held, id)
+	return held, ok
 }

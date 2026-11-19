@@ -144,10 +144,12 @@ func (m *Manager) startAdoption(handle string) {
 }
 
 // finishAdoption ends the adoption of handle, opened by opener, listed as p
-// or not at all, wakes the popups it opened (awaitOpener), and lists the
-// downloads it started meanwhile. A popup not listed lets go of the report
-// held for it, and none is held for it after (updatePageInfo).
+// or not at all, lists the downloads it started meanwhile, and wakes the
+// popups it opened (awaitOpener). The downloads are listed while its
+// admission still keeps its chain live. A popup not listed lets go of the
+// report held for it, and none is held for it after (updatePageInfo).
 func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
+	m.resolveParked(handle, p, opener)
 	m.mu.Lock()
 	delete(m.adopting, handle)
 	if p == nil {
@@ -157,7 +159,6 @@ func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
 	}
 	m.listingChangedLocked()
 	m.mu.Unlock()
-	m.resolveParked(handle, p, opener)
 }
 
 // listPageLocked makes p a tab of scope, the one way a page joins the
@@ -446,11 +447,13 @@ func (m *Manager) stopParked(d *parkedDownload, discard downloadDiscard) {
 // its tab while listed, else (never listed, or closed since by any path)
 // its nearest listed opener, or nil. Its openers are those its engine
 // named and, past them, the chain its admission and its ancestors' keep
-// (popupadmit.Registry.Ancestors), so a popup of a popup that went still
-// finds the tab that opened its parent.
+// (popupadmit.Registry.Ancestors), which is whole while the popup or a
+// popup of it is live, so a popup of a popup that went still finds the
+// tab that opened its parent. A popup whose admission is no longer known
+// has only the openers its engine named.
 func (m *Manager) fateTarget(handle string, fate popupFate) *managedPage {
 	openers := fate.openers
-	for _, ancestor := range m.admissions.Ancestors(popupadmit.Handle(handle)) {
+	for _, ancestor := range m.admissions.Ancestors(popupadmit.Handle(handle)).Chain() {
 		openers = mergeOpeners(openers, []string{string(ancestor)})
 	}
 	m.mu.Lock()

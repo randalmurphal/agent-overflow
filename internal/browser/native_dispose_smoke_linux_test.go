@@ -49,7 +49,7 @@ func TestNativeEngineRealDisposeDuringPageCreation(t *testing.T) {
 	// begins, so the view's construction and the disposal wait there in
 	// that order.
 	entered, gate := make(chan struct{}), make(chan struct{})
-	go gtkDo(func() {
+	go uiThread.Run(func() {
 		close(entered)
 		<-gate
 	})

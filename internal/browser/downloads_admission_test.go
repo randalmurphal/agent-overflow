@@ -194,13 +194,25 @@ func awaitGone(t *testing.T, path, what string) {
 }
 
 // Headless Chromium offers an unowned start again for a bounded time, then
-// cancels it and removes the file it wrote; a connection that ends first
-// does the same at once. Neither path ever treats it as admitted.
+// cancels it and removes the file it wrote once its end arrives; a
+// connection that ends first removes the file at once. Neither path ever
+// treats it as admitted.
 func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testing.T) {
 	t.Run("the wait passes", func(t *testing.T) {
 		d, file, offers := headlessUnownedRig(t, 100*time.Millisecond, t.Context())
+		canceled := make(chan string, 1)
+		d.cancel = func(id string) { canceled <- id }
 		d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "G1", FrameID: "F-unknown"})
-		awaitGone(t, file, "after the owner wait")
+		select {
+		case id := <-canceled:
+			if id != "G1" {
+				t.Fatalf("canceled %s, want G1", id)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the start was never canceled after the owner wait")
+		}
+		d.progress(cdpbrowser.EventDownloadProgress{GUID: "G1", State: cdpbrowser.DownloadProgressStateCanceled})
+		awaitGone(t, file, "after the canceled download's end")
 		settled := offers()
 		if settled < 2 {
 			t.Fatalf("the start was offered %d times, want it offered again while it waited", settled)

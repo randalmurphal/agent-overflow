@@ -286,7 +286,7 @@ func TestCDPEvaluateExceptionNamesACompileFailure(t *testing.T) {
 		t.Fatalf("compile failure = %#v", err)
 	}
 	err = cdpEvaluateException(exception("EvalError", "EvalError: Possible side-effect in debug-evaluate"), true)
-	if errors.As(err, &syntax) || !strings.HasPrefix(err.Error(), "browser: Chrome rejected a possible side effect") {
+	if errors.As(err, &syntax) || !errors.As(err, new(sideEffectRejectedError)) || !strings.HasPrefix(err.Error(), "browser: Chrome rejected a possible side effect") {
 		t.Fatalf("side-effect refusal = %#v", err)
 	}
 	err = cdpEvaluateException(exception("TypeError", "TypeError: x"), false)

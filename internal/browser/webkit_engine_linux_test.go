@@ -185,17 +185,8 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 	}
 }
 
-// holdPopupAdoption makes the Manager hear of each popup only after hold,
-// so the popup decides its first navigations with no page: the window a
-// profile's policy covers. The engine's call returns at once, as the
-// Manager's does (engineEvents). Call it before the Manager opens a page.
+// holdPopupAdoption makes the Manager adopt each popup only after hold
+// (heldAdoption). Call it before the Manager opens a page.
 func holdPopupAdoption(manager *Manager, hold time.Duration) {
-	engine := manager.engine.(*webkitEngine)
-	adopt := engine.events.PopupOpened
-	engine.events.PopupOpened = func(popup enginePopup) {
-		go func() {
-			time.Sleep(hold)
-			adopt(popup)
-		}()
-	}
+	manager.engine.(*webkitEngine).events.PopupOpened = heldAdoption(manager, hold)
 }

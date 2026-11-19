@@ -624,7 +624,12 @@ func (s downloadState) stopped() bool {
 // acting on a goroutine of its own, so an engine calls them in the order
 // it observed the facts, from its UI thread or event reader, and holds
 // nothing back for a popup's listing. The Manager decides from them
-// whether a popup becomes a tab.
+// whether a popup becomes a tab. An engine reports a popup before it
+// reports anything else of it, its close, its crash or a download it
+// starts (headless Chromium reads its target and download events in the
+// browser's order, a WebKit popup is reported in its creation, the
+// launcher's reports reach the hosted engine one at a time): the Manager
+// keeps no report of a handle it does not know for one that may come.
 type engineEvents struct {
 	// PopupOpened reports a page the engine opened by itself, which the
 	// Manager adopts (AttachPage) or discards (DiscardPage).

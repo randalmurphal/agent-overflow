@@ -23,10 +23,10 @@ import (
 //
 //	NEVER call into GTK while holding a lock a C callback can take.
 //
-// `gtkDo` waits for the GTK main thread, and that thread may be running a
-// delegate — a popup, a navigation-authority answer — that wants the very lock
-// being held. So a lock here only ever covers map bookkeeping, and every
-// gtkDo-backed call happens after it is released.
+// A call on `uiThread` waits for the GTK main thread, and that thread may be
+// running a delegate — a popup, a navigation-authority answer — that wants the
+// very lock being held. So a lock here only ever covers map bookkeeping, and
+// every call on uiThread happens after it is released.
 
 // newNativeEngine answers a WebKitGTK engine only when the caller supplied a
 // desktop window to host views inside. The same Linux binary also runs with no
@@ -276,7 +276,9 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver,
 		return nil, err
 	}
 	page.view = view
-	p.parkNew(page)
+	if err := p.parkNew(page); err != nil {
+		return nil, err
+	}
 	if err := p.publish(page); err != nil {
 		return nil, err
 	}
@@ -308,7 +310,9 @@ func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageH
 	}
 	// What ended the view before reached the Manager by the popup's handle,
 	// which its page keeps: the Manager's listing reads it.
-	p.parkNew(page)
+	if err := p.parkNew(page); err != nil {
+		return nil, err
+	}
 	if err := p.publish(page); err != nil {
 		return nil, err
 	}
@@ -360,9 +364,14 @@ func (p *webkitProfile) publish(page *webkitPage) error {
 
 // parkNew parks a new page's view. Parked is MAPPED: the view has a real
 // viewport and a fresh snapshot, it simply costs the window no space. Hiding
-// by opacity is banned — it stops rAF, which stops the page.
-func (p *webkitProfile) parkNew(page *webkitPage) {
-	webkitParkView(page.view)
+// by opacity is banned — it stops rAF, which stops the page. A view the GTK
+// thread did not park in time is never parked: its page is closed with it.
+func (p *webkitProfile) parkNew(page *webkitPage) error {
+	if err := webkitParkView(page.view); err != nil {
+		page.Close()
+		return err
+	}
+	return nil
 }
 
 // registerDownload keeps download under handle, unless the profile was
@@ -462,7 +471,7 @@ func webkitDownloadOwner(handle string) *webkitProfile {
 }
 
 // OnUIThread is the Manager's cue (engineUIThread in driver.go) that every
-// gtkDo would run inline from the caller. It is what lets a teardown issued
+// call on uiThread would run inline from the caller. It is what lets a teardown issued
 // from the blocked main thread at quit finish instead of parking on a queue
 // that thread is not draining.
 func (e *webkitEngine) OnUIThread() bool { return gtkOnMainThread() }
@@ -475,8 +484,8 @@ func (e *webkitEngine) WaitDownloadEvents() { e.downloadEvents.Wait() }
 var _ engineDownloadEvents = (*webkitEngine)(nil)
 
 // FocusApp is engineAppFocus: the SPA's webview becomes the window's focus
-// widget. Called on the GTK thread from the key gate, where gtkDo runs
-// inline. In a window that is not active GTK only records the focus
+// widget. Called on the GTK thread from the key gate, where uiThread runs
+// it inline. In a window that is not active GTK only records the focus
 // widget, which takes the keys once the window is activated.
 func (e *webkitEngine) FocusApp() error { return webkitFocusApp() }
 
