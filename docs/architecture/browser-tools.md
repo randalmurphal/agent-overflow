@@ -170,31 +170,36 @@ per-platform no-op.
   (`activate`, `step`, and the `new`, `reopen`, `duplicate` and
   `download-open` that select the tab they open) and every keyboard command
   on the active tab (`close-active`, `reload-active`) carries the pane's
-  mount and a number the client takes when the user acts, consecutive from
-  1 in each mount; a re-attach is a new mount and starts again at 1. A
-  keyboard command on the active tab must carry them; a selection made with
-  no pane mounted (the chat header's new tab, a download opened from its
-  toast) carries neither, and the backend refuses an action that does not
-  match its kind (`parseCompanionAction`). The Manager admits a mount's
-  numbers in order: the next one acts at once, a later one waits for its
-  predecessors' commit (never their restore or load), and each then does
-  what it says and restores the tab it selected. When a second passes with
-  no progress the count moves past the numbers not yet arrived: they lose
-  their place, not their effect, and a selection that arrives later applies
-  then, in arrival order. A keyboard command on the active tab admitted
-  past a number that had not arrived (it waited while the count moved, or
-  it is itself late) is refused with an error in the pane's banner and acts
-  on nothing, since the tab it means is not known. The order holds across
-  late numbers, not across numbers never sent. A mount remembers the last
-  256 numbers it moved past; an older one arriving is refused with an
-  error. A repeat of a number already admitted, one from a mount the
+  mount and a number the client takes when the user acts: an epoch and a
+  sequence in it, consecutive from 1. The client starts a mount's next
+  epoch with the first command it sends while none of the mount's is
+  unanswered, so nothing of an older epoch is still meant to act; a
+  re-attach is a new mount and starts again. A keyboard command on the
+  active tab must carry them; a selection made with no pane mounted (the
+  chat header's new tab, a download opened from its toast) carries none,
+  and the backend refuses an action that does not match its kind
+  (`parseCompanionAction`). The Manager admits a mount's numbers in order:
+  the next one acts at once, a later one waits for its predecessors' commit
+  (never their restore or load), and each then does what it says and
+  restores the tab it selected. When a second passes with no progress the
+  count moves past the numbers not yet arrived: each is outstanding, and
+  arriving later it is refused with an error and acts on nothing, so it
+  never undoes a choice the user made after it. While a number of its epoch
+  is outstanding a keyboard command on the active tab is refused with an
+  error in the pane's banner and acts on nothing, since the tab it means is
+  not known; a selection names its tab and acts. A newer epoch ends the
+  older one: what arrives of it is refused, and its outstanding numbers no
+  longer hold the keyboard's commands. A mount remembers 256 outstanding
+  numbers; past that the epoch's keyboard commands are refused until the
+  next. A repeat of a number already admitted, one from a mount the
   Manager does not have (detached, or another thread's), a waiter whose
-  mount detaches, and a command admitted before its mount detached answer
-  success and act on nothing; a reopen keeps its closed tab. More than 256
-  waiting in one mount are refused with an error, and that number, sent
-  again, is treated as never sent. An agent's `browser_select_page` and the
-  chat header's show apply in arrival order and never wait. Closing a tab
-  by its id reselects only when that tab was the active one.
+  mount detaches, and a command admitted before its mount detached or a
+  newer epoch began answer success and act on nothing; a reopen keeps its
+  closed tab. More than 256 waiting in one mount are refused with an error,
+  and that number, sent again, is treated as never sent. An agent's
+  `browser_select_page` and the chat header's show apply in arrival order
+  and never wait. Closing a tab by its id reselects only when that tab was
+  the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
   `loading`). When a load stops, an engine with a pane reads the favicon in

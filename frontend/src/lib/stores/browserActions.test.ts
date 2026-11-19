@@ -12,6 +12,7 @@ import {
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
+  browserActionError,
   browserThreadState,
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
@@ -315,6 +316,36 @@ describe('pane.close on a browser companion', () => {
         { kind: 'close-active', pageId: '', mount: 'mount-1', select: 1 },
         { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
       ]);
+    });
+
+    // The backend refuses a keyboard command while an earlier number of its
+    // epoch never arrived; the window starts a new epoch only once every
+    // action it sent in the old one answered or failed, so nothing of the
+    // old epoch is still meant to act.
+    it('starts a new epoch only when none of the mount\'s actions is unanswered', async () => {
+      const epochs: Array<{ epoch?: number; select?: number }> = [];
+      const failNext: boolean[] = [];
+      setBindingMock('BrowserCompanionDo', vi.fn(async (threadId: string, action: { kind: string; epoch?: number; select?: number }) => {
+        epochs.push({ epoch: action.epoch, select: action.select });
+        await new Promise<void>((resolve) => answers.push(resolve));
+        if (failNext.shift()) throw new Error('browser: an earlier tab action from this pane had not arrived');
+        return { kind: 'state', threadId, activePageId: 'a', visible: true, seq: 1, pages: ['a', 'b', 'c'].map(tab) };
+      }));
+      failNext.push(false, true);
+      const first = browserCompanionAct('thread-browser', browserAction.select(toPageId('b')));
+      expect(closeFocusedBrowserTab()).toBe(true);
+      answers.shift()?.();
+      await first;
+      // The close is still unanswered: the next press stays in epoch 1.
+      expect(closeFocusedBrowserTab()).toBe(true);
+      expect(epochs).toEqual([{ epoch: 1, select: 1 }, { epoch: 1, select: 2 }, { epoch: 1, select: 3 }]);
+      // The close fails and the last press answers: the next starts epoch 2.
+      for (const answer of answers.splice(0)) answer();
+      await vi.waitFor(() => expect(browserActionError('thread-browser')).not.toBe(''));
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(closeFocusedBrowserTab()).toBe(true);
+      expect(epochs.at(-1)).toEqual({ epoch: 2, select: 1 });
     });
 
     it('leaves a close from the tab menu on the tab it names, unnumbered', () => {

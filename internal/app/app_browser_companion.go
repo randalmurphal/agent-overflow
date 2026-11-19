@@ -35,13 +35,18 @@ type BrowserCompanionAction struct {
 	// Select numbers a user's tab selection made in Mount ("activate",
 	// "step", and the "new", "reopen", "duplicate" and "download-open" that
 	// select the tab they open) and a keyboard command on the active tab
-	// ("close-active", "reload-active"), consecutive from 1 in each mount in
-	// the order the user acted. The Manager admits a mount's commands in
-	// that order (internal/browser/selection.go). A keyboard command on the
-	// active tab requires Mount and Select; a selection carries both or
-	// neither, and with neither applies in arrival order. Validated by
-	// parseCompanionAction.
+	// ("close-active", "reload-active"), consecutive from 1 in each Epoch of
+	// a mount in the order the user acted. The Manager admits a mount's
+	// commands in that order (internal/browser/selection.go). A keyboard
+	// command on the active tab requires Mount, Epoch and Select; a
+	// selection carries all three or none, and with none applies in arrival
+	// order. Validated by parseCompanionAction.
 	Select uint64 `json:"select,omitempty"`
+	// Epoch is the client's run of numbered commands Select counts in, from
+	// 1: the client starts the next one only when every command it sent in
+	// this one has answered or failed, and the Manager then refuses what
+	// arrives of an older one.
+	Epoch uint64 `json:"epoch,omitempty"`
 	// DownloadID names one of the thread's downloads (ThreadDownload.ID)
 	// for "download-cancel", "download-reveal" and "download-open".
 	DownloadID string `json:"downloadId,omitempty"`

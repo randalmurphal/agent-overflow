@@ -153,8 +153,8 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 
 // The decoder accepts an action only with the fields its kind requires: a
 // named command names its tab, a keyboard command on the active tab names
-// none and carries its mount and number, a selection carries both of those
-// or neither, and nothing else is numbered.
+// none and carries its mount, epoch and number, a selection carries all
+// three or none, and nothing else is numbered.
 func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -164,23 +164,27 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "close", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "close"}, false},
 		{BrowserCompanionAction{Kind: "reload"}, false},
-		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1}, true},
-		{BrowserCompanionAction{Kind: "reload-active", Mount: "m", Select: 4}, true},
+		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "reload-active", Mount: "m", Select: 4, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "close-active"}, false},
 		{BrowserCompanionAction{Kind: "close-active", Mount: "m"}, false},
+		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m", Select: 2}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m", Intent: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "close-active", Select: 1}, false},
-		{BrowserCompanionAction{Kind: "close-active", PageID: "p", Mount: "m", Select: 1}, false},
-		{BrowserCompanionAction{Kind: "reload-active", PageID: "p", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "close-active", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "reload-active", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p"}, true},
-		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m", Select: 2}, true},
+		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m", Select: 2, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p", Select: 2}, false},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m"}, false},
 		{BrowserCompanionAction{Kind: "new"}, true},
 		{BrowserCompanionAction{Kind: "new", PageID: "p"}, false},
-		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "show"}, true},
 		{BrowserCompanionAction{Kind: "show", PageID: "p"}, true},
-		{BrowserCompanionAction{Kind: "download-open", DownloadID: "d", Mount: "m", Select: 1}, true},
+		{BrowserCompanionAction{Kind: "download-open", DownloadID: "d", Mount: "m", Select: 1, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "download-cancel"}, false},
 		{BrowserCompanionAction{Kind: "jar"}, false},
 		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Confirmed: true}, true},
@@ -188,7 +192,7 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m", Intent: 1}, true},
 		{BrowserCompanionAction{Kind: "focus-page-withdraw", Mount: "m", Intent: 1}, true},
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m"}, false},
-		{BrowserCompanionAction{Kind: "Close-Active", Mount: "m", Select: 1}, true},
+		{BrowserCompanionAction{Kind: "Close-Active", Mount: "m", Select: 1, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "shut"}, false},
 	} {
 		_, err := parseCompanionAction(tc.action)
@@ -235,7 +239,7 @@ func TestEveryCompanionKindHasAHandler(t *testing.T) {
 			action.PageID = "none"
 		}
 		if spec.target == targetActive {
-			action.Mount, action.Select = "none", 1
+			action.Mount, action.Epoch, action.Select = "none", 1, 1
 		}
 		if spec.focus {
 			action.Mount, action.Intent = "none", 1
@@ -277,10 +281,10 @@ func TestBrowserCompanionCloseActiveClosesTheActiveTab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", PageID: first.PageID, Mount: mount.ID, Select: 1}); err == nil {
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", PageID: first.PageID, Mount: mount.ID, Select: 1, Epoch: 1}); err == nil {
 		t.Fatal("a keyboard close naming a tab was accepted")
 	}
-	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", Mount: mount.ID, Select: 1})
+	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", Mount: mount.ID, Select: 1, Epoch: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +319,7 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := do(BrowserCompanionAction{Kind: "activate", PageID: first, Mount: mount.ID, Select: 1})
+	before := do(BrowserCompanionAction{Kind: "activate", PageID: first, Mount: mount.ID, Select: 1, Epoch: 1})
 	// Number 1 was admitted: each kind sent again as number 1 is passed and
 	// does nothing.
 	for _, late := range []BrowserCompanionAction{
@@ -328,7 +332,7 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "close-active"},
 		{Kind: "reload-active"},
 	} {
-		late.Mount, late.Select = mount.ID, 1
+		late.Mount, late.Epoch, late.Select = mount.ID, 1, 1
 		state := do(late)
 		if state.ActivePageID != first || len(state.Pages) != len(before.Pages) || state.ClosedTabs != before.ClosedTabs {
 			t.Fatalf("a passed %s changed the tabs: %+v", late.Kind, state)

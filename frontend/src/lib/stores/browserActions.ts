@@ -171,7 +171,7 @@ function unhandled(action: never): never {
 }
 
 /** The wire form of action, with its place in the mount's order. */
-function wireAction(action: BrowserAction, order: { mount: BrowserMountId; select: number } | null): BrowserCompanionAction {
+function wireAction(action: BrowserAction, order: TakenPlace['place'] | null): BrowserCompanionAction {
   const base = { kind: '', pageId: '', address: '', index: 0, ...order };
   switch (action.kind) {
     case 'active':
@@ -255,15 +255,50 @@ export function sendBrowserPageFocus(
   return BrowserCompanionDo(threadId, new BrowserCompanionAction({ kind, pageId, address: '', index: 0, mount, intent }));
 }
 
-// The last number given in each live mount. The backend counts a mount
-// from 1 and waits for every number in turn, so the numbers are consecutive
-// per mount and a new mount (a re-attach) starts again at 1.
-const selectionSeqs = new Map<BrowserMountId, number>();
+// Each live mount's numbering (internal/browser/turnorder). The backend
+// admits a mount's numbers in order within an epoch and refuses what
+// arrives of an older epoch, so a mount starts its next epoch only with
+// the first action it sends while none of its own is unanswered: then
+// nothing of the older epoch is still meant to act, and a gap the backend
+// recorded there (a number lost or overtaken) no longer holds its keyboard
+// commands. A new mount (a re-attach) starts again.
+interface MountNumbering {
+  epoch: number;
+  seq: number;
+  unanswered: number;
+}
 
-function nextNumber(mount: BrowserMountId): { mount: BrowserMountId; select: number } {
-  const select = (selectionSeqs.get(mount) ?? 0) + 1;
-  selectionSeqs.set(mount, select);
-  return { mount, select };
+const mountNumberings = new Map<BrowserMountId, MountNumbering>();
+
+/** An ordered action's place in its mount's order, and the end of its wait for an answer. */
+interface TakenPlace {
+  readonly place: { readonly mount: BrowserMountId; readonly epoch: number; readonly select: number };
+  /** The action answered or failed; safe to call more than once. */
+  readonly answered: () => void;
+}
+
+function takePlace(mount: BrowserMountId): TakenPlace {
+  let numbering = mountNumberings.get(mount);
+  if (!numbering) {
+    numbering = { epoch: 0, seq: 0, unanswered: 0 };
+    mountNumberings.set(mount, numbering);
+  }
+  if (numbering.unanswered === 0) {
+    numbering.epoch += 1;
+    numbering.seq = 0;
+  }
+  numbering.seq += 1;
+  numbering.unanswered += 1;
+  const taken = numbering;
+  let waiting = true;
+  return {
+    place: { mount, epoch: taken.epoch, select: taken.seq },
+    answered: () => {
+      if (!waiting) return;
+      waiting = false;
+      taken.unanswered -= 1;
+    },
+  };
 }
 
 /**
@@ -273,10 +308,10 @@ function nextNumber(mount: BrowserMountId): { mount: BrowserMountId; select: num
  * own mount; a selection made with no pane mounted carries none and applies
  * in arrival order.
  */
-function orderOf(threadId: string, action: BrowserAction): { mount: BrowserMountId; select: number } | null {
-  if (action.kind === 'active') return nextNumber(action.mount);
+function orderOf(threadId: string, action: BrowserAction): TakenPlace | null {
+  if (action.kind === 'active') return takePlace(action.mount);
   const mount = browserPaneMountId(threadId);
-  return mount && ordered(action) ? nextNumber(mount) : null;
+  return mount && ordered(action) ? takePlace(mount) : null;
 }
 
 // question says whether a refusal is a question for the user, which the
@@ -286,7 +321,8 @@ function runBrowserAction(
   action: BrowserAction,
   question: (err: unknown) => boolean = () => false,
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
-  return sendBrowserAction(threadId, wireAction(action, orderOf(threadId, action)), question);
+  const taken = orderOf(threadId, action);
+  return sendBrowserAction(threadId, wireAction(action, taken?.place ?? null), question).finally(() => taken?.answered());
 }
 
 async function sendBrowserAction(
@@ -520,11 +556,11 @@ function unhandledSnapshot(snapshot: never): never {
 observeBrowserCompanion({
   // A new mount (a re-attach) numbers its selections from 1 again.
   mountEnded: (mount) => {
-    selectionSeqs.delete(mount);
+    mountNumberings.delete(mount);
   },
   resetForTest: () => {
     browserActionCounts.clear();
-    selectionSeqs.clear();
+    mountNumberings.clear();
     headerShows.clear();
   },
 });
