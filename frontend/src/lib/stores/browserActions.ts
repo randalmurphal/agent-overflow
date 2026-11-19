@@ -4,6 +4,7 @@ import {
   browserCompanionState,
   browserPaneMountId,
   browserPaneOpen,
+  browserPaneShown,
   nativeBrowserRefusal,
   noteBrowserActionError,
   observeBrowserCompanion,
@@ -264,31 +265,44 @@ export function focusedBrowser(): { threadId: string; state: BrowserCompanionEve
 }
 
 /**
- * The chat header's browser button. With tabs it shows or hides the pane;
- * with none it opens the pane on a new tab with its address focused. Which
- * it is comes from a state this connection has seen: an unknown one is read
- * first, so a thread whose tabs opened while this window was away is shown
- * rather than given another tab. A refusal, or a read that fails, reaches a
- * toast, since a hidden pane has no banner.
+ * The chat header's browser button. What a press does is what the button
+ * showed when pressed: pressed (the thread's pane is in this layout,
+ * browserPaneShown) hides the pane; otherwise it opens the browser.
+ * A refusal, or a read that fails, reaches a toast, since a hidden pane has
+ * no banner.
  */
-export async function toggleBrowserFromHeader(threadId: string): Promise<void> {
+export function toggleBrowserFromHeader(threadId: string): Promise<void> {
+  if (browserPaneShown(threadId)) return hideBrowserFromHeader(threadId);
+  return openBrowserFromHeader(threadId);
+}
+
+async function hideBrowserFromHeader(threadId: string): Promise<void> {
+  const failure = await browserCompanionAct(threadId, { kind: 'hide' });
+  if (failure) addErrorToast(failure.error, failure.cause);
+}
+
+/**
+ * Shows the thread's browser. A state this connection has not seen is read
+ * first, so tabs opened while this window was away are shown rather than
+ * given another; applying the read may show the pane already. Existing tabs
+ * are shown; only a state known to have none gets a new tab, its address
+ * focused.
+ */
+async function openBrowserFromHeader(threadId: string): Promise<void> {
   try {
     await readBrowserCompanionState(threadId);
   } catch (err) {
     addErrorToast(`The browser's tabs could not be read: ${errString(err)}`, err);
     return;
   }
+  if (browserPaneShown(threadId)) return;
   const state = browserCompanionState(threadId);
   if (!state) {
     // A refusal reaches a toast there (openBrowserTab).
     await openBrowserTab(threadId, { focusAddress: true });
     return;
   }
-  const visible = state.visible === true;
-  const failure = await browserCompanionAct(threadId, {
-    kind: visible ? 'hide' : 'show',
-    pageId: visible ? '' : (state.activePageId ?? ''),
-  });
+  const failure = await browserCompanionAct(threadId, { kind: 'show', pageId: state.activePageId ?? '' });
   if (failure) addErrorToast(failure.error, failure.cause);
 }
 

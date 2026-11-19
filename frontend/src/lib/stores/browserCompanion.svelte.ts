@@ -283,10 +283,18 @@ function reportBrowserTeardown(event: BrowserCompanionEvent): void {
   addErrorToast(message, new Error(event.error || message), 0);
 }
 
+/**
+ * Whether the thread's browser pane is in this layout (reactive): what the
+ * chat header's button shows as pressed and what its press decides from.
+ */
+export function browserPaneShown(threadId: string): boolean {
+  const sourcePaneId = sourcePaneIdForThread(threadId);
+  return sourcePaneId !== null && companionForSource(sourcePaneId, 'browser') !== null;
+}
+
 /** Whether the thread's browser pane is open here, with its banner. */
 export function browserPaneOpen(threadId: string): boolean {
-  const sourcePaneId = sourcePaneIdForThread(threadId);
-  return sourcePaneId !== null && !!companionForSource(sourcePaneId, 'browser') && !!store.snapshot(threadId);
+  return browserPaneShown(threadId) && !!store.snapshot(threadId);
 }
 
 // True while a chord the page claimed is dispatched (replayBrowserAccelerator).

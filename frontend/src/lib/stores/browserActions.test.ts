@@ -52,6 +52,32 @@ describe('the chat header browser button', () => {
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'show', pageId: 'page-1' });
   });
 
+  // The press meant "open": a read that finds visible tabs shows the pane,
+  // and the press must not then hide it.
+  it('the header button pressed to open leaves shown the tabs its read finds visible', async () => {
+    let answer: (state: unknown) => void = () => {};
+    setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => none(9)));
+    const toggled = toggleBrowserFromHeader('thread-browser');
+    await Promise.resolve();
+    answer({ ...hidden(2), visible: true });
+    await toggled;
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('the header button pressed while its pane is shown hides it without reading', async () => {
+    applyBrowserCompanionState({ ...hidden(1), visible: true } as never);
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => hidden(2)));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(3)));
+    await toggleBrowserFromHeader('thread-browser');
+    expect(read).not.toHaveBeenCalled();
+    expect(act).toHaveBeenCalledTimes(1);
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'hide' });
+    expect(companionForSource('main', 'browser')).toBeNull();
+  });
+
   it('the header button opens a tab once the state is known to have none', async () => {
     setBindingMock('BrowserCompanionThreadState', async () => none(1));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
