@@ -232,7 +232,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
 	case "jar":
 		// Closes the live tabs and reopens their addresses in the new jar.
-		err = a.browser.manager.SetJar(access, action.Jar)
+		err = a.browser.manager.SetJar(ctx, access, action.Jar)
 	case "download-cancel":
 		err = a.browser.manager.CancelThreadDownload(access, action.DownloadID)
 	case "download-reveal":

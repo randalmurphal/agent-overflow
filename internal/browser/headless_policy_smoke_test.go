@@ -118,7 +118,7 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 				t.Errorf("close %s: %v", s.access.ThreadID, err)
 			}
 		})
-		if err := manager.SetJar(s.access, JarProject); err != nil {
+		if err := manager.SetJar(context.Background(), s.access, JarProject); err != nil {
 			t.Fatalf("choose the project jar: %v", err)
 		}
 		info, err := manager.OpenFile(ctx, s.access, writeSmokeFile(t, s.own, "index.html", page(s.own)), OpenOptions{})

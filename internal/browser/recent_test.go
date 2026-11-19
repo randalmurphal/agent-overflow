@@ -129,7 +129,7 @@ func TestRecentAddressesForgetOnJarSwitchAndKeepNothingPrivate(t *testing.T) {
 	if len(recentURLs(m, access)) != 1 {
 		t.Fatalf("recent = %q, want the fixture's open", recentURLs(m, access))
 	}
-	if err := m.SetJar(access, JarThread); err != nil {
+	if err := m.SetJar(context.Background(), access, JarThread); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, access); len(got) != 0 {
@@ -141,7 +141,7 @@ func TestRecentAddressesForgetOnJarSwitchAndKeepNothingPrivate(t *testing.T) {
 	if got := recentURLs(m, access); !reflect.DeepEqual(got, []string{"https://example.test/thread-jar"}) {
 		t.Fatalf("recent = %q in the thread jar", got)
 	}
-	if err := m.SetJar(access, JarPrivate); err != nil {
+	if err := m.SetJar(context.Background(), access, JarPrivate); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.Open(t.Context(), access, "https://example.test/private", OpenOptions{PageID: pageID}); err != nil {
@@ -207,8 +207,8 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 		// another thread does not, and its generation shows at the next push.
 		pushes bool
 	}{
-		{"jar switch", func() error { return m.SetJar(access, JarThread) }, true},
-		{"jar switch back", func() error { return m.SetJar(access, JarWorktree) }, true},
+		{"jar switch", func() error { return m.SetJar(context.Background(), access, JarThread) }, true},
+		{"jar switch back", func() error { return m.SetJar(context.Background(), access, JarWorktree) }, true},
 		{"another thread's close", func() error { return m.CloseThread(t.Context(), other.ThreadID) }, false},
 		{"clear site data", func() error { return m.ClearSiteData(t.Context()) }, true},
 		{"disable", func() error { return m.Reconfigure(Config{Enabled: false}) }, true},
@@ -251,7 +251,7 @@ func TestTheForgetGenerationChangesOnTheWire(t *testing.T) {
 		return decoded["recentGen"]
 	}
 	before := wire()
-	if err := m.SetJar(access, JarPrivate); err != nil {
+	if err := m.SetJar(context.Background(), access, JarPrivate); err != nil {
 		t.Fatal(err)
 	}
 	if after := wire(); after == before {
@@ -317,7 +317,7 @@ func overtakeOpen(t *testing.T, m *Manager, access Access, pageID string, overta
 // overtook it) records nothing in the list the switch forgot.
 func TestRecentAddressesIgnoreAnOpenAJarSwitchOvertook(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	if err := overtakeOpen(t, m, access, pageID, func() error { return m.SetJar(access, JarThread) }); err != nil {
+	if err := overtakeOpen(t, m, access, pageID, func() error { return m.SetJar(context.Background(), access, JarThread) }); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, access); len(got) != 0 {
