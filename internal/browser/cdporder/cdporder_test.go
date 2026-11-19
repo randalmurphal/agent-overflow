@@ -113,6 +113,54 @@ func TestWatchHandsOverTheWireOrder(t *testing.T) {
 	}
 }
 
+// Two watchers of one session and command each get its reply, as each gets
+// the events they watch, and a stopped one no longer holds the reply up for
+// the other.
+func TestEveryWatcherGetsAWatchedReply(t *testing.T) {
+	transport := &fakeTransport{in: make(chan *cdproto.Message, 2)}
+	tap := NewTap(transport)
+	first, second := make(chan Message, 2), make(chan Message, 2)
+	stopFirst := tap.Watch("S", []string{"Page.tree"}, func(m Message) { first <- m })
+	defer stopFirst()
+	stopSecond := tap.Watch("S", []string{"Page.tree"}, func(m Message) { second <- m })
+	defer stopSecond()
+	for _, id := range []int64{1, 2} {
+		if err := tap.Write(t.Context(), &cdproto.Message{ID: id, SessionID: "S", Method: "Page.tree"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(id int64) {
+		t.Helper()
+		transport.in <- &cdproto.Message{SessionID: "S", ID: id, Result: []byte(`{"tree":1}`)}
+		var msg cdproto.Message
+		if err := tap.Read(t.Context(), &msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	await := func(who string, got chan Message) {
+		t.Helper()
+		select {
+		case m := <-got:
+			if !m.Reply || string(m.Params) != `{"tree":1}` {
+				t.Fatalf("the %s watcher got %+v", who, m)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the %s watcher never got the reply", who)
+		}
+	}
+	read(1)
+	await("first", first)
+	await("second", second)
+	stopFirst()
+	read(2)
+	await("second", second)
+	tap.mu.Lock()
+	defer tap.mu.Unlock()
+	if len(tap.pending) != 0 {
+		t.Fatalf("answered replies left %d pending", len(tap.pending))
+	}
+}
+
 // A reply to a watched command that failed carries the protocol error.
 func TestWatchCarriesAFailedReply(t *testing.T) {
 	transport := &fakeTransport{in: make(chan *cdproto.Message, 1)}
