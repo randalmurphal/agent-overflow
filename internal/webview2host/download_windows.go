@@ -45,6 +45,11 @@ type hostDownload struct {
 	// cancelBound numbers the cancels that started a bound (settleCancel).
 	cancelRequested bool
 	cancelBound     uint64
+	// cancel is the number of the backend's last cancel taken, and
+	// cancelRefusal WebView2's refusal of it while that stands; every
+	// snapshot carries both.
+	cancel        uint64
+	cancelRefusal string
 	// snapshots counts the snapshots taken, numbering each (Seq).
 	snapshots uint64
 	// stale holds the operations resumes replaced (retireOperation).
@@ -221,7 +226,7 @@ func (d *hostDownload) snapshot(state, reason string) DownloadReport {
 	d.snapshots++
 	return DownloadReport{
 		ID: d.id, Seq: d.snapshots, State: state, URI: d.uri.shown, Name: windowsFileName(d.path), Path: d.path,
-		Received: d.received, Total: d.total, Reason: reason,
+		Received: d.received, Total: d.total, Reason: reason, Cancel: d.cancel, CancelRefusal: d.cancelRefusal,
 	}
 }
 
@@ -385,11 +390,13 @@ func (h *Host) releaseOperations(d *hostDownload) {
 // answerDownload answers a directive naming one of the page's downloads
 // with its snapshot, marked as an answer. The download's state is read
 // first, and one that ended since its last report ends now, its terminal
-// snapshot the answer. A cancel cancels a running download (cancelDownload),
-// and its end follows from the operation's state change, or from
-// settleCancel when WebView2 reports none. An ended download's answer is
-// its terminal snapshot again; an id with no record gets DownloadUnknown.
-func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
+// snapshot the answer. A cancel numbered past the last one taken (either
+// directive's Cancel) cancels a running download (cancelDownload), and its
+// end follows from the operation's state change, or from settleCancel when
+// WebView2 reports none; a number already taken is a repeat, which changes
+// nothing. An ended download's answer is its terminal snapshot again; an
+// id with no record gets DownloadUnknown.
+func (h *Host) answerDownload(page *hostPage, id string, cancel uint64) {
 	d := page.downloads[id]
 	if d == nil {
 		h.report(page, page.ended.answer(id))
@@ -399,8 +406,11 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	if page.downloads[id] != d {
 		return
 	}
-	if cancel && d.op != nil && !h.cancelDownload(d) {
-		return
+	if cancel > d.cancel && d.op != nil {
+		d.cancel = cancel
+		if !h.cancelDownload(d) {
+			return
+		}
 	}
 	answer := d.snapshot(DownloadRunning, "")
 	answer.Answer = true
@@ -410,22 +420,24 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 // cancelDownload cancels d's operation for the backend's cancel, kept for a
 // resume that replaces the operation, and starts the bound on the first
 // (settleCancel). A cancel WebView2 refuses withdraws the request, so no
-// bound ends a download that runs on as canceled: d's state is read again,
-// and one still running is answered with the refusal
-// (DownloadCancelRefusedReason). It answers whether WebView2 took the
-// cancel.
+// bound ends a download that runs on as canceled, and the refusal
+// (DownloadCancelRefusedReason) rides every snapshot until a cancel is
+// taken: d's state is read again, and one still running is answered with
+// it. It answers whether WebView2 took the cancel.
 func (h *Host) cancelDownload(d *hostDownload) bool {
 	if err := d.op.cancel(); err != nil {
 		h.config.Logf("browser host: cancel download %s: %v", d.id, err)
 		d.cancelRequested = false
+		d.cancelRefusal = DownloadCancelRefusedReason + ": " + err.Error()
 		h.downloadStateChanged(d)
 		if d.page.downloads[d.id] == d {
-			refused := d.snapshot(DownloadRunning, DownloadCancelRefusedReason+": "+err.Error())
+			refused := d.snapshot(DownloadRunning, "")
 			refused.Answer = true
 			h.report(d.page, refused)
 		}
 		return false
 	}
+	d.cancelRefusal = ""
 	if !d.cancelRequested {
 		d.cancelRequested = true
 		d.cancelBound++

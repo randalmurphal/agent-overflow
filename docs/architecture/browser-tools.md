@@ -446,7 +446,10 @@ behave as a desktop browser's:
   canceled, and its file stays in the Downloads folder, listed nowhere. A
   cancel WebView2 refuses is answered with the refusal: the row stays
   running with the reason under it, the cancel is withdrawn so its later
-  end reads as its own, and the user can cancel again. A second download a
+  end reads as its own, and the user can cancel again. Every later report
+  of the download carries the refusal, so one lost answer does not leave
+  the cancel standing, and the status question carries the cancel, so a
+  cancel lost on the way to the launcher is made then. A second download a
   script starts with no user gesture gets WebView2's own "download
   multiple files" prompt in
   the page and has no row until it is allowed. A popup's downloads are

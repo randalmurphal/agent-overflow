@@ -140,8 +140,12 @@ one's reports. Otherwise it is a row of its own and nothing running is
 touched. The held snapshot cap applies only to new downloads. A cancel
 settles through WebView2's report or after `downloadCancelBound`
 (`settleCancel`), which reads the state before ending the download
-canceled, and waits another bound when the state cannot be read. A cancel WebView2 refuses is withdrawn, starts no bound, and is
-answered with the refusal (`DownloadCancelRefusedReason`). A download
+canceled, and waits another bound when the state cannot be read. The
+backend numbers its cancels (`Directive.Cancel`); a directive of either
+kind naming a cancel past the last taken makes it, and every later
+snapshot names the last taken. A cancel WebView2 refuses is withdrawn,
+starts no bound, and its refusal (`DownloadCancelRefusedReason`) rides
+every snapshot until a cancel is taken. A download
 ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
 (`retireDownloads`), which cancels it and reports nothing. What the real

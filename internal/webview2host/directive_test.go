@@ -33,7 +33,8 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		{Op: OpFind, PageID: "page-1", Query: "größe \U0001F600"},
 		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", MaxFindQueryBytes)},
 		{Op: OpFindStop, PageID: "page-1"},
-		{Op: OpCancelDownload, PageID: "page-1", Download: "dl-abc-1"},
+		{Op: OpCancelDownload, PageID: "page-1", Download: "dl-abc-1", Cancel: 1},
+		{Op: OpDownloadStatus, PageID: "page-1", Download: "dl-abc-1", Cancel: 2},
 	} {
 		if err := directive.Validate(); err != nil {
 			t.Errorf("Validate(%#v) = %v, want nil", directive, err)
@@ -84,9 +85,10 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"find query too long", Directive{Op: OpFind, PageID: "p", Query: strings.Repeat("a", MaxFindQueryBytes+1)}, "exceeds"},
 		{"find query with NUL", Directive{Op: OpFind, PageID: "p", Query: "a\x00b"}, "without NUL"},
 		{"find query not UTF-8", Directive{Op: OpFind, PageID: "p", Query: "a\xffb"}, "UTF-8"},
-		{"cancel-download without page", Directive{Op: OpCancelDownload, Download: "dl-1"}, "page id is required"},
-		{"cancel-download without download", Directive{Op: OpCancelDownload, PageID: "p"}, "download id is required"},
-		{"cancel-download with a bad download id", Directive{Op: OpCancelDownload, PageID: "p", Download: "a b"}, "disallowed byte"},
+		{"cancel-download without page", Directive{Op: OpCancelDownload, Download: "dl-1", Cancel: 1}, "page id is required"},
+		{"cancel-download without its number", Directive{Op: OpCancelDownload, PageID: "p", Download: "dl-1"}, "must carry its number"},
+		{"cancel-download without download", Directive{Op: OpCancelDownload, PageID: "p", Cancel: 1}, "download id is required"},
+		{"cancel-download with a bad download id", Directive{Op: OpCancelDownload, PageID: "p", Download: "a b", Cancel: 1}, "disallowed byte"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.directive.Validate()

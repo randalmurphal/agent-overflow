@@ -196,10 +196,12 @@ which it applies one at a time per download, held across the Manager's
 callbacks, and only when newer than the last applied; an answer never
 creates a row, and a download is asked about only once admitted; a cancel
 made while its admission is in flight is kept and sent as it is admitted.
-A hosted page ends at the launcher's close, which follows
+Cancels are numbered, and the refusal of the last one sent withdraws the
+Manager's cancel from whichever snapshot first carries it. A hosted page ends at the launcher's close, which follows
 its downloads' ends; its CDP target's destroy ends it only past
-`hostClosedFallback`. One status loop asks for a quiet download's snapshot, so a
-lost report never leaves a row running; headless Chromium's arrive over
+`hostClosedFallback`. One status loop asks for a quiet download's snapshot,
+or one whose last cancel no snapshot names yet, and names that cancel, so a
+lost report or cancel never leaves a row running; headless Chromium's arrive over
 CDP (`headless_downloads.go`). Preserve the denial of sensitive website
 permissions.
 

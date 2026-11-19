@@ -292,7 +292,7 @@ func TestHostedEngineDeliversARefusedCancel(t *testing.T) {
 	sink.expectOps(t, webview2host.OpCancelDownload)
 	refusal := webview2host.DownloadCancelRefusedReason + ": Unspecified error"
 	refused := snapshot("dl-a-1", webview2host.DownloadRunning, 20)
-	refused.Seq, refused.Answer, refused.Reason = 3, true, refusal
+	refused.Seq, refused.Answer, refused.Cancel, refused.CancelRefusal = 3, true, 1, refusal
 	newer := snapshot("dl-a-1", webview2host.DownloadRunning, 30)
 	newer.Seq = 4
 	reportDownload(t, engine, "page1", newer)

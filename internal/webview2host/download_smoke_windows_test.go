@@ -76,7 +76,7 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 
 	held := s.navigateStarted("slow.bin", "/slow/slow.bin")
 	canceled := time.Now()
-	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: held.id})
+	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: held.id, Cancel: 1})
 	s.settle(held)
 	if held.final.State != DownloadInterrupted || held.final.Reason != downloadInterruptReason(downloadUserCanceled) {
 		t.Fatalf("the canceled download ended %+v", held.final)
@@ -116,7 +116,7 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 	kept := held.final
 	kept.Answer = true
 	for _, op := range []Op{OpCancelDownload, OpDownloadStatus} {
-		s.host.Apply(Directive{Op: op, PageID: "page-1", Download: held.id})
+		s.host.Apply(Directive{Op: op, PageID: "page-1", Download: held.id, Cancel: 1})
 		if got := s.nextReport(); got != kept {
 			t.Fatalf("%s of an ended download answered %+v, want %+v", op, got, kept)
 		}
@@ -137,7 +137,7 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 			t.Fatalf("a status ended or moved the download: %+v", later)
 		}
 	}
-	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: asked.id})
+	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: asked.id, Cancel: 1})
 	s.settle(asked)
 	if asked.final.State != DownloadInterrupted {
 		t.Fatalf("the asked download ended %+v", asked.final)
@@ -306,7 +306,7 @@ func stallBesideAResumed(t *testing.T, s *downloadSmoke) (a, b, own *smokeDownlo
 func cancelStalled(t *testing.T, s *downloadSmoke, b *smokeDownload, others ...string) {
 	t.Helper()
 	canceled := time.Now()
-	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id})
+	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id, Cancel: 1})
 	s.settleAmong(b, others...)
 	took := time.Since(canceled)
 	t.Logf("the stalled download ended after %v: %+v", took, b.final)
@@ -362,7 +362,7 @@ func TestDownloadSmokeAStalledDownloadsCancelEndsItsResume(t *testing.T) {
 	s := startDownloadSmoke(t)
 	a, b, own := stallBesideAResumed(t, s)
 	canceled := time.Now()
-	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id})
+	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id, Cancel: 1})
 	s.settleAmong(own, a.id, b.id)
 	t.Logf("b's cancel ended its resume after %v: %+v", time.Since(canceled), own.final)
 	if own.final.State != DownloadInterrupted || own.final.Reason != downloadInterruptReason(downloadUserCanceled) {

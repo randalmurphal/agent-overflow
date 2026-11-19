@@ -57,10 +57,8 @@ func (h *Host) Apply(directive Directive) {
 	case OpFocus:
 		h.config.Focus.Deliver(directive.Mount, directive.Intent, directive.PageID)
 		h.withPage(directive.PageID, h.applyPendingFocus)
-	case OpCancelDownload:
-		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, true) })
-	case OpDownloadStatus:
-		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, false) })
+	case OpCancelDownload, OpDownloadStatus:
+		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, directive.Cancel) })
 	}
 }
 

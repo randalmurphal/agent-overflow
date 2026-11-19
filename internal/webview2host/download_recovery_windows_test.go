@@ -7,10 +7,63 @@ import (
 	"testing"
 )
 
-// What the launcher does with a download it could not read in full or
-// whose state change never arrived: an address the runtime did not
-// answer, a state it did not answer at the cancel bound, and an end it
-// never raised before a popup goes.
+// What the launcher does with a download it could not read in full, whose
+// state change never arrived, or whose report or directive was lost: an
+// address the runtime did not answer, a state it did not answer at the
+// cancel bound, an end it never raised before a popup goes, and a cancel's
+// refusal or the cancel itself lost on the way.
+
+// A cancel's refusal rides every later snapshot of the download, progress,
+// a status's answer and its end, so one lost answer does not leave the
+// backend's cancel standing. A status naming a cancel the launcher never
+// got makes it, once; the refusal of the earlier one no longer stands.
+func TestACancelRefusalRidesEveryLaterSnapshot(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	op.refuseCancel = true
+	r.host.answerDownload(r.page, "dl-t-1", 1)
+	r.take() // the refusal's answer, lost on the way
+	op.received = 50
+	op.fire()
+	r.host.answerDownload(r.page, "dl-t-1", 1) // a repeat of cancel 1
+	r.host.answerDownload(r.page, "dl-t-1", 0)
+	later := r.take()
+	if states(later) != "dl-t-1:running dl-t-1:running dl-t-1:running" || op.canceled != 1 {
+		t.Fatalf("after the refusal: %+v, canceled %d times", later, op.canceled)
+	}
+	for _, report := range later {
+		if !report.CancelRefused() || report.Cancel != 1 || report.Reason != "" {
+			t.Fatalf("a snapshot after the refusal does not carry it: %+v", report)
+		}
+	}
+	op.refuseCancel = false
+	r.host.answerDownload(r.page, "dl-t-1", 2) // a status after cancel 2 was lost
+	r.host.answerDownload(r.page, "dl-t-1", 2)
+	got := r.take()
+	if states(got) != "dl-t-1:running dl-t-1:running" || op.canceled != 2 || len(r.timers) != 1 {
+		t.Fatalf("a status naming a lost cancel answered %+v, canceled %d times, %d bounds", got, op.canceled, len(r.timers))
+	}
+	if got[0].Cancel != 2 || got[0].CancelRefused() {
+		t.Fatalf("the taken cancel answers %+v", got[0])
+	}
+	op.set(downloadStateInterrupted, downloadUserCanceled)
+	if end := r.take(); states(end) != "dl-t-1:interrupted" || end[0].Cancel != 2 || end[0].CancelRefused() {
+		t.Fatalf("the cancel ended %+v", end)
+	}
+
+	failed := newFakeOp(`C:\D\g.bin`)
+	failed.uri = "https://example.test/g"
+	failed.refuseCancel = true
+	start(t, r.page, failed)
+	r.host.answerDownload(r.page, "dl-t-2", 1)
+	r.take()
+	failed.set(downloadStateInterrupted, 12)
+	if end := r.take(); states(end) != "dl-t-2:interrupted" || !end[0].CancelRefused() || end[0].Reason != downloadInterruptReason(12) {
+		t.Fatalf("a failure after a refused cancel ended %+v", end)
+	}
+	r.done(t, op, failed)
+}
 
 // A resume whose address cannot be read is never matched to a dropped
 // download whose address could not be read either: both read "", and a
@@ -44,7 +97,7 @@ func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, op)
-	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", 1)
 	r.take()
 	op.received = 100
 	op.st = downloadStateCompleted
@@ -54,7 +107,7 @@ func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 		t.Fatalf("an unread state at the bound reported %+v and armed %d bounds", got, len(r.timers))
 	}
 	op.stateErr = false
-	r.host.answerDownload(r.page, "dl-t-1", false)
+	r.host.answerDownload(r.page, "dl-t-1", 0)
 	if got := r.take(); states(got) != "dl-t-1:completed" || got[0].Received != 100 {
 		t.Fatalf("the status after the unread bound answered %+v", got)
 	}
@@ -65,7 +118,7 @@ func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 
 	stuck := newFakeOp(`C:\D\g.bin`)
 	start(t, r.page, stuck)
-	r.host.answerDownload(r.page, "dl-t-2", true)
+	r.host.answerDownload(r.page, "dl-t-2", 1)
 	r.take()
 	stuck.stateErr = true
 	r.timers[2]()

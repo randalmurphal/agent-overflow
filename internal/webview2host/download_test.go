@@ -199,27 +199,37 @@ func TestDownloadInterruptReasonNamesEveryKind(t *testing.T) {
 	}
 }
 
-// A running snapshot names a reason only as the answer to a refused cancel.
-func TestARunningReasonIsARefusedCancelsAnswer(t *testing.T) {
-	refused := DownloadReport{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Reason: DownloadCancelRefusedReason}
-	detail, err := refused.Encode()
-	if err != nil {
-		t.Fatal(err)
+// A cancel's refusal rides any snapshot, asked or not and whatever its
+// state, under the cancel's number; a running snapshot carries no reason.
+func TestACancelRefusalRidesEverySnapshot(t *testing.T) {
+	for _, refused := range []DownloadReport{
+		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Cancel: 1, CancelRefusal: DownloadCancelRefusedReason},
+		{ID: "dl-1", Seq: 3, State: DownloadRunning, Cancel: 1, CancelRefusal: DownloadCancelRefusedReason},
+		{ID: "dl-1", Seq: 4, State: DownloadInterrupted, Reason: "the network failed", Cancel: 1, CancelRefusal: DownloadCancelRefusedReason},
+	} {
+		detail, err := refused.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := ParseDownloadReport(detail)
+		if err != nil || parsed != refused || !parsed.CancelRefused() {
+			t.Fatalf("a snapshot with a refusal parses as %+v, %v", parsed, err)
+		}
 	}
-	parsed, err := ParseDownloadReport(detail)
-	if err != nil || !parsed.CancelRefused() {
-		t.Fatalf("a refused cancel's answer parses as %+v, %v", parsed, err)
-	}
-	refused.Answer = false
-	detail, err = refused.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ParseDownloadReport(detail); err == nil {
-		t.Fatal("an unasked running snapshot with a reason parsed")
+	for _, malformed := range []DownloadReport{
+		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Reason: DownloadCancelRefusedReason},
+		{ID: "dl-1", Seq: 2, State: DownloadRunning, CancelRefusal: DownloadCancelRefusedReason},
+	} {
+		detail, err := malformed.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ParseDownloadReport(detail); err == nil {
+			t.Fatalf("%+v parsed", malformed)
+		}
 	}
 	for _, r := range []DownloadReport{
-		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true},
+		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Cancel: 1},
 		{ID: "dl-1", Seq: 2, State: DownloadInterrupted, Answer: true, Reason: "the network failed"},
 	} {
 		if r.CancelRefused() {
