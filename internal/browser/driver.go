@@ -512,6 +512,20 @@ type downloadStart struct {
 	Profile string
 }
 
+// downloadAdmission is the Manager's answer to a download's start
+// (engineEvents.DownloadStarted). Only downloadAdmitted lets it continue;
+// the engine cancels any other at once. downloadUnowned is a frame no
+// listed page owns and no popup names: headless Chromium alone, which
+// can learn a popup's frame after its download starts, offers such a
+// start again (headless_downloads.go).
+type downloadAdmission int
+
+const (
+	downloadAdmitted downloadAdmission = iota
+	downloadRefused
+	downloadUnowned
+)
+
 // errDownloadEnded is CancelDownload's answer when the engine had already
 // let the download go: it finished or failed, and its terminal report is on
 // the way. The cancel lost; that report settles the download.
@@ -565,9 +579,9 @@ type engineEvents struct {
 	// being adopted): the Manager holds the newest of those for the page
 	// that takes the handle, so its order fence sees them.
 	PageInfoChanged func(handle, url, title string, order uint64)
-	// DownloadStarted reports whether the download may continue. The engine
-	// cancels one it answers false for.
-	DownloadStarted  func(downloadStart) bool
+	// DownloadStarted answers whether the download may continue
+	// (downloadAdmission).
+	DownloadStarted  func(downloadStart) downloadAdmission
 	DownloadProgress func(downloadProgress)
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held

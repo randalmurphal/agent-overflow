@@ -54,13 +54,13 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 // downloadTracker is the tracker of the downloads of the browser connected
 // on browserCtx. A popup's main frame id is its target id, which is its
 // handle. Chromium sends a popup's creation before the navigation that
-// downloads, but the start can be handled first: a start that names no
-// popup and that the Manager refuses waits up to ownerWait for the record
+// downloads, but the start can be handled first: a start whose frame no
+// page owns and that names no popup waits up to ownerWait for the record
 // to name the frame's opener, then is offered again or refused. One whose
 // popup's destroy the record handled first still names it
 // (downloadOwners).
 func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *headlessTargets) *downloadTracker {
-	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, p.engine.logf))
+	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.cancelRefusedDownload, p.engine.logf))
 	downloads.popup = func(frame string) downloadStart {
 		owners := targets.downloadOwners(frame)
 		if len(owners) < 2 {

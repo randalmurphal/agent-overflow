@@ -179,7 +179,7 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		popup := e.popupOwnersLocked(pageID)
 		e.mu.Unlock()
 		popup.Frame, popup.ID, popup.URL, popup.SuggestedName = pageID, report.ID, report.URI, name
-		if !e.events.DownloadStarted(popup) {
+		if e.events.DownloadStarted(popup) != downloadAdmitted {
 			// The Manager refused it: nothing later reaches a row.
 			e.mu.Lock()
 			e.downloads.noteEnded(pageID, report.ID)

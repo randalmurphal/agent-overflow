@@ -535,7 +535,7 @@ func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	if err := os.WriteFile(staged, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if manager.downloadStarted(downloadStart{Frame: "no such frame", ID: "refused", SuggestedName: "r.bin"}) {
+	if manager.downloadStarted(downloadStart{Frame: "no such frame", ID: "refused", SuggestedName: "r.bin"}) == downloadAdmitted {
 		t.Fatal("a download from no page was admitted")
 	}
 	if names := folderNames(t, downloads); !slices.Equal(names, []string{stagingDirName}) {
@@ -687,7 +687,7 @@ func TestALinkSwappedInBeforeTheFinishGrantsNothing(t *testing.T) {
 func TestAnEngineSavedFileWithNoPathCompletesWithItsReason(t *testing.T) {
 	manager, _, access, page := newDownloadManagerFor(t, downloadsSavedByEngine)
 	frame := paneHandle(manager, access, page.ID)
-	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "dl-x-1", URL: "https://example.test/x", SuggestedName: "x.bin"}) {
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "dl-x-1", URL: "https://example.test/x", SuggestedName: "x.bin"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	const reason = "the saved file's path is too long to report"
@@ -811,13 +811,13 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			frame := paneHandle(manager, access, page.ID)
 
 			authorityOf(t, manager, access).downloadBytes.Store(maxWorkspaceDownloadBytes)
-			admitted := manager.downloadStarted(downloadStart{Frame: frame, ID: "quota", SuggestedName: "q.bin"})
+			admitted := manager.downloadStarted(downloadStart{Frame: frame, ID: "quota", SuggestedName: "q.bin"}) == downloadAdmitted
 			if admitted == artifacts {
 				t.Fatalf("a download past the workspace quota was admitted: %v", admitted)
 			}
 			authorityOf(t, manager, access).downloadBytes.Store(0)
 
-			if !manager.downloadStarted(downloadStart{Frame: frame, ID: "big", SuggestedName: "big.bin"}) {
+			if manager.downloadStarted(downloadStart{Frame: frame, ID: "big", SuggestedName: "big.bin"}) != downloadAdmitted {
 				t.Fatal("a download within quota was refused")
 			}
 			manager.downloadProgress(downloadProgress{ID: "big", Received: maxDownloadBytes + 1, State: downloadInProgress})

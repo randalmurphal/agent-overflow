@@ -408,7 +408,8 @@ behave as a desktop browser's:
   close, a suspend, the engine's close, Clear site data, disabling the
   browser), which settles it at once and releases any reservation; a
   download that starts on a page already leaving is refused to the engine
-  and never listed; an end the engine reports on its own is `failed`, with
+  and never listed; headless Chromium cancels a refused download at once
+  and removes the file of one that finished before its cancel; an end the engine reports on its own is `failed`, with
   the engine's reason when it gives one, and so is a download whose
   Downloads folder cannot be created or written. Where the file goes is
   in [Browser hardening](#browser-hardening).

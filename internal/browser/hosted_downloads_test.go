@@ -36,7 +36,7 @@ type hostedDownloadLog struct {
 
 func (r *hostedDownloadLog) events() engineEvents {
 	return engineEvents{
-		DownloadStarted: func(start downloadStart) bool {
+		DownloadStarted: func(start downloadStart) downloadAdmission {
 			r.mu.Lock()
 			hook := r.admitting
 			r.mu.Unlock()
@@ -46,7 +46,10 @@ func (r *hostedDownloadLog) events() engineEvents {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.starts = append(r.starts, start)
-			return !r.refuse
+			if r.refuse {
+				return downloadRefused
+			}
+			return downloadAdmitted
 		},
 		DownloadProgress: func(progress downloadProgress) {
 			r.mu.Lock()

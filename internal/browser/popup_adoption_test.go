@@ -168,7 +168,7 @@ func popupDownload(m *Manager, e *adoptionEngine, popup, id string, openers ...s
 	return m.downloadStarted(downloadStart{
 		Frame: popup, ID: id, URL: "https://example.test/" + id, SuggestedName: id,
 		Popup: popup, Openers: openers, Profile: profile,
-	})
+	}) == downloadAdmitted
 }
 
 func progressOf(id, state string, received float64) downloadProgress {

@@ -426,7 +426,7 @@ func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stag
 	if stageErr != nil {
 		// Canceled before a byte was written; the row says why.
 		p.engine.downloadEvents.Go(func() {
-			if p.engine.events.DownloadStarted(start) {
+			if p.engine.events.DownloadStarted(start) == downloadAdmitted {
 				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
 			}
 			wkReleaseDownload(download.ptr)
@@ -434,7 +434,7 @@ func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stag
 		return
 	}
 	p.engine.downloadEvents.Go(func() {
-		if !p.engine.events.DownloadStarted(start) {
+		if p.engine.events.DownloadStarted(start) != downloadAdmitted {
 			if err := p.CancelDownload(handle); err != nil {
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}

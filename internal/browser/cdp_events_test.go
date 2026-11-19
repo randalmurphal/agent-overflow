@@ -223,14 +223,15 @@ func newDownloadRecorder(allow bool) *downloadRecorder {
 
 func (r *downloadRecorder) events() engineEvents {
 	return engineEvents{
-		DownloadStarted: func(start downloadStart) bool {
+		DownloadStarted: func(start downloadStart) downloadAdmission {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.state[start.ID] = downloadInProgress
 			if !r.allow {
 				r.state[start.ID] = "refused"
+				return downloadRefused
 			}
-			return r.allow
+			return downloadAdmitted
 		},
 		DownloadProgress: func(progress downloadProgress) {
 			r.mu.Lock()
@@ -549,12 +550,18 @@ func TestHeadlessPopupDownloadSettlesInAnyOrder(t *testing.T) {
 		p := newTargetTestProfile(t, engineEvents{
 			PopupOpened: func(enginePopup) {},
 			PageClosed:  func(string) {},
-			DownloadStarted: func(start downloadStart) bool {
+			DownloadStarted: func(start downloadStart) downloadAdmission {
 				ok := start.Popup == popup && slices.Equal(start.Openers, []string{opener})
 				mu.Lock()
 				got.admitted = got.admitted || ok
 				mu.Unlock()
-				return ok
+				switch {
+				case ok:
+					return downloadAdmitted
+				case start.Popup == "":
+					return downloadUnowned
+				}
+				return downloadRefused
 			},
 			DownloadProgress: func(downloadProgress) {},
 		})

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
@@ -123,6 +126,22 @@ func (p *headlessProfile) CancelDownload(id string) error {
 		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
 	}
 	return nil
+}
+
+// cancelRefusedDownload cancels a download the Manager refused and removes
+// the file Chromium names by its id in the download directory: a download
+// that finished before the cancel took effect left its whole file there,
+// and the Manager, which keeps no row for it or a settled one, ignores
+// that finish. The file goes whether or not the cancel succeeded.
+func (p *headlessProfile) cancelRefusedDownload(id string) error {
+	err := p.CancelDownload(id)
+	if p.downloadDir == "" {
+		return err
+	}
+	if removeErr := os.Remove(filepath.Join(p.downloadDir, filepath.Base(id))); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+		err = errors.Join(err, fmt.Errorf("browser: remove the refused download's file: %w", removeErr))
+	}
+	return err
 }
 
 // Dispose destroys the profile and everything in it: cancelling the browser

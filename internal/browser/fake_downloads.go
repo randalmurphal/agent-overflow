@@ -95,7 +95,7 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 		}
 		return nil
 	}
-	if !events.DownloadStarted(downloadStart{Frame: frame, ID: id, URL: request.url, SuggestedName: name}) {
+	if events.DownloadStarted(downloadStart{Frame: frame, ID: id, URL: request.url, SuggestedName: name}) != downloadAdmitted {
 		return discard()
 	}
 	fail := func(err error) error {
