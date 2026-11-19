@@ -18,6 +18,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -100,10 +101,12 @@ func (p *cdpPage) installHandlers() error {
 }
 
 // lifecycleMethods are what the page's ordered input carries
-// (cdpPage.lifecycle): the frame events, the main frame's loading, and the
-// frame tree's reply.
+// (cdpPage.lifecycle): the frame events, the attach and detach of the
+// iframe targets of its cross-site frames, the main frame's loading, and
+// the frame tree's reply.
 var lifecycleMethods = []string{
 	string(cdproto.EventPageFrameAttached), string(cdproto.EventPageFrameNavigated), string(cdproto.EventPageFrameDetached),
+	string(cdproto.EventTargetAttachedToTarget), string(cdproto.EventTargetDetachedFromTarget),
 	string(cdproto.EventPageFrameStartedLoading), string(cdproto.EventPageFrameStoppedLoading),
 	string(cdproto.CommandPageGetFrameTree),
 }
@@ -125,7 +128,17 @@ func (p *cdpPage) lifecycle(m cdporder.Message, seeded chan struct{}) {
 	case cdproto.EventPageFrameDetached:
 		var event page.EventFrameDetached
 		if p.decodeLifecycle(m, &event) {
-			p.frames.detached(event.FrameID)
+			p.frames.detached(event.FrameID, event.Reason)
+		}
+	case cdproto.EventTargetAttachedToTarget:
+		var event target.EventAttachedToTarget
+		if p.decodeLifecycle(m, &event) {
+			p.frames.targetAttached(event.SessionID, event.TargetInfo)
+		}
+	case cdproto.EventTargetDetachedFromTarget:
+		var event target.EventDetachedFromTarget
+		if p.decodeLifecycle(m, &event) {
+			p.frames.targetDetached(event.SessionID)
 		}
 	case cdproto.EventPageFrameNavigated:
 		var event page.EventFrameNavigated

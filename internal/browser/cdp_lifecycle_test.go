@@ -56,6 +56,19 @@ func wireDetach(frame, reason string) *cdproto.Message {
 	return wireEvent("Page.frameDetached", map[string]any{"frameId": frame, "reason": reason})
 }
 
+// wireTargetAttached is the attach of a cross-site frame's iframe target to
+// the page's session, as Chromium sends it before the frame's swap.
+func wireTargetAttached(frame, session string) *cdproto.Message {
+	return wireEvent("Target.attachedToTarget", map[string]any{
+		"sessionId": session, "waitingForDebugger": false,
+		"targetInfo": map[string]any{"targetId": frame, "type": "iframe", "title": "", "url": "", "attached": true, "canAccessOpener": false, "parentFrameId": wireMain},
+	})
+}
+
+func wireTargetDetached(session string) *cdproto.Message {
+	return wireEvent("Target.detachedFromTarget", map[string]any{"sessionId": session})
+}
+
 // wireTree is the reply to the page's frame tree read, naming children
 // under the main frame.
 func wireTree(children ...string) *cdproto.Message {
@@ -172,6 +185,22 @@ func TestCDPPageReadsItsWireInOrder(t *testing.T) {
 			"an iframe detached before the tree read",
 			[]*cdproto.Message{wireAttach("F-3"), wireDetach("F-3", "remove"), wireTree()},
 			[]string{"F-3"}, wireAnswers{loading: "unknown", owns: "F-3:false "},
+		},
+		{
+			// As real Chromium sends a cross-site iframe's.
+			"a cross-site iframe moved to its own renderer",
+			[]*cdproto.Message{wireAttach("F-x"), wireTargetAttached("F-x", "S-x"), wireDetach("F-x", "swap")},
+			[]string{"F-x"}, wireAnswers{loading: "unknown", owns: "F-x:true "},
+		},
+		{
+			"a cross-site iframe, then the tree read that no longer names it",
+			[]*cdproto.Message{wireAttach("F-x"), wireTargetAttached("F-x", "S-x"), wireDetach("F-x", "swap"), wireTree()},
+			[]string{"F-x"}, wireAnswers{loading: "unknown", owns: "F-x:true "},
+		},
+		{
+			"a cross-site iframe removed",
+			[]*cdproto.Message{wireAttach("F-x"), wireTargetAttached("F-x", "S-x"), wireDetach("F-x", "swap"), wireDetach("F-x", "remove"), wireTargetDetached("S-x")},
+			[]string{"F-x"}, wireAnswers{loading: "unknown", owns: "F-x:false "},
 		},
 	}
 	delays := map[string]func(int) time.Duration{
