@@ -308,15 +308,16 @@ func (h *Host) downloadBytes(d *hostDownload) {
 // It also reconciles: a directive naming the download and a page asking to
 // close read the state again, so a download whose state subscription
 // failed, or whose change WebView2 never raised, still ends. A state that
-// cannot be read leaves the download running.
-func (h *Host) downloadStateChanged(d *hostDownload) {
+// cannot be read leaves the download running, and it answers false then:
+// whether the download still runs is not known.
+func (h *Host) downloadStateChanged(d *hostDownload) bool {
 	if d.op == nil {
-		return
+		return true
 	}
 	state, err := d.op.state()
 	if err != nil {
 		h.config.Logf("browser host: download %s: %v", d.id, err)
-		return
+		return false
 	}
 	switch state {
 	case downloadStateCompleted:
@@ -341,6 +342,7 @@ func (h *Host) downloadStateChanged(d *hostDownload) {
 		}
 		h.endDownload(d, terminal)
 	}
+	return true
 }
 
 // report sends one snapshot of a page's download.
@@ -427,10 +429,15 @@ func (h *Host) cancelDownload(d *hostDownload) bool {
 	if !d.cancelRequested {
 		d.cancelRequested = true
 		d.cancelBound++
-		bound := d.cancelBound
-		h.after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d, bound) }) })
+		h.armCancelBound(d, d.cancelBound)
 	}
 	return true
+}
+
+// armCancelBound has settleCancel(d, bound) run downloadCancelBound from
+// now, on the UI thread.
+func (h *Host) armCancelBound(d *hostDownload, bound uint64) {
+	h.after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d, bound) }) })
 }
 
 // settleCancel ends a download the backend canceled that WebView2 has not
@@ -441,7 +448,9 @@ func (h *Host) cancelDownload(d *hostDownload) bool {
 // WebView2, so this cancel ends that resume too, at once and by WebView2's
 // own report, and once the resume finished the cancel and the release
 // leave its file as it is. Its state is read first, so one that ended
-// unreported ends as it did. The cost: a download that really finishes
+// unreported ends as it did, and one whose state cannot be read is not
+// known to run on: it stays running, for a status to read again, and the
+// bound waits once more. The cost: a download that really finishes
 // after the bound is listed canceled, and its file stays in the Downloads
 // folder, listed nowhere; its late state change reaches no handler. bound
 // is the cancel that started this bound: one whose cancel was refused
@@ -452,7 +461,10 @@ func (h *Host) settleCancel(d *hostDownload, bound uint64) {
 		// refused.
 		return
 	}
-	h.downloadStateChanged(d)
+	if !h.downloadStateChanged(d) {
+		h.armCancelBound(d, bound)
+		return
+	}
 	if d.page.downloads[d.id] != d {
 		return
 	}

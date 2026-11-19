@@ -140,7 +140,7 @@ one's reports. Otherwise it is a row of its own and nothing running is
 touched. The held snapshot cap applies only to new downloads. A cancel
 settles through WebView2's report or after `downloadCancelBound`
 (`settleCancel`), which reads the state before ending the download
-canceled. A cancel WebView2 refuses is withdrawn, starts no bound, and is
+canceled, and waits another bound when the state cannot be read. A cancel WebView2 refuses is withdrawn, starts no bound, and is
 answered with the refusal (`DownloadCancelRefusedReason`). A download
 ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
