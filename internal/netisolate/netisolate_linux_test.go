@@ -32,19 +32,60 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == HelperArg {
 		os.Exit(RunHelper(os.Args[2:], os.Stderr))
 	}
+	// Every launch in the test binary and the processes it starts takes its
+	// RAM reservation in a directory of the test's own, never the host's.
+	reservationsDir = func() string { return os.Getenv(reservationsEnv) }
+	if os.Getenv(reservationsEnv) == "" {
+		os.Exit(withTestReservations(m))
+	}
 	switch os.Getenv(isolationProbeEnv) {
 	case "1":
 		os.Exit(runIsolationProbe(os.Stdout))
 	case "temp":
 		os.Exit(runTempProbe(os.Stdout))
+	case "temp-hold":
+		code := runTempProbe(os.Stdout)
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(code)
 	case "nested":
 		os.Exit(runNestedTempProbe(os.Stdout))
 	case "launcher":
-		os.Exit(runLowMemoryLauncher())
+		os.Exit(runLauncher(memoryLimits{available: 0, total: 64 << 30}))
+	case "ram-launcher":
+		os.Exit(runLauncher(budgetFor(1)))
 	case "linger":
 		os.Exit(runLinger(os.Stdout))
+	case "spawn":
+		os.Exit(runSpawn())
+	case "hold":
+		os.Exit(runHold())
 	}
 	os.Exit(m.Run())
+}
+
+// reservationsEnv names the directory that stands in for reservationsDir
+// in the test binary and every process it starts.
+const reservationsEnv = "AO_NETISOLATE_TEST_RESERVATIONS"
+
+// withTestReservations runs the tests with reservationsEnv naming a fresh
+// directory on the host's /tmp, which every namespace shares, and removes
+// it afterwards.
+func withTestReservations(m *testing.M) int {
+	dir, err := os.MkdirTemp("/tmp", "netisolate-reservations-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := os.Setenv(reservationsEnv, dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	code := m.Run()
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return code
 }
 
 type probeInterface struct {

@@ -154,6 +154,51 @@ func TestSharedDirectoryOutlivesNoneOfItsHolders(t *testing.T) {
 	}
 }
 
+// TestHeldCountsOnlyDirectoriesAProcessHolds: a directory this process
+// holds counts, one whose owner exited is removed and not counted, and
+// one without a lock file stays uncounted.
+func TestHeldCountsOnlyDirectoriesAProcessHolds(t *testing.T) {
+	parent := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(self, "-test.run=^$")
+	child.Env = append(os.Environ(), childEnv+"="+parent)
+	out, err := child.Output()
+	if err != nil {
+		t.Fatalf("child: %v", err)
+	}
+	exited := strings.TrimSpace(string(out))
+	first, err := MakeShared(parent, "ownedtemp-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := MakeShared(parent, "ownedtemp-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlocked := filepath.Join(parent, "ownedtemp-test-unlocked")
+	if err := os.Mkdir(unlocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := Held(parent, "ownedtemp-test-"); err != nil || n != 2 {
+		t.Fatalf("Held = %d, %v; want the 2 held directories", n, err)
+	}
+	if exists(t, exited) || !exists(t, unlocked) {
+		t.Fatal("Held kept a directory whose owner exited or removed one without a lock")
+	}
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := Held(parent, "ownedtemp-test-"); err != nil || n != 1 {
+		t.Fatalf("Held after a release = %d, %v; want 1", n, err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestSharedReleaseRemovesAnUnsharedDirectory: with no other holder,
 // Release removes the directory itself.
 func TestSharedReleaseRemovesAnUnsharedDirectory(t *testing.T) {

@@ -41,8 +41,11 @@ const (
 	// command's work directories (newGoWorkDir).
 	goWorkArg = "--go-work="
 	// diskTempArg names the directory on disk the helper mounts as the temp
-	// directory instead of a tmpfs (ramTempAffordable).
+	// directory instead of a tmpfs (reserveRAMTemp).
 	diskTempArg = "--disk-temp="
+	// ownedArg names a run directory (ownedtemp), one per argument, that
+	// the helper keeps owned while its mount namespace has a process.
+	ownedArg = "--owned="
 )
 
 // TempDir is where the namespace mounts its private temp directory, and
@@ -66,11 +69,15 @@ func TempDir() string { return "/tmp/aot-" + strconv.Itoa(os.Getuid()) }
 // cgroup variant adds to SysProcAttr.
 //
 // The run's directories on disk (the Go work directory, and the temp
-// directory when the host cannot afford a RAM one) are locked until every
-// process of the run has exited: their lock files go to command through
-// ExtraFiles, and every descendant inherits them. Command first removes
-// those of earlier runs that are free, and says on stderr when this run's
-// temp directory is on disk and why, and what the sweep could not do.
+// directory when the run is not admitted to a RAM one) and its RAM
+// reservation (reserveRAMTemp) stay owned until every process of the run
+// has exited. The launcher holds their locks until release; their lock
+// files go to command through ExtraFiles, kept by every descendant that
+// does not close inherited descriptors; and the helper keeps them owned
+// while the run's mount namespace, which every descendant inherits, has a
+// process (ownedtemp.KeepForMountNamespace). Command first removes those
+// of earlier runs that are free, and says on stderr when this run's temp
+// directory is on disk and why, and what the sweep could not do.
 //
 // The command's first process gets SIGTERM when the thread that started it
 // exits, so a killed launcher ends its run. Start command from a goroutine
@@ -103,7 +110,9 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 		dirs = append(dirs, goWork)
 		options.goWork = goWork.Dir
 	}
-	if ram, reason := ramTempAffordable(readMemAvailable()); !ram {
+	if reservation, reason := reserveRAMTemp(stderr); reservation != nil {
+		dirs = append(dirs, reservation)
+	} else {
 		diskTemp, err := ownedtemp.MakeShared(diskParent(), diskTempPrefix)
 		if err != nil {
 			return noop, errors.Join(fmt.Errorf("create the temp directory on disk: %w", err), release())
@@ -111,6 +120,9 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 		dirs = append(dirs, diskTemp)
 		options.diskTemp = diskTemp.Dir
 		fmt.Fprintf(stderr, "netisolate: this run's temp directory is on disk (%s): %s\n", diskTemp.Dir, reason)
+	}
+	for _, dir := range dirs {
+		options.owned = append(options.owned, dir.Dir)
 	}
 	if err := isolate(command, options); err != nil {
 		return noop, errors.Join(err, release())
@@ -126,6 +138,7 @@ type helperOptions struct {
 	keepTemp bool
 	goWork   string
 	diskTemp string
+	owned    []string
 }
 
 func (o helperOptions) args() []string {
@@ -138,6 +151,9 @@ func (o helperOptions) args() []string {
 	}
 	if o.diskTemp != "" {
 		args = append(args, diskTempArg+o.diskTemp)
+	}
+	for _, dir := range o.owned {
+		args = append(args, ownedArg+dir)
 	}
 	return args
 }
@@ -152,6 +168,8 @@ func parseHelperOptions(args []string) (helperOptions, []string) {
 			o.goWork = strings.TrimPrefix(args[0], goWorkArg)
 		case strings.HasPrefix(args[0], diskTempArg):
 			o.diskTemp = strings.TrimPrefix(args[0], diskTempArg)
+		case strings.HasPrefix(args[0], ownedArg):
+			o.owned = append(o.owned, strings.TrimPrefix(args[0], ownedArg))
 		default:
 			return o, args
 		}
@@ -214,14 +232,21 @@ func Check(stderr io.Writer) error {
 // loopback and the isolated LAN interface, mounts the private temp
 // directory and the Go work directory, drops the ambient capabilities,
 // lowers its CPU priority and replaces itself with the target, which keeps
-// the run directories' lock files Command passed. args is
-// `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] path -- argv...`, or
-// empty for Check.
+// the run directories' lock files Command passed. Before any of that it
+// keeps each run directory owned while its mount namespace has a process.
+// args is `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--owned=DIR...]
+// path -- argv...`, or empty for Check.
 func RunHelper(args []string, stderr io.Writer) int {
 	// Niceness belongs to a thread on Linux. The thread that lowers it must
 	// be the one that execs, so the target starts with it.
 	runtime.LockOSThread()
 	options, args := parseHelperOptions(args)
+	for _, dir := range options.owned {
+		if err := ownedtemp.KeepForMountNamespace(dir); err != nil {
+			fmt.Fprintln(stderr, "netisolate:", err)
+			return 1
+		}
+	}
 	if err := configureIsolatedNetwork(); err != nil {
 		fmt.Fprintln(stderr, "netisolate: configure isolated network:", explainConfigureError(err))
 		return 1
@@ -256,7 +281,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) < 3 || args[1] != "--" {
-		fmt.Fprintln(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] path -- argv...`")
+		fmt.Fprintln(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--owned=DIR...] path -- argv...`")
 		return 2
 	}
 	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, Niceness); err != nil {

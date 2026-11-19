@@ -3,9 +3,10 @@
 // (LANName at LANAddress) with no route off it, so a test that binds every
 // interface, dials out or probes the LAN reaches nothing beyond the
 // namespace, whatever the host's networking mode. TMPDIR names a private
-// temp directory (TempDir): a size-capped tmpfs when the host has the memory
-// for one at launch, so temp files cost no disk writes and vanish with the
-// namespace however the run ends, and otherwise a per-run directory on disk.
+// temp directory (TempDir): a size-capped tmpfs when the host has the
+// memory for one beside the other runs' at launch, so temp files cost no
+// disk writes and vanish with the namespace however the run ends, and
+// otherwise a per-run directory on disk.
 // The command runs at the lowest CPU priority (nice 19), and so does
 // everything it starts, and it gets SIGTERM when its launcher dies.
 //

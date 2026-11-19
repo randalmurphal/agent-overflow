@@ -1,10 +1,12 @@
 // Package ownedtemp makes temporary directories that outlive no process
 // for long. A directory holds a lock file its process keeps locked until
 // it releases the directory or exits, however it exits; Sweep removes the
-// directories whose lock nobody holds. A process that is killed, panics at
+// directories nobody owns any more. A process that is killed, panics at
 // a test timeout or calls os.Exit before its cleanup leaves a directory
 // the next Sweep of that prefix removes. A Shared directory's lock is also
-// held by the processes it is passed to, so it outlives none of them.
+// held by the processes it is passed to, so it outlives none of them, and
+// on Linux a directory can also stay owned while a mount namespace has a
+// process (KeepForMountNamespace).
 //
 // Standard library and filelock only, so test fixtures that must stay
 // light can use it.
@@ -47,9 +49,10 @@ func Make(parent, prefix string) (dir string, release func() error, err error) {
 	}, nil
 }
 
-// ErrInUse is wrapped by Shared.Release when another process still holds
-// the directory's lock.
-var ErrInUse = errors.New("another process still holds its lock")
+// ErrInUse is wrapped by Shared.Release when another process still owns
+// the directory: it holds the lock, or is in the mount namespace the
+// directory records.
+var ErrInUse = errors.New("another process still owns it")
 
 // Shared is a directory Make would create that processes this one starts
 // use too.
@@ -78,8 +81,8 @@ func MakeShared(parent, prefix string) (*Shared, error) {
 }
 
 // Release closes this process's copy of the lock and removes Dir once no
-// other process holds it. It never unlocks, which would release the lock
-// for every process sharing it. When one still holds it, Dir stays for the
+// other process owns it. It never unlocks, which would release the lock
+// for every process sharing it. When one still owns it, Dir stays for the
 // Sweep after that process exits, and the error wraps ErrInUse.
 func (s *Shared) Release() error {
 	if err := s.Lock.Close(); err != nil {
@@ -117,8 +120,9 @@ func lockDir(dir string) (*os.File, error) {
 }
 
 // Sweep removes the directories in parent (os.TempDir() when empty) named
-// prefix plus anything whose owner is gone: their lock file is there and
-// nobody holds it. A directory without the lock file stays: Make has not
+// prefix plus anything whose owner is gone: their lock file is there,
+// nobody holds it, and no process is in the mount namespace a directory
+// records (KeepForMountNamespace). A directory without the lock file stays: Make has not
 // locked it yet, or a process that does not use this package made it and
 // may still use it. It returns what it could not inspect or remove.
 func Sweep(parent, prefix string) error {
@@ -136,6 +140,36 @@ func Sweep(parent, prefix string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Held removes the directories Sweep would and counts the rest that a
+// process owns, so a directory can stand for a claim that lasts as long as
+// its owners. One without the lock file is not counted. Callers that
+// count and then claim serialize both under a lock of their own, or two
+// can count the same total. An error means the count is uncertain.
+func Held(parent, prefix string) (int, error) {
+	matches, err := filepath.Glob(filepath.Join(parent, prefix+"*"))
+	if err != nil {
+		return 0, err
+	}
+	held := 0
+	var errs []error
+	for _, dir := range matches {
+		removed, err := removeIfOwnerGone(dir)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if removed {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(dir, lockName)); err == nil {
+			held++
+		} else if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			errs = append(errs, fmt.Errorf("inspect %s: %w", dir, err))
+		}
+	}
+	return held, errors.Join(errs...)
 }
 
 // removeIfOwnerGone removes dir when its lock file is there and nobody
@@ -166,5 +200,6 @@ func ownerGone(dir string) (bool, error) {
 	if err != nil || !locked {
 		return false, errors.Join(err, file.Close())
 	}
-	return true, filelock.Release(file)
+	inUse, err := mountNamespaceInUse(dir)
+	return err == nil && !inUse, errors.Join(err, filelock.Release(file))
 }
