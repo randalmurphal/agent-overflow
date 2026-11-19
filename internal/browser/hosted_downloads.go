@@ -131,10 +131,11 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			e.mu.Unlock()
 			return
 		}
-		_, live := e.targetByPage[pageID]
-		if popup := e.popups[pageID]; !live && (popup == nil || popup.downloadsEnded) {
-			// No page of the Manager's started it, or that page is leaving;
-			// the launcher cancels a closed page's downloads itself.
+		_, bound := e.targetByPage[pageID]
+		if popup := e.popups[pageID]; (popup != nil && popup.downloadsEnded) || (popup == nil && !bound) {
+			// No page of the Manager's started it, or that page is a popup
+			// leaving before its listing, bound or not; the launcher cancels
+			// a closed page's downloads itself.
 			e.mu.Unlock()
 			return
 		}

@@ -838,11 +838,12 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 }
 
 // A popup the Manager never listed takes every download it started with it,
-// whether it is discarded or its page closes: one whose first report
-// arrives while the popup's running downloads are being ended is refused
-// or ended too, never left running in its opener's tab.
+// whether it is discarded or its page closes, and whether or not its attach
+// bound it: one whose first report arrives while the popup's running
+// downloads are being ended is refused or ended too, never left running in
+// its opener's tab.
 func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
-	for _, how := range []string{"discard", "close"} {
+	for _, how := range []string{"discard", "close", "discard after its bind", "close after its bind"} {
 		t.Run(how, func(t *testing.T) {
 			engine, _, recorder := newDownloadHostedEngine(t)
 			engine.events.PageClosed = func(string) {}
@@ -851,6 +852,10 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 			engine.popups["popup"] = &hostedPopup{target: "T-popup", profile: engine.pageProfile["opener"], opener: "opener"}
 			engine.pageProfile["popup"] = engine.pageProfile["opener"]
 			engine.mu.Unlock()
+			if strings.HasSuffix(how, "after its bind") {
+				// Bound as its attach binds it, before the Manager lists it.
+				bindTestPage(t, engine, "popup", "T-popup")
+			}
 			reportDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadRunning, 10))
 			var once sync.Once
 			recorder.mu.Lock()
@@ -860,10 +865,9 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 				}
 			}
 			recorder.mu.Unlock()
-			switch how {
-			case "discard":
+			if strings.HasPrefix(how, "discard") {
 				engine.DiscardPage("popup")
-			case "close":
+			} else {
 				engine.Report("popup", webview2host.ReportClosed, "")
 			}
 			starts, progress := recorder.take()
