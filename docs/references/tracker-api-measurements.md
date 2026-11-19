@@ -144,6 +144,16 @@ Other:
   issue as a string `issueId`, with no key. The spec declares `created` a
   string and its example shows 10 digits. `GET /issue/{key}/changelog`
   gives `created` as an ISO 8601 string with milliseconds and an offset.
+- Measured on 2026-11-19, reads only, through `GET /rest/api/3/search/jql`.
+  A date-time field takes epoch milliseconds as a bare number
+  (`updated >= 1763590000000`) and compares at millisecond precision with
+  no time zone: bounded at one issue's exact update time, `>=` returned
+  that issue first and `>` the next one. Atlassian documents only the
+  text date formats, which are read in the user's zone to the minute.
+  `ORDER BY updated ASC` sorted 100 issues at millisecond precision, and
+  `ORDER BY updated ASC, id ASC` is accepted. A key or ID in `key in (...)`
+  or `id in (...)` that names no issue is left out of a 200 answer with no
+  warning.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.

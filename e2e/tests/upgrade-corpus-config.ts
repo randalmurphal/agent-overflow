@@ -807,6 +807,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'diff_review_comments', columns: ['claim_settles'], values: { claim_settles: ['row', 'confirm'] }, reason: "a sent draft's claim waits for its message's row or the provider's confirmation, and settles before the turn rests" },
   { table: 'thread_pull_requests', columns: ['merged_at', 'handled_at', 'removal_failed_at', 'outcome'], values: { forge: ['gitlab'], outcome: ['removed', 'kept', 'gone', 'closed', 'skipped'] }, reason: "the top-up's pull request stays open, so no merge cleanup runs; one forge's pull request proves the table" },
   { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
+  { table: 'tracker_connections', reason: 'an issue tracker connection (v159); no app method writes the tracker tables yet' },
+  { table: 'project_tracker_boards', reason: 'the tracker boards a project lists (v159); no app method writes the tracker tables yet' },
+  { table: 'thread_tickets', reason: 'the ticket a thread is linked to (v159); no app method writes the tracker tables yet' },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 
