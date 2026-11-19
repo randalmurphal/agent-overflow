@@ -11,6 +11,7 @@
   // the two badges read the resulting status through `pane.gitStatus`, which
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
+  import { untrack } from 'svelte';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Globe from '@lucide/svelte/icons/globe';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -53,9 +54,11 @@
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
     browserCompanionState,
+    browserPaneShown,
     canPresentNativeBrowser,
     canUseNativeBrowser,
     hydrateBrowserCompanionState,
+    reconcileBrowserCompanionForPane,
   } from '../../stores/browserCompanion.svelte';
   import { toggleBrowserFromHeader } from '../../stores/browserActions';
 
@@ -169,10 +172,10 @@
 
   // The browser chip renders wherever this page can open the thread's
   // browser and show it (canPresentNativeBrowser), tabs or not, and for a
-  // thread with tabs. With tabs it shows and hides the companion, which
-  // closing never strands; with none it opens the pane on a new tab with
-  // its address bar focused (toggleBrowserFromHeader, which reads a state
-  // this connection has not seen before deciding). The state read is
+  // thread with tabs. It hides a shown pane, shows hidden tabs, and with
+  // none opens the pane on a new tab with its address bar focused
+  // (toggleBrowserFromHeader, which reads a state this connection has not
+  // seen before choosing between the last two). The state read is
   // per-key reactive, and the hydration read fills in what the ephemeral
   // `browser:companion-state` channel cannot replay to a fresh UI.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
@@ -180,10 +183,21 @@
   let browserState = $derived(
     threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser) ? browserCompanionState(threadIdForBrowser) : null,
   );
-  let browserVisible = $derived(browserState?.visible === true);
+  // Pressed is what this layout presents, which a press decides from
+  // (toggleBrowserFromHeader), not the session's recorded visibility.
+  let browserPressed = $derived(threadIdForBrowser !== '' && browserPaneShown(threadIdForBrowser));
+  // A visible session compact did not present (it never opens the pane) is
+  // presented once the layout can: the push that recorded it is not resent.
+  let browserWanted = $derived(!compact && browserState?.visible === true);
 
   $effect(() => {
     if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
+  });
+
+  $effect(() => {
+    const threadId = threadIdForBrowser;
+    if (!threadId || !browserWanted) return;
+    untrack(() => reconcileBrowserCompanionForPane(pane.paneId, threadId));
   });
 
   function toggleBrowserCompanion(): void {
@@ -418,14 +432,15 @@
   {/if}
 
   {#if browserState || browserAvailable}
-    <!-- Browser companion toggle. With tabs it shows and hides the pane
-         (closing the pane never closes the pages); with none it opens the
-         pane on a new tab, which a compact screen never shows, so there it
-         appears only once tabs exist. -->
+    <!-- Browser companion toggle, on the desktop only (compact has no
+         browser row). Pressed while the pane is in the layout, and a press
+         then hides it; otherwise a press shows the tabs, or opens the pane
+         on a new tab when there are none. Closing the pane never closes the
+         pages. -->
     <Button
       variant="secondary"
       size="xs"
-      pressed={browserVisible}
+      pressed={browserPressed}
       ariaLabel={browserState ? 'Toggle browser pane' : 'Open browser'}
       title={browserState ? 'Toggle browser pane' : 'Open browser'}
       onclick={toggleBrowserCompanion}
