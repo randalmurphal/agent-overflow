@@ -184,7 +184,7 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 
 func TestSessionNameLimitCountsUnicodeCharacters(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	if _, err := manager.NameSession(t.Context(), access, strings.Repeat("🔎", 120)); err != nil {
 		t.Fatalf("120-character session name rejected: %v", err)
 	}

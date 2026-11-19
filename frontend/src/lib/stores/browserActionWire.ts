@@ -71,7 +71,7 @@ export type BrowserAction =
   | { readonly kind: 'step'; readonly step: 1 | -1 }
   | { readonly kind: 'new'; readonly address: string }
   | { readonly kind: 'reopen' }
-  | { readonly kind: 'show'; readonly pageId: PageId | null }
+  | { readonly kind: 'show-browser' }
   | { readonly kind: 'hide' }
   | { readonly kind: 'jar'; readonly jar: BrowserJar; readonly confirmed: boolean }
   | { readonly kind: DownloadKind; readonly downloadId: DownloadId }
@@ -82,7 +82,7 @@ export type BrowserAction =
  * mod-clicked link's and a download toast's. Every other kind comes from a
  * pane and is sent only from its attachment (sendFromPane).
  */
-export type ThreadAction = Extract<BrowserAction, { readonly kind: 'new' | 'show' | 'hide' | DownloadKind | 'downloads-clear' }>;
+export type ThreadAction = Extract<BrowserAction, { readonly kind: 'new' | 'show-browser' | 'hide' | DownloadKind | 'downloads-clear' }>;
 
 /** One constructor per kind of BrowserAction. */
 export const browserAction = {
@@ -95,7 +95,7 @@ export const browserAction = {
   step: (step: 1 | -1): BrowserAction => ({ kind: 'step', step }),
   newTab: (address = ''): ThreadAction => ({ kind: 'new', address }),
   reopen: (): BrowserAction => ({ kind: 'reopen' }),
-  show: (pageId: PageId | null): ThreadAction => ({ kind: 'show', pageId }),
+  showBrowser: (): ThreadAction => ({ kind: 'show-browser' }),
   hide: (): ThreadAction => ({ kind: 'hide' }),
   jar: (jar: BrowserJar, confirmed: boolean): BrowserAction => ({ kind: 'jar', jar, confirmed }),
   download: (kind: DownloadKind, downloadId: DownloadId): ThreadAction => ({ kind, downloadId }),
@@ -117,6 +117,7 @@ function ordered(action: BrowserAction | PageFocusRequest): boolean {
     case 'reopen':
     case 'duplicate':
     case 'download-open':
+    case 'show-browser':
       return true;
     case 'download-cancel':
     case 'download-reveal':
@@ -131,7 +132,6 @@ function ordered(action: BrowserAction | PageFocusRequest): boolean {
     case 'devtools':
     case 'navigate':
     case 'move':
-    case 'show':
     case 'hide':
     case 'jar':
     case 'downloads-clear':
@@ -183,9 +183,8 @@ function wireAction(action: BrowserAction | PageFocusRequest, origin: ActionOrig
     case 'reopen':
     case 'hide':
     case 'downloads-clear':
+    case 'show-browser':
       return new BrowserCompanionAction({ ...base, kind: action.kind });
-    case 'show':
-      return new BrowserCompanionAction({ ...base, kind: 'show', pageId: action.pageId ?? '' });
     case 'jar':
       return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed });
     case 'download-cancel':

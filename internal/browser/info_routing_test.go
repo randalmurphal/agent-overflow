@@ -25,7 +25,7 @@ func suspendedURL(t *testing.T, m *Manager, pageID string) string {
 // report commits first: the suspension reads again and saves B.
 func TestASuspendSavesTheNewerAddressReportedDuringItsRead(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, fake := fencePage(t, manager, access)
 	const b = "https://example.test/b"
 	var calls atomic.Int32
@@ -49,7 +49,7 @@ func TestASuspendSavesTheNewerAddressReportedDuringItsRead(t *testing.T) {
 // for maxSettleReads reads, which then saves the last one.
 func TestASuspendOfAPageThatKeepsNavigatingIsBounded(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, fake := fencePage(t, manager, access)
 	var calls atomic.Int32
 	address := func(n int32) string { return fmt.Sprintf("https://example.test/loop/%d", n) }
@@ -108,7 +108,7 @@ func TestAReportDuringAPopupAdoptionReachesItsTab(t *testing.T) {
 					t.Errorf("close manager: %v", err)
 				}
 			})
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			opener := mustOpen(t, manager, access, "https://example.test/")
 			report := func() { manager.updatePageInfo("popup", final, "Final", 2) }
 			manager.mu.Lock()
@@ -145,7 +145,7 @@ func TestAReportDuringAPopupAdoptionReachesItsTab(t *testing.T) {
 // creating, before it is attached, moves that page's order fence.
 func TestAReportBeforeACreatedPageIsAttachedMovesItsFence(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	const final = "https://example.test/final"
 	engine.mu.Lock()
 	engine.onNewFakePage = func(page *fakePage) {
@@ -170,7 +170,7 @@ func TestAReportBeforeACreatedPageIsAttachedMovesItsFence(t *testing.T) {
 // changes for a page the Manager has not attached are held for that page.
 func TestHostedReportsBeforeTheAttachReachThePage(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	endpoint := startFakeCDPEndpoint(t, nil, nil)
 	hosted, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
 		PageInfoChanged: manager.updatePageInfo,

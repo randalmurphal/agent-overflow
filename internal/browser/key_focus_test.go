@@ -148,13 +148,13 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 	}{
 		{"the page shown", func(t *testing.T, f *findFixture) string { return f.fake.Handle() }, true},
 		{"another client's pane mounted, not placed", func(t *testing.T, f *findFixture) string {
-			if _, err := f.manager.AttachPane(f.access); err != nil {
+			if _, err := f.manager.AttachPane(f.access.Caller()); err != nil {
 				t.Fatal(err)
 			}
 			return f.fake.Handle()
 		}, true},
 		{"another client's pane off screen", func(t *testing.T, f *findFixture) string {
-			other, err := f.manager.AttachPane(f.access)
+			other, err := f.manager.AttachPane(f.access.Caller())
 			if err != nil {
 				t.Fatal(err)
 			}

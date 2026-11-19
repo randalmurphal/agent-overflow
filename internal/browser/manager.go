@@ -13,7 +13,6 @@ import (
 
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/browser/quota"
-	"agent-overflow/internal/browser/threadlife"
 	"agent-overflow/internal/browser/turnorder"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
@@ -106,9 +105,9 @@ type Manager struct {
 	// forgetting counts the forgets of every page running (beginForget),
 	// during which no page becomes a record. Guarded by mu.
 	forgetting int
-	// lives holds the thread lifetimes pane actions are bound to
-	// (thread_life.go); retired in a hold of mu.
-	lives threadlife.Registry
+	// threads is each thread's current browser lifetime, which owns the
+	// thread's browser state (thread_life.go). Guarded by mu.
+	threads map[string]*threadBrowser
 	// pending holds the pages being created, and the failed creations of
 	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
 	pending map[string]*pendingPage
@@ -132,12 +131,10 @@ type Manager struct {
 	eventSink func(CompanionEvent)
 	panes     map[string]paneMount
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
-	paneSeq  uint64
-	sessions map[string]SessionInfo
-	// recent is each thread's recent addresses, recentGen their forget
-	// generation, and recentLaunch this Manager's identity the generation's
-	// token carries (recent.go).
-	recent       map[string][]RecentAddress
+	paneSeq uint64
+	// recentGen is the forget generation of the threads' recent addresses,
+	// and recentLaunch this Manager's identity the generation's token
+	// carries (recent.go).
 	recentGen    uint64
 	recentLaunch string
 	// viewportSyncs serializes viewport application per thread (viewport.go).
@@ -149,19 +146,11 @@ type Manager struct {
 	// presented is, per thread, the page the last presentation pass showed
 	// (presentPanes); a thread showing none has no entry. Guarded by mu.
 	presented map[string]string
-	// paneColors is, per thread, the newest color its presenting pane
-	// reported (SetPaneRect), which a blank page shows as its base
-	// (applyPageBase). Kept while no pane is mounted; removed with the
-	// thread. Guarded by mu.
-	paneColors map[string]string
 	// awaitingLayout is, per thread, the active page the last presentation
 	// pass held hidden because it lagged the thread viewport. Whichever
 	// apply lays it out first (applyViewportLocked) asks for the pass that
 	// shows it. Guarded by mu.
 	awaitingLayout map[string]string
-	// closedTabs is, per thread, the tabs the user closed that can be
-	// reopened, most recent last (companion_tabs.go). Guarded by mu.
-	closedTabs map[string]*closedTabs
 	// agentLinger is how long a page keeps showing agent activity after the
 	// last tool call on it ends (activity.go); a test shortens it.
 	agentLinger    time.Duration
@@ -172,12 +161,12 @@ type Manager struct {
 	// workspacePools hands each workspace its one download pool
 	// (workspaceAuthority).
 	workspacePools *quota.Registry
-	// downloadsMu guards threadDownloads, each thread's downloads as its
-	// pane lists them (downloads_thread.go). It is taken inside m.mu and
-	// inside a page's download log hold, and never held around either.
-	downloadsMu     sync.Mutex
-	threadDownloads map[string]*threadDownloadList
-	downloadKeys    atomic.Uint64
+	// downloadsMu guards each thread lifetime's downloads as its pane lists
+	// them (threadBrowser.downloads, downloads_thread.go). It is taken
+	// inside m.mu and inside a page's download log hold, and never held
+	// around either.
+	downloadsMu  sync.Mutex
+	downloadKeys atomic.Uint64
 	// staged is each running staged download's file by engine id
 	// (stageDownload in downloads.go). Guarded by stagedMu, which is taken
 	// alone.
@@ -336,9 +325,10 @@ type CDPRelay interface {
 }
 
 type managedPage struct {
-	id     string
-	owner  string
-	access Access
+	id string
+	// owner is the thread lifetime the page is a tab of (thread_life.go).
+	owner  *threadBrowser
+	access Caller
 	driver pageDriver
 	// jarGen is the generation of its thread's jar setting the page was
 	// opened under, and authority its workspace's (jar.go). Set before the
@@ -423,9 +413,9 @@ var pageIncarnations atomic.Uint64
 // newManagedPage allocates the AO-owned half of a page. Its driver is attached
 // once the engine has produced one, so the driver's own event handlers can
 // already report into this page while it is being created.
-func newManagedPage(access Access) *managedPage {
+func newManagedPage(owner *threadBrowser, access Caller) *managedPage {
 	p := &managedPage{
-		id: uuid.NewString(), owner: access.ThreadID, access: access,
+		id: uuid.NewString(), owner: owner, access: access,
 		createdAt:   time.Now().UnixNano(),
 		inventories: make(map[string]AssetInventory),
 		nodeRefs:    make(map[string]nodeReference),
@@ -454,11 +444,10 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		disposing:      make(map[string]chan struct{}),
 		recordDir:      filepath.Join(configDir, browserPageRecordDir),
 		panes:          make(map[string]paneMount),
-		sessions:       make(map[string]SessionInfo),
+		threads:        make(map[string]*threadBrowser),
 		viewportSyncs:  make(map[string]*viewportSync),
 		artifactRoot:   filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:    findActionTimeout,
-		closedTabs:     make(map[string]*closedTabs),
 		agentLinger:    agentActivityLinger,
 		recentLaunch:   uuid.NewString(),
 	}

@@ -168,14 +168,14 @@ func (m *Manager) applyFocusIntent(threadID string) {
 		return
 	}
 	m.mu.Lock()
-	mount, _, _ := m.presenterLocked(threadID)
+	mount, _, _ := m.presenterLocked(m.currentLocked(threadID))
 	pane := m.panes[mount]
 	if pane.focus == nil || pane.focus.intent == nil || pane.focus.intent.claimed {
 		m.mu.Unlock()
 		return
 	}
 	in := pane.focus.intent
-	if in.withdrawn.Load() || time.Since(in.armed) > focusIntentMaxAge || !m.hasTabLocked(threadID, in.pageID) {
+	if in.withdrawn.Load() || time.Since(in.armed) > focusIntentMaxAge || !m.hasTabLocked(m.currentLocked(threadID), in.pageID) {
 		pane.focus.intent = nil
 		m.mu.Unlock()
 		return
@@ -184,9 +184,9 @@ func (m *Manager) applyFocusIntent(threadID string) {
 	// Presented and still selected, as a pass's show requires: a page shown
 	// by a pass that a newer selection overtook is hidden by the next pass,
 	// which applies the intent if its page is shown then.
-	if m.presented[threadID] == in.pageID && m.sessions[threadID].ActivePageID == in.pageID {
+	if m.presented[threadID] == in.pageID && m.currentSessionLocked(threadID).ActivePageID == in.pageID {
 		// A closing page has left its scope's pages already.
-		if p, _ := m.livePageLocked(in.pageID); p != nil && p.owner == threadID {
+		if p, _ := m.livePageLocked(in.pageID); p != nil && p.owner == m.currentLocked(threadID) {
 			page = p
 		}
 	}
@@ -226,8 +226,8 @@ func (m *Manager) applyFocusIntent(threadID string) {
 }
 
 // hasTabLocked is hasTab for a caller holding m.mu.
-func (m *Manager) hasTabLocked(threadID, pageID string) bool {
-	for _, tab := range m.companionTabsLocked(threadID) {
+func (m *Manager) hasTabLocked(tb *threadBrowser, pageID string) bool {
+	for _, tab := range m.companionTabsLocked(tb) {
 		if tab.id == pageID {
 			return true
 		}
@@ -253,8 +253,8 @@ func (m *Manager) pageFocusReported(handle, mount string, intent uint64, err err
 	m.mu.Lock()
 	page := m.pageByHandleLocked(handle)
 	owner := ""
-	if page != nil && m.panes[mount].threadID == page.owner {
-		owner = page.owner
+	if page != nil && m.panes[mount].owner == page.owner {
+		owner = page.owner.id
 	}
 	m.mu.Unlock()
 	if owner == "" {

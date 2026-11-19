@@ -1,7 +1,8 @@
 // Opening the browser from no tab (docs/architecture/browser-tools.md,
 // companion pane). The chat header's browser button is there whenever the
 // native browser is usable, tabs or not; with none it opens the pane on one
-// new tab with its address bar focused. A mod-clicked link in a thread with
+// new tab with its address bar focused, and pressed again it hides the pane
+// and then shows that tab, adding none. A mod-clicked link in a thread with
 // no tab opens the pane on a tab at the link. Closing the last tab closes the
 // pane and leaves the button. The new-tab shortcut, pressed with the browser
 // pane focused, opens a tab whose address bar takes focus with its text
@@ -60,6 +61,21 @@ test('the header button and a mod-clicked link open the browser from no tab', as
   const opened = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
   expect(opened.pages).toHaveLength(1);
   expect(opened.visible).toBe(true);
+
+  // Hide, then show again: the show shows the tab the thread has and adds
+  // none, and no address takes focus.
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  await button.click();
+  await expect(pane).toHaveCount(0);
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
+  await button.click();
+  await expect(pane).toBeVisible();
+  await expect(pane.getByTestId('browser-tab')).toHaveCount(1);
+  await expect(address).not.toBeFocused();
+  const shownAgain = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+  expect(shownAgain.pages?.map((tab) => tab.id)).toEqual(opened.pages?.map((tab) => tab.id));
+  expect(shownAgain.activePageId).toBe(opened.activePageId);
+  expect(shownAgain.visible).toBe(true);
 
   await pane.getByRole('button', { name: 'Close tab' }).click();
   await expect(pane).toHaveCount(0);

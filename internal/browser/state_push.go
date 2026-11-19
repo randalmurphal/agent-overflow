@@ -11,18 +11,21 @@ import "strings"
 // one write push it once: a write is never lost whoever publishes next, and
 // an operation that changed nothing pushes nothing.
 
-// threadPagesLocked answers the thread's pages that have a managedPage: the
-// ones being created and the live ones. The caller holds m.mu.
-func (m *Manager) threadPagesLocked(threadID string) []*managedPage {
+// threadPagesLocked answers tb's pages that have a managedPage: the ones
+// being created and the live ones; none for nil. The caller holds m.mu.
+func (m *Manager) threadPagesLocked(tb *threadBrowser) []*managedPage {
+	if tb == nil {
+		return nil
+	}
 	var pages []*managedPage
 	for _, pending := range m.pending {
-		if pending.p.owner == threadID && !pending.closed {
+		if pending.p.owner == tb && !pending.closed {
 			pages = append(pages, pending.p)
 		}
 	}
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID {
+			if p.owner == tb {
 				pages = append(pages, p)
 			}
 		}
@@ -48,8 +51,8 @@ func (m *Manager) pageAdded(p *managedPage) {
 	m.applyPageBase(p)
 	p.touch()
 	m.ensureActivePage(p.owner, p.id)
-	m.emitThreadState(p.owner)
-	m.syncPanePresentation(p.owner)
+	m.emitThreadState(p.owner.id)
+	m.syncPanePresentation(p.owner.id)
 }
 
 // pageUsed follows an operation on p: a use, the thread's active page when it
@@ -57,11 +60,11 @@ func (m *Manager) pageAdded(p *managedPage) {
 func (m *Manager) pageUsed(p *managedPage) {
 	p.touch()
 	if m.ensureActivePage(p.owner, p.id) {
-		m.emitThreadState(p.owner)
+		m.emitThreadState(p.owner.id)
 	} else {
-		m.publishPages(p.owner)
+		m.publishPages(p.owner.id)
 	}
-	m.syncPanePresentation(p.owner)
+	m.syncPanePresentation(p.owner.id)
 }
 
 // threadState is the thread's state for one client's read (an attach, a
@@ -71,14 +74,16 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	return event
 }
 
-// buildThreadState builds the thread's state. For a push to every client
-// (push) it first takes the unpushed records of the thread's pages; with
-// ifUnpushed it builds nothing, answering false, when none holds one.
+// buildThreadState builds the thread's state, its current lifetime's (an
+// empty one when it has none). For a push to every client (push) it first
+// takes the unpushed records of the thread's pages; with ifUnpushed it
+// builds nothing, answering false, when none holds one.
 func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (CompanionEvent, bool) {
 	m.mu.Lock()
+	tb := m.currentLocked(threadID)
 	if push {
 		unpushed := false
-		for _, p := range m.threadPagesLocked(threadID) {
+		for _, p := range m.threadPagesLocked(tb) {
 			p.metaMu.Lock()
 			unpushed = unpushed || p.load.unpushed
 			p.load.unpushed = false
@@ -89,27 +94,27 @@ func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (Comp
 			return CompanionEvent{}, false
 		}
 	}
-	tabs := m.companionTabsLocked(threadID)
+	tabs := m.companionTabsLocked(tb)
 	if push && m.pushCopied != nil {
 		m.pushCopied()
 	}
-	session, hasSession := m.sessions[threadID]
+	session := newThreadBrowser(threadID).session
+	if tb != nil {
+		session = tb.session
+	}
 	active, _ := m.livePageLocked(session.ActivePageID)
-	closedTabs := m.closedCountLocked(threadID)
-	downloads := m.threadDownloadsLocked(threadID)
+	closedTabs := closedCountLocked(tb)
+	downloads := m.threadDownloadsLocked(tb)
 	m.stateSeq++
 	seq := m.stateSeq
 	recentGen := m.recentGenTokenLocked()
 	m.mu.Unlock()
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), ClosedTabs: closedTabs, Downloads: downloads, Seq: seq}
-	if active != nil && active.owner == threadID {
+	if active != nil && tb != nil && active.owner == tb {
 		event.FindMode = findModeOf(active)
 	}
-	visible := false
-	if hasSession {
-		visible = session.Visible
-		event.SessionName = session.Name
-	}
+	visible := session.Visible
+	event.SessionName = session.Name
 	event.Visible = &visible
 	for _, tab := range tabs {
 		event.Pages = append(event.Pages, tab.info)
@@ -139,6 +144,7 @@ func (m *Manager) emitThreadState(threadID string) {
 	}
 }
 
-func (m *Manager) CompanionState(access Access) CompanionEvent {
-	return m.threadState(access.ThreadID)
+// CompanionState answers the state of caller's thread as it is now.
+func (m *Manager) CompanionState(caller Caller) CompanionEvent {
+	return m.threadState(caller.ThreadID)
 }

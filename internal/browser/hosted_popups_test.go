@@ -19,7 +19,7 @@ import (
 // reported, attached at the target the launcher paired with it.
 func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	popupID, targetID := l.popup(opener, "https://example.test/popup")
 	p := l.awaitTab(access.ThreadID, popupID, true)
@@ -49,7 +49,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 // A popup's own popup is adopted into the same thread.
 func TestHostedPopupOfAPopupIsAdopted(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	first, _ := l.popup(opener, "https://example.test/1")
 	l.awaitTab(access.ThreadID, first, true)
@@ -69,7 +69,7 @@ func TestHostedPopupPastACapIsClosed(t *testing.T) {
 		fill func(l *popupLauncher) (Access, string)
 	}{
 		{"the thread's", func(l *popupLauncher) (Access, string) {
-			access := popupTestAccess(l.t, "thread")
+			access := l.access("thread")
 			var opener string
 			for range maxPagesPerThread {
 				_, opener = l.open(access)
@@ -79,20 +79,20 @@ func TestHostedPopupPastACapIsClosed(t *testing.T) {
 		// The opener's thread has room in these two; other threads fill the
 		// workspace or the process.
 		{"the workspace's", func(l *popupLauncher) (Access, string) {
-			access := popupTestAccess(l.t, "opener")
+			access := l.access("opener")
 			_, opener := l.open(access)
 			for i := range maxPagesPerWorkspace - 1 {
-				l.open(Access{ThreadID: fmt.Sprintf("thread-%d", i/maxPagesPerThread), Workspace: access.Workspace})
+				l.open(l.manager.Bind(Caller{ThreadID: fmt.Sprintf("thread-%d", i/maxPagesPerThread), Workspace: access.Workspace}))
 			}
 			return access, opener
 		}},
 		{"the process's", func(l *popupLauncher) (Access, string) {
-			access := popupTestAccess(l.t, "opener")
+			access := l.access("opener")
 			_, opener := l.open(access)
 			var other Access
 			for i := range maxPagesTotal - 1 {
 				if i%maxPagesPerThread == 0 {
-					other = popupTestAccess(l.t, fmt.Sprintf("thread-%d", i))
+					other = l.access(fmt.Sprintf("thread-%d", i))
 				}
 				l.open(other)
 			}
@@ -116,7 +116,7 @@ func TestHostedPopupPastACapIsClosed(t *testing.T) {
 // A popup whose opener closes while it is attached is closed, not adopted.
 func TestHostedPopupOfAnOpenerThatClosesMidAdoptionIsClosed(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	release := l.gate("PT-1")
 	defer release()
@@ -139,7 +139,7 @@ func TestHostedPopupOfAnOpenerThatClosesMidAdoptionIsClosed(t *testing.T) {
 // engine stopped, is closed at once.
 func TestHostedPopupOfAnUnknownOpenerIsClosed(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	l.reportPopup("popup-t-1", webview2host.PopupReport{Opener: "0123456789abcdef0123456789abcdef", Target: "PT-1"})
 	l.awaitTab(access.ThreadID, "popup-t-1", false)
@@ -244,7 +244,7 @@ func TestHostedPopupReportValidation(t *testing.T) {
 // popup is closed.
 func TestHostedPopupAttachOnALostConnectionIsClosed(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	release := l.gate("PT-1")
 	defer release()
@@ -263,7 +263,7 @@ func TestHostedPopupAttachOnALostConnectionIsClosed(t *testing.T) {
 func TestHostedPopupAttachesOnlyOnItsOpenersConnection(t *testing.T) {
 	l := newPopupLauncher(t)
 	l.engine.events.PopupOpened = func(enginePopup) {}
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	l.engine.mu.Lock()
 	profile := &hostedProfile{engine: l.engine, id: l.engine.pageProfile[opener]}
@@ -307,7 +307,7 @@ func TestHostedPopupAttachesOnlyOnItsOpenersConnection(t *testing.T) {
 // listed: its address and title in order, its downloads, then its close.
 func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	info := func(targetID, title string) {
 		l.engine.targetInfoChanged(l.engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
@@ -332,7 +332,7 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 	}
 	// Delivered once the tab is listed, which awaitTab may see first.
 	for deadline := time.Now().Add(hostedTestDeadline); ; {
-		downloads := l.manager.CompanionState(access).Downloads
+		downloads := l.manager.CompanionState(access.Caller()).Downloads
 		if len(downloads) == 1 && downloads[0].State == downloadStateRunning {
 			break
 		}
@@ -363,7 +363,7 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 // A popup that crashed while it was adopted becomes a crashed tab.
 func TestHostedPopupCrashDuringAdoptionReachesItsTab(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	release := l.gate("PT-1")
 	defer release()
@@ -379,7 +379,7 @@ func TestHostedPopupCrashDuringAdoptionReachesItsTab(t *testing.T) {
 	}
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
-		state := l.manager.CompanionState(access)
+		state := l.manager.CompanionState(access.Caller())
 		if len(state.Pages) == 2 && state.Pages[1].Suspended && state.Pages[1].Error != "" {
 			break
 		}
@@ -408,7 +408,7 @@ func TestHostedPopupCrashAndCloseDuringAdoptionLeaveNoTab(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newPopupLauncher(t)
-			access := popupTestAccess(t, "thread")
+			access := l.access("thread")
 			_, opener := l.open(access)
 			release := l.gateHistory("PT-1")
 			defer release()
@@ -424,7 +424,7 @@ func TestHostedPopupCrashAndCloseDuringAdoptionLeaveNoTab(t *testing.T) {
 			release()
 			deadline := time.Now().Add(hostedTestDeadline)
 			for {
-				state := l.manager.CompanionState(access)
+				state := l.manager.CompanionState(access.Caller())
 				crashed := len(state.Pages) == 2 && state.Pages[1].Suspended && state.Pages[1].Error != ""
 				gone := len(state.Pages) == 1 && l.closed(popupID)
 				if (tc.wantCrashed && crashed) || (!tc.wantCrashed && gone) {
@@ -656,7 +656,7 @@ func TestHostedPausedRequestWaitsForItsOwner(t *testing.T) {
 // once: the browser-wide policy is the only one.
 func TestHostedEnginePausesARequestOnce(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	popupID, _ := l.popup(opener, "https://example.test/popup")
 	l.awaitTab(access.ThreadID, popupID, true)

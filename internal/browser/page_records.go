@@ -93,12 +93,17 @@ func (m *Manager) writeRecordFilesLocked(threadIDs []string) error {
 	return errors.Join(errs...)
 }
 
-// recordFileLocked is the saved copy of the thread as it is: its suspended
-// pages and, with withLive, its live pages as the records a suspension
-// makes of them (recordOf). The caller holds m.mu.
+// recordFileLocked is the saved copy of the thread as its current lifetime
+// is: its suspended pages and, with withLive, its live pages as the records
+// a suspension makes of them (recordOf). A thread with no current lifetime
+// saves nothing, which removes its file. The copy on disk is one name for
+// every lifetime of the thread, so it is only ever written from the current
+// one, in persistMu order: an earlier lifetime's cleanup, or a save it
+// asks for, writes the current lifetime's tabs. The caller holds m.mu.
 func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFile {
 	file := pageRecordFile{Version: pageRecordVersion, ThreadID: threadID}
-	for _, tab := range m.threadTabsLocked(threadID) {
+	tb := m.currentLocked(threadID)
+	for _, tab := range m.threadTabsLocked(tb) {
 		rec := tab.rec
 		if rec == nil && withLive && tab.live != nil {
 			rec = recordOf(tab.live, tab.live.cachedInfo())
@@ -107,9 +112,9 @@ func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFil
 			file.Pages = append(file.Pages, rec.saved())
 		}
 	}
-	if session, ok := m.sessions[threadID]; ok {
-		file.ActivePageID = session.ActivePageID
-		file.Jar = savedJar(jarKindOf(session))
+	if tb != nil {
+		file.ActivePageID = tb.session.ActivePageID
+		file.Jar = savedJar(jarKindOf(tb.session))
 	}
 	return file
 }
@@ -271,17 +276,16 @@ func (m *Manager) readRecordFile(path string) (pageRecordFile, error) {
 // one.
 func (m *Manager) addLoadedRecords(file pageRecordFile) {
 	m.mu.Lock()
+	tb := m.threadLocked(file.ThreadID)
 	for _, page := range file.Pages {
 		m.suspended[page.ID] = &suspendedPage{
-			id: page.ID, owner: file.ThreadID,
+			id: page.ID, owner: tb,
 			url: page.URL, title: page.Title, label: page.Label,
 			tabOrder: page.Order, createdAt: page.Created, lastUse: page.LastUsed,
 		}
 	}
-	info := m.sessionLocked(file.ThreadID)
-	info.ActivePageID = file.ActivePageID
-	info.Jar = loadedJar(file.Jar)
-	m.sessions[file.ThreadID] = info
+	tb.session.ActivePageID = file.ActivePageID
+	tb.session.Jar = loadedJar(file.Jar)
 	m.mu.Unlock()
-	m.repairActivePage(file.ThreadID)
+	m.repairActivePage(tb)
 }

@@ -13,13 +13,14 @@ import (
 	"time"
 )
 
-func (m *Manager) ownedPages(threadID string) []*managedPage {
+// ownedPages answers tb's live pages.
+func (m *Manager) ownedPages(tb *threadBrowser) []*managedPage {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID {
+			if p.owner == tb {
 				out = append(out, p)
 			}
 		}
@@ -39,7 +40,7 @@ func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
 		if p := scope.pages[pageID]; p != nil {
-			if p.owner != access.ThreadID {
+			if p.owner != access.tb {
 				return nil, nil, errPageNotFound
 			}
 			return p, scope, nil
@@ -70,7 +71,7 @@ func (m *Manager) workspaceForPage(pageID string) string {
 	return ""
 }
 
-// threadPageCountLocked counts the thread's tabs, live, suspended and
+// threadPageCountLocked counts the tabs of the thread lifetime tb, live, suspended and
 // pending, and its pages still closing: a suspended page holds no engine
 // resource but keeps its slot in the thread's page cap, which is what bounds
 // the saved pages a thread keeps, and a closed page holds its slot until its
@@ -78,32 +79,32 @@ func (m *Manager) workspaceForPage(pageID string) string {
 // record it left under the same id are one tab, counted once; a closed
 // record leaves the slot to the page until its teardown ends (SetJar). The
 // caller holds m.mu.
-func (m *Manager) threadPageCountLocked(threadID string) int {
+func (m *Manager) threadPageCountLocked(tb *threadBrowser) int {
 	count := 0
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID {
+			if p.owner == tb {
 				count++
 			}
 		}
 		for _, c := range scope.closing {
-			if c.p.owner == threadID && m.suspended[c.p.id] == nil {
+			if c.p.owner == tb && m.suspended[c.p.id] == nil {
 				count++
 			}
 		}
 	}
 	for _, pending := range m.pending {
-		if pending.p.owner == threadID {
+		if pending.p.owner == tb {
 			count++
 		}
 	}
 	for _, rec := range m.suspended {
-		if rec.owner == threadID {
+		if rec.owner == tb {
 			count++
 		}
 	}
 	for _, p := range m.adopting {
-		if p != nil && p.owner == threadID {
+		if p != nil && p.owner == tb {
 			count++
 		}
 	}
@@ -252,7 +253,7 @@ func canonicalRoot(path string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func (m *Manager) authorizeFile(access Access, path string) (string, error) {
+func (m *Manager) authorizeFile(access Caller, path string) (string, error) {
 	resolved, _, err := m.authorizeFileGrant(access, path)
 	return resolved, err
 }
@@ -261,7 +262,7 @@ func (m *Manager) authorizeFile(access Access, path string) (string, error) {
 // a listed finished download's (listedDownloadFile), that download's file
 // as it finished, which an open checks again where it opens it; nil for a
 // file granted by its directory.
-func (m *Manager) authorizeFileGrant(access Access, path string) (string, os.FileInfo, error) {
+func (m *Manager) authorizeFileGrant(access Caller, path string) (string, os.FileInfo, error) {
 	resolved, err := canonicalRoot(path)
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: resolve file: %w", err)
@@ -308,7 +309,7 @@ func (m *Manager) authorizeFileGrant(access Access, path string) (string, os.Fil
 	return "", nil, fmt.Errorf("browser: file is outside the workspace; enable outside-workspace file access to open it")
 }
 
-func (m *Manager) navigationAllowed(access Access, rawURL string) bool {
+func (m *Manager) navigationAllowed(access Caller, rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return false

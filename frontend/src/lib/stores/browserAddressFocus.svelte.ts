@@ -1,13 +1,15 @@
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 // The browser pane's address bar focus, per thread: the focus a user asked
-// for with a new tab (openBrowserTab arms it, its own answer settles it, the
-// pane takes it once the tab is ready) and the mounted pane's address bar
+// for with a new tab (openBrowserTab and the chat header's show arm it, its
+// own answer settles it, the pane takes it once the tab is ready) and the
+// mounted pane's address bar
 // for the focus-address command. A leaf: it knows nothing of the companion
 // store.
 
 // Address-bar focus the user asked for with a new tab, per thread: null for
-// none, PENDING_TAB until the `new` answer names the tab, then its page id.
+// none, PENDING_TAB until the answer names the tab it opened, then its page
+// id.
 // Any pointer press or key in the window before the pane takes it withdraws
 // every intent (the user moved on), as does the pane finding another tab
 // active. Each request is numbered (armedAddressFocus), so only its own
@@ -30,8 +32,8 @@ export function armAddressFocus(threadId: string): number {
 }
 
 /**
- * Settles request number `request` with the `new` answer's tab, '' when it
- * named none. Only this request's own answer settles it: a newer new tab
+ * Settles request number `request` with the tab its answer opened, '' when
+ * it named none. Only this request's own answer settles it: a newer new tab
  * replaced it, and this answer must neither resolve nor withdraw that one.
  */
 export function settleAddressFocus(threadId: string, request: number, pageId: string): void {

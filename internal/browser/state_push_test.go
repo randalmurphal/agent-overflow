@@ -73,7 +73,7 @@ func (c *statePushes) settle(want int) int {
 // once.
 func TestAToolCallPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -107,15 +107,13 @@ func TestAToolCallPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	}
 
 	manager.mu.Lock()
-	session := manager.sessions[access.ThreadID]
-	session.ActivePageID = ""
-	manager.sessions[access.ThreadID] = session
+	access.tb.session.ActivePageID = ""
 	manager.mu.Unlock()
 	wait()
 	if n := pushes.take(); n != 1 {
 		t.Fatalf("a tool call that gave the thread its active page pushed %d states, want 1", n)
 	}
-	if got := manager.CompanionState(access).ActivePageID; got != page.ID {
+	if got := manager.CompanionState(access.Caller()).ActivePageID; got != page.ID {
 		t.Fatalf("active page %q, want %q", got, page.ID)
 	}
 }
@@ -124,7 +122,7 @@ func TestAToolCallPushesStateOnlyWhenItChangedIt(t *testing.T) {
 // including ones that touched neither; only a change pushes.
 func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -153,7 +151,7 @@ func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 // because the decision took the write's record.
 func TestTwoPublishersOfOneWritePushItOnce(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -213,7 +211,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 	for _, tc := range infoReaders {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, _ := newLifecycleManager(t)
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			page := mustOpen(t, manager, access, "https://example.test/")
 			pushes := countStatePushes(manager)
 			manager.emitThreadState(access.ThreadID)
@@ -240,7 +238,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 // changes nothing push nothing.
 func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	pushes := countStatePushes(manager)
 	for range 2 {
@@ -287,7 +285,7 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 // publish pushes it.
 func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -319,7 +317,7 @@ func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 // that registers it carries what the load read.
 func TestARestoredPageIsPushedWithWhatItsLoadRead(t *testing.T) {
 	manager, _ := newRestoreManager(t, t.TempDir(), ManagerOptions{})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/one")
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
@@ -344,7 +342,7 @@ func TestARestoredPageIsPushedWithWhatItsLoadRead(t *testing.T) {
 // that client, so a write it carried is still pushed to every client.
 func TestAClientReadLeavesAWriteForThePush(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -367,7 +365,7 @@ func TestAClientReadLeavesAWriteForThePush(t *testing.T) {
 // goroutine of its own (refreshHistoryState), so it is waited for.
 func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -405,7 +403,7 @@ func TestAWriteRacingAPushIsPushed(t *testing.T) {
 // older one pushes nothing.
 func TestAnEngineInfoReportOlderThanTheShownOneIsDropped(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {

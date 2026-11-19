@@ -117,7 +117,7 @@ func newNavigateFixture(t *testing.T, wsl bool) (*Manager, Access, string, strin
 	if wsl {
 		m.engine = wslEngine{fakeEngine: newFakeEngine(), root: root, drive: workspace}
 	}
-	access := Access{ThreadID: "thread", Workspace: workspace}
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: workspace})
 	info, err := m.Open(t.Context(), access, "https://example.test/start", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -127,7 +127,7 @@ func newNavigateFixture(t *testing.T, wsl bool) (*Manager, Access, string, strin
 
 func pageURL(t *testing.T, m *Manager, access Access, pageID string) string {
 	t.Helper()
-	for _, page := range m.CompanionState(access).Pages {
+	for _, page := range m.CompanionState(access.Caller()).Pages {
 		if page.ID == pageID {
 			return page.URL
 		}
@@ -560,7 +560,7 @@ func TestCDPNavigateErrorMarksOnlyTheAbort(t *testing.T) {
 
 func TestStopCompanionLoadRefusesAnotherThreadsPageAndIgnoresATabWithNoPage(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	other := Access{ThreadID: "other", Workspace: access.Workspace}
+	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
 	if err := m.StopCompanionLoad(t.Context(), other, pageID); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("stop of another thread's page = %v", err)
 	}

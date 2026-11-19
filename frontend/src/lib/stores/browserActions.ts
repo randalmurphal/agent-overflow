@@ -5,19 +5,14 @@ import {
   browserPaneOpen,
   browserPaneShown,
   browserSourcePaneShown,
-  browserThreadSnapshot,
   canPresentNativeBrowser,
   canUseNativeBrowser,
-  nativeBrowserRefusal,
   noteBrowserPaneError,
   observeBrowserCompanion,
-  presentWantedBrowser,
-  readBrowserCompanionState,
   type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
 import {
   browserAction,
-  pageIdOf,
   sendForThread,
   sendFromPane,
   type ActiveTabOperation,
@@ -30,7 +25,6 @@ import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelt
 import { getCompanionPane } from './companionPanes.svelte';
 import { getPane, paneCommandTarget } from './panes.svelte';
 import { TransportError } from '../transport/wsClient';
-import { errString } from '../utils/errors';
 import { addErrorToast } from './toast.svelte';
 
 // What the user's gestures on a thread's browser mean: the pane's chrome,
@@ -113,7 +107,12 @@ export async function actInPane(pane: BrowserPaneAttachment, action: BrowserActi
  * Null on success.
  */
 export async function browserCompanionAct(threadId: string, action: ThreadAction): Promise<BrowserActionFailure | null> {
-  return (await runAction(threadId, browserPaneAttachment(threadId), () => sendForThread(threadId, action))).failure;
+  return (await actForThread(threadId, action)).failure;
+}
+
+/** browserCompanionAct, answering the state as well. */
+function actForThread(threadId: string, action: ThreadAction): Promise<ActionResult> {
+  return runAction(threadId, browserPaneAttachment(threadId), () => sendForThread(threadId, action));
 }
 
 /** What a cookie jar switch answered. */
@@ -148,9 +147,9 @@ export interface NewTabOptions {
   /** Loaded in the new tab (a mod-clicked link, a picked file). */
   readonly address?: string;
   /**
-   * The new-tab button's, shortcut's and header button's: the address bar
-   * takes focus, its text selected, once the tab is ready, unless the user
-   * did anything else first (addressFocusIntent).
+   * The new-tab button's and shortcut's: the address bar takes focus, its
+   * text selected, once the tab is ready, unless the user did anything else
+   * first (addressFocusIntent).
    */
   readonly focusAddress?: boolean;
 }
@@ -159,8 +158,8 @@ export interface NewTabOptions {
  * Opens a new tab in the thread's browser for the user, showing the pane
  * even when the thread had no tab: the backend selects the tab and shows the
  * companion before the engine page exists, so the creating tab arrives with
- * the pane. From the chat header or a link, with no pane in hand, it applies
- * in arrival order; from a pane, openBrowserTabInPane numbers it.
+ * the pane. From a link, with no pane in hand, it applies in arrival order;
+ * from a pane, openBrowserTabInPane numbers it.
  */
 export function openBrowserTab(threadId: string, options: NewTabOptions = {}): Promise<BrowserActionFailure | null> {
   const action = browserAction.newTab(options.address);
@@ -297,19 +296,22 @@ export function browserHeaderIntent(threadId: string): BrowserHeaderIntent {
   return browserPaneShown(threadId) ? { kind: 'hide', threadId } : { kind: 'show', threadId };
 }
 
-// The header's shows in flight, one per thread: a press while the button
-// still shows the browser closed joins the show under way. It stands in for
-// a Manager operation that shows the current tab, or reserves one blank tab
-// when there is none, in one admission (see showBrowserFromHeader).
+// A header show still unanswered, per thread. A press while the button
+// still offers show (the show's state has not landed) is the same press
+// repeated and joins it, so a double click arms one address focus and
+// raises one toast. A hide press of the thread ends the run: a show after
+// it is sent again. The Manager converges two shows on its own
+// (ShowCompanion); this is only the UI's.
 const headerShows = new Map<string, Promise<void>>();
 
 /**
- * Carries out a header press. A refusal, or a read that fails, reaches a
- * toast, since a hidden pane has no banner.
+ * Carries out a header press. A refusal reaches a toast, since a hidden
+ * pane has no banner.
  */
 export function runBrowserHeaderIntent(intent: BrowserHeaderIntent): Promise<void> {
   switch (intent.kind) {
     case 'hide':
+      headerShows.delete(intent.threadId);
       return hideBrowserFromHeader(intent.threadId);
     case 'show': {
       const pending = headerShows.get(intent.threadId);
@@ -335,57 +337,29 @@ async function hideBrowserFromHeader(threadId: string): Promise<void> {
 }
 
 /**
- * Shows the thread's browser. A state this connection does not know is
- * read first, so tabs opened while this window was away are shown rather
- * than given another; admitting the read may show the pane already. After
- * the read the pane that asked must still show the thread. Existing tabs
- * are shown; only a state known to have none gets a new tab, its address
- * focused. The owner is checked again as each action is sent.
+ * Shows the thread's browser with one action that names no tab: at its
+ * turn the Manager shows the tab the thread has selected, or opens one
+ * blank tab when it has none, which the answer names and whose address bar
+ * takes focus (ShowCompanion). The answer's state opens the pane.
  *
- * The show and the new tab are two calls, so an agent's tab opened between
- * them still gets a blank tab beside it: closing that needs one Manager
- * operation that shows the active tab, or reserves one blank tab when there
- * is none, in one admission.
+ * The show may open a tab, so it is sent only where this layout presents
+ * the pane: beside a pane showing the thread, in a layout and page that
+ * can present the browser (canPresentNativeBrowser, never compact). It is
+ * asked in the press's own task, as the action is sent, so no layout
+ * change falls between the check and the send; a tab the show opens
+ * before a later change to compact is presented when the layout can be
+ * again (browserPresentationWanted). A page that cannot host the thread's
+ * browser at all is refused where the action is sent (sendForThread), and
+ * the refusal reaches a toast.
  */
 async function showBrowserFromHeader(threadId: string): Promise<void> {
-  try {
-    await readBrowserCompanionState(threadId);
-  } catch (err) {
-    addErrorToast(`The browser's tabs could not be read: ${errString(err)}`, err);
-    return;
-  }
   if (!browserSourcePaneShown(threadId)) return;
-  const snapshot = browserThreadSnapshot(threadId);
-  switch (snapshot.status) {
-    case 'unknown': {
-      // Only a page that cannot host the browser leaves it unread.
-      const refusal = nativeBrowserRefusal(threadId) ?? new Error("The browser's tabs are not known yet.");
-      addErrorToast(refusal.message, refusal);
-      return;
-    }
-    case 'known': {
-      if ((snapshot.snapshot.pages?.length ?? 0) === 0) {
-        // A refusal reaches a toast there (openBrowserTab).
-        await openBrowserTab(threadId, { focusAddress: true });
-        return;
-      }
-      if (snapshot.snapshot.visible === true) {
-        // The session is shown already; only this layout lacks the pane.
-        presentWantedBrowser(threadId);
-        return;
-      }
-      const active = snapshot.snapshot.activePageId;
-      const failure = await browserCompanionAct(threadId, browserAction.show(pageIdOf(active)));
-      if (failure) addErrorToast(failure.error, failure.cause);
-      return;
-    }
-    default:
-      unhandledSnapshot(snapshot);
-  }
-}
-
-function unhandledSnapshot(snapshot: never): never {
-  throw new Error(`Unhandled browser snapshot: ${JSON.stringify(snapshot)}`);
+  if (canUseNativeBrowser(threadId) && !canPresentNativeBrowser(threadId)) return;
+  const request = armAddressFocus(threadId);
+  const { failure, state } = await actForThread(threadId, browserAction.showBrowser());
+  settleAddressFocus(threadId, request, failure ? '' : (state?.pageId ?? ''));
+  // An older backend refuses the kind ("unsupported companion action").
+  if (failure) addErrorToast(failure.error, failure.cause);
 }
 
 observeBrowserCompanion({

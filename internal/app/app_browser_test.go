@@ -250,7 +250,7 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 	app.browser.manager = manager
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-tie")
-	access, err := app.browserAccess(thread.ID)
+	access, err := app.bindBrowser(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
 	app.browser.manager = manager
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-host-window")
-	access, err := app.browserAccess(thread.ID)
+	access, err := app.bindBrowser(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestDeleteThreadReleasesItsBrowserPagesAndToolToggles(t *testing.T) {
 			app.browser.mcp = appbrowser.NewMCPServer(manager, true)
 			t.Cleanup(func() { _ = manager.Close() })
 			thread := makeWorkspaceThread(t, app, "thread-delete-browser")
-			access, err := app.browserAccess(thread.ID)
+			access, err := app.bindBrowser(thread.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -423,7 +423,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 	if err := <-deleted; err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if pages := manager.CompanionState(appbrowser.Access{ThreadID: thread.ID}).Pages; len(pages) != 0 {
+	if pages := manager.CompanionState(appbrowser.Caller{ThreadID: thread.ID}).Pages; len(pages) != 0 {
 		t.Fatalf("the deleted thread owns %d browser pages", len(pages))
 	}
 }
@@ -453,7 +453,7 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 				app.browser.manager = manager
 				t.Cleanup(func() { _ = manager.Close() })
 				thread := makeWorkspaceThread(t, app, "thread-companion-"+name+"-"+deleteName)
-				access, err := app.browserAccess(thread.ID)
+				access, err := app.bindBrowser(thread.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -473,7 +473,7 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 				deleted := make(chan error, 1)
 				go func() { deleted <- deleteThread(app, thread.ID) }()
 				waitFor(t, "the delete to close the thread's pages", func() bool {
-					return manager.CompanionState(access).SessionName == ""
+					return manager.CompanionState(access.Caller()).SessionName == ""
 				})
 				opened := make(chan error, 1)
 				go func() {
@@ -485,14 +485,14 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 				if err := <-opened; err != nil {
 					t.Fatalf("opening a tab while the delete runs: %v", err)
 				}
-				if pages := manager.CompanionState(access).Pages; len(pages) != 1 {
+				if pages := manager.CompanionState(access.Caller()).Pages; len(pages) != 1 {
 					t.Fatalf("the thread owns %d browser pages before the delete finishes, want 1", len(pages))
 				}
 				unlock()
 				if err := <-deleted; err != nil {
 					t.Fatalf("delete: %v", err)
 				}
-				if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
+				if pages := manager.CompanionState(access.Caller()).Pages; len(pages) != 0 {
 					t.Fatalf("the deleted thread owns %d browser pages", len(pages))
 				}
 			})
@@ -529,7 +529,7 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 			app.browser.manager = manager
 			t.Cleanup(func() { _ = manager.Close() })
 			thread := makeWorkspaceThread(t, app, "thread-companion-deleted-"+name)
-			access, err := app.browserAccess(thread.ID)
+			access, err := app.bindBrowser(thread.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -550,7 +550,7 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 			if !errors.Is(err, appbrowser.ErrThreadClosed) {
 				t.Fatalf("the action returned %v, want the thread's close", err)
 			}
-			if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
+			if pages := manager.CompanionState(access.Caller()).Pages; len(pages) != 0 {
 				t.Fatalf("the deleted thread owns %d browser pages", len(pages))
 			}
 		})
@@ -568,13 +568,13 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			app.browser.manager = manager
 			t.Cleanup(func() { _ = manager.Close() })
 			var threadID string
-			bound, end := context.Background(), func() error { return nil }
+			var binding appbrowser.ThreadBinding
 			if held {
 				threadID, _ = seedHeldSource(t, app, 1)
 			} else {
 				thread := makeWorkspaceThread(t, app, "thread-companion-late")
 				threadID = thread.ID
-				bound, end = manager.BindThread(context.Background(), threadID)
+				binding = manager.BindThread(threadID)
 				if err := app.deleteThread(threadID); err != nil {
 					t.Fatal(err)
 				}
@@ -587,14 +587,17 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			}
 			// An action that read the row before the delete opens its page
 			// after the delete's last close.
-			access := appbrowser.Access{ThreadID: threadID, Workspace: t.TempDir()}
-			if _, err := manager.NewCompanionPage(bound, access, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
+			access, err := binding.Access(appbrowser.Caller{ThreadID: threadID, Workspace: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.NewCompanionPage(context.Background(), access, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
 				t.Fatalf("the action bound before the delete opened a tab: %v", err)
 			}
-			if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
+			if pages := manager.CompanionState(access.Caller()).Pages; len(pages) != 0 {
 				t.Fatalf("the deleted thread owns %d browser pages", len(pages))
 			}
-			if err := end(); !errors.Is(err, appbrowser.ErrThreadClosed) {
+			if err := access.End(); !errors.Is(err, appbrowser.ErrThreadClosed) {
 				t.Fatalf("the action ended with %v, want the thread's close", err)
 			}
 		})
@@ -610,25 +613,32 @@ func TestACompanionActionOverlappingAPageCloseLeavesNoPage(t *testing.T) {
 	app, manager := newBrowserTestApp(t)
 	thread, access := browserTestThread(t, app, "thread-companion-retired")
 
-	staleCtx, endStale := manager.BindThread(context.Background(), thread.ID)
-	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	laterCtx, endLater := manager.BindThread(context.Background(), thread.ID)
-	fresh, err := manager.NewCompanionPage(laterCtx, access, "")
+	caller := access.Caller()
+	stale, err := manager.BindThread(thread.ID).Access(caller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.NewCompanionPage(staleCtx, access, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
+	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	later, err := manager.BindThread(thread.ID).Access(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := manager.NewCompanionPage(t.Context(), later, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.NewCompanionPage(t.Context(), stale, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
 		t.Fatalf("the stale action's new tab answered %v, want ErrThreadClosed", err)
 	}
-	if err := endStale(); !errors.Is(err, appbrowser.ErrThreadClosed) {
+	if err := stale.End(); !errors.Is(err, appbrowser.ErrThreadClosed) {
 		t.Fatalf("the stale action ended with %v, want ErrThreadClosed", err)
 	}
-	if err := endLater(); err != nil {
+	if err := later.End(); err != nil {
 		t.Fatalf("an action bound after the close ended with %v", err)
 	}
-	pages := manager.CompanionState(access).Pages
+	pages := manager.CompanionState(caller).Pages
 	if len(pages) != 1 || pages[0].ID != fresh.ID {
 		t.Fatalf("the thread has tabs %+v, want only the one the later action opened", pages)
 	}
@@ -644,22 +654,36 @@ func newBrowserTestApp(t *testing.T) (*App, *appbrowser.Manager) {
 	return app, manager
 }
 
+// browserTestThread creates a thread with a workspace and binds an action
+// of it on the app's browser manager.
 func browserTestThread(t *testing.T, app *App, id string) (store.Thread, appbrowser.Access) {
 	t.Helper()
-	thread := testThread(id)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	access, err := app.browserAccess(thread.ID)
+	thread, _ := browserTestCaller(t, app, id)
+	access, err := app.bindBrowser(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return thread, access
 }
 
-func browserPageStates(manager *appbrowser.Manager, access appbrowser.Access) []appbrowser.PageInfo {
-	return manager.CompanionState(access).Pages
+// browserTestCaller creates a thread with a workspace and answers its
+// browser Caller, for a manager the test binds on itself.
+func browserTestCaller(t *testing.T, app *App, id string) (store.Thread, appbrowser.Caller) {
+	t.Helper()
+	thread := testThread(id)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	caller, err := app.browserCaller(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return thread, caller
+}
+
+func browserPageStates(manager *appbrowser.Manager, caller appbrowser.Caller) []appbrowser.PageInfo {
+	return manager.CompanionState(caller).Pages
 }
 
 // The reaper ending an idle session suspends the thread's browser pages; a
@@ -688,10 +712,10 @@ func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
 		t.Fatalf("StopSession: %v", err)
 	}
 
-	if pages := browserPageStates(manager, reapedAccess); len(pages) != 1 || !pages[0].Suspended {
+	if pages := browserPageStates(manager, reapedAccess.Caller()); len(pages) != 1 || !pages[0].Suspended {
 		t.Fatalf("pages of the reaped thread = %#v, want one suspended", pages)
 	}
-	if pages := browserPageStates(manager, stoppedAccess); len(pages) != 1 || pages[0].Suspended {
+	if pages := browserPageStates(manager, stoppedAccess.Caller()); len(pages) != 1 || pages[0].Suspended {
 		t.Fatalf("pages of the stopped thread = %#v, want one live", pages)
 	}
 
@@ -704,7 +728,7 @@ func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
 	if _, err := app.BrowserCompanionDo(t.Context(), reaped.ID, BrowserCompanionAction{Kind: "activate", PageID: pageID}); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if pages := browserPageStates(manager, reapedAccess); len(pages) != 1 || pages[0].ID != pageID || pages[0].Suspended {
+	if pages := browserPageStates(manager, reapedAccess.Caller()); len(pages) != 1 || pages[0].ID != pageID || pages[0].Suspended {
 		t.Fatalf("pages after presenting = %#v, want %s live", pages, pageID)
 	}
 }
@@ -736,7 +760,7 @@ func TestAStopKeepsTheStoppedThreadsBrowserPages(t *testing.T) {
 	if _, live := app.sessionManager().get(worker.ID); live {
 		t.Fatal("the stopped worker still has a session")
 	}
-	if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+	if pages := browserPageStates(manager, access.Caller()); len(pages) != 1 || pages[0].Suspended {
 		t.Fatalf("pages of the stopped worker = %#v, want its one page left open", pages)
 	}
 }
@@ -773,7 +797,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 			if err := tc.archive(app, thread.ID); err != nil {
 				t.Fatalf("archive: %v", err)
 			}
-			if pages := browserPageStates(manager, access); len(pages) != 0 {
+			if pages := browserPageStates(manager, access.Caller()); len(pages) != 0 {
 				t.Fatalf("archived thread still has browser pages: %#v", pages)
 			}
 		})
@@ -795,7 +819,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
-		if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+		if pages := browserPageStates(manager, access.Caller()); len(pages) != 1 || pages[0].Suspended {
 			t.Fatalf("pages of a thread whose session the archive kept = %#v", pages)
 		}
 	})
@@ -834,13 +858,13 @@ func TestBootKeepsSavedBrowserPagesOnlyForListedThreads(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.browser.mockEngine = true
 	dir := t.TempDir()
-	listed, listedAccess := browserTestThread(t, app, "thread-boot-listed")
-	archived, archivedAccess := browserTestThread(t, app, "thread-boot-archived")
+	listed, listedAccess := browserTestCaller(t, app, "thread-boot-listed")
+	archived, archivedAccess := browserTestCaller(t, app, "thread-boot-archived")
 	current := app.currentSettings()
 	current.BrowserEnabled = true
 	first := app.newBrowserManager(dir, current)
-	for _, access := range []appbrowser.Access{listedAccess, archivedAccess} {
-		if _, err := first.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+	for _, caller := range []appbrowser.Caller{listedAccess, archivedAccess} {
+		if _, err := first.Open(t.Context(), first.Bind(caller), "https://example.test/", appbrowser.OpenOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -877,7 +901,7 @@ func TestShutdownStopsTheReapersBrowserSuspension(t *testing.T) {
 	if err := app.suspendThreadBrowserPages(thread.ID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("suspension after the shutdown began = %v", err)
 	}
-	if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+	if pages := browserPageStates(manager, access.Caller()); len(pages) != 1 || pages[0].Suspended {
 		t.Fatalf("pages = %#v, want one live", pages)
 	}
 }

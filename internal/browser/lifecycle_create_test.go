@@ -14,7 +14,7 @@ import (
 // the companion is shown with it.
 func TestANewTabShowsCreatingThenReady(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	release := engine.hold(&engine.newPageGate)
 	defer release()
 	type result struct {
@@ -26,7 +26,7 @@ func TestANewTabShowsCreatingThenReady(t *testing.T) {
 		return result{info, err}
 	})
 	receive(t, engine.creating, "the engine page's creation")
-	state := manager.CompanionState(access)
+	state := manager.CompanionState(access.Caller())
 	if len(state.Pages) != 1 || !state.Pages[0].Creating {
 		t.Fatalf("tabs while the page is created = %+v, want one creating tab", state.Pages)
 	}
@@ -39,7 +39,7 @@ func TestANewTabShowsCreatingThenReady(t *testing.T) {
 	if got.err != nil || got.info.ID != id {
 		t.Fatalf("new = %+v, %v, want page %s", got.info, got.err, id)
 	}
-	state = manager.CompanionState(access)
+	state = manager.CompanionState(access.Caller())
 	if len(state.Pages) != 1 || state.Pages[0].Creating || state.ActivePageID != id || (state.Visible == nil || !*state.Visible) {
 		t.Fatalf("after the creation: %+v", state)
 	}
@@ -50,13 +50,13 @@ func TestANewTabShowsCreatingThenReady(t *testing.T) {
 func TestAFailedCreationShowsOnTheUsersTabOnly(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
 	engine.newPageErr = errors.New("engine refused the page")
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 
 	info, err := manager.NewCompanionPage(t.Context(), access, "")
 	if err != nil || info.ID != "" {
 		t.Fatalf("a failed user creation = %+v, %v, want no page and no error", info, err)
 	}
-	state := manager.CompanionState(access)
+	state := manager.CompanionState(access.Caller())
 	if len(state.Pages) != 1 || !strings.Contains(state.Pages[0].Error, "engine refused") || state.Pages[0].Creating {
 		t.Fatalf("tabs after the failure = %+v, want one tab with the error", state.Pages)
 	}
@@ -114,7 +114,7 @@ func TestClosingATabWhileItIsCreated(t *testing.T) {
 				engine.disposeErr = errors.New("the profile's browser would not stop")
 			}
 			events := recordEvents(manager)
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			release := engine.hold(&engine.newPageGate)
 			defer release()
 			type result struct {
@@ -134,7 +134,7 @@ func TestClosingATabWhileItIsCreated(t *testing.T) {
 				t.Fatalf("tabs right after closing the creating one = %v", got)
 			}
 			// A second close joins the first; it ends when the creation does.
-			pending, ok := manager.closePending(access, id)
+			pending, ok := closePendingTab(manager, access, id)
 			if !ok {
 				t.Fatal("a second close does not find the creating tab")
 			}
@@ -175,7 +175,7 @@ func TestAFailedTabClosedBeforeItIsShownReportsItsCleanup(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
 	engine.newPageErr = errors.New("engine refused the page")
 	engine.disposeErr = errors.New("the profile's browser would not stop")
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	var (
 		closing  sync.Once
 		pending  *pendingPage
@@ -192,7 +192,7 @@ func TestAFailedTabClosedBeforeItIsShownReportsItsCleanup(t *testing.T) {
 			if page.Error != "" {
 				closing.Do(func() {
 					var ok bool
-					if pending, ok = manager.closePending(access, page.ID); !ok {
+					if pending, ok = closePendingTab(manager, access, page.ID); !ok {
 						t.Error("the close does not find the failed tab")
 					}
 				})
@@ -222,7 +222,7 @@ func TestAFailedTabClosedBeforeItIsShownReportsItsCleanup(t *testing.T) {
 // after it, and forgets its failed one.
 func TestCloseThreadClosesCreatingAndFailedTabs(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	engine.newPageErr = errors.New("engine refused the page")
 	if _, err := manager.NewCompanionPage(t.Context(), access, ""); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestCloseThreadClosesCreatingAndFailedTabs(t *testing.T) {
 // before its restore ends.
 func TestSelectPresentsBeforePageWork(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	a := mustOpen(t, manager, access, "https://example.test/a")
 	b, err := manager.NewCompanionPage(t.Context(), access, "https://example.test/b")
 	if err != nil {
@@ -302,7 +302,7 @@ func TestSelectPresentsBeforePageWork(t *testing.T) {
 	defer releaseNav()
 	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, b.ID) })
 	receive(t, engine.navigating, "the restore's navigation")
-	state := manager.CompanionState(access)
+	state := manager.CompanionState(access.Caller())
 	tab, _ := findTab(manager, access, b.ID)
 	if state.ActivePageID != b.ID || !tab.Restoring {
 		t.Fatalf("while restoring: active %q, tab %+v", state.ActivePageID, tab)
@@ -320,7 +320,7 @@ func TestSelectPresentsBeforePageWork(t *testing.T) {
 // restored it is no error.
 func TestClosingATabWhileItRestores(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)

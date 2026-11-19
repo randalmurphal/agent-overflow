@@ -17,7 +17,7 @@ import (
 // have its store deleted, or rewritten, under it.
 func TestClearSiteDataHoldsNewPagesUntilBothClearsEnd(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	access := Access{ThreadID: "t", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "t", Workspace: t.TempDir()})
 	openPage(t, manager, access, "https://example.test/")
 
 	gate := make(chan struct{})
@@ -55,8 +55,9 @@ func TestClearSiteDataHoldsNewPagesUntilBothClearsEnd(t *testing.T) {
 // clear leaves no tab, in memory or saved, at an address it cleared.
 func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	access := Access{ThreadID: "t", Workspace: t.TempDir()}
-	openPage(t, manager, access, "https://example.test/old")
+	access := manager.Bind(Caller{ThreadID: "t", Workspace: t.TempDir()})
+	page := openPage(t, manager, access, "https://example.test/old")
+	handle := livePage(t, manager, access, page.ID).driver.Handle()
 
 	// An engine start in flight holds startMu, which the clear waits for
 	// after it forgets the records it finds.
@@ -74,11 +75,12 @@ func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 	if err := manager.SuspendThread(context.Background(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
+	manager.pageCrashed(handle, "crashed")
 	manager.startMu.Unlock()
 	if err := <-cleared; err != nil {
 		t.Fatalf("clear site data: %v", err)
 	}
-	if tabs := manager.CompanionState(access).Pages; len(tabs) != 0 {
+	if tabs := manager.CompanionState(access.Caller()).Pages; len(tabs) != 0 {
 		t.Fatalf("after the clear the thread lists tabs %+v", tabs)
 	}
 	saved, err := os.ReadFile(manager.recordPath(access.ThreadID))
@@ -137,7 +139,7 @@ func TestCloseDisposesInlineOnTheUIThread(t *testing.T) {
 	engine := &uiThreadEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
 	for _, thread := range []string{"a", "b"} {
-		access := Access{ThreadID: thread, Workspace: t.TempDir()}
+		access := manager.Bind(Caller{ThreadID: thread, Workspace: t.TempDir()})
 		if _, err := manager.Open(t.Context(), access, "https://example.test/"+thread, OpenOptions{}); err != nil {
 			t.Fatalf("open for %s: %v", thread, err)
 		}

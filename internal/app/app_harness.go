@@ -172,7 +172,7 @@ func (h *harnessHost) BrowserPressKey(threadID, pageID string, chord keybindings
 	if h.app.browser.manager == nil {
 		return errors.New("browser manager unavailable")
 	}
-	access, err := h.app.browserAccess(threadID)
+	access, err := h.app.bindBrowser(threadID)
 	if err != nil {
 		return err
 	}
@@ -183,7 +183,7 @@ func (h *harnessHost) BrowserScroll(threadID, pageID string, x, y float64) error
 	if h.app.browser.manager == nil {
 		return errors.New("browser manager unavailable")
 	}
-	access, err := h.app.browserAccess(threadID)
+	access, err := h.app.bindBrowser(threadID)
 	if err != nil {
 		return err
 	}
@@ -195,13 +195,13 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 	if h.app.browser.manager == nil {
 		return nil, errors.New("browser manager unavailable")
 	}
-	access, err := h.app.browserAccess(threadID)
+	access, err := h.app.bindBrowser(threadID)
 	if err != nil {
 		return nil, err
 	}
 	manager := h.app.browser.manager
-	previous := manager.CompanionState(access)
-	mount, err := manager.AttachPane(access)
+	previous := manager.CompanionState(access.Caller())
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		return nil, err
 	}

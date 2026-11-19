@@ -209,7 +209,7 @@ func (l *popupLauncher) reportPopup(pageID string, report webview2host.PopupRepo
 // tabs answers the thread's tabs by engine page id.
 func (l *popupLauncher) tabs(threadID string) map[string]*managedPage {
 	out := map[string]*managedPage{}
-	for _, p := range l.manager.ownedPages(threadID) {
+	for _, p := range l.manager.ownedPages(lifetimeOf(l.manager, threadID)) {
 		out[p.driver.Handle()] = p
 	}
 	return out
@@ -269,8 +269,10 @@ func (l *popupLauncher) settledEngine() {
 	}
 }
 
-func popupTestAccess(t *testing.T, thread string) Access {
-	return Access{ThreadID: thread, Workspace: t.TempDir()}
+// access binds a caller of thread, in a workspace of its own, on l's
+// Manager.
+func (l *popupLauncher) access(thread string) Access {
+	return l.manager.Bind(Caller{ThreadID: thread, Workspace: l.t.TempDir()})
 }
 
 // tabInfo answers a tab's info as the Manager holds it.

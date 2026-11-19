@@ -174,18 +174,18 @@ func TestADownloadRowListsTheCauseTheLauncherSaw(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newPopupLauncher(t)
-			access := popupTestAccess(t, "thread")
+			access := l.access("thread")
 			_, page := l.open(access)
 			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
 			l.awaitDownloads(access, downloadStateRunning)
-			row := l.manager.CompanionState(access).Downloads[0]
+			row := l.manager.CompanionState(access.Caller()).Downloads[0]
 			if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
 				t.Fatal(err)
 			}
 			end := snapshot("dl-1", webview2host.DownloadRunning, 20)
 			end.Cancel = webview2host.CancelTaken(1)
 			reportDownload(t, l.engine, page, tc.end(end))
-			if got := l.manager.CompanionState(access).Downloads[0]; got.State != tc.wantState || got.Error != tc.wantError {
+			if got := l.manager.CompanionState(access.Caller()).Downloads[0]; got.State != tc.wantState || got.Error != tc.wantError {
 				t.Fatalf("the row is %s %q, want %s %q", got.State, got.Error, tc.wantState, tc.wantError)
 			}
 		})
@@ -219,11 +219,11 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 		}
 		return out
 	}
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, page := l.open(access)
 	reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
 	l.awaitDownloads(access, downloadStateRunning)
-	row := l.manager.CompanionState(access).Downloads[0]
+	row := l.manager.CompanionState(access.Caller()).Downloads[0]
 	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	status := refusedSnapshot("dl-1", 1, 20)
 	status.Answer = true
 	reportDownload(t, l.engine, page, status)
-	if got := l.manager.CompanionState(access).Downloads[0]; got.State != downloadStateRunning || got.Error != testRefusal {
+	if got := l.manager.CompanionState(access.Caller()).Downloads[0]; got.State != downloadStateRunning || got.Error != testRefusal {
 		t.Fatalf("after the status the row is %+v", got)
 	}
 	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
@@ -243,7 +243,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	// A late snapshot still carrying the first cancel's refusal leaves the
 	// second standing.
 	reportDownload(t, l.engine, page, refusedSnapshot("dl-1", 1, 25))
-	if got := l.manager.CompanionState(access).Downloads[0]; got.State != downloadStateRunning || got.Error != "" {
+	if got := l.manager.CompanionState(access.Caller()).Downloads[0]; got.State != downloadStateRunning || got.Error != "" {
 		t.Fatalf("the first cancel's refusal after the second made the row %+v", got)
 	}
 	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
@@ -257,7 +257,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	failed := refusedSnapshot("dl-1", 2, 30)
 	failed.State, failed.End, failed.Reason = webview2host.DownloadInterrupted, webview2host.DownloadEndFailed, "the network failed"
 	reportDownload(t, l.engine, page, failed)
-	if got := l.manager.CompanionState(access).Downloads[0]; got.State != downloadStateFailed || got.Error != "the network failed" {
+	if got := l.manager.CompanionState(access.Caller()).Downloads[0]; got.State != downloadStateFailed || got.Error != "the network failed" {
 		t.Fatalf("a failure after a lost refusal lists as %+v", got)
 	}
 }

@@ -39,7 +39,7 @@ func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "native-smoke-popup-downloads", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-popup-downloads", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -56,13 +56,13 @@ func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
 		for !done() {
 			select {
 			case <-ctx.Done():
-				t.Fatalf("%s never happened: tabs %+v, downloads %+v", what, manager.CompanionState(access).Pages, manager.CompanionState(access).Downloads)
+				t.Fatalf("%s never happened: tabs %+v, downloads %+v", what, manager.CompanionState(access.Caller()).Pages, manager.CompanionState(access.Caller()).Downloads)
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
 	}
 	tabNamed := func(title string) string {
-		for _, tab := range manager.CompanionState(access).Pages {
+		for _, tab := range manager.CompanionState(access.Caller()).Pages {
 			if tab.Title == title {
 				return tab.ID
 			}
@@ -79,12 +79,12 @@ func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
 	t.Run("a download a popup starts before its listing", func(t *testing.T) {
 		open(opener.ID, "/popup.bin")
 		await("the popup's download to finish", func() bool {
-			listed := manager.CompanionState(access).Downloads
+			listed := manager.CompanionState(access.Caller()).Downloads
 			return len(listed) == 1 && listed[0].State == downloadStateCompleted && listed[0].ReceivedBytes == int64(len(payload))
 		})
 		// In the popup's tab, not its opener's.
 		var inOpener, inPopup int
-		for _, p := range manager.ownedPages(access.ThreadID) {
+		for _, p := range manager.ownedPages(access.tb) {
 			if p.id == opener.ID {
 				inOpener += len(p.downloads.list())
 			} else {

@@ -22,7 +22,7 @@ func TestNativeEngineRealCrashKeepsTheTab(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-crash", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-crash", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)

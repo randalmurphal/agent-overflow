@@ -89,7 +89,9 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 				t.Fatalf("revealed %q, want the first completion's file twice", revealed)
 			}
 
-			manager.ClearThreadDownloads(access)
+			if err := manager.ClearThreadDownloads(access); err != nil {
+				t.Fatal(err)
+			}
 			if got := threadDownloads(manager, access); len(got) != 0 {
 				t.Fatalf("the pane lists %d downloads after its history was cleared", len(got))
 			}
@@ -105,7 +107,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			}
 
 			startDownload(t, manager, access, page, "last.txt", 10)
-			if err := manager.closeLivePage(t.Context(), access, page.ID); err != nil {
+			if err := manager.closeLivePage(t.Context(), access.tb, page.ID); err != nil {
 				t.Fatal(err)
 			}
 			kept := threadDownloads(manager, access)

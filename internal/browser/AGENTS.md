@@ -31,11 +31,22 @@ mode. Product behavior and authority are defined in
   switch (`jar_switch.go`) advances the thread's jar generation and suspends
   its live pages into durable records in one lock hold; the tabs return
   only through the restore path, and any create or restore admitted under
-  an older generation must retry, never land in the old jar. `SetJar`
-  takes the caller's `JarConsent`: an unconfirmed switch is refused while
-  the thread has a live tab, in the hold that captures it and in the one
-  that would commit it, and a switch refused after its write saves the
-  thread back as it is.
+  an older generation must retry, never land in the old jar. From its
+  capture to its commit a switch holds its lifetime's structural gate:
+  every change to that lifetime's tabs takes `Manager.mu` through
+  `lockStructure`, which waits for the commit, so the commit suspends the
+  tabs it captured and wrote. `SetJar` takes the caller's `JarConsent`: an
+  unconfirmed switch is refused while the thread has a live tab, in the
+  hold that captures it, and a switch refused after its write (the
+  Manager's close) saves the thread back as it is.
+- A thread's browser lives as long as the thread (`thread_life.go`): one
+  `threadBrowser` per lifetime owns its session, browsing history, pane
+  color and download list, and every tab names it as its owner. An action
+  binds before its first wait (`Bind`, `BindThread`) and reaches only the
+  lifetime it bound; `CloseThread` detaches the lifetime in its first hold,
+  so a commit through it answers `ErrThreadClosed`, and closes only what it
+  detached. Look a lifetime up by thread id only for what shows the thread
+  as it is now (state, presentation, the saved copy).
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
   a pending tab, a popup being adopted reserves its page from admission to
   listing (`adoptPopup`), a closed page leaves the tab set before its engine

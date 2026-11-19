@@ -3,12 +3,9 @@ package browser
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"time"
-
-	"agent-overflow/internal/browser/turnorder"
 )
 
 // Page lifecycle. A tab appears in the thread's state the moment a page is
@@ -128,272 +125,6 @@ func (m *Manager) goLife(fn func()) bool {
 	return true
 }
 
-// tabClaim is what a new tab takes besides its slot: a closed tab it
-// reopens (ReopenClosedTab), taken off the thread's closed-tab history in the
-// hold that adds the tab.
-type tabClaim struct {
-	stack *closedTabs
-	tab   closedTab
-}
-
-// errReopenForgotten refuses a reopened tab whose closed-tab history was
-// forgotten, or whose entry another reopen took, after the reopen read it.
-var errReopenForgotten = errors.New("browser: the closed tab was forgotten")
-
-// admitTabLocked is a new tab's admission in the hold that adds it and
-// again in the startMu hold that creates its page: the thread lifetime ctx
-// is bound to still holds (BindThread), and a reopened tab's history is
-// still the thread's, which a clear's forget, a jar switch and the thread's
-// close replace. The caller holds m.mu.
-func (m *Manager) admitTabLocked(ctx context.Context, owner string, claim *tabClaim) error {
-	if err := m.lifeAdmitsLocked(ctx, owner); err != nil {
-		return err
-	}
-	if claim != nil && m.closedTabs[owner] != claim.stack {
-		return errReopenForgotten
-	}
-	return nil
-}
-
-// admissionRefused is a tab admitTabLocked refused where its page is
-// created.
-type admissionRefused struct{ err error }
-
-func (e *admissionRefused) Error() string { return e.err.Error() }
-func (e *admissionRefused) Unwrap() error { return e.err }
-
-// createPage creates a page for access's thread. Its tab appears at once,
-// creating, and the call returns once the engine page exists. A tab closed
-// meanwhile answers errClosedWhileCreating. This is an agent's tab, opened
-// behind the selection; the user's go through createPageAt.
-func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
-	return m.createPageAt(ctx, access, nil, -1, nil)
-}
-
-// createPageAt is createPage with the new tab placed at index in the
-// thread's tab order from the start; a negative index appends it. A tab the
-// user opens has the turn its selection was admitted in (selection.go): it
-// is selected and its companion shown before the engine is asked, in the
-// hold that adds the tab and commits the turn, and a failure stays on the
-// tab. A turn whose pane detached meanwhile opens nothing and answers
-// errSelectionPassed. An agent's tab has no turn. claim, when set, is taken in
-// the hold that adds the tab (admitTabLocked).
-func (m *Manager) createPageAt(ctx context.Context, access Access, turn *turnorder.Turn, index int, claim *tabClaim) (*managedPage, error) {
-	user := turn != nil
-	p := newManagedPage(access)
-	p.info = PageInfo{ID: p.id, URL: "about:blank"}
-	createCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	pending := &pendingPage{p: p, cancel: cancel, done: make(chan struct{})}
-	defer close(pending.done)
-	owner := access.ThreadID
-
-	admit := func() error {
-		if err := m.admitTabLocked(ctx, owner, claim); err != nil {
-			return &admissionRefused{err: err}
-		}
-		return nil
-	}
-	m.mu.Lock()
-	if err := m.admitTabLocked(ctx, owner, claim); err != nil {
-		m.mu.Unlock()
-		return nil, err
-	}
-	if claim != nil {
-		if stack := claim.stack; len(stack.tabs) == 0 || stack.tabs[len(stack.tabs)-1] != claim.tab {
-			// Another reopen took it.
-			m.mu.Unlock()
-			return nil, errReopenForgotten
-		}
-	}
-	if user && turn.Commit() == turnorder.Passed {
-		m.mu.Unlock()
-		return nil, errSelectionPassed
-	}
-	if err := m.admitThreadPageLocked(owner); err != nil {
-		m.mu.Unlock()
-		return nil, err
-	}
-	if claim != nil {
-		claim.stack.tabs = claim.stack.tabs[:len(claim.stack.tabs)-1]
-	}
-	if m.pending == nil {
-		m.pending = make(map[string]*pendingPage)
-	}
-	m.pending[p.id] = pending
-	savedMoved := false
-	if index >= 0 {
-		savedMoved, _ = m.placeTabLocked(owner, p.id, index)
-	}
-	if user {
-		info := m.sessionLocked(owner)
-		info.ActivePageID, info.Visible = p.id, true
-		info.UpdatedAt = time.Now()
-		m.sessions[owner] = info
-	}
-	m.mu.Unlock()
-	m.emitThreadState(owner)
-	if savedMoved {
-		if err := m.persistThreads([]string{owner}); err != nil {
-			// The suspended tabs keep their new places in memory; only a
-			// restart before the next save puts them back.
-			log.Printf("browser: place a new tab of thread %s: save the thread's pages: %v", owner, err)
-		}
-	}
-	if user {
-		// The page shown before is hidden while the new tab is created.
-		m.syncPanePresentation(owner)
-	}
-
-	// One startMu hold spans the engine start and the page's registration, so
-	// the idle close cannot stop the engine in between.
-	var scope *jarScope
-	var err error
-	var closed bool
-	var refused *admissionRefused
-	for {
-		m.startMu.Lock()
-		scope, err = m.openPageLocked(createCtx, access, p, admit)
-		refused = nil
-		errors.As(err, &refused)
-		// One m.mu hold settles the creation against its close flag and its
-		// thread's jar as they are now, so neither a close nor a jar switch can
-		// land between reading them and acting on it.
-		m.mu.Lock()
-		closed = pending.closed
-		if err == nil && !closed && !m.jarCurrentLocked(p) {
-			// The thread switched jars while the engine created the page in the
-			// old one: it is created again, under the same tab, in the new one.
-			stale := p
-			p = m.freshPendingPageLocked(pending)
-			m.mu.Unlock()
-			m.startMu.Unlock()
-			m.abandonStale(scope, stale, p)
-			continue
-		}
-		switch {
-		case err == nil && !closed:
-			delete(m.pending, p.id)
-			delete(scope.creating, p)
-			m.listPageLocked(scope, p)
-		case err != nil && (closed || !user || refused != nil):
-			delete(m.pending, p.id)
-		case err != nil:
-			pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
-		}
-		m.mu.Unlock()
-		m.startMu.Unlock()
-		break
-	}
-
-	switch {
-	case err == nil && !closed:
-		// The tab leaves its creating state.
-		m.pageAdded(p)
-		return p, nil
-	case err == nil:
-		// Closed while the engine created it: the engine page is closed
-		// before the entry stops holding the thread's slot.
-		pending.cleanupErr = m.abandonPage(scope, p)
-		m.dropPending(pending)
-		if pending.cleanupErr != nil {
-			m.reportTeardown(owner, p.id, pending.cleanupErr)
-		}
-		return nil, errClosedWhileCreating
-	}
-	if closed || user {
-		// The profile the creation left behind failing to dispose is
-		// reported whether or not its tab is still there: a close can take
-		// the tab at any point from here, and then answers with it. The
-		// creation's own failure (its cancellation, for a closed tab) is not.
-		pending.cleanupErr = teardownPart(err)
-		if pending.cleanupErr != nil {
-			m.reportTeardown(owner, p.id, pending.cleanupErr)
-		}
-	}
-	m.repairActivePage(owner)
-	m.emitThreadState(owner)
-	m.syncPanePresentation(owner)
-	switch {
-	case closed:
-		return nil, errClosedWhileCreating
-	case refused != nil:
-		return nil, refused.err
-	case user:
-		return nil, &shownOnTab{err: err}
-	}
-	return nil, err
-}
-
-// freshPendingPageLocked replaces a pending tab's page, whose engine page was
-// created under a jar its thread has left, with a new page under the same id
-// and tab position, and answers it. The caller holds m.mu and abandons the
-// old page (abandonStale).
-func (m *Manager) freshPendingPageLocked(pending *pendingPage) *managedPage {
-	old := pending.p
-	p := newManagedPage(old.access)
-	p.id, p.createdAt, p.info = old.id, old.createdAt, old.cachedInfo()
-	p.tabOrder.Store(old.tabOrder.Load())
-	p.lastUse.Store(old.lastUse.Load())
-	pending.p = p
-	return p
-}
-
-// abandonStale closes a page created in a jar its thread has left, before it
-// was registered; a failure to release that jar's profile reports as the
-// teardown of the tab's page.
-func (m *Manager) abandonStale(scope *jarScope, stale, tab *managedPage) {
-	if err := m.abandonPage(scope, stale); err != nil {
-		m.reportTeardown(tab.owner, tab.id, err)
-	}
-}
-
-// shownOnTab is a failed creation the user's tab shows as its Error.
-type shownOnTab struct{ err error }
-
-func (e *shownOnTab) Error() string { return e.err.Error() }
-func (e *shownOnTab) Unwrap() error { return e.err }
-
-// dropPending forgets a creation entry.
-func (m *Manager) dropPending(pending *pendingPage) {
-	m.mu.Lock()
-	if m.pending[pending.p.id] == pending {
-		delete(m.pending, pending.p.id)
-	}
-	m.mu.Unlock()
-}
-
-// admitThreadPageLocked refuses a page past the thread's cap. Every tab
-// counts, and so does a page still closing or being created after its tab
-// was closed. The caller holds m.mu.
-func (m *Manager) admitThreadPageLocked(threadID string) error {
-	if m.threadPageCountLocked(threadID) < maxPagesPerThread {
-		return nil
-	}
-	closing := 0
-	for _, scope := range m.scopes {
-		for _, c := range scope.closing {
-			if c.p.owner == threadID && m.suspended[c.p.id] == nil {
-				closing++
-			}
-		}
-	}
-	for _, pending := range m.pending {
-		if pending.closed && pending.p.owner == threadID {
-			closing++
-		}
-	}
-	return fmt.Errorf("browser: page limit reached for thread (%d)%s", maxPagesPerThread, closingHint(closing))
-}
-
-// closingHint says why a cap is reached while closed pages still hold it.
-func closingHint(closing int) string {
-	if closing > 0 {
-		return "; a closed page is still shutting down, try again in a moment"
-	}
-	return "; close a page first"
-}
-
 // ClosePage closes one of the caller's pages and waits for the engine to
 // finish with it, answering a failure of that teardown. A suspended page has
 // no engine page to close; closing it forgets its record.
@@ -407,24 +138,27 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 // tab set records for reopening (recordUserCloseLocked). The tab is found in
 // whichever of those states it is in, and taken out of it, in one m.mu hold,
 // so a creation or restore moving it between states meanwhile cannot hide it.
+// That hold waits for a jar switch of the thread writing its saved copy.
 func (m *Manager) closePage(ctx context.Context, access Access, pageID string, wait, byUser bool) error {
 	pageID = strings.TrimSpace(pageID)
-	m.mu.Lock()
-	finish := m.closeTabLocked(access, pageID, byUser)
+	if err := m.lockStructure(ctx, access.tb); err != nil {
+		return err
+	}
+	finish := m.closeTabLocked(access.tb, pageID, byUser)
 	m.mu.Unlock()
 	return finish(ctx, wait)
 }
 
-// closeTabLocked is closePage's m.mu hold: it takes the caller's tab pageID
-// out of the tab set and answers the rest of the close, which the caller
-// runs after releasing m.mu. The rest publishes the close and, with wait,
-// waits for the teardown; it answers errPageNotFound when pageID was no
-// tab of the caller's.
-func (m *Manager) closeTabLocked(access Access, pageID string, byUser bool) func(ctx context.Context, wait bool) error {
-	if m.forgetRecordLocked(access.ThreadID, pageID, byUser) {
-		return func(context.Context, bool) error { return m.recordForgotten(access.ThreadID) }
+// closeTabLocked is closePage's m.mu hold: it takes tb's tab pageID out of
+// the tab set and answers the rest of the close, which the caller runs
+// after releasing m.mu. The rest publishes the close and, with wait, waits
+// for the teardown; it answers errPageNotFound when pageID was no tab of
+// tb. The caller holds m.mu, taken by lockStructure.
+func (m *Manager) closeTabLocked(tb *threadBrowser, pageID string, byUser bool) func(ctx context.Context, wait bool) error {
+	if m.forgetRecordLocked(tb, pageID, byUser) {
+		return func(context.Context, bool) error { return m.recordForgotten(tb) }
 	}
-	if c, started, err := m.beginCloseLiveLocked(access, pageID, byUser); err == nil {
+	if c, started, err := m.beginCloseLiveLocked(tb, pageID, byUser); err == nil {
 		return func(ctx context.Context, wait bool) error {
 			if started != nil {
 				m.startClose(started, c)
@@ -435,12 +169,12 @@ func (m *Manager) closeTabLocked(access Access, pageID string, byUser bool) func
 			return c.wait(ctx)
 		}
 	}
-	pending, ok := m.closePendingLocked(access, pageID)
+	pending, ok := m.closePendingLocked(tb, pageID)
 	if !ok {
 		return func(context.Context, bool) error { return errPageNotFound }
 	}
 	return func(ctx context.Context, wait bool) error {
-		m.pendingClosed(access.ThreadID)
+		m.pendingClosed(tb)
 		if !wait {
 			return nil
 		}
@@ -448,35 +182,30 @@ func (m *Manager) closeTabLocked(access Access, pageID string, byUser bool) func
 	}
 }
 
-// closeLivePage closes a live page and waits for its teardown. It answers
-// errPageNotFound when the page is not live or closing.
-func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID string) error {
-	c, err := m.beginCloseLive(access, pageID, false)
+// closeLivePage closes a live page of tb and waits for its teardown. It
+// answers errPageNotFound when the page is not live or closing.
+func (m *Manager) closeLivePage(ctx context.Context, tb *threadBrowser, pageID string) error {
+	if err := m.lockStructure(ctx, tb); err != nil {
+		return err
+	}
+	c, started, err := m.beginCloseLiveLocked(tb, pageID, false)
+	m.mu.Unlock()
+	if started != nil {
+		m.startClose(started, c)
+	}
 	if err != nil {
 		return err
 	}
 	return c.wait(ctx)
 }
 
-// beginCloseLive starts the close of the caller's live page, or answers the
-// close already running for it (beginCloseLiveLocked).
-func (m *Manager) beginCloseLive(access Access, pageID string, byUser bool) (*pageClose, error) {
-	m.mu.Lock()
-	c, started, err := m.beginCloseLiveLocked(access, pageID, byUser)
-	m.mu.Unlock()
-	if started != nil {
-		m.startClose(started, c)
-	}
-	return c, err
-}
-
-// beginCloseLiveLocked moves the caller's live page to closing, answering
-// its close and its scope, for the caller to startClose after releasing
-// m.mu, or answers the close already running for it with a nil scope.
-// Finding the page and moving it is one m.mu hold, so concurrent closes
-// agree on one teardown, and only the one that moved it records a user's
-// close. The caller holds m.mu.
-func (m *Manager) beginCloseLiveLocked(access Access, pageID string, byUser bool) (*pageClose, *jarScope, error) {
+// beginCloseLiveLocked moves tb's live page to closing, answering its close
+// and its scope, for the caller to startClose after releasing m.mu, or
+// answers the close already running for it with a nil scope. Finding the
+// page and moving it is one m.mu hold, so concurrent closes agree on one
+// teardown, and only the one that moved it records a user's close. The
+// caller holds m.mu.
+func (m *Manager) beginCloseLiveLocked(tb *threadBrowser, pageID string, byUser bool) (*pageClose, *jarScope, error) {
 	if m.suspended[pageID] != nil {
 		// A jar switch's record: the tab is the record, and its page closing
 		// under the same id is no longer a tab (SetJar).
@@ -484,17 +213,17 @@ func (m *Manager) beginCloseLiveLocked(access Access, pageID string, byUser bool
 	}
 	for _, scope := range m.scopes {
 		if c := scope.closing[pageID]; c != nil {
-			if c.p.owner != access.ThreadID {
+			if c.p.owner != tb {
 				return nil, nil, errPageNotFound
 			}
 			return c, nil, nil
 		}
 		if p := scope.pages[pageID]; p != nil {
-			if p.owner != access.ThreadID {
+			if p.owner != tb {
 				return nil, nil, errPageNotFound
 			}
 			if byUser {
-				m.recordUserCloseLocked(p.owner, pageID)
+				m.recordUserCloseLocked(tb, pageID)
 			}
 			return m.markClosingLocked(p, scope), scope, nil
 		}
@@ -521,11 +250,11 @@ func (m *Manager) startClose(scope *jarScope, c *pageClose) {
 	// finds the page gone (pageLive) or its operations ended.
 	p.cancelOps()
 	m.repairActivePage(p.owner)
-	m.emitThreadState(p.owner)
+	m.emitThreadState(p.owner.id)
 	m.publishDownloads(c.ended.notes...)
 	// Hides the page (presentPanes hides closing pages) before its engine
 	// teardown, which can take a while.
-	m.syncPanePresentation(p.owner)
+	m.syncPanePresentation(p.owner.id)
 	if !m.goLife(func() { m.runClose(scope, c) }) {
 		m.runClose(scope, c)
 	}
@@ -552,28 +281,18 @@ func (m *Manager) runClose(scope *jarScope, c *pageClose) {
 	}
 	close(c.done)
 	if c.err != nil {
-		m.reportTeardown(p.owner, p.id, c.err)
+		m.reportTeardown(p.owner.id, p.id, c.err)
 	}
 }
 
-// closePending closes a tab that is still being created, or a failed
-// creation's tab, and answers its entry, whose wait ends when the creation
-// has finished with it; false when pageID is no such tab of the caller.
-func (m *Manager) closePending(access Access, pageID string) (*pendingPage, bool) {
-	m.mu.Lock()
-	pending, ok := m.closePendingLocked(access, pageID)
-	m.mu.Unlock()
-	if ok {
-		m.pendingClosed(access.ThreadID)
-	}
-	return pending, ok
-}
-
-// closePendingLocked is closePending's lock hold; the caller holds m.mu and
-// calls pendingClosed after releasing it when it answers true.
-func (m *Manager) closePendingLocked(access Access, pageID string) (*pendingPage, bool) {
+// closePendingLocked takes tb's tab pageID that is still being created,
+// or a failed creation's tab, out of the tab set and answers its entry,
+// whose wait ends when the creation has finished with it; false when pageID
+// is no such tab of tb. The caller holds m.mu and calls pendingClosed after
+// releasing it when it answers true.
+func (m *Manager) closePendingLocked(tb *threadBrowser, pageID string) (*pendingPage, bool) {
 	pending := m.pending[pageID]
-	if pending == nil || pending.p.owner != access.ThreadID {
+	if pending == nil || pending.p.owner != tb {
 		return nil, false
 	}
 	if pending.err != "" {
@@ -585,35 +304,29 @@ func (m *Manager) closePendingLocked(access Access, pageID string) (*pendingPage
 	return pending, true
 }
 
-// pendingClosed publishes the close of a pending tab of the thread.
-func (m *Manager) pendingClosed(threadID string) {
-	m.repairActivePage(threadID)
-	m.emitThreadState(threadID)
-	m.syncPanePresentation(threadID)
+// pendingClosed publishes the close of a pending tab of tb.
+func (m *Manager) pendingClosed(tb *threadBrowser) {
+	m.repairActivePage(tb)
+	m.emitThreadState(tb.id)
+	m.syncPanePresentation(tb.id)
 }
 
-// closeThreadPending closes every tab of the thread that is still being
-// created and forgets its failed creations, for CloseThread: a creation it
-// closes registers no page.
-func (m *Manager) closeThreadPending(threadID string) {
-	changed := false
+// closeThreadPending closes every tab of the detached lifetime tb that is
+// still being created and forgets its failed creations, for CloseThread: a
+// creation it closes registers no page.
+func (m *Manager) closeThreadPending(tb *threadBrowser) {
 	m.mu.Lock()
 	for id, pending := range m.pending {
 		switch {
-		case pending.p.owner != threadID:
+		case pending.p.owner != tb:
 		case pending.err != "":
 			delete(m.pending, id)
-			changed = true
 		case !pending.closed:
 			pending.closed = true
 			pending.cancel()
-			changed = true
 		}
 	}
 	m.mu.Unlock()
-	if changed {
-		m.emitThreadState(threadID)
-	}
 }
 
 // abandonPage closes a page openPageLocked created that will not be
@@ -657,9 +370,9 @@ func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
 	return true
 }
 
-// retirePrivateJarLocked ends the thread's use of a private jar once no tab
-// of it is live or being created: the thread's next private page opens a new
-// jar, while pages still closing, and popups still being adopted, finish in
+// retirePrivateJarLocked ends the thread lifetime's use of a private jar
+// once no tab of it is live or being created: its next private page opens a
+// new jar, while pages still closing, and popups still being adopted, finish in
 // the old one, under its own key. A popup is listed only while its opener is
 // a tab of the jar (adoptPopup), so one being adopted keeps no tab coming.
 // The caller holds m.mu.
@@ -672,9 +385,8 @@ func (m *Manager) retirePrivateJarLocked(scope *jarScope) {
 			return
 		}
 	}
-	if info, ok := m.sessions[scope.jar.thread]; ok && info.privateJar == scope.jar.private {
-		info.privateJar = ""
-		m.sessions[scope.jar.thread] = info
+	if tb := scope.jar.owner; tb.session.privateJar == scope.jar.private {
+		tb.session.privateJar = ""
 	}
 }
 

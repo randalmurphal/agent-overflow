@@ -175,10 +175,10 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 				opener := writeSmokeFile(t, workspace, "index.html", fmt.Sprintf(
 					"<!doctype html><title>opener</title><script>const SECRET = %s; %s window.open(%s);</script>",
 					jsonString(smokeFileURL(secret)), tc.open, jsonString(smokeFileURL(allowed))))
-				access := Access{
+				access := manager.Bind(Caller{
 					ThreadID: "native-smoke-" + jar + "-" + tc.name, Workspace: workspace,
 					ProjectRoot: resolvedTempDir(t), ProjectID: "native-smoke",
-				}
+				})
 				t.Cleanup(func() {
 					if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 						t.Errorf("close the thread's pages: %v", err)
@@ -237,7 +237,7 @@ func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-evaluate", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-evaluate", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -278,7 +278,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-find", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-find", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -296,7 +296,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-find-frames", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-find-frames", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -471,7 +471,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}

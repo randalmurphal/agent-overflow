@@ -78,7 +78,7 @@ func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string
 		// subsystems. Both mean the thread is offered no browser server.
 		return nil, nil
 	}
-	return a.browser.mcp.RegisterThread(appbrowser.Access{
+	return a.browser.mcp.RegisterThread(appbrowser.Caller{
 		ThreadID:    thread.ID,
 		Workspace:   thread.WorkspacePath,
 		ProjectRoot: thread.ProjectPath,

@@ -23,7 +23,7 @@ func TestNativeEngineRealFailedLoadIsNoRecentAddress(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-recent", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-recent", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -50,7 +50,7 @@ func TestNativeEngineRealFailedLoadIsNoRecentAddress(t *testing.T) {
 		t.Fatalf("the refused load reports its own address %q", info.URL)
 	}
 	var got []string
-	for _, entry := range manager.RecentAddresses(access) {
+	for _, entry := range manager.RecentAddresses(access.Caller()) {
 		got = append(got, entry.URL)
 	}
 	if want := []string{page.URL}; !reflect.DeepEqual(got, want) {

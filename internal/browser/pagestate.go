@@ -83,7 +83,7 @@ func (m *Manager) pageLoading(p *managedPage, loading bool, order uint64) {
 	}
 	start := p.load.beginReadLocked()
 	p.metaMu.Unlock()
-	m.publishPages(p.owner)
+	m.publishPages(p.owner.id)
 	if start {
 		m.runFaviconReads(p)
 	}
@@ -149,7 +149,7 @@ func (m *Manager) readFaviconOnce(p *managedPage) bool {
 	p.load.favicon = icon
 	p.load.unpushed = true
 	p.metaMu.Unlock()
-	m.publishPages(p.owner)
+	m.publishPages(p.owner.id)
 	return false
 }
 

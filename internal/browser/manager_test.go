@@ -42,7 +42,7 @@ func TestWindowlessDeploymentRefusesBrowserToolsBySentence(t *testing.T) {
 	if manager.Available() {
 		t.Fatal("a windowless deployment reported browser tools as available")
 	}
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	_, err := manager.Open(t.Context(), access, "https://example.test", OpenOptions{})
 	if err == nil || !strings.Contains(err.Error(), "not available in this deployment") {
 		t.Fatalf("browser tool error = %v, want the unavailable sentence", err)
@@ -58,7 +58,7 @@ func TestFakeEngineCarriesPageOwnershipAndNavigation(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	defer manager.Close()
 	workspace := t.TempDir()
-	owner := Access{ThreadID: "owner", Workspace: workspace}
+	owner := manager.Bind(Caller{ThreadID: "owner", Workspace: workspace})
 	info, err := manager.Open(t.Context(), owner, "https://example.test/docs/guide", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
@@ -66,21 +66,21 @@ func TestFakeEngineCarriesPageOwnershipAndNavigation(t *testing.T) {
 	if info.URL != "https://example.test/docs/guide" || info.Title != "guide" {
 		t.Fatalf("page info = %#v", info)
 	}
-	state := manager.CompanionState(owner)
+	state := manager.CompanionState(owner.Caller())
 	if len(state.Pages) != 1 || state.Pages[0].ID != info.ID {
 		t.Fatalf("companion state = %#v", state)
 	}
 
 	// A page belongs to the thread that opened it, and no other thread can
 	// address it. That is Manager policy, and it holds on every engine.
-	intruder := Access{ThreadID: "intruder", Workspace: workspace}
+	intruder := manager.Bind(Caller{ThreadID: "intruder", Workspace: workspace})
 	if err := manager.ClosePage(t.Context(), intruder, info.ID); err == nil {
 		t.Fatal("another thread closed a page it does not own")
 	}
 	if err := manager.ClosePage(t.Context(), owner, info.ID); err != nil {
 		t.Fatalf("close own page: %v", err)
 	}
-	if pages := manager.CompanionState(owner).Pages; len(pages) != 0 {
+	if pages := manager.CompanionState(owner.Caller()).Pages; len(pages) != 0 {
 		t.Fatalf("closed page survives: %#v", pages)
 	}
 }
@@ -92,7 +92,7 @@ func TestFakeEngineCarriesPageOwnershipAndNavigation(t *testing.T) {
 func TestFakeEngineHistoryWalksBackAndForward(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	defer manager.Close()
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	info, err := manager.Open(t.Context(), access, "https://example.test/first", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
@@ -133,7 +133,7 @@ func TestPageInfoWithoutHistoryKeepsTheHistoryShown(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	first := mustOpen(t, manager, access, "https://example.test/first")
 	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: first.ID}); err != nil {
 		t.Fatalf("second navigation: %v", err)
@@ -177,7 +177,7 @@ func TestPageInfoWithoutHistoryKeepsTheHistoryShown(t *testing.T) {
 func TestFakeEngineRefusesPageContentByName(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	defer manager.Close()
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	info, err := manager.Open(t.Context(), access, "https://example.test", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
@@ -263,7 +263,7 @@ func TestCloseThreadReportsAProfileThatFailsToDispose(t *testing.T) {
 	engine.disposeErr = errors.New("the profile's browser would not stop")
 	thread := "thread"
 	for range 2 {
-		access := Access{ThreadID: thread, Workspace: t.TempDir()}
+		access := manager.Bind(Caller{ThreadID: thread, Workspace: t.TempDir()})
 		if _, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{}); err != nil {
 			t.Fatalf("open: %v", err)
 		}
@@ -272,7 +272,7 @@ func TestCloseThreadReportsAProfileThatFailsToDispose(t *testing.T) {
 	if !errors.Is(err, engine.disposeErr) {
 		t.Fatalf("CloseThread = %v, want the dispose failure", err)
 	}
-	if pages := manager.ownedPages(thread); len(pages) != 0 {
+	if pages := manager.ownedPages(lifetimeOf(manager, thread)); len(pages) != 0 {
 		t.Fatalf("the closed thread still owns %d page(s)", len(pages))
 	}
 	if got := engine.disposed.Load(); got != 2 {
@@ -291,7 +291,7 @@ func TestCloseThreadReportsAProfileThatFailsToDispose(t *testing.T) {
 // headless_engine_test.go; this is the half that decides when.
 func TestManagerDisposesAWorkspaceProfileWithItsLastPage(t *testing.T) {
 	manager, engine := newDisposeCountingManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	first, err := manager.Open(t.Context(), access, "https://example.test/one", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -344,12 +344,12 @@ func TestAPageOpenedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 		t.Run(closer.name, func(t *testing.T) {
 			manager, engine := newDisposeCountingManager(t)
 			workspace := t.TempDir()
-			closing := Access{ThreadID: "closing", Workspace: workspace}
+			closing := manager.Bind(Caller{ThreadID: "closing", Workspace: workspace})
 			last, err := manager.Open(t.Context(), closing, "https://example.test/", OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			other := Access{ThreadID: "other", Workspace: workspace}
+			other := manager.Bind(Caller{ThreadID: "other", Workspace: workspace})
 			var opened PageInfo
 			var openErr error
 			var reported atomic.Bool
@@ -392,7 +392,7 @@ func TestAPageCreatedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 		t.Run(closer.name, func(t *testing.T) {
 			manager, engine := newDisposeCountingManager(t)
 			workspace := t.TempDir()
-			closing := Access{ThreadID: "closing", Workspace: workspace}
+			closing := manager.Bind(Caller{ThreadID: "closing", Workspace: workspace})
 			last, err := manager.Open(t.Context(), closing, "https://example.test/", OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -401,7 +401,7 @@ func TestAPageCreatedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 				closer.close(t, manager, closing, last.ID)
 				return nil
 			}
-			other := Access{ThreadID: "other", Workspace: workspace}
+			other := manager.Bind(Caller{ThreadID: "other", Workspace: workspace})
 			opened, err := manager.Open(t.Context(), other, "https://example.test/other", OpenOptions{})
 			if err != nil {
 				t.Fatalf("open while the workspace's last page closes: %v", err)
@@ -427,7 +427,7 @@ func TestAFailedPageCreationDisposesTheProfileItLeavesEmpty(t *testing.T) {
 	}{
 		{"new workspace", func(*testing.T, *Manager, string) func() { return func() {} }},
 		{"last page closed meanwhile", func(t *testing.T, m *Manager, workspace string) func() {
-			closing := Access{ThreadID: "closing", Workspace: workspace}
+			closing := m.Bind(Caller{ThreadID: "closing", Workspace: workspace})
 			last, err := m.Open(t.Context(), closing, "https://example.test/", OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -447,7 +447,7 @@ func TestAFailedPageCreationDisposesTheProfileItLeavesEmpty(t *testing.T) {
 				during()
 				return refused
 			}
-			_, err := manager.Open(t.Context(), Access{ThreadID: "other", Workspace: workspace}, "https://example.test/other", OpenOptions{})
+			_, err := manager.Open(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: workspace}), "https://example.test/other", OpenOptions{})
 			if !errors.Is(err, refused) {
 				t.Fatalf("open = %v, want the engine's refusal", err)
 			}
@@ -466,12 +466,12 @@ func TestAFailedPageCreationDisposesTheProfileItLeavesEmpty(t *testing.T) {
 func TestACloseSpanningABrowserRestartSparesTheReopenedProfile(t *testing.T) {
 	manager, engine := newCloseHookManager(t)
 	workspace := t.TempDir()
-	closing := Access{ThreadID: "closing", Workspace: workspace}
+	closing := manager.Bind(Caller{ThreadID: "closing", Workspace: workspace})
 	last, err := manager.Open(t.Context(), closing, "https://example.test/", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := Access{ThreadID: "other", Workspace: workspace}
+	other := manager.Bind(Caller{ThreadID: "other", Workspace: workspace})
 	var opened PageInfo
 	engine.onClose = func(string) {
 		// A persistence change closes the browser, and the workspace
@@ -526,7 +526,7 @@ func TestAnIdleCloseDuringPageCreationKeepsThePage(t *testing.T) {
 			manager, engine := newDisposeCountingManager(t)
 			var idleClosed <-chan struct{}
 			ctx := tc.arm(t, engine, func() { idleClosed = runConcurrently(manager.closeIdleBrowser) })
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			page, err := manager.Open(ctx, access, "https://example.test/", OpenOptions{})
 			if err != nil {
 				t.Fatalf("open: %v", err)
@@ -545,7 +545,7 @@ func TestAnIdleCloseDuringPageCreationKeepsThePage(t *testing.T) {
 // With no page left, the idle close stops the engine.
 func TestAnIdleCloseStopsTheEngineWithNoPage(t *testing.T) {
 	manager, engine := newDisposeCountingManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -575,17 +575,17 @@ func TestAuthorizeFileStaysWithinGrantedRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &Manager{config: Config{}, scopes: make(map[string]*jarScope), engine: newFakeEngine()}
-	access := Access{ThreadID: "t", Workspace: root}
+	access := manager.Bind(Caller{ThreadID: "t", Workspace: root})
 	wantInside, _ := filepath.EvalSymlinks(inside)
-	if got, err := manager.authorizeFile(access, inside); err != nil || got != wantInside {
+	if got, err := manager.authorizeFile(access.Caller(), inside); err != nil || got != wantInside {
 		t.Fatalf("inside = %q, %v", got, err)
 	}
-	if _, err := manager.authorizeFile(access, outside); err == nil {
+	if _, err := manager.authorizeFile(access.Caller(), outside); err == nil {
 		t.Fatal("outside file unexpectedly allowed")
 	}
 	manager.config.AllowOutsideWorkspace = true
 	wantOutside, _ := filepath.EvalSymlinks(outside)
-	if got, err := manager.authorizeFile(access, outside); err != nil || got != wantOutside {
+	if got, err := manager.authorizeFile(access.Caller(), outside); err != nil || got != wantOutside {
 		t.Fatalf("outside with grant = %q, %v", got, err)
 	}
 }
@@ -652,13 +652,13 @@ func TestPopupOfAClosedOpenerIsNotAdopted(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { manager.Close() })
 	workspace := t.TempDir()
-	opener := Access{ThreadID: "opener", Workspace: workspace}
+	opener := manager.Bind(Caller{ThreadID: "opener", Workspace: workspace})
 	page, err := manager.Open(t.Context(), opener, "https://example.test/", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Another thread's page keeps the workspace profile alive.
-	if _, err := manager.Open(t.Context(), Access{ThreadID: "other", Workspace: workspace}, "https://example.test/", OpenOptions{}); err != nil {
+	if _, err := manager.Open(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: workspace}), "https://example.test/", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	openerHandle := paneHandle(manager, opener, page.ID)
@@ -674,7 +674,7 @@ func TestPopupOfAClosedOpenerIsNotAdopted(t *testing.T) {
 	}
 	manager.mu.Unlock()
 	manager.adoptPopup(enginePopup{Profile: profile.Handle(), Opener: openerHandle, Handle: "popup"})
-	if pages := manager.ownedPages(opener.ThreadID); len(pages) != 0 {
+	if pages := manager.ownedPages(opener.tb); len(pages) != 0 {
 		t.Fatalf("the closed thread adopted %d pages", len(pages))
 	}
 }
@@ -737,7 +737,7 @@ func newCloseHookManager(t *testing.T) (*Manager, *closeHookEngine) {
 // is closed with the thread.
 func TestCloseThreadClosesAPopupAdoptedWhileItRuns(t *testing.T) {
 	manager, engine := newCloseHookManager(t)
-	opener := Access{ThreadID: "opener", Workspace: t.TempDir()}
+	opener := manager.Bind(Caller{ThreadID: "opener", Workspace: t.TempDir()})
 	page, err := manager.Open(t.Context(), opener, "https://example.test/", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -749,7 +749,7 @@ func TestCloseThreadClosesAPopupAdoptedWhileItRuns(t *testing.T) {
 	if err := manager.CloseThread(context.Background(), opener.ThreadID); err != nil {
 		t.Fatalf("CloseThread: %v", err)
 	}
-	if pages := manager.ownedPages(opener.ThreadID); len(pages) != 0 {
+	if pages := manager.ownedPages(opener.tb); len(pages) != 0 {
 		t.Fatalf("the closed thread still owns %d page(s)", len(pages))
 	}
 }
@@ -758,7 +758,7 @@ func TestCloseThreadClosesAPopupAdoptedWhileItRuns(t *testing.T) {
 // closed rather than failing the close.
 func TestCloseThreadCountsAPageTheEngineClosedAsClosed(t *testing.T) {
 	manager, engine := newCloseHookManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	var handles []string
 	for range 2 {
 		page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
@@ -777,7 +777,7 @@ func TestCloseThreadCountsAPageTheEngineClosedAsClosed(t *testing.T) {
 	if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 		t.Fatalf("CloseThread: %v", err)
 	}
-	if pages := manager.ownedPages(access.ThreadID); len(pages) != 0 {
+	if pages := manager.ownedPages(access.tb); len(pages) != 0 {
 		t.Fatalf("the closed thread still owns %d page(s)", len(pages))
 	}
 }
@@ -789,7 +789,7 @@ func TestAClosedPageIsNoLongerTheActivePage(t *testing.T) {
 		t.Run(closer.name, func(t *testing.T) {
 			manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 			t.Cleanup(func() { manager.Close() })
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			first, err := manager.Open(t.Context(), access, "https://example.test/one", OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -835,7 +835,7 @@ func TestAPopupThatFailsToAttachIsDiscarded(t *testing.T) {
 	t.Cleanup(func() { manager.Close() })
 	engine := &discardRecordingEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
-	opener := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	opener := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := manager.Open(t.Context(), opener, "https://example.test/", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -853,7 +853,7 @@ func TestAPopupThatFailsToAttachIsDiscarded(t *testing.T) {
 	if !slices.Equal(discarded, []string{"popup"}) {
 		t.Fatalf("discarded %v, want [popup]", discarded)
 	}
-	if pages := manager.ownedPages(opener.ThreadID); len(pages) != 1 {
+	if pages := manager.ownedPages(opener.tb); len(pages) != 1 {
 		t.Fatalf("the thread owns %d pages, want its opener only", len(pages))
 	}
 }
@@ -880,7 +880,7 @@ func TestAnOpenWhoseProfileIsRefusedLeavesTheEngineToTheIdleClose(t *testing.T) 
 			t.Cleanup(func() { manager.Close() })
 			engine := &refusingProfileEngine{fakeEngine: newFakeEngine()}
 			manager.engine = engine
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			if openedBefore {
 				page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
 				if err != nil {
@@ -939,7 +939,7 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	t.Cleanup(func() { manager.Close() })
 	engine := &policyRecordingEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
-	access := Access{ThreadID: "thread", Workspace: workspace, ProjectRoot: project}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: workspace, ProjectRoot: project})
 	page, err := manager.NewPage(t.Context(), access)
 	if err != nil {
 		t.Fatal(err)
@@ -999,7 +999,7 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { manager.Close() })
 	manager.engine.(*fakeEngine).saving = downloadsAsArtifacts
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := manager.NewPage(t.Context(), access)
 	if err != nil {
 		t.Fatal(err)

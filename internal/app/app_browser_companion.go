@@ -52,14 +52,29 @@ type BrowserCompanionAction struct {
 	DownloadID string `json:"downloadId,omitempty"`
 }
 
-func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
+// browserCaller reads the thread's row as the browser's Caller, for a read
+// of the thread's browser as it is now.
+func (a *App) browserCaller(threadID string) (appbrowser.Caller, error) {
 	thread, err := a.browserThread(strings.TrimSpace(threadID))
+	if err != nil {
+		return appbrowser.Caller{}, err
+	}
+	return appbrowser.Caller{
+		ThreadID: thread.ID, Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath, ProjectID: thread.ProjectID,
+	}, nil
+}
+
+// bindBrowser binds an action to the thread's browser lifetime, before it
+// reads the thread's row: a close of the thread after the read is one the
+// action's Access sees, so the action changes nothing after it and its
+// End answers appbrowser.ErrThreadClosed.
+func (a *App) bindBrowser(threadID string) (appbrowser.Access, error) {
+	binding := a.browser.manager.BindThread(strings.TrimSpace(threadID))
+	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.Access{}, err
 	}
-	return appbrowser.Access{
-		ThreadID: thread.ID, Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath, ProjectID: thread.ProjectID,
-	}, nil
+	return binding.Access(caller)
 }
 
 // BrowserCompanionThreadState answers the thread's current page/session
@@ -74,11 +89,11 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
 	}
-	access, err := a.browserAccess(threadID)
+	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	return a.browser.manager.CompanionState(access), nil
+	return a.browser.manager.CompanionState(caller), nil
 }
 
 // BrowserCompanionPaneAttach registers the calling connection's mounted pane
@@ -102,11 +117,11 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 	if !transport.ConnStateFromContext(ctx).HostWindow() {
 		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
-	access, err := a.browserAccess(threadID)
+	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	result, err := a.browser.manager.AttachPane(access)
+	result, err := a.browser.manager.AttachPane(caller)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
@@ -156,12 +171,12 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	ctx, end := a.browser.manager.BindThread(ctx, strings.TrimSpace(threadID))
-	access, err := a.browserAccess(threadID)
-	if err == nil {
-		err = a.browser.manager.RevealPageFile(ctx, access, pageID)
+	access, err := a.bindBrowser(threadID)
+	if err != nil {
+		return err
 	}
-	return errors.Join(err, end())
+	err = a.browser.manager.RevealPageFile(ctx, access, pageID)
+	return errors.Join(err, access.End())
 }
 
 // BrowserCompanionRecentAddresses answers the addresses the thread's pages
@@ -174,11 +189,11 @@ func (a *App) BrowserCompanionRecentAddresses(threadID string) ([]appbrowser.Rec
 	if a.browser.manager == nil {
 		return nil, fmt.Errorf("browser manager unavailable")
 	}
-	access, err := a.browserAccess(threadID)
+	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return nil, err
 	}
-	return a.browser.manager.RecentAddresses(access), nil
+	return a.browser.manager.RecentAddresses(caller), nil
 }
 
 //ao:scope host
@@ -192,14 +207,14 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		return appbrowser.CompanionEvent{}, err
 	}
 	// Bound before the row is read: a close of the thread's pages after the
-	// read leaves this action nothing to open (BindThread).
-	ctx, end := a.browser.manager.BindThread(ctx, strings.TrimSpace(threadID))
-	access, err := a.browserAccess(threadID)
+	// read leaves this action nothing to change (bindBrowser).
+	access, err := a.bindBrowser(threadID)
 	if err != nil {
-		return appbrowser.CompanionEvent{}, errors.Join(err, end())
+		return appbrowser.CompanionEvent{}, err
 	}
-	// newPage is the page a "new" opened, named in the answer so the client
-	// that asked can tell its own tab from one an agent opened meanwhile.
+	// newPage is the page a "new", or a "show-browser" that found no tab,
+	// opened, named in the answer so the client that asked can tell its own
+	// tab from one an agent opened meanwhile.
 	newPage := ""
 	if cmd.numbered && cmd.kind != kindCloseActive && cmd.kind != kindReloadActive {
 		ctx = appbrowser.WithSelection(ctx, cmd.place)
@@ -238,6 +253,17 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case kindHide:
 		visible := false
 		_, err = m.Visibility(ctx, access, &visible, "")
+	case kindShowBrowser:
+		// The tab selected at its turn, or one blank tab it opens, which the
+		// answer names.
+		var outcome appbrowser.ShowOutcome
+		var shown string
+		outcome, shown, err = m.ShowCompanion(ctx, access)
+		switch outcome {
+		case appbrowser.ShowOpened:
+			newPage = shown
+		case appbrowser.ShowShown, appbrowser.ShowPassed:
+		}
 	case kindNew:
 		// Address, when set, is navigated in the new tab (a mod-clicked link).
 		var page appbrowser.PageInfo
@@ -278,7 +304,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		page, err = m.OpenThreadDownload(ctx, access, cmd.download)
 		newPage = page.ID
 	case kindDownloadsClear:
-		m.ClearThreadDownloads(access)
+		err = m.ClearThreadDownloads(access)
 	case kindFocusPage, kindFocusPageWithdraw:
 		// Keyboard focus moves within the window the native view lives in,
 		// so only that window may ask for it or take the request back.
@@ -293,13 +319,13 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	default:
 		err = fmt.Errorf("%w: kind %d", errNoCompanionHandler, cmd.kind)
 	}
-	if endErr := end(); endErr != nil {
+	if endErr := access.End(); endErr != nil {
 		return appbrowser.CompanionEvent{}, errors.Join(err, endErr)
 	}
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	state := a.browser.manager.CompanionState(access)
+	state := a.browser.manager.CompanionState(access.Caller())
 	state.PageID = newPage
 	return state, nil
 }
@@ -330,13 +356,12 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if a.browser.manager == nil {
 		return appbrowser.FindState{}, fmt.Errorf("browser manager unavailable")
 	}
-	ctx, end := a.browser.manager.BindThread(ctx, strings.TrimSpace(threadID))
-	access, err := a.browserAccess(threadID)
+	access, err := a.bindBrowser(threadID)
 	if err != nil {
-		return appbrowser.FindState{}, errors.Join(err, end())
+		return appbrowser.FindState{}, err
 	}
 	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Seq)
-	if endErr := end(); endErr != nil {
+	if endErr := access.End(); endErr != nil {
 		return appbrowser.FindState{}, errors.Join(err, endErr)
 	}
 	return state, err

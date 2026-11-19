@@ -20,7 +20,7 @@ func (l *popupLauncher) awaitDownloads(access Access, want ...string) {
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
 		var got []string
-		for _, d := range l.manager.CompanionState(access).Downloads {
+		for _, d := range l.manager.CompanionState(access.Caller()).Downloads {
 			got = append(got, d.State)
 		}
 		if slices.Equal(got, want) {
@@ -52,7 +52,7 @@ func (l *popupLauncher) pageDownloads(threadID, handle string) []string {
 // running ends there.
 func TestCompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	release := l.gate("PT-1")
 	defer release()
@@ -78,7 +78,7 @@ func TestCompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
 // after.
 func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	offered := make(chan string, 1)
 	adopt := l.engine.events.PopupOpened
@@ -122,7 +122,7 @@ func TestHostedDownloadEndAfterTheTargetWentIsKept(t *testing.T) {
 	for _, popup := range []bool{false, true} {
 		t.Run(fmt.Sprintf("popup %v", popup), func(t *testing.T) {
 			l := newPopupLauncher(t)
-			access := popupTestAccess(t, "thread")
+			access := l.access("thread")
 			_, page := l.open(access)
 			targetID := "T-" + page
 			if popup {
@@ -155,7 +155,7 @@ func TestHostedDownloadEndAfterTheTargetWentIsKept(t *testing.T) {
 func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
 	t.Run("closed", func(t *testing.T) {
 		l := newPopupLauncher(t)
-		access := popupTestAccess(t, "thread")
+		access := l.access("thread")
 		_, opener := l.open(access)
 		release := l.gate("PT-1")
 		defer release()
@@ -175,7 +175,7 @@ func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
 	t.Run("bound", func(t *testing.T) {
 		l := newPopupLauncher(t)
 		l.engine.attachTimeout = 200 * time.Millisecond
-		access := popupTestAccess(t, "thread")
+		access := l.access("thread")
 		_, opener := l.open(access)
 		release := l.gate("PT-1")
 		defer release()
@@ -190,7 +190,7 @@ func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
 // snapshots came before it while the popup was adopted.
 func TestTerminalDownloadSurvivesHeldReportBound(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	release := l.gate("PT-1")
 	defer release()
@@ -213,7 +213,7 @@ func TestTerminalDownloadSurvivesHeldReportBound(t *testing.T) {
 // after it, and a download it started meanwhile is in its own tab.
 func TestNestedHostedPopupBeforeParentListed(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	release := l.gate("PT-1")
 	defer release()
@@ -247,7 +247,7 @@ func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			l := newPopupLauncher(t)
-			access := popupTestAccess(t, "thread")
+			access := l.access("thread")
 			_, opener := l.open(access)
 			entered, releasePath := make(chan struct{}), make(chan struct{})
 			l.engine.backendPath = func(ctx context.Context, _ string) (string, error) {
@@ -285,7 +285,7 @@ func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 			waitClosed(t, closed, "the close's acknowledgment while the terminal snapshot is applied")
 			time.Sleep(50 * time.Millisecond)
 			// A popup still being adopted has its download parked, unlisted.
-			for _, row := range l.manager.CompanionState(access).Downloads {
+			for _, row := range l.manager.CompanionState(access.Caller()).Downloads {
 				if row.State != downloadStateRunning {
 					t.Errorf("the close passed the pending terminal snapshot: row %+v", row)
 				}

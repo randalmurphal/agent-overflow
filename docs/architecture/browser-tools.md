@@ -83,8 +83,8 @@ per-platform no-op.
   them from its frame tree.
 - Switching the jar with tabs open asks first in the pane. The pane sends
   the switch unconfirmed; the Manager refuses it, changing nothing, when the
-  thread has a live tab as it captures the switch or in the hold that would
-  commit it (`SetJar` with `JarSwitchIfNoLiveTab`, code
+  thread has a live tab as it captures the switch (`SetJar` with
+  `JarSwitchIfNoLiveTab`, code
   `browser_jar_unconfirmed`), and the pane then asks and sends it confirmed
   (`JarSwitchConfirmed`). A tab still being created is not live: the switch
   creates it again in the new jar. The Manager then suspends every live tab
@@ -92,10 +92,14 @@ per-platform no-op.
   position, label and address, the active tab staying active, and the
   records are captured once and saved before the switch takes effect, so a
   shutdown or crash mid-switch loses no tab, and a switch whose save fails
-  changes nothing and reports the failure. A switch refused after its save
-  (unconfirmed, the app shutting down, the thread closed) saves the thread
-  again as it is, so the saved copy never names a jar the thread is not in,
-  and reports when that save fails. The tabs come back through the
+  changes nothing and reports the failure. From the capture to the switch
+  taking effect, any change to the thread's tabs (one opened, closed,
+  moved, relabeled, selected, suspended, restored, crashed or adopted)
+  waits for the switch, one save long, and then applies in the new jar, so
+  the tabs the switch suspends are the tabs it saved. A switch refused
+  after its save (the app shutting down) saves the thread again as it is,
+  so the saved copy never names a jar the thread is not in, and reports
+  when that save fails; a close of the thread waits for the switch. The tabs come back through the
   ordinary restore: the pane brings back the tab it shows, and the others
   return when selected or used, with the navigation policy applied and no
   page history. A tab that cannot come back stays suspended with the error.
@@ -180,8 +184,8 @@ per-platform no-op.
 - A pane's tab commands take effect in the order the user made them
   (`selection.go`, `internal/browser/turnorder`), though the transport runs
   each call on its own goroutine. Every pane action that selects a tab
-  (`activate`, `step`, and the `new`, `reopen`, `duplicate` and
-  `download-open` that select the tab they open) and every keyboard command
+  (`activate`, `step`, `show-browser`, and the `new`, `reopen`, `duplicate`
+  and `download-open` that select the tab they open) and every keyboard command
   on the active tab (`close-active`, `reload-active`) carries the pane's
   mount and a number the client takes when the user acts: an epoch and a
   sequence in it, consecutive from 1. The client starts a mount's next
@@ -189,7 +193,7 @@ per-platform no-op.
   unanswered, so nothing of an older epoch is still meant to act; a
   re-attach is a new mount and starts again. A keyboard command on the
   active tab must carry them; a selection made with no pane mounted (the
-  chat header's new tab, a download opened from its toast) carries none,
+  chat header's show, a download opened from its toast) carries none,
   and the backend refuses an action that does not match its kind
   (`parseCompanionAction`). The Manager admits a mount's numbers in order:
   the next one acts at once, a later one waits for its predecessors' commit
@@ -210,9 +214,8 @@ per-platform no-op.
   newer epoch began answer success and act on nothing; a reopen keeps its
   closed tab. More than 256 waiting in one mount are refused with an error,
   and that number, sent again, is treated as never sent. An agent's
-  `browser_select_page` and the chat header's show apply in arrival order
-  and never wait. Closing a tab by its id reselects only when that tab was
-  the active one.
+  `browser_select_page` applies in arrival order and never waits. Closing a
+  tab by its id reselects only when that tab was the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
   `loading`). When a load stops, an engine with a pane reads the favicon in
@@ -274,15 +277,19 @@ per-platform no-op.
   tab, as a mod-clicked link does on a tab at the link. Both ask one
   question (`canPresentNativeBrowser`): the window hosts the thread's view,
   the home backend has an engine, the browser is on, and the layout is not
-  compact. A mod-click that fails it opens the link the ordinary way. The
-  state channel has no replay, so the client reads the state of each thread
-  it shows once per connection of the home backend, and the button decides
-  between showing the pane and opening a tab only from a state read or
-  pushed on the current connection, reading one first when it has none.
-  The button reads pressed while this layout shows the thread's pane, and
-  a press is chosen from that at the click: hide it, or show the browser
-  (a session already visible is presented here without a backend call,
-  hidden tabs are shown, and a thread with no tab gets one). A new tab the user
+  compact. A mod-click that fails it opens the link the ordinary way, and a
+  header press that fails it sends nothing. The state channel has no
+  replay, so the client reads the state of each thread it shows once per
+  connection of the home backend. The button reads pressed while
+  this layout shows the thread's pane, and a press is chosen from that at
+  the click: hide it, or show the browser. The show (`show-browser`,
+  `Manager.ShowCompanion`) names no tab: in one `Manager.mu` hold at its
+  turn it shows the tab the thread has selected then, or the one used last,
+  and with no tab it opens one blank tab, selected and shown, which the
+  answer names. So an agent's open or the user's selection before its turn
+  wins, two shows open one tab between them, and the client decides nothing
+  from a state it may not have read yet. A press repeated before the show's
+  state lands joins it; a hide press ends that run. A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted

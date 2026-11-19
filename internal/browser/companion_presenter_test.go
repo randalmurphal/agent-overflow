@@ -59,7 +59,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			})
 			attach := func() string {
 				t.Helper()
-				mount, err := manager.AttachPane(access)
+				mount, err := manager.AttachPane(access.Caller())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -88,7 +88,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 					t.Fatalf("%s: presented at %+v, want at x=%v", state, placed, rect.X)
 				}
 				manager.mu.Lock()
-				session := manager.sessions[access.ThreadID]
+				session := access.tb.session
 				manager.mu.Unlock()
 				if session.PaneW != int(rect.Width) || session.PaneH != int(rect.Height) {
 					t.Fatalf("%s: the pages follow a %dx%d pane, want %vx%v", state, session.PaneW, session.PaneH, rect.Width, rect.Height)

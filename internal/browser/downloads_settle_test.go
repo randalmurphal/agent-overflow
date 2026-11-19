@@ -44,7 +44,7 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, saving)
 			startDownload(t, manager, access, page, "chart.png", 10)
 			row := threadDownloads(manager, access)[0]
-			item, err := manager.threadDownload(access.ThreadID, row.ID)
+			item, err := manager.threadDownload(access, row.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +61,7 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 			if !errors.Is(err, errDownloadReplaced) {
 				t.Fatalf("opening a replaced download answered %v", err)
 			}
-			for _, tab := range manager.CompanionState(access).Pages {
+			for _, tab := range manager.CompanionState(access.Caller()).Pages {
 				if strings.HasSuffix(tab.URL, filepath.ToSlash(item.path)) {
 					t.Fatalf("a tab shows the replacement at %s", tab.URL)
 				}
@@ -106,7 +106,7 @@ func TestAParkedDownloadWhoseJarWentIsRemovedAtItsFate(t *testing.T) {
 		t.Fatalf("before its fate the download holds %d workspace bytes, want %d", got, maxDownloadBytes)
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadInProgress, 3))
-	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access).Pages[0].ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access.Caller()).Pages[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()

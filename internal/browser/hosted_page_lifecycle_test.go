@@ -75,7 +75,7 @@ func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 // discard is pending.
 func TestADiscardKeepsAPopupsReceivedCompletion(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	releaseAttach := l.gate("PT-1")
 	defer releaseAttach()
@@ -169,7 +169,7 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 	for _, gated := range []string{"attach", "history"} {
 		t.Run(gated, func(t *testing.T) {
 			l := newPopupLauncher(t)
-			access := popupTestAccess(t, "thread")
+			access := l.access("thread")
 			_, opener := l.open(access)
 			var release func()
 			if gated == "attach" {
@@ -227,7 +227,7 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 // close.
 func TestListedPopupsDoNotShareTheirOpenersLane(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	_, opener := l.open(access)
 	a, _ := l.popup(opener, "https://example.test/a")
 	b, _ := l.popup(opener, "https://example.test/b")
@@ -307,7 +307,7 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 	for _, how := range []string{"discarded after its bind", "targetless and closed"} {
 		t.Run(how, func(t *testing.T) {
 			l := newPopupLauncher(t)
-			access := popupTestAccess(t, "thread")
+			access := l.access("thread")
 			openerTab, opener := l.open(access)
 			var popupID string
 			var release func()
@@ -346,7 +346,7 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 			if _, started := listed["dl-b"]; started {
 				t.Fatalf("a download first reported after the popup's end was listed: %v", listed)
 			}
-			for _, d := range l.manager.CompanionState(access).Downloads {
+			for _, d := range l.manager.CompanionState(access.Caller()).Downloads {
 				if d.State == downloadStateRunning {
 					t.Fatalf("download %+v was left running", d)
 				}

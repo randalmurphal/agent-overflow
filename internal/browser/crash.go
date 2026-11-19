@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -51,8 +52,11 @@ func cdpCrashReason(event target.EventTargetCrashed) string {
 // cancelled first, so one waiting on a dead renderer gives up the page's
 // lock; then, in one m.mu hold, the page leaves its scope and its record
 // takes its place, as a suspension does (suspendPage). A page closed or
-// suspended meanwhile, or one a forget of every page (the browser turned
-// off, its site data cleared) is closing, is left as it is.
+// suspended meanwhile, one a forget of every page (the browser turned off,
+// its site data cleared) is closing, or one whose thread lifetime was
+// closed, which closes it, is left as it is. The hold waits out a jar
+// switch of the page's lifetime (lockStructure), which may close the page
+// first.
 func (m *Manager) pageCrashed(handle, reason string) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
@@ -60,10 +64,11 @@ func (m *Manager) pageCrashed(handle, reason string) {
 	if p == nil {
 		return
 	}
-	log.Printf("browser: page %s of thread %s crashed: %s", p.id, p.owner, reason)
+	log.Printf("browser: page %s of thread %s crashed: %s", p.id, p.owner.id, reason)
 	p.cancelOps()
 	p.mu.Lock()
-	m.mu.Lock()
+	// Without a cancel: a switch ends with its one write.
+	_ = m.lockStructure(context.Background(), p.owner)
 	var scope *jarScope
 	for _, candidate := range m.scopes {
 		if candidate.pages[p.id] == p {
@@ -71,7 +76,7 @@ func (m *Manager) pageCrashed(handle, reason string) {
 			break
 		}
 	}
-	if scope == nil || m.closed || m.forgettingLocked() {
+	if scope == nil || m.closed || m.forgettingLocked() || p.owner.detached.Load() {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return
@@ -91,11 +96,11 @@ func (m *Manager) pageCrashed(handle, reason string) {
 	p.driver.Close()
 	m.endFindLocked(p)
 	p.mu.Unlock()
-	m.disposeReleased(ended, released, p.owner, p.id)
-	m.emitThreadState(p.owner)
+	m.disposeReleased(ended, released, p.owner.id, p.id)
+	m.emitThreadState(p.owner.id)
 	// Hides the dead view; the pane shows the failure in its place.
-	m.syncPanePresentation(p.owner)
-	if err := m.persistThreads([]string{p.owner}); err != nil {
+	m.syncPanePresentation(p.owner.id)
+	if err := m.persistThreads([]string{p.owner.id}); err != nil {
 		// The tab is in memory; only a restart before the next save loses
 		// it, as it would have lost the live page.
 		log.Printf("browser: page %s crashed: save the thread's pages: %v", p.id, err)

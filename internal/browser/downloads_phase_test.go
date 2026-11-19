@@ -108,7 +108,7 @@ func TestACancelDuringThePublishIsNotSent(t *testing.T) {
 	// Before the Manager's Close, which waits for the publish.
 	t.Cleanup(unblock)
 	startDownload(t, manager, access, page, "late.txt", 10, "hold")
-	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
 	profile := fakeProfileOf(t, manager)
 	counting := countCancels(t, manager)
 	finished := make(chan error, 1)
@@ -139,7 +139,7 @@ func TestACancelDuringThePublishIsNotSent(t *testing.T) {
 func TestACancelIsSentOnceUntilItsRefusal(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "slow.bin", 4096, "hold")
-	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
 	counting := countCancels(t, manager)
 	log.take()
 	for range 2 {
@@ -174,7 +174,7 @@ func TestACancelIsSentOnceUntilItsRefusal(t *testing.T) {
 func TestAPublishAfterARefusedCancelCompletes(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "kept.txt", 10, "hold")
-	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
 	profile := fakeProfileOf(t, manager)
 	countCancels(t, manager)
 	if err := manager.CancelThreadDownload(access, item.ID); err != nil {

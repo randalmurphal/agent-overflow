@@ -7,13 +7,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // assertJarKept fails unless the thread is still in the worktree jar with
 // its live tab live, in this manager and in the saved copy a restart reads.
 func assertJarKept(t *testing.T, m *Manager, dir string, access Access, liveID string) {
 	t.Helper()
-	state := m.CompanionState(access)
+	state := m.CompanionState(access.Caller())
 	if state.Jar != JarWorktree {
 		t.Fatalf("a refused switch left jar %q, want the worktree jar", state.Jar)
 	}
@@ -22,7 +23,7 @@ func assertJarKept(t *testing.T, m *Manager, dir string, access Access, liveID s
 		t.Fatalf("a refused switch suspended the live tab: %+v", page)
 	}
 	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	if got := restarted.CompanionState(access).Jar; got != JarWorktree {
+	if got := restarted.CompanionState(access.Caller()).Jar; got != JarWorktree {
 		t.Fatalf("after a refused switch the saved copy names jar %q, want the worktree jar", got)
 	}
 }
@@ -34,7 +35,7 @@ func TestAnUnconfirmedSwitchWithALiveTabIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	live := openPage(t, manager, access, "https://example.test/live")
 
 	writes := 0
@@ -52,7 +53,7 @@ func TestAnUnconfirmedSwitchWithALiveTabIsRefused(t *testing.T) {
 	}
 
 	setJar(t, manager, access, JarThread)
-	if got := manager.CompanionState(access).Jar; got != JarThread {
+	if got := manager.CompanionState(access.Caller()).Jar; got != JarThread {
 		t.Fatalf("the confirmed switch left jar %q, want thread", got)
 	}
 }
@@ -62,7 +63,7 @@ func TestAnUnconfirmedSwitchWithALiveTabIsRefused(t *testing.T) {
 func TestAnUnconfirmedSwitchWithNoLiveTabSwitches(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	if err := manager.SetJar(context.Background(), access, JarPrivate, JarSwitchIfNoLiveTab); err != nil {
 		t.Fatalf("an unconfirmed switch with no tab: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestAnUnconfirmedSwitchWithNoLiveTabSwitches(t *testing.T) {
 	if err := manager.SetJar(context.Background(), access, JarThread, JarSwitchIfNoLiveTab); err != nil {
 		t.Fatalf("an unconfirmed switch with only a suspended tab: %v", err)
 	}
-	if got := manager.CompanionState(access).Jar; got != JarThread {
+	if got := manager.CompanionState(access.Caller()).Jar; got != JarThread {
 		t.Fatalf("the switch left jar %q, want thread", got)
 	}
 }
@@ -80,58 +81,68 @@ func TestAnUnconfirmedSwitchWithNoLiveTabSwitches(t *testing.T) {
 func TestASwitchWithNoConsentIsRefused(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	for _, consent := range []JarConsent{jarConsentUnset, JarSwitchIfNoLiveTab + 1} {
 		if err := manager.SetJar(context.Background(), access, JarThread, consent); err == nil {
 			t.Fatalf("a switch with consent %d was admitted", consent)
 		}
 	}
-	if got := manager.CompanionState(access).Jar; got != JarWorktree {
+	if got := manager.CompanionState(access.Caller()).Jar; got != JarWorktree {
 		t.Fatalf("a switch with no consent left jar %q, want the worktree jar", got)
 	}
 }
 
-// A tab that goes live after the switch wrote its saved copy is seen in the
-// hold that would commit it: the switch is refused there, and the saved copy
-// it wrote is written back as the thread is, its jar and its tabs.
-func TestATabGoingLiveDuringAnUnconfirmedSwitchRefusesIt(t *testing.T) {
+// A tab opened after an unconfirmed switch captured the thread waits for
+// the switch's commit (its structural gate) and opens after it, in the new
+// jar: the consent the capture checked still holds at the commit, so the
+// switch goes ahead and writes its saved copy once.
+func TestATabOpenedDuringAnUnconfirmedSwitchOpensAfterIt(t *testing.T) {
 	dir := t.TempDir()
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	suspended := openPage(t, manager, access, "https://example.test/suspended")
 	suspendTab(t, manager, access, suspended.ID)
 
-	var live PageInfo
+	opened := make(chan PageInfo, 1)
 	writes := 0
 	manager.switchWritten = func() {
 		writes++
-		live = openPage(t, manager, access, "https://example.test/live")
+		go func() { opened <- openPage(t, manager, access, "https://example.test/live") }()
+		// Time for the open to reach the gate, which it may not pass.
+		time.Sleep(50 * time.Millisecond)
 	}
 	err := manager.SetJar(context.Background(), access, JarThread, JarSwitchIfNoLiveTab)
 	manager.switchWritten = nil
-	if !errors.Is(err, ErrJarSwitchUnconfirmed) {
-		t.Fatalf("a switch that met a live tab at its commit answered %v, want ErrJarSwitchUnconfirmed", err)
+	if err != nil {
+		t.Fatalf("an unconfirmed switch with no live tab at its capture answered %v", err)
 	}
 	if writes != 1 {
 		t.Fatalf("the switch wrote its saved copy %d times, want once", writes)
 	}
-	assertJarKept(t, manager, dir, access, live.ID)
-	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	if got := tabURLs(restarted, access); !slices.Equal(got, []string{"https://example.test/suspended"}) {
-		t.Fatalf("after a refused switch the saved copy holds %q, want the suspended tab", got)
+	live := await(t, opened, "the open made during the switch")
+	p := livePage(t, manager, access, live.ID)
+	manager.mu.Lock()
+	current := manager.jarCurrentLocked(p)
+	manager.mu.Unlock()
+	if !current || manager.CompanionState(access.Caller()).Jar != JarThread {
+		t.Fatal("the tab opened during the switch is not live in the new jar")
 	}
 }
 
-// A refused switch whose saved copy cannot be written back answers that the
-// copy still names the new jar, beside the refusal.
+// A switch refused after its write (the Manager's close) whose saved copy
+// cannot be written back answers that the copy still names the new jar,
+// beside the refusal.
 func TestARefusedSwitchThatCannotWriteBackSaysSo(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	manager.switchWritten = func() {
 		manager.switchWritten = nil
-		openPage(t, manager, access, "https://example.test/live")
+		// The Manager's close begins: the commit refuses the switch.
+		manager.mu.Lock()
+		manager.closed = true
+		manager.mu.Unlock()
 		if err := os.RemoveAll(manager.recordDir); err != nil {
 			t.Fatal(err)
 		}
@@ -140,13 +151,13 @@ func TestARefusedSwitchThatCannotWriteBackSaysSo(t *testing.T) {
 		}
 	}
 	err := manager.SetJar(context.Background(), access, JarThread, JarSwitchIfNoLiveTab)
-	if !errors.Is(err, ErrJarSwitchUnconfirmed) {
-		t.Fatalf("the switch answered %v, want ErrJarSwitchUnconfirmed", err)
+	if !errors.Is(err, errManagerClosed) {
+		t.Fatalf("the switch answered %v, want the Manager's close", err)
 	}
 	if !strings.Contains(err.Error(), "still name the thread cookie jar") {
 		t.Fatalf("the answer %q does not say the saved copy names the new jar", err)
 	}
-	if got := manager.CompanionState(access).Jar; got != JarWorktree {
+	if got := manager.CompanionState(access.Caller()).Jar; got != JarWorktree {
 		t.Fatalf("a refused switch left jar %q, want the worktree jar", got)
 	}
 }
@@ -158,7 +169,7 @@ func TestASwitchMeetingTheManagersCloseLeavesTheOldJarSaved(t *testing.T) {
 	dir := t.TempDir()
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	suspended := openPage(t, manager, access, "https://example.test/suspended")
 	suspendTab(t, manager, access, suspended.ID)
 
@@ -179,7 +190,7 @@ func TestASwitchMeetingTheManagersCloseLeavesTheOldJarSaved(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	state := restarted.CompanionState(access)
+	state := restarted.CompanionState(access.Caller())
 	if state.Jar != JarWorktree || !slices.Equal(tabURLs(restarted, access), []string{"https://example.test/suspended"}) {
 		t.Fatalf("after a switch the close stopped, the saved copy is jar %q with tabs %q, want the worktree jar with the suspended tab", state.Jar, tabURLs(restarted, access))
 	}

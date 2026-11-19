@@ -46,7 +46,7 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "native-smoke-download-release", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-download-release", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -135,7 +135,7 @@ func TestNativeEngineRealDownloadFailingBeforeItsFileIsFreed(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "native-smoke-download-early-failure", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-download-early-failure", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -163,7 +163,7 @@ func TestNativeEngineRealDownloadFailingBeforeItsFileIsFreed(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if listed := manager.CompanionState(access).Downloads; len(listed) != 0 {
+	if listed := manager.CompanionState(access.Caller()).Downloads; len(listed) != 0 {
 		t.Fatalf("a download that failed before its destination is listed: %+v", listed)
 	}
 }

@@ -38,7 +38,7 @@ func mustOutcome(t *testing.T, want ActiveOutcome, got ActiveOutcome, err error)
 func TestAKeyboardCloseClosesTheTabItsTurnLeavesActive(t *testing.T) {
 	m, engine, access, a, b, mount := newSuspendedPair(t)
 	c := mustOpen(t, m, access, addr("c"))
-	m.setActivePage(access.ThreadID, a.ID)
+	setActiveTab(m, access, a.ID)
 	for len(engine.navigating) > 0 {
 		<-engine.navigating
 	}
@@ -71,7 +71,7 @@ func TestAKeyboardCloseClosesTheTabItsTurnLeavesActive(t *testing.T) {
 	if tab, _ := findTab(m, access, a.ID); !tab.Suspended || tab.Restoring {
 		t.Fatalf("a was touched: %+v", tab)
 	}
-	if got := m.CompanionState(access).ClosedTabs; got != 1 {
+	if got := m.CompanionState(access.Caller()).ClosedTabs; got != 1 {
 		t.Fatalf("%d tabs can be reopened, want b's close", got)
 	}
 }
@@ -113,7 +113,7 @@ func TestAKeyboardCloseAfterAMissingNumberIsRefused(t *testing.T) {
 func TestAKeyboardCloseIsRefusedWhileAPredecessorIsOutstanding(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
-	m.setActivePage(access.ThreadID, ids[0])
+	setActiveTab(m, access, ids[0])
 	loads := livePage(t, m, access, ids[0]).docEpoch.Load()
 	reloading := deliver(func() error {
 		return outcome(ActiveOutOfOrder)(m.ReloadActiveCompanionPage(context.Background(), access, place(mount, 2)))
@@ -188,7 +188,7 @@ func TestALateKeyboardCommandIsRefused(t *testing.T) {
 func TestAKeyboardCloseAcrossAReattach(t *testing.T) {
 	m, access, ids, oldMount := newSelectionManager(t)
 	m.DetachPane(oldMount)
-	next, err := m.AttachPane(access)
+	next, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,9 +239,9 @@ func TestAKeyboardClosesCommitPicksTheNextActiveTab(t *testing.T) {
 	}
 	m.mu.Lock()
 	got, finish := m.closeActiveLocked(access, turnorder.Unordered())
-	active := m.sessionLocked(access.ThreadID).ActivePageID
+	active := access.tb.session.ActivePageID
 	var left []string
-	for _, tab := range m.companionTabsLocked(access.ThreadID) {
+	for _, tab := range m.companionTabsLocked(access.tb) {
 		left = append(left, tab.id)
 	}
 	m.mu.Unlock()
@@ -297,7 +297,7 @@ func TestAPassedKeyboardCloseClosesNothing(t *testing.T) {
 	if got := tabIDs(m, access); len(got) != len(ids)-1 {
 		t.Fatalf("tabs %v, want one closed of %v", got, ids)
 	}
-	empty := Access{ThreadID: "empty", Workspace: t.TempDir()}
+	empty := m.Bind(Caller{ThreadID: "empty", Workspace: t.TempDir()})
 	emptyMount := mustAttachEmpty(t, m, empty)
 	got, err = m.CloseActiveCompanionPage(t.Context(), empty, place(emptyMount, 1))
 	mustOutcome(t, ActiveNoTab, got, err)
@@ -308,7 +308,7 @@ func TestAPassedKeyboardCloseClosesNothing(t *testing.T) {
 func mustAttachEmpty(t *testing.T, m *Manager, access Access) string {
 	t.Helper()
 	page := mustOpen(t, m, access, addr("e"))
-	mount, err := m.AttachPane(access)
+	mount, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestAKeyboardReloadReloadsTheTabItsTurnLeavesActive(t *testing.T) {
 // finds no tab and reloads no other one.
 func TestAKeyboardReloadOfATabClosedMeanwhileDoesNothing(t *testing.T) {
 	m, engine, access, a, b, mount := newSuspendedPair(t)
-	m.setActivePage(access.ThreadID, a.ID)
+	setActiveTab(m, access, a.ID)
 	release := engine.hold(&engine.navGate)
 	defer release()
 	reloading := deliver(func() error {

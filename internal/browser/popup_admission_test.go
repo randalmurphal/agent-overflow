@@ -165,6 +165,112 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 	}
 }
 
+// A popup that crashed during its adoption is no crashed tab of a thread
+// lifetime the thread's close detached meanwhile, whose records that close
+// already dropped: nothing would ever drop it. Its attach succeeding or
+// failing, the Manager keeps no record of it.
+func TestACrashedPopupOfAClosedThreadLeavesNoRecord(t *testing.T) {
+	for _, fails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("attach fails %v", fails), func(t *testing.T) {
+			manager, engine, access, opener := newAdoptionManager(t)
+			release := engine.gate("popup")
+			defer release()
+			if fails {
+				engine.mu.Lock()
+				engine.failing["popup"] = true
+				engine.mu.Unlock()
+			}
+			manager.popupOpened(engine.popup(opener, "popup"))
+			engine.awaitAttach(t, "popup")
+			manager.pageCrashedReport("popup", "render-process-exited")
+			// The close's first hold; its closes of the lifetime's pages,
+			// which would take the opener and refuse the listing on that
+			// ground, have not run yet.
+			manager.mu.Lock()
+			manager.detachLocked(access.ThreadID)
+			manager.mu.Unlock()
+			release()
+			awaitAdmission(t, manager, "popup")
+			deadline := time.Now().Add(hostedTestDeadline)
+			for {
+				manager.mu.Lock()
+				adopting := manager.adopting["popup"]
+				records := 0
+				for _, rec := range manager.suspended {
+					if rec.owner == access.tb {
+						records++
+					}
+				}
+				manager.mu.Unlock()
+				if adopting == nil && records == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the closed thread keeps %d records, adopting %v", records, adopting != nil)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(20 * time.Millisecond)
+			manager.mu.Lock()
+			defer manager.mu.Unlock()
+			for id, rec := range manager.suspended {
+				if rec.owner == access.tb {
+					t.Fatalf("the closed thread's lifetime has the record %s", id)
+				}
+			}
+		})
+	}
+}
+
+// A popup's crashed tab is a change to its lifetime's tabs: listed while a
+// jar switch of the lifetime is between its capture and its commit, the
+// switch would write a copy that lacks it. Its listing waits for the
+// switch's commit, its attach succeeding or failing.
+func TestACrashedPopupWaitsOutAJarSwitch(t *testing.T) {
+	for _, fails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("attach fails %v", fails), func(t *testing.T) {
+			manager, engine, access, opener := newAdoptionManager(t)
+			release := engine.gate("popup")
+			defer release()
+			if fails {
+				engine.mu.Lock()
+				engine.failing["popup"] = true
+				engine.mu.Unlock()
+			}
+			manager.popupOpened(engine.popup(opener, "popup"))
+			engine.awaitAttach(t, "popup")
+			manager.pageCrashedReport("popup", "render-process-exited")
+			gate := make(chan struct{})
+			manager.mu.Lock()
+			access.tb.switching = gate
+			manager.mu.Unlock()
+			release()
+			awaitPopupWaiting := time.Now().Add(100 * time.Millisecond)
+			for time.Now().Before(awaitPopupWaiting) {
+				if got, tabs := popupOutcome(manager, access, opener); got == 1 {
+					t.Fatalf("the crashed popup was listed during the switch: %+v", tabs)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			manager.mu.Lock()
+			access.tb.switching = nil
+			manager.mu.Unlock()
+			close(gate)
+			deadline := time.Now().Add(hostedTestDeadline)
+			for {
+				got, tabs := popupOutcome(manager, access, opener)
+				if got == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("after the switch the thread's tabs are %+v, want the popup crashed", tabs)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
+}
+
 // A child popup still being adopted keeps its parent's chain however many
 // unrelated popups come and go: its parent closes, the child is never
 // listed, and the download it finished meanwhile is listed, finished, in
@@ -232,7 +338,7 @@ func awaitAdmission(t *testing.T, m *Manager, handle string) {
 // popupOutcome answers what the thread shows of the popup next to its
 // opener's tab: 0 a live tab, 1 a crashed tab, 2 none, -1 anything else.
 func popupOutcome(m *Manager, access Access, opener string) (int, []PageInfo) {
-	pages := m.CompanionState(access).Pages
+	pages := m.CompanionState(access.Caller()).Pages
 	m.mu.Lock()
 	livePopup := m.listedPageLocked("popup") != nil
 	m.mu.Unlock()

@@ -167,7 +167,7 @@ func TestMCPToolCallShowsOnThePageTab(t *testing.T) {
 	m.agentLinger = time.Hour
 	server := NewMCPServer(m, true)
 	t.Cleanup(func() { _ = server.Close() })
-	config, err := server.RegisterThread(access, "session-1")
+	config, err := server.RegisterThread(access.Caller(), "session-1")
 	if err != nil {
 		t.Fatal(err)
 	}

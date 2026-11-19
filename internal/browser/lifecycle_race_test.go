@@ -17,7 +17,7 @@ func TestACloseRacingAFailedCreationLeavesNoHiddenTab(t *testing.T) {
 	engine.newPageErr = errors.New("engine refused the page")
 	workspace := t.TempDir()
 	for i := range 100 {
-		access := Access{ThreadID: "thread", Workspace: workspace}
+		access := manager.Bind(Caller{ThreadID: "thread", Workspace: workspace})
 		release := engine.hold(&engine.newPageGate)
 		created := async(func() error {
 			_, err := manager.NewCompanionPage(context.Background(), access, "")
@@ -31,7 +31,7 @@ func TestACloseRacingAFailedCreationLeavesNoHiddenTab(t *testing.T) {
 			for !manager.startMu.TryLock() {
 			}
 			manager.startMu.Unlock()
-			_, ok := manager.closePending(access, id)
+			_, ok := closePendingTab(manager, access, id)
 			return ok
 		})
 		release()
@@ -41,7 +41,7 @@ func TestACloseRacingAFailedCreationLeavesNoHiddenTab(t *testing.T) {
 		await(t, closed, "the close")
 		// The tab is closed whether the close found it creating or failed.
 		if got := tabIDs(manager, access); len(got) != 0 {
-			if _, ok := manager.closePending(access, got[0]); !ok {
+			if _, ok := closePendingTab(manager, access, got[0]); !ok {
 				t.Fatalf("iteration %d: tabs %v that no close finds", i, got)
 			}
 		}
@@ -59,7 +59,7 @@ func TestACloseRacingAFailedCreationLeavesNoHiddenTab(t *testing.T) {
 // is not found, and the tab is gone.
 func TestACloseRacingACreationsPromotionFindsTheTab(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	// A page that stays keeps the profile across the iterations.
 	mustOpen(t, manager, access, "https://example.test/keep")
 	for i := range 2000 {
@@ -93,7 +93,7 @@ func TestACloseRacingACreationsPromotionFindsTheTab(t *testing.T) {
 // finds it as the record or as the page.
 func TestACloseRacingARestoreFindsTheTab(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	mustOpen(t, manager, access, "https://example.test/keep")
 	for i := range 1000 {
 		page := mustOpen(t, manager, access, "https://example.test/")
@@ -132,7 +132,7 @@ func TestACloseRacingARestoreFindsTheTab(t *testing.T) {
 // neither answers that the page is not found.
 func TestConcurrentClosesJoinOneTeardown(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	// A page that stays keeps the profile across the iterations.
 	mustOpen(t, manager, access, "https://example.test/keep")
 	for i := range 200 {

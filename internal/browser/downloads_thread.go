@@ -196,7 +196,8 @@ func (l *threadDownloadList) completedFiles(workspace, path string) []os.FileInf
 
 // downloadNote is what one change to a download publishes.
 type downloadNote struct {
-	threadID string
+	// tb is the thread lifetime whose list changed, nil for no change.
+	tb *threadBrowser
 	// progress is a change to the bytes alone, which a coalesced push carries.
 	progress bool
 	// announce is the download that just settled, to announce once; nil for
@@ -204,18 +205,13 @@ type downloadNote struct {
 	announce *ThreadDownload
 }
 
-// threadListLocked answers the thread's list, made on first use. The
-// caller holds m.downloadsMu.
-func (m *Manager) threadListLocked(threadID string) *threadDownloadList {
-	if m.threadDownloads == nil {
-		m.threadDownloads = make(map[string]*threadDownloadList)
+// threadListLocked answers the list of tb, the thread lifetime a page is a
+// tab of, made on first use. The caller holds m.downloadsMu.
+func (m *Manager) threadListLocked(tb *threadBrowser) *threadDownloadList {
+	if tb.downloads == nil {
+		tb.downloads = &threadDownloadList{}
 	}
-	list := m.threadDownloads[threadID]
-	if list == nil {
-		list = &threadDownloadList{}
-		m.threadDownloads[threadID] = list
-	}
-	return list
+	return tb.downloads
 }
 
 // noteDownloadStartLocked adds a page's new entry to its thread's list,
@@ -257,7 +253,7 @@ func (m *Manager) noteChangeLocked(p *managedPage, entry *DownloadInfo, started 
 		// which only a settled item can be: nothing to show.
 		return downloadNote{}
 	}
-	note := downloadNote{threadID: p.owner}
+	note := downloadNote{tb: p.owner}
 	// The user's own cancel is not announced; a finish that beat it is.
 	switch {
 	case !started && item.State == downloadStateRunning:
@@ -274,22 +270,24 @@ func (m *Manager) noteChangeLocked(p *managedPage, entry *DownloadInfo, started 
 // coalesced push. Then each settled download is announced, after the state
 // that lists it. Call it holding no lock.
 func (m *Manager) publishDownloads(notes ...downloadNote) {
-	threadID, now := "", false
+	var tb *threadBrowser
+	now := false
 	for _, note := range notes {
-		if note.threadID != "" {
-			threadID = note.threadID
+		if note.tb != nil {
+			tb = note.tb
 			now = now || !note.progress
 		}
 	}
-	if threadID == "" {
+	if tb == nil {
 		return
 	}
+	threadID := tb.id
 	if !now {
-		m.scheduleDownloadPush(threadID)
+		m.scheduleDownloadPush(tb)
 		return
 	}
 	m.downloadsMu.Lock()
-	if list := m.threadDownloads[threadID]; list != nil && list.push != nil {
+	if list := tb.downloads; list != nil && list.push != nil {
 		list.push.Stop()
 		list.push = nil
 	}
@@ -302,15 +300,16 @@ func (m *Manager) publishDownloads(notes ...downloadNote) {
 	}
 }
 
-// scheduleDownloadPush starts the thread's coalesced state push unless one
-// is pending.
-func (m *Manager) scheduleDownloadPush(threadID string) {
+// scheduleDownloadPush starts tb's coalesced state push unless one is
+// pending or tb was detached, whose list no state shows.
+func (m *Manager) scheduleDownloadPush(tb *threadBrowser) {
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
-	list := m.threadDownloads[threadID]
-	if list == nil || list.push != nil {
+	list := tb.downloads
+	if list == nil || list.push != nil || tb.detached.Load() {
 		return
 	}
+	threadID := tb.id
 	interval := m.downloadPushInterval
 	if interval <= 0 {
 		interval = downloadPushInterval
@@ -329,34 +328,41 @@ func (m *Manager) scheduleDownloadPush(threadID string) {
 	list.push = timer
 }
 
-// threadDownloadsLocked answers the thread's list for its state, newest
-// first. The caller holds m.mu; m.downloadsMu is taken inside it.
-func (m *Manager) threadDownloadsLocked(threadID string) []ThreadDownload {
+// threadDownloadsLocked answers tb's list for its state, newest first. The
+// caller holds m.mu; m.downloadsMu is taken inside it.
+func (m *Manager) threadDownloadsLocked(tb *threadBrowser) []ThreadDownload {
+	if tb == nil {
+		return nil
+	}
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
-	list := m.threadDownloads[threadID]
+	list := tb.downloads
 	if list == nil || len(list.shown) == 0 {
 		return nil
 	}
 	return list.list()
 }
 
-// forgetThreadDownloads drops the thread's list (CloseThread).
-func (m *Manager) forgetThreadDownloads(threadID string) {
+// forgetThreadDownloads drops the list of tb, a lifetime CloseThread
+// detached, and its pending push.
+func (m *Manager) forgetThreadDownloads(tb *threadBrowser) {
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
-	if list := m.threadDownloads[threadID]; list != nil && list.push != nil {
+	if list := tb.downloads; list != nil && list.push != nil {
 		list.push.Stop()
 	}
-	delete(m.threadDownloads, threadID)
+	tb.downloads = nil
 }
 
 var errDownloadNotFound = errors.New("browser: that download is no longer in this browser's list")
 
-func (m *Manager) threadDownload(threadID, id string) (threadDownload, error) {
+func (m *Manager) threadDownload(access Access, id string) (threadDownload, error) {
+	if err := access.End(); err != nil {
+		return threadDownload{}, err
+	}
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
-	if list := m.threadDownloads[threadID]; list != nil {
+	if list := access.tb.downloads; list != nil {
 		if item := list.find(strings.TrimSpace(id)); item != nil {
 			return *item, nil
 		}
@@ -373,7 +379,7 @@ func (m *Manager) threadDownload(threadID, id string) (threadDownload, error) {
 // deletes the finished file. The engine's refusal is the answer and the
 // download keeps running and listed as such.
 func (m *Manager) CancelThreadDownload(access Access, id string) error {
-	item, err := m.threadDownload(access.ThreadID, id)
+	item, err := m.threadDownload(access, id)
 	if err != nil {
 		return err
 	}
@@ -418,20 +424,25 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 // ClearThreadDownloads removes the thread's settled downloads from its list,
 // shown or resolvable. Running ones stay, so they can still be canceled. No
 // file is deleted: one in the user's Downloads folder is the user's, and an
-// artifact goes with the rest after artifactMaxAge.
-func (m *Manager) ClearThreadDownloads(access Access) {
+// artifact goes with the rest after artifactMaxAge. A lifetime the
+// thread's close detached is refused with ErrThreadClosed.
+func (m *Manager) ClearThreadDownloads(access Access) error {
+	if err := access.End(); err != nil {
+		return err
+	}
 	m.downloadsMu.Lock()
-	if list := m.threadDownloads[access.ThreadID]; list != nil {
+	if list := access.tb.downloads; list != nil {
 		list.clear()
 	}
 	m.downloadsMu.Unlock()
 	m.emitThreadState(access.ThreadID)
+	return nil
 }
 
 // finishedDownloadPath answers the file of one of the thread's finished
 // downloads.
 func (m *Manager) finishedDownloadPath(access Access, id string) (threadDownload, error) {
-	item, err := m.threadDownload(access.ThreadID, id)
+	item, err := m.threadDownload(access, id)
 	if err != nil {
 		return threadDownload{}, err
 	}
@@ -486,7 +497,7 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id st
 // its workspace's downloads (authorizeFile). With ctx's numbered selection
 // passed (selection.go) it opens nothing.
 func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id string) (PageInfo, error) {
-	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return PageInfo{}, err
 	}

@@ -6,7 +6,7 @@ import "testing"
 func documentTitlePage(t *testing.T, a string) (*Manager, *managedPage, *statePushes) {
 	t.Helper()
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, a)
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {

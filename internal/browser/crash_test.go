@@ -145,8 +145,8 @@ func TestToolCallRestoresACrashedPage(t *testing.T) {
 // suspended one, which presenting restores.
 func TestCrashedTabReturnsAfterARestartAsASuspendedOne(t *testing.T) {
 	dir := t.TempDir()
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	first := NewManager(dir, Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	access := first.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := first.Open(t.Context(), access, "https://example.test/a", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)

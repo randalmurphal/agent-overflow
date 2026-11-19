@@ -71,7 +71,7 @@ func newPaneFollowFixture(t *testing.T) *paneFollowFixture {
 
 func (f *paneFollowFixture) attach(t *testing.T) string {
 	t.Helper()
-	mount, err := f.manager.AttachPane(f.access)
+	mount, err := f.manager.AttachPane(f.access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}

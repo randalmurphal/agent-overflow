@@ -15,7 +15,7 @@ import (
 
 func recentURLs(m *Manager, access Access) []string {
 	var urls []string
-	for _, entry := range m.RecentAddresses(access) {
+	for _, entry := range m.RecentAddresses(access.Caller()) {
 		urls = append(urls, entry.URL)
 	}
 	return urls
@@ -64,7 +64,7 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 	if got := recentURLs(m, access); !reflect.DeepEqual(got, want) {
 		t.Fatalf("recent = %q, want %q", got, want)
 	}
-	if got := m.RecentAddresses(access)[2].Title; got == "" {
+	if got := m.RecentAddresses(access.Caller())[2].Title; got == "" {
 		t.Fatalf("an entry kept no title")
 	}
 
@@ -99,7 +99,7 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 	}
 
 	// Another thread's list is its own.
-	if got := m.RecentAddresses(Access{ThreadID: "other", Workspace: access.Workspace}); len(got) != 0 {
+	if got := m.RecentAddresses(Caller{ThreadID: "other", Workspace: access.Workspace}); len(got) != 0 {
 		t.Fatalf("another thread sees %v", got)
 	}
 }
@@ -154,7 +154,7 @@ func TestRecentAddressesForgetOnJarSwitchAndKeepNothingPrivate(t *testing.T) {
 
 func TestRecentAddressesForgetOnClearSiteDataAndThreadClose(t *testing.T) {
 	m, access, _, _ := newNavigateFixture(t, false)
-	other := Access{ThreadID: "other", Workspace: access.Workspace}
+	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
 	if _, err := m.Open(t.Context(), other, "https://example.test/other", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +195,8 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 		defer mu.Unlock()
 		return pushed[threadID]
 	}
-	reported := func() string { return m.CompanionState(access).RecentGen }
-	other := Access{ThreadID: "other", Workspace: access.Workspace}
+	reported := func() string { return m.CompanionState(access.Caller()).RecentGen }
+	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
 	if _, err := m.Open(t.Context(), other, "https://example.test/other", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 func TestTheForgetGenerationChangesOnTheWire(t *testing.T) {
 	m, access, _, _ := newNavigateFixture(t, false)
 	wire := func() any {
-		raw, err := json.Marshal(m.CompanionState(access))
+		raw, err := json.Marshal(m.CompanionState(access.Caller()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -263,7 +263,7 @@ func TestTheForgetGenerationChangesOnTheWire(t *testing.T) {
 // else a new page.
 func pageIDFor(t *testing.T, m *Manager, access Access, pageID string) string {
 	t.Helper()
-	for _, page := range m.CompanionState(access).Pages {
+	for _, page := range m.CompanionState(access.Caller()).Pages {
 		if page.ID == pageID {
 			return pageID
 		}

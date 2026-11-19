@@ -38,6 +38,11 @@ func (f *fakeController) Open(_ context.Context, a Access, u string, opts OpenOp
 	f.openOptions = opts
 	return PageInfo{ID: "p", URL: u}, nil
 }
+
+// Bind binds caller to a lifetime of its own, which no close detaches.
+func (f *fakeController) Bind(caller Caller) Access {
+	return Access{boundCaller: &caller, tb: newThreadBrowser(caller.ThreadID)}
+}
 func (f *fakeController) NewPage(context.Context, Access) (PageInfo, error) { return PageInfo{}, nil }
 func (f *fakeController) OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error) {
 	return PageInfo{}, nil
@@ -147,7 +152,7 @@ func TestMCPInitializeExplainsSafeParallelPageUsage(t *testing.T) {
 func TestMCPServerThreadToggleIsScopedAndDefaultsOn(t *testing.T) {
 	server := NewMCPServer(&fakeController{}, true)
 	first := registerTestThread(t, server)
-	secondConfig, err := server.RegisterThread(Access{ThreadID: "second", Workspace: "/repo"}, "session-2")
+	secondConfig, err := server.RegisterThread(Caller{ThreadID: "second", Workspace: "/repo"}, "session-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +199,7 @@ func TestMCPRevokeThreadRetiresOnlyThatSessionsURL(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 	register := func(session string) string {
 		t.Helper()
-		config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo"}, session)
+		config, err := server.RegisterThread(Caller{ThreadID: "thread", Workspace: "/repo"}, session)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +324,7 @@ func TestMCPEvaluateCarriesTheNoteBesideThePayload(t *testing.T) {
 
 func registerTestThread(t *testing.T, server *MCPServer) string {
 	t.Helper()
-	config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"}, "session-1")
+	config, err := server.RegisterThread(Caller{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"}, "session-1")
 	if err != nil {
 		t.Fatal(err)
 	}

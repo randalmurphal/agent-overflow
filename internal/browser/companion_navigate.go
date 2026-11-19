@@ -190,7 +190,7 @@ func (m *Manager) backendPathForWindows(ctx context.Context, windowsPath string)
 func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
 	p, _, err := m.lookupOwnedPage(access, pageID)
-	if errors.Is(err, errPageNotFound) && m.hasTab(access.ThreadID, pageID) {
+	if errors.Is(err, errPageNotFound) && m.hasTab(access.tb, pageID) {
 		return nil
 	}
 	if err != nil {

@@ -115,8 +115,8 @@ func newFocusWorld(t *testing.T) *focusWorld {
 	m.engine = e
 	w := &focusWorld{
 		m: m, e: e,
-		a: Access{ThreadID: "thread-a", Workspace: t.TempDir()},
-		b: Access{ThreadID: "thread-b", Workspace: t.TempDir()},
+		a: m.Bind(Caller{ThreadID: "thread-a", Workspace: t.TempDir()}),
+		b: m.Bind(Caller{ThreadID: "thread-b", Workspace: t.TempDir()}),
 	}
 	other, err := m.Open(t.Context(), w.a, "https://example.test/other", OpenOptions{})
 	if err != nil {
@@ -151,7 +151,7 @@ func newFocusWorld(t *testing.T) *focusWorld {
 // have, so the presentation runs inside SetPaneRect. It answers the mount.
 func remountPane(t *testing.T, m *Manager, access Access) string {
 	t.Helper()
-	mount, err := m.AttachPane(access)
+	mount, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount the pane again: %v", err)
 	}

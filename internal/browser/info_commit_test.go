@@ -20,7 +20,7 @@ func TestAReadNeverCommitsOverANavigation(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				manager, _ := newLifecycleManager(t)
-				access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+				access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 				page := mustOpen(t, manager, access, "https://example.test/a")
 				p, _, err := manager.lookupOwnedPage(access, page.ID)
 				if err != nil {
@@ -121,7 +121,7 @@ func TestAReadNeverCommitsOverAnEngineReport(t *testing.T) {
 	for _, reader := range append(infoReaders[:len(infoReaders):len(infoReaders)], operationReaders...) {
 		t.Run(reader.name, func(t *testing.T) {
 			manager, _ := newLifecycleManager(t)
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			page := mustOpen(t, manager, access, "https://example.test/a")
 			p, _, err := manager.lookupOwnedPage(access, page.ID)
 			if err != nil {
@@ -151,7 +151,7 @@ func TestAReadNeverCommitsOverAnEngineReport(t *testing.T) {
 // operation that commits while it reads (a back) wins over its older answer.
 func TestAHistoryRefreshNeverCommitsOverANewerRead(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/a")
 	if _, err := manager.Open(t.Context(), access, "https://example.test/b", OpenOptions{PageID: page.ID}); err != nil {
 		t.Fatal(err)

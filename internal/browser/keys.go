@@ -65,10 +65,10 @@ func (m *Manager) emitEscape(handle string) {
 		mount, _, _ = m.presenterLocked(p.owner)
 	}
 	m.mu.Unlock()
-	if p == nil || mount == "" || !m.pageShown(p.owner, p.id) {
+	if p == nil || mount == "" || !m.pageShown(p.owner.id, p.id) {
 		return
 	}
-	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id, Mount: mount})
+	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner.id, PageID: p.id, Mount: mount})
 }
 
 // emitAccelerator routes a claimed chord to the pane mount showing the page,
@@ -89,7 +89,7 @@ func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) 
 		log.Printf("browser: drop the chord %+v pressed in page %s: no pane shows the page", bound, p.id)
 		return
 	}
-	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Mount: mount, Accelerator: &bound})
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner.id, Mount: mount, Accelerator: &bound})
 }
 
 // AcceleratorsChanged tells an engine that matches chords out of process

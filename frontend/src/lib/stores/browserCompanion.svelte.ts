@@ -278,7 +278,7 @@ const store = createEntityStore<BrowserPaneMount, void>({
     // now is a later attach's, so this one only detaches its own.
     if (signal.aborted) return () => BrowserCompanionPaneDetach(result.id);
     const mount = result.id;
-    if (!isMountId(mount)) throw new Error('The browser answered the pane with no mount.');
+    if (!isMountId(mount)) throw new Error('The browser pane attach answered with no mount.');
     const pane: BrowserPaneAttachment = { [attachedPane]: true, threadId: key, mount };
     // The answer's state is admitted like any other; a newer one that
     // already landed (a push during the attach) wins.
@@ -564,16 +564,6 @@ export function browserPresentationWanted(threadId: string): boolean {
 export function reconcileBrowserCompanionForPane(paneId: string, threadId: string): void {
   hydrateBrowserCompanionState(threadId);
   if (browserPresentationWanted(threadId)) openBrowserCompanion(paneId, threadId);
-}
-
-/**
- * Presents the thread's admitted state beside the pane showing it, when this
- * window can (browserPresentationWanted): a show for a session already
- * visible, which no backend change would push again.
- */
-export function presentWantedBrowser(threadId: string): void {
-  const sourcePaneId = sourcePaneIdForThread(threadId);
-  if (sourcePaneId && browserPresentationWanted(threadId)) openBrowserCompanion(sourcePaneId, threadId);
 }
 
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);

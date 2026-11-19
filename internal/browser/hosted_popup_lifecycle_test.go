@@ -100,7 +100,7 @@ func TestHostedPageAttachThatStallsEnds(t *testing.T) {
 		l.engine.attachTimeout = 200 * time.Millisecond
 		l.stallFrameTree.Store(true)
 		returnsWithin(t, hostedTestDeadline, "the stalled creation", func() {
-			if _, err := l.manager.createPage(t.Context(), popupTestAccess(t, "thread")); err == nil {
+			if _, err := l.manager.createPage(t.Context(), l.access("thread")); err == nil {
 				t.Error("a page whose attach never finished was created")
 			}
 		})
@@ -112,7 +112,7 @@ func TestHostedPageAttachThatStallsEnds(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		created := make(chan error, 1)
 		go func() {
-			_, err := l.manager.createPage(ctx, popupTestAccess(t, "thread"))
+			_, err := l.manager.createPage(ctx, l.access("thread"))
 			created <- err
 		}()
 		awaitCall(t, l.endpoint.calls, "Page.getFrameTree")
@@ -130,7 +130,7 @@ func TestHostedPageAttachThatStallsEnds(t *testing.T) {
 		l := newPopupLauncher(t)
 		l.engine.attachTimeout = time.Hour
 		l.stallFrameTree.Store(true)
-		go func() { _, _ = l.manager.createPage(t.Context(), popupTestAccess(t, "thread")) }()
+		go func() { _, _ = l.manager.createPage(t.Context(), l.access("thread")) }()
 		awaitCall(t, l.endpoint.calls, "Page.getFrameTree")
 		returnsWithin(t, hostedTestDeadline, "the shutdown", func() { _ = l.manager.Close() })
 	})

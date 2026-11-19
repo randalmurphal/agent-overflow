@@ -186,6 +186,11 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "show"}, true},
 		{BrowserCompanionAction{Kind: "show", PageID: "p"}, true},
+		{BrowserCompanionAction{Kind: "show-browser"}, true},
+		{BrowserCompanionAction{Kind: "show-browser", Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "show-browser", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "show-browser", PageID: "p"}, false},
+		{BrowserCompanionAction{Kind: "show-browser", Mount: "m"}, false},
 		{BrowserCompanionAction{Kind: "download-open", DownloadID: "d", Mount: "m", Select: 1, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "download-cancel"}, false},
 		{BrowserCompanionAction{Kind: "jar"}, false},
@@ -333,12 +338,43 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "download-open", DownloadID: "none"},
 		{Kind: "close-active"},
 		{Kind: "reload-active"},
+		{Kind: "show-browser"},
 	} {
 		late.Mount, late.Epoch, late.Select = mount.ID, 1, 1
 		state := do(late)
 		if state.ActivePageID != first || len(state.Pages) != len(before.Pages) || state.ClosedTabs != before.ClosedTabs {
 			t.Fatalf("a passed %s changed the tabs: %+v", late.Kind, state)
 		}
+	}
+}
+
+// The chat header's show names no tab: on a thread with none it opens one,
+// shown and named in the answer, and again it shows that tab and names
+// none.
+func TestBrowserCompanionShowBrowserOpensOneTabAndNamesIt(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-show")
+	ctx := t.Context()
+	opened, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "show-browser"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened.Pages) != 1 || opened.PageID != opened.Pages[0].ID || opened.ActivePageID != opened.PageID || opened.Visible == nil || !*opened.Visible {
+		t.Fatalf("the first show answered %+v, want one tab, named, active and shown", opened)
+	}
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "hide"}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "show-browser"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Pages) != 1 || again.PageID != "" || again.ActivePageID != opened.PageID || again.Visible == nil || !*again.Visible {
+		t.Fatalf("the second show answered %+v, want the same tab shown and none named", again)
 	}
 }
 
@@ -362,11 +398,11 @@ func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
 	if code, _, _ := errorsx.PublicDetails(err); code != browserJarUnconfirmedCode {
 		t.Fatalf("an unconfirmed switch with a live tab answered %v, want code %s", err, browserJarUnconfirmedCode)
 	}
-	access, err := app.browserAccess(thread.ID)
+	access, err := app.bindBrowser(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := manager.CompanionState(access).Jar; got == appbrowser.JarProject {
+	if got := manager.CompanionState(access.Caller()).Jar; got == appbrowser.JarProject {
 		t.Fatal("the refused switch changed the jar")
 	}
 	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject, Confirmed: true})

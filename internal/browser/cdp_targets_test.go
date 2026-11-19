@@ -197,7 +197,7 @@ func TestCDPTargetsNumberChangesAsTheyArrive(t *testing.T) {
 // opener it learned goes when the connection does.
 func TestHostedTargetsGoWithTheirConnection(t *testing.T) {
 	l := newPopupLauncher(t)
-	access := popupTestAccess(t, "thread")
+	access := l.access("thread")
 	l.open(access)
 	l.endpoint.send(map[string]any{"method": "Target.targetCreated", "params": map[string]any{"targetInfo": map[string]any{
 		"targetId": "PT-9", "type": "page", "openerId": "T-opener", "url": "about:blank", "title": "",

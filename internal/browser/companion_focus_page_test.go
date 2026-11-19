@@ -357,7 +357,7 @@ func TestAWaitingFocusRequestEnds(t *testing.T) {
 			}
 			tc.end(t, w)
 			show, target := true, w.aPage
-			if !w.m.hasTab(w.a.ThreadID, w.aPage) {
+			if !w.m.hasTab(w.a.tb, w.aPage) {
 				target = w.aOther
 			}
 			if _, err := w.m.Visibility(t.Context(), w.a, &show, target); err != nil {
@@ -406,7 +406,7 @@ func TestAWaitingFocusRequestEnds(t *testing.T) {
 func TestFocusCompanionPageOnAnEngineWithoutViewsIsANoOp(t *testing.T) {
 	m := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.FocusCompanionPage(Access{ThreadID: "thread", Workspace: t.TempDir()}, "mount", "page", 1); err != nil {
+	if err := m.FocusCompanionPage(m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()}), "mount", "page", 1); err != nil {
 		t.Fatalf("focus on an engine with no views: %v", err)
 	}
 }
@@ -526,11 +526,11 @@ func TestTheLaunchersFocusReportsReachTheIntentsPane(t *testing.T) {
 		Relay:     stubRelay{},
 	}})
 	t.Cleanup(func() { _ = m.Close() })
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	m.mu.Lock()
-	m.panes["mount1"] = paneMount{threadID: access.ThreadID, seq: 1}
+	m.panes["mount1"] = paneMount{threadID: access.ThreadID, owner: access.tb, seq: 1}
 	m.mu.Unlock()
-	page := &managedPage{id: "page1", owner: access.ThreadID, driver: &fakePage{handle: "handle1"}}
+	page := &managedPage{id: "page1", owner: access.tb, driver: &fakePage{handle: "handle1"}}
 	m.mu.Lock()
 	m.scopes = map[string]*jarScope{"scope": {pages: map[string]*managedPage{"page1": page}}}
 	m.mu.Unlock()

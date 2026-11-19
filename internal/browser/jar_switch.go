@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"slices"
 	"strings"
 	"time"
 )
@@ -21,22 +19,34 @@ import (
 // jar, captured once (jarSwitch), and no teardown starts before it, so a
 // shutdown or crash during the switch loses no tab, and a failed write
 // changes nothing: the thread keeps its jar and its pages, and a retry
-// writes again. A page's own changes during the write (its address, title,
-// use) never hold the switch: its record is the one written. The tabs come back through the ordinary
-// restore path (resolvePage): the active one when the pane presents it or a
-// tool uses it, the others when selected or used. A restore fails as any
-// restore does, leaving its tab suspended with the error. Page state (forms,
-// history, sign-ins kept in the old jar) does not come along, so the caller
-// says whether the user agreed to lose it (JarConsent): a switch with
-// JarSwitchIfNoLiveTab is refused with ErrJarSwitchUnconfirmed while the
-// thread has a live tab, checked in the hold that captures it, before any
-// write, and again in the hold that would commit it.
+// writes again.
 //
-// A switch refused after its write (the consent, the Manager's close, a
-// forget, the thread's close) writes the thread's saved copy back as the
-// thread is before it answers, so the copy never names a jar the thread is
-// not in; when that write fails, the answer says the copy still names the
-// new jar.
+// From the capture to the commit the switch holds its lifetime's
+// structural gate (threadBrowser.switching): every change to the
+// lifetime's tabs (one added, closed, moved, relabeled, selected,
+// suspended, restored, crashed or adopted) waits for the commit in
+// lockStructure, so the tabs the commit suspends are the tabs it captured
+// and wrote, and a tab opened during the write is added after the commit,
+// in the new jar. A page's own changes during the write (its address,
+// title, use) never wait: its record is the one written. Other threads
+// never wait for it.
+//
+// The tabs come back through the ordinary restore path (resolvePage): the
+// active one when the pane presents it or a tool uses it, the others when
+// selected or used. A restore fails as any restore does, leaving its tab
+// suspended with the error. Page state (forms, history, sign-ins kept in
+// the old jar) does not come along, so the caller says whether the user
+// agreed to lose it (JarConsent): a switch with JarSwitchIfNoLiveTab is
+// refused with ErrJarSwitchUnconfirmed while the thread has a live tab,
+// checked in the hold that captures it, before any write; the gate keeps
+// that answer until the commit.
+//
+// A switch refused after its write (the Manager's close) writes the
+// thread's saved copy back as the thread is before it answers, so the copy
+// never names a jar the thread is not in; when that write fails, the answer
+// says the copy still names the new jar. A forget of every page and the
+// thread's close wait for the switch's persistMu hold, so neither refuses
+// it after its write.
 //
 // The switch's teardown barrier belongs to the thread's jar generation
 // (SessionInfo.jarTeardown): every page the thread has closing, this
@@ -66,74 +76,84 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consen
 	if kind == JarProject && strings.TrimSpace(access.ProjectID) == "" {
 		return fmt.Errorf("browser: this thread has no project to share a cookie jar with")
 	}
-	threadID := access.ThreadID
+	tb := access.tb
 
 	// persistMu is held from the capture to the commit, so the thread's copy
 	// on disk is the switch's from its write until the commit, and no other
 	// write orders between them; Manager.mu is held only to capture and to
-	// commit, never across the write.
+	// commit, never across the write. Neither is held to start the closes.
 	m.persistMu.Lock()
-	defer m.persistMu.Unlock()
-	m.mu.Lock()
-	if err := m.switchAdmitsLocked(ctx, threadID); err != nil {
+	persisting := true
+	defer func() {
+		if persisting {
+			m.persistMu.Unlock()
+		}
+	}()
+	if err := m.lockStructure(ctx, tb); err != nil {
+		return err
+	}
+	if err := m.switchAdmitsLocked(access); err != nil {
 		m.mu.Unlock()
 		return err
 	}
-	if jarKindOf(m.sessionLocked(threadID)) == kind {
+	if jarKindOf(tb.session) == kind {
 		m.mu.Unlock()
 		return nil
 	}
-	if err := consent.admitsLocked(m, threadID); err != nil {
+	if err := consent.admitsLocked(m, tb); err != nil {
 		m.mu.Unlock()
 		return err
 	}
-	sw := m.captureJarSwitchLocked(threadID, kind)
+	sw := m.captureJarSwitchLocked(tb, kind)
+	gate := make(chan struct{})
+	tb.switching = gate
 	m.mu.Unlock()
+	// endGate opens the gate; the caller holds m.mu.
+	endGate := func() {
+		tb.switching = nil
+		close(gate)
+	}
 	if err := m.writeRecordFile(sw.file); err != nil {
+		m.mu.Lock()
+		endGate()
+		m.mu.Unlock()
 		return err
 	}
 	if m.switchWritten != nil {
 		m.switchWritten()
 	}
 	m.mu.Lock()
-	err := m.switchAdmitsLocked(ctx, threadID)
-	if err == nil {
-		err = consent.admitsLocked(m, threadID)
-	}
+	err := m.switchAdmitsLocked(access)
 	var closes []switchClose
-	moved := false
 	if err == nil {
-		closes, moved = sw.commitLocked(m)
+		closes = sw.commitLocked(m)
 	}
+	endGate()
 	m.mu.Unlock()
 	if err != nil {
 		// The copy on disk is the switch's: write the thread back as it is,
-		// before a close or a forget waiting on persistMu writes its own.
-		if werr := m.writeRecordFilesLocked([]string{threadID}); werr != nil {
+		// before a write waiting on persistMu writes its own.
+		if werr := m.writeRecordFilesLocked([]string{access.ThreadID}); werr != nil {
 			return errors.Join(err, fmt.Errorf("browser: the saved tabs still name the %s cookie jar the switch did not make: %w", kind, werr))
 		}
 		return err
 	}
+	persisting = false
+	m.persistMu.Unlock()
 	for _, c := range closes {
 		m.startClose(c.scope, c.close)
 	}
 	if len(closes) == 0 {
-		m.emitThreadState(threadID)
-	}
-	if moved {
-		// A tab came, went or moved during the write: the copy follows the
-		// tabs the switch left, as any change of them does.
-		if err := m.writeRecordFilesLocked([]string{threadID}); err != nil {
-			log.Printf("browser: switch the jar of thread %s: save the tabs that changed during the switch: %v", threadID, err)
-		}
+		m.emitThreadState(access.ThreadID)
 	}
 	return nil
 }
 
-// switchAdmitsLocked refuses a jar switch of the thread once the Manager
-// closed, while a forget of every page runs (beginForget), or once the
-// lifetime ctx is bound to was retired (BindThread). The caller holds m.mu.
-func (m *Manager) switchAdmitsLocked(ctx context.Context, threadID string) error {
+// switchAdmitsLocked refuses a jar switch of access's thread once the
+// Manager closed, while a forget of every page runs (beginForget), or once
+// the thread's close detached the lifetime access is bound to
+// (thread_life.go). The caller holds m.mu.
+func (m *Manager) switchAdmitsLocked(access Access) error {
 	switch {
 	case m.closed:
 		return errManagerClosed
@@ -141,7 +161,7 @@ func (m *Manager) switchAdmitsLocked(ctx context.Context, threadID string) error
 		// The switch would record pages the forget closes.
 		return errForgetting
 	}
-	return m.lifeAdmitsLocked(ctx, threadID)
+	return access.admitLocked()
 }
 
 // JarConsent says whether the user agreed that a jar switch drops the page
@@ -176,14 +196,14 @@ func (c JarConsent) valid() error {
 	}
 }
 
-// admitsLocked refuses the switch of the thread when the consent does not
-// cover it as the thread is now. The caller holds m.mu.
-func (c JarConsent) admitsLocked(m *Manager, threadID string) error {
+// admitsLocked refuses the switch of tb when the consent does not cover it
+// as tb is now. The caller holds m.mu.
+func (c JarConsent) admitsLocked(m *Manager, tb *threadBrowser) error {
 	switch c {
 	case JarSwitchConfirmed:
 		return nil
 	case JarSwitchIfNoLiveTab:
-		if m.hasLiveTabLocked(threadID) {
+		if m.hasLiveTabLocked(tb) {
 			return ErrJarSwitchUnconfirmed
 		}
 		return nil
@@ -194,11 +214,11 @@ func (c JarConsent) admitsLocked(m *Manager, threadID string) error {
 	}
 }
 
-// hasLiveTabLocked reports whether the thread has a tab with a live page,
-// the tabs a switch closes (commitLocked). A tab still being created is not
-// live: the switch creates it again in the new jar. The caller holds m.mu.
-func (m *Manager) hasLiveTabLocked(threadID string) bool {
-	for _, tab := range m.threadTabsLocked(threadID) {
+// hasLiveTabLocked reports whether tb has a tab with a live page, the tabs
+// a switch closes (commitLocked). A tab still being created is not live:
+// the switch creates it again in the new jar. The caller holds m.mu.
+func (m *Manager) hasLiveTabLocked(tb *threadBrowser) bool {
+	for _, tab := range m.threadTabsLocked(tb) {
 		if tab.live != nil {
 			return true
 		}
@@ -206,22 +226,23 @@ func (m *Manager) hasLiveTabLocked(threadID string) bool {
 	return false
 }
 
-// jarSwitch is one switch of a thread's jar, captured once: the saved copy
-// it writes, holding each live page as the record its suspension makes, and
-// those records by page, which its commit installs. Its fields are written
-// only by captureJarSwitchLocked.
+// jarSwitch is one switch of a thread lifetime's jar, captured once: the
+// saved copy it writes, holding each live page as the record its suspension
+// makes, and those records by page, which its commit installs. Its fields
+// are written only by captureJarSwitchLocked.
 type jarSwitch struct {
-	thread, kind string
-	file         pageRecordFile
-	records      map[*managedPage]*suspendedPage
+	tb      *threadBrowser
+	kind    string
+	file    pageRecordFile
+	records map[*managedPage]*suspendedPage
 }
 
-// captureJarSwitchLocked captures a switch of the thread to kind. The
-// caller holds m.mu.
-func (m *Manager) captureJarSwitchLocked(threadID, kind string) *jarSwitch {
-	sw := &jarSwitch{thread: threadID, kind: kind, records: make(map[*managedPage]*suspendedPage)}
-	sw.file = pageRecordFile{Version: pageRecordVersion, ThreadID: threadID, ActivePageID: m.sessionLocked(threadID).ActivePageID, Jar: savedJar(kind)}
-	for _, tab := range m.threadTabsLocked(threadID) {
+// captureJarSwitchLocked captures a switch of tb to kind. The caller holds
+// m.mu.
+func (m *Manager) captureJarSwitchLocked(tb *threadBrowser, kind string) *jarSwitch {
+	sw := &jarSwitch{tb: tb, kind: kind, records: make(map[*managedPage]*suspendedPage)}
+	sw.file = pageRecordFile{Version: pageRecordVersion, ThreadID: tb.id, ActivePageID: tb.session.ActivePageID, Jar: savedJar(kind)}
+	for _, tab := range m.threadTabsLocked(tb) {
 		rec := tab.rec
 		if tab.live != nil {
 			rec = recordOf(tab.live, tab.live.cachedInfo())
@@ -246,42 +267,30 @@ type switchClose struct {
 }
 
 // commitLocked commits the switch: the generation advances and each live
-// page becomes, while it closes, the record the switch captured of it, its
-// address, title and use as written, with its place and label as they are
-// now. It answers the closes for the caller to start after releasing m.mu,
-// and whether the tabs moved during the write (a tab came, went, changed
-// place or label, or became live or suspended), so the copy on disk is not
-// the tabs it leaves. The caller holds m.mu.
-func (sw *jarSwitch) commitLocked(m *Manager) ([]switchClose, bool) {
-	info := m.sessionLocked(sw.thread)
+// page the switch captured becomes, while it closes, the record it wrote.
+// The structural gate held the tabs as captured, so there is nothing to
+// reconcile. It answers the closes for the caller to start after releasing
+// m.mu. The caller holds m.mu.
+func (sw *jarSwitch) commitLocked(m *Manager) []switchClose {
+	tb := sw.tb
+	info := &tb.session
 	info.Jar, info.jarGen, info.privateJar = sw.kind, info.jarGen+1, ""
 	info.UpdatedAt = time.Now()
 	// The recent addresses and closed tabs were the old jar's browsing; an
 	// open still running in it records nothing (recordRecentAddress). The
 	// switch's push carries both.
-	m.forgetBrowsingLocked(sw.thread)
+	m.forgetBrowsingLocked(tb)
 	var closes []switchClose
-	var left []pageRecord
-	for _, tab := range m.threadTabsLocked(sw.thread) {
-		rec := tab.rec
-		if old := tab.live; old != nil {
-			captured := sw.records[old]
-			rec = recordOf(old, old.cachedInfo())
-			if captured != nil {
-				rec.url, rec.title, rec.lastUse = captured.url, captured.title, captured.lastUse
-			}
-			_, scope := m.livePageLocked(old.id)
-			c := m.markClosingLocked(old, scope)
-			m.suspended[old.id] = rec
-			closes = append(closes, switchClose{scope: scope, close: c})
-		}
-		left = append(left, rec.saved())
+	for old, rec := range sw.records {
+		_, scope := m.livePageLocked(old.id)
+		c := m.markClosingLocked(old, scope)
+		m.suspended[old.id] = rec
+		closes = append(closes, switchClose{scope: scope, close: c})
 	}
-	moved := !slices.Equal(left, sw.file.Pages) || info.ActivePageID != sw.file.ActivePageID
 	var teardown []<-chan struct{}
 	for _, scope := range m.scopes {
 		for _, c := range scope.closing {
-			if c.p.owner == sw.thread {
+			if c.p.owner == tb {
 				teardown = append(teardown, c.done)
 			}
 		}
@@ -292,6 +301,5 @@ func (sw *jarSwitch) commitLocked(m *Manager) ([]switchClose, bool) {
 		teardown = append(teardown, done)
 	}
 	info.jarTeardown = teardown
-	m.sessions[sw.thread] = info
-	return closes, moved
+	return closes
 }

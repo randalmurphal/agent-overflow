@@ -71,7 +71,7 @@ func (m *Manager) openFile(ctx context.Context, access Access, path string, expe
 			return PageInfo{}, err
 		}
 	}
-	resolved, granted, err := m.authorizeFileGrant(access, path)
+	resolved, granted, err := m.authorizeFileGrant(access.Caller(), path)
 	if err != nil {
 		return PageInfo{}, err
 	}
@@ -151,7 +151,7 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested stri
 // never hold one jar's site data. admit, when set, decides the page's
 // admission under m.mu, after any such wait and before the caps. The caller
 // holds startMu.
-func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage, admit func() error) (*jarScope, error) {
+func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedPage, admit func() error) (*jarScope, error) {
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
@@ -190,7 +190,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 			m.idleTimer.Stop()
 			m.idleTimer = nil
 		}
-		if jar, err = m.jarForLocked(access, jarKindOf(m.sessionLocked(access.ThreadID))); err != nil {
+		if jar, err = m.jarForLocked(p.owner, access, jarKindOf(p.owner.session)); err != nil {
 			m.mu.Unlock()
 			m.scheduleIdleClose()
 			return nil, err
@@ -234,7 +234,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: process page limit reached (%d)", maxPagesTotal)
 	}
-	p.jarGen = m.sessionLocked(access.ThreadID).jarGen
+	p.jarGen = p.owner.session.jarGen
 	// The reservation keeps a concurrent close of the scope's last page from
 	// disposing the profile this page is being created in, and the page's
 	// workspace authority is taken in the same hold: pruneAuthoritiesLocked

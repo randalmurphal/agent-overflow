@@ -87,7 +87,7 @@ func suspendTab(t *testing.T, m *Manager, access Access, pageID string) {
 func fillProfiles(t *testing.T, m *Manager, proj project, n int) {
 	t.Helper()
 	for i := range n {
-		other := proj.access("other-"+string(rune('a'+i)), proj.one)
+		other := proj.access(m, "other-"+string(rune('a'+i)), proj.one)
 		setJar(t, m, other, JarThread)
 		openPage(t, m, other, "https://example.test/")
 	}
@@ -99,7 +99,7 @@ func fillProfiles(t *testing.T, m *Manager, proj project, n int) {
 func TestTheJarPolicyAnswersForAPageBeingCreated(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	a, b := proj.access("a", proj.one), proj.access("b", proj.two)
+	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two)
 	setJar(t, manager, a, JarProject)
 	setJar(t, manager, b, JarProject)
 	other := filepath.Join(proj.two, "other.html")
@@ -170,7 +170,7 @@ func TestClearingSiteDataBeforeARestoresAdmissionLeavesNothing(t *testing.T) {
 			manager, jars := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 			engine := newFileGateEngine(t, manager, jars)
 			proj := newProject(t, "P")
-			access := proj.access("a", proj.one)
+			access := proj.access(manager, "a", proj.one)
 			page := openWorkspaceFile(t, manager, access)
 			suspendTab(t, manager, access, page.ID)
 			waitDisposed(t, jars, canonical(t, proj.one))
@@ -193,7 +193,7 @@ func TestClearingSiteDataBeforeARestoresAdmissionLeavesNothing(t *testing.T) {
 			if got := jars.created(); len(got) != profiles {
 				t.Fatalf("the restore created profiles %q after the clear", got[profiles:])
 			}
-			if len(manager.ownedPages(access.ThreadID)) != 0 || len(tabIDs(manager, access)) != 0 {
+			if len(manager.ownedPages(access.tb)) != 0 || len(tabIDs(manager, access)) != 0 {
 				t.Fatal("the cleared tab came back")
 			}
 		})
@@ -205,7 +205,7 @@ func TestClearingSiteDataBeforeARestoresAdmissionLeavesNothing(t *testing.T) {
 func TestClosingATabCancelsItsRestore(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
+	access := proj.access(manager, "a", proj.one)
 	page := openPage(t, manager, access, "https://example.test/")
 	suspendTab(t, manager, access, page.ID)
 	release := engine.holdNav()
@@ -241,7 +241,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 	newSetup := func(t *testing.T) setup {
 		manager, jars := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 		proj := newProject(t, "P")
-		return setup{manager: manager, jars: jars, gate: newFileGateEngine(t, manager, jars), proj: proj, access: proj.access("a", proj.one)}
+		return setup{manager: manager, jars: jars, gate: newFileGateEngine(t, manager, jars), proj: proj, access: proj.access(manager, "a", proj.one)}
 	}
 	// expectWaiting fails when the restore ends, or tries again more than
 	// once, before the held teardown is released, then releases it and

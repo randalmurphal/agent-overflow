@@ -135,7 +135,10 @@ type CompanionSubscription struct {
 	State CompanionEvent `json:"state"`
 }
 
-type Access struct {
+// Caller is the thread an action is for and the paths its authority comes
+// from. A read or a registration takes it as it is; an action that can add a
+// tab takes it bound to the thread's lifetime (Access, thread_life.go).
+type Caller struct {
 	ThreadID    string
 	Workspace   string
 	ProjectRoot string
@@ -515,6 +518,9 @@ type SessionInfo struct {
 }
 
 type Controller interface {
+	// Bind binds one tool call to its thread's browser lifetime
+	// (Manager.Bind).
+	Bind(Caller) Access
 	Open(context.Context, Access, string, OpenOptions) (PageInfo, error)
 	NewPage(context.Context, Access) (PageInfo, error)
 	OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error)
