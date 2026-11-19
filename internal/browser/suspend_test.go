@@ -977,6 +977,7 @@ func TestASuspensionCaughtByShutdownOrAClearRecordsNothing(t *testing.T) {
 			m.mu.Unlock()
 		}},
 		{"clear", func(m *Manager) {
+			m.beginForget()
 			if err := m.forgetAllRecords(true); err != nil {
 				t.Fatal(err)
 			}

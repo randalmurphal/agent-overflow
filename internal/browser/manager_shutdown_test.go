@@ -61,17 +61,19 @@ func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 	// An engine start in flight holds startMu, which the clear waits for
 	// after it forgets the records it finds.
 	manager.startMu.Lock()
-	manager.mu.Lock()
-	before := manager.recordsCleared
-	manager.mu.Unlock()
 	cleared := make(chan error, 1)
 	go func() { cleared <- manager.ClearSiteData(context.Background()) }()
-	eventually(t, "the clear forgets the records", func() bool {
+	eventually(t, "the clear begins", func() bool {
 		manager.mu.Lock()
 		defer manager.mu.Unlock()
-		return manager.recordsCleared != before
+		return manager.forgettingLocked()
 	})
-	setJar(t, manager, access, JarThread)
+	// The switch keeps its tabs live for the clear to close, or is refused.
+	_ = manager.SetJar(access, JarThread)
+	// The reaper's suspension and a crash record nothing either.
+	if err := manager.SuspendThread(context.Background(), access.ThreadID); err != nil {
+		t.Fatal(err)
+	}
 	manager.startMu.Unlock()
 	if err := <-cleared; err != nil {
 		t.Fatalf("clear site data: %v", err)

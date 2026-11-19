@@ -100,10 +100,9 @@ type Manager struct {
 	// by page id. They belong to their thread's tab set but hold no engine
 	// resource. Guarded by mu.
 	suspended map[string]*suspendedPage
-	// recordsCleared counts forgetAllRecords calls, so a suspension that
-	// began before its browser was turned off or its site data cleared
-	// records nothing. Guarded by mu.
-	recordsCleared uint64
+	// forgetting counts the forgets of every page running (beginForget),
+	// during which no page becomes a record. Guarded by mu.
+	forgetting int
 	// lives holds the thread lifetimes pane actions are bound to
 	// (thread_life.go); retired in a hold of mu.
 	lives threadlife.Registry

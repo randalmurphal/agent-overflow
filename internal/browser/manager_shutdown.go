@@ -105,12 +105,12 @@ func (m *Manager) ClearSiteData(ctx context.Context) error {
 // runs once the browser closed without error, in the startMu hold of that
 // close, so no page opens before it ends.
 //
-// The records are forgotten first, which cancels the restores in flight and
-// fences the suspensions under way (recordsCleared), and again once the
-// browser is closed, in the same startMu hold: until the close, a live page
-// can still become a record (a jar switch, the reaper, a crash), and after
-// it no page is live or can open to become one.
+// No page becomes a record from the start of the forget to its end
+// (beginForget): a live page a jar switch, the reaper or a crash would
+// suspend is one the close takes, and the records are forgotten once, before
+// the engine start is interrupted, which cancels the restores in flight.
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func() error) error {
+	m.beginForget()
 	err := m.forgetAllRecords(keepJars)
 	// Release an in-flight engine start first: it holds startMu.
 	m.engine.Interrupt()
@@ -119,9 +119,9 @@ func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func(
 	if err == nil && clear != nil {
 		err = clear()
 	}
-	err = errors.Join(err, m.forgetAllRecords(keepJars))
 	m.mu.Lock()
 	threads := m.forgetAllBrowsingLocked()
+	m.forgetting--
 	m.mu.Unlock()
 	m.startMu.Unlock()
 	// The closes pushed state before the forget; these carry its generation.
@@ -130,6 +130,22 @@ func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool, clear func(
 	}
 	return err
 }
+
+// beginForget starts a forget of every page: from here until forgetAllPages
+// ends it, no page becomes a record (forgettingLocked). It waits for the
+// record writes in flight, which hold persistMu from their write to their
+// commit, so none commits after it.
+func (m *Manager) beginForget() {
+	m.persistMu.Lock()
+	m.mu.Lock()
+	m.forgetting++
+	m.mu.Unlock()
+	m.persistMu.Unlock()
+}
+
+// forgettingLocked reports whether a forget of every page runs, during which
+// no page becomes a record. The caller holds m.mu.
+func (m *Manager) forgettingLocked() bool { return m.forgetting > 0 }
 
 // Close shuts the manager down. The pages open at that moment are saved as
 // suspended pages first, so they come back in their threads after a restart.

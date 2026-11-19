@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -62,6 +63,13 @@ func (m *Manager) SetJar(access Access, kind string) error {
 			m.mu.Unlock()
 			m.persistMu.Unlock()
 			return fmt.Errorf("browser: manager closed")
+		}
+		if m.forgettingLocked() {
+			// The browser's pages are being closed and forgotten; the switch
+			// would record pages the forget closes (beginForget).
+			m.mu.Unlock()
+			m.persistMu.Unlock()
+			return errForgetting
 		}
 		if jarKindOf(m.sessionLocked(threadID)) == kind {
 			m.mu.Unlock()
@@ -142,6 +150,10 @@ func (s switchSnapshot) sameTabs(written switchSnapshot) bool {
 	}
 	return true
 }
+
+// errForgetting refuses a jar switch while the browser's pages are being
+// closed and forgotten (a clear, the browser turned off).
+var errForgetting = errors.New("browser: the browser's pages are being cleared; try again")
 
 // switchClose is one page a jar switch closes, in its scope.
 type switchClose struct {

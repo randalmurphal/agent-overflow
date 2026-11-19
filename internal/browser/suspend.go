@@ -460,12 +460,9 @@ func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
 // lookup finds it as one or the other. A page closed meanwhile is left
 // closed; a page a mounted pane shows by then is left live; a page of a
 // browser that began shutting down is left for Close to
-// save; and a page whose records were cleared meanwhile (the browser turned
-// off, or its site data cleared, which close it) records nothing.
+// save; and a page a forget of every page (the browser turned off, or its
+// site data cleared) is closing records nothing.
 func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error) {
-	m.mu.Lock()
-	cleared := m.recordsCleared
-	m.mu.Unlock()
 	p.mu.Lock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	read, err := m.settledAddress(opCtx, p)
@@ -489,7 +486,7 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	}
 	// A page a mounted pane came to show meanwhile stays live, as it would
 	// have had it been shown from the start (SuspendThread).
-	if scope == nil || m.closed || m.recordsCleared != cleared || m.presentedPageLocked(p.owner) == p.id {
+	if scope == nil || m.closed || m.forgettingLocked() || m.presentedPageLocked(p.owner) == p.id {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return false, nil
@@ -603,7 +600,6 @@ func (m *Manager) forgetAllRecords(keepJars bool) error {
 		threads[rec.owner] = true
 		m.dropRecordLocked(rec)
 	}
-	m.recordsCleared++
 	var jarThreads []string
 	for threadID, info := range m.sessions {
 		switch {
