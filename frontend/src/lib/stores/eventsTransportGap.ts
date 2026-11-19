@@ -1,5 +1,6 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { applyThreadWakesGap } from './eventsThreadWakes';
+import { refreshProviderMemory } from './providerMemory.svelte';
 import { applyThreadAgentRowsGap } from './eventsThreadAgentRows';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
@@ -462,7 +463,10 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // changed KEYS and the handler ignores them, because settings converge
       // by re-reading the whole (redacted) projection anyway. One read of an
       // in-memory value recovers every tier at once.
-      for (const computer of getAttachedBackends()) void resyncSettings(computer.id);
+      for (const computer of getAttachedBackends()) {
+        void resyncSettings(computer.id);
+        refreshProviderMemory(computer.id);
+      }
       return;
     }
     case 'agent-computers:changed':

@@ -2,7 +2,7 @@ import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { applyDictationSourcesChanged } from './dictation.svelte';
 import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
-import { applyProviderMemorySettingsChanged } from './providerMemory.svelte';
+import { refreshProviderMemory } from './providerMemory.svelte';
 import { installComputerHydration } from './computerHydration';
 import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './providerUpdates.svelte';
 // Composition root for backend event wiring. `setupEventListeners()` is the
@@ -406,7 +406,7 @@ export function setupEventListeners(): () => void {
       // Whether a provider's own memory is on follows the environment its
       // sessions get, which these settings carry; any change re-reads a
       // computer a surface is showing it for.
-      applyProviderMemorySettingsChanged(backendKeyForOrigin(origin.backendId));
+      refreshProviderMemory(backendKeyForOrigin(origin.backendId));
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,

@@ -11,7 +11,6 @@
   // Memory says why. Shown on an assistant's current thread only, never on
   // its workers or an ordinary thread. ChatView gives it a row of its own
   // above the conversation.
-  import { fade } from 'svelte/transition';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { providerMemory, watchProviderMemory } from '../../stores/providerMemory.svelte';
   import { computerHasSetting, getSettings } from '../../stores/settings.svelte';
@@ -45,7 +44,6 @@
 
 {#if shown && backend !== null}
   <div
-    transition:fade={{ duration: 150 }}
     role="alert"
     aria-live="polite"
     data-testid="own-memory-banner"

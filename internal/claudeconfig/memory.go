@@ -1,6 +1,7 @@
 package claudeconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"agent-overflow/internal/errorsx"
 )
 
 // AutoMemoryOffEnv turns Claude Code's auto memory off when true and on
@@ -53,17 +56,32 @@ func (s *Store) AutoMemoryOn(env string, set bool) (bool, error) {
 }
 
 // readJSONFile decodes the file at path into out; a missing file leaves out
-// unchanged.
+// unchanged. Its error's public message (errorsx.Public) names the file and
+// the line, never the decoder's text, which can quote the file.
 func readJSONFile(path, what string, out any) error {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err == nil {
-		err = json.Unmarshal(raw, out)
-	}
 	if err != nil {
-		return fmt.Errorf("read %s %s: %w", what, path, err)
+		return errorsx.Public("config_unreadable", fmt.Sprintf("%s %s could not be read.", what, path),
+			fmt.Errorf("read %s %s: %w", what, path, err))
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		message := fmt.Sprintf("%s %s could not be parsed", what, path)
+		// The decoder reports a byte offset just past where it stopped.
+		var syntax *json.SyntaxError
+		var mistyped *json.UnmarshalTypeError
+		offset := int64(-1)
+		if errors.As(err, &syntax) {
+			offset = syntax.Offset
+		} else if errors.As(err, &mistyped) {
+			offset = mistyped.Offset
+		}
+		if offset > 0 && offset <= int64(len(raw)) {
+			message += fmt.Sprintf(" at line %d", 1+bytes.Count(raw[:offset-1], []byte("\n")))
+		}
+		return errorsx.Public("config_unparsable", message+".", fmt.Errorf("parse %s %s: %w", what, path, err))
 	}
 	return nil
 }
