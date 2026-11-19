@@ -9,6 +9,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
 	"agent-overflow/internal/serialqueue"
 )
 
@@ -291,8 +292,9 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	}
 	profile := &wkProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
-		stage: opts.StageDownload,
-		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
+		destinations: destination.NewDecisions[string, wkPendingDownload](),
+		pages:        make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -317,8 +319,14 @@ type wkProfile struct {
 	// only honest answer there.
 	store unsafe.Pointer
 	// stage names the staged file each download is written to
-	// (profileOptions.StageDownload).
-	stage func(id string) (string, error)
+	// (profileOptions.StageDownload), and releaseStaged gives up one no
+	// download start took.
+	stage         func(id string) (string, error)
+	releaseStaged func(id string)
+	// destinations are the downloads whose destination decision is open:
+	// held on the main thread as WebKit hands it over, taken there once by
+	// its completion or by Dispose.
+	destinations *destination.Decisions[string, wkPendingDownload]
 
 	mu        sync.Mutex
 	disposed  bool
@@ -351,7 +359,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	if err != nil {
 		return nil, err
 	}
-	view, err := wkNewView(p.store, func() bool { return !p.isDisposed() }, page.id, p.id, script, webkitConsoleHandler)
+	view, err := wkNewView(page.id, p.id, script, webkitConsoleHandler)
 	if err != nil {
 		page.discard()
 		return nil, err
@@ -505,13 +513,15 @@ func (p *wkProfile) sampleDownload(entry *wkDownload) {
 		case <-entry.stop:
 			return
 		case <-ticker.C:
-			received, total, held, ran := wkDownloadProgress(func() unsafe.Pointer { return p.heldDownload(entry) })
-			if !ran {
+			sample := wkDownloadProgress(p, entry)
+			switch sample.kind {
+			case wkSampleWithdrawn:
 				continue
-			}
-			if !held {
+			case wkSampleReleased:
 				return
+			case wkSampleTaken:
 			}
+			received, total := sample.received, sample.total
 			select {
 			case <-entry.stop:
 				return
@@ -530,8 +540,8 @@ func (p *wkProfile) releaseDownload(handle string) {
 	p.mu.Lock()
 	entry := p.downloads[handle]
 	delete(p.downloads, handle)
+	wkDownloadOwners.CompareAndDelete(handle, p)
 	p.mu.Unlock()
-	wkDownloadOwners.Delete(handle)
 	if entry == nil {
 		return
 	}
@@ -543,24 +553,12 @@ func (p *wkProfile) releaseDownload(handle string) {
 // CancelDownload looks the download up on the main thread, where a
 // released download is let go after it leaves downloads (releaseDownload),
 // so the one it finds is still held through the cancel.
+//
+// A download released first has finished, failed or been canceled, and
+// its report is on its way (aoWKVDownloadFinished releases before it
+// reports).
 func (p *wkProfile) CancelDownload(id string) error {
-	found, ran := wkCancelDownload(func() unsafe.Pointer {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if entry := p.downloads[id]; entry != nil {
-			return entry.ptr
-		}
-		return nil
-	})
-	if !ran {
-		return errWKUnavailable
-	}
-	if !found {
-		// Released: WebKit finished, failed or canceled it, and that report
-		// is on its way (aoWKVDownloadFinished releases before it reports).
-		return errDownloadEnded
-	}
-	return nil
+	return wkCancelDownload(p, id).err(errWKUnavailable)
 }
 
 func (p *wkProfile) Dispose(context.Context) error {
@@ -586,6 +584,10 @@ func (p *wkProfile) Dispose(context.Context) error {
 	for _, handle := range handles {
 		p.releaseDownload(handle)
 	}
+	// Before the store goes: a destination still being decided is canceled
+	// and released on the main thread, where its worker's completion would
+	// have taken it.
+	wkCancelDestinations(p)
 	wkProfileByID.Delete(p.id)
 	p.engine.mu.Lock()
 	delete(p.engine.profiles, p.id)

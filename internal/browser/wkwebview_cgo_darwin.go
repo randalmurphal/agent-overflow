@@ -21,6 +21,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -383,15 +385,39 @@ func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t,
 		name = handle
 	}
 	pending := wkPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
+	if !profile.destinations.Hold(handle, pending) {
+		// The profile is closing: Dispose cancels what it holds, and this
+		// one goes the same way.
+		C.ao_wkv_download_decide(download, nil)
+		C.ao_wkv_download_release(download)
+		return
+	}
 	// Naming the staged file resolves the Downloads folder and prunes the
 	// staging directory, file system work the main thread must not wait on;
-	// the decision is completed on it afterwards.
-	go func() {
-		path, err := stagedFile(profile.stage, handle)
-		if !wkDo(func() { profile.decideDownload(pending, path, err) }) {
-			log.Printf("browser: download %s: decide its destination: %v", handle, errWKUnavailable)
+	// the decision is completed on it afterwards, by whichever of its
+	// worker and Dispose takes it first.
+	go destination.Settle(wkDo, func() bool { return !wkAlive() || profile.isDisposed() },
+		func() destination.Staged { return stageFor(profile.stage, profile.releaseStaged, handle) },
+		func(staged destination.Staged) bool {
+			pending, ok := profile.destinations.Take(handle)
+			if ok {
+				profile.decideDownload(pending, staged.Path, staged.Err)
+			}
+			return ok
+		})
+}
+
+// wkCancelDestinations cancels and releases, on the main thread, the
+// destination decisions p still holds, and refuses later ones (Dispose).
+func wkCancelDestinations(p *wkProfile) {
+	if !wkDo(func() {
+		for _, pending := range p.destinations.Close() {
+			C.ao_wkv_download_decide(pending.ptr, nil)
+			C.ao_wkv_download_release(pending.ptr)
 		}
-	}()
+	}) {
+		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errWKUnavailable)
+	}
 }
 
 // wkPendingDownload is a download whose destination is being decided, with
@@ -653,22 +679,23 @@ func wkClearSiteData(ctx context.Context) error {
 	}
 }
 
-// wkNewView builds a page's view in store, on the main thread, once live
-// answers there that the store's profile is not disposed: the profile's
-// Dispose frees the store on the main thread after it marks the profile
-// disposed, so a store live finds is not freed until the view holds it.
-func wkNewView(store unsafe.Pointer, live func() bool, pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
+// wkNewView builds a page's view in profile profileID's store on the main
+// thread (withProfileOnUI): Dispose frees the store there after it
+// unregisters the profile, so a store found there is not freed until the
+// view holds it.
+func wkNewView(pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
 	disposed := false
-	if !wkDo(func() {
-		if disposed = !live(); disposed {
-			return
-		}
-		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
-		view = C.ao_wkv_view_new(store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
-		C.free(unsafe.Pointer(cScript))
-		C.free(unsafe.Pointer(cHandler))
-	}) {
+	// Withdrawn unless it ran: a view built after the caller gave up would
+	// belong to no page.
+	if uicall.Run(wkDo, func() {
+		disposed = !withProfileOnUI(profileID, func(p *wkProfile) {
+			cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
+			view = C.ao_wkv_view_new(p.store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
+			C.free(unsafe.Pointer(cScript))
+			C.free(unsafe.Pointer(cHandler))
+		})
+	}) == uicall.Withdrawn {
 		return nil, errWKUnavailable
 	}
 	if disposed {
@@ -678,6 +705,19 @@ func wkNewView(store unsafe.Pointer, live func() bool, pageID, profileID uint64,
 		return nil, fmt.Errorf("browser: create page view")
 	}
 	return view, nil
+}
+
+// withProfileOnUI runs fn with profile id on the main thread, where the
+// caller runs it, unless the profile is unregistered or disposed, and
+// answers whether fn ran. A caller carries the profile's id, never a
+// native pointer it looked up elsewhere.
+func withProfileOnUI(id uint64, fn func(p *wkProfile)) bool {
+	p := wkLookupProfile(id)
+	if p == nil || p.isDisposed() {
+		return false
+	}
+	fn(p)
+	return true
 }
 
 func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler string) error {
@@ -861,46 +901,82 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 	}
 }
 
-// wkCancelDownload cancels the download lookup answers on the main thread,
-// nil for none. It reports whether lookup found one, and ran false when the
-// main thread could not run it, the cancel then withdrawn (runOrWithdraw).
-func wkCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
-	canceled := false
-	if !runOrWithdraw(wkDo, func() {
-		if download := lookup(); download != nil {
-			canceled = true
-			C.ao_wkv_download_cancel(download)
-		}
-	}) {
-		return false, false
+// wkCancelDownload cancels p's download id on the main thread
+// (withDownloadOnUI), where a released download is let go after it leaves
+// p.downloads (releaseDownload), so the one it finds is still held through
+// the cancel.
+func wkCancelDownload(p *wkProfile, id string) nativeCancel {
+	found := false
+	if uicall.Run(wkDo, func() {
+		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wkv_download_cancel(download) })
+	}) == uicall.Withdrawn {
+		return nativeCancelWithdrawn
 	}
-	return canceled, true
+	if !found {
+		return nativeCancelEnded
+	}
+	return nativeCanceled
+}
+
+// withDownloadOnUI runs fn with p's download id on the main thread, where
+// the caller runs it, unless it was released, and answers whether fn ran.
+func withDownloadOnUI(p *wkProfile, id string, fn func(download unsafe.Pointer)) bool {
+	p.mu.Lock()
+	entry := p.downloads[id]
+	p.mu.Unlock()
+	if entry == nil {
+		return false
+	}
+	fn(entry.ptr)
+	return true
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
 	wkDo(func() { C.ao_wkv_download_release(download) })
 }
 
-// wkDownloadProgress samples the NSProgress of the download lookup answers
-// on the main thread: the bytes received and the size expected, 0 when
-// unknown. held is false when lookup found none, and ran false when the
-// main thread could not run the sample. WKDownload reports no per-chunk
+// wkSample is one sample of a running download's progress
+// (wkDownloadProgress).
+type wkSample struct {
+	kind            wkSampleKind
+	received, total float64
+}
+
+// wkSampleKind is how a sample ended.
+type wkSampleKind int
+
+const (
+	// wkSampleTaken: the download was sampled; received and total hold.
+	wkSampleTaken wkSampleKind = iota + 1
+	// wkSampleReleased: the download was released first.
+	wkSampleReleased
+	// wkSampleWithdrawn: the main thread did not run the sample in time,
+	// and it never will.
+	wkSampleWithdrawn
+)
+
+// wkDownloadProgress samples the NSProgress of entry's download on the
+// main thread, while entry is p's (heldDownload): the bytes received and
+// the size expected, 0 when unknown. WKDownload reports no per-chunk
 // callback, so the profile polls this while a download is live; that
 // sample is what lets the Manager cancel one that outgrows its byte cap
 // before the whole file is on disk.
-func wkDownloadProgress(lookup func() unsafe.Pointer) (received, total float64, held, ran bool) {
+func wkDownloadProgress(p *wkProfile, entry *wkDownload) wkSample {
 	var r, t C.double
-	found := false
-	if !runOrWithdraw(wkDo, func() {
-		download := lookup()
+	held := false
+	if uicall.Run(wkDo, func() {
+		download := p.heldDownload(entry)
 		if download == nil {
 			return
 		}
-		found = true
+		held = true
 		r = C.ao_wkv_download_received(download)
 		t = C.ao_wkv_download_total(download)
-	}) {
-		return 0, 0, false, false
+	}) == uicall.Withdrawn {
+		return wkSample{kind: wkSampleWithdrawn}
 	}
-	return float64(r), float64(t), found, true
+	if !held {
+		return wkSample{kind: wkSampleReleased}
+	}
+	return wkSample{kind: wkSampleTaken, received: float64(r), total: float64(t)}
 }

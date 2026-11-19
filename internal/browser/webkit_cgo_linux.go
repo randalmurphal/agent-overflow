@@ -21,6 +21,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -366,15 +368,39 @@ func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64
 		name = handle
 	}
 	pending := webkitPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
+	if !profile.destinations.Hold(handle, pending) {
+		// The profile is closing: Dispose cancels what it holds, and this
+		// one goes the same way.
+		C.ao_wk_download_decide(download, nil)
+		C.ao_wk_download_unref(download)
+		return
+	}
 	// Naming the staged file resolves the Downloads folder and prunes the
 	// staging directory, file system work this GTK thread must not wait on;
-	// the decision is completed on it afterwards.
-	go func() {
-		path, err := stagedFile(profile.stage, handle)
-		if !gtkDo(func() { profile.decideDownload(pending, path, err) }) {
-			log.Printf("browser: download %s: decide its destination: %v", handle, errGTKUnavailable)
+	// the decision is completed on it afterwards, by whichever of its
+	// worker and Dispose takes it first.
+	go destination.Settle(gtkDo, func() bool { return !gtkAlive() || profile.isDisposed() },
+		func() destination.Staged { return stageFor(profile.stage, profile.releaseStaged, handle) },
+		func(staged destination.Staged) bool {
+			pending, ok := profile.destinations.Take(handle)
+			if ok {
+				profile.decideDownload(pending, staged.Path, staged.Err)
+			}
+			return ok
+		})
+}
+
+// webkitCancelDestinations cancels and releases, on the GTK thread, the
+// destination decisions p still holds, and refuses later ones (Dispose).
+func webkitCancelDestinations(p *webkitProfile) {
+	if !gtkDo(func() {
+		for _, pending := range p.destinations.Close() {
+			C.ao_wk_download_decide(pending.ptr, nil)
+			C.ao_wk_download_unref(pending.ptr)
 		}
-	}()
+	}) {
+		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errGTKUnavailable)
+	}
 }
 
 // webkitPendingDownload is a download whose destination is being decided,
@@ -581,23 +607,23 @@ func webkitFreeSession(session unsafe.Pointer) {
 	gtkDo(func() { C.ao_wk_session_free(session) })
 }
 
-// webkitNewView builds a page's view in session, on the GTK thread, once
-// live answers there that the session's profile is not disposed: the
-// profile's Dispose frees the session on the GTK thread after it marks
-// the profile disposed, so a session live finds is not freed until the
+// webkitNewView builds a page's view in profile profileID's session on the
+// GTK thread (withProfileOnUI): Dispose frees the session there after it
+// unregisters the profile, so a session found there is not freed until the
 // view holds it.
-func webkitNewView(session unsafe.Pointer, live func() bool, pageID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
+func webkitNewView(profileID, pageID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
 	disposed := false
-	if !gtkDo(func() {
-		if disposed = !live(); disposed {
-			return
-		}
-		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
-		view = C.ao_wk_view_new(session, C.uint64_t(pageID), cScript, cHandler)
-		C.free(unsafe.Pointer(cScript))
-		C.free(unsafe.Pointer(cHandler))
-	}) {
+	// Withdrawn unless it ran: a view built after the caller gave up would
+	// belong to no page.
+	if uicall.Run(gtkDo, func() {
+		disposed = !withProfileOnUI(profileID, func(p *webkitProfile) {
+			cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
+			view = C.ao_wk_view_new(p.session, C.uint64_t(pageID), cScript, cHandler)
+			C.free(unsafe.Pointer(cScript))
+			C.free(unsafe.Pointer(cHandler))
+		})
+	}) == uicall.Withdrawn {
 		return nil, errGTKUnavailable
 	}
 	if disposed {
@@ -607,6 +633,19 @@ func webkitNewView(session unsafe.Pointer, live func() bool, pageID uint64, user
 		return nil, fmt.Errorf("browser: create page view")
 	}
 	return view, nil
+}
+
+// withProfileOnUI runs fn with profile id on the GTK thread, where the
+// caller runs it, unless the profile is unregistered or disposed, and
+// answers whether fn ran. A caller carries the profile's id, never a
+// native pointer it looked up elsewhere.
+func withProfileOnUI(id uint64, fn func(p *webkitProfile)) bool {
+	p := webkitLookupProfile(id)
+	if p == nil || p.isDisposed() {
+		return false
+	}
+	fn(p)
+	return true
 }
 
 func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHandler string) error {
@@ -950,21 +989,32 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 	}
 }
 
-// webkitCancelDownload cancels the download lookup answers on the GTK
-// thread, nil for none. It reports whether lookup found one, and ran false
-// when the GTK main loop could not run it, the cancel then withdrawn
-// (runOrWithdraw).
-func webkitCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
-	canceled := false
-	if !runOrWithdraw(gtkDo, func() {
-		if download := lookup(); download != nil {
-			canceled = true
-			C.ao_wk_download_cancel(download)
-		}
-	}) {
-		return false, false
+// webkitCancelDownload cancels p's download id on the GTK thread
+// (withDownloadOnUI), where a released download's reference is dropped
+// after it leaves p.downloads (releaseDownload), so the one it finds is
+// still held through the cancel.
+func webkitCancelDownload(p *webkitProfile, id string) nativeCancel {
+	found := false
+	if uicall.Run(gtkDo, func() {
+		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wk_download_cancel(download) })
+	}) == uicall.Withdrawn {
+		return nativeCancelWithdrawn
 	}
-	return canceled, true
+	if !found {
+		return nativeCancelEnded
+	}
+	return nativeCanceled
+}
+
+// withDownloadOnUI runs fn with p's download id on the GTK thread, where
+// the caller runs it, unless it was released, and answers whether fn ran.
+func withDownloadOnUI(p *webkitProfile, id string, fn func(download unsafe.Pointer)) bool {
+	download := p.heldDownload(id)
+	if download == nil {
+		return false
+	}
+	fn(download)
+	return true
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {

@@ -102,3 +102,98 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 		}
 	}
 }
+
+// TestNativeEngineRealProfileCloseEndsADownloadBeingStaged closes a real
+// WebKitGTK profile while a download's staging is blocked: the close
+// cancels the open destination decision and releases the download on the
+// GTK thread at once, and the staging that ends afterwards gives up the
+// file it named, exactly once, with no row listed.
+func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
+	window := smokeWindow(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file.bin" {
+			_, _ = fmt.Fprint(w, "<!doctype html><title>files</title><p>files</p>")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="file.bin"`)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), 1000))
+	}))
+	t.Cleanup(server.Close)
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	access := Access{ThreadID: "native-smoke-download-staging-close", Workspace: resolvedTempDir(t)}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.Open(ctx, access, server.URL+"/", OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatalf("look the page up: %v", err)
+	}
+	profile := p.driver.(*webkitPage).profile
+	entered, unblock := make(chan string, 1), make(chan struct{})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(unblock) }) })
+	stage, releaseStaged := profile.stage, profile.releaseStaged
+	profile.stage = func(id string) (string, error) {
+		entered <- id
+		<-unblock
+		return stage(id)
+	}
+	var mu sync.Mutex
+	var released []string
+	profile.releaseStaged = func(id string) {
+		mu.Lock()
+		released = append(released, id)
+		mu.Unlock()
+		releaseStaged(id)
+	}
+	before := webkitDownloadsAlive()
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
+		t.Fatalf("start the download: %v", err)
+	}
+	var id string
+	select {
+	case id = <-entered:
+	case <-ctx.Done():
+		t.Fatal("the download was never staged")
+	}
+	if err := manager.CloseThread(ctx, access.ThreadID); err != nil {
+		t.Fatalf("close the thread's pages: %v", err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); webkitDownloadsAlive() != before; {
+		if time.Now().After(deadline) {
+			t.Fatalf("downloads alive: %d before, %d with its profile closed and its staging blocked", before, webkitDownloadsAlive())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	release.Do(func() { close(unblock) })
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		mu.Lock()
+		got := append([]string(nil), released...)
+		mu.Unlock()
+		if len(got) > 0 {
+			if len(got) != 1 || got[0] != id {
+				t.Fatalf("released the staged files of %v, want %s once", got, id)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the staged file the late staging named was never released")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if path := manager.stagedPath(id); path != "" {
+		t.Fatalf("the download still holds its staged file %s", path)
+	}
+	if listed := manager.CompanionState(access).Downloads; len(listed) != 0 {
+		t.Fatalf("a download canceled before its destination is listed: %+v", listed)
+	}
+}

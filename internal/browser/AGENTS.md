@@ -145,7 +145,12 @@ same way under any interleaving and bound what it keeps for unmatched events
 
 All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
 `wkDo`. Do not call either while holding a lock reachable from a native
-callback. Native callbacks carry integer IDs, never Go pointers. Keep shared
+callback. A closure posted to the UI thread carries ids and looks the
+profile or download up there (`withProfileOnUI`, `withDownloadOnUI`); an
+action whose answer is reported runs through `uicall.Run`, which never runs
+it after it answered withdrawn. A download's destination decision is held
+by its profile from WebKit's hand-over until its completion or the
+profile's close takes it, once (`internal/browser/destination`). Native callbacks carry integer IDs, never Go pointers. Keep shared
 page-operation JavaScript in `webkitjs.go` and `pagejs.go`; selectors and user
 text cross as JSON values rather than source fragments.
 

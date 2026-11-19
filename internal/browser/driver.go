@@ -212,6 +212,11 @@ type profileOptions struct {
 	// off its UI thread and completes the download's destination there
 	// afterwards (webkit_downloads.go).
 	StageDownload func(id string) (string, error)
+	// ReleaseStaged gives up the staged file StageDownload named for
+	// download id when no download start took it: the engine's decision
+	// for the download ended without one (destination.Settle). Nil when
+	// StageDownload is.
+	ReleaseStaged func(id string)
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.

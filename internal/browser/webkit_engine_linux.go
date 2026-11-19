@@ -10,6 +10,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
 	"agent-overflow/internal/serialqueue"
 )
 
@@ -238,8 +239,10 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 		return nil, err
 	}
 	profile := &webkitProfile{
-		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session, stage: opts.StageDownload,
-		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
+		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session,
+		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
+		destinations: destination.NewDecisions[string, webkitPendingDownload](),
+		pages:        make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
 	}
 	webkitProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -261,8 +264,14 @@ type webkitProfile struct {
 	session unsafe.Pointer
 
 	// stage names the staged file each download is written to
-	// (profileOptions.StageDownload).
-	stage func(id string) (string, error)
+	// (profileOptions.StageDownload), and releaseStaged gives up one no
+	// download start took.
+	stage         func(id string) (string, error)
+	releaseStaged func(id string)
+	// destinations are the downloads whose destination decision is open:
+	// held on the GTK thread as WebKit hands it over, taken there once by
+	// its completion or by Dispose.
+	destinations *destination.Decisions[string, webkitPendingDownload]
 
 	mu        sync.Mutex
 	disposed  bool
@@ -292,7 +301,7 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver,
 	if p.beforeView != nil {
 		p.beforeView()
 	}
-	view, err := webkitNewView(p.session, func() bool { return !p.isDisposed() }, page.id, script, webkitConsoleHandler)
+	view, err := webkitNewView(p.id, page.id, script, webkitConsoleHandler)
 	if err != nil {
 		page.discard()
 		return nil, err
@@ -397,7 +406,8 @@ func (p *webkitProfile) parkNew(page *webkitPage) {
 }
 
 // registerDownload keeps download under handle, unless the profile was
-// disposed, and reports whether it did.
+// disposed, and reports whether it did. The profile's entry and the owner
+// index change in one hold of p.mu, here and in releaseDownload.
 func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -419,8 +429,8 @@ func (p *webkitProfile) releaseDownload(handle string) {
 	p.mu.Lock()
 	download := p.downloads[handle]
 	delete(p.downloads, handle)
+	webkitDownloadOwners.CompareAndDelete(handle, p)
 	p.mu.Unlock()
-	webkitDownloadOwners.Delete(handle)
 	if download != nil {
 		webkitReleaseDownload(download)
 	}
@@ -437,17 +447,11 @@ func (p *webkitProfile) heldDownload(id string) unsafe.Pointer {
 // CancelDownload looks the download up on the GTK thread, where a released
 // download's reference is dropped after it leaves downloads
 // (releaseDownload), so the one it finds is still held through the cancel.
+//
+// A download released first has finished or failed, and its report is on
+// its way (aoWebKitDownloadProgress releases before it reports).
 func (p *webkitProfile) CancelDownload(id string) error {
-	found, ran := webkitCancelDownload(func() unsafe.Pointer { return p.heldDownload(id) })
-	if !ran {
-		return errGTKUnavailable
-	}
-	if !found {
-		// Released: WebKit finished or failed it, and that report is on its
-		// way (aoWebKitDownloadProgress releases before it reports).
-		return errDownloadEnded
-	}
-	return nil
+	return webkitCancelDownload(p, id).err(errGTKUnavailable)
 }
 
 func (p *webkitProfile) Dispose(context.Context) error {
@@ -473,6 +477,10 @@ func (p *webkitProfile) Dispose(context.Context) error {
 	for _, handle := range handles {
 		p.releaseDownload(handle)
 	}
+	// Before the session goes: a destination still being decided is
+	// canceled and released on the GTK thread, where its worker's
+	// completion would have taken it.
+	webkitCancelDestinations(p)
 	webkitProfileByID.Delete(p.id)
 	p.engine.mu.Lock()
 	delete(p.engine.profiles, p.id)
