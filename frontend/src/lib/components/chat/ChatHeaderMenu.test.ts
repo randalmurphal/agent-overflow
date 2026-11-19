@@ -1,5 +1,5 @@
-// The Thread actions menu on desktop: the terminal rows, title
-// regeneration and the editor rows. Its compact-only rows are covered in
+// The Thread actions menu on desktop: the terminal rows, message search,
+// title regeneration and the editor rows. Its compact-only rows are covered in
 // ChatHeaderActions.test.ts, and the spinner a regeneration shows beside
 // the title in ChatHeader.test.ts.
 
@@ -10,6 +10,7 @@ import ChatHeaderMenu from './ChatHeaderMenu.svelte';
 import { ensureEditorsLoaded, resetEditorsForTest } from '../../stores/editors.svelte';
 import { resetKeybindingsStore, setKeybindingsForTest } from '../../stores/keybindings.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from '../../stores/messageSearch.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
@@ -109,10 +110,23 @@ describe('<ChatHeaderMenu> on desktop', () => {
     resetToLocalPage();
   });
 
-  it('lists the terminal rows, title regeneration and the editor, and none of the compact rows', async () => {
+  it('lists the terminal rows, search, title regeneration and the editor, and none of the compact rows', async () => {
     addProject();
     await renderOpen();
-    expect(rows()).toEqual(['Terminal', 'New terminal pane', 'Regenerate title', 'Open in editor']);
+    expect(rows()).toEqual(['Terminal', 'New terminal pane', 'Search messages', 'Regenerate title', 'Open in editor']);
+  });
+
+  it('Search messages opens message search for this pane', async () => {
+    const { pane } = await renderOpen();
+    try {
+      await fireEvent.click(row('Search messages'));
+      await flush();
+      expect(isMessageSearchOpen()).toBe(true);
+      expect(getMessageSearchTargetPaneId()).toBe(pane.paneId);
+      expect(queryRow('Search messages')).toBeNull();
+    } finally {
+      closeMessageSearch();
+    }
   });
 
   it('is a menu button that says whether its menu is open', async () => {
@@ -180,23 +194,28 @@ describe('<ChatHeaderMenu> on desktop', () => {
     expect(pane.showTerminal).toBe(false);
   });
 
-  it('names the chord of each terminal row from the loaded keybindings, and none under compact', async () => {
+  it('names the chord of each row that has one from the loaded keybindings, and none under compact', async () => {
     // Chord hints come from the loaded keybindings store: there is no
     // hardcoded fallback, which would resurrect a chord the user rebound
     // or cleared.
     setKeybindingsForTest([
       { key: 'ctrl+`', command: 'terminal.toggle' },
       { key: 'ctrl+shift+n', command: 'terminal.newPane' },
+      { key: 'ctrl+shift+f', command: 'search.messages' },
     ]);
     const view = await renderOpen();
     expect(row('Terminal').textContent).toContain('Ctrl+`');
     expect(row('New terminal pane').textContent).toContain('Ctrl+Shift+N');
+    expect(row('Search messages').textContent).toContain('Ctrl+Shift+F');
+    // A row whose command is unbound names no chord.
+    expect(row('Regenerate title').textContent?.trim()).toBe('Regenerate title');
     view.unmount();
 
     setCompactLayoutForTest(true);
     await renderOpen();
     expect(row('Terminal').textContent).not.toContain('Ctrl+`');
     expect(row('New terminal pane').textContent).not.toContain('Ctrl+Shift+N');
+    expect(row('Search messages').textContent).not.toContain('Ctrl+Shift+F');
   });
 
   it('renders both terminal rows inert with the reason without terminal:operate', async () => {
@@ -260,7 +279,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
     await seedEditors([ed('code', 'Visual Studio Code'), ed('cursor', 'Cursor'), ed('zed', 'Zed')], 'cursor');
     const open = setBindingMock('OpenInEditor', async () => undefined);
     await renderOpen();
-    expect(rows().slice(3)).toEqual(['Open in Cursor', 'Open in Visual Studio Code', 'Open in Zed']);
+    expect(rows().slice(4)).toEqual(['Open in Cursor', 'Open in Visual Studio Code', 'Open in Zed']);
     await fireEvent.click(row('Open in Zed'));
     await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'zed']);

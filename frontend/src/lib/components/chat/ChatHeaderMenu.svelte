@@ -1,15 +1,16 @@
 <script lang="ts">
   // The chat header's Thread actions menu: the last control of the cluster
   // on desktop and under compact. It holds the actions that need no
-  // standing button: the drawer terminal, a fresh terminal pane, title
-  // regeneration and opening the project in an editor.
+  // standing button: the drawer terminal, a fresh terminal pane, message
+  // search, title regeneration and opening the project in an editor.
   //
   // Under compact it also carries the rows for the controls the phone
-  // header has no room for (review, the PR, take-control, message search,
-  // git); every other row is the same on both layouts. The git rows are GitActionsControl's own menu, opened from here
-  // (`openMenu`): the control mounts beside the button without its split
-  // trigger, so its dialogs live outside this menu and survive its close,
-  // and it still shows its status error and sign-in warning.
+  // header has no room for (review, the PR, take-control, git); every other
+  // row is the same on both layouts. The git rows are GitActionsControl's
+  // own menu, opened from here (`openMenu`): the control mounts beside the
+  // button without its split trigger, so its dialogs live outside this menu
+  // and survive its close, and it still shows its status error and sign-in
+  // warning.
   //
   // The menu drops from its button on both layouts, never as a bottom
   // sheet (docs/decisions.md, Phone menus).
@@ -72,9 +73,11 @@
   // rather than absent, like every other ungranted control.
   let terminalUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
   let terminalTitle = $derived(terminalUngranted ? UNGRANTED : undefined);
-  // The phone has no chords, so its rows name none.
-  let terminalChord = $derived(compact ? null : chordHintForCommand('terminal.toggle'));
-  let newTerminalChord = $derived(compact ? null : chordHintForCommand('terminal.newPane'));
+  // A row names its command's chord, read from the loaded keybindings. The
+  // phone has no chords, so its rows name none.
+  function chordFor(commandId: string): string | undefined {
+    return compact ? undefined : (chordHintForCommand(commandId) ?? undefined);
+  }
 
   function openNewTerminalPane(): void {
     void openTerminalThread({
@@ -195,7 +198,7 @@
       {/if}
       <MenuItem
         label="Terminal"
-        kbd={terminalChord ?? undefined}
+        kbd={chordFor('terminal.toggle')}
         checked={pane.showTerminal}
         disabled={terminalUngranted}
         title={terminalTitle}
@@ -203,26 +206,29 @@
       />
       <MenuItem
         label="New terminal pane"
-        kbd={newTerminalChord ?? undefined}
+        kbd={chordFor('terminal.newPane')}
         disabled={terminalUngranted}
         title={terminalTitle}
         onSelect={() => pick(openNewTerminalPane)}
       />
-      {#if compact}
-        {#if isClaudeTui}
-          <MenuItem
-            label="Take control"
-            checked={isCompanionOpen(pane.paneId, 'take-control')}
-            disabled={terminalUngranted}
-            title={terminalTitle}
-            onSelect={() => pick(() => toggleTakeControl(pane))}
-          />
-        {/if}
-        <!-- No Browser row: the companion is a native view on the host, which
-             the compact screen never shows (docs/specs/remote-access.md,
-             "Hidden on the phone"), and the store never opens it there. -->
-        <MenuItem label="Search messages" onSelect={() => pick(() => openMessageSearch(pane.paneId))} />
+      {#if compact && isClaudeTui}
+        <MenuItem
+          label="Take control"
+          checked={isCompanionOpen(pane.paneId, 'take-control')}
+          disabled={terminalUngranted}
+          title={terminalTitle}
+          onSelect={() => pick(() => toggleTakeControl(pane))}
+        />
       {/if}
+      <!-- No Browser row under compact: the companion is a native view on
+           the host, which the compact screen never shows
+           (docs/specs/remote-access.md, "Hidden on the phone"), and the
+           store never opens it there. -->
+      <MenuItem
+        label="Search messages"
+        kbd={chordFor('search.messages')}
+        onSelect={() => pick(() => openMessageSearch(pane.paneId))}
+      />
       <MenuItem
         label="Regenerate title"
         disabled={regeneratePending || regenerateUngranted}

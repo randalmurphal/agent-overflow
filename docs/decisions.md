@@ -812,13 +812,13 @@ and anti-changes that live only here:
   title is not enlarged. Opening a thread on the phone never focuses the
   composer; the keyboard rises only on a tap into the input.
 - Chat header actions menu (2026-11-19): the drawer terminal, a new
-  terminal pane, title regeneration and open-in-editor (one row per
-  installed editor, the default first) are rows of the Thread actions menu
-  at the end of the cluster, on desktop and on the phone. The desktop
-  cluster keeps the PR and diff badges, git, and the assistant,
-  take-control and browser buttons; the phone keeps the diff badge and the
-  assistant button, and its menu also carries review, the PR, take-control,
-  message search and git. A regeneration in flight shows a spinner beside
+  terminal pane, message search, title regeneration and open-in-editor (one
+  row per installed editor, the default first) are rows of the Thread
+  actions menu at the end of the cluster, on desktop and on the phone. A
+  desktop row names its command's chord. The desktop cluster keeps the PR
+  and diff badges, git, and the assistant, take-control and browser
+  buttons; the phone keeps the diff badge and the assistant button, and its
+  menu also carries review, the PR, take-control and git. A regeneration in flight shows a spinner beside
   the title on both layouts. On desktop the project crumb shows its whole
   name (to a 14rem cap) or is left out under a 36rem header; the title is
   what truncates, to a floor of 8rem or its own width, and the cluster
