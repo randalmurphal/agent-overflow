@@ -81,7 +81,12 @@ per-platform no-op.
   its target, its popup's report or its frame, then is refused. A page
   attached after its frames were made, a popup at its adoption, reads
   them from its frame tree.
-- Switching the jar with tabs open asks first in the pane. The Manager then
+- Switching the jar with tabs open asks first in the pane. The pane sends
+  the switch unconfirmed; the Manager refuses it, changing nothing, when the
+  thread has a live tab in the hold that would commit it
+  (`SetJarIfNoLiveTab`, code `browser_jar_unconfirmed`), and the pane then
+  asks and sends it confirmed (`SetJar`). A tab still being created is not
+  live: the switch creates it again in the new jar. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying
   active, and the records are saved before the switch takes effect, so a

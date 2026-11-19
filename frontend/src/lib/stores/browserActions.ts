@@ -11,6 +11,7 @@ import {
 import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelte';
 import { getCompanionPane } from './companionPanes.svelte';
 import { getFocusedPaneId, getPane } from './panes.svelte';
+import { TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
 import { addErrorToast } from './toast.svelte';
 
@@ -88,7 +89,7 @@ export type BrowserAction =
   | { readonly kind: 'reopen' }
   | { readonly kind: 'show'; readonly pageId: PageId | null }
   | { readonly kind: 'hide' }
-  | { readonly kind: 'jar'; readonly jar: BrowserJar }
+  | { readonly kind: 'jar'; readonly jar: BrowserJar; readonly confirmed: boolean }
   | { readonly kind: 'download-cancel' | 'download-reveal' | 'download-open'; readonly downloadId: DownloadId }
   | { readonly kind: 'downloads-clear' };
 
@@ -105,7 +106,7 @@ export const browserAction = {
   reopen: (): BrowserAction => ({ kind: 'reopen' }),
   show: (pageId: PageId | null): BrowserAction => ({ kind: 'show', pageId }),
   hide: (): BrowserAction => ({ kind: 'hide' }),
-  jar: (jar: BrowserJar): BrowserAction => ({ kind: 'jar', jar }),
+  jar: (jar: BrowserJar, confirmed: boolean): BrowserAction => ({ kind: 'jar', jar, confirmed }),
   download: (kind: 'download-cancel' | 'download-reveal' | 'download-open', downloadId: DownloadId): BrowserAction => ({ kind, downloadId }),
   clearDownloads: (): BrowserAction => ({ kind: 'downloads-clear' }),
 };
@@ -229,7 +230,7 @@ function wireAction(action: BrowserAction, order: { mount: MountId; select: numb
     case 'show':
       return new BrowserCompanionAction({ ...base, kind: 'show', pageId: action.pageId ?? '' });
     case 'jar':
-      return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar });
+      return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed });
     case 'download-cancel':
     case 'download-reveal':
     case 'download-open':
@@ -239,13 +240,30 @@ function wireAction(action: BrowserAction, order: { mount: MountId; select: numb
   }
 }
 
+/** What a cookie jar switch answered. */
+export type JarSwitchAnswer =
+  | { readonly kind: 'switched' }
+  | { readonly kind: 'needs-confirmation' }
+  | { readonly kind: 'failed'; readonly failure: BrowserActionFailure };
+
+// The backend's refusal of an unconfirmed switch while a tab is live
+// (internal/app browserJarUnconfirmedCode): a question for the user, not a
+// failure for the banner.
+function jarUnconfirmed(err: unknown): boolean {
+  return err instanceof TransportError && err.code === 'browser_jar_unconfirmed';
+}
+
 /**
  * Sets the cookie jar the thread's browser uses. The backend closes the
- * live tabs and reopens their addresses in the new jar; the caller asks
- * the user first when any are open. A refusal lands in the pane's banner.
+ * live tabs and reopens their addresses in the new jar. Unless the user
+ * confirmed losing the live tabs' page state, the backend refuses while a tab
+ * is live and the answer is 'needs-confirmation': the caller asks and sends
+ * again confirmed. Any other refusal lands in the pane's banner.
  */
-export async function setBrowserJar(threadId: string, jar: BrowserJar): Promise<BrowserActionFailure | null> {
-  return (await runBrowserAction(threadId, browserAction.jar(jar))).failure;
+export async function setBrowserJar(threadId: string, jar: BrowserJar, confirmed: boolean): Promise<JarSwitchAnswer> {
+  const { failure } = await runBrowserAction(threadId, browserAction.jar(jar, confirmed), jarUnconfirmed);
+  if (!failure) return { kind: 'switched' };
+  return jarUnconfirmed(failure.cause) ? { kind: 'needs-confirmation' } : { kind: 'failed', failure };
 }
 
 /**
@@ -288,16 +306,20 @@ function orderOf(threadId: string, action: BrowserAction): { mount: MountId; sel
   return mount && ordered(action) ? nextNumber(toMountId(mount)) : null;
 }
 
+// question says whether a refusal is a question for the user, which the
+// caller asks instead of the banner showing it.
 function runBrowserAction(
   threadId: string,
   action: BrowserAction,
+  question: (err: unknown) => boolean = () => false,
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
-  return sendBrowserAction(threadId, wireAction(action, orderOf(threadId, action)));
+  return sendBrowserAction(threadId, wireAction(action, orderOf(threadId, action)), question);
 }
 
 async function sendBrowserAction(
   threadId: string,
   wire: BrowserCompanionAction,
+  question: (err: unknown) => boolean = () => false,
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   noteBrowserActionStarted(threadId);
   noteBrowserActionError(threadId, '');
@@ -307,7 +329,7 @@ async function sendBrowserAction(
     return { failure: null, state };
   } catch (err) {
     const message = errString(err);
-    noteBrowserActionError(threadId, message);
+    if (!question(err)) noteBrowserActionError(threadId, message);
     return { failure: { error: message, cause: err }, state: null };
   }
 }

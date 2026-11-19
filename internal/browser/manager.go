@@ -251,6 +251,10 @@ type Manager struct {
 	// downloadAdmitting is a test seam run between a download start's page
 	// lookup and its admission. Production leaves it nil.
 	downloadAdmitting func()
+	// jarSwitchSaved is a test seam run, holding persistMu and not m.mu,
+	// after a jar switch writes its saved copy and before the hold that
+	// commits it (setJar). Production leaves it nil.
+	jarSwitchSaved func()
 }
 
 type ManagerOptions struct {

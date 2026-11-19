@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/transport"
 )
 
@@ -182,6 +183,8 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "download-open", DownloadID: "d", Mount: "m", Select: 1}, true},
 		{BrowserCompanionAction{Kind: "download-cancel"}, false},
 		{BrowserCompanionAction{Kind: "jar"}, false},
+		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Confirmed: true}, true},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Confirmed: true}, false},
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m", Intent: 1}, true},
 		{BrowserCompanionAction{Kind: "focus-page-withdraw", Mount: "m", Intent: 1}, true},
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m"}, false},
@@ -325,7 +328,20 @@ func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
 	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
 		t.Fatal(err)
 	}
-	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject})
+	// The tab is live: an unconfirmed switch is refused with the code the
+	// pane asks on, and the confirmed one goes ahead.
+	_, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject})
+	if code, _, _ := errorsx.PublicDetails(err); code != browserJarUnconfirmedCode {
+		t.Fatalf("an unconfirmed switch with a live tab answered %v, want code %s", err, browserJarUnconfirmedCode)
+	}
+	access, err := app.browserAccess(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.CompanionState(access).Jar; got == appbrowser.JarProject {
+		t.Fatal("the refused switch changed the jar")
+	}
+	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject, Confirmed: true})
 	if err != nil {
 		t.Fatalf("choose the project jar: %v", err)
 	}

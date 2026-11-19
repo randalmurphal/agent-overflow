@@ -920,6 +920,14 @@ export class BrowserCompanionAction {
     "jar"?: string;
 
     /**
+     * Confirmed says the user agreed, for "jar", to lose the live tabs' page
+     * state. Unconfirmed, a switch with a live tab is refused with code
+     * browser_jar_unconfirmed and changes nothing; the pane asks and sends
+     * it again confirmed.
+     */
+    "confirmed"?: boolean;
+
+    /**
      * Mount and Intent name a page focus intent for "focus-page" and
      * "focus-page-withdraw": the pane mount and its number for the request.
      */

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/errorsx"
 )
 
 // companionKind is a BrowserCompanionAction's kind, parsed once at the
@@ -114,6 +115,8 @@ type companionCommand struct {
 	// mount and intent name a page focus intent (focus kinds).
 	mount  string
 	intent uint64
+	// confirmed: the user agreed to a jar switch that closes live tabs.
+	confirmed bool
 }
 
 var errCompanionActionShape = errors.New("browser: malformed companion action")
@@ -173,7 +176,24 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 	if spec.kind == kindJar && cmd.jar == "" {
 		return refuse("names its cookie jar")
 	}
+	if action.Confirmed && spec.kind != kindJar {
+		return refuse("asks no confirmation")
+	}
+	cmd.confirmed = action.Confirmed
 	return cmd, nil
+}
+
+// browserJarUnconfirmedCode is the code of an unconfirmed jar switch the
+// Manager refused because a tab is live; the pane asks the user on it.
+const browserJarUnconfirmedCode = "browser_jar_unconfirmed"
+
+// jarSwitchError is the answer to an unconfirmed jar switch: the Manager's
+// refusal as a coded error the pane recognizes, any other error as it is.
+func jarSwitchError(err error) error {
+	if errors.Is(err, appbrowser.ErrJarSwitchUnconfirmed) {
+		return errorsx.Public(browserJarUnconfirmedCode, "Switching the cookie jar closes the open tabs and loses their page state", err)
+	}
+	return err
 }
 
 // truncateKind bounds an unknown kind quoted back in an error.

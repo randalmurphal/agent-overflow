@@ -24,6 +24,11 @@ type BrowserCompanionAction struct {
 	Index int `json:"index"`
 	// Jar is the cookie jar for "jar": worktree, project, thread or private.
 	Jar string `json:"jar,omitempty"`
+	// Confirmed says the user agreed, for "jar", to lose the live tabs' page
+	// state. Unconfirmed, a switch with a live tab is refused with code
+	// browser_jar_unconfirmed and changes nothing; the pane asks and sends
+	// it again confirmed.
+	Confirmed bool `json:"confirmed,omitempty"`
 	// Mount and Intent name a page focus intent for "focus-page" and
 	// "focus-page-withdraw": the pane mount and its number for the request.
 	Mount  string `json:"mount,omitempty"`
@@ -257,8 +262,13 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case kindDevtools:
 		err = m.OpenPaneDevTools(ctx, access, cmd.page)
 	case kindJar:
-		// Closes the live tabs and reopens their addresses in the new jar.
-		err = m.SetJar(access, cmd.jar)
+		// Closes the live tabs and reopens their addresses in the new jar;
+		// unconfirmed, it is refused while a tab is live.
+		if cmd.confirmed {
+			err = m.SetJar(access, cmd.jar)
+		} else {
+			err = jarSwitchError(m.SetJarIfNoLiveTab(access, cmd.jar))
+		}
 	case kindDownloadCancel:
 		err = m.CancelThreadDownload(access, cmd.download)
 	case kindDownloadReveal:

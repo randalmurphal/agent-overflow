@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -21,8 +22,9 @@ import (
 // restore path (resolvePage): the active one when the pane presents it or a
 // tool uses it, the others when selected or used. A restore fails as any
 // restore does, leaving its tab suspended with the error. Page state (forms,
-// history, sign-ins kept in the old jar) does not come along; the pane asks
-// before it switches.
+// history, sign-ins kept in the old jar) does not come along: SetJar is the
+// switch the user confirmed, and the pane sends SetJarIfNoLiveTab until they
+// do.
 //
 // The switch's teardown barrier belongs to the thread's jar generation
 // (SessionInfo.jarTeardown): every page the thread has closing, this
@@ -39,6 +41,24 @@ import (
 // (jarCurrentLocked), and a popup needs a live opener, which the switch has
 // closed.
 func (m *Manager) SetJar(access Access, kind string) error {
+	return m.setJar(access, kind, true)
+}
+
+// ErrJarSwitchUnconfirmed is SetJarIfNoLiveTab's refusal: the thread has a
+// live tab, whose page state the switch would drop.
+var ErrJarSwitchUnconfirmed = errors.New("browser: switching the cookie jar closes the open tabs")
+
+// SetJarIfNoLiveTab is SetJar for a switch the user has not confirmed: it
+// refuses with ErrJarSwitchUnconfirmed, changing nothing, when the thread
+// has a live tab in the m.mu hold that would commit the switch. A tab still
+// being created is not live; the switch creates it again in the new jar.
+// When the saved copy was already written for the switch, the refusal
+// writes it back as the thread is (the old jar) before it answers.
+func (m *Manager) SetJarIfNoLiveTab(access Access, kind string) error {
+	return m.setJar(access, kind, false)
+}
+
+func (m *Manager) setJar(access Access, kind string, confirmed bool) error {
 	kind = strings.TrimSpace(kind)
 	if !validJarKind(kind) {
 		return fmt.Errorf("browser: unknown cookie jar %q", truncateUTF8(kind, 32))
@@ -69,6 +89,15 @@ func (m *Manager) SetJar(access Access, kind string) error {
 			m.persistMu.Unlock()
 			return nil
 		}
+		if !confirmed && m.hasLiveTabLocked(threadID) {
+			m.mu.Unlock()
+			var err error
+			if written != nil {
+				err = m.writeRecordFilesLocked([]string{threadID})
+			}
+			m.persistMu.Unlock()
+			return errors.Join(ErrJarSwitchUnconfirmed, err)
+		}
 		file := m.recordFileLocked(threadID, true)
 		file.ActivePageID, file.Jar = info.ActivePageID, savedJar(kind)
 		if written != nil && reflect.DeepEqual(*written, file) {
@@ -85,6 +114,9 @@ func (m *Manager) SetJar(access Access, kind string) error {
 			return err
 		}
 		written = &file
+		if m.jarSwitchSaved != nil {
+			m.jarSwitchSaved()
+		}
 	}
 	m.persistMu.Unlock()
 	for _, c := range closes {
@@ -140,4 +172,15 @@ func (m *Manager) switchJarLocked(threadID string, info SessionInfo, kind string
 	info.jarTeardown = teardown
 	m.sessions[threadID] = info
 	return closes
+}
+
+// hasLiveTabLocked reports whether the thread has a tab with a live page, the
+// tabs a switch closes (switchJarLocked). The caller holds m.mu.
+func (m *Manager) hasLiveTabLocked(threadID string) bool {
+	for _, tab := range m.threadTabsLocked(threadID) {
+		if tab.live != nil {
+			return true
+		}
+	}
+	return false
 }
