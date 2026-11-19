@@ -8,6 +8,8 @@
 // Show in folder, and one that fails is announced with its reason. The fake
 // engine's download.invalid addresses stand in for a server
 // (fake_downloads.go).
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { test, expect, type SeedResult } from './fixtures.js';
 
 interface BrowserState {
@@ -54,10 +56,15 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
   await page.keyboard.press('Escape');
   await expect(list).toHaveCount(0);
 
-  // A finished download announces itself once, with Show in folder.
+  // A finished download announces itself once, with Show in folder. A
+  // report.pdf already in the Downloads folder makes it the next free name,
+  // one with a space in it.
+  const home = harness.bootstrap.homeDir;
+  if (!home) throw new Error('The download spec requires an isolated home');
+  await mkdir(path.join(home, 'Downloads'), { recursive: true });
+  await writeFile(path.join(home, 'Downloads', 'report.pdf'), 'earlier');
   await address.fill('https://download.invalid/report.pdf?bytes=2048');
   await address.press('Enter');
-  // The worker's harness home may hold a report.pdf from an earlier test.
   const finished = page.getByTestId('toast').filter({ hasText: /Downloaded report(?: \(\d+\))?\.pdf/ });
   await expect(finished).toHaveCount(1);
   await expect(finished.getByRole('button', { name: 'Show in folder' })).toBeVisible();
@@ -79,13 +86,21 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
   // the harness home, as the desktop engines save it.
   await rows.nth(1).getByTestId('browser-download-open').click();
   await expect(pane.getByTestId('browser-tab')).toHaveCount(2);
-  const savedAs = /^file:\/\/.*\/home\/Downloads\/(report(?: \(\d+\))?\.pdf)$/;
+  const listed = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+  const firstName = listed.downloads?.find((item) => item.state === 'completed')?.name ?? '';
+  expect(firstName).toMatch(/^report \(\d+\)\.pdf$/);
+  // The file URL escapes the name (a space is %20), so the opened tab is
+  // compared by its decoded file name.
+  const savedName = (url: string): string => {
+    if (!url.startsWith('file:')) return '';
+    const path = new URL(url).pathname.split('/');
+    if (path.at(-3) !== 'home' || path.at(-2) !== 'Downloads') return '';
+    return decodeURIComponent(path.at(-1) ?? '');
+  };
   await expect.poll(async () => {
     const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
-    return state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '';
-  }).toMatch(savedAs);
-  const opened = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
-  const firstName = opened.pages?.find((tab) => tab.id === opened.activePageId)?.url.match(savedAs)?.[1];
+    return savedName(state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '');
+  }).toBe(firstName);
 
   // The same name again is saved beside the first, never over it.
   await pane.getByTestId('browser-tab').first().click();
