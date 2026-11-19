@@ -203,6 +203,9 @@ gocache-trim:
 
 # GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
 # for CI shards that run the heavy packages on their own runners.
+# The timeout is 30m rather than go's 10m: at nice 19 on a loaded host
+# ./internal/app alone runs past 10 minutes. A -timeout in GO_TEST_FLAGS
+# replaces it.
 GO_TEST_EXCLUDE ?=
 go-test: netns-tool gocache-trim
 	@set -e; \
@@ -210,7 +213,7 @@ go-test: netns-tool gocache-trim
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
-	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
+	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version through
