@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -395,10 +396,37 @@ func TestNativeMemoryStatusReadsTheSessionsConfiguration(t *testing.T) {
 		t.Fatalf("with Codex's config unreadable: %+v, %v", status, err)
 	}
 	writeHomeFile(t, home, ".codex/config.toml", "[features]\nmemories = true\n")
-	writeHomeFile(t, home, ".claude/settings.json", `{`)
+	writeHomeFile(t, home, ".claude/settings.json", "{\n  \"autoMemoryEnabled\": yes\n}\n")
 	status, err = app.GetNativeMemoryStatus()
-	if err != nil || status.Codex != (ProviderMemory{On: true}) || status.Claude.On || !strings.Contains(status.Claude.Error, "settings.json") {
+	want := "Claude's settings " + filepath.Join(home, ".claude", "settings.json") + " could not be parsed at line 2."
+	if err != nil || status.Codex != (ProviderMemory{On: true}) || status.Claude != (ProviderMemory{Error: want}) {
 		t.Fatalf("with Claude's settings unreadable: %+v, %v", status, err)
+	}
+}
+
+// A config the parser refuses can quote the value it stopped at, from any
+// field, and the status reaches every screen allowed to read settings. The
+// answer names the file and the line; the value stays on this computer.
+func TestNativeMemoryStatusNeverCarriesTheConfigsText(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	home := testProviderHome(t, app)
+	const secret = "sentinelpassword"
+	writeHomeFile(t, home, ".codex/config.toml", "[features]\nmemories = true\n\n[mcp_servers.db.env]\nPASSWORD = "+secret+"\n")
+	status, err := app.GetNativeMemoryStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), secret) {
+		t.Fatalf("the answer carries the config's text: %s", wire)
+	}
+	want := "Codex's config " + filepath.Join(home, ".codex", "config.toml") + " could not be parsed at line 5."
+	if status.Codex != (ProviderMemory{Error: want}) {
+		t.Fatalf("Codex = %+v, want the error %q", status.Codex, want)
 	}
 }
 

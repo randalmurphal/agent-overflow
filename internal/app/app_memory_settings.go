@@ -1,10 +1,13 @@
 package app
 
 import (
+	"fmt"
+	"log"
 	"os"
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -23,15 +26,23 @@ type NativeMemoryStatus struct {
 // why its configuration could not be read. Each provider is read on its
 // own, so one unreadable configuration leaves the other's answer.
 type ProviderMemory struct {
-	On    bool   `json:"on"`
+	On bool `json:"on"`
+	// Error names the file and whether it could not be read or parsed, with
+	// the line when the parser gives one. It never carries the parser's
+	// text, which can quote any value in the file; that goes to the log.
 	Error string `json:"error"`
 }
 
-func providerMemory(on bool, err error) ProviderMemory {
-	if err != nil {
-		return ProviderMemory{Error: err.Error()}
+func providerMemory(name string, on bool, err error) ProviderMemory {
+	if err == nil {
+		return ProviderMemory{On: on}
 	}
-	return ProviderMemory{On: on}
+	log.Printf("read whether %s's own memory is on: %v", name, err)
+	_, message, ok := errorsx.PublicDetails(err)
+	if !ok {
+		message = fmt.Sprintf("%s's configuration could not be read.", name)
+	}
+	return ProviderMemory{Error: message}
 }
 
 // GetNativeMemoryStatus reads whether Claude's auto-memory and Codex's
@@ -53,8 +64,10 @@ func (a *App) GetNativeMemoryStatus() (NativeMemoryStatus, error) {
 	if !set {
 		env, set = os.LookupEnv(claude.AutoMemoryOffEnv)
 	}
+	claudeOn, claudeErr := claudeconfig.New(claudeconfig.PathForHome(home)).AutoMemoryOn(env, set)
+	codexOn, codexErr := codexconfig.New(codexconfig.PathForHome(home)).MemoriesOn()
 	return NativeMemoryStatus{
-		Claude: providerMemory(claudeconfig.New(claudeconfig.PathForHome(home)).AutoMemoryOn(env, set)),
-		Codex:  providerMemory(codexconfig.New(codexconfig.PathForHome(home)).MemoriesOn()),
+		Claude: providerMemory("Claude", claudeOn, claudeErr),
+		Codex:  providerMemory("Codex", codexOn, codexErr),
 	}, nil
 }

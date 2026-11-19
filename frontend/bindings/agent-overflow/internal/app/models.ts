@@ -6165,6 +6165,12 @@ export class ProjectPRList {
  */
 export class ProviderMemory {
     "on": boolean;
+
+    /**
+     * Error names the file and whether it could not be read or parsed, with
+     * the line when the parser gives one. It never carries the parser's
+     * text, which can quote any value in the file; that goes to the log.
+     */
     "error": string;
 
     /** Creates a new ProviderMemory instance. */

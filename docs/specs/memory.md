@@ -440,8 +440,10 @@ environment a session gets; otherwise `autoMemoryEnabled` in
 [Codex](../references/codex-wire.md#memories-config)).
 Codex's is on when `[features] memories` is true in
 `~/.codex/config.toml`. Each provider is read on its own: one whose
-file cannot be read or parsed says so on the page, naming the file, and
-the other's answer still warns.
+file cannot be read or parsed says so on the page, naming the file and
+the line when the parser gives one, and the other's answer still warns.
+The parser's own text, which can quote any value in the file, goes to
+the host log only.
 
 Shared memory gives sessions write access outside their workspace, so
 it is a host setting (`internal/settings/tier.go`), like the other
