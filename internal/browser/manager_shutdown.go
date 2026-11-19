@@ -239,7 +239,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Unlock()
 	// A popup not listed yet goes with the browser, its downloads with it;
 	// their files go once the engine writing them has stopped.
-	parkedFiles := m.dropParked(scopes)
+	parkedFiles := m.dropParked()
 	for _, p := range pages {
 		m.endFind(p)
 	}

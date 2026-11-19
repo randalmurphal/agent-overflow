@@ -580,25 +580,106 @@ func TestParkedDownloadsStopAtTheArtifactQuota(t *testing.T) {
 	}
 }
 
-// A popup's download refused at its fate (here its workspace's quota) is
-// listed in no tab, and its file in the jar's download directory goes with
-// it: nothing keeps it, so it would sit outside every quota.
+// A popup's download refused at its fate (no page that opened it is still
+// a tab) is listed in no tab, and its file in the jar's download directory
+// goes with it, and its reservation: nothing keeps it, so it would sit
+// outside every quota.
 func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
 	for _, state := range []string{downloadCompleted, downloadInProgress} {
 		t.Run(state, func(t *testing.T) {
 			manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+			// Another tab keeps the jar open.
+			openPage(t, manager, access, "https://example.test/other")
+			before := manager.artifactBytes.Load()
 			file := engineArtifact(t, manager, "dl-1")
-			popupDownload(manager, engine, "popup", "dl-1", opener)
-			manager.downloadProgress(progressOf("dl-1", state, 100))
-			p, _, err := manager.lookupOwnedPage(access, manager.CompanionState(access).Pages[0].ID)
-			if err != nil {
-				t.Fatal(err)
+			if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+				t.Fatal("the popup's download was refused")
 			}
-			p.authority.downloadBytes.Store(maxWorkspaceDownloadBytes)
+			manager.downloadProgress(progressOf("dl-1", state, 100))
+			manager.removeClosedPage(opener)
 			manager.removeClosedPage("popup")
-			wantDownloads(t, manager, opener, "dl-1 canceled 0")
 			awaitRemoved(t, file)
+			if got := manager.artifactBytes.Load(); got != before {
+				t.Fatalf("%d artifact bytes are reserved, want %d", got, before)
+			}
 		})
+	}
+}
+
+// A popup's download holds its workspace's allowance from its start, as a
+// listed one does: one past the workspace's quota is refused before the
+// engine writes it, whatever the artifact quota has left.
+func TestAParkedDownloadHoldsItsWorkspacesAllowance(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	authority := authorityOf(t, manager, access)
+	before := authority.downloadBytes.Load()
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("a parked download within the quotas was refused")
+	}
+	if got := authority.downloadBytes.Load() - before; got != maxDownloadBytes {
+		t.Fatalf("a parked download holds %d of its workspace's bytes, want %d", got, maxDownloadBytes)
+	}
+	authority.downloadBytes.Store(maxWorkspaceDownloadBytes)
+	if popupDownload(manager, engine, "popup", "dl-2", opener) {
+		t.Fatal("a parked download past its workspace's quota was admitted")
+	}
+}
+
+// A parked download's listing takes its reservation over: with the artifact
+// quota taken up meanwhile, the download its popup finished is listed as it
+// is, not canceled over quota, and holds its size of the quotas after.
+func TestAParkedDownloadsListingKeepsItsReservation(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	engineArtifact(t, manager, "dl-1")
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
+	// Another download takes everything the artifact quota has left as the
+	// listing begins.
+	manager.downloadAdmitting = func() {
+		if free := maxArtifactRootBytes - manager.artifactBytes.Load(); !manager.reserveArtifacts(free) {
+			t.Error("the competing reservation was refused")
+		}
+	}
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	wantDownloads(t, manager, "popup", "dl-1 completed 5")
+	if got := manager.artifactBytes.Load(); got != maxArtifactRootBytes-maxDownloadBytes+5 {
+		t.Fatalf("%d artifact bytes are reserved, want the competitor's and the file's", got)
+	}
+	if got := authorityOf(t, manager, access).downloadBytes.Load(); got != 5 {
+		t.Fatalf("the workspace holds %d download bytes, want the file's 5", got)
+	}
+}
+
+// A finished parked download whose jar closed with its last tab is still
+// removed with the browser: the download keeps the directory it was
+// written in.
+func TestAParkedDownloadOfAClosedJarIsRemovedWithTheBrowser(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	before := manager.artifactBytes.Load()
+	file := engineArtifact(t, manager, "dl-1")
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
+	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access).Pages[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	open := len(manager.scopes)
+	manager.mu.Unlock()
+	if open != 0 {
+		t.Fatalf("%d jars are open after the last tab closed", open)
+	}
+	if err := manager.closeBrowser(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the parked download's file survives the browser's close: %v", err)
+	}
+	if got := manager.artifactBytes.Load(); got != before {
+		t.Fatalf("after the close %d artifact bytes are reserved, want %d", got, before)
 	}
 }
 
