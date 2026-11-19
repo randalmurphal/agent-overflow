@@ -25,6 +25,10 @@ is the drag handle. Open, close and placement belong to
   hidden. Do not make the shield wait for a later drag event. A pane body
   sees the drags that place nothing: dragged text and files. A thread
   row's DataTransfer carries only its id (`encodeThreadDragPayload`).
+- A pane kind's primary scroll container carries `data-pane-scroller` and
+  is focusable (a `tabindex`, `-1` unless it is a tab stop): a keyboard pane move with no
+  composer to take the caret focuses it, so PageDown and the arrows scroll
+  it. The pane section itself has no tabindex, so a click never focuses it.
 - Desktop owns resizers and multi-pane layout. Compact mode shows one pane at a
   time while keeping the strip mounted; use the shared layout mode rather than
   device or runtime detection.

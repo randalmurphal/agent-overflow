@@ -1037,6 +1037,7 @@
     style:overflow-anchor="none"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
     tabindex="-1"
+    data-pane-scroller
     data-testid="message-timeline-scroll"
     role="log"
     aria-label="Message History"

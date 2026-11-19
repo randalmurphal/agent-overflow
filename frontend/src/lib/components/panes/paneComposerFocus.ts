@@ -38,14 +38,37 @@ function paneSection(paneId: string): HTMLElement | null {
 }
 
 /**
- * Puts the caret in `paneId`: its composer when it takes input, else the
- * pane's own section (PaneHost's, focusable by script), so keys typed after
- * a move never reach the pane focus left. A blocking prompt, a side chat
- * still preparing and a pane with no composer all take the section.
+ * Puts the caret in `paneId`, so keys typed after a move never reach the
+ * pane focus left: its composer when it takes input; else the pane's
+ * primary scroller (`data-pane-scroller`, focusable by script), where the
+ * browser starts a keyboard scroll, so PageDown and the arrows scroll it;
+ * else (a side chat still preparing) PaneHost's section, focusable only
+ * while it holds this focus, so a click never lands on it.
  */
 export function carryCaretIntoPane(paneId: string): void {
   if (focusPaneComposer(paneId)) return;
-  paneSection(paneId)?.focus({ preventScroll: true });
+  const section = paneSection(paneId);
+  if (!section) return;
+  const scroller = section.querySelector<HTMLElement>('[data-pane-scroller]');
+  if (scroller) {
+    scroller.focus({ preventScroll: true });
+    return;
+  }
+  focusSectionOnce(section);
+}
+
+function focusSectionOnce(section: HTMLElement): void {
+  if (section.hasAttribute('tabindex')) {
+    section.focus({ preventScroll: true });
+    return;
+  }
+  section.tabIndex = -1;
+  section.focus({ preventScroll: true });
+  if (document.activeElement !== section) {
+    section.removeAttribute('tabindex');
+    return;
+  }
+  section.addEventListener('blur', () => section.removeAttribute('tabindex'), { once: true });
 }
 
 /**

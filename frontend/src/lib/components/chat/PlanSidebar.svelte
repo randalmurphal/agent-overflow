@@ -275,6 +275,7 @@
       bind:this={planScrollEl}
       class="flex-1 overflow-y-auto px-8 pb-2 focus-visible:outline-none"
       tabindex="-1"
+      data-pane-scroller
       data-testid="plan-sidebar-scroll"
     >
       {#if currentPlan}
