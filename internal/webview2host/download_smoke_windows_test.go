@@ -590,11 +590,9 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 	for target == "" {
 		select {
 		case report := <-s.reports:
-			switch report.kind {
-			case ReportCreated:
+			if report.kind == ReportCreated {
 				target = report.detail
-			case ReportFindUnavailable:
-			default:
+			} else if report.kind != ReportFindUnavailable {
 				t.Fatalf("create answered %+v", report)
 			}
 		case <-time.After(60 * time.Second):

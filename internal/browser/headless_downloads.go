@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -170,15 +171,22 @@ func downloadSettled(state string) bool {
 	return state == downloadCompleted || state == downloadCanceled
 }
 
+// cdpDownloadProgress is the seam's progress for Chromium's. A state the
+// pinned protocol does not name ends the download with it as the reason,
+// so a row never stays running on a report nothing here understands.
 func cdpDownloadProgress(event cdpbrowser.EventDownloadProgress) downloadProgress {
-	state := downloadInProgress
+	progress := downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, Total: event.TotalBytes, FilePath: event.FilePath}
 	switch event.State {
+	case cdpbrowser.DownloadProgressStateInProgress:
+		progress.State = downloadInProgress
 	case cdpbrowser.DownloadProgressStateCompleted:
-		state = downloadCompleted
+		progress.State = downloadCompleted
 	case cdpbrowser.DownloadProgressStateCanceled:
-		state = downloadCanceled
+		progress.State = downloadCanceled
+	default:
+		progress.State, progress.Error = downloadCanceled, fmt.Sprintf("Chromium reported the download as %q", event.State)
 	}
-	return downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, Total: event.TotalBytes, State: state, FilePath: event.FilePath}
+	return progress
 }
 
 // subscribe connects the tracker to the download events of the browser of

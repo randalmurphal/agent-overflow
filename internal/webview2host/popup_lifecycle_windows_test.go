@@ -69,14 +69,14 @@ func kinds(t *testing.T, reports []rigReport) []string {
 	var out []string
 	for _, report := range reports {
 		entry := report.page + ":" + string(report.kind)
-		switch report.kind {
-		case ReportPopup:
+		if report.kind == ReportPopup {
 			parsed, err := ParsePopupReport(report.detail)
 			if err != nil {
 				t.Fatal(err)
 			}
 			entry += fmt.Sprintf("(%s,%s)", parsed.Opener, parsed.Target)
-		case ReportDownload:
+		}
+		if report.kind == ReportDownload {
 			parsed, err := ParseDownloadReport(report.detail)
 			if err != nil {
 				t.Fatal(err)

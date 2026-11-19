@@ -768,3 +768,12 @@ func TestCDPDownloadProgressCarriesItsTotal(t *testing.T) {
 		t.Fatalf("cdpDownloadProgress = %+v, want %+v", got, want)
 	}
 }
+
+// A state the pinned protocol does not name ends the download with the
+// state as its reason, rather than leaving its row running.
+func TestCDPDownloadProgressEndsAnUnknownState(t *testing.T) {
+	got := cdpDownloadProgress(cdpbrowser.EventDownloadProgress{GUID: "G", ReceivedBytes: 10, State: "interrupted"})
+	if got.State != downloadCanceled || !strings.Contains(got.Error, `"interrupted"`) {
+		t.Fatalf("cdpDownloadProgress = %+v, want canceled naming the state", got)
+	}
+}

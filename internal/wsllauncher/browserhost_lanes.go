@@ -70,11 +70,11 @@ func (l *directiveLanes) submit(d webview2host.Directive) {
 	key := laneKey(d)
 	item := laneItem{directive: d}
 	l.mu.Lock()
-	switch d.Op {
-	case webview2host.OpCloseProfile:
+	if d.Op == webview2host.OpCloseProfile {
 		item.done = make(chan struct{})
 		l.closing[d.ProfileID] = item.done
-	case webview2host.OpCreate:
+	}
+	if d.Op == webview2host.OpCreate {
 		item.after = l.closing[d.ProfileID]
 	}
 	waiting, busy := l.lanes[key]

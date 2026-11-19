@@ -137,10 +137,10 @@ func TestACreateWaitsForItsProfilesEarlierClose(t *testing.T) {
 			<-release
 		}
 		mu.Lock()
-		switch d.Op {
-		case webview2host.OpCreate:
+		if d.Op == webview2host.OpCreate {
 			pages[d.PageID] = d.ProfileID
-		case webview2host.OpCloseProfile:
+		}
+		if d.Op == webview2host.OpCloseProfile {
 			for id, profile := range pages {
 				if profile == d.ProfileID {
 					delete(pages, id)

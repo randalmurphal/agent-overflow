@@ -76,11 +76,9 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 	for created := false; !created; {
 		select {
 		case report := <-reports:
-			switch report.kind {
-			case ReportCreated:
+			if report.kind == ReportCreated {
 				created = true
-			case ReportFindUnavailable:
-			default:
+			} else if report.kind != ReportFindUnavailable {
 				t.Fatalf("create answered %+v", report)
 			}
 		case <-time.After(60 * time.Second):

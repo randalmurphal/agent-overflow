@@ -173,14 +173,20 @@ func (p *headlessProfile) disposeLocked() (*launchedBrowser, context.CancelFunc)
 	return current, launchCancel
 }
 
+// awaitLaunch returns once a launch in flight (ensureBrowser, which holds
+// launchMu throughout) has returned, its process reaped. It is a barrier
+// only: nothing is read or written under the lock.
+func (p *headlessProfile) awaitLaunch() {
+	p.launchMu.Lock()
+	defer p.launchMu.Unlock()
+}
+
 // tearDown is the rest of Dispose, after disposeLocked.
 func (p *headlessProfile) tearDown(current *launchedBrowser, launchCancel context.CancelFunc) error {
 	if launchCancel != nil {
 		launchCancel()
 	}
-	// Waits for a launch in flight to return, its process reaped.
-	p.launchMu.Lock()
-	p.launchMu.Unlock()
+	p.awaitLaunch()
 	var err error
 	if current != nil {
 		err = p.closeBrowser(current)

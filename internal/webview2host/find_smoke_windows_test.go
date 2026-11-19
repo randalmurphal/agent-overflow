@@ -80,14 +80,13 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	for created := false; !created; {
 		select {
 		case report := <-reports:
-			switch report.kind {
-			case ReportCreated:
-				created = true
-			case ReportFindUnavailable:
+			if report.kind == ReportFindUnavailable {
 				t.Fatalf("the installed runtime reported no find API")
-			default:
+			}
+			if report.kind != ReportCreated {
 				t.Fatalf("create answered %+v", report)
 			}
+			created = true
 		case <-time.After(60 * time.Second):
 			t.Fatal("no created report")
 		}

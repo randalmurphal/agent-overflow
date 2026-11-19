@@ -89,10 +89,10 @@ func (a *launcherApp) handleBrowserHostDirective(bs *wsllauncher.Bootstrap, dire
 		// than a pane that never appears or a Settings button that spins
 		// until its own timeout. The rest address a page that, by
 		// definition, was never created.
-		switch directive.Op {
-		case webview2host.OpCreate:
+		if directive.Op == webview2host.OpCreate {
 			a.reportBrowserHost(directive.PageID, webview2host.ReportCreateFailed, err.Error())
-		case webview2host.OpClearData:
+		}
+		if directive.Op == webview2host.OpClearData {
 			a.reportBrowserHost(directive.PageID, webview2host.ReportClearFailed, err.Error())
 		}
 		return

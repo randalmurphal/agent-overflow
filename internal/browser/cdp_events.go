@@ -272,10 +272,3 @@ func (t *frameTracker) owns(id cdp.FrameID) bool {
 	_, ok := t.live[id]
 	return ok
 }
-
-// retained reports how many frames the tracker keeps.
-func (t *frameTracker) retained() int {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return len(t.live)
-}
