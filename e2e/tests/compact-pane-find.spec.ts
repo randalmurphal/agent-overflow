@@ -108,7 +108,9 @@ test('Back resolves the find on the pane on screen, not the thread focus stayed 
   await expect(agentBody).toHaveCount(0);
   await expect(threadBar).toBeVisible();
 
-  // The thread's find input keeps focus while keyboard navigation reveals the agent pane.
+  // Keyboard navigation from the thread's find input carries the caret into
+  // the agent pane, so typing never searches the thread; Back closes the
+  // agent pane and leaves the thread's bar.
   await openAgent();
   await page.keyboard.press('Alt+l');
   await expect(agent).toHaveAttribute('data-pane-focused', 'true');
@@ -118,7 +120,9 @@ test('Back resolves the find on the pane on screen, not the thread focus stayed 
   await threadInput.focus();
   await page.keyboard.press('Alt+l');
   await expect(agent).toBeInViewport({ ratio: 1 });
-  await expect(threadInput).toBeFocused();
+  await expect(agent).toBeFocused();
+  await page.keyboard.type('x');
+  await expect(threadInput).toHaveValue('Ready');
   await page.goBack();
   await expect(agentBody).toHaveCount(0);
   await expect(threadBar).toBeVisible();
