@@ -46,8 +46,10 @@ Go trims its build cache only by age, so `go-build`, `go-test` and
 another when it ends. A pass walks the cache at most every five minutes,
 one at a time across sessions, and once `go env GOCACHE` passes 20 GiB
 (`AO_GOCACHE_MAX_GIB`; 0 turns it off) deletes its least recently used
-entries, never one used in the last hour; when those alone keep the cache
-over the cap it says so. There a failed pass prints its error and the
+entries, linked executables included, never one used in the last hour;
+when those alone keep the cache over the cap it says so. It resolves
+`GOCACHE` by the go command's own rules and refuses a directory without
+the `README` the go command writes in its cache. There a failed pass prints its error and the
 target goes on, while an invalid `AO_GOCACHE_MAX_GIB` fails it;
 `make gocache-trim` fails on either. It does nothing in CI.
 

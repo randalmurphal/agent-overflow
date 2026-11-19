@@ -78,13 +78,25 @@ func TestGoWorkDirKeepsAGivenGOTMPDIR(t *testing.T) {
 		}
 	})
 	t.Run("Go environment file", func(t *testing.T) {
-		goWorkTest(t, []byte("GOFLAGS=-mod=mod\n GOTMPDIR = /somewhere/chosen\n"))
+		goWorkTest(t, []byte("GOFLAGS=-mod=mod\nGOTMPDIR=/somewhere/chosen\n"))
 		dir, err := newGoWorkDir()
 		if err != nil || dir != nil {
 			t.Fatalf("newGoWorkDir = %v, %v; want none while the Go environment file sets GOTMPDIR", dir, err)
 		}
 		if matches, _ := filepath.Glob(filepath.Join(diskParent(), goWorkPrefix+"*")); len(matches) > 0 {
 			t.Fatalf("created %v anyway", matches)
+		}
+	})
+	// The go command ignores a line that does not start with the key, so
+	// the run still needs a work directory of its own.
+	t.Run("line the go command ignores", func(t *testing.T) {
+		goWorkTest(t, []byte(" GOTMPDIR=/somewhere/chosen\nGOTMPDIR =/somewhere/chosen\n"))
+		dir, err := newGoWorkDir()
+		if err != nil || dir == nil {
+			t.Fatalf("newGoWorkDir = %v, %v; want a work directory", dir, err)
+		}
+		if err := dir.Release(); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

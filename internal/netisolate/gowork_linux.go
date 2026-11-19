@@ -45,17 +45,14 @@ func goWorkPath() string { return filepath.Join(TempDir(), goWorkMount) }
 func goEnvPath() string { return filepath.Join(TempDir(), goEnvName) }
 
 // newGoWorkDir creates the run's Go work directory on disk. It returns nil
-// when GOTMPDIR is set already, in the environment or the developer's Go
-// environment file; that one stays.
+// when the go command has a GOTMPDIR already, from the environment or the
+// developer's Go environment file; that one stays.
 func newGoWorkDir() (*ownedtemp.Shared, error) {
-	if os.Getenv("GOTMPDIR") != "" {
-		return nil, nil
-	}
-	userEnv, err := goenvfile.Read()
+	given, err := goenvfile.Getenv("GOTMPDIR")
 	if err != nil {
 		return nil, err
 	}
-	if goenvfile.Lookup(userEnv, "GOTMPDIR") != "" {
+	if given != "" {
 		return nil, nil
 	}
 	dir, err := ownedtemp.MakeShared(diskParent(), goWorkPrefix)
