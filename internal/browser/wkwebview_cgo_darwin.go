@@ -13,6 +13,7 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -20,6 +21,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -78,6 +81,10 @@ func wkDo(fn func()) bool {
 }
 
 var errWKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
+
+// errProfileClosedBeforeView is a new page's answer when its profile was
+// disposed before its view was built (wkNewView).
+var errProfileClosedBeforeView = errors.New("browser: workspace profile closed before the page's view was built")
 
 // wkView is a live page's view as the page's operations reach it. The page's
 // lifetime ends (wkPage.discard) before Close queues the view's release, and
@@ -299,28 +306,33 @@ func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repea
 
 //export aoWKVPageClosed
 func aoWKVPageClosed(pageID, popupID, profileID C.uint64_t) {
-	wkViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{closed: true})
+	if events, handle, ok := wkViewOwner(uint64(pageID), uint64(popupID), uint64(profileID)); ok {
+		events.PageClosed(handle)
+	}
 }
 
 //export aoWKVPageCrashed
 func aoWKVPageCrashed(pageID, popupID, profileID C.uint64_t) {
-	wkViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{crashed: "web content process terminated"})
+	if events, handle, ok := wkViewOwner(uint64(pageID), uint64(popupID), uint64(profileID)); ok {
+		events.PageCrashed(handle, "web content process terminated")
+	}
 }
 
-// wkViewEnded routes what ended a view, on the main thread: to its page
-// once the view answers to one, and before that, for a popup, to the
-// engine of its profile by the popup's number.
-func wkViewEnded(pageID, popupID, profileID uint64, end pageEnd) {
+// wkViewOwner answers whom to tell what ended a view, on the main thread:
+// its page's handle once the view answers to one, and before that, for a
+// popup, the handle its number gives it, which its adoption keeps
+// (pageHandle). The Manager records either at once (engineEvents).
+func wkViewOwner(pageID, popupID, profileID uint64) (engineEvents, string, bool) {
 	if page := wkLookupPage(pageID); page != nil {
-		page.ends.report(end, page.engine.events, page.handle)
-		return
+		return page.engine.events, page.handle, true
 	}
 	if popupID == 0 {
-		return
+		return engineEvents{}, "", false
 	}
 	if profile := wkLookupProfile(profileID); profile != nil {
-		profile.engine.popupEnded(pageHandle(popupID), end)
+		return profile.engine.events, pageHandle(popupID), true
 	}
+	return engineEvents{}, "", false
 }
 
 // aoWKVPopup holds a popup WebKit created and answers its number, zero for
@@ -348,7 +360,9 @@ func aoWKVPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer
 		return 0
 	}
 	n, handle := profile.engine.holdPopup(view, opener)
-	go profile.engine.events.PopupOpened(enginePopup{
+	// Before the view can report its close, which the popup's admission
+	// then holds for its listing (engineEvents).
+	profile.engine.events.PopupOpened(enginePopup{
 		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
 	return C.uint64_t(n)
@@ -378,15 +392,39 @@ func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t,
 		name = handle
 	}
 	pending := wkPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
+	if !profile.destinations.Hold(handle, pending) {
+		// The profile is closing: Dispose cancels what it holds, and this
+		// one goes the same way.
+		C.ao_wkv_download_decide(download, nil)
+		C.ao_wkv_download_release(download)
+		return
+	}
 	// Naming the staged file resolves the Downloads folder and prunes the
 	// staging directory, file system work the main thread must not wait on;
-	// the decision is completed on it afterwards.
-	go func() {
-		path, err := stagedFile(profile.stage, handle)
-		if !wkDo(func() { profile.decideDownload(pending, path, err) }) {
-			log.Printf("browser: download %s: decide its destination: %v", handle, errWKUnavailable)
+	// the decision is completed on it afterwards, by whichever of its
+	// worker and Dispose takes it first.
+	go destination.Settle(wkDo, func() bool { return !wkAlive() || profile.isDisposed() },
+		func() destination.Staged { return stageFor(profile.stage, profile.releaseStaged, handle) },
+		func(staged destination.Staged) bool {
+			pending, ok := profile.destinations.Take(handle)
+			if ok {
+				profile.decideDownload(pending, staged.Path, staged.Err)
+			}
+			return ok
+		})
+}
+
+// wkCancelDestinations cancels and releases, on the main thread, the
+// destination decisions p still holds, and refuses later ones (Dispose).
+func wkCancelDestinations(p *wkProfile) {
+	if !wkDo(func() {
+		for _, pending := range p.destinations.Close() {
+			C.ao_wkv_download_decide(pending.ptr, nil)
+			C.ao_wkv_download_release(pending.ptr)
 		}
-	}()
+	}) {
+		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errWKUnavailable)
+	}
 }
 
 // wkPendingDownload is a download whose destination is being decided, with
@@ -426,7 +464,7 @@ func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stag
 	if stageErr != nil {
 		// Canceled before a byte was written; the row says why.
 		p.engine.downloadEvents.Go(func() {
-			if p.engine.events.DownloadStarted(start) {
+			if p.engine.events.DownloadStarted(start) == downloadAdmitted {
 				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
 			}
 			wkReleaseDownload(download.ptr)
@@ -434,7 +472,7 @@ func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stag
 		return
 	}
 	p.engine.downloadEvents.Go(func() {
-		if !p.engine.events.DownloadStarted(start) {
+		if p.engine.events.DownloadStarted(start) != downloadAdmitted {
 			if err := p.CancelDownload(handle); err != nil {
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}
@@ -648,20 +686,45 @@ func wkClearSiteData(ctx context.Context) error {
 	}
 }
 
-func wkNewView(store unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
+// wkNewView builds a page's view in profile profileID's store on the main
+// thread (withProfileOnUI): Dispose frees the store there after it
+// unregisters the profile, so a store found there is not freed until the
+// view holds it.
+func wkNewView(pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
-	if !wkDo(func() {
-		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
-		view = C.ao_wkv_view_new(store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
-		C.free(unsafe.Pointer(cScript))
-		C.free(unsafe.Pointer(cHandler))
-	}) {
+	disposed := false
+	// Withdrawn unless it ran: a view built after the caller gave up would
+	// belong to no page.
+	if uicall.Run(wkDo, func() {
+		disposed = !withProfileOnUI(profileID, func(p *wkProfile) {
+			cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
+			view = C.ao_wkv_view_new(p.store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
+			C.free(unsafe.Pointer(cScript))
+			C.free(unsafe.Pointer(cHandler))
+		})
+	}) == uicall.Withdrawn {
 		return nil, errWKUnavailable
+	}
+	if disposed {
+		return nil, errProfileClosedBeforeView
 	}
 	if view == nil {
 		return nil, fmt.Errorf("browser: create page view")
 	}
 	return view, nil
+}
+
+// withProfileOnUI runs fn with profile id on the main thread, where the
+// caller runs it, unless the profile is unregistered or disposed, and
+// answers whether fn ran. A caller carries the profile's id, never a
+// native pointer it looked up elsewhere.
+func withProfileOnUI(id uint64, fn func(p *wkProfile)) bool {
+	p := wkLookupProfile(id)
+	if p == nil || p.isDisposed() {
+		return false
+	}
+	fn(p)
+	return true
 }
 
 func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler string) error {
@@ -679,11 +742,21 @@ func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, cons
 // wkCloseView closes the view, giving keyboard focus it held to the SPA's
 // webview. No caller can act on a failed handoff, so it is logged here.
 func wkCloseView(view unsafe.Pointer) {
-	released := 0
-	wkDo(func() { released = int(C.ao_wkv_view_close(view)) })
-	if err := focusReleaseError(released); err != nil {
+	if err := wkCloseViewErr(view); err != nil {
 		log.Printf("browser: close a page: %v", err)
 	}
+}
+
+// wkCloseViewErr closes the view on the main thread and answers how its
+// focus handoff ended. A dispatch that timed out answers errWKUnavailable,
+// and the close may still run; its answer is read only from the closure
+// that ran (a buffered completion).
+func wkCloseViewErr(view unsafe.Pointer) error {
+	released := make(chan int, 1)
+	if !wkDo(func() { released <- int(C.ao_wkv_view_close(view)) }) {
+		return errWKUnavailable
+	}
+	return focusReleaseError(<-released)
 }
 
 func wkSetViewSize(view wkView, width, height int) error {
@@ -835,43 +908,82 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 	}
 }
 
-// wkCancelDownload cancels the download lookup answers on the main thread,
-// nil for none. It reports whether lookup found one, and ran false when the
-// main thread could not run it.
-func wkCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
-	ran = wkDo(func() {
-		if download := lookup(); download != nil {
-			found = true
-			C.ao_wkv_download_cancel(download)
-		}
-	})
-	return found, ran
+// wkCancelDownload cancels p's download id on the main thread
+// (withDownloadOnUI), where a released download is let go after it leaves
+// p.downloads (releaseDownload), so the one it finds is still held through
+// the cancel.
+func wkCancelDownload(p *wkProfile, id string) nativeCancel {
+	found := false
+	if uicall.Run(wkDo, func() {
+		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wkv_download_cancel(download) })
+	}) == uicall.Withdrawn {
+		return nativeCancelWithdrawn
+	}
+	if !found {
+		return nativeCancelEnded
+	}
+	return nativeCanceled
+}
+
+// withDownloadOnUI runs fn with p's download id on the main thread, where
+// the caller runs it, unless it was released, and answers whether fn ran.
+func withDownloadOnUI(p *wkProfile, id string, fn func(download unsafe.Pointer)) bool {
+	p.mu.Lock()
+	entry := p.downloads[id]
+	p.mu.Unlock()
+	if entry == nil {
+		return false
+	}
+	fn(entry.ptr)
+	return true
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
 	wkDo(func() { C.ao_wkv_download_release(download) })
 }
 
-// wkDownloadProgress samples the NSProgress of the download lookup answers
-// on the main thread: the bytes received and the size expected, 0 when
-// unknown. held is false when lookup found none, and ran false when the
-// main thread could not run the sample. WKDownload reports no per-chunk
+// wkSample is one sample of a running download's progress
+// (wkDownloadProgress).
+type wkSample struct {
+	kind            wkSampleKind
+	received, total float64
+}
+
+// wkSampleKind is how a sample ended.
+type wkSampleKind int
+
+const (
+	// wkSampleTaken: the download was sampled; received and total hold.
+	wkSampleTaken wkSampleKind = iota + 1
+	// wkSampleReleased: the download was released first.
+	wkSampleReleased
+	// wkSampleWithdrawn: the main thread did not run the sample in time,
+	// and it never will.
+	wkSampleWithdrawn
+)
+
+// wkDownloadProgress samples the NSProgress of entry's download on the
+// main thread, while entry is p's (heldDownload): the bytes received and
+// the size expected, 0 when unknown. WKDownload reports no per-chunk
 // callback, so the profile polls this while a download is live; that
 // sample is what lets the Manager cancel one that outgrows its byte cap
 // before the whole file is on disk.
-func wkDownloadProgress(lookup func() unsafe.Pointer) (received, total float64, held, ran bool) {
+func wkDownloadProgress(p *wkProfile, entry *wkDownload) wkSample {
 	var r, t C.double
-	ran = wkDo(func() {
-		download := lookup()
+	held := false
+	if uicall.Run(wkDo, func() {
+		download := p.heldDownload(entry)
 		if download == nil {
 			return
 		}
 		held = true
 		r = C.ao_wkv_download_received(download)
 		t = C.ao_wkv_download_total(download)
-	})
-	if !ran {
-		return 0, 0, false, false
+	}) == uicall.Withdrawn {
+		return wkSample{kind: wkSampleWithdrawn}
 	}
-	return float64(r), float64(t), held, true
+	if !held {
+		return wkSample{kind: wkSampleReleased}
+	}
+	return wkSample{kind: wkSampleTaken, received: float64(r), total: float64(t)}
 }

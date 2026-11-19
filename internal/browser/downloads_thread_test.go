@@ -211,7 +211,7 @@ func TestDownloadProgressCoalescesIntoOneStatePush(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	manager.downloadPushInterval = 50 * time.Millisecond
 	frame := paneHandle(manager, access, page.ID)
-	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "G", SuggestedName: "big.bin"}) {
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "G", SuggestedName: "big.bin"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	if n := countKind(log.take(), "state"); n != 1 {
@@ -521,11 +521,11 @@ func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
 	manager, log, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	frame := paneHandle(manager, access, page.ID)
 	authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "over", SuggestedName: "over.bin"}) {
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "over", SuggestedName: "over.bin"}) == downloadAdmitted {
 		t.Fatal("a download over quota was kept")
 	}
 	authorityOf(t, manager, access).downloadBytes.SetUsed(0)
-	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "kept", SuggestedName: "kept.bin"}) {
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "kept", SuggestedName: "kept.bin"}) != downloadAdmitted {
 		t.Fatal("a download within quota was refused")
 	}
 	log.take()
@@ -602,7 +602,7 @@ func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
 	start := func(id string) {
-		if !manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) {
+		if manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
 			t.Fatalf("%s was refused", id)
 		}
 	}
@@ -650,7 +650,7 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	total := maxPageDownloads + 10
 	for i := range total {
 		id := fmt.Sprintf("dl-%d", i)
-		if !manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) {
+		if manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
 			t.Fatalf("%s was refused", id)
 		}
 	}
@@ -903,7 +903,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			manager.mu.Unlock()
 			manager.downloadAdmitting = func() { tc.leave(t, manager, access, page) }
 
-			if manager.downloadStarted(downloadStart{Frame: p.driver.Handle(), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) {
+			if manager.downloadStarted(downloadStart{Frame: p.driver.Handle(), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) == downloadAdmitted {
 				t.Fatal("a download on a page that left was admitted")
 			}
 			if listed := threadDownloads(manager, access); len(listed) != 0 {
@@ -1116,7 +1116,7 @@ func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
 	}
 	frame := paneHandle(manager, access, blank.ID)
 	long := "data:text/plain," + strings.Repeat("a", 1<<20)
-	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "listed", URL: long, SuggestedName: "a.txt"}) {
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "listed", URL: long, SuggestedName: "a.txt"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	p, _, err := manager.lookupOwnedPage(access, blank.ID)
@@ -1132,7 +1132,7 @@ func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
 	if source := len(threadDownloads(manager, access)[0].Source); source > maxBrowserURLBytes {
 		t.Fatalf("the thread's list keeps a %d-byte source", source)
 	}
-	if !manager.downloadStarted(downloadStart{Frame: "popup", Popup: "popup", ID: "parked", URL: long, SuggestedName: "b.txt", Openers: []string{frame}}) {
+	if manager.downloadStarted(downloadStart{Frame: "popup", Popup: "popup", ID: "parked", URL: long, SuggestedName: "b.txt", Openers: []string{frame}}) != downloadAdmitted {
 		t.Fatal("the popup's download was refused")
 	}
 	manager.parkMu.Lock()

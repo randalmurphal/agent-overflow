@@ -9,6 +9,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
 	"agent-overflow/internal/serialqueue"
 )
 
@@ -71,8 +72,6 @@ type wkEngine struct {
 	pane     map[uint64]wkPaneState
 	profiles map[uint64]*wkProfile
 	stopped  bool
-	// popupEnds is what ended a popup's view before its adoption.
-	popupEnds heldPopupEnds
 
 	// downloadEvents carries every download report to the Manager off the
 	// main thread, one at a time in the order they were made, so a fast
@@ -121,7 +120,6 @@ func (e *wkEngine) Stop() {
 		orphans = append(orphans, held.view)
 		delete(e.popups, handle)
 	}
-	e.popupEnds = heldPopupEnds{}
 	e.stopped = true
 	e.mu.Unlock()
 	// The window and its park view stay: the SPA lives in it, and re-attaching
@@ -182,40 +180,13 @@ func (e *wkEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string
 	return n, handle
 }
 
-// takePopup takes the held popup handle, for its attach when attach is
-// set (popupEnds), and otherwise for its discard.
-func (e *wkEngine) takePopup(handle string, attach bool) heldPopupView {
+// takePopup takes the held popup handle, for its attach or its discard.
+func (e *wkEngine) takePopup(handle string) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	held, ok := e.popups[handle]
+	held := e.popups[handle]
 	delete(e.popups, handle)
-	if ok && attach {
-		e.popupEnds.attachLocked(handle)
-	} else {
-		e.popupEnds.forgetLocked(handle)
-	}
 	return held
-}
-
-// popupEnded keeps what ended the view of the popup handle before its
-// adoption named the view's page (heldPopupEnds). A close also reaches the
-// Manager at once (pageEnds).
-func (e *wkEngine) popupEnded(handle string, end pageEnd) {
-	e.mu.Lock()
-	_, held := e.popups[handle]
-	kept := e.popupEnds.recordLocked(handle, held, end)
-	e.mu.Unlock()
-	if kept && end.closed {
-		go e.events.PageClosed(handle)
-	}
-}
-
-// endAttach ends the attach of the popup handle and answers what ended its
-// view before its adoption.
-func (e *wkEngine) endAttach(handle string) pageEnd {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.popupEnds.takeLocked(handle)
 }
 
 // heldOpener answers the opener of the held popup handle, "" for none.
@@ -254,10 +225,11 @@ func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 // publishes each finished file to the user's Downloads folder.
 func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
-func (e *wkEngine) DiscardPage(handle string) {
-	if held := e.takePopup(handle, false); held.view != nil {
-		wkCloseView(held.view)
+func (e *wkEngine) DiscardPage(_ context.Context, handle string) error {
+	if held := e.takePopup(handle); held.view != nil {
+		return wkCloseViewErr(held.view)
 	}
+	return nil
 }
 
 // claimSlot reserves one row in the park view. Parked views are stacked by slot
@@ -290,8 +262,9 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	}
 	profile := &wkProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
-		stage: opts.StageDownload,
-		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
+		destinations: destination.NewDecisions[string, wkPendingDownload](),
+		pages:        make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -316,8 +289,14 @@ type wkProfile struct {
 	// only honest answer there.
 	store unsafe.Pointer
 	// stage names the staged file each download is written to
-	// (profileOptions.StageDownload).
-	stage func(id string) (string, error)
+	// (profileOptions.StageDownload), and releaseStaged gives up one no
+	// download start took.
+	stage         func(id string) (string, error)
+	releaseStaged func(id string)
+	// destinations are the downloads whose destination decision is open:
+	// held on the main thread as WebKit hands it over, taken there once by
+	// its completion or by Dispose.
+	destinations *destination.Decisions[string, wkPendingDownload]
 
 	mu        sync.Mutex
 	disposed  bool
@@ -350,7 +329,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	if err != nil {
 		return nil, err
 	}
-	view, err := wkNewView(p.store, page.id, p.id, script, webkitConsoleHandler)
+	view, err := wkNewView(page.id, p.id, script, webkitConsoleHandler)
 	if err != nil {
 		page.discard()
 		return nil, err
@@ -364,7 +343,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 }
 
 func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
-	held := p.engine.takePopup(handle, true)
+	held := p.engine.takePopup(handle)
 	view := held.view
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
@@ -372,31 +351,22 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 	script := wkUserScript()
 	page, err := p.newPageShell(hooks, held.n)
 	if err != nil {
-		p.engine.endAttach(handle)
 		wkCloseView(view)
 		return nil, err
 	}
 	page.view = view
 	page.popup, page.opener = handle, held.opener
-	page.ends.popup = true
 	// The popup already exists and may already be loading, so its document start
 	// is gone: the injected script applies from its next document on. That is
 	// the same trade CDP's addScriptToEvaluateOnNewDocument makes for an adopted
 	// target.
 	if err := wkAdoptView(view, page.id, p.id, script, webkitConsoleHandler); err != nil {
-		p.engine.endAttach(handle)
 		page.discard()
 		wkCloseView(view)
 		return nil, err
 	}
-	// The view answers to the page from its adoption on, so what ended it
-	// before has reached the engine by now.
-	end := p.engine.endAttach(handle)
-	if end.closed {
-		page.Close()
-		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
-	}
-	page.ends.hold(end)
+	// What ended the view before reached the Manager by the popup's handle,
+	// which its page keeps: the Manager's listing reads it.
 	p.parkNew(page)
 	if err := p.publish(page); err != nil {
 		return nil, err
@@ -457,7 +427,9 @@ func (p *wkProfile) parkNew(page *wkPage) {
 }
 
 // registerDownload keeps download ptr under handle and starts its sampler,
-// unless the profile was disposed, and reports whether it did.
+// unless the profile was disposed, and reports whether it did. Both
+// registrations are made in one hold of p.mu, so a Dispose that takes the
+// entry also finds, and deletes, its owner (releaseDownload).
 func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) bool {
 	entry := &wkDownload{handle: handle, ptr: ptr, stop: make(chan struct{})}
 	p.mu.Lock()
@@ -466,8 +438,8 @@ func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) bool {
 		return false
 	}
 	p.downloads[handle] = entry
-	p.mu.Unlock()
 	wkDownloadOwners.Store(handle, p)
+	p.mu.Unlock()
 	go p.sampleDownload(entry)
 	return true
 }
@@ -502,13 +474,15 @@ func (p *wkProfile) sampleDownload(entry *wkDownload) {
 		case <-entry.stop:
 			return
 		case <-ticker.C:
-			received, total, held, ran := wkDownloadProgress(func() unsafe.Pointer { return p.heldDownload(entry) })
-			if !ran {
+			sample := wkDownloadProgress(p, entry)
+			switch sample.kind {
+			case wkSampleWithdrawn:
 				continue
-			}
-			if !held {
+			case wkSampleReleased:
 				return
+			case wkSampleTaken:
 			}
+			received, total := sample.received, sample.total
 			select {
 			case <-entry.stop:
 				return
@@ -527,8 +501,8 @@ func (p *wkProfile) releaseDownload(handle string) {
 	p.mu.Lock()
 	entry := p.downloads[handle]
 	delete(p.downloads, handle)
+	wkDownloadOwners.CompareAndDelete(handle, p)
 	p.mu.Unlock()
-	wkDownloadOwners.Delete(handle)
 	if entry == nil {
 		return
 	}
@@ -540,24 +514,12 @@ func (p *wkProfile) releaseDownload(handle string) {
 // CancelDownload looks the download up on the main thread, where a
 // released download is let go after it leaves downloads (releaseDownload),
 // so the one it finds is still held through the cancel.
+//
+// A download released first has finished, failed or been canceled, and
+// its report is on its way (aoWKVDownloadFinished releases before it
+// reports).
 func (p *wkProfile) CancelDownload(id string) error {
-	found, ran := wkCancelDownload(func() unsafe.Pointer {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if entry := p.downloads[id]; entry != nil {
-			return entry.ptr
-		}
-		return nil
-	})
-	if !ran {
-		return errWKUnavailable
-	}
-	if !found {
-		// Released: WebKit finished, failed or canceled it, and that report
-		// is on its way (aoWKVDownloadFinished releases before it reports).
-		return errDownloadEnded
-	}
-	return nil
+	return wkCancelDownload(p, id).err(errWKUnavailable)
 }
 
 func (p *wkProfile) Dispose(context.Context) error {
@@ -583,6 +545,10 @@ func (p *wkProfile) Dispose(context.Context) error {
 	for _, handle := range handles {
 		p.releaseDownload(handle)
 	}
+	// Before the store goes: a destination still being decided is canceled
+	// and released on the main thread, where its worker's completion would
+	// have taken it.
+	wkCancelDestinations(p)
 	wkProfileByID.Delete(p.id)
 	p.engine.mu.Lock()
 	delete(p.engine.profiles, p.id)

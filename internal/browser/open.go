@@ -282,8 +282,9 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 		}
 	}
 	var stage func(string) (string, error)
+	var releaseStaged func(string)
 	if m.downloadsStagedHere() {
-		stage = m.stageDownload
+		stage, releaseStaged = m.stageDownload, m.releaseStagedDownload
 	}
 	scope := &jarScope{
 		jar: jar, downloadDir: downloadDir,
@@ -291,7 +292,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 		creating: make(map[*managedPage]struct{}),
 	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
-		Jar: jar.key, DownloadDir: downloadDir, StageDownload: stage, Ephemeral: jar.ephemeral,
+		Jar: jar.key, DownloadDir: downloadDir, StageDownload: stage, ReleaseStaged: releaseStaged, Ephemeral: jar.ephemeral,
 		Allow: func(owners []string, rawURL string) (bool, bool) { return m.jarAllows(scope, owners, rawURL) },
 	})
 	if err != nil {

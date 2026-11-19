@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/browser/quota"
 	"agent-overflow/internal/browser/threadlife"
 	"agent-overflow/internal/keybindings"
@@ -205,6 +206,12 @@ type Manager struct {
 	adopting       map[string]*managedPage
 	unlisted       *boundedMap[string, struct{}]
 	listingChanged chan struct{}
+	// admissions is each popup's admission from its engine's report until
+	// its listing or its end, which decides whether it becomes a tab, and
+	// pageEnds runs what each page's reported close and crash do, in the
+	// order reported (engine_pages.go).
+	admissions *popupadmit.Registry
+	pageEnds   pageEndQueue
 	// parked holds the downloads of popups not listed yet, by popup
 	// handle, parkedIDs each one's popup by download id, and popupFates
 	// what became of the newest popups. Guarded by parkMu, which is taken
@@ -443,6 +450,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		suspended:     make(map[string]*suspendedPage),
 		pending:       make(map[string]*pendingPage),
 		heldInfo:      newBoundedMap[string, heldInfo](orderSlack),
+		admissions:    popupadmit.New(orderSlack),
 		disposing:     make(map[string]chan struct{}),
 		recordDir:     filepath.Join(configDir, browserPageRecordDir),
 		panes:         make(map[string]paneMount),
@@ -457,9 +465,9 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m.selectionGapTimer = newSelectionGapTimer
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
-		PopupOpened:       m.adoptPopup,
-		PageClosed:        m.removeClosedPage,
-		PageCrashed:       m.pageCrashed,
+		PopupOpened:       m.popupOpened,
+		PageClosed:        m.pageClosed,
+		PageCrashed:       m.pageCrashedReport,
 		PageInfoChanged:   m.updatePageInfo,
 		DownloadStarted:   m.downloadStarted,
 		DownloadProgress:  m.downloadProgress,

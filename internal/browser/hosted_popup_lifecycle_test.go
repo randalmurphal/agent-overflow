@@ -33,7 +33,9 @@ func TestHostedPopupAttachCancelHoldsNoEngineLock(t *testing.T) {
 				case "close":
 					engine.Report("popup", webview2host.ReportClosed, "")
 				case "discard":
-					engine.DiscardPage("popup")
+					if err := engine.DiscardPage(t.Context(), "popup"); err != nil {
+						t.Errorf("discard: %v", err)
+					}
 				case "stop":
 					engine.Stop()
 				}

@@ -35,8 +35,11 @@ type browserEngine interface {
 	Stop()
 	// NewProfile creates one isolated site-data profile.
 	NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error)
-	// DiscardPage closes an engine page the Manager declined to adopt.
-	DiscardPage(handle string)
+	// DiscardPage closes an engine page the Manager declined to adopt,
+	// within ctx. It is idempotent, and a page it fails to close stays the
+	// engine's to close at its profile's disposal; the Manager's
+	// reservation for the page ends either way.
+	DiscardPage(ctx context.Context, handle string) error
 	// DownloadSaving is where the engine's downloads go; constant for an
 	// engine.
 	DownloadSaving() downloadSaving
@@ -209,6 +212,11 @@ type profileOptions struct {
 	// off its UI thread and completes the download's destination there
 	// afterwards (webkit_downloads.go).
 	StageDownload func(id string) (string, error)
+	// ReleaseStaged gives up the staged file StageDownload named for
+	// download id when no download start took it: the engine's decision
+	// for the download ended without one (destination.Settle). Nil when
+	// StageDownload is.
+	ReleaseStaged func(id string)
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
@@ -475,15 +483,6 @@ type pageAssets struct {
 	InlineSVGs []InlineSVG `json:"inlineSvgs"`
 }
 
-// adoptedPage is implemented by a page driver whose engine holds what a
-// popup reports while the Manager adopts it (the hosted engine:
-// hosted_popups.go). The Manager calls Adopted once the popup is in its
-// thread's tabs, so a download, crash or close it held reaches a listed
-// page.
-type adoptedPage interface {
-	Adopted()
-}
-
 // enginePopup is a page the engine opened on its own behalf. Nothing about
 // ownership is decided here: the Manager matches the opener and applies its
 // own per-thread and per-workspace limits before adopting it.
@@ -511,6 +510,20 @@ type downloadStart struct {
 	Openers []string
 	Profile string
 }
+
+// downloadAdmission is the Manager's answer to a download's start
+// (engineEvents.DownloadStarted). Only downloadAdmitted lets it continue;
+// the engine cancels any other at once. downloadUnowned is a frame no
+// listed page owns and no popup names: headless Chromium alone, which
+// can learn a popup's frame after its download starts, offers such a
+// start again (headless_downloads.go).
+type downloadAdmission int
+
+const (
+	downloadAdmitted downloadAdmission = iota
+	downloadRefused
+	downloadUnowned
+)
 
 // errDownloadEnded is CancelDownload's answer when the engine had already
 // let the download go: it finished or failed, and its terminal report is on
@@ -546,14 +559,23 @@ const (
 
 // engineEvents are the engine-originated notifications the Manager subscribes
 // to. The engine reports; the Manager alone routes and decides.
+//
+// PopupOpened, PageClosed and PageCrashed are the popup admission's
+// inputs (engine_pages.go): each records the report and returns at once,
+// acting on a goroutine of its own, so an engine calls them in the order
+// it observed the facts, from its UI thread or event reader, and holds
+// nothing back for a popup's listing. The Manager decides from them
+// whether a popup becomes a tab.
 type engineEvents struct {
+	// PopupOpened reports a page the engine opened by itself, which the
+	// Manager adopts (AttachPage) or discards (DiscardPage).
 	PopupOpened func(enginePopup)
-	PageClosed  func(handle string)
+	// PageClosed reports that the page closed by itself or its engine
+	// lost it.
+	PageClosed func(handle string)
 	// PageCrashed reports that the page's renderer or web content process
 	// ended while the page was open; reason is the engine's name for how.
 	// The engine page still exists and the Manager closes it (crash.go).
-	// Never called on a UI thread (it takes Manager locks and closes the
-	// page's driver).
 	PageCrashed func(handle, reason string)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
@@ -565,9 +587,9 @@ type engineEvents struct {
 	// being adopted): the Manager holds the newest of those for the page
 	// that takes the handle, so its order fence sees them.
 	PageInfoChanged func(handle, url, title string, order uint64)
-	// DownloadStarted reports whether the download may continue. The engine
-	// cancels one it answers false for.
-	DownloadStarted  func(downloadStart) bool
+	// DownloadStarted answers whether the download may continue
+	// (downloadAdmission).
+	DownloadStarted  func(downloadStart) downloadAdmission
 	DownloadProgress func(downloadProgress)
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held

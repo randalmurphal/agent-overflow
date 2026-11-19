@@ -391,6 +391,55 @@ func TestHostedPopupCrashDuringAdoptionReachesItsTab(t *testing.T) {
 	l.settledEngine()
 }
 
+// A popup that closed after its attach and before its listing leaves no
+// tab, crashed or live, whether it crashed too and in either order; one
+// that only crashed is a crashed tab. The launcher's reports reach the
+// Manager through the engine while the adoption reads the popup's history.
+func TestHostedPopupCrashAndCloseDuringAdoptionLeaveNoTab(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		reports     []webview2host.ReportKind
+		wantCrashed bool
+	}{
+		{"crashed, then closed", []webview2host.ReportKind{webview2host.ReportProcessFailed, webview2host.ReportClosed}, false},
+		{"closed, then crashed", []webview2host.ReportKind{webview2host.ReportClosed, webview2host.ReportProcessFailed}, false},
+		{"closed", []webview2host.ReportKind{webview2host.ReportClosed}, false},
+		{"crashed", []webview2host.ReportKind{webview2host.ReportProcessFailed}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newPopupLauncher(t)
+			access := popupTestAccess(t, "thread")
+			_, opener := l.open(access)
+			release := l.gateHistory("PT-1")
+			defer release()
+			popupID, _ := l.popup(opener, "https://example.test/popup")
+			l.awaitAttach("history PT-1")
+			for _, kind := range tc.reports {
+				detail := ""
+				if kind == webview2host.ReportProcessFailed {
+					detail = "render-process-exited"
+				}
+				l.report(popupID, kind, detail)
+			}
+			release()
+			deadline := time.Now().Add(hostedTestDeadline)
+			for {
+				state := l.manager.CompanionState(access)
+				crashed := len(state.Pages) == 2 && state.Pages[1].Suspended && state.Pages[1].Error != ""
+				gone := len(state.Pages) == 1 && l.closed(popupID)
+				if (tc.wantCrashed && crashed) || (!tc.wantCrashed && gone) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("tabs %+v (the popup's page closed: %v), want the popup's crashed: %v", state.Pages, l.closed(popupID), tc.wantCrashed)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			l.settledEngine()
+		})
+	}
+}
+
 // policyRecorder stands in for the profiles' policies: each answers
 // resolved for owners that name one of its frames, allowing what profile
 // "a" asks, and otherwise answers unresolved, allowing a web address alone,

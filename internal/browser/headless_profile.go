@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -119,10 +124,26 @@ func (p *headlessProfile) CancelDownload(id string) error {
 	if !ok {
 		return fmt.Errorf("browser: profile %s has no running browser", p.handle)
 	}
-	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
+	if err := callBounded(browserCtx, p.engine.closeTimeout, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
 		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
 	}
 	return nil
+}
+
+// cancelRefusedDownload cancels a download the Manager refused and removes
+// the file Chromium names by its id in the download directory: a download
+// that finished before the cancel took effect left its whole file there,
+// and the Manager, which keeps no row for it or a settled one, ignores
+// that finish. The file goes whether or not the cancel succeeded.
+func (p *headlessProfile) cancelRefusedDownload(id string) error {
+	err := p.CancelDownload(id)
+	if p.downloadDir == "" {
+		return err
+	}
+	if removeErr := os.Remove(filepath.Join(p.downloadDir, filepath.Base(id))); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+		err = errors.Join(err, fmt.Errorf("browser: remove the refused download's file: %w", removeErr))
+	}
+	return err
 }
 
 // Dispose destroys the profile and everything in it: cancelling the browser
@@ -199,15 +220,34 @@ func (p *headlessProfile) interrupt() {
 	}
 }
 
-// closeTarget destroys one page of this profile without a driver for it —
-// the popup the Manager declined.
-func (p *headlessProfile) closeTarget(handle string) {
+// closeTarget destroys one page of this profile without a driver for it,
+// the popup the Manager declined, within ctx. A target it fails to close
+// stays bound to this profile, whose disposal ends it with its browser,
+// and a later discard tries again.
+func (p *headlessProfile) closeTarget(ctx context.Context, handle string) error {
 	browserCtx, ok := p.browser()
 	if !ok {
-		return
+		// Its browser is gone, and the target with it.
+		p.engine.unbindPage(handle)
+		return nil
+	}
+	callCtx, cancel := context.WithCancel(browserCtx)
+	defer cancel()
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	if _, err := chromedp.CallBrowser(callCtx, target.CloseTarget, target.CloseTargetParams{TargetID: target.ID(handle)}); err != nil {
+		return fmt.Errorf("browser: close discarded page %s: %w", handle, err)
 	}
 	p.engine.unbindPage(handle)
-	if _, err := chromedp.CallBrowser(browserCtx, target.CloseTarget, target.CloseTargetParams{TargetID: target.ID(handle)}); err != nil {
-		p.engine.logf("browser: close discarded page %s: %v", handle, err)
-	}
+	return nil
+}
+
+// callBounded sends one browser-level command on browserCtx, bounded by
+// timeout: its caller (a download's cancel, which a page's close waits on)
+// must end when a connected Chromium stops answering.
+func callBounded[P, R any](browserCtx context.Context, timeout time.Duration, cmd cdp.Command[P, R], params P) error {
+	ctx, cancel := context.WithTimeout(browserCtx, timeout)
+	defer cancel()
+	_, err := chromedp.CallBrowser(ctx, cmd, params)
+	return err
 }

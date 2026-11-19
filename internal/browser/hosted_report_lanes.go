@@ -196,7 +196,7 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	case acceptedClose:
 		e.retirePage(string(w.page))
 	case acceptedCrash:
-		e.pageCrashed(string(w.page), w.crash)
+		e.events.PageCrashed(string(w.page), w.crash)
 	default:
 		panic(fmt.Sprintf("browser: accepted work of unknown kind %d", w.kind))
 	}
@@ -212,7 +212,7 @@ func (e *hostedEngine) acceptClose(page hostedPageID) {
 }
 
 // acceptCrash accepts the process failure that ended page, which runs
-// after the page's work already accepted (pageCrashed).
+// after the page's work already accepted (engineEvents.PageCrashed).
 func (e *hostedEngine) acceptCrash(page hostedPageID, reason string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

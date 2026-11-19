@@ -171,7 +171,7 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 		t.Errorf("a held popup's download started as %+v, want %+v", got, want)
 	}
 	// Taken for adoption: the number still names it.
-	engine.takePopup(handle, true)
+	engine.takePopup(handle)
 	if got := profile.downloadStart(nil, n); got.Popup != handle || got.Profile != "profile-1" {
 		t.Errorf("a popup being adopted's download started as %+v", got)
 	}
@@ -185,14 +185,17 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 	}
 }
 
-// holdPopupAdoption makes the Manager adopt each popup only after hold, so
-// the popup decides its first navigations with no page: the window a
-// profile's policy covers. Call it before the Manager opens a page.
+// holdPopupAdoption makes the Manager hear of each popup only after hold,
+// so the popup decides its first navigations with no page: the window a
+// profile's policy covers. The engine's call returns at once, as the
+// Manager's does (engineEvents). Call it before the Manager opens a page.
 func holdPopupAdoption(manager *Manager, hold time.Duration) {
 	engine := manager.engine.(*webkitEngine)
 	adopt := engine.events.PopupOpened
 	engine.events.PopupOpened = func(popup enginePopup) {
-		time.Sleep(hold)
-		adopt(popup)
+		go func() {
+			time.Sleep(hold)
+			adopt(popup)
+		}()
 	}
 }

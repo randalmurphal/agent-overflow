@@ -448,6 +448,18 @@ int ao_wk_view_focus_presented(void *view) {
 
 static uint64_t ao_download_seq = 0;
 
+// ao_downloads_alive counts the WebKitDownload objects not finalized yet
+// (ao_wk_downloads_alive).
+static gint ao_downloads_alive = 0;
+
+static void ao_download_gone(gpointer data, GObject *download) {
+  (void)data;
+  (void)download;
+  g_atomic_int_add(&ao_downloads_alive, -1);
+}
+
+int ao_wk_downloads_alive(void) { return g_atomic_int_get(&ao_downloads_alive); }
+
 // ao_download_destination hands the download to the Go side, which names
 // the staged file it is written to (the app's staging directory in the
 // user's Downloads folder) and nowhere else, with none canceling it before a
@@ -459,6 +471,11 @@ static gboolean ao_download_destination(WebKitDownload *download, gchar *suggest
                                         gpointer data) {
   (void)data;
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
+  // The Go side owns the download from here until it releases it, so a
+  // cancel arriving after the page closed cannot reach a freed object. A
+  // download that fails before this is never the Go side's, and WebKit
+  // frees it.
+  g_object_ref(download);
   // WebKitGTK 6.0 offers no download -> session accessor; the session rode
   // in on the download when it started.
   WebKitNetworkSession *session = g_object_get_data(G_OBJECT(download), AO_SESSION_KEY);
@@ -534,9 +551,8 @@ static void ao_session_download_started(WebKitNetworkSession *session,
   // WebKitGTK 6.0 has no download -> session accessor, so the session the
   // destination callback needs travels on the download itself.
   g_object_set_data(G_OBJECT(download), AO_SESSION_KEY, session);
-  // Held until the Go side releases it, so a cancel arriving after the page
-  // closed cannot reach a freed object.
-  g_object_ref(download);
+  g_atomic_int_inc(&ao_downloads_alive);
+  g_object_weak_ref(G_OBJECT(download), ao_download_gone, NULL);
   g_signal_connect(download, "decide-destination", G_CALLBACK(ao_download_destination), NULL);
   g_signal_connect(download, "received-data", G_CALLBACK(ao_download_received), NULL);
   g_signal_connect(download, "finished", G_CALLBACK(ao_download_finished), NULL);

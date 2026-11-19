@@ -16,11 +16,11 @@ import (
 // chromedp delivers each CDP event method on its own buffered subscription,
 // and each subscription here is read by its own goroutine. Within one method
 // the events keep the browser's order; across methods they do not, so two
-// events the browser sent in one order can be handled in the other. chromedp
-// has no exported ordered join of arbitrary methods (Console is the one
-// fixed join it offers), so the state below, which is fed by more than one
-// method, is keyed by the protocol's own ids and settles to the same answer
-// in every handling order.
+// events the browser sent in one order can be handled in the other. A
+// page's frames and its loading are read in the browser's order from one
+// ordered input (cdporder, cdpPage.lifecycle). The request set below, fed
+// by more than one method, is keyed by the protocol's own ids and settles
+// to the same answer in every handling order.
 
 // errNoBrowserConnection is a browser subscription that connected nothing
 // and reported no reason.
@@ -200,157 +200,70 @@ func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 	return len(t.inFlight) == 0 && now.Sub(t.last) >= quiet
 }
 
-// cdpLoadTracker is whether a page's main frame is loading, from
-// Page.frameStartedLoading and Page.frameStoppedLoading.
-//
-// The two arrive on two subscriptions. For one frame they alternate,
-// starting with a start, so once every event is handled the frame is loading
-// exactly when more starts than stops were handled, in whatever order. Each
-// handled event answers that with the number of events handled, which only
-// grows, and the Manager keeps the answer with the highest number
-// (pageHooks.Loading), so the last answer it keeps is the settled one.
-//
-// A load already running when the page subscribed (a popup attached
-// mid-load) shows its stop alone. A stop that leaves more stops than starts
-// is held as unmatched from when it was handled: a start handled within
-// loadReorderWindow of it is its own start handled late, and one handled
-// after belongs to a new load, so the unmatched stops are dropped first.
-// The two readers drift apart by microseconds, the window by a second, so
-// a load the page starts within a second of such a stop reads as idle,
-// and the next one reads right again. Three counters and a time are all it
-// keeps.
+// cdpLoadTracker numbers a page's main-frame loading reports, from
+// Page.frameStartedLoading and Page.frameStoppedLoading in the order the
+// browser sent them (cdpPage.lifecycle): a start means loading and a stop
+// idle, whatever came before and however long ago. A page attached
+// mid-load has sent neither, and reports nothing until one comes. The
+// Manager keeps the highest number (pageHooks.Loading). Used by the
+// session's one lifecycle goroutine alone.
 type cdpLoadTracker struct {
-	mu            sync.Mutex
-	starts, stops uint64
-	// handled numbers the answers; dropped stops do not lower it.
 	handled uint64
-	// unmatchedAt is when stops last came to exceed starts.
-	unmatchedAt time.Time
 }
 
-// loadReorderWindow is how long after an unmatched stop a start is taken
-// as that stop's own (cdpLoadTracker).
-const loadReorderWindow = time.Second
-
-func (t *cdpLoadTracker) started(now time.Time) (bool, uint64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.stops > t.starts && now.Sub(t.unmatchedAt) >= loadReorderWindow {
-		t.stops = t.starts
-	}
-	t.starts++
-	return t.answerLocked()
-}
-
-func (t *cdpLoadTracker) stopped(now time.Time) (bool, uint64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.stops <= t.starts {
-		t.unmatchedAt = now
-	}
-	t.stops++
-	return t.answerLocked()
-}
-
-// answerLocked is whether the frame is loading and the answer's number.
-// The caller holds t.mu.
-func (t *cdpLoadTracker) answerLocked() (bool, uint64) {
+// observe answers the report for a start (loading) or stop and its number.
+func (t *cdpLoadTracker) observe(loading bool) (bool, uint64) {
 	t.handled++
-	return t.starts > t.stops, t.handled
+	return loading, t.handled
 }
 
-// frameTracker is the set of frames a page has reported, which downloads are
-// routed by.
-//
-// frameAttached, frameNavigated and frameDetached arrive on three
-// subscriptions, so the tracker counts rather than toggles. Attaches and
-// detaches of one frame alternate, starting with an attach (a frame swapped
-// to another process and back is attached twice), so once every event is
-// handled the frame is live exactly when it has more attaches than
-// detaches, in whatever order they were handled. A navigation stands in for
-// the attach of a frame that attached before the page subscribed until an
-// attach is handled. The frame tree read once the page subscribed (seed)
-// counts as that unseen attach for every frame it names, alongside the
-// frame's own attaches handled before or after it, so a frame that was
-// there before the page subscribed and is swapped out and back stays live.
-// A frame attached between the subscriptions and the tree read has its
-// attach counted twice and stays live after it detaches; its id names no
-// other frame, and only the frames of that one round trip are kept so.
-//
-// A live frame is kept until it detaches; the page's own frames bound that.
-// A frame that is not live keeps its counts in gone to absorb its late
-// events, and gone is bounded by orderSlack, so detached frames do not pile
-// up.
+// frameTracker is the set of frames a page has, which downloads are routed
+// by, from Page.frameAttached, frameNavigated and frameDetached in the
+// order the browser sent them and the frame tree read at the page's
+// attach at its place among them (cdpPage.lifecycle). An attach or a
+// navigation makes a frame live, a detach makes it gone, and the tree
+// replaces the set: it reflects every event sent before its reply, and
+// the events after it apply on top. The page's own frames bound it.
 type frameTracker struct {
 	mu   sync.RWMutex
-	live map[cdp.FrameID]frameEvents
-	gone *boundedMap[cdp.FrameID, frameEvents]
-}
-
-// frameEvents counts what has been handled for one frame.
-type frameEvents struct {
-	attaches, detaches int
-	navigated          bool
-	// seeded says the frame tree named it (frameTracker.seed).
-	seeded bool
-}
-
-func (f frameEvents) live() bool {
-	attaches := f.attaches
-	switch {
-	case f.seeded:
-		attaches++
-	case attaches == 0 && f.navigated:
-		attaches = 1
-	}
-	return attaches > f.detaches
+	live map[cdp.FrameID]struct{}
 }
 
 func newFrameTracker() *frameTracker {
-	return &frameTracker{live: make(map[cdp.FrameID]frameEvents), gone: newBoundedMap[cdp.FrameID, frameEvents](orderSlack)}
+	return &frameTracker{live: make(map[cdp.FrameID]struct{})}
 }
 
 func (t *frameTracker) attached(id cdp.FrameID) {
-	t.record(id, func(f *frameEvents) { f.attaches++ })
-}
-
-func (t *frameTracker) navigated(id cdp.FrameID) {
-	t.record(id, func(f *frameEvents) { f.navigated = true })
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.live[id] = struct{}{}
 }
 
 func (t *frameTracker) detached(id cdp.FrameID) {
-	t.record(id, func(f *frameEvents) { f.detaches++ })
-}
-
-// seed records the frames of tree, read after the page subscribed, as
-// attached before it subscribed (frameTracker).
-func (t *frameTracker) seed(tree *page.FrameTree) {
-	if tree == nil {
-		return
-	}
-	if tree.Frame != nil {
-		t.record(tree.Frame.ID, func(f *frameEvents) { f.seeded = true })
-	}
-	for _, child := range tree.ChildFrames {
-		t.seed(child)
-	}
-}
-
-func (t *frameTracker) record(id cdp.FrameID, event func(*frameEvents)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	f, ok := t.live[id]
-	if !ok {
-		f, _ = t.gone.get(id)
-	}
-	event(&f)
-	if f.live() {
-		t.gone.delete(id)
-		t.live[id] = f
-		return
-	}
 	delete(t.live, id)
-	t.gone.put(id, f)
+}
+
+// reset makes the set the frames of tree.
+func (t *frameTracker) reset(tree *page.FrameTree) {
+	live := make(map[cdp.FrameID]struct{})
+	var walk func(*page.FrameTree)
+	walk = func(node *page.FrameTree) {
+		if node == nil {
+			return
+		}
+		if node.Frame != nil {
+			live[node.Frame.ID] = struct{}{}
+		}
+		for _, child := range node.ChildFrames {
+			walk(child)
+		}
+	}
+	walk(tree)
+	t.mu.Lock()
+	t.live = live
+	t.mu.Unlock()
 }
 
 func (t *frameTracker) owns(id cdp.FrameID) bool {
@@ -364,5 +277,5 @@ func (t *frameTracker) owns(id cdp.FrameID) bool {
 func (t *frameTracker) retained() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return len(t.live) + t.gone.len()
+	return len(t.live)
 }

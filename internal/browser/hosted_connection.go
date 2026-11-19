@@ -6,10 +6,11 @@ import (
 	"slices"
 	"time"
 
+	"agent-overflow/internal/browser/cdporder"
+
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/remote"
 )
 
 // ensureBrowser establishes (once) the CDP browser connection through the
@@ -61,7 +62,7 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// NoModifyURL: the URL was already rewritten onto the relay listener,
 	// and chromedp's own /json/version probe would re-read the Windows-side
 	// address and dial it.
-	allocCtx, allocCancel := remote.NewAllocator(context.Background(), wsURL, remote.NoModifyURL)
+	allocCtx, allocCancel := cdporder.NewAllocator(context.Background(), wsURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
 		e.logf("browser: chromedp: "+format, args...)
 	}))
@@ -160,10 +161,11 @@ func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
 	return pages
 }
 
-// reportLost reports pages, claimed from a lost connection, crashed.
+// reportLost reports pages, claimed from a lost connection, crashed, each
+// after the reports already accepted for it (acceptCrash).
 func (e *hostedEngine) reportLost(pages []string) {
 	for _, pageID := range pages {
-		e.pageCrashed(pageID, connectionLostReason)
+		e.acceptCrash(hostedPageID(pageID), connectionLostReason)
 	}
 }
 
@@ -221,11 +223,11 @@ func (e *hostedEngine) subscribe(browserCtx context.Context, targets *cdpTargets
 // targetCrashed reports a page whose renderer died. The launcher's
 // process-failed report says the same for the controller; whichever the
 // Manager handles first turns the tab into a crashed one, and the other then
-// finds no live page.
+// finds no live page. It runs after the page's reports already accepted
+// (acceptCrash), so it overtakes no download's end.
 func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
-		// Off the event reader: the Manager closes the page's driver.
-		go e.pageCrashed(pageID, cdpCrashReason(event))
+		e.acceptCrash(hostedPageID(pageID), cdpCrashReason(event))
 	}
 }
 
@@ -239,9 +241,10 @@ func (e *hostedEngine) targetDestroyed(targets *cdpTargets, event target.EventTa
 // awaitLauncherClose leaves a page whose target went to the launcher's
 // close, which follows the ends of the page's downloads in the launcher's
 // ordered reports, so none of those ends is overtaken. Past
-// closeFallback the engine retires the page itself, on the timer's own
-// goroutine: retirePage ends in the Manager's teardown, which must not
-// hold the target events queued behind this.
+// closeFallback the engine accepts the close itself (acceptClose), which
+// retires the page on its lane, after its reports already accepted and
+// never on the goroutine reading target events: retirePage ends in the
+// Manager's teardown.
 func (e *hostedEngine) awaitLauncherClose(pageID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -251,7 +254,7 @@ func (e *hostedEngine) awaitLauncherClose(pageID string) {
 	wait := e.closeFallback
 	e.closeFallbacks[pageID] = time.AfterFunc(wait, func() {
 		e.logf("browser: pane page %s lost its target and the launcher reported no close within %v", pageID, wait)
-		e.retirePage(pageID)
+		e.acceptClose(hostedPageID(pageID))
 	})
 }
 

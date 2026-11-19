@@ -821,10 +821,11 @@ type discardRecordingEngine struct {
 	discarded []string
 }
 
-func (e *discardRecordingEngine) DiscardPage(handle string) {
+func (e *discardRecordingEngine) DiscardPage(_ context.Context, handle string) error {
 	e.mu.Lock()
 	e.discarded = append(e.discarded, handle)
 	e.mu.Unlock()
+	return nil
 }
 
 // A popup its profile fails to attach is discarded, not left open with no
@@ -992,8 +993,8 @@ func resolvedPolicy(t *testing.T, policy func([]string, string) (bool, bool)) fu
 
 // The Manager keeps a download only when a managed page owns the frame it
 // began in and, on an engine whose downloads are AO's, the workspace has
-// quota for it. It answers false for every other one, which the engine then
-// cancels.
+// quota for it. It refuses one over quota, and answers one no managed page
+// owns as unowned; the engine cancels both.
 func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { manager.Close() })
@@ -1005,10 +1006,10 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	}
 	frame := paneHandle(manager, access, page.ID)
 
-	if manager.downloadStarted(downloadStart{Frame: "unowned", ID: "G-unowned"}) {
-		t.Fatal("a download no managed page owns was kept")
+	if got := manager.downloadStarted(downloadStart{Frame: "unowned", ID: "G-unowned"}); got != downloadUnowned {
+		t.Fatalf("a download no managed page owns was answered %v, want unowned", got)
 	}
-	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "G-kept", SuggestedName: "a.bin"}) {
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "G-kept", SuggestedName: "a.bin"}) != downloadAdmitted {
 		t.Fatal("a download in a managed page within quota was refused")
 	}
 	manager.mu.Lock()
@@ -1016,8 +1017,8 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 		authority.downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	}
 	manager.mu.Unlock()
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "G-over"}) {
-		t.Fatal("a download over the workspace quota was kept")
+	if got := manager.downloadStarted(downloadStart{Frame: frame, ID: "G-over"}); got != downloadRefused {
+		t.Fatalf("a download over the workspace quota was answered %v, want refused", got)
 	}
 
 	listed, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})

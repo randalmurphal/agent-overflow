@@ -21,11 +21,11 @@ type unavailableEngine struct{}
 // the browser tool's error and the user as the companion pane's.
 var errNoBrowserEngine = errors.New("browser: browser tools are not available in this deployment")
 
-func (unavailableEngine) Start(context.Context) error { return errNoBrowserEngine }
-func (unavailableEngine) Running() bool               { return false }
-func (unavailableEngine) Interrupt()                  {}
-func (unavailableEngine) Stop()                       {}
-func (unavailableEngine) DiscardPage(string)          {}
+func (unavailableEngine) Start(context.Context) error               { return errNoBrowserEngine }
+func (unavailableEngine) Running() bool                             { return false }
+func (unavailableEngine) Interrupt()                                {}
+func (unavailableEngine) Stop()                                     {}
+func (unavailableEngine) DiscardPage(context.Context, string) error { return nil }
 
 // DownloadSaving is never consulted: this engine makes no page.
 func (unavailableEngine) DownloadSaving() downloadSaving { return downloadsStaged }

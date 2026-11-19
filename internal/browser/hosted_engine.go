@@ -161,8 +161,8 @@ type hostedEngine struct {
 	// popup's profile and the browser-wide policy (hosted_popups.go).
 	pageProfile map[string]string
 	policies    map[string]func(owners []string, rawURL string) (allowed, resolved bool)
-	// popups are the popups the launcher reported that the Manager has not
-	// listed, and popupByTarget their pages by CDP target.
+	// popups are the popups the launcher reported whose pages have not
+	// gone (hostedPopup), and popupByTarget their pages by CDP target.
 	popups        map[string]*hostedPopup
 	popupByTarget map[string]string
 	// targets is the current connection's record of its targets

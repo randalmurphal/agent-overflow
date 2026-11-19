@@ -13,33 +13,41 @@ import (
 // A download's admission to its page: the caps, its row and its reservation.
 
 // downloadStarted admits a download into the log of the page whose frame
-// it began in. It answers false, and the engine cancels the download, when
-// no managed page owns that frame or, on an engine whose downloads are AO's,
-// the download is over quota: whether it may consume workspace and artifact
-// bytes is policy, and so is the sanitized name it will eventually be
-// renamed to. The quota is the page's workspace's (workspaceAuthority),
-// whichever jar the page is in. A refused staged download's file goes.
-func (m *Manager) downloadStarted(event downloadStart) bool {
-	admitted := m.admitDownload(event)
-	if !admitted && m.downloadsStagedHere() {
+// it began in. It refuses it, and the engine cancels the download, when
+// the page left or, on an engine whose downloads are AO's, the download is
+// over quota: whether it may consume workspace and artifact bytes is
+// policy, and so is the sanitized name it will eventually be renamed to.
+// The quota is the page's workspace's (workspaceAuthority), whichever jar
+// the page is in. A frame no managed page owns is downloadUnowned. A
+// refused staged download's file goes.
+func (m *Manager) downloadStarted(event downloadStart) downloadAdmission {
+	admission := m.admitDownload(event)
+	if admission != downloadAdmitted && m.downloadsStagedHere() {
 		m.releaseStagedDownload(event.ID)
 	}
-	return admitted
+	return admission
 }
 
-func (m *Manager) admitDownload(event downloadStart) bool {
+func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	// The address is display data from here, bounded once as it enters, in
 	// a copy of its own, before anything parks or lists it.
 	event.URL = strings.Clone(truncateUTF8(event.URL, maxBrowserURLBytes))
 	p, _ := m.pageForFrame(event.Frame)
-	if p == nil {
-		if event.Popup != "" {
-			// A popup not listed yet: its fate lists it (popup_adoption.go).
-			return m.parkDownload(event)
-		}
-		return false
+	switch {
+	case p != nil:
+		return admission(m.admitTo(p, event, nil))
+	case event.Popup != "":
+		// A popup not listed yet: its fate lists it (popup_adoption.go).
+		return admission(m.parkDownload(event))
 	}
-	return m.admitTo(p, event, nil)
+	return downloadUnowned
+}
+
+func admission(admitted bool) downloadAdmission {
+	if admitted {
+		return downloadAdmitted
+	}
+	return downloadRefused
 }
 
 // admitTo lists a starting download in p. A parked download's listing

@@ -9,10 +9,8 @@ import (
 	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/cdproto/cdp"
 	jsonv2 "github.com/chromedp/cdproto/cdp/jsonv2"
 	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -132,81 +130,6 @@ func end(tr *networkTracker, id network.RequestID, now time.Time) eventStep {
 	return eventStep{"end " + string(id), func() { tr.ended(id, now) }}
 }
 
-// A page owns a frame from its attach until its detach, whichever of the
-// three frame events is handled first. A frame swapped out to another
-// process and back is attached twice and detached once.
-func TestFrameTrackerSettlesInAnyOrder(t *testing.T) {
-	const frame = cdp.FrameID("F1")
-	attach := func(tr *frameTracker) eventStep {
-		return eventStep{"attached", func() { tr.attached(frame) }}
-	}
-	navigate := func(tr *frameTracker) eventStep {
-		return eventStep{"navigated", func() { tr.navigated(frame) }}
-	}
-	detach := func(tr *frameTracker) eventStep {
-		return eventStep{"detached", func() { tr.detached(frame) }}
-	}
-	// The frame tree read once the page subscribed names the frame.
-	seed := func(tr *frameTracker) eventStep {
-		tree := &page.FrameTree{
-			Frame:       &cdp.Frame{ID: "main"},
-			ChildFrames: []*page.FrameTree{{Frame: &cdp.Frame{ID: frame, ParentID: "main"}}},
-		}
-		return eventStep{"seeded", func() { tr.seed(tree) }}
-	}
-	cases := []struct {
-		name     string
-		streams  func(tr *frameTracker) [][]eventStep
-		wantOwns bool
-	}{
-		{"a detached frame", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {navigate(tr)}, {detach(tr)}}
-		}, false},
-		{"a live frame", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {navigate(tr)}, {}}
-		}, true},
-		{"a frame attached before the page subscribed", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {navigate(tr)}, {}}
-		}, true},
-		{"a frame attached before the page subscribed, then detached", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {navigate(tr)}, {detach(tr)}}
-		}, false},
-		{"a frame swapped out and back", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr), attach(tr)}, {}, {detach(tr)}}
-		}, true},
-		{"a frame in the frame tree", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {seed(tr)}, {}}
-		}, true},
-		{"a frame in the frame tree, then detached", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {seed(tr)}, {detach(tr)}}
-		}, false},
-		{"a frame in the frame tree, swapped out and back", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {seed(tr)}, {detach(tr)}}
-		}, true},
-		{"a frame in the frame tree, swapped out and back, navigated", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {seed(tr), navigate(tr)}, {detach(tr)}}
-		}, true},
-		{"a frame in the frame tree, swapped twice, then removed", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr), attach(tr)}, {seed(tr)}, {detach(tr), detach(tr), detach(tr)}}
-		}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			count := len(interleavings(tc.streams(newFrameTracker())))
-			for i := range count {
-				tr := newFrameTracker()
-				order := interleavings(tc.streams(tr))[i]
-				for _, step := range order {
-					step.run()
-				}
-				if got := tr.owns(frame); got != tc.wantOwns {
-					t.Errorf("handled as [%s]: owns = %v, want %v", stepNames(order), got, tc.wantOwns)
-				}
-			}
-		})
-	}
-}
-
 // downloadRecorder stands in for the Manager's download bookkeeping: like
 // downloadProgress, it ignores progress for a download it never saw start.
 type downloadRecorder struct {
@@ -223,14 +146,15 @@ func newDownloadRecorder(allow bool) *downloadRecorder {
 
 func (r *downloadRecorder) events() engineEvents {
 	return engineEvents{
-		DownloadStarted: func(start downloadStart) bool {
+		DownloadStarted: func(start downloadStart) downloadAdmission {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.state[start.ID] = downloadInProgress
 			if !r.allow {
 				r.state[start.ID] = "refused"
+				return downloadRefused
 			}
-			return r.allow
+			return downloadAdmitted
 		},
 		DownloadProgress: func(progress downloadProgress) {
 			r.mu.Lock()
@@ -530,6 +454,90 @@ func TestHeadlessTargetsSettleInAnyOrder(t *testing.T) {
 	})
 }
 
+// A headless popup's report, close and crash reach the Manager as their
+// target events are handled, before each handler returns and in the order
+// handled, with nothing held back for a listing: the popup's admission in
+// the Manager holds them (engine_pages.go). A crash of a page the Manager
+// created reaches it the same way.
+func TestHeadlessReportsAPopupsEndsAsTheyAreHandled(t *testing.T) {
+	const popup, crashed, own = "T-popup", "T-crashed", "T-own"
+	var mu sync.Mutex
+	var got []string
+	record := func(what string) {
+		mu.Lock()
+		got = append(got, what)
+		mu.Unlock()
+	}
+	p := newTargetTestProfile(t, engineEvents{
+		PopupOpened: func(opened enginePopup) { record("opened " + opened.Handle) },
+		PageClosed:  func(handle string) { record("closed " + handle) },
+		PageCrashed: func(handle, reason string) { record("crashed " + handle) },
+	})
+	heard := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(got)
+	}
+	h := newHeadlessTargets(p)
+	for _, id := range []target.ID{popup, crashed} {
+		h.created(target.EventTargetCreated{TargetInfo: &target.Info{TargetID: id, Type: "page", OpenerID: "T-opener"}})
+	}
+	p.engine.bindPage(own, p)
+	h.destroyed(target.EventTargetDestroyed{TargetID: popup})
+	p.targetCrashed(target.EventTargetCrashed{TargetID: crashed})
+	p.targetCrashed(target.EventTargetCrashed{TargetID: own})
+	want := []string{"opened " + popup, "opened " + crashed, "closed " + popup, "crashed " + crashed, "crashed " + own}
+	if now := heard(); !slices.Equal(now, want) {
+		t.Fatalf("the Manager heard %q as the events were handled, want %q", now, want)
+	}
+}
+
+// A download in a frame no page owns yet and no popup names, a popup's
+// subframe before the popup is listed, is admitted once a listed page owns
+// the frame within ownerWait, and never cancelled for the wait.
+func TestHeadlessDownloadWaitsForItsFramesPage(t *testing.T) {
+	const guid, frame = "G1", "F-popup-iframe"
+	var mu sync.Mutex
+	listed, admitted, canceled := false, 0, 0
+	p := newTargetTestProfile(t, engineEvents{
+		DownloadStarted: func(start downloadStart) downloadAdmission {
+			mu.Lock()
+			defer mu.Unlock()
+			if start.Frame != frame || !listed {
+				return downloadUnowned
+			}
+			admitted++
+			return downloadAdmitted
+		},
+		DownloadProgress: func(downloadProgress) {},
+	})
+	p.engine.ownerWait = 5 * time.Second
+	d := p.downloadTracker(t.Context(), newHeadlessTargets(p))
+	d.cancel = func(string) {
+		mu.Lock()
+		canceled++
+		mu.Unlock()
+	}
+	d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: guid, FrameID: frame})
+	time.Sleep(20 * requestOwnerPoll)
+	mu.Lock()
+	listed = true
+	mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		gotAdmitted, gotCanceled := admitted, canceled
+		mu.Unlock()
+		if gotAdmitted > 0 || gotCanceled > 0 || time.Now().After(deadline) {
+			if gotAdmitted != 1 || gotCanceled != 0 {
+				t.Fatalf("admitted %d times, cancelled %d times; want admitted once and never cancelled", gotAdmitted, gotCanceled)
+			}
+			return
+		}
+		time.Sleep(requestOwnerPoll)
+	}
+}
+
 // An info change held until its page's targetCreated is numbered before any
 // info change handled after that created, even when the newer one is
 // delivered while the held one still is: the Manager, which keeps the
@@ -549,12 +557,18 @@ func TestHeadlessPopupDownloadSettlesInAnyOrder(t *testing.T) {
 		p := newTargetTestProfile(t, engineEvents{
 			PopupOpened: func(enginePopup) {},
 			PageClosed:  func(string) {},
-			DownloadStarted: func(start downloadStart) bool {
+			DownloadStarted: func(start downloadStart) downloadAdmission {
 				ok := start.Popup == popup && slices.Equal(start.Openers, []string{opener})
 				mu.Lock()
 				got.admitted = got.admitted || ok
 				mu.Unlock()
-				return ok
+				switch {
+				case ok:
+					return downloadAdmitted
+				case start.Popup == "":
+					return downloadUnowned
+				}
+				return downloadRefused
 			},
 			DownloadProgress: func(downloadProgress) {},
 		})
@@ -671,29 +685,6 @@ func TestNetworkTrackerBoundsUnmatchedEnds(t *testing.T) {
 	tr.ended("live", now)
 	if !tr.idle(now.Add(time.Hour), 0) {
 		t.Fatal("the newest early end no longer settles its late start")
-	}
-}
-
-// Detached frames are kept only up to orderSlack, and live frames are never
-// dropped to make room.
-func TestFrameTrackerBoundsDetachedFrames(t *testing.T) {
-	tr := newFrameTracker()
-	for i := range 10 {
-		tr.attached(cdp.FrameID(fmt.Sprintf("live-%d", i)))
-	}
-	for i := range 2 * orderSlack {
-		id := cdp.FrameID(fmt.Sprintf("gone-%d", i))
-		tr.attached(id)
-		tr.navigated(id)
-		tr.detached(id)
-	}
-	if got := tr.retained(); got != 10+orderSlack {
-		t.Fatalf("kept %d frames, want the 10 live ones and %d detached", got, orderSlack)
-	}
-	for i := range 10 {
-		if !tr.owns(cdp.FrameID(fmt.Sprintf("live-%d", i))) {
-			t.Fatalf("live frame %d was dropped to make room for detached ones", i)
-		}
 	}
 }
 

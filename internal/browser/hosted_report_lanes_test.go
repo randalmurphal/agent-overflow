@@ -43,7 +43,10 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 			}
 		}
 	}
-	engine.events.DownloadStarted = func(start downloadStart) bool { note("start %s", start.ID); return true }
+	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
+		note("start %s", start.ID)
+		return downloadAdmitted
+	}
 	engine.events.DownloadProgress = func(p downloadProgress) { note("%s %s %v", p.ID, p.State, p.Received) }
 	engine.events.PageClosed = func(handle string) { note("closed %s", handle) }
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -132,8 +135,11 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 			progress = append(progress, s)
 		}
 	}
-	if !slices.Equal(progress, []string{"dl-2 inProgress 1", "dl-2 inProgress 50"}) {
-		t.Fatalf("dl-2's progress reached the Manager as %v, want its first and its newest", progress)
+	if !slices.Equal(progress, []string{"dl-2 inProgress 1", "dl-2 inProgress 50", "dl-2 canceled 0"}) {
+		t.Fatalf("dl-2's progress reached the Manager as %v, want its first, its newest, and its end with its page", progress)
+	}
+	if ended := slices.Index(got, "dl-2 canceled 0"); ended > closed {
+		t.Fatalf("the Manager heard %v, want page-b's running download ended before its close", got)
 	}
 }
 
@@ -178,10 +184,7 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 	}
 	recorder.mu.Unlock()
 	bindTestPage(t, engine, "opener", "T-opener")
-	engine.mu.Lock()
-	engine.popups["popup"] = &hostedPopup{target: "T-popup", profile: engine.pageProfile["opener"], opener: "opener"}
-	engine.pageProfile["popup"] = engine.pageProfile["opener"]
-	engine.mu.Unlock()
+	pendingTestPopup(engine, "popup", "T-popup", "opener")
 	reportDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadRunning, 10))
 	entered, release := make(chan struct{}), make(chan struct{})
 	engine.backendPath = func(ctx context.Context, path string) (string, error) {
@@ -196,8 +199,7 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 	sendDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadCompleted, 100))
 	waitClosed(t, entered, "the completion's path conversion")
 	if closes == "popup" {
-		// The Manager lists it and its attach binds it.
-		engine.popupListed("popup")
+		// Its attach binds it.
 		bindTestPage(t, engine, "popup", "T-popup")
 	}
 	engine.Report(closes, kind, "render-process-exited")
@@ -245,5 +247,69 @@ func TestStopJoinsTheAcceptedReports(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if _, late := recorder.take(); len(progress) != 0 || len(late) != 0 {
 		t.Fatalf("the Manager heard %+v while the engine stopped and %+v after", progress, late)
+	}
+}
+
+// A page's end the engine learns of by itself (its renderer's crash or its
+// connection's loss read from CDP, the close the launcher never reported)
+// runs on the page's lane like the launcher's own reports: a completion
+// still converting its path, and one accepted behind it, reach the Manager
+// first.
+func TestAPagesOwnEndFollowsItsAcceptedReports(t *testing.T) {
+	for name, end := range map[string]func(*hostedEngine){
+		"its renderer crashed": func(engine *hostedEngine) {
+			engine.targetCrashed(target.EventTargetCrashed{TargetID: "T-1"})
+		},
+		"its connection was lost": func(engine *hostedEngine) { engine.reportLost([]string{"page1"}) },
+		"the launcher never reported its close": func(engine *hostedEngine) {
+			engine.closeFallback = time.Millisecond
+			engine.awaitLauncherClose("page1")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			engine, _, recorder := newDownloadHostedEngine(t)
+			var mu sync.Mutex
+			var order []string
+			note := func(what string) {
+				mu.Lock()
+				order = append(order, what)
+				mu.Unlock()
+			}
+			engine.events.PageClosed = func(handle string) { note("ended " + handle) }
+			engine.events.PageCrashed = func(handle, _ string) { note("ended " + handle) }
+			recorder.mu.Lock()
+			recorder.progressing = func(p downloadProgress) {
+				if p.State != downloadInProgress {
+					note(fmt.Sprintf("%s %s", p.ID, p.State))
+				}
+			}
+			recorder.mu.Unlock()
+			bindTestPage(t, engine, "page1", "T-1")
+			reportDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadRunning, 10))
+			reportDownload(t, engine, "page1", snapshot("dl-2", webview2host.DownloadRunning, 10))
+			entered, release := make(chan struct{}), make(chan struct{})
+			var first sync.Once
+			engine.backendPath = func(ctx context.Context, path string) (string, error) {
+				first.Do(func() { close(entered) })
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+				return testBackendPath(ctx, path)
+			}
+			sendDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadCompleted, 100))
+			waitClosed(t, entered, "the completion's path conversion")
+			sendDownload(t, engine, "page1", snapshot("dl-2", webview2host.DownloadCompleted, 100))
+			end(engine)
+			time.Sleep(20 * time.Millisecond)
+			close(release)
+			settleReports(t, engine, "")
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(order, []string{"dl-1 completed", "dl-2 completed", "ended page1"}) {
+				t.Fatalf("the Manager heard %v, want both downloads' completions before the page's end", order)
+			}
+		})
 	}
 }

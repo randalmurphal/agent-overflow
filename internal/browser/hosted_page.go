@@ -87,8 +87,9 @@ func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedBy
 
 // DiscardPage closes a controller the Manager declined to adopt. The handle
 // is this engine's page id, because that is what pageDriver.Handle answers.
-func (e *hostedEngine) DiscardPage(handle string) {
+func (e *hostedEngine) DiscardPage(_ context.Context, handle string) error {
 	e.closePage(handle)
+	return nil
 }
 
 // Report routes one launcher answer. Called from the App's
@@ -170,25 +171,35 @@ func processFailureCrashes(detail string) bool {
 	return detail == "render-process-exited" || detail == "browser-process-exited"
 }
 
-// retirePage drops the engine's bookkeeping and tells the Manager the page
-// is gone. The Manager alone decides what that means for its registry.
-//
-// PageClosed is called inline here because every SYNCHRONOUS caller is the
-// launcher's report path, which is an RPC goroutine of its own. A
-// target's destroy, read from CDP events, retires its page only past
-// closeFallback, on a timer's goroutine (awaitLauncherClose).
+// retirePage drops the engine's bookkeeping of a page that closed by
+// itself, ends its downloads, and tells the Manager the page is gone. The
+// Manager alone decides what that means for its registry, a popup's
+// admission among it (engineEvents). It runs only on the page's report
+// lane (acceptClose); a target's destroy, read from CDP events, is accepted
+// as a close only past closeFallback (awaitLauncherClose).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
 	e.endCloseFallbackLocked(pageID)
-	if pending, cancelAttach := e.retirePendingLocked(pageID); pending {
-		// A popup the Manager has not listed: its close waits for its
-		// listing (popupListed), or goes with its discard.
-		e.mu.Unlock()
-		cancelAttach()
-		e.pendingClosed(pageID)
+	_, bound := e.targetByPage[pageID]
+	_, profiled := e.pageProfile[pageID]
+	cancelAttach := e.forgetPopupLocked(pageID)
+	e.forgetPageLocked(pageID)
+	e.mu.Unlock()
+	cancelAttach()
+	if !bound && !profiled {
 		return
 	}
-	targetID, known := e.targetByPage[pageID]
+	// A snapshot being applied reaches the Manager before the close does:
+	// the launcher sends a download's end before its page's close, and a
+	// report whose call timed out there may still be applied here.
+	e.endPageDownloads(pageID, pageClosedReason)
+	e.events.PageClosed(pageID)
+}
+
+// forgetPageLocked drops pageID from the engine's page bookkeeping, its
+// downloads aside (endPageDownloads). The caller holds e.mu.
+func (e *hostedEngine) forgetPageLocked(pageID string) {
+	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
 	delete(e.pageConn, pageID)
@@ -199,18 +210,6 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
 	delete(e.pageProfile, pageID)
-	e.mu.Unlock()
-	if !known {
-		return
-	}
-	// A snapshot being applied reaches the Manager before the close does:
-	// the launcher sends a download's end before its page's close, and a
-	// report whose call timed out there may still be applied here.
-	e.joinDownloadReports(pageID, "")
-	e.mu.Lock()
-	e.forgetDownloadsLocked(pageID)
-	e.mu.Unlock()
-	e.events.PageClosed(pageID)
 }
 
 func (e *hostedEngine) watch(pageID string) (chan hostReport, error) {
@@ -257,10 +256,17 @@ func (e *hostedEngine) bind(pageID, targetID string, conn context.Context) error
 	if conn.Err() != nil {
 		return errors.New("browser: the connection to the pane browser was lost")
 	}
+	e.bindLocked(pageID, targetID, conn)
+	return nil
+}
+
+// bindLocked is bind for a caller that holds e.mu and has checked conn.
+// A bound page admits downloads; a popup's admission opened at its report.
+func (e *hostedEngine) bindLocked(pageID, targetID string, conn context.Context) {
 	e.targetByPage[pageID] = targetID
 	e.pageByTarget[targetID] = pageID
 	e.pageConn[pageID] = conn
-	return nil
+	e.downloads.openLocked(pageID)
 }
 
 func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
@@ -280,32 +286,17 @@ func (e *hostedEngine) targetPageLocked(targetID string) (string, bool) {
 }
 
 // closePage retires the bookkeeping and asks the launcher to destroy the
-// controller. The launcher answers `closed`, which is a no-op by then —
+// controller, for the Manager's close or discard or a create that failed.
+// The launcher cancels the page's downloads with it and reports nothing,
+// so they end here (endPageDownloads); a listed page's the Manager ended
+// as it closed it. The launcher answers `closed`, which is a no-op by then:
 // the close a page's own Close already accounted for must not be reported
 // to the Manager twice.
 func (e *hostedEngine) closePage(pageID string) {
+	e.endPageDownloads(pageID, popupDiscardedReason)
 	e.mu.Lock()
-	_, pending := e.popups[pageID]
-	e.mu.Unlock()
-	if pending {
-		// The launcher cancels the page's downloads with it and reports
-		// nothing, and the Manager never listed the page to settle them.
-		e.joinDownloadReports(pageID, popupDiscardedReason)
-	}
-	e.mu.Lock()
-	targetID := e.targetByPage[pageID]
-	delete(e.targetByPage, pageID)
-	delete(e.pageByTarget, targetID)
-	delete(e.pageConn, pageID)
-	delete(e.shown, pageID)
-	delete(e.bounds, pageID)
-	delete(e.drivers, pageID)
-	delete(e.ratios, pageID)
-	delete(e.scales, pageID)
-	delete(e.noFind, pageID)
-	delete(e.pageProfile, pageID)
+	e.forgetPageLocked(pageID)
 	cancelAttach := e.forgetPopupLocked(pageID)
-	e.forgetDownloadsLocked(pageID)
 	e.endCloseFallbackLocked(pageID)
 	e.mu.Unlock()
 	cancelAttach()
@@ -355,10 +346,6 @@ func (p *hostedPage) Handle() string { return p.id }
 func (p *hostedPage) OwnsFrame(frame string) bool {
 	return frame == p.id || p.pageDriver.OwnsFrame(frame)
 }
-
-// Adopted is adoptedPage: a popup's tab is listed, so what it reported
-// meanwhile is delivered (popupListed).
-func (p *hostedPage) Adopted() { p.engine.popupListed(p.id) }
 
 func (p *hostedPage) Close() {
 	p.pageDriver.Close()

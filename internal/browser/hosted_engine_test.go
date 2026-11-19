@@ -516,17 +516,19 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 // A profile attaches only a popup the launcher reported in it, and not
 // once the popup closed (hosted_popups_test.go covers the adoption).
 func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
-	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(string) {}})
 	profile := testProfile(t, engine)
 	engine.mu.Lock()
 	engine.popups["popup-other"] = &hostedPopup{target: "T-other", profile: "another-profile"}
-	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id, closed: true}
+	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id}
+	engine.pageProfile["popup-closed"] = profile.id
 	engine.mu.Unlock()
+	engine.retirePage("popup-closed")
 
 	for handle, why := range map[string]string{
 		"TARGET-1":     "reported no popup",
 		"popup-other":  "reported no popup",
-		"popup-closed": "closed before it was adopted",
+		"popup-closed": "reported no popup",
 	} {
 		if _, err := profile.AttachPage(context.Background(), handle, pageHooks{}); err == nil || !strings.Contains(err.Error(), why) {
 			t.Errorf("attach %s: %v, want %q", handle, err, why)
@@ -536,7 +538,9 @@ func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
 
 func TestHostedEngineDiscardPageClosesTheController(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.DiscardPage("0123456789abcdef0123456789abcdef")
+	if err := engine.DiscardPage(t.Context(), "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
 	sink.expectOps(t, webview2host.OpClose)
 }
 
@@ -1095,6 +1099,19 @@ func bindTestPage(t *testing.T, engine *hostedEngine, pageID, targetID string) {
 	if err := engine.bind(pageID, targetID, context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// pendingTestPopup records popup as the launcher's report of it does
+// (popupReported): opened by opener, in its profile, admitting downloads, and
+// not yet attached or listed.
+func pendingTestPopup(engine *hostedEngine, popup, targetID, opener string) {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	profile := engine.pageProfile[opener]
+	engine.popups[popup] = &hostedPopup{target: targetID, profile: profile, opener: opener}
+	engine.popupByTarget[targetID] = popup
+	engine.pageProfile[popup] = profile
+	engine.downloads.openLocked(popup)
 }
 
 // A browser connection that ends on its own takes the sessions of the pages

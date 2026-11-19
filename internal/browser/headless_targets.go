@@ -8,7 +8,8 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// A headless profile's browser-level target events: popups, crashes and closes.
+// A headless profile's browser-level target events: popups, crashes and
+// closes, each reported to the Manager as it is handled (engineEvents).
 
 // subscribe connects the CDP events of the browser connected on browserCtx
 // to the seam, and answers the requests the workspace's navigation policy
@@ -54,13 +55,15 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 // downloadTracker is the tracker of the downloads of the browser connected
 // on browserCtx. A popup's main frame id is its target id, which is its
 // handle. Chromium sends a popup's creation before the navigation that
-// downloads, but the start can be handled first: a start that names no
-// popup and that the Manager refuses waits up to ownerWait for the record
-// to name the frame's opener, then is offered again or refused. One whose
+// downloads, but the start can be handled first: a start whose frame no
+// page owns and that names no popup is offered again until the record
+// names the frame's opener or a listed page owns the frame (a popup's
+// subframe, once the popup is listed), for up to ownerWait, and refused
+// after (awaitOwner). One whose
 // popup's destroy the record handled first still names it
 // (downloadOwners).
 func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *headlessTargets) *downloadTracker {
-	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, p.engine.logf))
+	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.cancelRefusedDownload, p.engine.logf))
 	downloads.popup = func(frame string) downloadStart {
 		owners := targets.downloadOwners(frame)
 		if len(owners) < 2 {
@@ -79,8 +82,7 @@ func (p *headlessProfile) targetCrashed(event target.EventTargetCrashed) {
 	if owner, ok := p.engine.profileForPage(handle); !ok || owner != p {
 		return
 	}
-	// Off the event reader: the Manager closes the page's driver.
-	go p.engine.events.PageCrashed(handle, cdpCrashReason(event))
+	p.engine.events.PageCrashed(handle, cdpCrashReason(event))
 }
 
 // headlessTargets handles the target events of one browser connection, over
@@ -124,11 +126,12 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 			}
 			return
 		}
+		// Bound and reported in the record's hold, so the destroyed
+		// handler, which unbinds in it too, reports the popup's close
+		// after its report. The Manager adopts it on a goroutine of its
+		// own (engineEvents).
 		p.engine.bindPage(handle, p)
-		// On its own goroutine, as the WebKit engines report popups: the
-		// Manager adopts a popup through AttachPage, a CDP round trip that
-		// must not hold the target events queued behind it.
-		go p.engine.events.PopupOpened(enginePopup{
+		p.engine.events.PopupOpened(enginePopup{
 			Profile: p.handle, Opener: string(info.OpenerID), Handle: handle,
 			URL: newest.URL, Title: newest.Title,
 		})
@@ -169,9 +172,5 @@ func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
 	if !bound {
 		return
 	}
-	// On its own goroutine for the same reason as the popup above, and as
-	// the hosted engine retires a page: PageClosed is the Manager's page
-	// teardown, which on the workspace's last page disposes this profile and
-	// blocks until Chromium is reaped.
-	go p.engine.events.PageClosed(handle)
+	p.engine.events.PageClosed(handle)
 }

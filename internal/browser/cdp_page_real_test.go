@@ -55,7 +55,7 @@ func assertRealPageOperations(t *testing.T, engine *headlessEngine) {
 	var mu sync.Mutex
 	var consoleLines []string
 	var downloads []downloadProgress
-	engine.events.DownloadStarted = func(downloadStart) bool { return true }
+	engine.events.DownloadStarted = func(downloadStart) downloadAdmission { return downloadAdmitted }
 	engine.events.DownloadProgress = func(progress downloadProgress) {
 		mu.Lock()
 		downloads = append(downloads, progress)

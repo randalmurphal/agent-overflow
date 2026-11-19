@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,6 +65,9 @@ type fakeChromium struct {
 	onClose atomic.Pointer[func()]
 	// stallFrameTree leaves every Page.getFrameTree unanswered.
 	stallFrameTree atomic.Bool
+	// stallBrowserCalls leaves every Target.closeTarget and
+	// Browser.cancelDownload unanswered.
+	stallBrowserCalls atomic.Bool
 }
 
 // writeFakeChromium installs the script and the endpoint behind it.
@@ -97,6 +102,10 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 			// chromedp asks the fresh target what `self` is, to find out
 			// whether it attached to a worker. A page answers Window.
 			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
+		case "Target.closeTarget", "Browser.cancelDownload":
+			if browser.stallBrowserCalls.Load() {
+				return fakeCDPNoReply{}
+			}
 		case "Page.getFrameTree":
 			if browser.stallFrameTree.Load() {
 				return fakeCDPNoReply{}
@@ -447,6 +456,35 @@ func TestCDPPageOwnsTheFramesItHadBeforeItsAttach(t *testing.T) {
 	}
 }
 
+// Over the connection, a frame whose attach the browser sent before the
+// frame tree's reply, which names it too, is the page's until its detach,
+// and a detach of the frame tree's own frame ends it as well: the page
+// reads its frame events and the tree in the order they came.
+func TestCDPPageReadsItsFramesInWireOrder(t *testing.T) {
+	browser := writeAnnouncingFakeChromium(t, "chromium", func(call fakeCDPCall) []map[string]any {
+		if call.Method != "Page.getFrameTree" {
+			return nil
+		}
+		return []map[string]any{{"method": "Page.frameAttached", "sessionId": call.SessionID, "params": map[string]any{"frameId": "F-child", "parentFrameId": "F-1"}}}
+	})
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	if !page.OwnsFrame("F-child") || !page.OwnsFrame("F-grandchild") {
+		t.Fatal("the page does not own the frames of its tree")
+	}
+	for _, frame := range []string{"F-child", "F-grandchild"} {
+		browser.send(map[string]any{"method": "Page.frameDetached", "sessionId": "S-1", "params": map[string]any{"frameId": frame, "reason": "remove"}})
+	}
+	eventually(t, "the detached frames to leave the page", func() bool {
+		return !page.OwnsFrame("F-child") && !page.OwnsFrame("F-grandchild")
+	})
+}
+
 // Two pages attached, the headless engine still pauses a request once: the
 // browser-wide policy is the only one.
 func TestHeadlessEnginePausesARequestOnce(t *testing.T) {
@@ -720,12 +758,15 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 		if popup.Handle != "P-page" {
 			return
 		}
-		// What Manager.adoptPopup does with a popup it keeps.
-		driver, err := profile.AttachPage(context.Background(), popup.Handle, testPageHooks())
-		if err == nil {
-			driver.Close()
-		}
-		adopted <- err
+		// What Manager.popupOpened does with a popup it keeps: the report
+		// returns at once and the adoption runs on its own goroutine.
+		go func() {
+			driver, err := profile.AttachPage(context.Background(), popup.Handle, testPageHooks())
+			if err == nil {
+				driver.Close()
+			}
+			adopted <- err
+		}()
 	}
 	created := make(chan error, 1)
 	go func() {
@@ -910,24 +951,36 @@ func downloadWillBegin(guid, frame string) map[string]any {
 	}}
 }
 
-// A download the Manager refuses, over quota or in a frame no managed page
-// owns, is cancelled by the engine; one it keeps is left running.
+// A download the Manager refuses outright, over quota, is cancelled by the
+// engine at once, with no wait for a popup to own it, and the file Chromium
+// finished for it before the cancel goes; one it keeps is left running.
 func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	var mu sync.Mutex
 	var started []string
-	engine.events.DownloadStarted = func(start downloadStart) bool {
+	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
 		mu.Lock()
 		defer mu.Unlock()
 		started = append(started, start.ID)
-		return start.ID == "G-kept"
+		if start.ID == "G-kept" {
+			return downloadAdmitted
+		}
+		return downloadRefused
 	}
-	// A refused start that names no popup waits this long for one first.
-	engine.ownerWait = 50 * time.Millisecond
+	// An unowned start would wait this long for a popup to own it.
+	engine.ownerWait = time.Hour
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 	if _, err := profile.ensureBrowser(); err != nil {
 		t.Fatalf("launch: %v", err)
+	}
+	if err := os.MkdirAll(profile.downloadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// What Chromium wrote for a download that finished before its cancel.
+	finished := filepath.Join(profile.downloadDir, "G-refused")
+	if err := os.WriteFile(finished, []byte("whole"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	browser.send(downloadWillBegin("G-refused", "F-1"))
@@ -946,6 +999,66 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	if got := browserCallParams[cancel](t, browser.calls(), "Browser.cancelDownload"); len(got) != 1 || got[0].GUID != "G-refused" {
 		t.Fatalf("cancelled %+v, want only G-refused", got)
 	}
+	eventually(t, "the refused download's file to go", func() bool {
+		_, err := os.Stat(finished)
+		return errors.Is(err, fs.ErrNotExist)
+	})
+}
+
+// A discarded popup's close and a download's cancel end when a connected
+// Chromium stops answering them: the discard within its caller's deadline,
+// the cancel within the close timeout. Meanwhile another page opens, the
+// target the discard could not close stays bound to its profile, and a
+// later discard, answered, closes it.
+func TestHeadlessProfileBoundsItsBrowserCalls(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	engine.closeTimeout = 50 * time.Millisecond
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	engine.bindPage("P-1", profile)
+	browser.stallBrowserCalls.Store(true)
+	discarded := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		discarded <- engine.DiscardPage(ctx, "P-1")
+	}()
+	opened, err := profile.NewPage(t.Context(), testPageHooks())
+	if err != nil {
+		t.Fatalf("another page while the discard is unanswered: %v", err)
+	}
+	opened.Close()
+	select {
+	case err := <-discarded:
+		if err == nil {
+			t.Fatal("a discard Chromium never answered succeeded")
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("a discard Chromium never answers did not end")
+	}
+	if owner, bound := engine.profileForPage("P-1"); !bound || owner != profile {
+		t.Fatal("the target the discard could not close has no owner")
+	}
+	canceled := make(chan error, 1)
+	go func() { canceled <- profile.CancelDownload("G-1") }()
+	select {
+	case err := <-canceled:
+		if err == nil {
+			t.Fatal("a cancel Chromium never answered succeeded")
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("a cancel Chromium never answers did not end")
+	}
+	browser.stallBrowserCalls.Store(false)
+	if err := engine.DiscardPage(t.Context(), "P-1"); err != nil {
+		t.Fatalf("a discard again, answered: %v", err)
+	}
+	if _, bound := engine.profileForPage("P-1"); bound {
+		t.Fatal("the discarded page is still bound")
+	}
 }
 
 // A download in a popup's main frame names the popup, its openers as the
@@ -955,9 +1068,9 @@ func TestHeadlessProfileNamesThePopupADownloadBeganIn(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	starts := make(chan downloadStart, 4)
-	engine.events.DownloadStarted = func(start downloadStart) bool {
+	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
 		starts <- start
-		return true
+		return downloadAdmitted
 	}
 	engine.events.PopupOpened = func(enginePopup) {}
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
@@ -1001,9 +1114,9 @@ func TestHeadlessProfileNamesAGonePopupADownloadBeganIn(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	starts := make(chan downloadStart, 1)
-	engine.events.DownloadStarted = func(start downloadStart) bool {
+	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
 		starts <- start
-		return true
+		return downloadAdmitted
 	}
 	engine.events.PopupOpened = func(enginePopup) {}
 	engine.events.PageClosed = func(string) {}
@@ -1570,7 +1683,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 		PageClosed:       func(string) {},
 		PageCrashed:      func(string, string) {},
 		PageInfoChanged:  func(string, string, string, uint64) {},
-		DownloadStarted:  func(downloadStart) bool { return true },
+		DownloadStarted:  func(downloadStart) downloadAdmission { return downloadAdmitted },
 		DownloadProgress: func(downloadProgress) {},
 	})
 	if err != nil {

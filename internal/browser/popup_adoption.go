@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/browser/quota"
 )
 
@@ -103,19 +104,15 @@ type popupFate struct {
 	openers []string
 }
 
-// startAdoption records the adoption of handle, or answers false when one
-// already runs.
-func (m *Manager) startAdoption(handle string) bool {
+// startAdoption records the adoption of handle, which its admission
+// (announcePopup) runs once.
+func (m *Manager) startAdoption(handle string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.adopting == nil {
 		m.adopting = make(map[string]*managedPage)
 	}
-	if _, running := m.adopting[handle]; running {
-		return false
-	}
 	m.adopting[handle] = nil
-	return true
 }
 
 // finishAdoption ends the adoption of handle, opened by opener, listed as p
@@ -126,6 +123,7 @@ func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
 	m.mu.Lock()
 	delete(m.adopting, handle)
 	if p == nil {
+		m.admissions.Discard(popupadmit.Handle(handle))
 		m.unlistedLocked().put(handle, struct{}{})
 		m.heldInfo.delete(handle)
 	}
@@ -213,7 +211,7 @@ func (m *Manager) parkDownload(event downloadStart) bool {
 	defer m.parkMu.Unlock()
 	if fate, known := m.fates().get(event.Popup); known {
 		fate.openers = mergeOpeners(fate.openers, event.Openers)
-		target := m.fateTarget(fate)
+		target := m.fateTarget(event.Popup, fate)
 		return target != nil && m.admitTo(target, event, nil)
 	}
 	if m.parked == nil {
@@ -346,7 +344,7 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 	if popup == nil {
 		return
 	}
-	target := m.fateTarget(fate)
+	target := m.fateTarget(handle, fate)
 	for _, d := range popup.downloads {
 		// Its listing takes its reservation over (admitTo).
 		if target == nil || !m.admitTo(target, d.start, d) {
@@ -388,10 +386,17 @@ func (m *Manager) stopParked(d *parkedDownload) {
 	}()
 }
 
-// fateTarget answers the page that takes a popup's downloads: its tab while
-// listed, else (never listed, or closed since by any path) its nearest
-// listed opener, or nil.
-func (m *Manager) fateTarget(fate popupFate) *managedPage {
+// fateTarget answers the page that takes the downloads of popup handle:
+// its tab while listed, else (never listed, or closed since by any path)
+// its nearest listed opener, or nil. Its openers are those its engine
+// named and, past them, the chain its admission and its ancestors' keep
+// (popupadmit.Registry.Ancestors), so a popup of a popup that went still
+// finds the tab that opened its parent.
+func (m *Manager) fateTarget(handle string, fate popupFate) *managedPage {
+	openers := fate.openers
+	for _, ancestor := range m.admissions.Ancestors(popupadmit.Handle(handle)) {
+		openers = mergeOpeners(openers, []string{string(ancestor)})
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fate.listed != "" {
@@ -399,7 +404,7 @@ func (m *Manager) fateTarget(fate popupFate) *managedPage {
 			return p
 		}
 	}
-	for _, opener := range fate.openers {
+	for _, opener := range openers {
 		if p := m.listedPageLocked(opener); p != nil {
 			return p
 		}

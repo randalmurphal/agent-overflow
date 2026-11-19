@@ -55,7 +55,7 @@ const (
 	// chromiumCloseTimeout bounds how long a persisted profile's Chromium is
 	// given to exit when asked (headlessProfile.closeBrowser). It exits in
 	// about a tenth of a second; one that takes this long is wedged, and it
-	// is killed.
+	// is killed. It bounds a download's cancel too (callBounded).
 	chromiumCloseTimeout = 5 * time.Second
 	// headlessAttachTimeout bounds one page's attach to its target: the
 	// attach, its domains and its frame tree (startCDPPage).
@@ -263,10 +263,11 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 // DiscardPage closes a page the Manager declined to adopt — always a popup
 // Chromium opened by itself, since every other page is one the Manager
 // asked for.
-func (e *headlessEngine) DiscardPage(handle string) {
+func (e *headlessEngine) DiscardPage(ctx context.Context, handle string) error {
 	if p, ok := e.profileForPage(handle); ok {
-		p.closeTarget(handle)
+		return p.closeTarget(ctx, handle)
 	}
+	return nil
 }
 
 // bindPage records which profile a page belongs to. Reported by the
