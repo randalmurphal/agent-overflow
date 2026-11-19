@@ -57,8 +57,10 @@ interface InlineFacts {
 	readonly refs: readonly string[];
 	readonly headings: readonly Heading[];
 	readonly markers: number;
-	/** The scope it lexed under, and the keys of it the lex read. */
-	readonly scope: DocumentScope;
+	/** A scope its read keys resolve under as they did when it lexed, and
+	 * those keys. Rebased onto each fold's scope it still stands under, so
+	 * only the current definitions stay alive. */
+	scope: DocumentScope;
 	readonly reads: ReadonlySet<string>;
 }
 
@@ -369,6 +371,7 @@ export const documentContextOf = (
 			const scope = factScopes[index === lead ? 1 : 0];
 			if (facts.inline === null || !sameScopeReads(facts.inline.scope, scope, facts.inline.reads))
 				facts.inline = inlineFactsOf(raws[index], extensions, forge, scope);
+			else facts.inline.scope = scope;
 		}
 	}
 

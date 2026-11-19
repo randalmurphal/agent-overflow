@@ -140,6 +140,27 @@ describe('same-document links', () => {
     expect(first.scroller.scrollTop).toBe(0);
   });
 
+  it('leaves a disclosure closed when the target is in its summary', async () => {
+    const source = [
+      '[Jump](#target)',
+      '',
+      filler('Before'),
+      '',
+      '<details>',
+      '<summary><a name="target"></a>Summary</summary>',
+      '',
+      'Hidden body.',
+      '',
+      '</details>',
+      '',
+      filler('After'),
+    ].join('\n');
+    const { scroller, root } = await mountBody(outerScroller(), source, GITHUB);
+    root.querySelector<HTMLAnchorElement>('a[data-md-fragment][href="#target"]')!.click();
+    expect(root.querySelector('details')!.open).toBe(false);
+    expect(Math.abs(top(root.querySelector('[data-md-anchor="target"]')!, scroller))).toBeLessThan(1);
+  });
+
   it("follows GitLab's table of contents", async () => {
     const outer = outerScroller();
     const { scroller, root } = await mountBody(outer, BODY('Only'), GITLAB);

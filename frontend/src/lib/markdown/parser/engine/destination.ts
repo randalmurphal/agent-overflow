@@ -32,15 +32,30 @@ export interface BareUrlRule {
   readonly end: (run: string) => string;
 }
 
+const EDGE_CONTROLS = /^[\x00-\x20]+|[\x00-\x20]+$/g;
+const TAB_OR_NEWLINE = /[\t\n\r]/g;
+const HTTP_SCHEME = /^https?:/i;
+/** `http(s)://`, an authority without userinfo, and no backslash. */
+const PLAIN_HTTP = /^https?:\/\/[^\\/?#@]*(?:[/?#][^\\]*)?$/i;
+
 /**
- * `href` with a scheme-relative `//host/x` as the https URL it names, never
- * a URL on the page's origin. Leading C0 controls and spaces are skipped,
- * as URL parsing skips them.
+ * `href` as the URL a renderer would fetch, so a hook never classifies a
+ * spelling the URL parser reads as another URL. A scheme-relative `//host/x`
+ * is the https URL it names, never a URL on the page's origin. An http(s)
+ * URL not written plainly (one slash, a backslash, a tab or newline, edge
+ * controls or spaces, userinfo) is its parsed `href`; a plain one keeps its
+ * spelling. Anything else is returned as written.
  */
 export function canonicalHref(href: string): string {
-  let start = 0;
-  while (start < href.length && href.charCodeAt(start) <= 0x20) start++;
-  return href.startsWith('//', start) ? `https:${href.slice(start).trimEnd()}` : href;
+  const url = href.replace(TAB_OR_NEWLINE, '').replace(EDGE_CONTROLS, '');
+  if (url.startsWith('//')) return canonicalHref(`https:${url}`);
+  if (!HTTP_SCHEME.test(url)) return href;
+  if (url === href && PLAIN_HTTP.test(url)) return href;
+  try {
+    return new URL(url).href;
+  } catch {
+    return href;
+  }
 }
 
 /** `token` with its canonical href, claimed by the first of `hooks` that claims it. */
@@ -60,12 +75,53 @@ export function decideDestination(
   return canonical;
 }
 
-/** A bare URL run without the trailing punctuation GFM leaves out, and an unbalanced `)`. */
+/**
+ * A bare URL run without the trailing punctuation GFM leaves out, and an
+ * unbalanced `)`: `_backpedal` applied until it changes nothing. `run`
+ * starts as a bare URL does, with a letter. One pass reads it forward; what
+ * later passes take is read from the end (`backpedalEnd`).
+ */
 export function backpedalUrl(run: string): string {
-  let previous;
-  do {
-    previous = run;
-    run = inline.gfm._backpedal.exec(run)?.[0] ?? '';
-  } while (previous !== run);
-  return run;
+  const url = inline.gfm._backpedal.exec(run)?.[0] ?? '';
+  return url.slice(0, backpedalEnd(url, url.length));
+}
+
+// What `_backpedal` leaves off the end of a URL it otherwise matches.
+const TRAILING = new Set(['?', '!', '.', ',', ':', ';', '*', '_', "'", '"', '~', ')']);
+
+const isAlphanumeric = (code: number): boolean =>
+  (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+
+/** Whether the `)` at `at` closes a group: the nearest paren before it opens. */
+const closesGroup = (url: string, at: number): boolean => {
+  for (let i = at - 1; i >= 0; i--) {
+    if (url[i] === '(') return true;
+    if (url[i] === ')') return false;
+  }
+  return false;
+};
+
+/**
+ * Where `_backpedal`, applied until it changes nothing, ends
+ * `url.slice(0, end)`, which is one whole match of it (as a match, or a match
+ * cut before a `]` or `}` at its end, is). A pass then drops a trailing entity
+ * reference (`&amp;`), or the last character of trailing punctuation unless
+ * it is a `)` closing a group; each character is read a bounded number of
+ * times.
+ */
+export function backpedalEnd(url: string, end: number): number {
+  while (end > 0) {
+    const last = url[end - 1];
+    if (last === ';') {
+      let at = end - 2;
+      while (at >= 0 && isAlphanumeric(url.charCodeAt(at))) at--;
+      if (at >= 0 && at < end - 2 && url[at] === '&') {
+        end = at;
+        continue;
+      }
+    }
+    if (!TRAILING.has(last) || (last === ')' && closesGroup(url, end - 1))) return end;
+    end--;
+  }
+  return end;
 }

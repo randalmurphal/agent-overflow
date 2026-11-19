@@ -6,20 +6,36 @@
  * forgeReferenceExtension.ts through `Tokenizer.urlEnd`) and ends a URL
  * before an unbalanced `]` or `}`. Agent chat keeps the engine's rule.
  */
-import { backpedalUrl, type BareUrlRule } from '../engine/destination';
+import { backpedalEnd, backpedalUrl, type BareUrlRule } from '../engine/destination';
 import type { Extension } from '../lexer';
 
 const count = (text: string, char: string): number => text.split(char).length - 1;
 
-const GITLAB_CLOSERS: Readonly<Record<string, string>> = { ']': '[', '}': '{' };
-
+/**
+ * The URL in `run`, ending before each unbalanced `]` or `}` at its end,
+ * backpedalled again after each. The closers' balances are counted once and
+ * kept as the end moves back, and backpedalling reads from the end, so each
+ * character is read a bounded number of times.
+ */
 const gitlabEnd = (run: string): string => {
+	const url = backpedalUrl(run);
+	let end = url.length;
+	let square = count(url, ']') - count(url, '[');
+	let curly = count(url, '}') - count(url, '{');
+	const trim = (to: number) => {
+		for (; end > to; end--) {
+			const char = url[end - 1];
+			if (char === ']') square--;
+			else if (char === '[') square++;
+			else if (char === '}') curly--;
+			else if (char === '{') curly++;
+		}
+	};
 	for (;;) {
-		const url = backpedalUrl(run);
-		const last = url.at(-1) ?? '';
-		const opener = GITLAB_CLOSERS[last];
-		if (opener === undefined || count(url, last) <= count(url, opener)) return url;
-		run = url.slice(0, -1);
+		const last = url[end - 1];
+		if (last === ']' ? square <= 0 : last === '}' ? curly <= 0 : true) return url.slice(0, end);
+		trim(end - 1);
+		trim(backpedalEnd(url, end));
 	}
 };
 

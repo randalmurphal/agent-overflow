@@ -375,6 +375,20 @@ describe('the document context on appends', () => {
 		expect(all([use], 'link').map((link) => link.href)).toEqual(['https://example.invalid/x', 'https://example.invalid/y']);
 	});
 
+	it('keeps only the current definitions alive across appended definitions', () => {
+		const blocks = createParseBlocksCache();
+		const cache = createDocumentContextCache();
+		let source = '';
+		for (let n = 0; n < 150; n++) {
+			const append = createProvenAppend(source, `## Heading ${n}\n\n[d${n}]: https://example.invalid/${n}\n\n`);
+			source = append.next;
+			parseBlocks(source, NO_EXTENSIONS, blocks, append);
+			documentContextOf(blocks, NO_EXTENSIONS, cache, 'gitlab');
+		}
+		const dictionaries = new Set(cache.facts.flatMap((facts) => (facts?.inline ? [facts.inline.scope.links] : [])));
+		expect(dictionaries).toEqual(new Set([cache.factScopes![0].links]));
+	});
+
 	/** A scope as plain data. */
 	const shape = (scope: DocumentScope) => ({
 		forge: scope.forge,

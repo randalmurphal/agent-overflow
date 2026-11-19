@@ -211,17 +211,20 @@ export function buildForgeReferences(source: ForgeAttachmentSource): Extension {
 
   // A relative href where the forge sends it: GitHub leaves it for the
   // browser to resolve against the page; GitLab resolves a path in the
-  // repository and leaves a query to the page. Null for a fragment or an
-  // absolute href (a scheme-relative one is already https).
+  // repository and leaves a query to the page. Null for a fragment, an
+  // absolute href (a scheme-relative one is already https), and one the URL
+  // parser reads as naming another host (`/\host/x`): relative means on
+  // the forge.
   const resolveRelative = (href: string): string | null => {
     const trimmed = href.trim();
     if (trimmed === '' || trimmed.startsWith('#') || SCHEME.test(trimmed)) return null;
+    let resolved: URL;
     try {
-      if (github || trimmed.startsWith('?')) return new URL(trimmed, pageUrl).href;
-      return new URL(trimmed.startsWith('/') ? trimmed.slice(1) : trimmed, blobBase).href;
+      resolved = github || trimmed.startsWith('?') ? new URL(trimmed, pageUrl) : new URL(trimmed.startsWith('/') ? trimmed.slice(1) : trimmed, blobBase);
     } catch {
       return null;
     }
+    return resolved.origin === origin ? resolved.href : null;
   };
 
   // A relative link resolved, however it was written: inline, by reference,

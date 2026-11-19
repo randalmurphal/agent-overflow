@@ -175,8 +175,7 @@ func parseGitLabReference(host, project, href string) (Target, error) {
 		default:
 			return Target{}, errNotGitLabUpload
 		}
-		// URL.host spelling on both sides: a port is part of the authority.
-		if u.Host == "" || u.User != nil || !strings.EqualFold(u.Host, host) {
+		if u.Host == "" || u.User != nil || authority(u.Scheme, u.Host) != authority(u.Scheme, host) {
 			return Target{}, errNotGitLabUpload
 		}
 		escaped, decoded, err = pathSegments(u.EscapedPath())
@@ -245,6 +244,21 @@ func parseGitLabReference(host, project, href string) (Target, error) {
 		Request:  "projects/" + url.PathEscape(target) + "/uploads/" + secret + "/" + name,
 		Filename: filename,
 	}, nil
+}
+
+// authority is a URL's host and port as a browser's URL.host spells them:
+// lowercase, without the scheme's default port. host is the MR's own in
+// that spelling, so a reference a browser reads as the same server compares
+// equal, and a port that is not the default stays part of the identity.
+func authority(scheme, host string) string {
+	host = strings.ToLower(host)
+	switch strings.ToLower(scheme) {
+	case "https":
+		return strings.TrimSuffix(host, ":443")
+	case "http":
+		return strings.TrimSuffix(host, ":80")
+	}
+	return host
 }
 
 // pathSegments splits an escaped URL path and returns both spellings of

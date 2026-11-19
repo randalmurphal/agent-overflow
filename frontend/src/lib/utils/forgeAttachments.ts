@@ -175,7 +175,11 @@ function forgeShape(forge: Forge, href: string): ForgeHrefShape | null {
 export function isForgeAttachmentHref(pr: Pick<PRRef, 'forge' | 'host'>, href: string): boolean {
   const shape = forgeShape(pr.forge, href);
   if (shape === null) return false;
-  return pr.forge !== 'gitlab' || shape.absolute === null || shape.absolute.host.toLowerCase() === pr.host.toLowerCase();
+  if (pr.forge !== 'gitlab' || shape.absolute === null) return true;
+  // `URL.host` on both sides: lowercase, without the scheme's default port.
+  // Userinfo names no server, and the backend refuses it.
+  const { host, username, password } = shape.absolute;
+  return username === '' && password === '' && host === pr.host.toLowerCase();
 }
 
 /** The attachment's display name: the `<name>` segment, else the trailing id. */

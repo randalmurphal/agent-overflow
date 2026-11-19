@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { lex, parseBlocks, createParseBlocksCache, createProvenAppend, type Extension } from '../../index';
 import { Lexer } from '../engine';
 import { markedStrikethrough } from './strikethrough';
+import { markedGithubMath } from './math';
 import { markedInlineDiff } from './inlineDiff';
 import { markedMultilineBlockquote } from './multilineBlockquote';
 import { markedFrontMatter } from './frontMatter';
@@ -73,9 +74,12 @@ describe('GFM strikethrough', () => {
 		expect(rawSum(tokens)).toBe('~a `b~ c` d');
 	});
 
-	/** The run with each `del` as `<del>…</del>` around its text. */
+	/** The run with each `del` and `em` as its tag around its text. */
 	const struck = (tokens: Tok[]): string =>
-		tokens.map((token) => (token.type === 'del' ? `<del>${struck(token.tokens ?? [])}</del>` : token.tokens ? struck(token.tokens) : token.raw)).join('');
+		tokens.map((token) =>
+			token.type === 'del' || token.type === 'em'
+				? `<${token.type}>${struck(token.tokens ?? [])}</${token.type}>`
+				: token.tokens ? struck(token.tokens) : token.raw).join('');
 
 	// Pairings both forges render (cmark-gfm on GitHub, comrak on GitLab).
 	it.each([
@@ -116,16 +120,41 @@ describe('GFM strikethrough', () => {
 		expect(rawSum(tokens)).toBe(source);
 	});
 
-	it('masks a paragraph of unmatched openers once and scans it in linear work', () => {
+	// Rendered on both forges. Emphasis and tildes pair in one delimiter
+	// pass: a match removes every delimiter between, so a tilde inside
+	// emphasis that closes first is no delimiter of the run around it.
+	it.each([
+		['~a *~x* b~', '<del>a <em>~x</em> b</del>'],
+		['~~a *b ~c* d~~', '<del>a <em>b ~c</em> d</del>'],
+		['*~x* a~b c~', '<em>~x</em> a<del>b c</del>'],
+		['~~a *b* c~~', '<del>a <em>b</em> c</del>'],
+		['*a ~b* c~ d~', '<em>a ~b</em> c~ d~']
+	])('pairs %s around emphasis as the forges do', (source, shown) => {
+		const tokens = inline(source, ext);
+		expect(struck(tokens)).toBe(shown);
+		expect(rawSum(tokens)).toBe(source);
+	});
+
+	it('pairs without a tilde another token holds', () => {
+		// GitHub's inline math holds `~x`; the pass alone would pair it with `a~b`.
+		const tokens = inline('$~x$ a~b c~', [markedStrikethrough, ...markedGithubMath]);
+		expect(tokens.map((token) => token.type)).toEqual(['math', 'text', 'del']);
+		expect(tokens.at(-1)?.text).toBe('b c');
+	});
+
+	it.each([
+		['unmatched openers', (n: number) => '~word '.repeat(n)],
+		['emphasis openers before tilde openers', (n: number) => '*a '.repeat(n) + '~b '.repeat(n)]
+	])('masks a paragraph of %s once and scans it in linear work', (_name, source) => {
 		const maskInline = vi.spyOn(Lexer.prototype, 'maskInline');
 		try {
-			inline('~word '.repeat(2000), ext);
+			inline(source(2000), ext);
 			// The paragraph's run, and nothing per opener.
 			expect(maskInline).toHaveBeenCalledTimes(1);
 		} finally {
 			maskInline.mockRestore();
 		}
-		const work = (n: number) => scans(() => inline('~word '.repeat(n), ext));
+		const work = (n: number) => scans(() => inline(source(n), ext));
 		// Linear work grows 4x with 4x the openers; quadratic grows 16x.
 		expect(work(2000) / work(500)).toBeLessThan(5);
 	});

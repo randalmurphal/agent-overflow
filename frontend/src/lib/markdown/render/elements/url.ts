@@ -90,20 +90,25 @@ export const transformUrl = (
 };
 
 /**
- * The src an authored image, video or audio may fetch, or null: what
- * `transformUrl` admits, except a URL on the page's own origin, which would
- * make the app request itself (its transport and API). Every authored
- * media src passes here, in both renderers and the HTML sanitizer; media
- * the app mints itself (a fetched attachment's or local image's bytes)
- * never does. Links are not fetches and use `transformUrl`.
+ * The src an authored image, video or audio paints, or null: what
+ * `transformUrl` admits that a surface can paint. The `*` wildcard admits
+ * http(s) only, never on the page's own origin, which would make the app
+ * request itself (its transport and API); any other scheme paints only
+ * through an explicit prefix (`data:image/`, a host's claimed href). Every
+ * candidate and final src of an authored image passes here, in both
+ * renderers and the HTML sanitizer, so a src that cannot paint never wins
+ * over one that can. Media the app mints itself (a fetched attachment's or
+ * local image's bytes) never does. Links are not fetches and use
+ * `transformUrl`.
  */
 export const transformMediaUrl = (
     url: unknown,
     allowedPrefixes: string[]
 ): string | null => {
     const admitted = transformUrl(url, allowedPrefixes);
-    if (admitted === null || !/^https?:/i.test(admitted))
-        return admitted;
+    if (admitted === null) return null;
+    if (!/^https?:/i.test(admitted))
+        return transformUrl(url, allowedPrefixes.filter((prefix) => prefix !== '*'));
     const page = globalThis.location?.origin;
     return page !== undefined && new URL(admitted).origin === page ? null : admitted;
 };

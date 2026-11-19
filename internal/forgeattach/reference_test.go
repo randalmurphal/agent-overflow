@@ -186,6 +186,8 @@ func TestParseReferenceRefusals(t *testing.T) {
 		{name: "gitlab foreign host", forge: "gitlab", project: "g/r", href: "https://unrelated.invalid/other/private/uploads/" + secret + "/a.png"},
 		{name: "gitlab foreign host by project id", forge: "gitlab", project: "g/r", href: "https://unrelated.invalid/-/project/77/uploads/" + secret + "/a.png"},
 		{name: "gitlab own host on another port", forge: "gitlab", project: "g/r", href: "https://gitlab.example.com:8443/g/r/uploads/" + secret + "/a.png"},
+		{name: "gitlab own host on the other scheme's default port", forge: "gitlab", project: "g/r", href: "http://gitlab.example.com:443/g/r/uploads/" + secret + "/a.png"},
+		{name: "gitlab userinfo in the authority", forge: "gitlab", project: "g/r", href: "https://someone@gitlab.example.com/g/r/uploads/" + secret + "/a.png"},
 		{name: "gitlab own host as a subdomain label", forge: "gitlab", project: "g/r", href: "https://gitlab.example.com.unrelated.invalid/g/r/uploads/" + secret + "/a.png"},
 	}
 	for _, tc := range cases {
@@ -215,6 +217,9 @@ func TestParseReferenceMatchesTheGitLabHostAsWritten(t *testing.T) {
 	for _, tc := range []struct{ host, href string }{
 		{"gitlab.example.com", "https://GitLab.Example.com/g/r/uploads/" + secret + "/a.png"},
 		{"gitlab.example.com:8443", "https://gitlab.example.com:8443/g/r/uploads/" + secret + "/a.png"},
+		// A browser's URL.host drops the scheme's default port.
+		{"gitlab.example.com", "https://gitlab.example.com:443/g/r/uploads/" + secret + "/a.png"},
+		{"gitlab.example.com", "http://gitlab.example.com:80/g/r/uploads/" + secret + "/a.png"},
 	} {
 		if _, err := ParseReference("gitlab", tc.host, "g/r", tc.href); err != nil {
 			t.Errorf("ParseReference(host %q, %q) returned error: %v", tc.host, tc.href, err)

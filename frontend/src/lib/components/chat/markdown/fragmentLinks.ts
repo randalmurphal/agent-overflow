@@ -59,10 +59,13 @@ export function jumpToFragment(link: HTMLAnchorElement): boolean {
   if (!root || !href.startsWith('#')) return false;
   const target = fragmentTarget(root, href.slice(1));
   if (!target) return false;
-  // A target inside a closed disclosure has no box: open every one around
-  // it, as a browser does for a fragment navigation.
+  // A target in a closed disclosure's body has no box: open every such
+  // disclosure around it, as a browser does for a fragment navigation. Its
+  // summary shows while it is closed, so a target there opens nothing.
   for (let node = target.parentElement; node && node !== root; node = node.parentElement) {
-    if (node instanceof HTMLDetailsElement && !node.open) node.open = true;
+    if (!(node instanceof HTMLDetailsElement) || node.open) continue;
+    const summary = node.querySelector(':scope > summary');
+    if (!summary?.contains(target)) node.open = true;
   }
   const scroller = scrollContainerOf(root);
   if (scroller) scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;

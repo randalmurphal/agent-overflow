@@ -58,6 +58,7 @@ import { codespanClass } from './codespan';
 import { imageSizeOf } from './imageSize';
 import { imageSrcFor, pictureSources, type ColorScheme } from '../parser/extensions/themedImages';
 import { ANY_FORGE_HTML_POLICY, imageAlign, ruleAttributes, type HtmlPolicy } from '../parser/extensions/htmlPolicy';
+import { videoSrcs } from '../parser/extensions/embeddedHtml';
 import { canonicalHref, decideDestination, type DestinationHook } from '../parser/engine/destination';
 import {
 	classifyLinkHref,
@@ -97,7 +98,7 @@ const mediaTarget = (src: string, options: SanitizeEmbeddedHtmlOptions | undefin
 	const token = decideDestination({ type: 'image', raw: '', href: src, title: null, text: '', tokens: [] }, options?.destinations, { inLink });
 	const url = transformMediaUrl(token.href, options?.allowedImagePrefixes ?? HTTP_ONLY);
 	if (url !== null && token.href !== canonicalHref(src)) return { kind: 'claim', claim: url };
-	if (url !== null && /^(?:https?|data):/i.test(url)) return { kind: 'src', src: url };
+	if (url !== null) return { kind: 'src', src: url };
 	return { kind: 'unavailable', title: unavailableImageTitle(token.href) };
 };
 
@@ -267,10 +268,9 @@ const appendTokenNodes = (tokens: readonly Token[], parent: Node, doc: Document,
 	}
 };
 
-/** A host's claim on a `<video>`: on its own src, else its first `<source src>`; null for none. */
+/** A host's claim on a `<video>`'s first claimed src (`videoSrcs`, as inline); null for none. */
 const videoClaim = (element: Element, options: SanitizeEmbeddedHtmlOptions | undefined, inLink: boolean): string | null => {
-	for (const src of [element.getAttribute('src'), element.querySelector('source[src]')?.getAttribute('src')]) {
-		if (src === null || src === undefined) continue;
+	for (const src of videoSrcs(element)) {
 		const target = mediaTarget(src, options, inLink);
 		if (target.kind === 'claim') return target.claim;
 	}

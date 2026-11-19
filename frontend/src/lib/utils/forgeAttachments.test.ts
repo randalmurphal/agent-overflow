@@ -64,6 +64,7 @@ describe('gitlab upload shapes', () => {
     `https://gitlab.com/group/sub/widget/uploads/${HEX}/shot.png`,
     `https://GitLab.com/other/widget/uploads/${HEX}/report.pdf`,
     `https://gitlab.com/-/project/4711/uploads/${HEX}/report.pdf`,
+    `https://gitlab.com:443/group/sub/widget/uploads/${HEX}/shot.png`,
     `/uploads/${HEX}/shot.png?inline=false`,
   ])('claims %s', (href) => {
     expect(isForgeAttachmentHref(GITLAB_MR, href)).toBe(true);
@@ -94,6 +95,8 @@ describe('gitlab upload shapes', () => {
     `https://unrelated.invalid/other/private/uploads/${HEX}/shot.png`,
     `https://unrelated.invalid/-/project/4711/uploads/${HEX}/shot.png`,
     `https://gitlab.com.unrelated.invalid/group/sub/widget/uploads/${HEX}/shot.png`,
+    `https://someone@gitlab.com/group/sub/widget/uploads/${HEX}/shot.png`,
+    `http://gitlab.com:443/group/sub/widget/uploads/${HEX}/shot.png`,
   ])('leaves %s alone', (href) => {
     expect(isForgeAttachmentHref(GITLAB_MR, href)).toBe(false);
   });

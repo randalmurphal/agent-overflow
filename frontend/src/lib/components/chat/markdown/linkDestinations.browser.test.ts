@@ -9,6 +9,7 @@ import { findTextSegments } from '../../../utils/findHighlights';
 import { markdownFindText } from './markdownFindText';
 import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from './forgeAttachmentContext';
 import { parseForgeAttachmentHref, type ForgeAttachmentSource } from '../../../utils/forgeAttachments';
+import { resetAppearanceForTest, setAppearance } from '../../../stores/appearance.svelte';
 
 // A link or image destination is decided once (the destination hooks),
 // whatever syntax wrote it: the same href and claim on both forges and
@@ -117,6 +118,114 @@ describe('a private attachment image', () => {
   });
 });
 
+describe('a private attachment written as a URL the parser reads differently', () => {
+  // The hooks see the URL a renderer would fetch, so no spelling reaches the
+  // private host directly. Backslashes are doubled once for JS; Markdown
+  // reads `\\` as one more.
+  const GH = 'private-user-images.githubusercontent.com/123/shot.png';
+  const GL = `gitlab.com/group/widget/uploads/${HEX}/shot.png`;
+  const backslashed = (path: string) => path.replaceAll('/', '\\');
+  const image: [string, string, ForgeAttachmentSource][] = [
+    ['GitHub block HTML, one slash', `<div><img src="https:/${GH}" alt="shot"></div>`, GITHUB],
+    ['GitHub inline HTML, one slash', `See <img src="https:/${GH}" alt="shot"> here.`, GITHUB],
+    ['GitHub Markdown, backslashes', `![shot](https:\\\\${backslashed(GH)})`, GITHUB],
+    ['GitHub block HTML, a tab in the scheme', `<div><img src="ht&#9;tps://${GH}" alt="shot"></div>`, GITHUB],
+    ['GitHub block HTML, a newline in the host', `<div><img src="https://private-user-images.github&#10;usercontent.com/123/shot.png" alt="shot"></div>`, GITHUB],
+    ['GitHub inline HTML, leading space and userinfo', `See <img src=" https://u@${GH}" alt="shot"> here.`, GITHUB],
+    ['GitLab Markdown, one slash', `![shot](https:/${GL})`, GITLAB],
+    ['GitLab block HTML, backslashes', `<div><img src="https:${backslashed(`//${GL}`)}" alt="shot"></div>`, GITLAB],
+    ['GitLab inline HTML, one slash', `See <img src="https:/${GL}" alt="shot"> here.`, GITLAB],
+  ];
+  const link: [string, string, ForgeAttachmentSource][] = [
+    ['GitHub Markdown, one slash', `See [shot](https:/${GH}) here.`, GITHUB],
+    ['GitHub block HTML, backslashes', `<div><a href="https:\\\\${backslashed(GH)}">shot</a></div>`, GITHUB],
+    ['GitLab Markdown, one slash', `See [shot](https:/${GL}) here.`, GITLAB],
+    ['GitLab block HTML, a tab after the scheme', `<div><a href="https:&#9;//${GL}">shot</a></div>`, GITLAB],
+  ];
+  const direct = (root: Element): string[] =>
+    [...root.querySelectorAll('img, a, source')].flatMap((element) =>
+      ['src', 'href', 'srcset'].flatMap((name) => {
+        const value = element.getAttribute(name);
+        if (value === null) return [];
+        const url = URL.parse(value, location.href);
+        return url && /^https?:$/.test(url.protocol) && (url.host === 'private-user-images.githubusercontent.com' || url.pathname.includes(`/uploads/${HEX}/`)) ? [value] : [];
+      }),
+    );
+
+  it.each(image)('as an image, %s, loads through the attachment host', async (_name, source, forge) => {
+    for (const streaming of [false, true]) {
+      const root = await mounted(source, forge, streaming);
+      await waitFor(() => expect(root.querySelector('[data-forge-attachment-loading]')).not.toBeNull());
+      expect(direct(root)).toEqual([]);
+      document.body.innerHTML = '';
+    }
+  });
+
+  it.each(link)('as a link, %s, is the attachment link', async (_name, source, forge) => {
+    for (const streaming of [false, true]) {
+      const root = await mounted(source, forge, streaming);
+      const anchor = [...root.querySelectorAll('a')].find((a) => a.textContent === 'shot');
+      expect(parseForgeAttachmentHref(anchor?.getAttribute('href') ?? null)).not.toBeNull();
+      expect(direct(root)).toEqual([]);
+      document.body.innerHTML = '';
+    }
+  });
+});
+
+describe('a <video> claim', () => {
+  // A video plays what the HTML parser reads as its src or its first
+  // `<source src>`, in a sentence, alone on its line, or in a block.
+  const U = `/uploads/${HEX}/still.png`;
+  const VIDEOS: [string, string, number][] = [
+    ['src text inside another attribute', `<video title="text src='${U}'">fallback</video>`, 0],
+    ['a <source> inside a comment', `<video><!-- <source src="${U}"> -->fallback</video>`, 0],
+    ['its own src', `<video src="${U}">fallback</video>`, 1],
+    ['a <source src>', `<video><source src="${U}">fallback</video>`, 1],
+    ['a <source> after a comment holding </video>', `<video><!-- </video> --><source src="${U}">fallback</video>`, 1],
+    ['a <source> after an unclaimed own src', `<video src="https://example.invalid/a.mp4"><source src="${U}"></video>`, 1],
+    ['a quoted > before its src', `<video title='a>b' src="${U}">fallback</video>`, 1],
+  ];
+  const FORMS: [string, (video: string) => string][] = [
+    ['in a sentence', (video) => `See ${video} here.`],
+    ['alone on its line', (video) => video],
+    ['in a block', (video) => `<div>${video}</div>`],
+  ];
+  it.each(VIDEOS)('reads %s the same in every position', async (_name, video, claims) => {
+    for (const [form, write] of FORMS) {
+      for (const streaming of [false, true]) {
+        const root = await mounted(write(video), GITLAB, streaming);
+        expect(root.querySelectorAll('[data-forge-attachment-loading]').length, `${form}, ${streaming ? 'component' : 'static'}`).toBe(claims);
+        document.body.innerHTML = '';
+      }
+    }
+  });
+});
+
+describe('a relative link the URL parser reads as naming another host', () => {
+  // `/\host` and `\\host` resolve as `//host` in a browser; relative means
+  // on the forge, so neither links off it.
+  it.each(
+    [GITHUB, GITLAB].flatMap((forge) =>
+      ['/\\elsewhere.invalid/x', '\\\\elsewhere.invalid/x', '\\/elsewhere.invalid/x'].flatMap((href) =>
+        [
+          ['Markdown', `See [label](<${href}>) here.`],
+          ['block HTML', `<div><a href="${href}">label</a> here.</div>`],
+          ['inline HTML', `See <a href="${href}">label</a> here.`],
+        ].map(([way, source]) => [`${forge.pr.forge}, ${way}, ${href}`, source, forge] as const),
+      ),
+    ),
+  )('%s stays on the forge', async (_name, source, forge) => {
+    for (const streaming of [false, true]) {
+      const root = await mounted(source, forge, streaming);
+      expect(root.textContent).toContain('label');
+      for (const anchor of root.querySelectorAll('a[href]')) {
+        expect(new URL(anchor.getAttribute('href')!, location.href).host).toBe(forge.pr.host);
+      }
+      document.body.innerHTML = '';
+    }
+  });
+});
+
 describe('an authored image on the page\'s own origin', () => {
   const FIXTURE = '/src/test/fixtures/images/badge-80x20.svg';
   // The test server answers on both loopback names; the other one is
@@ -169,6 +278,29 @@ describe('an authored image on the page\'s own origin', () => {
       for (const img of root.querySelectorAll('img')) expect(img.currentSrc.startsWith(location.origin)).toBe(false);
       expect(requested(own)).toBe(false);
       document.body.innerHTML = '';
+    }
+  });
+
+  // A source no surface can paint never wins over a fallback that paints.
+  it.each(
+    (['dark', 'light'] as const).flatMap((mode) => [
+      [mode, 'an inline <picture>', (source: string, other: string) => `See ${picture(source, other)} here.`],
+      [mode, 'a <picture> in an HTML block', (source: string, other: string) => `<p align="center">${picture(source, other)}</p>`],
+    ] as const),
+  )('in the %s scheme, %s with ftp: sources paints its fallback on GitHub', async (mode, _name, write) => {
+    setBindingMock('SetAppearance', async () => {});
+    try {
+      void setAppearance({ mode });
+      for (const streaming of [false, true]) {
+        const other = `${otherOrigin()}${FIXTURE}?other-${++probe}`;
+        const root = await mounted(write('ftp://example.invalid/a.png', other), GITHUB, streaming);
+        await waitFor(() => expect(root.querySelector('img')?.getAttribute('src')).toBe(other));
+        expect(root.textContent).not.toContain('unavailable');
+        expect(root.textContent).not.toContain('does not display');
+        document.body.innerHTML = '';
+      }
+    } finally {
+      resetAppearanceForTest();
     }
   });
 });

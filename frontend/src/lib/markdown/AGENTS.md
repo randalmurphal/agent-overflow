@@ -41,14 +41,16 @@ volatile block on every append.
 
 Path-relative links or images never render as raw anchors or image sources.
 Render them only after `transformUrl` approval, or as a non-navigable reference.
-An authored image, video or audio src passes `transformMediaUrl`, which also
-refuses the page's own origin; media the app mints (fetched attachment or
-local image bytes) never passes it.
+An authored image, video or audio src, and every candidate of a themed
+image, passes `transformMediaUrl`, the one answer to what a surface paints:
+http(s) off the page's own origin, or a scheme an explicit prefix names.
+Media the app mints (fetched attachment or local image bytes) never passes it.
 
 A link or image destination is decided once, by
 `parser/engine/destination.ts#decideDestination`: `//host/x` becomes
-`https://host/x`, never the page origin, then the extensions' `destination`
-hooks run in list order and the first claim wins (a forge-relative link
+`https://host/x`, never the page origin, and an http(s) URL not written
+plainly becomes the URL the parser reads (`canonicalHref`), then the
+extensions' `destination` hooks run in list order and the first claim wins (a forge-relative link
 resolved, a forge attachment, a local path, a preview). The engine runs it
 on every inline, reference and autolink token, an extension that builds a
 link or image from other syntax (an HTML `<a>` or `<img>`) calls
@@ -174,8 +176,10 @@ selectors. Scope Markdown styles to Markdown-owned markup.
 - A rule that scans ahead of its position reads the run in progress
   (`Lexer.inlineRun`, `Lexer.blockRun`) and keys what it learns on that
   object, so the run is scanned once rather than from every position: the
-  forge strikethrough pairs a run's tildes in one pass, and description
-  lists remember a scan that found no `:` line.
+  forge strikethrough pairs a run's tildes in one pass (again only when a
+  tilde another token holds is found), description lists remember a scan
+  that found no `:` line, and the block loop one that found no setext
+  underline.
 
 ## Validation
 

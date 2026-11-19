@@ -89,9 +89,6 @@ export class Lexer {
 
   /** How many `blockTokens` calls are running: 1 at the top level. */
   blockDepth = 0;
-  /** Set by `loneParagraph`: the top-level block loop ends once its tokens
-   * cannot be a single paragraph. */
-  private loneParagraphProbe = false;
 
   /**
    * The block run in progress: the source of the innermost running
@@ -205,13 +202,19 @@ export class Lexer {
   blockTokens(src: string, tokens?: Token[], lastParagraphClipped?: boolean): Token[];
   blockTokens(src: string, tokens?: TokensList, lastParagraphClipped?: boolean): TokensList;
   blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false) {
+    return this.runBlockTokens(src, tokens, lastParagraphClipped, false);
+  }
+
+  /** `blockTokens`; with `lone`, this run's loop ends once its tokens
+   * cannot be a single paragraph (`loneParagraph`). */
+  private runBlockTokens(src: string, tokens: Token[], lastParagraphClipped: boolean, lone: boolean): Token[] {
     if (this.options.pedantic) {
       src = src.replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
     }
 
     this.blockDepth++;
     const outer = this.blockRun;
-    const run: BlockRun = { src, at: 0 };
+    const run: BlockRunState = { src, at: 0, lone, setext: null };
     this.blockRun = run;
     try {
       return this.blockTokensAtDepth(src, tokens, lastParagraphClipped, run);
@@ -228,8 +231,7 @@ export class Lexer {
    * queues is not run.
    */
   loneParagraph(src: string): Tokens.Paragraph | undefined {
-    this.loneParagraphProbe = true;
-    const tokens = this.blockTokens(src, []);
+    const tokens = this.runBlockTokens(src, [], false, true);
     const only = tokens.length === 1 ? tokens[0] : undefined;
     return only?.type === 'paragraph' && only.raw === src ? (only as Tokens.Paragraph) : undefined;
   }
@@ -260,14 +262,13 @@ export class Lexer {
     return undefined;
   }
 
-  private blockTokensAtDepth(src: string, tokens: Token[], lastParagraphClipped: boolean, run: BlockRun) {
+  private blockTokensAtDepth(src: string, tokens: Token[], lastParagraphClipped: boolean, run: BlockRunState) {
     const startBlock = this.options.extensions?.startBlock;
 
     while (src) {
       let token: Tokens.Generic | undefined;
       run.at = run.src.length - src.length;
-      if (this.loneParagraphProbe && this.blockDepth === 1 && tokens.length > 0
-        && (tokens.length > 1 || tokens[0].type !== 'paragraph')) break;
+      if (run.lone && tokens.length > 0 && (tokens.length > 1 || tokens[0].type !== 'paragraph')) break;
 
       // extensions
       if ((token = this.claimBlock(src, tokens))) {
@@ -373,7 +374,7 @@ export class Lexer {
       }
 
       // lheading
-      if ((token = this.tokenizer.lheading(src))) {
+      if (setextMayFollow(src, run) && (token = this.tokenizer.lheading(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
@@ -724,6 +725,51 @@ export interface BlockRun {
   readonly src: string;
   at: number;
 }
+
+/** A block run as its loop keeps it. */
+interface BlockRunState extends BlockRun {
+  /** Run by `loneParagraph`: it stops once its tokens cannot be one paragraph. */
+  readonly lone: boolean;
+  /** The last `setextMayFollow` scan: run offsets of the line it started on
+   * and of the line it stopped at, an underline or a blank line or the end. */
+  setext: { from: number; to: number; underline: boolean } | null;
+}
+
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+) *$/;
+// `lheading` ends its text before a line of whitespace followed by a newline.
+const SETEXT_BLANK = /^\s*$/;
+
+/**
+ * Whether a setext underline line follows the first line of `src` before a
+ * blank line; where none does, `lheading` cannot match. A scan answers each
+ * later position of the run whose second line it read, so a run of lines
+ * lexed one at a time (tight content) is read once.
+ */
+const setextMayFollow = (src: string, run: BlockRunState): boolean => {
+  const first = src.indexOf('\n') + 1;
+  if (first === 0) return false;
+  const scan = run.setext;
+  if (scan && run.at + first >= scan.from && run.at + first <= scan.to) return scan.underline;
+  let start = first;
+  let underline = false;
+  while (start < src.length) {
+    const newline = src.indexOf('\n', start);
+    if (newline === -1) {
+      underline = SETEXT_UNDERLINE.test(src.slice(start));
+      if (!underline) start = src.length;
+      break;
+    }
+    const line = src.slice(start, newline);
+    if (SETEXT_UNDERLINE.test(line)) {
+      underline = true;
+      break;
+    }
+    if (SETEXT_BLANK.test(line)) break;
+    start = newline + 1;
+  }
+  run.setext = { from: run.at + first, to: run.at + start, underline };
+  return underline;
+};
 
 /** `Lexer.inlineRun`. */
 export interface InlineRun {

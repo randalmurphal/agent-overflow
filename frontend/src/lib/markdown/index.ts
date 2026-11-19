@@ -41,7 +41,7 @@ export type {
   ProvenAppend,
 } from './parser/index';
 export { parseIncompleteMarkdown } from './parser/incompleteMarkdown';
-export { EMBEDDED_HTML_EXTENSIONS, embeddedHtmlFor, type EmbeddedHtml } from './parser/extensions/embeddedHtml';
+export { EMBEDDED_HTML_EXTENSIONS, embeddedHtmlFor, readVideo, type EmbeddedHtml } from './parser/extensions/embeddedHtml';
 export type { HtmlPolicy } from './parser/extensions/htmlPolicy';
 export type { EmbeddedImageToken } from './parser/extensions/embeddedHtml';
 // GitHub's soft-break-as-<br> rendering, for a surface showing GitHub content.

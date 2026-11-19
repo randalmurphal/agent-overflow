@@ -303,6 +303,35 @@ const pictureToken = (policy: HtmlPolicy, src: string, open: HtmlTag): EmbeddedI
 	return sources.dark === undefined && sources.light === undefined ? image : { ...image, sources };
 };
 
+/** The srcs a `<video>` element offers a host, in the order it tries them: its own `src`, then its first `<source src>`. */
+export const videoSrcs = (video: Element): string[] =>
+	[video.getAttribute('src'), video.querySelector('source[src]')?.getAttribute('src')].filter((src) => typeof src === 'string');
+
+/** A `<video>` read as the sanitizer reads one in a block. */
+export interface EmbeddedVideo {
+	/** Through its `</video>`; the open tag alone when it has none. */
+	raw: string;
+	/** `videoSrcs` of the element. */
+	srcs: string[];
+	title: string | null;
+}
+
+/** The `<video>` that opens `src`, or undefined. */
+export const readVideo = (src: string): EmbeddedVideo | undefined => {
+	if (src.charCodeAt(0) !== 60 /* < */) return undefined;
+	const open = readTag(src, 0);
+	if (!open || open.closing || open.name !== 'video') return undefined;
+	let close: HtmlTag | undefined;
+	scanTags(src.slice(open.end), (tag) => {
+		if (tag.name !== 'video' || !tag.closing) return;
+		close = tag;
+		return false;
+	});
+	const raw = src.slice(0, open.end + (close?.end ?? 0));
+	const video = parseInert(raw).querySelector('video');
+	return video ? { raw, srcs: videoSrcs(video), title: video.getAttribute('title') } : undefined;
+};
+
 /** The attributes `policy` keeps on the element `tag` opens, an `<a>`'s
  * `href` aside (its link token holds that). */
 const inlineAttributes = (policy: HtmlPolicy, src: string, tag: HtmlTag): Record<string, string> => {

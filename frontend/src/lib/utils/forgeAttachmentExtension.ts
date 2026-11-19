@@ -5,8 +5,8 @@
 //
 // Most of it is a destination hook (`destination`): the engine and the
 // HTML sanitizer run it on every link and image destination however it was
-// written, inline, by reference, as an HTML `<a>` or `<img>`, after a
-// `//host/x` destination became `https://host/x`. So
+// written, inline, by reference, as an HTML `<a>` or `<img>`, as the URL a
+// renderer would fetch (`canonicalHref`). So
 //
 //   ![alt](/uploads/<hex>/shot.png)   any image syntax   → claimed image
 //   [report.pdf](/uploads/<hex>/…)    any link syntax    → download link
@@ -28,7 +28,7 @@
 // `markedImageAttributes`'s, as after any image.
 
 import type { ColorScheme, ColorSchemeSources, DestinationHook, EmbeddedImageToken, Extension, Tokens } from '../markdown';
-import { colorSchemeOnly, type Lexer } from '../markdown';
+import { colorSchemeOnly, readVideo, type Lexer } from '../markdown';
 import { fileSaveAction } from './fileSaveAction';
 import {
   buildForgeAttachmentHref,
@@ -54,19 +54,6 @@ type ClaimedImage = Tokens.Image & Partial<Pick<EmbeddedImageToken, 'width' | 'h
 // routinely arrives with a capitalized host.
 const BARE_GITHUB_URL_SCAN =
   /(?:^|[\s(<[{'"`])(https?:\/\/(?:github\.com\/user-attachments\/|private-user-images\.githubusercontent\.com\/))/gi;
-
-const VIDEO_OPEN = /^<video\b((?:[^>"'\n]|"[^"]*"|'[^']*')*)>/i;
-const VIDEO_CLOSE = /<\/video\s*>/i;
-const SOURCE_TAG = /<source\b((?:[^>"'\n]|"[^"]*"|'[^']*')*)>/i;
-
-function attrOf(attrs: string, name: string): string | null {
-  const match = new RegExp(
-    `(?:^|\\s)${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`,
-    'i',
-  ).exec(attrs);
-  if (!match) return null;
-  return match[2] ?? match[3] ?? match[4] ?? '';
-}
 
 /**
  * Build the extensions for one PR-scoped surface. Surfaces with no forge
@@ -201,26 +188,18 @@ export function buildForgeAttachmentExtension(opts: ForgeAttachmentSource & { em
   };
   return [inline, block];
 
-  /** A `<video>` whose src (or first `<source src>`) the destination rule claims, as the image it plays. */
+  /**
+   * A `<video>`, read as the sanitizer reads one (`readVideo`), as the image
+   * of its first src the destination rule claims. An unpaired `<video>` is
+   * its open tag alone; the sanitizer keeps whatever follows.
+   */
   function videoToken(lexer: Lexer, src: string): ClaimedImage | undefined {
-    const open = VIDEO_OPEN.exec(src);
-    if (!open) return undefined;
-    const rest = src.slice(open[0].length);
-    const close = VIDEO_CLOSE.exec(rest);
-    // A self-closing or unpaired `<video>` consumes only its open tag; the
-    // sanitizer keeps its current behaviour for whatever follows.
-    const raw = close
-      ? src.slice(0, open[0].length + close.index + close[0].length)
-      : open[0];
-    const attrs = open[1] ?? '';
-    let href = attrOf(attrs, 'src');
-    if (href === null && close) {
-      const source = SOURCE_TAG.exec(rest.slice(0, close.index));
-      if (source) href = attrOf(source[1] ?? '', 'src');
+    const video = readVideo(src);
+    if (!video) return undefined;
+    for (const href of video.srcs) {
+      const decided = lexer.tokenizer.destination({ type: 'image', raw: video.raw, href, title: null, text: video.title ?? '', tokens: [] });
+      if (decided.href.startsWith(FORGE_ATTACHMENT_HREF_PREFIX)) return decided;
     }
-    if (href === null) return undefined;
-    const image: ClaimedImage = { type: 'image', raw, href, title: null, text: attrOf(attrs, 'title') ?? '', tokens: [] };
-    const decided = lexer.tokenizer.destination(image);
-    return decided.href.startsWith(FORGE_ATTACHMENT_HREF_PREFIX) ? decided : undefined;
+    return undefined;
   }
 }
