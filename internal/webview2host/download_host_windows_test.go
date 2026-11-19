@@ -742,7 +742,7 @@ func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {
 	}
 	r.timers[0]()
 	end := r.take()
-	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadInterruptReason(downloadUserCanceled) || end[0].Answer {
+	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadCancelBoundReason || end[0].Answer {
 		t.Fatalf("at the bound the download ended %+v", end)
 	}
 	if op.refs != 1 || len(op.subs) != 0 {
@@ -769,8 +769,8 @@ func TestARefusedCancelKeepsTheDownloadRunning(t *testing.T) {
 	op.refuseCancel = true
 	r.host.answerDownload(r.page, "dl-t-1", 1)
 	got := r.take()
-	if states(got) != "dl-t-1:running" || !got[0].CancelRefused() ||
-		!strings.HasPrefix(got[0].CancelRefusal, DownloadCancelRefusedReason) || got[0].Cancel != 1 || len(r.timers) != 0 {
+	if states(got) != "dl-t-1:running" || !refused(got[0]) ||
+		!strings.HasPrefix(refusal(got[0]), DownloadCancelRefusedReason) || got[0].Cancel.Attempt() != 1 || len(r.timers) != 0 {
 		t.Fatalf("a refused cancel answered %+v and started %d bounds", got, len(r.timers))
 	}
 	if d := r.page.downloads["dl-t-1"]; d == nil || d.cancelRequested {
@@ -778,7 +778,7 @@ func TestARefusedCancelKeepsTheDownloadRunning(t *testing.T) {
 	}
 	op.refuseCancel = false
 	r.host.answerDownload(r.page, "dl-t-1", 2)
-	if got := r.take(); states(got) != "dl-t-1:running" || got[0].CancelRefused() || len(r.timers) != 1 {
+	if got := r.take(); states(got) != "dl-t-1:running" || refused(got[0]) || len(r.timers) != 1 {
 		t.Fatalf("a cancel taken answered %+v and started %d bounds", got, len(r.timers))
 	}
 	op.refuseCancel = true
@@ -788,7 +788,7 @@ func TestARefusedCancelKeepsTheDownloadRunning(t *testing.T) {
 	ofOp := newFakeOp(`C:\D\f (1).bin`)
 	ofOp.refuseCancel = true
 	resume(t, r.page, ofOp)
-	if got := r.take(); states(got) != "dl-t-1:running" || !got[0].CancelRefused() {
+	if got := r.take(); states(got) != "dl-t-1:running" || !refused(got[0]) {
 		t.Fatalf("a resume whose cancel was refused reported %+v", got)
 	}
 	r.timers[0]()

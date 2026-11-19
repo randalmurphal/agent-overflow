@@ -17,7 +17,7 @@ func TestDepartingChildWaitsForItsLiveUnannouncedOpener(t *testing.T) {
 	child, childController := r.openPopup(parentController, newFakeWindowArgs(popupURL))
 	answerTarget(t, childController, "child-target")
 	completed := r.startDownload(child, "dl-completed")
-	r.host.endDownload(completed, completed.snapshot(DownloadCompleted, ""))
+	finish(completed)
 	childController.view.raise("close-requested")
 	r.pump()
 	if reports := r.takeReports(); len(reports) != 0 {
@@ -36,7 +36,7 @@ func TestDepartingChildMergesTerminalSnapshotsWithinOpenerBound(t *testing.T) {
 	parent, parentController := r.openPopup(opener, newFakeWindowArgs(popupURL))
 	for i := range maxHeldPopupDownloads - 1 {
 		d := r.startDownload(parent, fmt.Sprintf("dl-parent-%d", i))
-		r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+		finish(d)
 	}
 	child, _ := r.openPopup(parentController, newFakeWindowArgs(popupURL))
 	r.startDownload(child, "dl-running")
@@ -61,7 +61,7 @@ func TestDepartingSubtreeLeavesDownloadsWithItsLiveUnannouncedOpener(t *testing.
 	child, childController := r.openPopup(parentController, newFakeWindowArgs(popupURL))
 	grandchild, _ := r.openPopup(childController, newFakeWindowArgs(popupURL))
 	d := r.startDownload(grandchild, "dl-completed")
-	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	finish(d)
 	r.host.Apply(Directive{Op: OpClose, PageID: child.id})
 	sameReports(t, "departing subtree", kinds(t, r.takeReports()))
 
@@ -126,7 +126,7 @@ func TestPopupAtHeldDownloadBoundCanResume(t *testing.T) {
 	start(t, popup, first)
 	for i := 1; i < maxHeldPopupDownloads; i++ {
 		d := r.startDownload(popup, fmt.Sprintf("dl-ended-%d", i))
-		r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+		finish(d)
 	}
 	drop(first)
 	controller.view.raise("close-requested")

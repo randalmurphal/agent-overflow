@@ -310,7 +310,7 @@ func cancelStalled(t *testing.T, s *downloadSmoke, b *smokeDownload, others ...s
 	s.settleAmong(b, others...)
 	took := time.Since(canceled)
 	t.Logf("the stalled download ended after %v: %+v", took, b.final)
-	if b.final.State != DownloadInterrupted || b.final.Reason != downloadInterruptReason(downloadUserCanceled) || took < downloadCancelBound {
+	if b.final.State != DownloadInterrupted || b.final.Reason != downloadCancelBoundReason || took < downloadCancelBound {
 		t.Fatalf("the stalled download ended after %v as %+v", took, b.final)
 	}
 }

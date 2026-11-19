@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -16,10 +17,11 @@ import (
 
 const testRefusal = webview2host.DownloadCancelRefusedReason + ": Unspecified error"
 
-// refusedSnapshot is a snapshot of id carrying the refusal of cancel n.
-func refusedSnapshot(id string, n uint64, received int64) webview2host.DownloadReport {
+// refusedSnapshot is a snapshot of id carrying the refusal of cancel
+// attempt n.
+func refusedSnapshot(id string, n webview2host.CancelAttempt, received int64) webview2host.DownloadReport {
 	r := snapshot(id, webview2host.DownloadRunning, received)
-	r.Cancel, r.CancelRefusal = n, testRefusal
+	r.Cancel = webview2host.CancelRefused(n, errors.New("Unspecified error"))
 	return r
 }
 
@@ -117,7 +119,7 @@ func TestHostedEngineAsksAgainForACancelTheLauncherNeverNamed(t *testing.T) {
 	if directive := sink.next(t); directive.Op != webview2host.OpCancelDownload || directive.Cancel != 1 {
 		t.Fatalf("the cancel sent %+v", directive)
 	}
-	keepReporting := func(cancel uint64) []webview2host.Directive {
+	keepReporting := func(cancel webview2host.CancelOutcome) []webview2host.Directive {
 		sink.drain()
 		for i := range 20 {
 			r := snapshot("dl-a-1", webview2host.DownloadRunning, int64(i+2))
@@ -127,7 +129,7 @@ func TestHostedEngineAsksAgainForACancelTheLauncherNeverNamed(t *testing.T) {
 		}
 		return sink.drain()
 	}
-	asked := keepReporting(0)
+	asked := keepReporting(webview2host.CancelOutcome{})
 	if len(asked) == 0 {
 		t.Fatal("a cancel the launcher never named was not asked about again")
 	}
@@ -136,7 +138,7 @@ func TestHostedEngineAsksAgainForACancelTheLauncherNeverNamed(t *testing.T) {
 			t.Fatalf("the engine sent %+v", directive)
 		}
 	}
-	if asked := keepReporting(1); len(asked) != 0 {
+	if asked := keepReporting(webview2host.CancelTaken(1)); len(asked) != 0 {
 		t.Fatalf("a download whose cancel was named was asked %+v", asked)
 	}
 }
@@ -159,10 +161,10 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 		}
 		send(directive)
 	}
-	sent := func() []uint64 {
+	sent := func() []webview2host.CancelAttempt {
 		mu.Lock()
 		defer mu.Unlock()
-		var out []uint64
+		var out []webview2host.CancelAttempt
 		for _, directive := range cancels {
 			out = append(out, directive.Cancel)
 		}
@@ -186,8 +188,20 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := sent(); !reflect.DeepEqual(got, []uint64{1, 2}) {
+	if got := sent(); !reflect.DeepEqual(got, []webview2host.CancelAttempt{1, 2}) {
 		t.Fatalf("cancels sent %v, want the second to reach the launcher", got)
+	}
+	// A late snapshot still carrying the first cancel's refusal leaves the
+	// second standing.
+	reportDownload(t, l.engine, page, refusedSnapshot("dl-1", 1, 25))
+	if got := l.manager.CompanionState(access).Downloads[0]; got.State != downloadStateRunning || got.Error != "" {
+		t.Fatalf("the first cancel's refusal after the second made the row %+v", got)
+	}
+	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent(); len(got) != 2 {
+		t.Fatalf("the first cancel's refusal withdrew the second: cancels sent %v", got)
 	}
 
 	// The second's refusal is lost too, and the download fails.

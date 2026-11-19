@@ -13,6 +13,18 @@ import (
 // cancel bound, an end it never raised before a popup goes, and a cancel's
 // refusal or the cancel itself lost on the way.
 
+// refused reports whether a snapshot carries a refusal of its cancel.
+func refused(r DownloadReport) bool {
+	_, ok := r.Cancel.Refusal()
+	return ok
+}
+
+// refusal is a snapshot's refusal of its cancel, "" for none.
+func refusal(r DownloadReport) string {
+	why, _ := r.Cancel.Refusal()
+	return why
+}
+
 // A cancel's refusal rides every later snapshot of the download, progress,
 // a status's answer and its end, so one lost answer does not leave the
 // backend's cancel standing. A status naming a cancel the launcher never
@@ -33,7 +45,7 @@ func TestACancelRefusalRidesEveryLaterSnapshot(t *testing.T) {
 		t.Fatalf("after the refusal: %+v, canceled %d times", later, op.canceled)
 	}
 	for _, report := range later {
-		if !report.CancelRefused() || report.Cancel != 1 || report.Reason != "" {
+		if !refused(report) || report.Cancel.Attempt() != 1 || report.Reason != "" {
 			t.Fatalf("a snapshot after the refusal does not carry it: %+v", report)
 		}
 	}
@@ -44,11 +56,11 @@ func TestACancelRefusalRidesEveryLaterSnapshot(t *testing.T) {
 	if states(got) != "dl-t-1:running dl-t-1:running" || op.canceled != 2 || len(r.timers) != 1 {
 		t.Fatalf("a status naming a lost cancel answered %+v, canceled %d times, %d bounds", got, op.canceled, len(r.timers))
 	}
-	if got[0].Cancel != 2 || got[0].CancelRefused() {
+	if got[0].Cancel.Attempt() != 2 || refused(got[0]) {
 		t.Fatalf("the taken cancel answers %+v", got[0])
 	}
 	op.set(downloadStateInterrupted, downloadUserCanceled)
-	if end := r.take(); states(end) != "dl-t-1:interrupted" || end[0].Cancel != 2 || end[0].CancelRefused() {
+	if end := r.take(); states(end) != "dl-t-1:interrupted" || end[0].Cancel.Attempt() != 2 || refused(end[0]) {
 		t.Fatalf("the cancel ended %+v", end)
 	}
 
@@ -59,7 +71,7 @@ func TestACancelRefusalRidesEveryLaterSnapshot(t *testing.T) {
 	r.host.answerDownload(r.page, "dl-t-2", 1)
 	r.take()
 	failed.set(downloadStateInterrupted, 12)
-	if end := r.take(); states(end) != "dl-t-2:interrupted" || !end[0].CancelRefused() || end[0].Reason != downloadInterruptReason(12) {
+	if end := r.take(); states(end) != "dl-t-2:interrupted" || !refused(end[0]) || end[0].Reason != downloadInterruptReason(12) {
 		t.Fatalf("a failure after a refused cancel ended %+v", end)
 	}
 	r.done(t, op, failed)
@@ -124,7 +136,7 @@ func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 	r.timers[2]()
 	stuck.stateErr = false
 	r.timers[3]()
-	if got := r.take(); states(got) != "dl-t-2:interrupted" || got[0].Reason != downloadInterruptReason(downloadUserCanceled) {
+	if got := r.take(); states(got) != "dl-t-2:interrupted" || got[0].Reason != downloadCancelBoundReason {
 		t.Fatalf("a download still running at the next bound ended %+v", got)
 	}
 	r.done(t, op, stuck)
@@ -147,7 +159,7 @@ func TestAPopupGoneWithItsOpenerReadsItsDownloadsFirst(t *testing.T) {
 		op.refs++ // the reference DownloadStarting hands over
 		r.host.attachOperation(d, op.com())
 		popup.downloads[d.id] = d
-		r.host.report(popup, d.snapshot(DownloadRunning, ""))
+		r.host.report(popup, d.snapshot())
 	}
 	finished.received, finished.st = 100, downloadStateCompleted
 	r.host.Apply(Directive{Op: OpClose, PageID: openerPage.id})

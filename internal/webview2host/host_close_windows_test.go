@@ -129,7 +129,7 @@ func TestARequestedCloseWaitsForADownloadThatStartedAfterIt(t *testing.T) {
 	if r.page("page") == nil || controller.closed != 0 {
 		t.Fatal("a close requested before a download started closed the page under it")
 	}
-	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	finish(d)
 	sameReports(t, "the download's end", kinds(t, r.awaitReport("page", ReportClosed)),
 		"page:download(dl-1,running)", "page:download(dl-1,completed)", "page:closed")
 	closed(t, controller)

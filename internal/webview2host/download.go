@@ -34,12 +34,11 @@ import (
 // again (kept while its page lives, up to MaxEndedDownloads per page), or,
 // for an id it has no record of, DownloadUnknown.
 //
-// The backend numbers its cancels of a download (Directive.Cancel), and
-// every snapshot after one names the last the launcher took (Cancel) and,
-// while WebView2's refusal of it stands, the refusal (CancelRefusal). So a
-// lost answer to a cancel heals on the download's next snapshot, a status
-// answer included, and a status naming a cancel the launcher never got
-// makes it.
+// The backend numbers its cancel attempts of a download (Directive.Cancel),
+// and every snapshot after one carries the outcome of the last the launcher
+// took (Cancel, a CancelOutcome). So a lost answer to a cancel heals on the
+// download's next snapshot, a status answer included, and a status naming
+// an attempt the launcher never got makes it.
 
 // The states a DownloadReport carries: running until one terminal state.
 // DownloadUnknown is no download's state: it answers a directive naming an
@@ -64,9 +63,9 @@ const MaxEndedDownloads = 64
 // DownloadUnknownReason is the reason a DownloadUnknown answer carries.
 const DownloadUnknownReason = "the browser host has no record of this download"
 
-// DownloadCancelRefusedReason begins a snapshot's CancelRefusal: WebView2
-// refused the download's last cancel, the download runs on, and its
-// cancel is no longer requested.
+// DownloadCancelRefusedReason begins a refused CancelOutcome's refusal:
+// WebView2 refused the download's last cancel, the download runs on, and
+// its cancel is no longer requested.
 const DownloadCancelRefusedReason = "the browser refused to cancel the download"
 
 // DownloadPathTooLongReason is a completed snapshot's reason when the
@@ -82,22 +81,20 @@ const DownloadPathTooLongReason = "the saved file's path is too long to report, 
 // Path the file as Windows names it, from the first snapshot on; URI its
 // address, shortened or left out so the report fits; Reason an interrupted
 // download's cause, why a completed one's file is not reported
-// (DownloadPathTooLongReason), or DownloadUnknownReason; Cancel the number
-// of the backend's last cancel the launcher took, and CancelRefusal, while
-// WebView2's refusal of it stands, why (DownloadCancelRefusedReason).
+// (DownloadPathTooLongReason), or DownloadUnknownReason; Cancel what came
+// of the backend's last cancel attempt the launcher took.
 type DownloadReport struct {
-	ID            string `json:"id"`
-	Seq           uint64 `json:"seq,omitempty"`
-	Answer        bool   `json:"answer,omitempty"`
-	State         string `json:"state"`
-	URI           string `json:"uri,omitempty"`
-	Name          string `json:"name,omitempty"`
-	Path          string `json:"path,omitempty"`
-	Received      int64  `json:"received"`
-	Total         int64  `json:"total,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	Cancel        uint64 `json:"cancel,omitempty"`
-	CancelRefusal string `json:"cancelRefusal,omitempty"`
+	ID       string        `json:"id"`
+	Seq      uint64        `json:"seq,omitempty"`
+	Answer   bool          `json:"answer,omitempty"`
+	State    string        `json:"state"`
+	URI      string        `json:"uri,omitempty"`
+	Name     string        `json:"name,omitempty"`
+	Path     string        `json:"path,omitempty"`
+	Received int64         `json:"received"`
+	Total    int64         `json:"total,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Cancel   CancelOutcome `json:"cancel,omitzero"`
 }
 
 // maxDownloadNameBytes bounds the name a report carries; Windows bounds a
@@ -209,19 +206,10 @@ func ParseDownloadReport(detail string) (DownloadReport, error) {
 	if r.State == DownloadRunning && r.Reason != "" {
 		return DownloadReport{}, errors.New("a running download report carries no reason")
 	}
-	if r.CancelRefusal != "" && r.Cancel == 0 {
-		return DownloadReport{}, errors.New("a cancel refusal names no cancel")
-	}
 	if r.State == DownloadCompleted && r.Path == "" && r.Reason == "" {
 		return DownloadReport{}, errors.New("a completed download report names no file and says no reason")
 	}
 	return r, nil
-}
-
-// CancelRefused reports whether WebView2 refused the snapshot's cancel
-// (Cancel), so that cancel no longer stands.
-func (r DownloadReport) CancelRefused() bool {
-	return r.Cancel != 0 && r.CancelRefusal != ""
 }
 
 // Terminal reports whether the snapshot is the download's last state.

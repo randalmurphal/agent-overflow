@@ -301,20 +301,20 @@ func TestWindowCloseRequestClosesThePage(t *testing.T) {
 			t.Fatalf("%s reported %+v, want closed", what, got)
 		}
 	}
-	first := &hostDownload{id: "dl-1", page: page}
-	second := &hostDownload{id: "dl-2", page: page}
-	page.downloads = map[string]*hostDownload{first.id: first, second.id: second}
+	first := r.startDownload(page, "dl-1")
+	second := r.startDownload(page, "dl-2")
+	r.takeReports()
 	controller.view.raise("close-requested")
 	r.pump()
 	if got := r.takeReports(); len(got) != 0 || r.page("page") == nil {
 		t.Fatalf("a downloading page closed on its close request: %+v", got)
 	}
-	r.host.endDownload(first, DownloadReport{ID: first.id, State: DownloadCompleted})
+	finish(first)
 	r.pump()
 	if got := r.takeReports(); len(got) != 1 || got[0].kind != ReportDownload || r.page("page") == nil {
 		t.Fatalf("a page closed with a download running: %+v", got)
 	}
-	r.host.endDownload(second, DownloadReport{ID: second.id, State: DownloadCompleted})
+	finish(second)
 	if got := r.takeReports(); len(got) == 0 || got[0].kind != ReportDownload {
 		t.Fatalf("the last download's end reported %+v", got)
 	}

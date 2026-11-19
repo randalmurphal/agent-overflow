@@ -278,9 +278,9 @@ func TestHostedEngineCancelOfADownloadWhoseEndWasLostSettlesIt(t *testing.T) {
 	sink.expectOps(t, webview2host.OpCancelDownload)
 }
 
-// A cancel the launcher could not make is answered with the refusal, which
-// reaches the Manager as such even when a newer snapshot overtook it; its
-// bytes count only when it is the newest.
+// A cancel the launcher could not make is answered with the refusal, and
+// every later snapshot carries it: it reaches the Manager once, from the
+// newest snapshot, and an older one that arrives after changes nothing.
 func TestHostedEngineDeliversARefusedCancel(t *testing.T) {
 	engine, sink, recorder := newDownloadHostedEngine(t)
 	bindTestPage(t, engine, "page1", "TARGET-1")
@@ -292,15 +292,15 @@ func TestHostedEngineDeliversARefusedCancel(t *testing.T) {
 	sink.expectOps(t, webview2host.OpCancelDownload)
 	refusal := webview2host.DownloadCancelRefusedReason + ": Unspecified error"
 	refused := snapshot("dl-a-1", webview2host.DownloadRunning, 20)
-	refused.Seq, refused.Answer, refused.Cancel, refused.CancelRefusal = 3, true, 1, refusal
+	refused.Seq, refused.Answer, refused.Cancel = 3, true, webview2host.CancelRefused(1, errors.New("Unspecified error"))
 	newer := snapshot("dl-a-1", webview2host.DownloadRunning, 30)
-	newer.Seq = 4
+	newer.Seq, newer.Cancel = 4, refused.Cancel
 	reportDownload(t, engine, "page1", newer)
 	reportDownload(t, engine, "page1", refused)
 	_, progress := recorder.take()
 	want := []downloadProgress{
-		{ID: "dl-a-1", Received: 30, Total: 100, State: downloadInProgress},
 		{ID: "dl-a-1", State: downloadInProgress, Error: refusal, CancelRefused: true},
+		{ID: "dl-a-1", Received: 30, Total: 100, State: downloadInProgress},
 	}
 	if !reflect.DeepEqual(progress, want) {
 		t.Fatalf("progress %+v, want %+v", progress, want)

@@ -153,7 +153,7 @@ type Directive struct {
 	// Download, from 1, and on OpDownloadStatus the number of the last one
 	// sent (0 for none): the launcher makes a cancel numbered past the last
 	// it took, so a status also makes a cancel that was lost on the way.
-	Cancel uint64 `json:"cancel,omitempty"`
+	Cancel CancelAttempt `json:"cancel,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.

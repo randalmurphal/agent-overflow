@@ -80,16 +80,17 @@ type hostedDownload struct {
 	// canceled is a cancel the Manager made while it admitted the download,
 	// its row already listed: it goes to the launcher once admitted is set.
 	canceled bool
-	// cancels is the number of the last cancel sent, and reflected the
-	// highest a snapshot named: a cancel the launcher has not named yet is
-	// sent again with each status question (askQuietDownloads).
-	cancels, reflected uint64
+	// cancels is the last cancel attempt sent, and reflected the latest a
+	// snapshot named: an attempt the launcher has not named yet is sent
+	// again with each status question (askQuietDownloads).
+	cancels, reflected webview2host.CancelAttempt
 	// apply is held while one snapshot is applied, across the Manager's
 	// callbacks, so the download's snapshots reach the Manager one at a time.
 	apply sync.Mutex
 	// applied is the number of the last snapshot applied, and refused the
-	// cancel whose refusal the Manager has. Guarded by apply.
-	applied, refused uint64
+	// cancel attempt whose refusal the Manager has. Guarded by apply.
+	applied uint64
+	refused webview2host.CancelAttempt
 }
 
 func newHostedDownloads() hostedDownloads {
@@ -157,7 +158,7 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 	defer known.apply.Unlock()
 	e.mu.Lock()
 	gone, admitted, cancels := known.gone, known.admitted, known.cancels
-	known.reflected = max(known.reflected, report.Cancel)
+	known.reflected = max(known.reflected, report.Cancel.Attempt())
 	e.mu.Unlock()
 	if gone {
 		// Ended or refused while this snapshot waited its turn.
@@ -171,15 +172,15 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		e.mu.Unlock()
 		return
 	}
-	if admitted && report.CancelRefused() && report.Cancel == cancels && known.refused != cancels {
-		// Whatever the snapshot's number, once per cancel: the Manager's
-		// cancel stands until the refusal of the last one sent arrives, on
-		// whichever snapshot first carries it.
-		known.refused = cancels
-		e.events.DownloadProgress(downloadProgress{ID: report.ID, State: downloadInProgress, Error: report.CancelRefusal, CancelRefused: true})
-	}
 	if report.Seq <= known.applied {
 		return
+	}
+	if refusal, refused := report.Cancel.Refusal(); refused && admitted && report.Cancel.Attempt() == cancels && known.refused != cancels {
+		// Every snapshot after a refusal carries it, so the newest applied
+		// has it: the Manager's cancel stands until the refusal of the last
+		// attempt sent arrives, and hears it once.
+		known.refused = cancels
+		e.events.DownloadProgress(downloadProgress{ID: report.ID, State: downloadInProgress, Error: refusal, CancelRefused: true})
 	}
 	if !admitted {
 		name := report.Name
