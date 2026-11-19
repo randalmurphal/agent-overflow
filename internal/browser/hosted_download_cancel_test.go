@@ -138,6 +138,10 @@ func TestHostedEngineAsksAgainForACancelTheLauncherNeverNamed(t *testing.T) {
 			t.Fatalf("the engine sent %+v", directive)
 		}
 	}
+	// A question the status loop made before the first snapshot naming the
+	// cancel was applied can be sent after the next drain, so the round
+	// checked starts once a round of named snapshots has passed.
+	keepReporting(webview2host.CancelTaken(1))
 	if asked := keepReporting(webview2host.CancelTaken(1)); len(asked) != 0 {
 		t.Fatalf("a download whose cancel was named was asked %+v", asked)
 	}
