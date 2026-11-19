@@ -2,6 +2,7 @@ package browser
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -93,9 +94,33 @@ type parkedDownload struct {
 	// the artifact root's, from its start until its row takes it (admitTo)
 	// or it is refused.
 	reservation *quota.Reservation
-	// capped is whether it passed maxDownloadBytes, after which it takes no
-	// further progress.
-	capped bool
+	// phase is whether AO has stopped it (stop).
+	phase parkedPhase
+}
+
+// parkedPhase is a parked download's lifecycle until its fate, after which
+// it is no longer parked: running, or stopped by AO (over maxDownloadBytes,
+// or refused), after which it takes no further progress and its engine
+// has been asked to cancel it once.
+type parkedPhase int
+
+const (
+	parkedRunning parkedPhase = iota
+	parkedStopped
+)
+
+// stop moves d to parkedStopped and answers whether it ran until now, for
+// the one caller that then stops it in its engine (stopParked). The caller
+// holds m.parkMu.
+func (d *parkedDownload) stop() bool {
+	switch d.phase {
+	case parkedRunning:
+		d.phase = parkedStopped
+		return true
+	case parkedStopped:
+		return false
+	}
+	panic(fmt.Sprintf("browser: parked download in phase %d", d.phase))
 }
 
 // popupFate is what became of a popup: listed is the driver handle of its
@@ -287,13 +312,12 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 		return false
 	}
 	for _, d := range m.parked[handle].downloads {
-		if d.start.ID != event.ID || d.capped {
+		if d.start.ID != event.ID || d.phase == parkedStopped {
 			continue
 		}
 		newest := event
 		d.newest = &newest
-		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && event.State != downloadCanceled {
-			d.capped = true
+		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && event.State != downloadCanceled && d.stop() {
 			m.stopParked(d)
 		}
 	}
@@ -387,7 +411,9 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 // returns, and it stops (stopParked). The caller holds m.parkMu.
 func (m *Manager) refuseParked(d *parkedDownload) {
 	m.releaseParked(d)
-	m.stopParked(d)
+	if d.stop() {
+		m.stopParked(d)
+	}
 }
 
 // stopParked has the engine cancel a parked download still running, and

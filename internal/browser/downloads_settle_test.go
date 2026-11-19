@@ -70,6 +70,26 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 	}
 }
 
+// A parked download stopped over the cap before its fate, then refused at
+// its fate, is canceled in its engine once.
+func TestAParkedDownloadStoppedAndThenRefusedIsCanceledOnce(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	// Another tab keeps the jar open, so a cancel can reach the engine.
+	openPage(t, manager, access, "https://example.test/other")
+	file := engineArtifact(t, manager, "dl-1")
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadInProgress, maxDownloadBytes+1))
+	awaitRemoved(t, file)
+	manager.removeClosedPage(opener)
+	manager.removeClosedPage("popup")
+	time.Sleep(50 * time.Millisecond)
+	if got := engine.cancels(); len(got) != 1 {
+		t.Fatalf("the engine was asked to cancel %q, want dl-1 once", got)
+	}
+}
+
 // A popup's parked download whose jar's last profile went before its fate
 // is refused at the fate: its file in the jar's directory goes and both
 // quotas are back as they were, with no row anywhere.
