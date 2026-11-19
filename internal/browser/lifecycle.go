@@ -342,26 +342,37 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 // closePage closes a live, closing, pending or suspended page. A page whose
 // close is already running answers that close, so repeated closes agree.
 // byUser is the user's close, which the close that takes the tab out of the
-// tab set records for reopening (recordUserCloseLocked).
+// tab set records for reopening (recordUserCloseLocked). The tab is found in
+// whichever of those states it is in, and taken out of it, in one m.mu hold,
+// so a creation or restore moving it between states meanwhile cannot hide it.
 func (m *Manager) closePage(ctx context.Context, access Access, pageID string, wait, byUser bool) error {
 	pageID = strings.TrimSpace(pageID)
-	c, err := m.beginCloseLive(access, pageID, byUser)
+	m.mu.Lock()
+	if m.forgetRecordLocked(access.ThreadID, pageID, byUser) {
+		m.mu.Unlock()
+		return m.recordForgotten(access.ThreadID)
+	}
+	c, started, err := m.beginCloseLiveLocked(access, pageID, byUser)
 	if err == nil {
+		m.mu.Unlock()
+		if started != nil {
+			m.startClose(started, c)
+		}
 		if !wait {
 			return nil
 		}
 		return c.wait(ctx)
 	}
-	if !errors.Is(err, errPageNotFound) {
-		return err
+	pending, ok := m.closePendingLocked(access, pageID)
+	m.mu.Unlock()
+	if !ok {
+		return errPageNotFound
 	}
-	if pending, ok := m.closePending(access, pageID); ok {
-		if !wait {
-			return nil
-		}
-		return pending.wait(ctx)
+	m.pendingClosed(access.ThreadID)
+	if !wait {
+		return nil
 	}
-	return m.forgetRecord(access.ThreadID, pageID, byUser)
+	return pending.wait(ctx)
 }
 
 // closeLivePage closes a live page and waits for its teardown. It answers
@@ -375,41 +386,47 @@ func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID strin
 }
 
 // beginCloseLive starts the close of the caller's live page, or answers the
-// close already running for it. Finding the page and moving it to closing is
-// one m.mu hold, so concurrent closes agree on one teardown, and only the
-// one that moved it records a user's close.
+// close already running for it (beginCloseLiveLocked).
 func (m *Manager) beginCloseLive(access Access, pageID string, byUser bool) (*pageClose, error) {
 	m.mu.Lock()
+	c, started, err := m.beginCloseLiveLocked(access, pageID, byUser)
+	m.mu.Unlock()
+	if started != nil {
+		m.startClose(started, c)
+	}
+	return c, err
+}
+
+// beginCloseLiveLocked moves the caller's live page to closing, answering
+// its close and its scope, for the caller to startClose after releasing
+// m.mu, or answers the close already running for it with a nil scope.
+// Finding the page and moving it is one m.mu hold, so concurrent closes
+// agree on one teardown, and only the one that moved it records a user's
+// close. The caller holds m.mu.
+func (m *Manager) beginCloseLiveLocked(access Access, pageID string, byUser bool) (*pageClose, *jarScope, error) {
 	if m.suspended[pageID] != nil {
 		// A jar switch's record: the tab is the record, and its page closing
 		// under the same id is no longer a tab (SetJar).
-		m.mu.Unlock()
-		return nil, errPageNotFound
+		return nil, nil, errPageNotFound
 	}
 	for _, scope := range m.scopes {
 		if c := scope.closing[pageID]; c != nil {
-			m.mu.Unlock()
 			if c.p.owner != access.ThreadID {
-				return nil, errPageNotFound
+				return nil, nil, errPageNotFound
 			}
-			return c, nil
+			return c, nil, nil
 		}
 		if p := scope.pages[pageID]; p != nil {
 			if p.owner != access.ThreadID {
-				m.mu.Unlock()
-				return nil, errPageNotFound
+				return nil, nil, errPageNotFound
 			}
 			if byUser {
 				m.recordUserCloseLocked(p.owner, pageID)
 			}
-			c := m.markClosingLocked(p, scope)
-			m.mu.Unlock()
-			m.startClose(scope, c)
-			return c, nil
+			return m.markClosingLocked(p, scope), scope, nil
 		}
 	}
-	m.mu.Unlock()
-	return nil, errPageNotFound
+	return nil, nil, errPageNotFound
 }
 
 // markClosingLocked moves a live page to its scope's closing pages. The
@@ -471,9 +488,19 @@ func (m *Manager) runClose(scope *jarScope, c *pageClose) {
 // has finished with it; false when pageID is no such tab of the caller.
 func (m *Manager) closePending(access Access, pageID string) (*pendingPage, bool) {
 	m.mu.Lock()
+	pending, ok := m.closePendingLocked(access, pageID)
+	m.mu.Unlock()
+	if ok {
+		m.pendingClosed(access.ThreadID)
+	}
+	return pending, ok
+}
+
+// closePendingLocked is closePending's lock hold; the caller holds m.mu and
+// calls pendingClosed after releasing it when it answers true.
+func (m *Manager) closePendingLocked(access Access, pageID string) (*pendingPage, bool) {
 	pending := m.pending[pageID]
 	if pending == nil || pending.p.owner != access.ThreadID {
-		m.mu.Unlock()
 		return nil, false
 	}
 	if pending.err != "" {
@@ -482,11 +509,14 @@ func (m *Manager) closePending(access Access, pageID string) (*pendingPage, bool
 		pending.closed = true
 		pending.cancel()
 	}
-	m.mu.Unlock()
-	m.repairActivePage(access.ThreadID)
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
 	return pending, true
+}
+
+// pendingClosed publishes the close of a pending tab of the thread.
+func (m *Manager) pendingClosed(threadID string) {
+	m.repairActivePage(threadID)
+	m.emitThreadState(threadID)
+	m.syncPanePresentation(threadID)
 }
 
 // closeThreadPending closes every tab of the thread that is still being

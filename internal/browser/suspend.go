@@ -537,21 +537,24 @@ func (m *Manager) saveOpenPages() error {
 	return m.writeRecordFilesLocked(threads)
 }
 
-// forgetRecord closes one suspended page: its record and its saved copy go.
-func (m *Manager) forgetRecord(threadID, pageID string, byUser bool) error {
-	m.mu.Lock()
+// forgetRecordLocked closes one suspended page: it drops the thread's record
+// of pageID, answering whether it had one, and the caller, which holds m.mu,
+// calls recordForgotten after releasing it, so the saved copy goes too.
+func (m *Manager) forgetRecordLocked(threadID, pageID string, byUser bool) bool {
 	rec := m.suspended[strings.TrimSpace(pageID)]
-	found := rec != nil && rec.owner == threadID
-	if found {
-		if byUser {
-			m.recordUserCloseLocked(threadID, rec.id)
-		}
-		m.dropRecordLocked(rec)
+	if rec == nil || rec.owner != threadID {
+		return false
 	}
-	m.mu.Unlock()
-	if !found {
-		return errPageNotFound
+	if byUser {
+		m.recordUserCloseLocked(threadID, rec.id)
 	}
+	m.dropRecordLocked(rec)
+	return true
+}
+
+// recordForgotten publishes a forgotten record of the thread and saves the
+// thread's records.
+func (m *Manager) recordForgotten(threadID string) error {
 	m.repairActivePage(threadID)
 	m.emitThreadState(threadID)
 	m.syncPanePresentation(threadID)
