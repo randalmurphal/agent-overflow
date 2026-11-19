@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -181,7 +182,7 @@ func TestRecentAddressesForgetOnClearSiteDataAndThreadClose(t *testing.T) {
 func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
 	var mu sync.Mutex
-	pushed := map[string]uint64{}
+	pushed := map[string]string{}
 	m.SetEventSink(func(event CompanionEvent) {
 		if event.Kind == "state" {
 			mu.Lock()
@@ -189,12 +190,12 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 			mu.Unlock()
 		}
 	})
-	lastPushed := func(threadID string) uint64 {
+	lastPushed := func(threadID string) string {
 		mu.Lock()
 		defer mu.Unlock()
 		return pushed[threadID]
 	}
-	reported := func() uint64 { return m.CompanionState(access).RecentGen }
+	reported := func() string { return m.CompanionState(access).RecentGen }
 	other := Access{ThreadID: "other", Workspace: access.Workspace}
 	if _, err := m.Open(t.Context(), other, "https://example.test/other", OpenOptions{}); err != nil {
 		t.Fatal(err)
@@ -224,12 +225,37 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 			t.Fatalf("%s: %v", forget.name, err)
 		}
 		after := reported()
-		if after <= before {
-			t.Fatalf("%s: the generation went from %d to %d", forget.name, before, after)
+		if after == before {
+			t.Fatalf("%s: the generation stayed %q", forget.name, after)
 		}
 		if forget.pushes && lastPushed(access.ThreadID) != after {
-			t.Fatalf("%s: the last push carried %d, want %d", forget.name, lastPushed(access.ThreadID), after)
+			t.Fatalf("%s: the last push carried %q, want %q", forget.name, lastPushed(access.ThreadID), after)
 		}
+	}
+}
+
+// A forget changes the generation as a JavaScript client reads the pushed
+// state, where every JSON number is a double: a switch to Private with the
+// same active tab still drops the field's list.
+func TestTheForgetGenerationChangesOnTheWire(t *testing.T) {
+	m, access, _, _ := newNavigateFixture(t, false)
+	wire := func() any {
+		raw, err := json.Marshal(m.CompanionState(access))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded["recentGen"]
+	}
+	before := wire()
+	if err := m.SetJar(access, JarPrivate); err != nil {
+		t.Fatal(err)
+	}
+	if after := wire(); after == before {
+		t.Fatalf("after a forget the wire generation is still %v", after)
 	}
 }
 
