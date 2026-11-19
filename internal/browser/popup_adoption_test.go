@@ -543,6 +543,43 @@ func TestAParkedFinishedDownloadOverTheCapIsNotKept(t *testing.T) {
 	awaitRemoved(t, file)
 }
 
+// A popup's download not listed yet holds its bytes against the artifact
+// quota from its start, and one passing the per-download cap is stopped,
+// its file gone, before its popup's fate; the fate lists it canceled.
+func TestAParkedDownloadIsBoundedBeforeItsFate(t *testing.T) {
+	manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	before := manager.artifactBytes.Load()
+	file := engineArtifact(t, manager, "dl-1")
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("the popup's download was refused")
+	}
+	if got := manager.artifactBytes.Load() - before; got != maxDownloadBytes {
+		t.Fatalf("a parked download reserved %d artifact bytes, want %d", got, maxDownloadBytes)
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadInProgress, maxDownloadBytes+1))
+	awaitRemoved(t, file)
+	if got := engine.cancels(); !slices.Equal(got, []string{"dl-1"}) {
+		t.Fatalf("the engine canceled %q before the popup's fate, want dl-1", got)
+	}
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	wantDownloads(t, manager, "popup", fmt.Sprintf("dl-1 canceled %d", maxDownloadBytes+1))
+	if got := manager.artifactBytes.Load(); got != before {
+		t.Fatalf("after the fate %d artifact bytes are reserved, want %d", got, before)
+	}
+}
+
+// Parked downloads past the artifact quota are refused as they start.
+func TestParkedDownloadsStopAtTheArtifactQuota(t *testing.T) {
+	manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	manager.artifactBytes.Store(maxArtifactRootBytes - maxDownloadBytes)
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("a parked download within the quota was refused")
+	}
+	if popupDownload(manager, engine, "popup", "dl-2", opener) {
+		t.Fatal("a parked download past the artifact quota was admitted")
+	}
+}
+
 // A popup's download refused at its fate (here its workspace's quota) is
 // listed in no tab, and its file in the jar's download directory goes with
 // it: nothing keeps it, so it would sit outside every quota.

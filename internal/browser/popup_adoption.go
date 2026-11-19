@@ -35,6 +35,10 @@ import (
 // page takes, or its workspace refuses, is refused: its engine cancels it
 // and the file AO keeps for it (staged or an artifact) goes; WebView2's
 // finished file stays in the Downloads folder, where it saved it itself.
+// On an engine whose downloads are AO's, a parked download reserves its
+// bytes against the artifact quota as it starts, or is refused, and one
+// whose progress passes the per-download cap is stopped then; its workspace
+// quota applies at its listing.
 //
 // Its engine settles a running one as it would any: on WebView2 the
 // launcher cancels it with the popup's page and the engine ends it
@@ -63,9 +67,15 @@ type parkedPopup struct {
 	timer     *time.Timer
 }
 
+// parkedDownload is one download of a popup not listed yet. On an engine
+// whose downloads are AO's, reserved is whether it holds maxDownloadBytes
+// of the artifact quota, and capped whether it passed maxDownloadBytes,
+// after which it takes no further progress. Guarded by m.parkMu.
 type parkedDownload struct {
-	start  downloadStart
-	newest *downloadProgress
+	start    downloadStart
+	newest   *downloadProgress
+	reserved bool
+	capped   bool
 }
 
 // popupFate is what became of a popup: listed is the driver handle of its
@@ -210,26 +220,51 @@ func (m *Manager) parkDownload(event downloadStart) bool {
 	if len(popup.downloads) >= maxParkedDownloads {
 		return false
 	}
+	d := &parkedDownload{start: event}
+	// Its workspace is known only at its fate; until then the artifact
+	// quota bounds what parked downloads write.
+	if m.downloadsToArtifacts() {
+		if !m.reserveArtifacts(maxDownloadBytes) {
+			return false
+		}
+		d.reserved = true
+	}
 	popup.openers = mergeOpeners(popup.openers, event.Openers)
-	popup.downloads = append(popup.downloads, &parkedDownload{start: event})
+	popup.downloads = append(popup.downloads, d)
 	m.parkedIDs[event.ID] = event.Popup
 	return true
 }
 
 // parkProgressLocked keeps the newest progress of a parked download, and
-// answers whether id is one. The caller holds m.parkMu.
+// answers whether id is one. One past maxDownloadBytes on an engine whose
+// downloads are AO's is stopped then, keeping that progress, which lists
+// it canceled over the cap at its fate. The caller holds m.parkMu.
 func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 	handle, ok := m.parkedIDs[event.ID]
 	if !ok {
 		return false
 	}
 	for _, d := range m.parked[handle].downloads {
-		if d.start.ID == event.ID {
-			newest := event
-			d.newest = &newest
+		if d.start.ID != event.ID || d.capped {
+			continue
+		}
+		newest := event
+		d.newest = &newest
+		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && event.State != downloadCanceled {
+			d.capped = true
+			m.stopParked(d)
 		}
 	}
 	return true
+}
+
+// releaseParked returns a parked download's artifact reservation. The
+// caller holds m.parkMu.
+func (m *Manager) releaseParked(d *parkedDownload) {
+	if d.reserved {
+		d.reserved = false
+		m.settleArtifactReservation(maxDownloadBytes, 0)
+	}
 }
 
 // resolveParked records the fate of popup handle: listed as p, or, with p
@@ -265,6 +300,8 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 	}
 	target := m.fateTarget(fate)
 	for _, d := range popup.downloads {
+		// Its listing reserves against its workspace as any start does.
+		m.releaseParked(d)
 		if target == nil || !m.admitTo(target, d.start) {
 			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
 			m.refuseParked(d)
@@ -276,10 +313,17 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 	}
 }
 
-// refuseParked ends a parked download no tab took: its engine cancels a
-// running one, and the file AO keeps for it, staged or in the jar's
-// download directory, goes once the cancel returns.
+// refuseParked ends a parked download no tab took: its reservation
+// returns, and it stops (stopParked). The caller holds m.parkMu.
 func (m *Manager) refuseParked(d *parkedDownload) {
+	m.releaseParked(d)
+	m.stopParked(d)
+}
+
+// stopParked has the engine cancel a parked download still running, and
+// removes the file AO keeps for it, staged or in the jar's download
+// directory, once the cancel returns.
+func (m *Manager) stopParked(d *parkedDownload) {
 	m.mu.Lock()
 	var scope *jarScope
 	for _, candidate := range m.scopes {
@@ -339,6 +383,7 @@ func (m *Manager) dropParked() {
 		popup.timer.Stop()
 		for _, d := range popup.downloads {
 			log.Printf("browser: download %s of popup %s is listed in no tab: the browser closed", d.start.ID, handle)
+			m.releaseParked(d)
 			if m.downloadsStagedHere() {
 				m.releaseStagedDownload(d.start.ID)
 			}

@@ -55,7 +55,8 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			running := event.State == downloadInProgress
 			go func() {
 				if running {
-					if err := scope.profile.CancelDownload(event.ID); err != nil {
+					// One parked past the cap was canceled then.
+					if err := scope.profile.CancelDownload(event.ID); err != nil && !errors.Is(err, errDownloadEnded) {
 						log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
 					}
 				}
