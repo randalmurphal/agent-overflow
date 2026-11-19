@@ -3,11 +3,13 @@
 // the page scroll on keydown and activates once on keyup; the element's
 // blur disarms it, so moving focus away while Space is held cancels. A key
 // aimed at a control inside the element is that control's: the helper acts
-// only on events targeted at the element itself. Ctrl or Cmd with Enter
-// reaches `activate`, which reads them (open in a new pane) as a link does;
-// Alt with Enter is an app chord (alt+shift+enter) and is left to it.
+// only on events targeted at the element itself. Ctrl or Cmd with Enter or
+// Space reaches `activate` as the press's ActivationIntent (open in a new
+// pane), as a modified click does; Alt with Enter is an app chord
+// (alt+shift+enter) and is left to it.
 
 import { isEnterKey } from './localEnter';
+import { activationIntent, type ActivationIntent } from './modClick';
 
 export interface RoleButtonKeys {
   /** Returns whether the key was the button's own. */
@@ -20,14 +22,14 @@ function ownKey(event: KeyboardEvent): boolean {
   return event.target === event.currentTarget;
 }
 
-export function roleButtonKeys(activate: (event: KeyboardEvent) => void): RoleButtonKeys {
+export function roleButtonKeys(activate: (intent: ActivationIntent) => void): RoleButtonKeys {
   let spaceArmed = false;
   return {
     keydown(event) {
       if (!ownKey(event)) return false;
       if (isEnterKey(event) && !event.altKey) {
         event.preventDefault();
-        if (!event.repeat) activate(event);
+        if (!event.repeat) activate(activationIntent(event));
         return true;
       }
       if (event.key === ' ') {
@@ -41,7 +43,7 @@ export function roleButtonKeys(activate: (event: KeyboardEvent) => void): RoleBu
       if (!ownKey(event) || event.key !== ' ' || !spaceArmed) return;
       spaceArmed = false;
       event.preventDefault();
-      activate(event);
+      activate(activationIntent(event));
     },
     blur() {
       spaceArmed = false;

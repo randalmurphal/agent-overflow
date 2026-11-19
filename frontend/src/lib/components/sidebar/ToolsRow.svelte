@@ -26,7 +26,7 @@
   import { activeToolKind, isToolOpen, openTool } from '../../stores/toolPanes.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
-  import { isModClick } from '../../utils/modClick';
+  import { activationIntent, type ActivationIntent } from '../../utils/modClick';
   import { roleButtonKeys, type RoleButtonKeys } from '../../utils/roleButtonKeys';
   import {
     beginToolPaneDrag,
@@ -44,9 +44,14 @@
     return `${title} · ${workflowsCount} ${workflowsCount === 1 ? 'needs' : 'need'} you`;
   }
 
-  const keys = Object.fromEntries(
-    TOOL_PANES.map((tool) => [tool.kind, roleButtonKeys((event) => openTool(tool.kind, { newPane: isModClick(event) }))]),
-  ) as Record<ToolPaneKind, RoleButtonKeys>;
+  /** A tool's one activation, from a click or from Enter or Space. */
+  function activate(kind: ToolPaneKind, intent: ActivationIntent): void {
+    openTool(kind, { newPane: intent.openInNewPane });
+  }
+
+  const keys = new Map<ToolPaneKind, RoleButtonKeys>(
+    TOOL_PANES.map((tool) => [tool.kind, roleButtonKeys((intent) => activate(tool.kind, intent))]),
+  );
 
   function handleDragStart(event: DragEvent, kind: ToolPaneKind): void {
     if (compact || !event.dataTransfer) {
@@ -80,10 +85,10 @@
         pressed,
         class: `compact:select-none ${isActive ? 'min-w-0 flex-1 justify-start' : 'shrink-0 justify-center px-2'}`,
       })}
-      onclick={(event) => openTool(tool.kind, { newPane: isModClick(event) })}
-      onkeydown={(event) => keys[tool.kind].keydown(event)}
-      onkeyup={(event) => keys[tool.kind].keyup(event)}
-      onblur={() => keys[tool.kind].blur()}
+      onclick={(event) => activate(tool.kind, activationIntent(event))}
+      onkeydown={(event) => keys.get(tool.kind)?.keydown(event)}
+      onkeyup={(event) => keys.get(tool.kind)?.keyup(event)}
+      onblur={() => keys.get(tool.kind)?.blur()}
       ondragstart={(event) => handleDragStart(event, tool.kind)}
       ondragend={endToolPaneDrag}
     >
