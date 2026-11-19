@@ -65,6 +65,9 @@ type fakeChromium struct {
 	onClose atomic.Pointer[func()]
 	// stallFrameTree leaves every Page.getFrameTree unanswered.
 	stallFrameTree atomic.Bool
+	// stallBrowserCalls leaves every Target.closeTarget and
+	// Browser.cancelDownload unanswered.
+	stallBrowserCalls atomic.Bool
 }
 
 // writeFakeChromium installs the script and the endpoint behind it.
@@ -99,6 +102,10 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 			// chromedp asks the fresh target what `self` is, to find out
 			// whether it attached to a worker. A page answers Window.
 			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
+		case "Target.closeTarget", "Browser.cancelDownload":
+			if browser.stallBrowserCalls.Load() {
+				return fakeCDPNoReply{}
+			}
 		case "Page.getFrameTree":
 			if browser.stallFrameTree.Load() {
 				return fakeCDPNoReply{}
@@ -964,6 +971,37 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 		_, err := os.Stat(finished)
 		return errors.Is(err, fs.ErrNotExist)
 	})
+}
+
+// A discarded popup's close and a download's cancel end when a connected
+// Chromium stops answering them: the popup's discard holds its reservation
+// until it returns, and a page's close waits on its downloads' cancels.
+func TestHeadlessProfileBoundsItsBrowserCalls(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	engine.closeTimeout = 50 * time.Millisecond
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	engine.bindPage("P-1", profile)
+	browser.stallBrowserCalls.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		engine.DiscardPage("P-1")
+		done <- profile.CancelDownload("G-1")
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancel Chromium never answered succeeded")
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("a discard or cancel Chromium never answers did not end")
+	}
+	if _, bound := engine.profileForPage("P-1"); bound {
+		t.Fatal("the discarded page is still bound")
+	}
 }
 
 // A download in a popup's main frame names the popup, its openers as the

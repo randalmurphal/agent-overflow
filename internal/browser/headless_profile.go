@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -122,7 +124,7 @@ func (p *headlessProfile) CancelDownload(id string) error {
 	if !ok {
 		return fmt.Errorf("browser: profile %s has no running browser", p.handle)
 	}
-	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
+	if err := callBounded(browserCtx, p.engine.closeTimeout, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
 		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
 	}
 	return nil
@@ -226,7 +228,18 @@ func (p *headlessProfile) closeTarget(handle string) {
 		return
 	}
 	p.engine.unbindPage(handle)
-	if _, err := chromedp.CallBrowser(browserCtx, target.CloseTarget, target.CloseTargetParams{TargetID: target.ID(handle)}); err != nil {
+	if err := callBounded(browserCtx, p.engine.closeTimeout, target.CloseTarget, target.CloseTargetParams{TargetID: target.ID(handle)}); err != nil {
 		p.engine.logf("browser: close discarded page %s: %v", handle, err)
 	}
+}
+
+// callBounded sends one browser-level command on browserCtx, bounded by
+// timeout: its callers (a popup's discard, which holds the popup's
+// reservation until it returns, a download's cancel, which a page's close
+// waits on) must end when a connected Chromium stops answering.
+func callBounded[P, R any](browserCtx context.Context, timeout time.Duration, cmd cdp.Command[P, R], params P) error {
+	ctx, cancel := context.WithTimeout(browserCtx, timeout)
+	defer cancel()
+	_, err := chromedp.CallBrowser(ctx, cmd, params)
+	return err
 }

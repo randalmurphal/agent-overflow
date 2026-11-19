@@ -55,7 +55,8 @@ const (
 	// chromiumCloseTimeout bounds how long a persisted profile's Chromium is
 	// given to exit when asked (headlessProfile.closeBrowser). It exits in
 	// about a tenth of a second; one that takes this long is wedged, and it
-	// is killed.
+	// is killed. It bounds a discarded page's close and a download's cancel
+	// too (callBounded).
 	chromiumCloseTimeout = 5 * time.Second
 	// headlessAttachTimeout bounds one page's attach to its target: the
 	// attach, its domains and its frame tree (startCDPPage).
