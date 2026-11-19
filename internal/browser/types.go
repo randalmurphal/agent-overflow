@@ -392,6 +392,9 @@ type DownloadInfo struct {
 	// reservation is the quota a download AO keeps holds until it settles
 	// (quota.Reservation), nil for one that holds none.
 	reservation *quota.Reservation
+	// source is the file AO had the engine write the download into, named
+	// at admission, which its discard removes (downloads_discard.go).
+	source downloadFile
 	// key is the download's entry in its thread's list (downloads_thread.go).
 	key string
 	// cancelRequested is set while the user's cancel is with the engine, so

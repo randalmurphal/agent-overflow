@@ -576,8 +576,11 @@ func TestAParkedDownloadIsBoundedBeforeItsFate(t *testing.T) {
 	}
 	manager.adoptPopup(engine.popup(opener, "popup"))
 	wantDownloads(t, manager, "popup", fmt.Sprintf("dl-1 canceled %d", maxDownloadBytes+1))
-	if got := manager.artifactBytes.Used(); got != before {
-		t.Fatalf("after the fate %d artifact bytes are reserved, want %d", got, before)
+	// Its row's discard settles the reservation once its file is gone.
+	for deadline := time.Now().Add(hostedTestDeadline); manager.artifactBytes.Used() != before; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("after the fate %d artifact bytes are reserved, want %d", manager.artifactBytes.Used(), before)
+		}
 	}
 }
 

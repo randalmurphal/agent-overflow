@@ -31,10 +31,10 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	// The address is display data from here, bounded once as it enters, in
 	// a copy of its own, before anything parks or lists it.
 	event.URL = strings.Clone(truncateUTF8(event.URL, maxBrowserURLBytes))
-	p, _ := m.pageForFrame(event.Frame)
+	p, scope := m.pageForFrame(event.Frame)
 	switch {
 	case p != nil:
-		return m.admitTo(p, event, nil)
+		return m.admitTo(p, event, m.downloadFileOf(scope, event.ID), nil)
 	case event.Popup != "":
 		// A popup not listed yet: its fate lists it (popup_adoption.go).
 		return m.parkDownload(event)
@@ -42,12 +42,12 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	return downloadUnowned
 }
 
-// admitTo lists a starting download in p, its owner. It answers
-// downloadRefused when p left (its log ended) or, on an engine whose
-// downloads are AO's, p's workspace refuses the reservation, which the
-// row then says. A parked download's listing (parked set) takes its
-// reservation over.
-func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDownload) downloadAdmission {
+// admitTo lists a starting download in p, its owner, with file, the file
+// its engine writes it into. It answers downloadRefused when p left (its
+// log ended) or, on an engine whose downloads are AO's, p's workspace
+// refuses the reservation, which the row then says. A parked download's
+// listing (parked set) takes its file and reservation over.
+func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile, parked *parkedDownload) downloadAdmission {
 	authority := p.authority
 	source := p.cachedInfo().URL
 	if source == "" || source == "about:blank" {
@@ -70,15 +70,21 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDow
 	}
 	switch {
 	case parked != nil:
-		// Its listing moves its reservation to its row: its bytes stay held,
-		// against the workspace they were taken from.
+		// Its listing moves its file and reservation to its row: its bytes
+		// stay held, against the workspace they were taken from.
 		entry.reservation = quota.Take(&parked.reservation)
+		entry.source, parked.file = parked.file, downloadFile{}
 	case m.downloadsToArtifacts():
 		reservation, err := m.reserveDownload(authority)
 		if err != nil {
+			// Refused: its engine cancels it and removes its file.
 			entry.State, entry.Error = downloadStateCanceled, err.Error()
+		} else {
+			entry.source = file
 		}
 		entry.reservation = reservation
+	default:
+		entry.source = file
 	}
 	note := m.noteDownloadStartLocked(p, held.add(entry), source)
 	held.release()
@@ -99,10 +105,4 @@ func (m *Manager) reserveDownload(authority *workspaceAuthority) (*quota.Reserva
 		return nil, errNoWorkspace
 	}
 	return m.reserveArtifacts(maxDownloadBytes, authority.downloadBytes)
-}
-
-// releaseDownloadLocked returns a download's whole reservation, for one that
-// ends with no file kept. The caller holds p's download log.
-func (m *Manager) releaseDownloadLocked(_ *managedPage, entry *DownloadInfo) {
-	quota.Take(&entry.reservation).Release()
 }

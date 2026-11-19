@@ -1111,7 +1111,7 @@ func (m *Manager) closeAllPages(t *testing.T, access Access) {
 // A scope with no artifact directory, and a download with no staged file,
 // has no partial file of AO's to remove: the engine id is never taken as a
 // path.
-func TestRemovePartialDownloadNeedsAFileOfAOs(t *testing.T) {
+func TestADiscardNeedsAFileOfAOs(t *testing.T) {
 	for _, mode := range downloadModes {
 		t.Run(mode.name, func(t *testing.T) {
 			manager, _, _, _ := newDownloadManagerFor(t, mode.saving)
@@ -1119,8 +1119,8 @@ func TestRemovePartialDownloadNeedsAFileOfAOs(t *testing.T) {
 			if err := os.WriteFile("dl-1", []byte("not AO's"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			manager.removePartialDownload(&jarScope{}, "dl-1")
-			manager.removePartialDownload(nil, "dl-1")
+			manager.finishDiscard(downloadDiscard{id: "dl-1", file: manager.downloadFileOf(&jarScope{}, "dl-1")})
+			manager.finishDiscard(downloadDiscard{id: "dl-1", file: manager.downloadFileOf(nil, "dl-1")})
 			if _, err := os.Stat("dl-1"); err != nil {
 				t.Fatalf("a download with no file of AO's removed one: %v", err)
 			}

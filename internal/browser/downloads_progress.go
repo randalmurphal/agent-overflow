@@ -67,29 +67,29 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && !event.State.stopped() {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
-		m.releaseDownloadLocked(p, entry)
+		discard := entry.discard()
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
 		m.publishDownloads(note)
-		if scope != nil {
-			running := event.State.running()
-			go func() {
-				if running {
-					// One parked past the cap was canceled then.
-					if err := scope.profile.CancelDownload(event.ID); err != nil && !errors.Is(err, errDownloadEnded) {
-						log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
-					}
+		// One parked past the cap was canceled then.
+		cancel := event.State.running() && scope != nil
+		go func() {
+			if cancel {
+				if err := scope.profile.CancelDownload(event.ID); err != nil && !errors.Is(err, errDownloadEnded) {
+					log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
 				}
-				m.removePartialDownload(scope, event.ID)
-			}()
-		}
+			}
+			m.finishDiscard(discard)
+		}()
 		return
 	}
 	if event.State == downloadCompleted && saving == downloadsStaged {
 		m.publishFinishedDownload(p, held, entry, event)
 		return
 	}
-	removePartial := false
+	// keep is false for an end that keeps no file: what the engine wrote,
+	// staged or an artifact, is a partial file, which goes.
+	keep := true
 	switch event.State {
 	case downloadCompleted:
 		entry.State = downloadStateCompleted
@@ -111,14 +111,14 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			if err != nil {
 				entry.Error = err.Error()
 			}
-		} else if scope != nil && p.authority != nil {
+		} else if entry.source.kind == artifactDownloadFile && p.authority != nil {
 			// The engine writes into its jar's directory; the finished file
 			// moves to the page's workspace's.
 			source := event.FilePath
 			if source == "" {
-				source = filepath.Join(scope.downloadDir, filepath.Base(event.ID))
+				source = entry.source.path
 			}
-			if !pathInside(scope.downloadDir, source) {
+			if !pathInside(filepath.Dir(entry.source.path), source) {
 				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
 			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
 				entry.State, entry.Error = downloadStateFailed, moveErr.Error()
@@ -135,10 +135,9 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 				entry.Bytes = kept
 			}
 			quota.Take(&entry.reservation).Settle(kept)
+			entry.source = downloadFile{}
 		} else {
-			// Nothing is kept: the engine's file goes with its reservation.
-			m.releaseDownloadLocked(p, entry)
-			removePartial = true
+			keep = false
 		}
 	case downloadCanceled:
 		// The cancel the user asked for, which needs no reason.
@@ -156,17 +155,17 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	case downloadInProgress, downloadCancelRefused:
 	}
 	if event.State.stopped() {
-		m.releaseDownloadLocked(p, entry)
-		// A download that stopped, canceled or failed, leaves nothing but
-		// the file AO had the engine write, staged or an artifact, which
-		// goes.
-		removePartial = true
+		keep = false
+	}
+	var discard downloadDiscard
+	if !keep {
+		discard = entry.discard()
 	}
 	note := m.noteDownloadLocked(p, entry)
 	held.release()
-	if removePartial {
-		// What the engine wrote is a partial file.
-		m.removePartialDownload(scope, event.ID)
+	if !keep {
+		// The engine reported its end, so it writes the file no more.
+		m.finishDiscard(discard)
 	}
 	m.publishDownloads(note)
 }
@@ -198,23 +197,6 @@ func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, 
 	return path, file, nil
 }
 
-// removePartialDownload removes the file an engine writing into AO's
-// directories was streaming a download into, once the download stopped:
-// its staged file, or its handle-named artifact. An engine that saves to
-// the user's Downloads folder itself removes its own partial file.
-func (m *Manager) removePartialDownload(scope *jarScope, id string) {
-	if m.downloadsStagedHere() {
-		m.releaseStagedDownload(id)
-		return
-	}
-	if scope == nil || scope.downloadDir == "" {
-		return
-	}
-	if err := os.Remove(filepath.Join(scope.downloadDir, filepath.Base(id))); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		log.Printf("browser: remove the partial download %s: %v", id, err)
-	}
-}
-
 // publishFinishedDownload settles a staged download the engine finished:
 // its file moves from the staging directory into the Downloads folder
 // beside it (publishDownload) and the row completes with the published
@@ -235,9 +217,10 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 	}
 	if failure != "" {
 		entry.State, entry.Error = downloadStateFailed, failure
+		discard := entry.discard()
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
-		m.releaseStagedDownload(event.ID)
+		m.finishDiscard(discard)
 		m.publishDownloads(note)
 		return
 	}
@@ -254,6 +237,8 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 	entry = held.entry(event.ID)
 	if entry != nil {
 		entry.publishing = false
+		// Its staged file is released, published or not.
+		entry.source = downloadFile{}
 		if err != nil {
 			entry.State, entry.Error = downloadStateFailed, err.Error()
 		} else {

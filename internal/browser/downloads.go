@@ -114,12 +114,12 @@ func (m *Manager) pageForDownload(id string) (*managedPage, *jarScope) {
 }
 
 // endedDownloads are the downloads a page left running when it stopped being
-// the Manager's (pageLeftLocked): already settled as canceled with their
-// reservations released, still to be published and stopped in the engine.
+// the Manager's (pageLeftLocked): already settled as canceled, still to be
+// published, stopped in the engine and discarded.
 type endedDownloads struct {
-	scope *jarScope
-	notes []downloadNote
-	ids   []string
+	scope    *jarScope
+	notes    []downloadNote
+	discards []downloadDiscard
 }
 
 // pageLeftLocked takes p out of scope's live pages. Every way a page stops
@@ -146,26 +146,25 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 			continue
 		}
 		entry.State, entry.Error = downloadStateCanceled, reason
-		m.releaseDownloadLocked(p, entry)
 		ended.notes = append(ended.notes, m.noteDownloadLocked(p, entry))
-		ended.ids = append(ended.ids, entry.ID)
+		ended.discards = append(ended.discards, entry.discard())
 	}
 	held.release()
 	return ended
 }
 
 // stopEndedDownloads asks the engine to stop the downloads a page left
-// running. On an engine writing into AO's directory it removes what they
-// wrote: their entries already say canceled, so a file that finished
-// meanwhile goes too. An engine saving to the user's Downloads folder
-// itself removes its own partial file on the cancel, and a file that
-// finished first stays there.
+// running, then discards each (finishDiscard). On an engine writing into
+// AO's directory that removes what they wrote: their entries already say
+// canceled, so a file that finished meanwhile goes too. An engine saving
+// to the user's Downloads folder itself removes its own partial file on
+// the cancel, and a file that finished first stays there.
 func (m *Manager) stopEndedDownloads(ended endedDownloads) {
-	for _, id := range ended.ids {
-		if err := ended.scope.profile.CancelDownload(id); err != nil && !errors.Is(err, errDownloadEnded) {
-			log.Printf("browser: cancel download %s of a page that went: %v", id, err)
+	for _, discard := range ended.discards {
+		if err := ended.scope.profile.CancelDownload(discard.id); err != nil && !errors.Is(err, errDownloadEnded) {
+			log.Printf("browser: cancel download %s of a page that went: %v", discard.id, err)
 		}
-		m.removePartialDownload(ended.scope, id)
+		m.finishDiscard(discard)
 	}
 }
 

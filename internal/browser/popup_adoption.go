@@ -3,10 +3,7 @@ package browser
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
-	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -47,11 +44,12 @@ import (
 // On an engine whose downloads are AO's, a parked download holds what a
 // listed one does from its start: maxDownloadBytes of its workspace's
 // allowance, the workspace of the nearest page that opened it, and of the
-// artifact quota, or it is refused. Its listing takes that reservation over
-// (admitTo), and its refusal returns it. One whose progress passes the
-// per-download cap is stopped then. A parked download keeps the jar it is
-// written in, whose directory holds its file until it is listed or removed,
-// whether or not the jar is still open.
+// artifact quota, or it is refused. Its listing takes that reservation and
+// its file over (admitTo), and its refusal discards both, the file first
+// (downloads_discard.go). One whose progress passes the per-download cap
+// is stopped then. A parked download keeps the jar it is written in, whose
+// directory holds its file until it is listed or removed, whether or not
+// the jar is still open.
 //
 // Its engine settles a running one as it would any: on WebView2 the
 // launcher cancels it with the popup's page and the engine ends it
@@ -94,6 +92,9 @@ type parkedDownload struct {
 	// the artifact root's, from its start until its row takes it (admitTo)
 	// or it is refused.
 	reservation *quota.Reservation
+	// file is the file the engine writes it into, in scope's directory,
+	// which its listing hands to its row (admitTo).
+	file downloadFile
 	// phase is whether AO has stopped it (stop).
 	phase parkedPhase
 }
@@ -247,7 +248,10 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 		if target == nil {
 			return downloadUnowned
 		}
-		return m.admitTo(target, event, nil)
+		m.mu.Lock()
+		scope := m.profileScopeLocked(event.Profile)
+		m.mu.Unlock()
+		return m.admitTo(target, event, m.downloadFileOf(scope, event.ID), nil)
 	}
 	popup := m.parked[event.Popup]
 	var openers []string
@@ -264,6 +268,7 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 	d := &parkedDownload{start: event, scope: m.profileScopeLocked(event.Profile)}
 	authority := m.openerAuthorityLocked(append([]string{event.Popup}, openers...))
 	m.mu.Unlock()
+	d.file = m.downloadFileOf(d.scope, event.ID)
 	if m.downloadsToArtifacts() {
 		// Its workspace's allowance and the artifact quota, as a listed
 		// download's, before the engine writes a byte of it.
@@ -318,16 +323,12 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 		newest := event
 		d.newest = &newest
 		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && !event.State.stopped() && d.stop() {
-			m.stopParked(d)
+			// Its file goes now; its reservation stays for its row, which
+			// lists it canceled over the cap, or its refusal.
+			m.stopParked(d, downloadDiscard{id: d.start.ID, file: d.file})
 		}
 	}
 	return true
-}
-
-// releaseParked returns a parked download's reservation. The caller holds
-// m.parkMu.
-func (m *Manager) releaseParked(d *parkedDownload) {
-	quota.Take(&d.reservation).Release()
 }
 
 // profileScopeLocked answers the open jar whose profile has handle, or nil.
@@ -396,7 +397,7 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 		}
 		// Its listing takes its reservation over (admitTo), which only a
 		// tab that left meanwhile refuses.
-		if m.admitTo(target, d.start, d) != downloadAdmitted {
+		if m.admitTo(target, d.start, d.file, d) != downloadAdmitted {
 			log.Printf("browser: download %s of popup %s is listed in no tab: its tab closed as it was listed", d.start.ID, handle)
 			m.refuseParked(d)
 			continue
@@ -407,19 +408,23 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 	}
 }
 
-// refuseParked ends a parked download no tab took: its reservation
-// returns, and it stops (stopParked). The caller holds m.parkMu.
+// refuseParked ends a parked download no tab took: it stops, once
+// (stopParked), and is discarded, its file removed before its reservation
+// settles. The caller holds m.parkMu.
 func (m *Manager) refuseParked(d *parkedDownload) {
-	m.releaseParked(d)
+	discard := d.discard()
 	if d.stop() {
-		m.stopParked(d)
+		m.stopParked(d, discard)
+		return
 	}
+	// Stopped before: its engine was asked to cancel it then.
+	go m.finishDiscard(discard)
 }
 
 // stopParked has the engine cancel a parked download still running, and
-// removes the file AO keeps for it, staged or in the jar's download
-// directory, once the cancel returns.
-func (m *Manager) stopParked(d *parkedDownload) {
+// then finishes discard, its file and whatever of its reservation it took.
+// The caller holds m.parkMu.
+func (m *Manager) stopParked(d *parkedDownload, discard downloadDiscard) {
 	scope := d.scope
 	m.mu.Lock()
 	open := scope != nil && m.scopes[scope.jar.key] == scope
@@ -433,7 +438,7 @@ func (m *Manager) stopParked(d *parkedDownload) {
 				log.Printf("browser: cancel download %s listed in no tab: %v", d.start.ID, err)
 			}
 		}
-		m.removePartialDownload(scope, d.start.ID)
+		m.finishDiscard(discard)
 	}()
 }
 
@@ -473,39 +478,21 @@ func (m *Manager) fates() *boundedMap[string, popupFate] {
 }
 
 // dropParked refuses every parked download and forgets every fate, for a
-// closing browser. It answers the files the parked downloads of an engine
-// keeping them as artifacts were written to, in their jars' download
-// directories, for the caller to remove once the engine that writes them
-// has stopped.
-func (m *Manager) dropParked() []string {
+// closing browser. It answers their discards, for the caller to finish
+// once the engine that writes their files has stopped.
+func (m *Manager) dropParked() []downloadDiscard {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
-	var files []string
+	var discards []downloadDiscard
 	for handle, popup := range m.parked {
 		popup.timer.Stop()
 		for _, d := range popup.downloads {
 			log.Printf("browser: download %s of popup %s is listed in no tab: the browser closed", d.start.ID, handle)
-			m.releaseParked(d)
-			if m.downloadsStagedHere() {
-				m.releaseStagedDownload(d.start.ID)
-			}
-			if d.scope != nil && d.scope.downloadDir != "" {
-				files = append(files, filepath.Join(d.scope.downloadDir, filepath.Base(d.start.ID)))
-			}
+			discards = append(discards, d.discard())
 		}
 	}
 	m.parked, m.parkedIDs, m.popupFates = nil, nil, nil
-	return files
-}
-
-// removeStoppedDownloads removes the files of downloads whose engine has
-// stopped writing them.
-func removeStoppedDownloads(files []string) {
-	for _, file := range files {
-		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("browser: remove the download file %s: %v", file, err)
-		}
-	}
+	return discards
 }
 
 // mergeOpeners appends to openers those of more it lacks, in order,
