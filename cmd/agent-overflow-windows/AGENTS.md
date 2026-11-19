@@ -58,7 +58,9 @@ their validation at this process boundary.
   `SetThreadExecutionState`. Reject unknown modes.
 - Browser-host directives go through `internal/webview2host`. Create the host
   lazily, answer result-bearing `create` and `clear-data` operations even when
-  construction fails, serialize reports off the UI thread, hand a report
+  construction fails, serialize reports off the UI thread
+  (`webview2host.ReportQueue`, where a download's waiting progress is
+  replaced by its newer progress), hand a report
   that did not reach the backend back to the host (`Host.ReportUndelivered`),
   and close the host before its parent window and backend. The host's
   `OnMain` runs a turn inline on the UI thread and `Post` queues one for

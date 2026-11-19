@@ -67,7 +67,6 @@ import (
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/pagehost"
-	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
@@ -555,10 +554,10 @@ type launcherApp struct {
 	// get the same switches the app window got.
 	disableGPUVsync bool
 	// browserReports serializes the host's answers back to the backend.
-	// It is deliberately NOT under mu: its jobs take mu themselves, and
-	// submission happens from a WebView2 completion handler on the UI
-	// thread, which must never block. Zero value ready.
-	browserReports serialqueue.Queue
+	// It is deliberately NOT under mu: its deliveries take mu themselves,
+	// and submission happens from a WebView2 completion handler on the UI
+	// thread, which must never block.
+	browserReports *webview2host.ReportQueue
 	// paneGeometry holds the SPA's own browser pane geometry reports, posted
 	// to the launcher directly (handlePaneGeometryMessage). It exists before
 	// the browser host and is safe from any goroutine.
@@ -1396,6 +1395,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		paneFocus:               webview2host.NewFocusIntents(),
 		chords:                  uikeys.NewPageChords(),
 	}
+	a.browserReports = webview2host.NewReportQueue(a.deliverBrowserReport)
 	if disableGPUVsync {
 		log.Printf("webview2: GPU vsync disabled by Settings > Performance (%s on the app window and the browser pane)", disableGPUVsyncArg)
 	}
