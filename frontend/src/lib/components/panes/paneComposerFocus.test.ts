@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   carryCaretIntoPane,
-  delayedFocusStillCurrent,
   focusPaneComposer,
   isEditingFocused,
   isEditingFocusedIn,
@@ -80,18 +79,6 @@ describe('paneComposerFocus', () => {
     carryCaretIntoPane('right');
     expect(document.activeElement).toBe(scroller);
     expect(section.hasAttribute('tabindex')).toBe(false);
-  });
-
-  // A terminal asked for focus mounts a frame later; by then the user may
-  // have moved into another pane, whose caret stays.
-  it('lets a delayed focus land only while focus is in its pane or nowhere', () => {
-    const a = mountPaneComposer('a');
-    const b = mountPaneComposer('b');
-    a.focus();
-    expect(delayedFocusStillCurrent(a)).toBe(true);
-    expect(delayedFocusStillCurrent(b)).toBe(false);
-    a.blur();
-    expect(delayedFocusStillCurrent(b)).toBe(true);
   });
 
   describe('restorePickerFocus', () => {

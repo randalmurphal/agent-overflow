@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserAction, browserCompanionAct, toPageId } from './browserActions';
+import { actInPane } from './browserActions';
+import { browserAction } from './browserActionWire';
+import { pageIdForTest, paneForTest } from '../../test/helpers/browserPane';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
   browserActionError,
-  noteBrowserActionError,
+  noteBrowserPaneError,
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { focusBrowserPage } from './browserPageFocus';
@@ -100,7 +102,6 @@ describe('handing the keyboard to the browser page', () => {
     ['the address bar refocused', () => address.focus()],
     ['a press outside the page area', () => composer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))],
     ['a tab switch', () => applyBrowserCompanionState({ ...shown, activePageId: 'b', seq: 99 })],
-    ['the pane unmounting', () => pane.release()],
   ])('withdraws a request still on its way when %s', async (_name, choose) => {
     deferFocusAnswers();
     const request = focusBrowserPage(THREAD, 'a', area);
@@ -114,6 +115,22 @@ describe('handing the keyboard to the browser page', () => {
     // Withdrawn once: a later choice sends nothing more.
     composer.focus();
     expect(withdrawals()).toHaveLength(1);
+  });
+
+  // The detach withdraws the mount's intent at the backend, and a pane
+  // that detached sends nothing more: the launcher is told at once.
+  it('withdraws a request still on its way at the launcher when the pane unmounts', async () => {
+    const detach = setBindingMock('BrowserCompanionPaneDetach', vi.fn(async () => {}));
+    deferFocusAnswers();
+    const request = focusBrowserPage(THREAD, 'a', area);
+    pane.release();
+    expect(posted.at(-1)).toBe('ao:pane-focus:{"mount":"mount-1","intent":1,"withdrawn":true}');
+    await vi.waitFor(() => expect(detach).toHaveBeenCalledWith('mount-1'));
+    expect(withdrawals()).toEqual([]);
+    answerFocus();
+    expect(await request).toBeNull();
+    composer.focus();
+    expect(withdrawals()).toEqual([]);
   });
 
   it('withdraws on the next choice however long the request took', async () => {
@@ -207,7 +224,7 @@ describe('handing the keyboard to the browser page', () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => {
       throw new Error('navigation refused');
     }));
-    await browserCompanionAct(THREAD, browserAction.navigate(toPageId('a'), 'https://example.test/x'));
+    await actInPane(paneForTest(THREAD), browserAction.navigate(pageIdForTest('a'), 'https://example.test/x'));
     applyBrowserCompanionState(refusal(3));
     expect(browserActionError(THREAD)).toBe('navigation refused');
     answerFocus();
@@ -217,7 +234,7 @@ describe('handing the keyboard to the browser page', () => {
     deferFocusAnswers();
     const fourth = focusBrowserPage(THREAD, 'a', area);
     setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
-    await browserCompanionAct(THREAD, browserAction.navigate(toPageId('a'), 'https://example.test/y'));
+    await actInPane(paneForTest(THREAD), browserAction.navigate(pageIdForTest('a'), 'https://example.test/y'));
     applyBrowserCompanionState(refusal(4));
     expect(browserActionError(THREAD)).toBe('refused 4');
     answerFocus();
@@ -233,7 +250,7 @@ describe('handing the keyboard to the browser page', () => {
     expect(browserActionError(THREAD)).toContain('pane mount not found');
 
     // The navigation the focus follows failed: its banner stays.
-    noteBrowserActionError(THREAD, 'navigation refused');
+    noteBrowserPaneError(paneForTest(THREAD), 'navigation refused');
     setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
     expect(await focusBrowserPage(THREAD, 'a', area)).toBeNull();
     expect(browserActionError(THREAD)).toBe('navigation refused');

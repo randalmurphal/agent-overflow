@@ -46,7 +46,7 @@ function surfaceFor(threadId: string, setVisible: (visible: boolean) => void = (
     workspacePath: '/tmp',
     setVisible,
     acquireResizeLease: () => null,
-    consumeFocusRequest: () => false,
+    consumeFocusRequest: () => null,
   };
 }
 
@@ -135,7 +135,7 @@ describe('terminal surface reconciliation', () => {
 
     await vi.waitFor(() => expect(ids('thread-L')).toEqual(['a']));
     expect(handle.activeTerminalID).toBe('a');
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('collapses the drawer and opens nothing when the re-read finds every terminal gone', async () => {

@@ -99,7 +99,8 @@ describe('browser commands', () => {
     ]);
   });
 
-  it('next and previous tab each send one relative step, also back to back with no state between', () => {
+  it('next and previous tab each send one relative step, also back to back with no state between', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     runCommand('browser.nextTab', ctx());
     runCommand('browser.nextTab', ctx());
@@ -125,7 +126,8 @@ describe('browser commands', () => {
     ]);
   });
 
-  it('reopen asks the backend for the last closed tab, from the chord too', () => {
+  it('reopen asks the backend for the last closed tab, from the chord too', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     runCommand('browser.reopenTab', ctx());
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reopen' }));
@@ -138,11 +140,23 @@ describe('browser commands', () => {
     expect(act).not.toHaveBeenCalled();
   });
 
-  it('new tab opens a tab the user asked for, which takes the address bar', () => {
+  it('new tab opens a tab the user asked for, which takes the address bar', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     runCommand('browser.newTab', ctx());
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new', mount: 'mount-1', select: 1 }));
     expect(addressFocusIntent(THREAD)).toBe('');
+  });
+
+  // Before its attach answers a pane has no place in its mount's order:
+  // its chords send nothing, and Mod+W is not taken, so it neither closes a
+  // tab nor the pane.
+  it('send nothing from a pane whose attach has not answered, and leave Mod+W untaken', () => {
+    focusPane('browser-main');
+    for (const id of ['browser.newTab', 'browser.reload', 'browser.nextTab', 'browser.prevTab', 'browser.reopenTab']) runCommand(id, ctx());
+    expect(act).not.toHaveBeenCalled();
+    expect(ctx().flags.browserPaneUnattached).toBe(true);
+    expect(closeFocusedBrowserTab()).toBe(false);
   });
 
   it('focus address focuses the mounted pane\'s bar, and nothing once it is gone', () => {

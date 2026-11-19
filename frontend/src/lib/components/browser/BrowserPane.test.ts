@@ -5,7 +5,9 @@ import BrowserPane from './BrowserPane.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
-import { applyBrowserCompanionState, noteBrowserActionError, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { applyBrowserCompanionState, noteBrowserPaneError, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { paneForTest } from '../../../test/helpers/browserPane';
+import { openBrowserTab } from '../../stores/browserActions';
 import { BROWSER_FIND_DEBOUNCE_MS, BROWSER_FIND_STOP_ATTEMPTS, BROWSER_FIND_STOP_RETRY_MS, resetBrowserFindForTest } from '../../stores/browserFind.svelte';
 import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind, resetPaneFindForTest } from '../../stores/paneFind.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
@@ -107,6 +109,30 @@ describe('<BrowserPane> suspended pages', () => {
       .filter((action) => action.kind === 'navigate');
     expect(navigations).toHaveLength(1);
     expect(navigations[0]).toMatchObject({ kind: 'navigate', pageId: 'a', address: 'notes.html' });
+  });
+
+  // The tabs a known state shows are not the pane's to act on until its
+  // attach answers: the chrome is unavailable, and a press sends nothing.
+  it('makes its chrome unavailable until its attach answers, and sends nothing from it', async () => {
+    applyBrowserCompanionState(state([page('a', false), page('b', false)]) as never);
+    let attach!: () => void;
+    setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
+      attach = () => resolve({ id: 'mount-1', state: state([page('a', false), page('b', false)]) });
+    }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a', false), page('b', false)])));
+    const view = render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD }) });
+    const chrome = view.getByTestId('browser-pane-chrome');
+    expect(chrome.inert).toBe(true);
+    expect(chrome.getAttribute('aria-busy')).toBe('true');
+    const tabs = view.getAllByTestId('browser-tab');
+    await fireEvent.click(tabs[1]);
+    expect(act).not.toHaveBeenCalled();
+
+    attach();
+    await waitFor(() => expect(chrome.inert).toBe(false));
+    expect(chrome.getAttribute('aria-busy')).toBe('false');
+    await fireEvent.click(view.getAllByTestId('browser-tab')[1]);
+    await waitFor(() => expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'b', mount: 'mount-1' })));
   });
 
   it('asks nothing for a live active page', async () => {
@@ -231,7 +257,7 @@ describe('<BrowserPane> find', () => {
     await vi.advanceTimersByTimeAsync(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
     const cleanup = await view.findByTestId('browser-find-cleanup-error');
     expect(cleanup.textContent).toBe('Find could not clear the page: fake engine: find stop failed');
-    noteBrowserActionError(THREAD, '');
+    noteBrowserPaneError(paneForTest(THREAD), '');
     await tick();
     expect(view.queryByTestId('browser-find-cleanup-error'), 'a browser action does not clear it').not.toBeNull();
     refusing = false;
@@ -411,6 +437,24 @@ describe('<BrowserPane> tab lifecycle', () => {
     expect(address.value).toBe('https://example.test/n');
     expect([address.selectionStart, address.selectionEnd]).toEqual([0, address.value.length]);
     expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  // The header's new tab opens the pane with the tab: the tab is ready
+  // before the pane's attach answers, and the bar takes focus once it does.
+  it('focuses the address of a tab ready before the pane attached, once the attach answers', async () => {
+    const ready = [page('n', false)];
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: THREAD, seq: 2, activePageId: 'n', visible: true, pages: ready, pageId: 'n' })));
+    let attach!: () => void;
+    setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
+      attach = () => resolve({ id: 'mount-1', state: { kind: 'state', threadId: THREAD, seq: 2, activePageId: 'n', visible: true, pages: ready } });
+    }));
+    const view = render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD, paneId: 'main' }) });
+    await openBrowserTab(THREAD, { focusAddress: true });
+    const address = view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement;
+    await tick();
+    expect(document.activeElement).not.toBe(address);
+    attach();
+    await waitFor(() => expect(document.activeElement).toBe(address));
   });
 
   it('leaves focus alone when the user acted before the new tab was ready', async () => {

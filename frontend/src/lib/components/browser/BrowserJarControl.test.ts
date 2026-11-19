@@ -11,6 +11,7 @@ import {
   resetBrowserCompanionForTest,
 } from '../../stores/browserCompanion.svelte';
 import { TransportError } from '../../transport/wsClient';
+import { setHostWindowFromBootstrap } from '../../transport/pageHost';
 
 const THREAD = 'thread-1';
 
@@ -102,6 +103,7 @@ describe('<BrowserJarControl>', () => {
   });
 
   it('asks on the backend refusal even when the pane shows no open tab', async () => {
+    const release = await attachPane();
     // A tab went live after the pane's last state: the backend's hold sees it.
     seed('worktree', [page('a', { suspended: true })]);
     const view = mount();
@@ -112,9 +114,37 @@ describe('<BrowserJarControl>', () => {
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Switch cookie jar' }));
     await waitFor(() => expect(act).toHaveBeenCalledTimes(2));
     expect(act.mock.calls[1][1]).toMatchObject({ kind: 'jar', jar: 'private', confirmed: true });
+    release();
+  });
+
+  // The confirmed switch is sent through the same checks as the first: not
+  // once this window lost the thread's browser, nor from a pane that closed
+  // while the question was up.
+  it.each([
+    ['this window no longer hosts the browser', () => setHostWindowFromBootstrap(false)],
+    ['the pane that asked detached', (release: () => void) => release()],
+  ])('sends no confirmed switch once %s', async (_name, lose) => {
+    const release = await attachPane();
+    seed('worktree', [page('a')]);
+    const view = mount();
+    try {
+      await fireEvent.click(view.getByTestId('browser-jar'));
+      await fireEvent.click(await view.findByTestId('browser-jar-thread'));
+      const dialog = await view.findByRole('dialog');
+      expect(act).toHaveBeenCalledTimes(1);
+      lose(release);
+      await fireEvent.click(within(dialog).getByRole('button', { name: 'Switch cookie jar' }));
+      await tick();
+      await Promise.resolve();
+      expect(act).toHaveBeenCalledTimes(1);
+    } finally {
+      setHostWindowFromBootstrap(true);
+      release();
+    }
   });
 
   it('switches without asking when the backend has no live tab, and does nothing for the current jar', async () => {
+    const release = await attachPane();
     live = false;
     seed('worktree', [page('a', { suspended: true }), page('b', { error: 'failed' })]);
     const view = mount();
@@ -129,6 +159,7 @@ describe('<BrowserJarControl>', () => {
     expect(view.queryByRole('dialog')).toBeNull();
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'jar', jar: 'private' });
     expect(act.mock.calls[0][1].confirmed).toBeFalsy();
+    release();
   });
 
   it('shows any other refusal in the banner and asks nothing', async () => {

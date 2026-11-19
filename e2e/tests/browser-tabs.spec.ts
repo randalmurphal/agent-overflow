@@ -14,7 +14,9 @@
 // or those to its right, and the menu or mod+shift+t reopens the last closed
 // tab where it was. The user's last selection wins when the backend
 // receives two in reverse order: of two tabs clicked with no gap the
-// second, and a click then next tab one past the clicked tab.
+// second, and a click then next tab one past the clicked tab. A close chord
+// the page claimed that arrives after a pane was promoted over the browser
+// closes nothing; once the browser is uncovered it closes the active tab.
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -328,4 +330,57 @@ test('the user\'s last tab selection wins when two arrive reversed', async ({ ha
     await page.keyboard.press('Control+Tab');
     await settled((clicked + 1) % 3);
   }
+});
+
+// A chord pressed in the native page arrives later as an `accelerator`
+// event naming the pane mount that showed the page. It acts in that pane or
+// nowhere: a pane promoted over the browser meanwhile is not closed by it.
+test('a chord from the page that arrives after a pane was promoted over it closes nothing', async ({ harness, page }) => {
+  let mount = '';
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO && frame.params?.[1]?.mount) mount = frame.params[1].mount;
+      server.send(message);
+    });
+    server.onMessage((message) => socket.send(message));
+  });
+  const threadId = await seedBrowserThread(harness, 'Browser chord replay');
+  for (const address of ['https://example.test/one', 'https://example.test/two']) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser chord replay').click();
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(2);
+  // A click names the pane's mount on the wire.
+  await tabs.nth(0).click();
+  await expect.poll(() => mount).not.toBe('');
+  await expect.poll(() => activeURL(harness, threadId)).toBe('https://example.test/one');
+
+  const close = process.platform === 'darwin' ? { key: 'w', meta: true } : { key: 'w', ctrl: true };
+  const pressInPage = () => harness.rpc('HarnessEmit', 'browser:companion-state', { kind: 'accelerator', threadId, mount, accelerator: close });
+  const thread = page.locator('section[data-pane-kind="thread"]');
+  const promote = thread.getByTestId('chat-header').getByTestId('pane-promote');
+  await promote.click();
+  await expect(thread).toHaveAttribute('data-pane-promoted', 'true');
+
+  await pressInPage();
+  // A frame sent after the chord on the same socket: once it shows, the
+  // chord has been handled.
+  await harness.rpc('HarnessEmit', 'thread:updated', { action: 'patch', id: threadId, title: 'Browser chord handled' });
+  await expect(page.getByText('Browser chord handled').first()).toBeVisible();
+  await expect(thread).toHaveCount(1);
+  await expect(thread).toHaveAttribute('data-pane-promoted', 'true');
+  expect(await tabURLs(harness, threadId)).toEqual(['https://example.test/one', 'https://example.test/two']);
+
+  // With the browser no longer covered, the same chord closes its active tab.
+  await promote.click();
+  await expect(thread).toHaveAttribute('data-pane-promoted', 'false');
+  await pressInPage();
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual(['https://example.test/two']);
+  await expect(thread).toHaveCount(1);
 });

@@ -32,7 +32,7 @@ function makeSurface() {
     workspacePath: '/workspace',
     setVisible: vi.fn(),
     acquireResizeLease: vi.fn(() => null),
-    consumeFocusRequest: vi.fn(() => false),
+    consumeFocusRequest: vi.fn(() => null),
     settleAfterAsyncMount: vi.fn(),
   };
 }

@@ -5,6 +5,7 @@ import BrowserDownloadsControlHarness from './BrowserDownloadsControlHarness.sve
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
 import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
+import { attachBrowserPaneForTest } from '../../../test/helpers/browserPane';
 
 const THREAD = 'thread-1';
 let seq = 0;
@@ -68,6 +69,7 @@ describe('<BrowserDownloadsControl>', () => {
       download('bad', { state: 'failed', error: 'net::ERR_FAILED' }),
       download('link', { name: 'notes.txt', error: 'the saved file is a link' }),
     ]);
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     await fireEvent.click(view.getByTestId('browser-downloads'));
     const list = await view.findByTestId('browser-downloads-list');
@@ -100,6 +102,7 @@ describe('<BrowserDownloadsControl>', () => {
 
   it('opens a download in a tab and closes the list', async () => {
     seed([download('img', { name: 'chart.png', openable: true })]);
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     await fireEvent.click(view.getByTestId('browser-downloads'));
     await fireEvent.click(await view.findByTestId('browser-download-open'));

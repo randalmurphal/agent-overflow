@@ -22,6 +22,7 @@
   import {
     getThreadTerminalState,
     registerTerminalSurface,
+    TERMINAL_FOCUS_REGION,
     terminalFocusRegion,
     terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
@@ -31,7 +32,7 @@
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
   import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
-  import { delayedFocusStillCurrent } from '../panes/paneComposerFocus';
+  import { intendFocus, paneFocusScope, type FocusIntent } from '../../utils/focusIntent';
   import { paneFindSurface } from '../panes/paneFindRegion';
   import { hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -63,20 +64,26 @@
   //     which run in builtinCommands and have no handle to this component.
   //   • In-component mouse handlers (＋ click, tab click, close-to-sibling) set
   //     it directly, since they already hold this $state.
-  let pendingFocus = $state(false);
+  let pendingFocus = $state.raw<FocusIntent | null>(null);
+
+  // A focus this surface asks for itself: the latest focus intent, which a
+  // later choice outside the pane, or a press outside its terminal, cancels.
+  function intendTerminalFocus(): FocusIntent {
+    return intendFocus(paneFocusScope(surface.paneId, TERMINAL_FOCUS_REGION));
+  }
 
   $effect(() => {
-    if (!pendingFocus || !bodyEl) return;
+    const intent = pendingFocus;
+    if (!intent || !bodyEl) return;
     const el = bodyEl;
-    pendingFocus = false;
+    pendingFocus = null;
     // Defer one frame past the mount flush so the terminal claims focus after
-    // any focus changes that ran during this commit (e.g. the composer's own
-    // mount/autofocus), rather than being immediately overridden by them.
-    // By then the user may have moved into another pane, whose caret stays.
+    // any focus changes that ran during this commit in its pane (e.g. the
+    // composer's own mount/autofocus), rather than being immediately
+    // overridden by them. A focus choice made since the intent (another
+    // pane, a dialog) canceled it, and that focus stays.
     requestAnimationFrame(() => {
-      const target = el.focusTarget();
-      if (target && !delayedFocusStillCurrent(target)) return;
-      el.focus();
+      intent.land(() => el.focus());
     });
   });
 
@@ -87,7 +94,8 @@
   // It returns true at most once per requestTerminalFocus(), so a remount can't
   // re-grab focus; the rAF effect above lands it once TerminalBody binds.
   $effect(() => {
-    if (surface.consumeFocusRequest()) pendingFocus = true;
+    const requested = surface.consumeFocusRequest();
+    if (requested) pendingFocus = requested;
   });
 
   // Read the key once at init (non-reactive on purpose — the parent keys this
@@ -153,7 +161,7 @@
       // The ＋ button passes focus:true so the freshly opened tab grabs the
       // cursor. The mount auto-open leaves it unset — its focus is driven by
       // the pane's consume-once intent (see pendingFocus above), not here.
-      if (opts.focus) pendingFocus = true;
+      if (opts.focus) pendingFocus = intendTerminalFocus();
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
       // A surface that is gone asked for nothing any more: its thread may have
@@ -179,7 +187,7 @@
     if (handle.tabs.length === 0) {
       collapseDrawer();
     } else {
-      pendingFocus = true;
+      pendingFocus = intendTerminalFocus();
     }
   }
 
@@ -187,7 +195,7 @@
     handle.setActive(terminalID);
     // The remount on the active-tab change drops xterm focus; re-latch it so
     // clicking a tab puts the cursor in that terminal (parity with Ctrl+Tab).
-    pendingFocus = true;
+    pendingFocus = intendTerminalFocus();
   }
 
   // Repaint the active terminal. RefreshTerminal blips the PTY winsize (rows

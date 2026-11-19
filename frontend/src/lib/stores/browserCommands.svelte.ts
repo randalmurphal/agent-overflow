@@ -4,10 +4,12 @@
 // panes.svelte#paneCommandTarget), so the
 // chords keep their meaning elsewhere. A chord pressed in the native page
 // arrives as a replay after the pane was focused (browserCompanion.svelte.ts
-// replayBrowserAccelerator). Closing a tab is `pane.close`.
+// replayBrowserAccelerator). Closing a tab is `pane.close`. A pane whose
+// attach has not answered has nothing to send: its chords do nothing.
 
 import { registerCommand } from './commandRegistry.svelte';
-import { actOnActiveTab, browserAction, browserCompanionAct, focusedBrowser, openBrowserTab } from './browserActions';
+import { actInPane, actOnActiveTab, focusedBrowser, openBrowserTabInPane } from './browserActions';
+import { browserAction } from './browserActionWire';
 import { focusBrowserAddressBar } from './browserAddressFocus.svelte';
 
 export function isBrowserPaneFocused(): boolean {
@@ -20,8 +22,8 @@ export function isBrowserPaneFocused(): boolean {
  * previous one's state arrives each move one tab.
  */
 function stepTab(step: 1 | -1): void {
-  const focused = focusedBrowser();
-  if (focused) void browserCompanionAct(focused.threadId, browserAction.step(step));
+  const pane = focusedBrowser()?.pane;
+  if (pane) void actInPane(pane, browserAction.step(step));
 }
 
 const WHEN = 'browserPaneFocused && !overlayOpen';
@@ -35,8 +37,8 @@ export function registerBrowserCommands(): void {
     when: WHEN,
     editableReachable: true,
     run: () => {
-      const focused = focusedBrowser();
-      if (focused) void openBrowserTab(focused.threadId, { focusAddress: true });
+      const pane = focusedBrowser()?.pane;
+      if (pane) void openBrowserTabInPane(pane, { focusAddress: true });
     },
   });
 
@@ -61,8 +63,8 @@ export function registerBrowserCommands(): void {
     // Names no tab: the backend reloads the tab active at this press's turn
     // in the user's order, after a tab switch still on its way.
     run: () => {
-      const focused = focusedBrowser();
-      if (focused) actOnActiveTab(focused.threadId, 'reload');
+      const pane = focusedBrowser()?.pane;
+      if (pane) actOnActiveTab(pane, 'reload');
     },
   });
 
@@ -92,8 +94,8 @@ export function registerBrowserCommands(): void {
     when: WHEN,
     editableReachable: true,
     run: () => {
-      const focused = focusedBrowser();
-      if (focused) void browserCompanionAct(focused.threadId, browserAction.reopen());
+      const pane = focusedBrowser()?.pane;
+      if (pane) void actInPane(pane, browserAction.reopen());
     },
   });
 }

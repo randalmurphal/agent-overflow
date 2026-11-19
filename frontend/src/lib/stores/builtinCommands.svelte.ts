@@ -40,8 +40,8 @@ import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closePaneById } from './companionPanes.svelte';
-import { closeFocusedBrowserTab } from './browserActions';
-import { isReplayingBrowserPageChord } from './browserCompanion.svelte';
+import { closeFocusedBrowserTab, isBrowserPaneUnattached } from './browserActions';
+import { isReplayingBrowserPageChord } from './browserPageChords';
 import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
 import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';
@@ -296,8 +296,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Close Focused',
     icon: '×',
     // It closes the pane the screen shows (paneCommandTarget), and nothing
-    // on the compact list.
-    when: '!terminalFocus && !noPaneTarget',
+    // on the compact list. A browser pane whose attach has not answered
+    // closes neither a tab nor itself: the chord is not taken.
+    when: '!terminalFocus && !noPaneTarget && !browserPaneUnattached',
     editableReachable: true,
     run: () => {
       // A browser companion closes a TAB; the pane goes with its last tab
@@ -1242,6 +1243,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
     noPaneTarget: paneCommandTarget() === null,
+    browserPaneUnattached: isBrowserPaneUnattached(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

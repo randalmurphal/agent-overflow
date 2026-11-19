@@ -14,13 +14,15 @@ import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { closeCompanion, companionForSource, openCompanion } from './companionPanes.svelte';
-import { addPaneThreadMountedObserver, focusPane, getAllPanes } from './panes.svelte';
+import { addPaneThreadMountedObserver, getAllPanes } from './panes.svelte';
 import { hasScope } from '../transport/scopes';
 import { isCompactLayout } from './layoutMode.svelte';
 import { createSequenceGate } from './snapshotStream';
+import { onWatchedThreadsComposed } from './watchedThreads';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { addErrorToast } from './toast.svelte';
 
 // The browser pane's state store. The pane surface itself is an empty host
@@ -30,28 +32,47 @@ import { addErrorToast } from './toast.svelte';
 //
 // - The thread's accepted snapshot: the newest state admitted for it, which
 //   the chat header, the tab strip and the keyboard commands all read. A
-//   thread has one whether or not any pane is mounted.
+//   thread has one whether or not its browser pane is mounted, while a
+//   surface shows the thread.
 // - The pane's mount: the attachment a mounted pane holds (the entity
 //   store), which owns the mount id, the pane's failure and the detach.
 //
 // Every state, pushed or answered, lands through one admission
 // (`admitBrowserState`). The parts that keep their own state beside this
 // store follow it through observeBrowserCompanion: the user's actions
-// (browserActions.ts), the host rect reports (browserPaneRectReports.ts) and
-// the page keyboard focus intent (browserPageFocus.ts). Address bar focus
+// (browserActions.ts), the host rect reports (browserPaneRectReports.ts),
+// the page keyboard focus intent (browserPageFocus.ts) and the chords
+// pressed in a page (browserPageChords.ts). Address bar focus
 // is a leaf it imports (browserAddressFocus.svelte.ts).
 
 /** The backend's id of one pane mount, minted from BrowserCompanionPaneAttach's answer. */
 export type BrowserMountId = string & { readonly __brand: 'BrowserMountId' };
 
-function mintMountId(id: string): BrowserMountId {
-  return id as BrowserMountId;
+function isMountId(id: string): id is BrowserMountId {
+  return id.trim() !== '';
 }
 
-/** A mounted pane's attachment value: the backend's id of its mount. */
+// The brand only this module can write: a BrowserPaneAttachment exists only
+// for a mount this store attached.
+const attachedPane: unique symbol = Symbol('BrowserPaneAttachment');
+
+/**
+ * One attached pane mount of a thread. Only this store makes one, from the
+ * attach's answer, so a value of this type names a mount the backend
+ * attached; whether it is still the thread's is isCurrentBrowserPane. The
+ * pane's commands are built from it (browserActions.ts#actInPane), and its
+ * refusals go to its banner and to no other (noteBrowserPaneError).
+ */
+export interface BrowserPaneAttachment {
+  readonly [attachedPane]: true;
+  readonly threadId: string;
+  readonly mount: BrowserMountId;
+}
+
+/** A mounted pane's attachment value. */
 export interface BrowserPaneMount {
-  /** Null once the mount detached while the attachment re-acquires one. */
-  readonly mount: BrowserMountId | null;
+  /** Null until the attach answers, and once the mount detached while the attachment re-acquires one. */
+  readonly pane: BrowserPaneAttachment | null;
 }
 
 /**
@@ -61,10 +82,14 @@ export interface BrowserPaneMount {
 export interface BrowserCompanionObserver {
   /** An admitted Kind "state" event, before it is applied. */
   stateAdmitted?(event: BrowserCompanionEvent): void;
+  /** A Kind "accelerator" event: a bound chord pressed in a page. */
+  accelerator?(event: BrowserCompanionEvent): void;
   /** A Kind "focus" event: how a page focus intent ended. */
   focusSettled?(event: BrowserCompanionEvent): void;
   /** The thread's pane mount ended with its attachment. */
   mountEnded?(mount: BrowserMountId): void;
+  /** No surface shows the thread any more: drop what is kept for it. */
+  threadReleased?(threadId: string): void;
   /** resetBrowserCompanionForTest: drop all state, telling no one. */
   resetForTest?(): void;
 }
@@ -92,12 +117,41 @@ interface AcceptedState {
 // only when ITS thread's state changes. A known empty snapshot (no pages) is
 // data: the thread has no tab. The reads in flight, one per thread.
 const snapshots = createKeyedSignalRegistry<AcceptedState | null>(null);
-const stateReads = new Map<string, Promise<void>>();
+const stateReads = new Map<string, { readonly token: symbol; readonly promise: Promise<void> }>();
 
 // The transport can write a push published after a call returned ahead of
 // its reply. The backend numbers every snapshot, so the newest by that
 // number wins within a backend launch, whatever the arrival order.
 const stateOrder = createSequenceGate();
+
+// The threads whose browser state this window keeps: those a surface shows,
+// the last composed watched set (watchedThreads.ts; a browser pane's thread
+// is its source pane's). The channel carries every thread's state, so a
+// state for any other thread is not admitted, and a thread that leaves the
+// set loses its snapshot, its place in the order and its read in flight; a
+// surface that shows it again reads it again. Null until the first
+// composition, keeping every thread.
+let keptThreads: ReadonlySet<string> | null = null;
+
+function keepsThreadState(threadId: string): boolean {
+  return keptThreads === null || keptThreads.has(threadId);
+}
+
+onWatchedThreadsComposed((threadIds) => {
+  keptThreads = threadIds;
+  const released = new Set<string>();
+  for (const threadId of snapshots.keys()) if (!threadIds.has(threadId)) released.add(threadId);
+  for (const threadId of stateReads.keys()) if (!threadIds.has(threadId)) released.add(threadId);
+  for (const threadId of released) releaseThreadState(threadId);
+});
+
+function releaseThreadState(threadId: string): void {
+  snapshots.drop(threadId);
+  stateOrder.forget(threadId);
+  stateReads.delete(threadId);
+  findCleanupErrors.drop(threadId);
+  for (const observer of observers) observer.threadReleased?.(threadId);
+}
 
 /** The home connection's generation; an answer is admitted only in the one its call started in. */
 export function browserStateGeneration(): number {
@@ -219,20 +273,22 @@ const store = createEntityStore<BrowserPaneMount, void>({
     if (refusal) throw refusal;
     const generation = connectionGeneration;
     const result = await BrowserCompanionPaneAttach(key);
-    const mount = mintMountId(result.id);
     // An attach superseded while it was in flight (the pane closed, or
     // closed and opened again) owns nothing here: the mount the thread has
     // now is a later attach's, so this one only detaches its own.
     if (signal.aborted) return () => BrowserCompanionPaneDetach(result.id);
+    const mount = result.id;
+    if (!isMountId(mount)) throw new Error('The browser answered the pane with no mount.');
+    const pane: BrowserPaneAttachment = { [attachedPane]: true, threadId: key, mount };
     // The answer's state is admitted like any other; a newer one that
     // already landed (a push during the attach) wins.
     admitBrowserState(result.state, generation);
-    apply({ mount });
+    apply({ pane });
     return async () => {
       // The entity store keeps the value through a re-acquire; a detached
       // mount is no longer one to address.
-      if (store.snapshot(key)?.mount === mount) store.apply(key, { mount: null }, { preserveError: true });
-      actionErrors.drop(key);
+      if (store.snapshot(key)?.pane === pane) store.apply(key, { pane: null }, { preserveError: true });
+      actionErrors.drop(mount);
       for (const observer of observers) observer.mountEnded?.(mount);
       await BrowserCompanionPaneDetach(result.id);
     };
@@ -243,20 +299,32 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
-/** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
-export function browserPaneMountId(threadId: string): BrowserMountId | null {
-  return store.peek(threadId)?.mount ?? null;
+/** The thread's attached pane mount, null while it has none. Reactive. */
+export function browserPaneAttachment(threadId: string): BrowserPaneAttachment | null {
+  return store.peek(threadId)?.pane ?? null;
 }
 
-/** The thread whose pane holds `mount`, null for none. */
-export function threadForBrowserPaneMount(mount: string): string | null {
+/** Whether `pane` is still the thread's attached mount. Not reactive: asked as something is sent or shown. */
+export function isCurrentBrowserPane(pane: BrowserPaneAttachment): boolean {
+  return store.snapshot(pane.threadId)?.pane === pane;
+}
+
+/** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
+export function browserPaneMountId(threadId: string): BrowserMountId | null {
+  return browserPaneAttachment(threadId)?.mount ?? null;
+}
+
+/** The attached pane whose mount is `mount`, null when no thread has it attached. */
+export function browserPaneOfMount(mount: string): BrowserPaneAttachment | null {
   for (const threadId of store.keys()) {
-    if (store.snapshot(threadId)?.mount === mount) return threadId;
+    const pane = store.snapshot(threadId)?.pane;
+    if (pane?.mount === mount) return pane;
   }
   return null;
 }
 
-function sourcePaneIdForThread(threadId: string): string | null {
+/** The pane showing the thread, which its browser pane opens beside; null for none. */
+export function sourcePaneIdForThread(threadId: string): string | null {
   for (const [paneId, pane] of getAllPanes()) {
     if (pane.threadId === threadId) return paneId;
   }
@@ -280,7 +348,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     return;
   }
   if (event.kind === 'accelerator') {
-    replayBrowserAccelerator(event);
+    for (const observer of observers) observer.accelerator?.(event);
     return;
   }
   if (event.kind === 'find' || event.kind === 'escape') {
@@ -306,7 +374,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
  */
 export function admitBrowserState(event: BrowserCompanionEvent, generation: number): void {
   if (event?.kind !== 'state' || !event.threadId) return;
-  if (generation !== connectionGeneration) return;
+  if (generation !== connectionGeneration || !keepsThreadState(event.threadId)) return;
   if (!stateOrder.admit(event.threadId, event.seq, getTransportHelloFor(HOME_BACKEND)?.launchId ?? '')) {
     // The held state is at least as new as this answer of the current
     // generation, so it is known in this generation too.
@@ -347,8 +415,9 @@ function presentBrowserState(threadId: string, state: BrowserCompanionEvent): vo
  */
 function reportBrowserTeardown(event: BrowserCompanionEvent): void {
   const message = `A closed browser tab did not shut down cleanly: ${event.error || 'unknown error'}`;
-  if (browserPaneOpen(event.threadId)) {
-    noteBrowserActionError(event.threadId, message);
+  const pane = browserPaneAttachment(event.threadId);
+  if (pane && browserPaneShown(event.threadId)) {
+    noteBrowserPaneError(pane, message);
     return;
   }
   addErrorToast(message, new Error(event.error || message), 0);
@@ -368,59 +437,6 @@ export function browserPaneOpen(threadId: string): boolean {
   return browserPaneShown(threadId) && !!store.snapshot(threadId);
 }
 
-// True while a chord the page claimed is dispatched (replayBrowserAccelerator).
-let replayingPageChord = false;
-
-/**
- * Whether the keydown being dispatched is a chord pressed in a browser page.
- * It was typed with keyboard focus in the page, so it resolves outside any
- * terminal whatever focus the SPA has by the time it arrives: the engine
- * hands focus back to the SPA when it claims the chord, and the terminal
- * caret left there may already have it again.
- */
-export function isReplayingBrowserPageChord(): boolean {
-  return replayingPageChord;
-}
-
-/**
- * A bound chord pressed while the thread's NATIVE page view held keyboard
- * focus (spec §7). The engine swallowed it and the backend routed it here;
- * replaying it as a window keydown puts it through the one dispatcher every
- * other keystroke uses, so `when` gates, user rebinds, and the palette all
- * behave exactly as if the SPA had been focused. The companion pane is
- * focused first: the click that gave the page focus moved no DOM focus, and
- * pane-scoped commands (pane.close → this pane's tab) need the logical focus
- * to be where the user is looking. The engine already handed keyboard focus
- * to the SPA. DOM focus left in the SPA stays where it is, so a surface the
- * chord opens returns focus there on close; it gates nothing for this chord
- * (isReplayingBrowserPageChord).
- *
- * Every host client receives the event; only the one holding the pane
- * mount that showed the page (`event.mount`) replays it.
- */
-function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
-  const chord = event.accelerator;
-  if (!chord || !event.mount || event.mount !== browserPaneMountId(event.threadId)) return;
-  const sourcePaneId = sourcePaneIdForThread(event.threadId);
-  const companion = sourcePaneId ? companionForSource(sourcePaneId, 'browser') : null;
-  if (companion) focusPane(companion.paneId);
-  replayingPageChord = true;
-  try {
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: chord.key,
-        ctrlKey: chord.ctrl === true,
-        metaKey: chord.meta === true,
-        altKey: chord.alt === true,
-        shiftKey: chord.shift === true,
-        cancelable: true,
-      }),
-    );
-  } finally {
-    replayingPageChord = false;
-  }
-}
-
 // A find stop that could not be delivered, per thread (stores/browserFind):
 // the page may keep its highlights. Its own entry, so a browser action
 // neither clears it nor is hidden by it.
@@ -437,19 +453,30 @@ export function browserFindCleanupError(threadId: string): string {
   return findCleanupErrors.get(threadId);
 }
 
-// The mounted pane's banner: the last refused chrome action. It lives as
-// long as the pane's mount; with no pane mounted there is no banner to write.
+// Each attached mount's banner: the last refused chrome action, keyed by the
+// mount, so it lives as long as that mount and no other mount's pane shows
+// it.
 const actionErrors = createKeyedSignalRegistry<string>('');
 
-export function noteBrowserActionError(threadId: string, message: string): void {
-  if (!store.snapshot(threadId)) return;
-  if (message) actionErrors.set(threadId, message);
-  else actionErrors.drop(threadId);
+/**
+ * Writes, or with '' clears, the banner of `pane`, the attachment the
+ * action that failed was sent from. A pane that detached since shows
+ * nothing more: its refusal is logged, never shown in the pane that
+ * replaced it.
+ */
+export function noteBrowserPaneError(pane: BrowserPaneAttachment, message: string): void {
+  if (!isCurrentBrowserPane(pane)) {
+    if (message) reportFrontendDiagnostic('A browser action failed after its pane closed', message);
+    return;
+  }
+  if (message) actionErrors.set(pane.mount, message);
+  else actionErrors.drop(pane.mount);
 }
 
-/** The thread's banner text, '' for none. Reactive. */
+/** The banner text of the thread's attached pane, '' for none. Reactive. */
 export function browserActionError(threadId: string): string {
-  return actionErrors.get(threadId);
+  const mount = browserPaneMountId(threadId);
+  return mount ? actionErrors.get(mount) : '';
 }
 
 // The `browser:companion-state` channel is ephemeral (no replay), so a
@@ -469,13 +496,17 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   // The read in flight may end in a generation that has since passed; the
   // caller is answered for the current one.
   const pending = stateReads.get(threadId);
-  if (pending) return pending.then(() => readBrowserCompanionState(threadId));
+  if (pending) return pending.promise.then(() => readBrowserCompanionState(threadId));
+  const token = Symbol('browser state read');
   // The async wrapper folds a SYNCHRONOUS throw from the binding into the
   // same failure path as a rejection.
   const read = (async () => {
     while (browserThreadSnapshot(threadId).status === 'unknown') {
       const generation = connectionGeneration;
       const state = await BrowserCompanionThreadState(threadId);
+      // Released while reading: no surface shows the thread, and one that
+      // shows it again reads it again.
+      if (stateReads.get(threadId)?.token !== token) return;
       // Not admitted when older than a state already admitted, which then
       // is the known one; or when an edge passed, and then read again.
       admitBrowserState(state, generation);
@@ -486,9 +517,9 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   })().finally(() => {
     // A failed read (backend restarting, thread gone) leaves the thread
     // unknown; the next mount or click reads again.
-    if (stateReads.get(threadId) === read) stateReads.delete(threadId);
+    if (stateReads.get(threadId)?.token === token) stateReads.delete(threadId);
   });
-  stateReads.set(threadId, read);
+  stateReads.set(threadId, { token, promise: read });
   return read;
 }
 
@@ -547,7 +578,15 @@ export function presentWantedBrowser(threadId: string): void {
 
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
+/** Test hook: the threads this window keeps browser state or a read for. */
+export function browserStateThreadsForTest(): string[] {
+  return [...new Set([...snapshots.keys(), ...stateReads.keys()])].sort();
+}
+
 export function resetBrowserCompanionForTest(): void {
+  // An answer to a call a test started before the reset is not admitted after it.
+  connectionGeneration += 1;
+  keptThreads = null;
   for (const observer of observers) observer.resetForTest?.();
   stateOrder.reset();
   snapshots.reset();

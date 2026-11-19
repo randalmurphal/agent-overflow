@@ -15,6 +15,7 @@ import {
   popoverCloseRestoresFocus,
   type PopoverCloseReason,
 } from '../../utils/popoverOwnership';
+import { focusChosen } from '../../utils/focusIntent';
 
 /** Whether an editing caret holds focus now, which a pane move carries. */
 export function isEditingFocused(): boolean {
@@ -23,6 +24,15 @@ export function isEditingFocused(): boolean {
   const tag = active.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   return active.isContentEditable;
+}
+
+/**
+ * Whether DOM focus sits inside a pane's section, whatever element holds
+ * it (a composer, a diff scroller, a button), which a pane move carries.
+ */
+export function isFocusInAPane(): boolean {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  return active instanceof HTMLElement && active.closest('[data-pane-id]') !== null;
 }
 
 /** Whether an editing caret holds focus inside `paneId`'s section. */
@@ -43,9 +53,11 @@ function paneSection(paneId: string): HTMLElement | null {
  * primary scroller (`data-pane-scroller`, focusable by script), where the
  * browser starts a keyboard scroll, so PageDown and the arrows scroll it;
  * else (a side chat still preparing) PaneHost's section, focusable only
- * while it holds this focus, so a click never lands on it.
+ * while it holds this focus, so a click never lands on it. It is a focus
+ * choice: no deferred focus asked for before it lands after it.
  */
 export function carryCaretIntoPane(paneId: string): void {
+  focusChosen();
   if (focusPaneComposer(paneId)) return;
   const section = paneSection(paneId);
   if (!section) return;
@@ -69,17 +81,6 @@ function focusSectionOnce(section: HTMLElement): void {
     return;
   }
   section.addEventListener('blur', () => section.removeAttribute('tabindex'), { once: true });
-}
-
-/**
- * Whether a focus that lands later (a terminal mounting a frame after it was
- * asked for) may take it from where focus is now: not when it has moved
- * into another pane since.
- */
-export function delayedFocusStillCurrent(target: Element): boolean {
-  if (typeof document === 'undefined') return false;
-  const activePane = document.activeElement?.closest('[data-pane-id]') ?? null;
-  return activePane === null || activePane === target.closest('[data-pane-id]');
 }
 
 /**

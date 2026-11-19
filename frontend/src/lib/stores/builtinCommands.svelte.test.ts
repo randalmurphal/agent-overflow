@@ -1,6 +1,7 @@
 // Focused tests for makeCommandContext — keeps palette / keybindings gates
 // honest about the live pane / terminal-focus state.
 
+import { refreshWatchedThreads } from './watchedThreads';
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
 import { render } from '@testing-library/svelte';
@@ -870,7 +871,7 @@ describe('terminal tab management commands', () => {
     await Promise.resolve();
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']);
     // The new tab is now active → focus is requested so the cursor lands in it.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.newTab adds no tab for a shell whose exit overtook the OpenTerminal reply', async () => {
@@ -887,7 +888,7 @@ describe('terminal tab management commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
     expect(handle.activeTerminalID).toBe('term-existing');
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('terminal.newTab removes the tab when the exit follows the reply', async () => {
@@ -915,7 +916,7 @@ describe('terminal tab management commands', () => {
     expect(closeMock).toHaveBeenCalledWith('term-b');
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-a']);
     // term-a is promoted to active → focus follows the user into it.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.closeTab does not request focus when the last tab is closed', () => {
@@ -928,7 +929,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.closeTab', makeCommandContext(pane, { terminalFocus: true }));
     expect(handle.tabs).toHaveLength(0);
     // Nothing remains to focus (the surface collapses instead), so no intent.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('terminal.nextTab / prevTab cycle the active tab with wraparound', () => {
@@ -947,7 +948,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.prevTab', ctx); // c → b
     expect(handle.activeTerminalID).toBe('b');
     // A switch remounts the body, so the cursor must follow into the new tab.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.nextTab is a no-op with a single tab', () => {
@@ -959,7 +960,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.nextTab', makeCommandContext(pane, { terminalFocus: true }));
     expect(handle.activeTerminalID).toBe('only');
     // No switch happened (< 2 tabs), so no focus intent is set.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('newTab/closeTab/nextTab are safe no-ops when the pane has no terminal state', () => {
@@ -984,7 +985,7 @@ describe('terminal tab management commands', () => {
     expect(closeMock).not.toHaveBeenCalled();
     // Every command bailed at its state guard before mutating, so none of them
     // requested terminal focus.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 });
 
@@ -2087,10 +2088,10 @@ describe('terminal.toggle command', () => {
     // Opening latches a one-shot focus intent synchronously (no rAF). The
     // drawer consumes it in onMount — whenever its lazily-loaded chunk
     // resolves — so the intent survives the cold-open mount delay.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
     // Read-and-clear: a second consume (e.g. a drawer remount) returns false,
     // so focus is never re-grabbed without a fresh open.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('closes the terminal and returns focus to the composer when the terminal was focused', () => {
@@ -2107,7 +2108,7 @@ describe('terminal.toggle command', () => {
       // Focus handed back to the composer so the unmount doesn't orphan it.
       expect(document.activeElement).toBe(composer.textarea);
       // A close never latches a focus request — it only ever closes.
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     } finally {
       composer.cleanup();
     }
@@ -2132,7 +2133,7 @@ describe('terminal.toggle command', () => {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
       expect(pane.showTerminal).toBe(false);
       expect(document.activeElement).toBe(sentinel);
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     } finally {
       document.body.removeChild(sentinel);
       composer.cleanup();
@@ -2414,7 +2415,7 @@ describe('pane navigation into a terminal pane', () => {
     const ran = runCommand('pane.focusRight', makeCommandContext(left, {}));
     expect(ran).toBe(true);
     // requestTerminalFocus was called → the read-and-clear intent is set.
-    expect(right.consumeTerminalFocusRequest()).toBe(true);
+    expect(right.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   // A side chat and an agent thread host a conversation under the companion
@@ -2539,7 +2540,7 @@ describe('pane navigation into a terminal pane', () => {
   it('does not latch terminal focus when focusRight lands on a chat pane', () => {
     const { left, right } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
     runCommand('pane.focusRight', makeCommandContext(left, {}));
-    expect(right.consumeTerminalFocusRequest()).toBe(false);
+    expect(right.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('pane.togglePromoted promotes the focused pane, restores it on the second run, and is off under compact', () => {
@@ -2981,13 +2982,16 @@ describe('compact-gated commands', () => {
     setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
     const pane = readyPane();
     registerPaneForTest('a', pane);
+    // A pane registered here composes no watched set; the browser keeps
+    // state only for the threads one names.
+    refreshWatchedThreads();
     setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
     const browser = openCompanion('a', 'browser')!;
     applyBrowserCompanionState({
       kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
       pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
     });
-    await attachBrowserPaneForTest('thread-1', 'mount-1');
+    const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
     const close = () => dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false });
     focusPane(browser.paneId);
@@ -3002,6 +3006,41 @@ describe('compact-gated commands', () => {
     setCompactLayoutForTest(false);
     expect(close()).toBe(true);
     expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', pageId: '', mount: 'mount-1' }));
+    attached.release();
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetKeybindingsStore();
+  });
+
+  // Before its attach answers a browser pane shows its tabs but has no
+  // place in its mount's order: Mod+W is not taken, closing neither a tab
+  // nor the pane, and is the browser's once the attach answers.
+  it('leaves Mod+W untaken on a browser pane whose attach has not answered', async () => {
+    installCompanionPanes();
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    // A pane registered here composes no watched set; the browser keeps
+    // state only for the threads one names.
+    refreshWatchedThreads();
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const browser = openCompanion('a', 'browser')!;
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
+      pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
+    });
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
+    focusPane(browser.paneId);
+    const chord = new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true });
+    expect(dispatchKey(chord, makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(false);
+    expect(chord.defaultPrevented).toBe(false);
+    expect(act).not.toHaveBeenCalled();
+    expect(isCompanionOpen('a', 'browser')).toBe(true);
+
+    const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
+    expect(dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(true);
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', mount: 'mount-1' }));
+    attached.release();
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();
     resetKeybindingsStore();

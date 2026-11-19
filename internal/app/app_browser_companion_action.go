@@ -70,7 +70,7 @@ type companionSpec struct {
 }
 
 var companionSpecs = map[string]companionSpec{
-	"navigate":            {kind: kindNavigate, target: targetOptional},
+	"navigate":            {kind: kindNavigate, target: targetNamed},
 	"back":                {kind: kindBack, target: targetNamed},
 	"forward":             {kind: kindForward, target: targetNamed},
 	"reload":              {kind: kindReload, target: targetNamed},
@@ -128,7 +128,7 @@ var errNoCompanionHandler = errors.New("browser: companion action has no handler
 
 // parseCompanionAction validates action against its kind's spec: a named
 // command names its tab and an active-tab command names none and carries
-// its mount and number; a selection carries both of those or neither.
+// its mount, epoch and number; a selection carries all three or none.
 func parseCompanionAction(action BrowserCompanionAction) (companionCommand, error) {
 	name := strings.ToLower(strings.TrimSpace(action.Kind))
 	spec, ok := companionSpecs[name]
@@ -159,17 +159,17 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 	}
 	switch {
 	case spec.focus:
-		if mount == "" || action.Intent == 0 || action.Select != 0 {
+		if mount == "" || action.Intent == 0 || action.Select != 0 || action.Epoch != 0 {
 			return refuse("needs its pane mount and intent")
 		}
 		cmd.mount, cmd.intent = mount, action.Intent
-	case spec.target == targetActive || (spec.selects && (mount != "" || action.Select != 0)):
-		place, err := appbrowser.NewNumbered(appbrowser.MountID(mount), action.Select)
+	case spec.target == targetActive || (spec.selects && (mount != "" || action.Select != 0 || action.Epoch != 0)):
+		place, err := appbrowser.NewNumbered(appbrowser.MountID(mount), action.Epoch, action.Select)
 		if err != nil {
 			return companionCommand{}, fmt.Errorf("%w: %s: %w", errCompanionActionShape, name, err)
 		}
 		cmd.place, cmd.numbered = place, true
-	case mount != "" || action.Select != 0 || action.Intent != 0:
+	case mount != "" || action.Select != 0 || action.Epoch != 0 || action.Intent != 0:
 		return refuse("is not numbered in a pane")
 	}
 	if spec.download && cmd.download == "" {

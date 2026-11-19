@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -76,8 +77,9 @@ func TestAKeyboardCloseClosesTheTabItsTurnLeavesActive(t *testing.T) {
 }
 
 // A keyboard close whose predecessor never arrived stands out of order when
-// the count moves past that number, and closes nothing; the predecessor
-// still applies when it arrives late, and the next close acts in order.
+// the count moves past that number, and closes nothing; the predecessor is
+// refused when it arrives late, which settles it, and the next close acts
+// in order on the tab still active.
 func TestAKeyboardCloseAfterAMissingNumberIsRefused(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
@@ -90,21 +92,72 @@ func TestAKeyboardCloseAfterAMissingNumberIsRefused(t *testing.T) {
 	if got := tabIDs(m, access); len(got) != len(ids) {
 		t.Fatalf("the refused close closed a tab: %v", got)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); err != nil {
-		t.Fatal(err)
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+		t.Fatalf("the late selection answered %v", err)
 	}
-	if got := activeTab(m, access); got != ids[1] {
-		t.Fatalf("the late selection did not apply: active %s, want b", got)
+	if got := activeTab(m, access); got != ids[3] {
+		t.Fatalf("the late selection applied: active %s, want d", got)
 	}
 	got, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 3))
 	mustOutcome(t, ActiveApplied, got, err)
-	if _, open := findTab(m, access, ids[1]); open {
-		t.Fatalf("the next close did not close b: %v", tabIDs(m, access))
+	if _, open := findTab(m, access, ids[3]); open {
+		t.Fatalf("the next close did not close d: %v", tabIDs(m, access))
+	}
+}
+
+// The review's sequence: on a, the user selects b (#1, delayed), reloads
+// (#2) and closes (#3). #2 refuses after the gap wait; #3 arrives before
+// #1 and is refused too, whoever saw the gap, since #1 could still have
+// changed which tab it means; #1 arriving is refused. The window then
+// starts a new epoch, and its close closes a, the tab the user sees.
+func TestAKeyboardCloseIsRefusedWhileAPredecessorIsOutstanding(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	clock := installGapClock(m)
+	m.setActivePage(access.ThreadID, ids[0])
+	loads := livePage(t, m, access, ids[0]).docEpoch.Load()
+	reloading := deliver(func() error {
+		return outcome(ActiveOutOfOrder)(m.ReloadActiveCompanionPage(context.Background(), access, place(mount, 2)))
+	})
+	clock.awaitTimers(t, 1)
+	clock.expire(t)
+	mustDeliver(t, reloading, "the reload after a missing number")
+	got, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 3))
+	mustOutcome(t, ActiveOutOfOrder, got, err)
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+		t.Fatalf("the late selection of b answered %v", err)
+	}
+	if got := tabIDs(m, access); len(got) != len(ids) || activeTab(m, access) != ids[0] {
+		t.Fatalf("tabs %v, active %s; want all four, a active", got, activeTab(m, access))
+	}
+	if again := livePage(t, m, access, ids[0]).docEpoch.Load(); again != loads {
+		t.Fatalf("a refused reload loaded a: %d loads, was %d", again, loads)
+	}
+	got, err = m.CloseActiveCompanionPage(t.Context(), access, placeIn(mount, 2, 1))
+	mustOutcome(t, ActiveApplied, got, err)
+	if got, want := tabIDs(m, access), ids[1:]; !slices.Equal(got, want) {
+		t.Fatalf("tabs %v after the new epoch's close, want %v (a closed)", got, want)
+	}
+}
+
+// A command of an epoch the window has left is refused when it arrives,
+// and one admitted before the new epoch began acts on nothing.
+func TestAnOlderEpochsCommandIsRefused(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	got, err := m.CloseActiveCompanionPage(t.Context(), access, placeIn(mount, 2, 1))
+	mustOutcome(t, ActiveApplied, got, err)
+	if got, err := m.CloseActiveCompanionPage(t.Context(), access, placeIn(mount, 1, 1)); !errors.Is(err, turnorder.ErrLost) {
+		t.Fatalf("an older epoch's close answered %d, %v", got, err)
+	}
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, ids[0]); !errors.Is(err, turnorder.ErrLost) {
+		t.Fatalf("an older epoch's selection answered %v", err)
+	}
+	if got := tabIDs(m, access); len(got) != len(ids)-1 {
+		t.Fatalf("tabs %v, want one closed", got)
 	}
 }
 
 // A keyboard close or reload arriving after the count moved past its own
-// number stands out of order and acts on nothing.
+// number is refused and acts on nothing.
 func TestALateKeyboardCommandIsRefused(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
@@ -115,10 +168,12 @@ func TestALateKeyboardCommandIsRefused(t *testing.T) {
 	clock.awaitTimers(t, 1)
 	clock.expire(t)
 	mustDeliver(t, selecting, "the selection of a")
-	got, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 1))
-	mustOutcome(t, ActiveOutOfOrder, got, err)
-	got, err = m.ReloadActiveCompanionPage(t.Context(), access, place(mount, 2))
-	mustOutcome(t, ActiveOutOfOrder, got, err)
+	if _, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 1)); !errors.Is(err, turnorder.ErrLost) {
+		t.Fatalf("the late close answered %v", err)
+	}
+	if _, err := m.ReloadActiveCompanionPage(t.Context(), access, place(mount, 2)); !errors.Is(err, turnorder.ErrLost) {
+		t.Fatalf("the late reload answered %v", err)
+	}
 	if got := tabIDs(m, access); len(got) != len(ids) {
 		t.Fatalf("a refused close closed a tab: %v", got)
 	}

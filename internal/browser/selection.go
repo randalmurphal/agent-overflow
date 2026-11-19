@@ -22,9 +22,11 @@ import (
 //     restore or a navigation, never delays the next turn.
 //   - A keyboard command on the active tab requires a number, resolves the
 //     active tab in the m.mu hold that ends its turn, and refuses with
-//     ActiveOutOfOrder, acting on nothing, when its turn stands OutOfOrder.
-//     A selection names its tab or steps from what has arrived and acts
-//     whatever its standing.
+//     ActiveOutOfOrder, acting on nothing, when its turn stands OutOfOrder:
+//     an earlier number of its epoch was passed and has not arrived. A
+//     selection names its tab or steps from what has arrived and acts
+//     whatever its standing. A number that arrives after the count passed
+//     it, or of an older epoch, is refused with turnorder.ErrLost.
 //   - A number from a mount the Manager does not have (detached, never
 //     attached, or another thread's) is Passed: a quiet success that
 //     selects, opens and restores nothing. A detach ends the mount's Order.
@@ -39,18 +41,20 @@ import (
 type MountID string
 
 // Numbered is a command's place in its pane mount's order. Only NewNumbered
-// makes one, so every Numbered has a mount and a number from 1.
+// makes one, so every Numbered has a mount and an epoch and number from 1.
 type Numbered struct {
 	mount MountID
-	seq   turnorder.Seq
+	place turnorder.Place
 }
 
-// NewNumbered answers the place of the seq-th command made in mount.
-func NewNumbered(mount MountID, seq uint64) (Numbered, error) {
-	if strings.TrimSpace(string(mount)) == "" || seq == 0 {
-		return Numbered{}, fmt.Errorf("browser: a numbered tab action needs its pane mount and a number from 1")
+// NewNumbered answers the place of the seq-th command of epoch made in
+// mount.
+func NewNumbered(mount MountID, epoch, seq uint64) (Numbered, error) {
+	place, err := turnorder.NewPlace(epoch, seq)
+	if strings.TrimSpace(string(mount)) == "" || err != nil {
+		return Numbered{}, fmt.Errorf("browser: a numbered tab action needs its pane mount and an epoch and number from 1")
 	}
-	return Numbered{mount: mount, seq: turnorder.Seq(seq)}, nil
+	return Numbered{mount: mount, place: place}, nil
 }
 
 // Mount is the pane mount n was made in.
@@ -92,7 +96,7 @@ func (m *Manager) awaitTurn(ctx context.Context, threadID string, sel Numbered) 
 	}
 	order := mount.order
 	m.mu.Unlock()
-	turn, err := order.Await(ctx, sel.seq)
+	turn, err := order.Await(ctx, sel.place)
 	if err == nil && m.selectionAdmitted != nil && turn.Standing() != turnorder.Passed {
 		m.selectionAdmitted(sel)
 	}

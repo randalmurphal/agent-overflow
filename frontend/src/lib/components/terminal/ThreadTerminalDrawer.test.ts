@@ -101,7 +101,7 @@ function makeSurface(threadId = 'thread-A') {
     // handoff (and the real TerminalBody is focus-inert under happy-dom). Focus
     // outcomes are covered in TerminalSurface.focus.test.ts, which stubs the
     // body to observe focus() across the keyed remount.
-    consumeFocusRequest: vi.fn(() => false),
+    consumeFocusRequest: vi.fn(() => null),
   };
 }
 

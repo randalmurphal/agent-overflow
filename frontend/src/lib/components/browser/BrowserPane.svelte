@@ -5,11 +5,12 @@
     browserActionError,
     browserPaneMountId,
     browserThreadState,
-    noteBrowserActionError,
+    noteBrowserPaneError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
-  import { browserAction, browserCompanionAct, openBrowserTab, toPageId, type BrowserAction } from '../../stores/browserActions';
+  import { actInPane, openBrowserTabInPane } from '../../stores/browserActions';
+  import { browserAction, pageIdOf, type BrowserAction } from '../../stores/browserActionWire';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
@@ -52,7 +53,10 @@
   let activePageId = $derived(threadState?.activePageId ?? '');
   let closedTabs = $derived(threadState?.closedTabs ?? 0);
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  let attached = $derived((attachment?.current?.mount ?? null) !== null);
+  // The attached mount the pane's actions are sent from; null until the
+  // attach answers, and the chrome is unavailable until then.
+  let pane = $derived(attachment?.current?.pane ?? null);
+  let attached = $derived(pane !== null);
 
   $effect(() => {
     const threadId = ctx.threadId;
@@ -119,8 +123,7 @@
   );
 
   async function act(action: BrowserAction): Promise<void> {
-    const threadId = ctx.threadId;
-    if (threadId) await browserCompanionAct(threadId, action);
+    if (pane) await actInPane(pane, action);
   }
 
   // A suspended page (its session went idle, or the app restarted) has no
@@ -131,25 +134,27 @@
   let restoreAsked = '';
   $effect(() => {
     const page = attached ? activePage : null;
-    if (!page?.suspended || page.error) {
+    const pageId = pageIdOf(page?.id);
+    if (!page?.suspended || page.error || !pageId) {
       restoreAsked = '';
       return;
     }
-    if (page.id === restoreAsked) return;
-    restoreAsked = page.id;
+    if (pageId === restoreAsked) return;
+    restoreAsked = pageId;
     // Not a selection: the backend restores the tab only while it is the
     // active one, so this cannot undo a tab the user picked since.
-    void act(browserAction.onTab('restore', toPageId(page.id)));
+    void act(browserAction.onTab('restore', pageId));
   });
 
   // A new tab the user opened takes the address bar's focus once it is ready
-  // (stores/browserActions#openBrowserTab); the store withdraws the intent
-  // when the user does anything else first or another tab is shown.
+  // (stores/browserActions#openBrowserTab) and the pane's attach answered,
+  // which makes the bar available; the store withdraws the intent when the
+  // user does anything else first or another tab is shown.
   let addressBar: ReturnType<typeof BrowserAddressBar> | undefined = $state(undefined);
   $effect(() => {
     const threadId = ctx.threadId;
     const page = activePage;
-    if (!threadId || addressFocusIntent(threadId) === null) return;
+    if (!threadId || !attached || addressFocusIntent(threadId) === null) return;
     if (!untrack(() => takeAddressFocus(threadId, page))) return;
     // After this update renders the bar enabled for the ready page.
     void tick().then(() => addressBar?.focusAddress());
@@ -163,8 +168,7 @@
   });
 
   function openNewTab(): void {
-    const threadId = ctx.threadId;
-    if (threadId) void openBrowserTab(threadId, { focusAddress: true });
+    if (pane) void openBrowserTabInPane(pane, { focusAddress: true });
   }
 
   /**
@@ -192,11 +196,11 @@
 
   function openPickedFile(path: string): void {
     pickingFile = false;
-    const threadId = ctx.threadId;
-    if (!threadId) return;
+    if (!pane) return;
     const page = activePage;
-    if (page && !page.creating && !(page.error && !page.suspended)) void act(browserAction.navigate(toPageId(page.id), path));
-    else void openBrowserTab(threadId, { address: path });
+    const pageId = pageIdOf(page?.id);
+    if (page && pageId && !page.creating && !(page.error && !page.suspended)) void act(browserAction.navigate(pageId, path));
+    else void openBrowserTabInPane(pane, { address: path });
   }
 
   // What the host rect says while the active tab has no page to present.
@@ -214,30 +218,39 @@
   );
 
   async function revealPageFile(): Promise<void> {
-    const threadId = ctx.threadId;
-    if (!threadId || !activePageId) return;
-    noteBrowserActionError(threadId, '');
+    const from = pane;
+    if (!from || !activePageId) return;
+    noteBrowserPaneError(from, '');
     try {
-      await BrowserCompanionRevealPageFile(threadId, activePageId);
+      await BrowserCompanionRevealPageFile(from.threadId, activePageId);
     } catch (err) {
-      noteBrowserActionError(threadId, errString(err));
+      noteBrowserPaneError(from, errString(err));
     }
   }
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
-  <BrowserTabStrip {sessionName} {pages} {activePageId} {closedTabs} onAct={act} onNewTab={openNewTab} onEmptyDoubleClick={togglePromotion} />
+  <!-- Until the attach answers the pane has nothing to send from: its
+       chrome takes no input, and dims if the wait is long enough to see. -->
+  <div
+    class="flex shrink-0 flex-col {attached ? '' : 'opacity-60 transition-opacity delay-150 duration-150'}"
+    data-testid="browser-pane-chrome"
+    inert={!attached}
+    aria-busy={!attached}
+  >
+    <BrowserTabStrip {sessionName} {pages} {activePageId} {closedTabs} onAct={act} onNewTab={openNewTab} onEmptyDoubleClick={togglePromotion} />
 
-  <BrowserAddressBar
-    bind:this={addressBar}
-    {activePage}
-    {sizeLabel}
-    promotePaneId={browserPaneId}
-    onAct={act}
-    onRevealPageFile={revealPageFile}
-    onOpenFile={() => (pickingFile = true)}
-    onLeave={leaveAddress}
-  />
+    <BrowserAddressBar
+      bind:this={addressBar}
+      {activePage}
+      {sizeLabel}
+      promotePaneId={browserPaneId}
+      onAct={act}
+      onRevealPageFile={revealPageFile}
+      onOpenFile={() => (pickingFile = true)}
+      onLeave={leaveAddress}
+    />
+  </div>
 
   {#if pickingFile}
     <BrowserFilePicker
@@ -281,7 +294,10 @@
             variant="secondary"
             size="sm"
             testId="browser-pane-crash-reload"
-            onclick={() => void act(browserAction.onTab('reload', toPageId(activePage.id)))}
+            onclick={() => {
+              const pageId = pageIdOf(activePage?.id);
+              if (pageId) void act(browserAction.onTab('reload', pageId));
+            }}
           >Reload</Button>{/if}</div>
     {/if}
   </div>

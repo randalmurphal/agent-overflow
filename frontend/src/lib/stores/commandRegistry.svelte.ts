@@ -102,6 +102,12 @@ export interface CommandFlags {
    */
   noPaneTarget: boolean;
   /**
+   * True while the keyboard's target is a browser pane whose attach has not
+   * answered (browserActions#isBrowserPaneUnattached): nothing it would
+   * send has a place in its mount's order. Negative, as noPaneTarget.
+   */
+  browserPaneUnattached: boolean;
+  /**
    * Whether this session holds `access:admin` (`transport/scopes.ts`), which
    * covers the device list and the provider-account surface. A command whose
    * RPCs need it gates on this flag so it is *disabled* without it — absent

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { intendFocus, paneFocusScope } from '../../utils/focusIntent';
+import { TERMINAL_FOCUS_REGION } from './terminalStore.svelte';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalView from './TerminalView.svelte';
@@ -119,7 +121,7 @@ function makePane(opts: MakePaneOpts = {}) {
     get thread() {
       return thread;
     },
-    consumeTerminalFocusRequest: vi.fn(() => opts.focus ?? false),
+    consumeTerminalFocusRequest: vi.fn(() => (opts.focus ? intendFocus(paneFocusScope(opts.paneId ?? 'pane-term', TERMINAL_FOCUS_REGION)) : null)),
   };
 }
 

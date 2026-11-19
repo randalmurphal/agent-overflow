@@ -116,6 +116,11 @@ per-platform no-op.
   thread's explicitly selected tab. No pixels cross the wire in either
   direction, so a hidden pane costs nothing and no connection can receive
   browser image data.
+- The host window receives every thread's state on
+  `browser:companion-state` and keeps it only for the threads a surface
+  shows (the watched threads): a thread that leaves them loses its snapshot,
+  its place in the state order and its read in flight, and a surface that
+  shows it again reads it again (`BrowserCompanionThreadState`).
 - Every page lays out at the thread's viewport whether or not a pane shows it.
   By default the viewport follows the mounted pane's host rect (whole CSS
   pixels, held within 320×240 and 1920×1200): the page fills the pane at 1:1
@@ -164,37 +169,50 @@ per-platform no-op.
   `restoring` until its reload ends. The pane's own request to restore the
   suspended tab it shows (`restore`) selects nothing and acts only while that
   tab is still the active one.
+- The client sends a pane's action only from the pane's attached mount
+  (`browserActionWire.ts`): until the attach answers the pane's tab strip and
+  address bar are unavailable and its keyboard commands send nothing, and an
+  action whose pane detached before it was sent is not sent. Its refusal
+  goes to the banner of the mount that sent it; once that mount detached it
+  is logged instead. Every send first checks that this window hosts the
+  thread's browser. An action that names a tab (`navigate` among them) must
+  name one.
 - A pane's tab commands take effect in the order the user made them
   (`selection.go`, `internal/browser/turnorder`), though the transport runs
   each call on its own goroutine. Every pane action that selects a tab
   (`activate`, `step`, and the `new`, `reopen`, `duplicate` and
   `download-open` that select the tab they open) and every keyboard command
   on the active tab (`close-active`, `reload-active`) carries the pane's
-  mount and a number the client takes when the user acts, consecutive from
-  1 in each mount; a re-attach is a new mount and starts again at 1. A
-  keyboard command on the active tab must carry them; a selection made with
-  no pane mounted (the chat header's new tab, a download opened from its
-  toast) carries neither, and the backend refuses an action that does not
-  match its kind (`parseCompanionAction`). The Manager admits a mount's
-  numbers in order: the next one acts at once, a later one waits for its
-  predecessors' commit (never their restore or load), and each then does
-  what it says and restores the tab it selected. When a second passes with
-  no progress the count moves past the numbers not yet arrived: they lose
-  their place, not their effect, and a selection that arrives later applies
-  then, in arrival order. A keyboard command on the active tab admitted
-  past a number that had not arrived (it waited while the count moved, or
-  it is itself late) is refused with an error in the pane's banner and acts
-  on nothing, since the tab it means is not known. The order holds across
-  late numbers, not across numbers never sent. A mount remembers the last
-  256 numbers it moved past; an older one arriving is refused with an
-  error. A repeat of a number already admitted, one from a mount the
+  mount and a number the client takes when the user acts: an epoch and a
+  sequence in it, consecutive from 1. The client starts a mount's next
+  epoch with the first command it sends while none of the mount's is
+  unanswered, so nothing of an older epoch is still meant to act; a
+  re-attach is a new mount and starts again. A keyboard command on the
+  active tab must carry them; a selection made with no pane mounted (the
+  chat header's new tab, a download opened from its toast) carries none,
+  and the backend refuses an action that does not match its kind
+  (`parseCompanionAction`). The Manager admits a mount's numbers in order:
+  the next one acts at once, a later one waits for its predecessors' commit
+  (never their restore or load), and each then does what it says and
+  restores the tab it selected. When a second passes with no progress the
+  count moves past the numbers not yet arrived: each is outstanding, and
+  arriving later it is refused with an error and acts on nothing, so it
+  never undoes a choice the user made after it. While a number of its epoch
+  is outstanding a keyboard command on the active tab is refused with an
+  error in the pane's banner and acts on nothing, since the tab it means is
+  not known; a selection names its tab and acts. A newer epoch ends the
+  older one: what arrives of it is refused, and its outstanding numbers no
+  longer hold the keyboard's commands. A mount remembers 256 outstanding
+  numbers; past that the epoch's keyboard commands are refused until the
+  next. A repeat of a number already admitted, one from a mount the
   Manager does not have (detached, or another thread's), a waiter whose
-  mount detaches, and a command admitted before its mount detached answer
-  success and act on nothing; a reopen keeps its closed tab. More than 256
-  waiting in one mount are refused with an error, and that number, sent
-  again, is treated as never sent. An agent's `browser_select_page` and the
-  chat header's show apply in arrival order and never wait. Closing a tab
-  by its id reselects only when that tab was the active one.
+  mount detaches, and a command admitted before its mount detached or a
+  newer epoch began answer success and act on nothing; a reopen keeps its
+  closed tab. More than 256 waiting in one mount are refused with an error,
+  and that number, sent again, is treated as never sent. An agent's
+  `browser_select_page` and the chat header's show apply in arrival order
+  and never wait. Closing a tab by its id reselects only when that tab was
+  the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
   `loading`). When a load stops, an engine with a pane reads the favicon in
@@ -558,7 +576,9 @@ so AO's chords have to be taken back at the engine:
   window only). Being presented, visible or in the foreground makes a page
   eligible; none of them overrides the user's next focus choice. The store
   withdraws the intent on a focus or pointer press outside the page area
-  (the composer, the address bar again), another active tab, or the pane
+  (the composer, the address bar again), a newer deferred focus anywhere in
+  the window (`utils/focusIntent.ts`, which a terminal's focus once it
+  mounts also registers with), another active tab, or the pane
   unmounting, whatever the arm's answer was and however long it took,
   posting the withdrawal to the Windows launcher directly
   (`ao:pane-focus:`, beside the pane geometry) and sending
@@ -606,8 +626,11 @@ so AO's chords have to be taken back at the engine:
   (`mount`). Every host client receives the event, and only the one holding
   that mount replays it; a chord in a page no pane shows is dropped. An
   `escape` event carries the mount too, and closes only that client's find
-  bar. The
-  store focuses the thread's
+  bar. The client (`browserPageChords.ts`) acts in that mount's pane or
+  nowhere: when a pane promoted over it, or a compact screen that no longer
+  shows it, means the keyboard's commands would not reach it, the chord is
+  dropped rather than resolved against another pane. Otherwise it focuses
+  the thread's
   browser companion and replays the chord as a window keydown, so `when`
   gates, rebinds and the palette all behave as if the SPA had been focused.
   A bound chord whose `when` fails there is a no-op — the page never gets it
