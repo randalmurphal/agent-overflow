@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // holdPresentation makes the first presentation pass that is about to decide
@@ -151,7 +153,7 @@ func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 	switched := make(chan error, 1)
 	go func() { switched <- manager.ActivateCompanionPage(t.Context(), access, firstID) }()
 	<-held
-	manager.pageCrashed(firstHandle, "test crash")
+	manager.pageCrashed(ids.PageHandle(firstHandle), "test crash")
 	close(release)
 	if err := <-switched; err != nil {
 		t.Fatalf("switch: %v", err)

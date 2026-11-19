@@ -153,12 +153,12 @@ func (p *cdpPage) lifecycle(m cdporder.Message, seeded chan struct{}) {
 		}
 	case cdproto.EventPageFrameStartedLoading:
 		var event page.EventFrameStartedLoading
-		if p.decodeLifecycle(m, &event) && string(event.FrameID) == p.handle {
+		if p.decodeLifecycle(m, &event) && string(event.FrameID) == string(p.handle) {
 			p.reportLoading(p.loads.observe(true))
 		}
 	case cdproto.EventPageFrameStoppedLoading:
 		var event page.EventFrameStoppedLoading
-		if p.decodeLifecycle(m, &event) && string(event.FrameID) == p.handle {
+		if p.decodeLifecycle(m, &event) && string(event.FrameID) == string(p.handle) {
 			p.reportLoading(p.loads.observe(false))
 		}
 	case cdproto.CommandPageGetFrameTree:

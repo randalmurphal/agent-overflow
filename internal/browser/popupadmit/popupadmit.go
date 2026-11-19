@@ -30,14 +30,14 @@
 // has an unknown ancestry, which Ancestors says, and which its caller
 // treats as "no owner known" rather than as "no opener".
 //
-// Stdlib-only.
+// It imports only the standard library and internal/browser/ids.
 package popupadmit
 
-import "sync"
+import (
+	"sync"
 
-// Handle is an engine page handle: the identity a popup is reported,
-// adopted and listed under.
-type Handle string
+	"agent-overflow/internal/browser/ids"
+)
 
 // Disposition is where a popup's admission stands.
 type Disposition int
@@ -137,7 +137,7 @@ func (v Verdict) CrashReason() string { return v.crash }
 // Ancestry is what the registry knows of a popup's openers.
 type Ancestry struct {
 	known bool
-	chain []Handle
+	chain []ids.PageHandle
 }
 
 // Known says whether the popup's admission is still known. An unknown
@@ -146,10 +146,10 @@ func (a Ancestry) Known() bool { return a.known }
 
 // Chain is the popup's openers, nearest first: its opener, that opener's
 // own if it was a popup, and so on, each once. Nil when unknown.
-func (a Ancestry) Chain() []Handle { return a.chain }
+func (a Ancestry) Chain() []ids.PageHandle { return a.chain }
 
 type admission struct {
-	opener      Handle
+	opener      ids.PageHandle
 	disposition Disposition
 	ending      ending
 }
@@ -172,10 +172,10 @@ type Registry struct {
 	mu sync.Mutex
 	// live are the admissions pending or listed, and those that are the
 	// opener of a live one.
-	live map[Handle]*admission
+	live map[ids.PageHandle]*admission
 	// children counts the live admissions whose opener is each handle,
 	// whether or not that handle is a popup.
-	children map[Handle]int
+	children map[ids.PageHandle]int
 	history  history
 }
 
@@ -186,14 +186,14 @@ func New(limit int) *Registry {
 		limit = 1
 	}
 	return &Registry{
-		live: make(map[Handle]*admission), children: make(map[Handle]int),
-		history: history{limit: limit, entries: make(map[Handle]historyEntry)},
+		live: make(map[ids.PageHandle]*admission), children: make(map[ids.PageHandle]int),
+		history: history{limit: limit, entries: make(map[ids.PageHandle]historyEntry)},
 	}
 }
 
 // Announce starts the admission of popup h, opened by opener, and answers
 // false when h was announced before and is still known.
-func (r *Registry) Announce(h, opener Handle) bool {
+func (r *Registry) Announce(h, opener ids.PageHandle) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.live[h] != nil {
@@ -212,7 +212,7 @@ func (r *Registry) Announce(h, opener Handle) bool {
 // of it, so an observation of a handle with no pending admission is of a
 // listed tab, a popup that already ended, or a page that was never a
 // popup, and nothing keeps it.
-func (r *Registry) Observe(h Handle, o Observation) Observed {
+func (r *Registry) Observe(h ids.PageHandle, o Observation) Observed {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if a := r.live[h]; a != nil && a.disposition == Pending {
@@ -226,7 +226,7 @@ func (r *Registry) Observe(h Handle, o Observation) Observed {
 // answers whether to list it: a popup that closed is refused, one that
 // crashed is listed crashed. The caller holds the lock under which it
 // lists pages, so no listing of h races this.
-func (r *Registry) Commit(h Handle) Verdict {
+func (r *Registry) Commit(h ids.PageHandle) Verdict {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.live[h]
@@ -249,7 +249,7 @@ func (r *Registry) Commit(h Handle) Verdict {
 // attached: a popup whose process ended first is still listed crashed, as
 // its crash would list it attached, unless it also closed; any other is
 // refused.
-func (r *Registry) CommitUnattached(h Handle) Verdict {
+func (r *Registry) CommitUnattached(h ids.PageHandle) Verdict {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.live[h]
@@ -265,7 +265,7 @@ func (r *Registry) CommitUnattached(h Handle) Verdict {
 
 // Discard ends the pending admission of h without a listing; it does
 // nothing to one that already ended or is listed.
-func (r *Registry) Discard(h Handle) {
+func (r *Registry) Discard(h ids.PageHandle) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if a := r.live[h]; a != nil && a.disposition == Pending {
@@ -275,7 +275,7 @@ func (r *Registry) Discard(h Handle) {
 
 // Leave ends the admission of h, whose tab left; it does nothing to a
 // handle that is not a listed popup.
-func (r *Registry) Leave(h Handle) {
+func (r *Registry) Leave(h ids.PageHandle) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if a := r.live[h]; a != nil && a.disposition == Listed {
@@ -285,7 +285,7 @@ func (r *Registry) Leave(h Handle) {
 
 // Disposition answers where the admission of h stands; ok is false when
 // none is known.
-func (r *Registry) Disposition(h Handle) (d Disposition, ok bool) {
+func (r *Registry) Disposition(h ids.PageHandle) (d Disposition, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if a := r.lookupLocked(h); a != nil {
@@ -296,15 +296,15 @@ func (r *Registry) Disposition(h Handle) (d Disposition, ok bool) {
 
 // Ancestors answers the openers of h, nearest first, or that its
 // admission is no longer known.
-func (r *Registry) Ancestors(h Handle) Ancestry {
+func (r *Registry) Ancestors(h ids.PageHandle) Ancestry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.lookupLocked(h)
 	if a == nil {
 		return Ancestry{}
 	}
-	var chain []Handle
-	seen := map[Handle]bool{h: true}
+	var chain []ids.PageHandle
+	seen := map[ids.PageHandle]bool{h: true}
 	for ; a != nil && a.opener != "" && !seen[a.opener]; a = r.lookupLocked(a.opener) {
 		seen[a.opener] = true
 		chain = append(chain, a.opener)
@@ -314,7 +314,7 @@ func (r *Registry) Ancestors(h Handle) Ancestry {
 
 // lookupLocked answers the admission of h, live or in the history, or
 // nil. The caller holds r.mu.
-func (r *Registry) lookupLocked(h Handle) *admission {
+func (r *Registry) lookupLocked(h ids.PageHandle) *admission {
 	if a := r.live[h]; a != nil {
 		return a
 	}
@@ -324,7 +324,7 @@ func (r *Registry) lookupLocked(h Handle) *admission {
 
 // settleLocked moves a to next, and lets it go from the live ones when
 // nothing keeps it there. The caller holds r.mu.
-func (r *Registry) settleLocked(h Handle, a *admission, next Disposition) {
+func (r *Registry) settleLocked(h ids.PageHandle, a *admission, next Disposition) {
 	if !a.to(next) {
 		panic("popupadmit: an admission moved from " + a.disposition.String() + " to " + next.String())
 	}
@@ -334,7 +334,7 @@ func (r *Registry) settleLocked(h Handle, a *admission, next Disposition) {
 // pinLocked counts one more live admission opened by h. An opener that
 // already went to the history is live again while it has one, so its
 // chain is kept with it. The caller holds r.mu.
-func (r *Registry) pinLocked(h Handle) {
+func (r *Registry) pinLocked(h ids.PageHandle) {
 	if h == "" {
 		return
 	}
@@ -351,7 +351,7 @@ func (r *Registry) pinLocked(h Handle) {
 // releaseLocked moves the admission of h to the history once it is
 // neither pending, listed nor the opener of a live one, and so on up its
 // chain. The caller holds r.mu.
-func (r *Registry) releaseLocked(h Handle) {
+func (r *Registry) releaseLocked(h ids.PageHandle) {
 	for h != "" {
 		a := r.live[h]
 		if a == nil || a.disposition != Ended || r.children[h] > 0 {
@@ -375,7 +375,7 @@ func (r *Registry) releaseLocked(h Handle) {
 type history struct {
 	limit   int
 	next    uint64
-	entries map[Handle]historyEntry
+	entries map[ids.PageHandle]historyEntry
 	// order is the handles put, oldest first, each with the number it was
 	// put under; one taken or put again since is skipped.
 	order []historyKey
@@ -387,22 +387,22 @@ type historyEntry struct {
 }
 
 type historyKey struct {
-	handle Handle
+	handle ids.PageHandle
 	seq    uint64
 }
 
-func (h *history) get(k Handle) (*admission, bool) {
+func (h *history) get(k ids.PageHandle) (*admission, bool) {
 	e, ok := h.entries[k]
 	return e.admission, ok
 }
 
-func (h *history) take(k Handle) (*admission, bool) {
+func (h *history) take(k ids.PageHandle) (*admission, bool) {
 	e, ok := h.entries[k]
 	delete(h.entries, k)
 	return e.admission, ok
 }
 
-func (h *history) put(k Handle, a *admission) {
+func (h *history) put(k ids.PageHandle, a *admission) {
 	h.next++
 	h.entries[k] = historyEntry{admission: a, seq: h.next}
 	h.order = append(h.order, historyKey{handle: k, seq: h.next})

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -21,9 +22,9 @@ type viewScaleState struct {
 	busy  bool
 }
 
-func (e *hostedEngine) ShowPage(handle string) {
+func (e *hostedEngine) ShowPage(handle ids.PageHandle) {
 	if e.setShown(handle, true) {
-		e.dispatch(webview2host.Directive{Op: webview2host.OpShow, PageID: handle})
+		e.dispatch(webview2host.Directive{Op: webview2host.OpShow, PageID: string(handle)})
 		// A hide put the override back at 1; a re-show at an unchanged
 		// placement sends no bounds, so the placement's scale is restored
 		// here or the page would draw at 1:1 and be cropped by the pane.
@@ -37,7 +38,7 @@ func (e *hostedEngine) ShowPage(handle string) {
 // its window is in the foreground, and whether the SPA has withdrawn the
 // intent (webview2host.FocusIntents); it answers ReportFocused or
 // ReportFocusFailed for a move it made or that was refused.
-func (e *hostedEngine) FocusPage(handle string, req focusRequest) (focusResult, error) {
+func (e *hostedEngine) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
 	e.mu.Lock()
 	shown := e.shown[handle]
 	e.mu.Unlock()
@@ -47,7 +48,7 @@ func (e *hostedEngine) FocusPage(handle string, req focusRequest) (focusResult, 
 	if !req.Live() {
 		return focusWithdrawn, nil
 	}
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: handle, Mount: req.Mount, Intent: req.Intent}) {
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: string(handle), Mount: req.Mount, Intent: req.Intent}) {
 		return focusNotPresented, fmt.Errorf("browser: the pane host could not be asked to focus page %s", handle)
 	}
 	return focusDispatched, nil
@@ -56,9 +57,9 @@ func (e *hostedEngine) FocusPage(handle string, req focusRequest) (focusResult, 
 // HidePage hides the page's clip container. The controller itself stays
 // visible to Chromium, so a hidden page keeps compositing: screenshots and
 // scroll state stay live exactly as on the WebKit engines' 1x1 park.
-func (e *hostedEngine) HidePage(handle string) {
+func (e *hostedEngine) HidePage(handle ids.PageHandle) {
 	if e.setShown(handle, false) {
-		e.dispatch(webview2host.Directive{Op: webview2host.OpHide, PageID: handle})
+		e.dispatch(webview2host.Directive{Op: webview2host.OpHide, PageID: string(handle)})
 		e.syncViewScale(handle)
 	}
 }
@@ -73,13 +74,13 @@ func (e *hostedEngine) HidePage(handle string) {
 // report's sequence: a launcher that measures the mount itself places the
 // page from its own rect with the same rule (paneplace.Fit) unless this
 // directive's report is newer than its own.
-func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
+func (e *hostedEngine) SetPageBounds(handle ids.PageHandle, placement PanePlacement) {
 	if !e.setBounds(handle, placement) {
 		return
 	}
 	rect := placement.Rect
 	e.dispatch(webview2host.Directive{
-		Op: webview2host.OpBounds, PageID: handle,
+		Op: webview2host.OpBounds, PageID: string(handle),
 		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
 		CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
 		VW: rect.ViewportWidth, VH: rect.ViewportHeight,
@@ -93,12 +94,12 @@ func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
 // SetPageBase sends the page's base to the launcher, which paints it as the
 // controller's default background whether or not the page has bounds or is
 // shown. It rides the page's lane, so it lands after the page's create.
-func (e *hostedEngine) SetPageBase(handle, color string) {
+func (e *hostedEngine) SetPageBase(handle ids.PageHandle, color string) {
 	e.mu.Lock()
 	_, known := e.targetByPage[handle]
 	e.mu.Unlock()
 	if known {
-		e.dispatch(webview2host.Directive{Op: webview2host.OpBackground, PageID: handle, Bg: color})
+		e.dispatch(webview2host.Directive{Op: webview2host.OpBackground, PageID: string(handle), Bg: color})
 	}
 }
 
@@ -106,7 +107,7 @@ func (e *hostedEngine) SetPageBase(handle, color string) {
 // state calls for: the placement's scale times the pane zoom while shown,
 // 1 while hidden. A placement that only moved asks for what was already
 // asked, which costs nothing.
-func (e *hostedEngine) syncViewScale(handle string) {
+func (e *hostedEngine) syncViewScale(handle ids.PageHandle) {
 	e.mu.Lock()
 	shown := e.shown[handle]
 	placement, hasBounds := e.bounds[handle]
@@ -127,7 +128,7 @@ func paneZoom(paneRatio, pageRatio float64) float64 {
 	return paneRatio / pageRatio
 }
 
-func (e *hostedEngine) driverFor(handle string) *cdpPage {
+func (e *hostedEngine) driverFor(handle ids.PageHandle) *cdpPage {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.drivers[handle]
@@ -137,7 +138,7 @@ func (e *hostedEngine) driverFor(handle string) *cdpPage {
 // pane ratio it is asked under (see ratios), so only a monitor or zoom change
 // costs a CDP round trip. 0 means unknown, which paneZoom treats as no zoom.
 // It runs in the scale drain, never in a presentation pass.
-func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) float64 {
+func (e *hostedEngine) pageDevicePixelRatio(handle ids.PageHandle, paneRatio float64) float64 {
 	e.mu.Lock()
 	cached, ok := e.ratios[handle]
 	p := e.drivers[handle]
@@ -174,7 +175,7 @@ func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) fl
 // which is what keeps a position-only change free of metrics work. Failures
 // are logged rather than returned: the caller (a pane rect report) has
 // nothing to do with one, and a page that refuses is one that is closing.
-func (e *hostedEngine) applyViewScale(handle string, want viewScale) {
+func (e *hostedEngine) applyViewScale(handle ids.PageHandle, want viewScale) {
 	e.mu.Lock()
 	if _, known := e.drivers[handle]; !known {
 		e.mu.Unlock()
@@ -202,7 +203,7 @@ func (e *hostedEngine) applyViewScale(handle string, want viewScale) {
 	}
 }
 
-func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
+func (e *hostedEngine) drainViewScale(handle ids.PageHandle, st *viewScaleState) {
 	for {
 		e.mu.Lock()
 		want := st.want
@@ -244,7 +245,7 @@ func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
 // setBounds is the bounds half of the setShown dedupe: the presentation sync
 // re-sends the active page's placement on every selection, focus and
 // page-list change, and only an actually-changed one should cost a directive.
-func (e *hostedEngine) setBounds(handle string, placement PanePlacement) bool {
+func (e *hostedEngine) setBounds(handle ids.PageHandle, placement PanePlacement) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, known := e.targetByPage[handle]; !known {
@@ -257,15 +258,15 @@ func (e *hostedEngine) setBounds(handle string, placement PanePlacement) bool {
 	return true
 }
 
-func (e *hostedEngine) OpenPageDevTools(handle string) {
-	e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: handle})
+func (e *hostedEngine) OpenPageDevTools(handle ids.PageHandle) {
+	e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: string(handle)})
 }
 
 // setShown reports whether the visibility actually changed for a page this
 // engine still owns. Visibility is recomputed on every selection, focus
 // and page-list change, so re-emitting an unchanged state would put a
 // directive on the wire for every one of them.
-func (e *hostedEngine) setShown(handle string, visible bool) bool {
+func (e *hostedEngine) setShown(handle ids.PageHandle, visible bool) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, known := e.targetByPage[handle]; !known {

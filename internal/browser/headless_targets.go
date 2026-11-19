@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"agent-overflow/internal/browser/cdporder"
+	"agent-overflow/internal/browser/ids"
 
 	"github.com/chromedp/cdproto"
 	cdpbrowser "github.com/chromedp/cdproto/browser"
@@ -121,7 +122,7 @@ func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *h
 		if len(owners) < 2 {
 			return downloadStart{}
 		}
-		return downloadStart{Popup: frame, Openers: owners[1:], Profile: p.handle}
+		return downloadStart{Popup: owners[0], Openers: owners[1:], Profile: p.handle}
 	}
 	downloads.lifetime, downloads.ownerWait = browserCtx, p.engine.ownerWait
 	return downloads
@@ -130,7 +131,7 @@ func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *h
 // targetCrashed reports a page of this profile whose renderer died; the
 // Manager closes the target and keeps its tab as a crashed one.
 func (p *headlessProfile) targetCrashed(event target.EventTargetCrashed) {
-	handle := string(event.TargetID)
+	handle := ids.PageHandle(event.TargetID)
 	if owner, ok := p.engine.profileForPage(handle); !ok || owner != p {
 		return
 	}
@@ -164,7 +165,7 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 		return
 	}
 	p := h.profile
-	handle := string(info.TargetID)
+	handle := ids.PageHandle(info.TargetID)
 	var deliver func()
 	h.cdpTargets.created(info, func(newest *target.Info, held bool, order uint64) {
 		// An opener is what makes a target a POPUP: every page the Manager
@@ -184,7 +185,7 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 		// own (engineEvents).
 		p.engine.bindPage(handle, p)
 		p.engine.events.PopupOpened(enginePopup{
-			Profile: p.handle, Opener: string(info.OpenerID), Handle: handle,
+			Profile: p.handle, Opener: ids.PageHandle(info.OpenerID), Handle: handle,
 			URL: newest.URL, Title: newest.Title,
 		})
 	})
@@ -199,7 +200,7 @@ func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
 		return
 	}
 	p := h.profile
-	handle := string(info.TargetID)
+	handle := ids.PageHandle(info.TargetID)
 	order, ok := h.changed(info, func() bool {
 		if !h.isKnownLocked(info.TargetID) {
 			return false
@@ -214,7 +215,7 @@ func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
 
 func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
 	p := h.profile
-	handle := string(event.TargetID)
+	handle := ids.PageHandle(event.TargetID)
 	var bound bool
 	h.cdpTargets.destroyed(event.TargetID, func() {
 		// A page the Manager created is bound before its created event may

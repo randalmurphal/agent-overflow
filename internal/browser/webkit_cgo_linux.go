@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
 )
@@ -274,7 +275,7 @@ func aoWebKitPageCrashed(pageID, popupID, profileID C.uint64_t, reason *C.char) 
 // thread: its page's handle once the view answers to one, and before
 // that, for a popup, the handle its number gives it, which its adoption
 // keeps (pageHandle). The Manager records either at once (engineEvents).
-func webkitViewOwner(pageID, popupID, profileID uint64) (engineEvents, string, bool) {
+func webkitViewOwner(pageID, popupID, profileID uint64) (engineEvents, ids.PageHandle, bool) {
 	if page := webkitLookupPage(pageID); page != nil {
 		return page.engine.events, page.handle, true
 	}
@@ -295,7 +296,7 @@ func webkitViewOwner(pageID, popupID, profileID uint64) (engineEvents, string, b
 //export aoWebKitPopup
 func aoWebKitPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := webkitTakeString(uri)
-	var opener string
+	var opener ids.PageHandle
 	if page := webkitLookupPage(uint64(openerID)); page != nil {
 		opener = page.handle
 	} else if openerPopup != 0 {
@@ -820,10 +821,10 @@ func (p *webkitPage) terminateWebProcess() error {
 // seen before it is answered, until the returned restore runs. It swaps the
 // hook on the GTK thread, which is the only reader. For the native smoke.
 func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (restore func() error, err error) {
-	var orig func(string, keybindings.Accelerator, KeyPress) bool
+	var orig func(ids.PageHandle, keybindings.Accelerator, KeyPress) bool
 	err = p.liveView().do(func(unsafe.Pointer) {
 		orig = p.engine.events.KeyChord
-		p.engine.events.KeyChord = func(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
+		p.engine.events.KeyChord = func(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool {
 			seen(pressed, press)
 			return orig(handle, pressed, press)
 		}

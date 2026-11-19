@@ -3,6 +3,7 @@ package browser
 import (
 	"log"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -29,7 +30,7 @@ func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
 // the keys typed next must reach that, not the page. So every claim hands
 // focus to the app (engineAppFocus) before it returns; a chord AO does not
 // claim leaves focus in the page.
-func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
+func (m *Manager) keyChord(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool {
 	if pressed == pageEscape {
 		if pageEscapeAnnounced(pressed, press) {
 			go m.emitEscape(handle)
@@ -57,7 +58,7 @@ func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press
 // emitEscape announces a bare Escape pressed in a page a pane shows, as a
 // Kind "escape" event naming the thread, the page and the presenting mount,
 // whose client's find bar it closes.
-func (m *Manager) emitEscape(handle string) {
+func (m *Manager) emitEscape(handle ids.PageHandle) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
 	mount := ""
@@ -74,7 +75,7 @@ func (m *Manager) emitEscape(handle string) {
 // emitAccelerator routes a claimed chord to the pane mount showing the page,
 // so that only the client holding the mount replays it. A page no pane shows
 // has nobody to act for, and its chord is dropped.
-func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
+func (m *Manager) emitAccelerator(handle ids.PageHandle, bound keybindings.Accelerator) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
 	mount := ""

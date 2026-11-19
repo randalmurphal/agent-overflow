@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // A download that ends keeping no file removes the file it was admitted
@@ -140,7 +142,7 @@ func TestAParkedDiscardRemovesTheFileItWasParkedWith(t *testing.T) {
 			}
 			decoy := moveJarDirectory(t, manager, "dl-1")
 			if how == "refused at its fate" {
-				manager.removeClosedPage(opener)
+				manager.removeClosedPage(ids.PageHandle(opener))
 				manager.removeClosedPage("popup")
 			} else if err := manager.Close(); err != nil {
 				t.Fatal(err)

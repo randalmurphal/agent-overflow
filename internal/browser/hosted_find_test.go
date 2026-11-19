@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -54,8 +55,8 @@ func TestHostedEngineFindUnavailableReport(t *testing.T) {
 			profile := testProfile(t, engine)
 			go func() {
 				directive := sink.next(t)
-				engine.Report(directive.PageID, webview2host.ReportFindUnavailable, "")
-				engine.Report(directive.PageID, tc.answer, "TARGET-1")
+				engine.Report(ids.PageHandle(directive.PageID), webview2host.ReportFindUnavailable, "")
+				engine.Report(ids.PageHandle(directive.PageID), tc.answer, "TARGET-1")
 			}()
 			if _, err := profile.NewPage(t.Context(), pageHooks{}); err == nil {
 				t.Fatal("create succeeded")

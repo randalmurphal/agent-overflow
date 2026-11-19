@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // A pane resize lays out only the page the pane shows. Every other page of
@@ -193,7 +195,7 @@ func TestASelectedPageShowsOnceAnOperationLaysItOut(t *testing.T) {
 	shown := make(chan struct{}, 8)
 	f.engine.mu.Lock()
 	f.engine.onShow = func(h string) {
-		if h == handle {
+		if ids.PageHandle(h) == handle {
 			shown <- struct{}{}
 		}
 	}
@@ -269,14 +271,14 @@ func TestALayoutLandingAsThePassHidesThePageStillShowsIt(t *testing.T) {
 	shown := make(chan struct{}, 8)
 	f.engine.mu.Lock()
 	f.engine.onShow = func(h string) {
-		if h == handle {
+		if ids.PageHandle(h) == handle {
 			shown <- struct{}{}
 		}
 	}
 	// presentPanes hides the lagging page between its check and its
 	// record; once armed, the layout lands right there.
 	f.engine.onHide = func(h string) {
-		if h == handle && armed.Load() {
+		if ids.PageHandle(h) == handle && armed.Load() {
 			hideOnce.Do(func() { close(releaseApply); <-shooting })
 		}
 	}
@@ -403,7 +405,7 @@ func TestALaggingPageIsLaidOutBeforeItIsShown(t *testing.T) {
 			f.engine.mu.Lock()
 			f.engine.calls = nil
 			f.engine.mu.Unlock()
-			showRecorder := &showSizes{page: hidden, handle: hiddenHandle, mu: &mu, sizes: &shownAt}
+			showRecorder := &showSizes{page: hidden, handle: string(hiddenHandle), mu: &mu, sizes: &shownAt}
 			f.engine.mu.Lock()
 			f.engine.onShow = showRecorder.record
 			f.engine.mu.Unlock()
@@ -467,7 +469,7 @@ func TestAPageThatRefusesTheSizeIsStillShown(t *testing.T) {
 	}
 	f.awaitFollowIdle(t)
 	handle := f.pages[1].Handle()
-	if calls := strings.Join(f.engine.take(), " "); !strings.Contains(calls, "show:"+handle) {
+	if calls := strings.Join(f.engine.take(), " "); !strings.Contains(calls, "show:"+string(handle)) {
 		t.Fatalf("the refusing page was never shown: %s", calls)
 	}
 	f.pages[1].mu.Lock()

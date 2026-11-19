@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // One WebKitWebView, driven entirely through JavaScript. WebKitGTK exposes no
@@ -51,13 +53,13 @@ type webkitPage struct {
 	engine  *webkitEngine
 	profile *webkitProfile
 	id      uint64
-	handle  string
+	handle  ids.PageHandle
 	hooks   pageHooks
 	view    unsafe.Pointer
 	// popup is the handle the page was adopted under when WebKit opened it
 	// as a popup, and opener the handle of the page that opened it; both
 	// empty otherwise. Set before the view answers to the page.
-	popup, opener string
+	popup, opener ids.PageHandle
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -80,12 +82,12 @@ func (p *webkitPage) Lifetime() context.Context { return p.ctx }
 
 // liveView is the view as an operation reaches it: refused once the page
 // closed (webkitView.do).
-func (p *webkitPage) liveView() webkitView { return webkitView{ptr: p.view, life: p.ctx} }
-func (p *webkitPage) Handle() string       { return p.handle }
+func (p *webkitPage) liveView() webkitView   { return webkitView{ptr: p.view, life: p.ctx} }
+func (p *webkitPage) Handle() ids.PageHandle { return p.handle }
 
 // OwnsFrame answers for this page's own handle: this engine addresses every
 // event by page, so a page's only frame identity is itself.
-func (p *webkitPage) OwnsFrame(frame string) bool { return frame == p.handle }
+func (p *webkitPage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
 
 // ReadOnlyCaveat is non-empty because WebKit has no equivalent of CDP's
 // throwOnSideEffect: the expression is evaluated as written. The Manager

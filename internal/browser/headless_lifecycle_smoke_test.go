@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/procutil/procutiltest"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -74,9 +75,9 @@ func TestHeadlessChromiumRealLoadingAndFrames(t *testing.T) {
 	var owner atomic.Pointer[pageDriver]
 	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}, engineEvents{
 		PopupOpened:     func(enginePopup) {},
-		PageClosed:      func(string) {},
-		PageCrashed:     func(string, string) {},
-		PageInfoChanged: func(string, string, string, uint64) {},
+		PageClosed:      func(ids.PageHandle) {},
+		PageCrashed:     func(ids.PageHandle, string) {},
+		PageInfoChanged: func(ids.PageHandle, string, string, uint64) {},
 		DownloadStarted: func(start downloadStart) downloadAdmission {
 			owned := false
 			if d := owner.Load(); d != nil {

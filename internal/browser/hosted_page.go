@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -27,7 +28,7 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	}
 	defer e.unwatch(pageID)
 
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: pageID, ProfileID: profile.id, Ephemeral: profile.ephemeral}) {
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: string(pageID), ProfileID: profile.id, Ephemeral: profile.ephemeral}) {
 		return nil, errors.New("browser: pane host refused the create directive")
 	}
 
@@ -96,7 +97,7 @@ func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedBy
 // lane, after the reports received before it; DiscardPage waits for that
 // within ctx, and past it answers errDiscardPending while the lane still
 // finishes the discard. A second discard of the page joins the first.
-func (e *hostedEngine) DiscardPage(ctx context.Context, handle string) error {
+func (e *hostedEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
 	retired := e.closePage(handle)
 	select {
 	case <-retired:
@@ -111,7 +112,7 @@ func (e *hostedEngine) DiscardPage(ctx context.Context, handle string) error {
 // launcher posts over the notification bridge, so its return acknowledges
 // the report: a download snapshot, a close or a crash is received here and
 // processed on the page's lane (hosted_pages.go, hosted_report_lanes.go).
-func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detail string) {
+func (e *hostedEngine) Report(pageID ids.PageHandle, kind webview2host.ReportKind, detail string) {
 	switch kind {
 	case webview2host.ReportCreated:
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
@@ -133,10 +134,10 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 			e.logf("browser: pane host page %s reported %s; the page keeps running", pageID, detail)
 			return
 		}
-		e.acceptCrash(hostedPageID(pageID), detail)
+		e.acceptCrash(pageID, detail)
 	case webview2host.ReportClosed:
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			e.acceptClose(hostedPageID(pageID))
+			e.acceptClose(pageID)
 		}
 	case webview2host.ReportAccelerator:
 		// The launcher already matched and swallowed the chord; the Manager
@@ -161,7 +162,7 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		}
 		e.events.PageFocusReported(pageID, report.Mount, report.Intent, failure)
 	case webview2host.ReportDownload:
-		e.acceptDownload(hostedPageID(pageID), detail)
+		e.acceptDownload(pageID, detail)
 	case webview2host.ReportPopup:
 		e.popupReported(pageID, detail)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
@@ -187,7 +188,7 @@ func processFailureCrashes(detail string) bool {
 
 // forgetPageLocked drops pageID from the engine's page bookkeeping, its
 // record and downloads aside (retirePage). The caller holds e.mu.
-func (e *hostedEngine) forgetPageLocked(pageID string) {
+func (e *hostedEngine) forgetPageLocked(pageID ids.PageHandle) {
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
@@ -201,7 +202,7 @@ func (e *hostedEngine) forgetPageLocked(pageID string) {
 	delete(e.pageProfile, pageID)
 }
 
-func (e *hostedEngine) watch(pageID string) (chan hostReport, error) {
+func (e *hostedEngine) watch(pageID ids.PageHandle) (chan hostReport, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, exists := e.pending[pageID]; exists {
@@ -212,7 +213,7 @@ func (e *hostedEngine) watch(pageID string) (chan hostReport, error) {
 	return waiter, nil
 }
 
-func (e *hostedEngine) unwatch(pageID string) {
+func (e *hostedEngine) unwatch(pageID ids.PageHandle) {
 	e.mu.Lock()
 	delete(e.pending, pageID)
 	e.mu.Unlock()
@@ -221,7 +222,7 @@ func (e *hostedEngine) unwatch(pageID string) {
 // deliver hands one report to a pending create. Reports whether a waiter
 // took it, which is what tells the caller a late or unmatched report needs
 // its own handling.
-func (e *hostedEngine) deliver(pageID string, report hostReport) bool {
+func (e *hostedEngine) deliver(pageID ids.PageHandle, report hostReport) bool {
 	e.mu.Lock()
 	waiter, ok := e.pending[pageID]
 	if ok {
@@ -238,7 +239,7 @@ func (e *hostedEngine) deliver(pageID string, report hostReport) bool {
 // claimTarget pairs a page the engine is creating with the CDP target the
 // launcher reported for it, unless another page, bound or a popup, has
 // that target. Its close forgets the pair (forgetPageLocked).
-func (e *hostedEngine) claimTarget(pageID, targetID string) error {
+func (e *hostedEngine) claimTarget(pageID ids.PageHandle, targetID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if owner, claimed := e.targetPageLocked(targetID); claimed {
@@ -254,27 +255,27 @@ func (e *hostedEngine) claimTarget(pageID, targetID string) error {
 // which it admits downloads. It refuses a connection that has ended: that
 // connection's retirement may already have claimed its pages, and a later
 // one would never report this page.
-func (e *hostedEngine) bind(pageID, targetID string, conn context.Context) error {
+func (e *hostedEngine) bind(pageID ids.PageHandle, targetID string, conn context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if conn.Err() != nil {
 		return errors.New("browser: the connection to the pane browser was lost")
 	}
 	e.bindLocked(pageID, targetID, conn)
-	e.pages.addOpen(hostedPageID(pageID))
+	e.pages.addOpen(pageID)
 	return nil
 }
 
 // bindLocked is bind's pairing for a caller that holds e.mu and has
 // checked conn. It changes no page's record: a popup's opened at its
 // report.
-func (e *hostedEngine) bindLocked(pageID, targetID string, conn context.Context) {
+func (e *hostedEngine) bindLocked(pageID ids.PageHandle, targetID string, conn context.Context) {
 	e.targetByPage[pageID] = targetID
 	e.pageByTarget[targetID] = pageID
 	e.pageConn[pageID] = conn
 }
 
-func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
+func (e *hostedEngine) pageForTarget(targetID string) (ids.PageHandle, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.targetPageLocked(targetID)
@@ -282,7 +283,7 @@ func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
 
 // targetPageLocked answers the page whose CDP target targetID is: a bound
 // page's, or a popup's the Manager has not listed. The caller holds e.mu.
-func (e *hostedEngine) targetPageLocked(targetID string) (string, bool) {
+func (e *hostedEngine) targetPageLocked(targetID string) (ids.PageHandle, bool) {
 	if pageID, ok := e.pageByTarget[targetID]; ok {
 		return pageID, true
 	}
@@ -303,9 +304,9 @@ func (e *hostedEngine) targetPageLocked(targetID string) (string, bool) {
 // closes once the page is retired; a page already closing retires once,
 // and its answer is its first close's. The launcher is asked to close the
 // page every time: a close of a page it closed already changes nothing.
-func (e *hostedEngine) closePage(pageID string) <-chan struct{} {
-	defer e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
-	receipt := e.pages.acceptEnd(hostedPageID(pageID), acceptedDiscard, "")
+func (e *hostedEngine) closePage(pageID ids.PageHandle) <-chan struct{} {
+	defer e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: string(pageID)})
+	receipt := e.pages.acceptEnd(pageID, acceptedDiscard, "")
 	if receipt.retired == nil {
 		e.mu.Lock()
 		e.endCloseFallbackLocked(pageID)
@@ -318,7 +319,7 @@ func (e *hostedEngine) closePage(pageID string) <-chan struct{} {
 		return retired
 	}
 	if receipt.accepted {
-		e.endPageWaits(hostedPageID(pageID))
+		e.endPageWaits(pageID)
 	}
 	return receipt.retired
 }
@@ -342,8 +343,8 @@ func awaitHostReport(ctx context.Context, waiter chan hostReport, timeout time.D
 	}
 }
 
-func newHostedPageID() string {
-	return strings.ReplaceAll(uuid.NewString(), "-", "")
+func newHostedPageID() ids.PageHandle {
+	return ids.PageHandle(strings.ReplaceAll(uuid.NewString(), "-", ""))
 }
 
 // hostedPage is one launcher-hosted controller. Every operation is the CDP
@@ -352,19 +353,19 @@ func newHostedPageID() string {
 type hostedPage struct {
 	pageDriver
 	engine    *hostedEngine
-	id        string
+	id        ids.PageHandle
 	closeOnce sync.Once
 }
 
 // Handle is the PAGE id, not the CDP target id: it is what the launcher's
 // reports name and what every directive addresses, so it is the one handle
 // both halves of this engine agree on.
-func (p *hostedPage) Handle() string { return p.id }
+func (p *hostedPage) Handle() ids.PageHandle { return p.id }
 
 // OwnsFrame answers for the page id too, which is the frame a launcher
 // download report names (hosted_downloads.go).
 func (p *hostedPage) OwnsFrame(frame string) bool {
-	return frame == p.id || p.pageDriver.OwnsFrame(frame)
+	return frame == string(p.id) || p.pageDriver.OwnsFrame(frame)
 }
 
 func (p *hostedPage) Close() {
@@ -374,6 +375,6 @@ func (p *hostedPage) Close() {
 
 // Listed is the Manager's listing of an adopted popup (listingDriver): its
 // later reports run on its own lane.
-func (p *hostedPage) Listed() { p.engine.pages.listed(hostedPageID(p.id)) }
+func (p *hostedPage) Listed() { p.engine.pages.listed(p.id) }
 
 var _ listingDriver = (*hostedPage)(nil)

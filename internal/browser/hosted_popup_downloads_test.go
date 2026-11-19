@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/target"
@@ -84,7 +85,7 @@ func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
 	adopt := l.engine.events.PopupOpened
 	l.engine.events.PopupOpened = func(popup enginePopup) {
 		select {
-		case offered <- popup.Handle:
+		case offered <- string(popup.Handle):
 		default:
 		}
 		adopt(popup)
@@ -109,7 +110,7 @@ func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
 	l.engine.mu.Lock()
 	_, profiled := l.engine.pageProfile[popupID]
 	l.engine.mu.Unlock()
-	_, recorded := l.engine.pages.state(hostedPageID(popupID))
+	_, recorded := l.engine.pages.state(ids.PageHandle(popupID))
 	if profiled || recorded {
 		t.Fatalf("the engine keeps the closed popup: profile %v, record %v", profiled, recorded)
 	}

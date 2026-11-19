@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -14,7 +15,7 @@ import (
 func TestHostedPopupAttachCancelHoldsNoEngineLock(t *testing.T) {
 	for _, how := range []string{"close", "discard", "stop"} {
 		t.Run(how, func(t *testing.T) {
-			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(string) {}})
+			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(ids.PageHandle) {}})
 			if err := engine.Start(context.Background()); err != nil {
 				t.Fatal(err)
 			}

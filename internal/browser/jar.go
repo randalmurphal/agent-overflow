@@ -173,7 +173,7 @@ func framePageLocked(scope *jarScope, frame string) *managedPage {
 		return nil
 	}
 	owns := func(p *managedPage) bool {
-		return p.driver != nil && (p.driver.Handle() == frame || p.driver.OwnsFrame(frame))
+		return p.driver != nil && (string(p.driver.Handle()) == frame || p.driver.OwnsFrame(frame))
 	}
 	for _, p := range scope.pages {
 		if owns(p) {

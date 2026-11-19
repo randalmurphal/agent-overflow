@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -80,8 +81,8 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 				placed, routed = nil, nil
 				mu.Unlock()
 				manager.syncPanePresentation(access.ThreadID)
-				manager.emitAccelerator(handle, bound)
-				manager.emitEscape(handle)
+				manager.emitAccelerator(ids.PageHandle(handle), bound)
+				manager.emitEscape(ids.PageHandle(handle))
 				mu.Lock()
 				defer mu.Unlock()
 				if len(placed) == 0 || placed[len(placed)-1].Rect.X != rect.X {
@@ -124,7 +125,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			placed, routed = nil, nil
 			mu.Unlock()
 			manager.syncPanePresentation(access.ThreadID)
-			manager.emitAccelerator(handle, bound)
+			manager.emitAccelerator(ids.PageHandle(handle), bound)
 			mu.Lock()
 			if len(placed) != 0 {
 				mu.Unlock()

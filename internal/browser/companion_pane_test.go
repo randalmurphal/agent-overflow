@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The pane presentation contract every paneHost engine is built against
@@ -39,28 +41,28 @@ func (e *recordingPaneHost) record(call string) {
 	e.mu.Unlock()
 }
 
-func (e *recordingPaneHost) ShowPage(handle string) {
-	e.record("show:" + handle)
+func (e *recordingPaneHost) ShowPage(handle ids.PageHandle) {
+	e.record("show:" + string(handle))
 	e.mu.Lock()
 	onShow := e.onShow
 	e.mu.Unlock()
 	if onShow != nil {
-		onShow(handle)
+		onShow(string(handle))
 	}
 }
-func (e *recordingPaneHost) HidePage(handle string) {
-	e.record("hide:" + handle)
+func (e *recordingPaneHost) HidePage(handle ids.PageHandle) {
+	e.record("hide:" + string(handle))
 	e.mu.Lock()
 	onHide := e.onHide
 	e.mu.Unlock()
 	if onHide != nil {
-		onHide(handle)
+		onHide(string(handle))
 	}
 }
 
 // FocusPage records the request; focusErr, when set, is its answer.
-func (e *recordingPaneHost) FocusPage(handle string, req focusRequest) (focusResult, error) {
-	e.record("focus:" + handle)
+func (e *recordingPaneHost) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
+	e.record("focus:" + string(handle))
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.lastFocus = req
@@ -72,8 +74,8 @@ func (e *recordingPaneHost) FocusPage(handle string, req focusRequest) (focusRes
 
 var _ paneHost = (*recordingPaneHost)(nil)
 
-func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
-	e.record("bounds:" + handle)
+func (e *recordingPaneHost) SetPageBounds(handle ids.PageHandle, placement PanePlacement) {
+	e.record("bounds:" + string(handle))
 	e.mu.Lock()
 	onBounds := e.onBounds
 	e.mu.Unlock()
@@ -82,12 +84,12 @@ func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement
 	}
 }
 
-func (e *recordingPaneHost) SetPageBase(handle, color string) {
+func (e *recordingPaneHost) SetPageBase(handle ids.PageHandle, color string) {
 	e.mu.Lock()
 	onBase := e.onBase
 	e.mu.Unlock()
 	if onBase != nil {
-		onBase(handle, color)
+		onBase(string(handle), color)
 	}
 }
 
@@ -121,7 +123,13 @@ func newPaneHostManager(t *testing.T) (*Manager, *recordingPaneHost, Access, str
 	return manager, engine, access, first.ID, second.ID
 }
 
+// paneHandle is the engine handle of a page as the recording pane host
+// records it.
 func paneHandle(m *Manager, access Access, pageID string) string {
+	return string(driverHandle(m, access, pageID))
+}
+
+func driverHandle(m *Manager, access Access, pageID string) ids.PageHandle {
 	p, _, err := m.lookupOwnedPage(access, pageID)
 	if err != nil {
 		panic(err)

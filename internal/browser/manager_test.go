@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // Engine selection is provable on every platform without a display, and it is
@@ -326,7 +328,7 @@ var lastPageClosers = []struct {
 		}
 	}},
 	{"closed by the engine", func(t *testing.T, m *Manager, access Access, pageID string) {
-		m.removeClosedPage(paneHandle(m, access, pageID))
+		m.removeClosedPage(driverHandle(m, access, pageID))
 	}},
 }
 
@@ -641,7 +643,7 @@ type attachHookProfile struct {
 	onAttach func()
 }
 
-func (p *attachHookProfile) AttachPage(ctx context.Context, _ string, hooks pageHooks) (pageDriver, error) {
+func (p *attachHookProfile) AttachPage(ctx context.Context, _ ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	p.onAttach()
 	return p.fakeProfile.NewPage(ctx, hooks)
 }
@@ -673,7 +675,7 @@ func TestPopupOfAClosedOpenerIsNotAdopted(t *testing.T) {
 		}}
 	}
 	manager.mu.Unlock()
-	manager.adoptPopup(enginePopup{Profile: profile.Handle(), Opener: openerHandle, Handle: "popup"})
+	manager.adoptPopup(enginePopup{Profile: profile.Handle(), Opener: ids.PageHandle(openerHandle), Handle: "popup"})
 	if pages := manager.ownedPages(opener.tb); len(pages) != 0 {
 		t.Fatalf("the closed thread adopted %d pages", len(pages))
 	}
@@ -710,7 +712,7 @@ func (p *closeHookProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDr
 	return &closeHookPage{pageDriver: driver, engine: p.engine}, nil
 }
 
-func (p *closeHookProfile) AttachPage(ctx context.Context, _ string, hooks pageHooks) (pageDriver, error) {
+func (p *closeHookProfile) AttachPage(ctx context.Context, _ ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	return p.fakeProfile.NewPage(ctx, hooks)
 }
 
@@ -720,7 +722,7 @@ type closeHookPage struct {
 }
 
 func (p *closeHookPage) Close() {
-	p.engine.once.Do(func() { p.engine.onClose(p.Handle()) })
+	p.engine.once.Do(func() { p.engine.onClose(string(p.Handle())) })
 	p.pageDriver.Close()
 }
 
@@ -744,7 +746,7 @@ func TestCloseThreadClosesAPopupAdoptedWhileItRuns(t *testing.T) {
 	}
 	openerHandle := paneHandle(manager, opener, page.ID)
 	engine.onClose = func(string) {
-		manager.adoptPopup(enginePopup{Profile: engine.profile.Handle(), Opener: openerHandle, Handle: "popup"})
+		manager.adoptPopup(enginePopup{Profile: engine.profile.Handle(), Opener: ids.PageHandle(openerHandle), Handle: "popup"})
 	}
 	if err := manager.CloseThread(context.Background(), opener.ThreadID); err != nil {
 		t.Fatalf("CloseThread: %v", err)
@@ -770,7 +772,7 @@ func TestCloseThreadCountsAPageTheEngineClosedAsClosed(t *testing.T) {
 	engine.onClose = func(closing string) {
 		for _, handle := range handles {
 			if handle != closing {
-				manager.removeClosedPage(handle)
+				manager.removeClosedPage(ids.PageHandle(handle))
 			}
 		}
 	}
@@ -818,10 +820,10 @@ func TestAClosedPageIsNoLongerTheActivePage(t *testing.T) {
 type discardRecordingEngine struct {
 	*fakeEngine
 	mu        sync.Mutex
-	discarded []string
+	discarded []ids.PageHandle
 }
 
-func (e *discardRecordingEngine) DiscardPage(_ context.Context, handle string) error {
+func (e *discardRecordingEngine) DiscardPage(_ context.Context, handle ids.PageHandle) error {
 	e.mu.Lock()
 	e.discarded = append(e.discarded, handle)
 	e.mu.Unlock()
@@ -846,11 +848,11 @@ func TestAPopupThatFailsToAttachIsDiscarded(t *testing.T) {
 		profile = scope.profile.Handle()
 	}
 	manager.mu.Unlock()
-	manager.adoptPopup(enginePopup{Profile: profile, Opener: paneHandle(manager, opener, page.ID), Handle: "popup"})
+	manager.adoptPopup(enginePopup{Profile: profile, Opener: driverHandle(manager, opener, page.ID), Handle: "popup"})
 	engine.mu.Lock()
 	discarded := slices.Clone(engine.discarded)
 	engine.mu.Unlock()
-	if !slices.Equal(discarded, []string{"popup"}) {
+	if !slices.Equal(discarded, []ids.PageHandle{"popup"}) {
 		t.Fatalf("discarded %v, want [popup]", discarded)
 	}
 	if pages := manager.ownedPages(opener.tb); len(pages) != 1 {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -60,7 +61,7 @@ const (
 // acceptDownload receives one launcher snapshot of a download of page
 // (hostedPages.acceptSnapshot). A report naming a download id another page
 // owns is refused and logged.
-func (e *hostedEngine) acceptDownload(page hostedPageID, detail string) {
+func (e *hostedEngine) acceptDownload(page ids.PageHandle, detail string) {
 	report, err := webview2host.ParseDownloadReport(detail)
 	if err != nil {
 		e.logf("browser: pane host download report for page %s: %v", page, err)
@@ -243,10 +244,10 @@ func (e *hostedEngine) askQuietDownloads(stop <-chan struct{}) {
 // rows the Manager ended as it closed the page take nothing from this; a
 // popup's it never listed settle here. Whoever waits for the page to go
 // (DiscardPage) is woken last.
-func (e *hostedEngine) retirePage(page hostedPageID, why string, closed bool) {
+func (e *hostedEngine) retirePage(page ids.PageHandle, why string, closed bool) {
 	running, finish := e.pages.retire(page)
 	defer finish()
-	pageID := string(page)
+	pageID := page
 	e.mu.Lock()
 	e.endCloseFallbackLocked(pageID)
 	cancelAttach := e.forgetPopupLocked(pageID)

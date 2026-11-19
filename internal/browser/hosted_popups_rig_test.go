@@ -210,7 +210,7 @@ func (l *popupLauncher) reportPopup(pageID string, report webview2host.PopupRepo
 func (l *popupLauncher) tabs(threadID string) map[string]*managedPage {
 	out := map[string]*managedPage{}
 	for _, p := range l.manager.ownedPages(lifetimeOf(l.manager, threadID)) {
-		out[p.driver.Handle()] = p
+		out[string(p.driver.Handle())] = p
 	}
 	return out
 }
@@ -250,7 +250,7 @@ func (l *popupLauncher) settledEngine() {
 		var stale []string
 		for id, popup := range l.engine.popups {
 			if _, live := l.engine.pageProfile[id]; !live || popup.cancelAttach != nil {
-				stale = append(stale, id)
+				stale = append(stale, string(id))
 			}
 		}
 		for target, id := range l.engine.popupByTarget {

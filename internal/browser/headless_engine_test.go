@@ -29,6 +29,7 @@ import (
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/chromedp"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -236,7 +237,7 @@ func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
 		// instead.
 		closeTimeout: headlessTestDeadline,
 		profiles:     make(map[*headlessProfile]struct{}),
-		pageProfile:  make(map[string]*headlessProfile),
+		pageProfile:  make(map[ids.PageHandle]*headlessProfile),
 	}
 	t.Cleanup(engine.Stop)
 	if err := engine.Start(context.Background()); err != nil {
@@ -753,7 +754,7 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 	adopted := make(chan error, 1)
 	engine.events.PopupOpened = func(popup enginePopup) {
 		mu.Lock()
-		reported[popup.Handle] = popup
+		reported[string(popup.Handle)] = popup
 		mu.Unlock()
 		if popup.Handle != "P-page" {
 			return
@@ -794,10 +795,10 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 	defer mu.Unlock()
 	for handle, opener := range map[string]string{"P-handshake": "T-elsewhere", "P-page": "T-1"} {
 		got, ok := reported[handle]
-		if !ok || got.Opener != opener || got.Profile != profile.handle {
+		if !ok || got.Opener != ids.PageHandle(opener) || got.Profile != profile.handle {
 			t.Fatalf("popup %s was reported as %+v (reported: %v)", handle, got, ok)
 		}
-		if owner, bound := engine.profileForPage(handle); !bound || owner != profile {
+		if owner, bound := engine.profileForPage(ids.PageHandle(handle)); !bound || owner != profile {
 			t.Fatalf("popup %s is not bound to the profile that saw it", handle)
 		}
 	}
@@ -1234,7 +1235,7 @@ func TestHeadlessProfileNamesThePopupADownloadBeganIn(t *testing.T) {
 		}
 		switch start.ID {
 		case "G-popup":
-			if start.Frame != "P-2" || start.Popup != "P-2" || !slices.Equal(start.Openers, []string{"P-1", "T-1"}) || start.Profile != profile.Handle() {
+			if start.Frame != "P-2" || start.Popup != "P-2" || !slices.Equal(start.Openers, []ids.PageHandle{"P-1", "T-1"}) || start.Profile != profile.Handle() {
 				t.Errorf("the popup's download started as %+v", start)
 			}
 		case "G-page":
@@ -1258,7 +1259,7 @@ func TestHeadlessProfileNamesAGonePopupADownloadBeganIn(t *testing.T) {
 		return downloadAdmitted
 	}
 	engine.events.PopupOpened = func(enginePopup) {}
-	engine.events.PageClosed = func(string) {}
+	engine.events.PageClosed = func(ids.PageHandle) {}
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 	if _, err := profile.ensureBrowser(); err != nil {
 		t.Fatalf("launch: %v", err)
@@ -1280,7 +1281,7 @@ func TestHeadlessProfileNamesAGonePopupADownloadBeganIn(t *testing.T) {
 	browser.send(downloadWillBegin("G-gone", "P-2"))
 	select {
 	case start := <-starts:
-		if start.Popup != "P-2" || !slices.Equal(start.Openers, []string{"P-1", "T-1"}) || start.Profile != profile.Handle() {
+		if start.Popup != "P-2" || !slices.Equal(start.Openers, []ids.PageHandle{"P-1", "T-1"}) || start.Profile != profile.Handle() {
 			t.Fatalf("the gone popup's download started as %+v", start)
 		}
 	case <-time.After(headlessTestDeadline):
@@ -1303,12 +1304,12 @@ func TestHeadlessReportsAPopupsCrashAfterItsCreation(t *testing.T) {
 			<-release
 		}
 		mu.Lock()
-		heard = append(heard, "opened "+popup.Handle)
+		heard = append(heard, "opened "+string(popup.Handle))
 		mu.Unlock()
 	}
-	engine.events.PageCrashed = func(handle, reason string) {
+	engine.events.PageCrashed = func(handle ids.PageHandle, reason string) {
 		mu.Lock()
-		heard = append(heard, "crashed "+handle)
+		heard = append(heard, "crashed "+string(handle))
 		mu.Unlock()
 	}
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
@@ -1347,7 +1348,7 @@ func TestCDPPageOwnsItsMainFrameBeforeReportingOne(t *testing.T) {
 		t.Fatalf("new page: %v", err)
 	}
 	defer page.Close()
-	if !page.OwnsFrame(page.Handle()) {
+	if !page.OwnsFrame(string(page.Handle())) {
 		t.Fatalf("page %s does not own its main frame", page.Handle())
 	}
 	if page.OwnsFrame("F-elsewhere") {
@@ -1561,8 +1562,10 @@ type lostPages struct {
 
 func recordLostPages(engine *headlessEngine) *lostPages {
 	closed := &lostPages{}
-	engine.events.PageCrashed = func(handle, _ string) { closed.add(handle) }
-	engine.events.PageClosed = func(handle string) { panic("a lost browser's page was reported closed, not crashed: " + handle) }
+	engine.events.PageCrashed = func(handle ids.PageHandle, _ string) { closed.add(string(handle)) }
+	engine.events.PageClosed = func(handle ids.PageHandle) {
+		panic("a lost browser's page was reported closed, not crashed: " + handle)
+	}
 	return closed
 }
 
@@ -1623,10 +1626,10 @@ func TestHeadlessProfileRelaunchReportsThePagesOfTheBrowserItLost(t *testing.T) 
 	if alive(lostPID) {
 		t.Fatalf("the lost Chromium %d is still running or unreaped after the relaunch", lostPID)
 	}
-	eventually(t, "the lost browser's page to be reported lost", func() bool { return closed.count(handle) > 0 })
+	eventually(t, "the lost browser's page to be reported lost", func() bool { return closed.count(string(handle)) > 0 })
 
 	profile.watchBrowser(lost.ctx)
-	if n := closed.count(handle); n != 1 {
+	if n := closed.count(string(handle)); n != 1 {
 		t.Fatalf("page %s was reported lost %d times, want once", handle, n)
 	}
 	if _, ok := profile.browser(); !ok {
@@ -1658,12 +1661,12 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 	var handle string
 	var lostPID int
 	var reportedBeforeTheReap, reportedBeforeTheRemoval atomic.Bool
-	engine.events.PageCrashed = func(closedHandle, _ string) {
-		closed.add(closedHandle)
+	engine.events.PageCrashed = func(closedHandle ids.PageHandle, _ string) {
+		closed.add(string(closedHandle))
 		lostMu.Lock()
 		lost, pid := handle, lostPID
 		lostMu.Unlock()
-		if closedHandle != lost {
+		if closedHandle != ids.PageHandle(lost) {
 			return
 		}
 		reportedBeforeTheReap.Store(alive(pid))
@@ -1674,7 +1677,7 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 			during <- created{err: err}
 			return
 		}
-		during <- created{handle: next.Handle()}
+		during <- created{handle: string(next.Handle())}
 	}
 
 	page, err := profile.NewPage(context.Background(), testPageHooks())
@@ -1683,7 +1686,7 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 	}
 	launchedPID := browser.pid(t)
 	lostMu.Lock()
-	handle, lostPID = page.Handle(), launchedPID
+	handle, lostPID = string(page.Handle()), launchedPID
 	lostMu.Unlock()
 
 	browser.hangUp()
@@ -1732,7 +1735,7 @@ func TestHeadlessProfileReportsEveryPageOfALostBrowserOnce(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new page: %v", err)
 		}
-		lostPages = append(lostPages, page.Handle())
+		lostPages = append(lostPages, string(page.Handle()))
 
 		browser.hangUp()
 		deadline := time.Now().Add(headlessTestDeadline)
@@ -1750,8 +1753,8 @@ func TestHeadlessProfileReportsEveryPageOfALostBrowserOnce(t *testing.T) {
 		} else {
 			outcomes["watcher first"]++
 		}
-		eventually(t, "page "+page.Handle()+" to be reported lost", func() bool {
-			return closed.count(page.Handle()) > 0
+		eventually(t, "page "+string(page.Handle())+" to be reported lost", func() bool {
+			return closed.count(string(page.Handle())) > 0
 		})
 		if err := profile.Dispose(context.Background()); err != nil {
 			t.Fatalf("dispose: %v", err)
@@ -1866,9 +1869,9 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	t.Setenv("HOME", home)
 	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}, engineEvents{
 		PopupOpened:      func(enginePopup) {},
-		PageClosed:       func(string) {},
-		PageCrashed:      func(string, string) {},
-		PageInfoChanged:  func(string, string, string, uint64) {},
+		PageClosed:       func(ids.PageHandle) {},
+		PageCrashed:      func(ids.PageHandle, string) {},
+		PageInfoChanged:  func(ids.PageHandle, string, string, uint64) {},
 		DownloadStarted:  func(downloadStart) downloadAdmission { return downloadAdmitted },
 		DownloadProgress: func(downloadProgress) {},
 	})

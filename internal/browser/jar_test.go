@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // jarEngine is the fake engine recording every profile it creates with the
@@ -178,12 +180,12 @@ func (p *jarProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, 
 		return nil, err
 	}
 	p.engine.mu.Lock()
-	p.engine.lastPage = driver.Handle()
+	p.engine.lastPage = string(driver.Handle())
 	p.engine.mu.Unlock()
 	return &jarPage{pageDriver: driver, engine: p.engine}, nil
 }
 
-func (p *jarProfile) AttachPage(ctx context.Context, _ string, hooks pageHooks) (pageDriver, error) {
+func (p *jarProfile) AttachPage(ctx context.Context, _ ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	p.engine.mu.Lock()
 	hook := p.engine.onAttach
 	p.engine.mu.Unlock()
@@ -224,12 +226,12 @@ func (p *jarPage) OwnsFrame(frame string) bool {
 	p.engine.mu.Lock()
 	owner, ok := p.engine.frames[frame]
 	p.engine.mu.Unlock()
-	return (ok && owner == p.Handle()) || p.pageDriver.OwnsFrame(frame)
+	return (ok && ids.PageHandle(owner) == p.Handle()) || p.pageDriver.OwnsFrame(frame)
 }
 
 func (p *jarPage) Close() {
 	p.engine.mu.Lock()
-	gate, step, own := p.engine.closeGate, p.engine.closeStep, p.engine.closeHolds[p.Handle()]
+	gate, step, own := p.engine.closeGate, p.engine.closeStep, p.engine.closeHolds[string(p.Handle())]
 	p.engine.mu.Unlock()
 	switch {
 	case gate != nil:

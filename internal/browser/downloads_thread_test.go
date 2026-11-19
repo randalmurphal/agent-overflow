@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // downloadEventLog records what the Manager emits.
@@ -905,7 +907,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			manager.mu.Unlock()
 			manager.downloadAdmitting = func() { tc.leave(t, manager, access, page) }
 
-			if manager.downloadStarted(downloadStart{Frame: p.driver.Handle(), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) == downloadAdmitted {
+			if manager.downloadStarted(downloadStart{Frame: string(p.driver.Handle()), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) == downloadAdmitted {
 				t.Fatal("a download on a page that left was admitted")
 			}
 			if listed := threadDownloads(manager, access); len(listed) != 0 {
@@ -1132,7 +1134,7 @@ func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
 	if source := len(threadDownloads(manager, access)[0].Source); source > maxBrowserURLBytes {
 		t.Fatalf("the thread's list keeps a %d-byte source", source)
 	}
-	if manager.downloadStarted(downloadStart{Frame: "popup", Popup: "popup", ID: "parked", URL: long, SuggestedName: "b.txt", Openers: []string{frame}}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: "popup", Popup: "popup", ID: "parked", URL: long, SuggestedName: "b.txt", Openers: []ids.PageHandle{ids.PageHandle(frame)}}) != downloadAdmitted {
 		t.Fatal("the popup's download was refused")
 	}
 	manager.parkMu.Lock()

@@ -7,6 +7,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The engine half of the Manager's pane presentation (`paneHost`), the
@@ -75,8 +77,8 @@ func wkPaneApplied(st wkPaneState) bool {
 // wkPaneTarget answers the page a pane call addresses, or nil for a handle
 // this engine never issued (a page that already closed is a lookup miss,
 // not an error).
-func wkPaneTarget(handle string) *wkPage {
-	id, err := strconv.ParseUint(strings.TrimPrefix(handle, "page-"), 10, 64)
+func wkPaneTarget(handle ids.PageHandle) *wkPage {
+	id, err := strconv.ParseUint(strings.TrimPrefix(string(handle), "page-"), 10, 64)
 	if err != nil {
 		return nil
 	}
@@ -94,7 +96,7 @@ func (p *wkPage) present(placement PanePlacement) {
 	}
 }
 
-func (e *wkEngine) SetPageBounds(handle string, placement PanePlacement) {
+func (e *wkEngine) SetPageBounds(handle ids.PageHandle, placement PanePlacement) {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return
@@ -115,7 +117,7 @@ func (e *wkEngine) SetPageBounds(handle string, placement PanePlacement) {
 	}
 }
 
-func (e *wkEngine) ShowPage(handle string) {
+func (e *wkEngine) ShowPage(handle ids.PageHandle) {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return
@@ -140,7 +142,7 @@ func (e *wkEngine) ShowPage(handle string) {
 
 // SetPageBase sets the view's base colour, which it keeps parked or
 // presented and its clip container takes when present creates it.
-func (e *wkEngine) SetPageBase(handle, color string) {
+func (e *wkEngine) SetPageBase(handle ids.PageHandle, color string) {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return
@@ -161,7 +163,7 @@ func (e *wkEngine) SetPageBase(handle, color string) {
 // the responder for when it becomes key; AppKit never activates the app for
 // it. The request's Live is read there too. A page that closed is not
 // presented.
-func (e *wkEngine) FocusPage(handle string, req focusRequest) (focusResult, error) {
+func (e *wkEngine) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return focusNotPresented, nil
@@ -175,7 +177,7 @@ func (e *wkEngine) FocusPage(handle string, req focusRequest) (focusResult, erro
 
 var _ paneHost = (*wkEngine)(nil)
 
-func (e *wkEngine) HidePage(handle string) {
+func (e *wkEngine) HidePage(handle ids.PageHandle) {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return

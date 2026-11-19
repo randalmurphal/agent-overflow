@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/fetch"
@@ -62,7 +63,7 @@ type hostedPopup struct {
 	target  string
 	profile string
 	// opener is the page id of the page that opened it.
-	opener string
+	opener ids.PageHandle
 	// conn is its opener's browser connection, the one its target is on;
 	// nil for a popup with no target.
 	conn context.Context
@@ -87,8 +88,8 @@ func (popup *hostedPopup) takeAttachCancelLocked() func() {
 // report naming a page id the engine already has is ignored before it is
 // read, so no report closes a known page; one naming a target a page or a
 // pending popup already has is refused, and the target keeps its page.
-func (e *hostedEngine) popupReported(pageID, detail string) {
-	if err := webview2host.ValidatePageID(pageID); err != nil {
+func (e *hostedEngine) popupReported(pageID ids.PageHandle, detail string) {
+	if err := webview2host.ValidatePageID(string(pageID)); err != nil {
 		e.logf("browser: pane host reported a popup with an unusable id: %v", err)
 		return
 	}
@@ -105,14 +106,15 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 		e.closePage(pageID)
 		return
 	}
+	opener := ids.PageHandle(report.Opener)
 	e.mu.Lock()
-	profile, known := e.pageProfile[report.Opener]
+	profile, known := e.pageProfile[opener]
 	// An opener whose close or discard was received opens nothing more.
-	known = known && e.pages.admits(hostedPageID(report.Opener))
+	known = known && e.pages.admits(opener)
 	_, taken = e.pageProfile[pageID]
 	_, claimed := e.targetPageLocked(report.Target)
-	conn := e.pageConn[report.Opener]
-	if pending := e.popups[report.Opener]; pending != nil {
+	conn := e.pageConn[opener]
+	if pending := e.popups[opener]; pending != nil {
 		conn = pending.conn
 	}
 	switch {
@@ -139,12 +141,12 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 		e.closePage(pageID)
 		return
 	}
-	if !e.pages.addPopup(hostedPageID(pageID), hostedPageID(report.Opener), profile) {
+	if !e.pages.addPopup(pageID, opener, profile) {
 		e.mu.Unlock()
 		e.logf("browser: pane host reported popup %s, a page it already has", pageID)
 		return
 	}
-	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: report.Opener, conn: conn}
+	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: opener, conn: conn}
 	if report.Target != "" {
 		e.popupByTarget[report.Target] = pageID
 	}
@@ -158,12 +160,12 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 	e.takeTargetInfo(pageID, report.Target)
 	// Before any later report of the page, its close among them: the
 	// Manager records it at once and adopts it on a goroutine of its own.
-	e.events.PopupOpened(enginePopup{Profile: profile, Opener: report.Opener, Handle: pageID, URL: report.URL})
+	e.events.PopupOpened(enginePopup{Profile: profile, Opener: opener, Handle: pageID, URL: report.URL})
 }
 
 // attachPopup attaches chromedp to a pending popup of profile, on its
 // opener's connection; bind refuses it if that connection ended meanwhile.
-func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks pageHooks) (pageDriver, error) {
+func (e *hostedEngine) attachPopup(profile *hostedProfile, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	e.mu.Lock()
 	popup := e.popups[handle]
 	var targetID string
@@ -208,7 +210,7 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 	// popup that went meanwhile left no page to bind.
 	e.mu.Lock()
 	switch {
-	case e.popups[handle] != popup || !e.pages.admits(hostedPageID(handle)):
+	case e.popups[handle] != popup || !e.pages.admits(handle):
 		err = fmt.Errorf("browser: popup %s closed before it was adopted", handle)
 	case browserCtx.Err() != nil:
 		err = errors.New("browser: the connection to the pane browser was lost")
@@ -229,7 +231,7 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 // forgetPopupLocked drops the record of popup pageID, whose page goes, and
 // answers the cancel of its attach for the caller to call once it releases
 // e.mu. The caller holds e.mu.
-func (e *hostedEngine) forgetPopupLocked(pageID string) func() {
+func (e *hostedEngine) forgetPopupLocked(pageID ids.PageHandle) func() {
 	popup := e.popups[pageID]
 	if popup == nil {
 		return func() {}
@@ -304,7 +306,7 @@ func (e *hostedEngine) reportedOpenersLocked(owners []string) []string {
 // ownerPageLocked answers the page a frame belongs to: the page whose
 // target it is, a pending popup's, or the page that reported it as one of
 // its frames. The caller holds e.mu.
-func (e *hostedEngine) ownerPageLocked(frame string) (string, bool) {
+func (e *hostedEngine) ownerPageLocked(frame string) (ids.PageHandle, bool) {
 	if pageID, ok := e.targetPageLocked(frame); ok {
 		return pageID, true
 	}

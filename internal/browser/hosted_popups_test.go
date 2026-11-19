@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/target"
@@ -26,7 +27,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 	if got := l.tabInfo(p); got.URL != "https://example.test/popup" {
 		t.Errorf("the popup's tab is at %q", got.URL)
 	}
-	if got, ok := l.engine.pageForTarget(targetID); !ok || got != popupID {
+	if got, ok := l.engine.pageForTarget(targetID); !ok || got != ids.PageHandle(popupID) {
 		t.Errorf("target %s answers page %q, want %s", targetID, got, popupID)
 	}
 	l.settledEngine()
@@ -210,19 +211,19 @@ func TestHostedPopupReportValidation(t *testing.T) {
 		t.Fatalf("a report for a known page was answered with %+v", got)
 	}
 	for _, claimed := range []string{"T-b", "T-opener"} {
-		engine.Report("popup-"+claimed, webview2host.ReportPopup, `{"opener":"opener","target":"`+claimed+`"}`)
+		engine.Report(ids.PageHandle("popup-"+claimed), webview2host.ReportPopup, `{"opener":"opener","target":"`+claimed+`"}`)
 		if d := sink.next(t); d.Op != webview2host.OpClose || d.PageID != "popup-"+claimed {
 			t.Fatalf("a popup claiming %s was answered with %+v, want close", claimed, d)
 		}
 	}
 	for target, want := range map[string]string{"T-b": "popup-b", "T-opener": "opener"} {
-		if got, _ := engine.pageForTarget(target); got != want {
+		if got, _ := engine.pageForTarget(target); got != ids.PageHandle(want) {
 			t.Errorf("target %s belongs to %q, want %q", target, got, want)
 		}
 	}
 	engine.mu.Lock()
 	for _, id := range []string{"popup-T-b", "popup-T-opener"} {
-		if _, ok := engine.pageProfile[id]; ok || engine.popups[id] != nil {
+		if _, ok := engine.pageProfile[ids.PageHandle(id)]; ok || engine.popups[ids.PageHandle(id)] != nil {
 			t.Errorf("the refused popup %s was kept", id)
 		}
 	}
@@ -231,7 +232,7 @@ func TestHostedPopupReportValidation(t *testing.T) {
 	// No more pending popups than the launcher keeps pages.
 	engine.mu.Lock()
 	for i := len(engine.popups); i < webview2host.MaxHostPages; i++ {
-		engine.popups[fmt.Sprintf("filler-%d", i)] = &hostedPopup{}
+		engine.popups[ids.PageHandle(fmt.Sprintf("filler-%d", i))] = &hostedPopup{}
 	}
 	engine.mu.Unlock()
 	engine.Report("popup-c", webview2host.ReportPopup, `{"opener":"opener","target":"T-d"}`)
@@ -266,7 +267,7 @@ func TestHostedPopupAttachesOnlyOnItsOpenersConnection(t *testing.T) {
 	access := l.access("thread")
 	_, opener := l.open(access)
 	l.engine.mu.Lock()
-	profile := &hostedProfile{engine: l.engine, id: l.engine.pageProfile[opener]}
+	profile := &hostedProfile{engine: l.engine, id: l.engine.pageProfile[ids.PageHandle(opener)]}
 	first := l.engine.browserCtx
 	l.engine.mu.Unlock()
 	popupID, _ := l.popup(opener, "https://example.test/popup")
@@ -276,7 +277,7 @@ func TestHostedPopupAttachesOnlyOnItsOpenersConnection(t *testing.T) {
 	if _, err := l.engine.ensureBrowser(); err != nil {
 		t.Fatal(err)
 	}
-	if driver, err := l.engine.attachPopup(profile, popupID, pageHooks{}); err == nil {
+	if driver, err := l.engine.attachPopup(profile, ids.PageHandle(popupID), pageHooks{}); err == nil {
 		driver.Close()
 		t.Fatal("a popup of a lost connection was attached on its replacement")
 	}
@@ -289,13 +290,13 @@ func TestHostedPopupAttachesOnlyOnItsOpenersConnection(t *testing.T) {
 	l.engine.mu.Lock()
 	l.engine.pageConn["ended"] = ended
 	for _, id := range []string{"ended", "unbound"} {
-		l.engine.pageProfile[id] = profile.id
+		l.engine.pageProfile[ids.PageHandle(id)] = profile.id
 	}
 	l.engine.mu.Unlock()
 	for _, opener := range []string{"ended", "unbound"} {
 		orphan, _ := l.popup(opener, "https://example.test/orphan")
 		l.engine.mu.Lock()
-		kept := l.engine.popups[orphan] != nil
+		kept := l.engine.popups[ids.PageHandle(orphan)] != nil
 		l.engine.mu.Unlock()
 		if kept || !l.closed(orphan) {
 			t.Fatalf("a popup of %s: kept %v, closed %v", opener, kept, l.closed(orphan))
@@ -342,7 +343,7 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	l.engine.mu.Lock()
-	noFind := l.engine.noFind[popupID]
+	noFind := l.engine.noFind[ids.PageHandle(popupID)]
 	l.engine.mu.Unlock()
 	if !noFind {
 		t.Error("the popup's runtime has no find, but the engine does not know it")

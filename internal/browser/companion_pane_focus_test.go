@@ -2,6 +2,8 @@ package browser
 
 import (
 	"testing"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // focusPaneHost models the one keyboard focus a windowed engine's pages
@@ -21,18 +23,20 @@ type focusPaneHost struct {
 
 const focusHeldByTheApp = "app"
 
-func (e *focusPaneHost) ShowPage(handle string) {
+var _ paneHost = (*focusPaneHost)(nil)
+
+func (e *focusPaneHost) ShowPage(handle ids.PageHandle) {
 	e.recordingPaneHost.ShowPage(handle)
 	e.mu.Lock()
-	e.shown[handle] = true
+	e.shown[string(handle)] = true
 	e.mu.Unlock()
 }
 
-func (e *focusPaneHost) HidePage(handle string) {
+func (e *focusPaneHost) HidePage(handle ids.PageHandle) {
 	e.recordingPaneHost.HidePage(handle)
 	e.mu.Lock()
-	e.shown[handle] = false
-	if e.focus == handle {
+	e.shown[string(handle)] = false
+	if e.focus == string(handle) {
 		e.focus = focusHeldByTheApp
 	}
 	e.mu.Unlock()
@@ -42,7 +46,8 @@ func (e *focusPaneHost) HidePage(handle string) {
 // is live, and leaves a page that is not shown alone, as every engine does.
 // Both are read after beforeFocus, which stands in for the wait for the
 // engine's UI thread.
-func (e *focusPaneHost) FocusPage(handle string, req focusRequest) (focusResult, error) {
+func (e *focusPaneHost) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
+	h := string(handle)
 	if _, err := e.recordingPaneHost.FocusPage(handle, req); err != nil {
 		return focusNotPresented, err
 	}
@@ -50,17 +55,17 @@ func (e *focusPaneHost) FocusPage(handle string, req focusRequest) (focusResult,
 	before := e.beforeFocus
 	e.mu.Unlock()
 	if before != nil {
-		before(handle)
+		before(h)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch {
-	case !e.shown[handle]:
+	case !e.shown[h]:
 		return focusNotPresented, nil
 	case !req.Live():
 		return focusWithdrawn, nil
 	}
-	e.focus = handle
+	e.focus = h
 	return focusMoved, nil
 }
 

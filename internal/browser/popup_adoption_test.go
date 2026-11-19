@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // adoptionEngine attaches each popup as a fake page under the popup's own
@@ -20,12 +22,12 @@ import (
 type adoptionEngine struct {
 	*fakeEngine
 	mu      sync.Mutex
-	gates   map[string]chan struct{}
-	reached chan string
-	failing map[string]bool
+	gates   map[ids.PageHandle]chan struct{}
+	reached chan ids.PageHandle
+	failing map[ids.PageHandle]bool
 	// histories is each popup's history as its attach finds it, newest last.
-	histories map[string][]string
-	discarded []string
+	histories map[ids.PageHandle][]string
+	discarded []ids.PageHandle
 	canceled  []string
 	profile   string
 	// stallDiscard makes a discard wait for its deadline, as an engine
@@ -35,20 +37,20 @@ type adoptionEngine struct {
 	wrap func(pageDriver) pageDriver
 }
 
-func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, string) {
+func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, ids.PageHandle) {
 	t.Helper()
 	return newAdoptionManagerSaving(t, downloadsSavedByEngine)
 }
 
 // newAdoptionManagerSaving is newAdoptionManager with an engine whose
 // downloads go where saving says, from the jar's creation on.
-func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *adoptionEngine, Access, string) {
+func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *adoptionEngine, Access, ids.PageHandle) {
 	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
 	engine := &adoptionEngine{
-		fakeEngine: newFakeEngine(), gates: map[string]chan struct{}{},
-		reached: make(chan string, 16), failing: map[string]bool{}, histories: map[string][]string{},
+		fakeEngine: newFakeEngine(), gates: map[ids.PageHandle]chan struct{}{},
+		reached: make(chan ids.PageHandle, 16), failing: map[ids.PageHandle]bool{}, histories: map[ids.PageHandle][]string{},
 	}
 	engine.saving = saving
 	manager.engine = engine
@@ -57,7 +59,7 @@ func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *a
 	if err != nil {
 		t.Fatal(err)
 	}
-	return manager, engine, access, paneHandle(manager, access, page.ID)
+	return manager, engine, access, driverHandle(manager, access, page.ID)
 }
 
 func (e *adoptionEngine) NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error) {
@@ -71,7 +73,7 @@ func (e *adoptionEngine) NewProfile(ctx context.Context, opts profileOptions) (e
 	return &adoptionProfile{fakeProfile: profile.(*fakeProfile), engine: e}, nil
 }
 
-func (e *adoptionEngine) DiscardPage(ctx context.Context, handle string) error {
+func (e *adoptionEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
 	e.mu.Lock()
 	e.discarded = append(e.discarded, handle)
 	stall := e.stallDiscard
@@ -84,7 +86,7 @@ func (e *adoptionEngine) DiscardPage(ctx context.Context, handle string) error {
 }
 
 // gate holds the attach of handle until the answered release.
-func (e *adoptionEngine) gate(handle string) (release func()) {
+func (e *adoptionEngine) gate(handle ids.PageHandle) (release func()) {
 	ch := make(chan struct{})
 	e.mu.Lock()
 	e.gates[handle] = ch
@@ -93,7 +95,7 @@ func (e *adoptionEngine) gate(handle string) (release func()) {
 	return func() { once.Do(func() { close(ch) }) }
 }
 
-func (e *adoptionEngine) awaitAttach(t *testing.T, handle string) {
+func (e *adoptionEngine) awaitAttach(t *testing.T, handle ids.PageHandle) {
 	t.Helper()
 	select {
 	case got := <-e.reached:
@@ -105,7 +107,7 @@ func (e *adoptionEngine) awaitAttach(t *testing.T, handle string) {
 	}
 }
 
-func (e *adoptionEngine) discards() []string {
+func (e *adoptionEngine) discards() []ids.PageHandle {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return slices.Clone(e.discarded)
@@ -117,7 +119,7 @@ func (e *adoptionEngine) cancels() []string {
 	return slices.Clone(e.canceled)
 }
 
-func (e *adoptionEngine) popup(opener, handle string) enginePopup {
+func (e *adoptionEngine) popup(opener, handle ids.PageHandle) enginePopup {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return enginePopup{Profile: e.profile, Opener: opener, Handle: handle}
@@ -128,7 +130,7 @@ type adoptionProfile struct {
 	engine *adoptionEngine
 }
 
-func (p *adoptionProfile) AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+func (p *adoptionProfile) AttachPage(ctx context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	p.engine.mu.Lock()
 	gate, failing := p.engine.gates[handle], p.engine.failing[handle]
 	p.engine.mu.Unlock()
@@ -168,20 +170,20 @@ func (p *adoptionProfile) CancelDownload(id string) error {
 // handledPage is a fake page under the handle its popup was reported with.
 type handledPage struct {
 	pageDriver
-	handle string
+	handle ids.PageHandle
 }
 
-func (p *handledPage) Handle() string              { return p.handle }
-func (p *handledPage) OwnsFrame(frame string) bool { return frame == p.handle }
+func (p *handledPage) Handle() ids.PageHandle      { return p.handle }
+func (p *handledPage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
 
 // popupDownload starts download id in popup, opened by openers, nearest
 // first, and answers whether the Manager took it.
-func popupDownload(m *Manager, e *adoptionEngine, popup, id string, openers ...string) bool {
+func popupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id string, openers ...ids.PageHandle) bool {
 	e.mu.Lock()
 	profile := e.profile
 	e.mu.Unlock()
 	return m.downloadStarted(downloadStart{
-		Frame: popup, ID: id, URL: "https://example.test/" + id, SuggestedName: id,
+		Frame: string(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
 		Popup: popup, Openers: openers, Profile: profile,
 	}) == downloadAdmitted
 }
@@ -197,7 +199,7 @@ func progressOf(id string, state downloadState, received float64) downloadProgre
 
 // downloadsOf answers the downloads listed in the tab whose driver has
 // handle, as "id state bytes".
-func downloadsOf(m *Manager, handle string) []string {
+func downloadsOf(m *Manager, handle ids.PageHandle) []string {
 	m.mu.Lock()
 	p := m.listedPageLocked(handle)
 	m.mu.Unlock()
@@ -211,14 +213,14 @@ func downloadsOf(m *Manager, handle string) []string {
 	return out
 }
 
-func wantDownloads(t *testing.T, m *Manager, handle string, want ...string) {
+func wantDownloads(t *testing.T, m *Manager, handle ids.PageHandle, want ...string) {
 	t.Helper()
 	if got := downloadsOf(m, handle); !slices.Equal(got, want) {
 		t.Fatalf("tab %s lists %q, want %q", handle, got, want)
 	}
 }
 
-func listed(m *Manager, handle string) bool {
+func listed(m *Manager, handle ids.PageHandle) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.listedPageLocked(handle) != nil
@@ -266,7 +268,7 @@ func TestAPopupThatIsNotAdoptedLeavesItsDownloadsWithItsOpener(t *testing.T) {
 	engine.failing["popup"] = true
 	popupDownload(manager, engine, "popup", "dl-1")
 	manager.adoptPopup(engine.popup(opener, "popup"))
-	if got := engine.discards(); !slices.Equal(got, []string{"popup"}) {
+	if got := engine.discards(); !slices.Equal(got, []ids.PageHandle{"popup"}) {
 		t.Fatalf("discarded %v", got)
 	}
 	wantDownloads(t, manager, opener, "dl-1 in_progress 0")
@@ -321,7 +323,7 @@ func TestAPopupOfADiscardedPopupIsDiscarded(t *testing.T) {
 	<-parentDone
 	// At the parent's discard, not after popupOpenerWait.
 	awaitPromptly(t, childDone)
-	if got := engine.discards(); !slices.Equal(got, []string{"parent", "child"}) {
+	if got := engine.discards(); !slices.Equal(got, []ids.PageHandle{"parent", "child"}) {
 		t.Fatalf("discarded %v, want parent then child", got)
 	}
 	wantDownloads(t, manager, opener, "dl-1 in_progress 0")
@@ -464,7 +466,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 			defer release()
 			// The engine page exists and the tab is not listed yet.
 			engine.onNewFakePage = func(page *fakePage) {
-				handles <- page.handle
+				handles <- string(page.handle)
 				<-hold
 			}
 			opened := make(chan error, 1)
@@ -487,7 +489,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 				t.Fatal("the opener's engine page was never made")
 			}
 			listed := make(chan bool, 1)
-			go func() { listed <- manager.awaitOpener(opener) }()
+			go func() { listed <- manager.awaitOpener(ids.PageHandle(opener)) }()
 			time.Sleep(50 * time.Millisecond)
 			if closing && restored {
 				// The restore finds its record gone and abandons the page.
@@ -535,11 +537,11 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 // discarded at once.
 func TestAPopupOfAnOpenerThatLeftIsDiscardedAtOnce(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
-	manager.removeClosedPage(opener)
+	manager.removeClosedPage(ids.PageHandle(opener))
 	done := make(chan struct{})
 	go func() { manager.adoptPopup(engine.popup(opener, "popup")); close(done) }()
 	awaitPromptly(t, done)
-	if got := engine.discards(); !slices.Equal(got, []string{"popup"}) {
+	if got := engine.discards(); !slices.Equal(got, []ids.PageHandle{"popup"}) {
 		t.Fatalf("discarded %v", got)
 	}
 }
@@ -612,7 +614,7 @@ func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
 				t.Fatal("the popup's download was refused")
 			}
 			manager.downloadProgress(progressOf("dl-1", state, 100))
-			manager.removeClosedPage(opener)
+			manager.removeClosedPage(ids.PageHandle(opener))
 			manager.removeClosedPage("popup")
 			awaitRemoved(t, file)
 			if got := manager.artifactBytes.Used(); got != before {
@@ -790,7 +792,7 @@ func TestParkedDownloadsAreBounded(t *testing.T) {
 		t.Fatal("a download past the popup's bound was taken")
 	}
 	for i := 1; i < maxParkedPopups; i++ {
-		if !popupDownload(manager, engine, fmt.Sprintf("popup-%d", i), fmt.Sprintf("p-%d", i), opener) {
+		if !popupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("popup-%d", i)), fmt.Sprintf("p-%d", i), opener) {
 			t.Fatalf("popup %d's download was refused", i)
 		}
 	}
@@ -817,7 +819,7 @@ func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 	popupDownload(manager, engine, "popup", "dl-running", opener)
 	popupDownload(manager, engine, "popup", "dl-done", opener)
 	manager.downloadProgress(progressOf("dl-done", downloadCompleted, 100))
-	manager.removeClosedPage(opener)
+	manager.removeClosedPage(ids.PageHandle(opener))
 	manager.removeClosedPage("popup")
 	for deadline := time.Now().Add(hostedTestDeadline); len(engine.cancels()) == 0; {
 		if time.Now().After(deadline) {
@@ -837,7 +839,7 @@ func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 func TestTheBrowsersCloseDropsParkedDownloads(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
 	popupDownload(manager, engine, "popup", "dl-1", opener)
-	manager.resolveParked("gone", nil, opener)
+	manager.resolveParked("gone", nil, ids.PageHandle(opener))
 	if err := manager.closeBrowser(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -876,7 +878,7 @@ func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
 func TestPopupFatesAreBounded(t *testing.T) {
 	manager, _, _, opener := newAdoptionManager(t)
 	for i := range 4 * orderSlack {
-		manager.resolveParked(fmt.Sprintf("popup-%d", i), nil, opener)
+		manager.resolveParked(ids.PageHandle(fmt.Sprintf("popup-%d", i)), nil, ids.PageHandle(opener))
 	}
 	manager.parkMu.Lock()
 	defer manager.parkMu.Unlock()
@@ -892,7 +894,7 @@ func TestARefusedPopupHoldsNoReport(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManager(t)
 	manager.updatePageInfo("keep", "https://example.test/kept", "Kept", 1)
 	for i := range 2 * orderSlack {
-		handle := fmt.Sprintf("refused-%d", i)
+		handle := ids.PageHandle(fmt.Sprintf("refused-%d", i))
 		engine.failing[handle] = true
 		manager.updatePageInfo(handle, "https://example.test/refused", "", uint64(2+i))
 		manager.adoptPopup(engine.popup(opener, handle))
@@ -971,7 +973,7 @@ func TestAPopupIsListedWithItsHistory(t *testing.T) {
 }
 
 // pageInfoOf answers the info of the tab whose driver has handle.
-func pageInfoOf(m *Manager, access Access, handle string) PageInfo {
+func pageInfoOf(m *Manager, access Access, handle ids.PageHandle) PageInfo {
 	m.mu.Lock()
 	p := m.listedPageLocked(handle)
 	m.mu.Unlock()
@@ -1053,7 +1055,7 @@ func TestAPopupBeingAdoptedKeepsNoPrivateJarForANewTab(t *testing.T) {
 	defer release()
 	done := make(chan struct{})
 	go func() {
-		manager.adoptPopup(engine.popup(paneHandle(manager, access, first.ID), "popup"))
+		manager.adoptPopup(engine.popup(driverHandle(manager, access, first.ID), "popup"))
 		close(done)
 	}()
 	engine.awaitAttach(t, "popup")
@@ -1089,7 +1091,7 @@ func TestPopupsBeingAdoptedCountAgainstTheCaps(t *testing.T) {
 	var releases []func()
 	var dones []chan struct{}
 	for i := range maxPagesPerThread {
-		handle := fmt.Sprintf("popup-%d", i)
+		handle := ids.PageHandle(fmt.Sprintf("popup-%d", i))
 		releases = append(releases, engine.gate(handle))
 		done := make(chan struct{})
 		dones = append(dones, done)

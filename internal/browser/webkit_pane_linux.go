@@ -7,6 +7,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The engine half of the Manager's pane presentation (`paneHost`). Where the
@@ -67,8 +69,8 @@ func webkitParseBackground(value string) (webkitRGB, bool) {
 // webkitPaneTarget answers the page a pane call addresses, or nil for a
 // handle this engine never issued (a page that already closed is a lookup
 // miss, not an error).
-func webkitPaneTarget(handle string) *webkitPage {
-	id, err := strconv.ParseUint(strings.TrimPrefix(handle, "page-"), 10, 64)
+func webkitPaneTarget(handle ids.PageHandle) *webkitPage {
+	id, err := strconv.ParseUint(strings.TrimPrefix(string(handle), "page-"), 10, 64)
 	if err != nil {
 		return nil
 	}
@@ -83,7 +85,7 @@ func (p *webkitPage) present(placement PanePlacement) {
 	}
 }
 
-func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
+func (e *webkitEngine) SetPageBounds(handle ids.PageHandle, placement PanePlacement) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return
@@ -104,7 +106,7 @@ func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
 	}
 }
 
-func (e *webkitEngine) ShowPage(handle string) {
+func (e *webkitEngine) ShowPage(handle ids.PageHandle) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return
@@ -127,7 +129,7 @@ func (e *webkitEngine) ShowPage(handle string) {
 	}
 }
 
-func (e *webkitEngine) HidePage(handle string) {
+func (e *webkitEngine) HidePage(handle ids.PageHandle) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return
@@ -148,7 +150,7 @@ func (e *webkitEngine) HidePage(handle string) {
 
 // SetPageBase sets the view's background color, which WebKit paints under
 // the document whether the view is parked or presented.
-func (e *webkitEngine) SetPageBase(handle, color string) {
+func (e *webkitEngine) SetPageBase(handle ids.PageHandle, color string) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return
@@ -166,7 +168,7 @@ func (e *webkitEngine) SetPageBase(handle, color string) {
 // FocusPage gives the presented page's view keyboard focus within the
 // window while the request is live. Both are read on the GTK thread, after
 // any hide queued before it. A page that closed is not presented.
-func (e *webkitEngine) FocusPage(handle string, req focusRequest) (focusResult, error) {
+func (e *webkitEngine) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return focusNotPresented, nil
@@ -180,7 +182,7 @@ func (e *webkitEngine) FocusPage(handle string, req focusRequest) (focusResult, 
 
 var _ paneHost = (*webkitEngine)(nil)
 
-func (e *webkitEngine) OpenPageDevTools(handle string) {
+func (e *webkitEngine) OpenPageDevTools(handle ids.PageHandle) {
 	if p := webkitPaneTarget(handle); p != nil {
 		_ = webkitOpenInspector(p.liveView())
 	}

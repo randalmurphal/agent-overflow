@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"agent-overflow/internal/browser/popupadmit"
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/quota"
 )
 
@@ -73,7 +73,7 @@ const (
 
 // parkedPopup holds the downloads a popup started before its fate.
 type parkedPopup struct {
-	openers   []string
+	openers   []ids.PageHandle
 	downloads []*parkedDownload
 	timer     *time.Timer
 }
@@ -128,17 +128,17 @@ func (d *parkedDownload) stop() bool {
 // tab, empty when it never became one, and openers the pages that opened
 // it, nearest first, whose nearest listed one takes its downloads then.
 type popupFate struct {
-	listed  string
-	openers []string
+	listed  ids.PageHandle
+	openers []ids.PageHandle
 }
 
 // startAdoption records the adoption of handle, which its admission
 // (announcePopup) runs once.
-func (m *Manager) startAdoption(handle string) {
+func (m *Manager) startAdoption(handle ids.PageHandle) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.adopting == nil {
-		m.adopting = make(map[string]*managedPage)
+		m.adopting = make(map[ids.PageHandle]*managedPage)
 	}
 	m.adopting[handle] = nil
 }
@@ -148,12 +148,12 @@ func (m *Manager) startAdoption(handle string) {
 // popups it opened (awaitOpener). The downloads are listed while its
 // admission still keeps its chain live. A popup not listed lets go of the
 // report held for it, and none is held for it after (updatePageInfo).
-func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
+func (m *Manager) finishAdoption(handle, opener ids.PageHandle, p *managedPage) {
 	m.resolveParked(handle, p, opener)
 	m.mu.Lock()
 	delete(m.adopting, handle)
 	if p == nil {
-		m.admissions.Discard(popupadmit.Handle(handle))
+		m.admissions.Discard(handle)
 		m.unlistedLocked().put(handle, struct{}{})
 		m.heldInfo.delete(handle)
 	}
@@ -185,7 +185,7 @@ func (m *Manager) listingChangedLocked() {
 // (unlistedLocked), within popupOpenerWait, and answers whether it is
 // listed. An opener still being adopted, or not reported yet (an engine
 // reports each popup on a goroutine of its own), is waited for.
-func (m *Manager) awaitOpener(opener string) bool {
+func (m *Manager) awaitOpener(opener ids.PageHandle) bool {
 	deadline := time.NewTimer(popupOpenerWait)
 	defer deadline.Stop()
 	for {
@@ -214,16 +214,16 @@ func (m *Manager) awaitOpener(opener string) bool {
 // unlistedLocked is the newest handles that will not be listed again:
 // popups whose adoption ended without a listing, and pages that left. The
 // caller holds m.mu.
-func (m *Manager) unlistedLocked() *boundedMap[string, struct{}] {
+func (m *Manager) unlistedLocked() *boundedMap[ids.PageHandle, struct{}] {
 	if m.unlisted == nil {
-		m.unlisted = newBoundedMap[string, struct{}](orderSlack)
+		m.unlisted = newBoundedMap[ids.PageHandle, struct{}](orderSlack)
 	}
 	return m.unlisted
 }
 
 // listedPageLocked answers the listed page whose driver has handle, or
 // nil. The caller holds m.mu.
-func (m *Manager) listedPageLocked(handle string) *managedPage {
+func (m *Manager) listedPageLocked(handle ids.PageHandle) *managedPage {
 	for _, scope := range m.scopes {
 		if p := pageWithHandle(scope, handle); p != nil {
 			return p
@@ -255,7 +255,7 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 		return m.admitTo(target, event, m.downloadFileOf(scope, event.ID), nil)
 	}
 	popup := m.parked[event.Popup]
-	var openers []string
+	var openers []ids.PageHandle
 	switch {
 	case popup == nil && len(m.parked) >= maxParkedPopups:
 		return downloadRefused
@@ -267,7 +267,7 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 	openers = mergeOpeners(openers, event.Openers)
 	m.mu.Lock()
 	d := &parkedDownload{start: event, scope: m.profileScopeLocked(event.Profile)}
-	authority := m.openerAuthorityLocked(append([]string{event.Popup}, openers...))
+	authority := m.openerAuthorityLocked(append([]ids.PageHandle{event.Popup}, openers...))
 	m.mu.Unlock()
 	d.file = m.downloadFileOf(d.scope, event.ID)
 	if m.downloadsToArtifacts() {
@@ -293,10 +293,10 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 
 // parkPopupLocked starts holding downloads for popup handle until its fate,
 // or popupParkTimeout. The caller holds m.parkMu.
-func (m *Manager) parkPopupLocked(handle string) *parkedPopup {
+func (m *Manager) parkPopupLocked(handle ids.PageHandle) *parkedPopup {
 	if m.parked == nil {
-		m.parked = make(map[string]*parkedPopup)
-		m.parkedIDs = make(map[string]string)
+		m.parked = make(map[ids.PageHandle]*parkedPopup)
+		m.parkedIDs = make(map[string]ids.PageHandle)
 	}
 	timeout := popupParkTimeout
 	if m.parkTimeout > 0 {
@@ -346,7 +346,7 @@ func (m *Manager) profileScopeLocked(handle string) *jarScope {
 // openerAuthorityLocked answers the workspace authority of the first of
 // handles that is a tab or a popup being adopted, or nil. The caller holds
 // m.mu.
-func (m *Manager) openerAuthorityLocked(handles []string) *workspaceAuthority {
+func (m *Manager) openerAuthorityLocked(handles []ids.PageHandle) *workspaceAuthority {
 	for _, handle := range handles {
 		if p := m.listedPageLocked(handle); p != nil {
 			return p.authority
@@ -363,14 +363,14 @@ func (m *Manager) openerAuthorityLocked(handles []string) *workspaceAuthority {
 // The downloads it started before are listed then: in p, or in the tab of
 // its nearest listed opener. A download's start and newest progress are
 // applied in m.parkMu, so a later progress waits for them and lands after.
-func (m *Manager) resolveParked(handle string, p *managedPage, openers ...string) {
+func (m *Manager) resolveParked(handle ids.PageHandle, p *managedPage, openers ...ids.PageHandle) {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
 	m.resolveParkedLocked(handle, p, openers...)
 }
 
 // resolveParkedLocked is resolveParked for a caller that holds m.parkMu.
-func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...string) {
+func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, openers ...ids.PageHandle) {
 	fate, _ := m.fates().get(handle)
 	if p != nil {
 		fate.listed = p.driver.Handle()
@@ -451,10 +451,10 @@ func (m *Manager) stopParked(d *parkedDownload, discard downloadDiscard) {
 // popup of it is live, so a popup of a popup that went still finds the
 // tab that opened its parent. A popup whose admission is no longer known
 // has only the openers its engine named.
-func (m *Manager) fateTarget(handle string, fate popupFate) *managedPage {
+func (m *Manager) fateTarget(handle ids.PageHandle, fate popupFate) *managedPage {
 	openers := fate.openers
-	for _, ancestor := range m.admissions.Ancestors(popupadmit.Handle(handle)).Chain() {
-		openers = mergeOpeners(openers, []string{string(ancestor)})
+	for _, ancestor := range m.admissions.Ancestors(handle).Chain() {
+		openers = mergeOpeners(openers, []ids.PageHandle{ancestor})
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -473,9 +473,9 @@ func (m *Manager) fateTarget(handle string, fate popupFate) *managedPage {
 
 // fates is the record of popup fates, the newest orderSlack. The caller
 // holds m.parkMu.
-func (m *Manager) fates() *boundedMap[string, popupFate] {
+func (m *Manager) fates() *boundedMap[ids.PageHandle, popupFate] {
 	if m.popupFates == nil {
-		m.popupFates = newBoundedMap[string, popupFate](orderSlack)
+		m.popupFates = newBoundedMap[ids.PageHandle, popupFate](orderSlack)
 	}
 	return m.popupFates
 }
@@ -500,7 +500,7 @@ func (m *Manager) dropParked() []downloadDiscard {
 
 // mergeOpeners appends to openers those of more it lacks, in order,
 // within maxPopupOpeners.
-func mergeOpeners(openers, more []string) []string {
+func mergeOpeners(openers, more []ids.PageHandle) []ids.PageHandle {
 	for _, opener := range more {
 		if opener != "" && !slices.Contains(openers, opener) && len(openers) < maxPopupOpeners {
 			openers = append(openers, opener)

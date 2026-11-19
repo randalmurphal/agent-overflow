@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 )
@@ -41,7 +42,7 @@ type browserEngine interface {
 	// within ctx. It is idempotent, and a page it fails to close stays the
 	// engine's to close at its profile's disposal; the Manager's
 	// reservation for the page ends either way.
-	DiscardPage(ctx context.Context, handle string) error
+	DiscardPage(ctx context.Context, handle ids.PageHandle) error
 	// DownloadSaving is where the engine's downloads go; constant for an
 	// engine.
 	DownloadSaving() downloadSaving
@@ -137,20 +138,20 @@ type engineFileURL interface {
 // done by the same code that hands it over for a claimed chord
 // (engineAppFocus, or the launcher's chord gate). ShowPage never takes focus.
 type paneHost interface {
-	ShowPage(handle string)
-	HidePage(handle string)
+	ShowPage(handle ids.PageHandle)
+	HidePage(handle ids.PageHandle)
 	// SetPageBounds carries the placement the Manager computed: the page's
 	// own viewport, the scale the pane shows it at, and the fitted rect in
 	// the SPA's CSS pixels. The host converts that rect with the rect's
 	// pixel ratio or its own size over the rect's viewport, so no engine
 	// ever equates CSS pixels with its native units. Always sent before a
 	// show.
-	SetPageBounds(handle string, placement PanePlacement)
+	SetPageBounds(handle ids.PageHandle, placement PanePlacement)
 	// SetPageBase sets the color the page's view paints wherever its
 	// document leaves the background transparent or has not painted yet,
 	// as "#rrggbb". It holds, shown or hidden, until the next call; the
 	// Manager decides it (applyPageBase) and sends it only when it changes.
-	SetPageBase(handle, color string)
+	SetPageBase(handle ids.PageHandle, color string)
 	// FocusPage gives the page's view keyboard focus for one focus intent,
 	// as a click into the page does, if and only if the host presents and
 	// shows that view and req.Live holds at the moment focus would move;
@@ -158,7 +159,7 @@ type paneHost interface {
 	// another application. The Manager asks for the presented page only
 	// (applyFocusIntent); the host's own checks are what hold when a hide or
 	// a withdrawal races the request.
-	FocusPage(handle string, req focusRequest) (focusResult, error)
+	FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error)
 }
 
 // paneDevTools is the OPTIONAL inspector half, split from paneHost because
@@ -168,7 +169,7 @@ type paneHost interface {
 // this and the Manager's assertion failure — "devtools are not available on
 // this browser engine" — is the true answer there.
 type paneDevTools interface {
-	OpenPageDevTools(handle string)
+	OpenPageDevTools(handle ids.PageHandle)
 }
 
 // engineProfile is one cookie jar's isolated site data (jar.go): the unit that
@@ -183,7 +184,7 @@ type engineProfile interface {
 	// AttachPage adopts a page the engine created on its own (a popup). On an
 	// error the Manager discards the page, which is a no-op for an engine
 	// that already closed it.
-	AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error)
+	AttachPage(ctx context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error)
 	// CancelDownload aborts one in-flight download by its engine id. A nil
 	// answer means the engine took the cancel; the download then ends with
 	// the engine's own terminal report, a cancel or, when the download
@@ -290,7 +291,7 @@ type pageDriver interface {
 	// against it.
 	Lifetime() context.Context
 	// Handle identifies this page in engine events.
-	Handle() string
+	Handle() ids.PageHandle
 	// OwnsFrame reports whether an engine frame handle belongs to this page,
 	// its main frame included.
 	OwnsFrame(frame string) bool
@@ -490,8 +491,8 @@ type pageAssets struct {
 // own per-thread and per-workspace limits before adopting it.
 type enginePopup struct {
 	Profile string
-	Opener  string
-	Handle  string
+	Opener  ids.PageHandle
+	Handle  ids.PageHandle
 	URL     string
 	Title   string
 }
@@ -508,8 +509,8 @@ type downloadStart struct {
 	// Manager lists the download in the popup's tab, or in the nearest
 	// listed opener's if the popup is never listed, and cancels it through
 	// the profile when neither is (popup_adoption.go).
-	Popup   string
-	Openers []string
+	Popup   ids.PageHandle
+	Openers []ids.PageHandle
 	Profile string
 }
 
@@ -636,16 +637,16 @@ type engineEvents struct {
 	PopupOpened func(enginePopup)
 	// PageClosed reports that the page closed by itself or its engine
 	// lost it.
-	PageClosed func(handle string)
+	PageClosed func(handle ids.PageHandle)
 	// PageCrashed reports that the page's renderer or web content process
 	// ended while the page was open; reason is the engine's name for how.
 	// The engine page still exists and the Manager closes it (crash.go).
-	PageCrashed func(handle, reason string)
+	PageCrashed func(handle ids.PageHandle, reason string)
 	// PageEndReceived records, at once, a close or crash an engine received
 	// for a page and reports through PageClosed or PageCrashed only once it
 	// has processed what it received before (the hosted engine's report
 	// lanes), so a popup's listing that commits meanwhile reads it.
-	PageEndReceived func(handle string, end popupadmit.Observation)
+	PageEndReceived func(handle ids.PageHandle, end popupadmit.Observation)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
 	// native engine reports through the page's own hook (pageHooks.Info).
@@ -655,7 +656,7 @@ type engineEvents struct {
 	// engine page being created before the Manager attaches it, a popup
 	// being adopted): the Manager holds the newest of those for the page
 	// that takes the handle, so its order fence sees them.
-	PageInfoChanged func(handle, url, title string, order uint64)
+	PageInfoChanged func(handle ids.PageHandle, url, title string, order uint64)
 	// DownloadStarted answers whether the download may continue
 	// (downloadAdmission).
 	DownloadStarted  func(downloadStart) downloadAdmission
@@ -668,13 +669,13 @@ type engineEvents struct {
 	// focus. A bare Escape is always the page's; press is what the engine
 	// knows of it besides the chord. It runs on the engine's UI thread, so
 	// the answer must be a set lookup and nothing that waits.
-	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
+	KeyChord func(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool
 	// PageFocusReported reports how a focus the host was asked for
 	// (paneHost.FocusPage) ended after FocusPage answered, which only the
 	// hosted engine does: the launcher moves focus after the directive.
 	// mount and intent name the focus intent; err nil means the page took
 	// the keyboard.
-	PageFocusReported func(handle, mount string, intent uint64, err error)
+	PageFocusReported func(handle ids.PageHandle, mount string, intent uint64, err error)
 }
 
 // KeyPress is what an in-process engine gathers about a key press besides

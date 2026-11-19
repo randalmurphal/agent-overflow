@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/chromedp/cdproto/target"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // Crashed pages. When a page's renderer or web content process ends while
@@ -57,7 +59,7 @@ func cdpCrashReason(event target.EventTargetCrashed) string {
 // closed, which closes it, is left as it is. The hold waits out a jar
 // switch of the page's lifetime (lockStructure), which may close the page
 // first.
-func (m *Manager) pageCrashed(handle, reason string) {
+func (m *Manager) pageCrashed(handle ids.PageHandle, reason string) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
 	m.mu.Unlock()

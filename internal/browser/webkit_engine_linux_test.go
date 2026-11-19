@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // holdDownloadEvents stops the engine's download reports from reaching the
@@ -166,7 +168,7 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 	if handle != pageHandle(n) {
 		t.Fatalf("held as %s, numbered %d", handle, n)
 	}
-	want := downloadStart{Popup: handle, Openers: []string{"page-1"}, Profile: "profile-1"}
+	want := downloadStart{Popup: handle, Openers: []ids.PageHandle{"page-1"}, Profile: "profile-1"}
 	if got := profile.downloadStart(nil, n); !reflect.DeepEqual(got, want) {
 		t.Errorf("a held popup's download started as %+v, want %+v", got, want)
 	}
@@ -176,7 +178,7 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 		t.Errorf("a popup being adopted's download started as %+v", got)
 	}
 	adopted := &webkitPage{handle: "page-2", popup: handle, opener: "page-1"}
-	want = downloadStart{Frame: "page-2", Popup: handle, Openers: []string{"page-1"}, Profile: "profile-1"}
+	want = downloadStart{Frame: "page-2", Popup: handle, Openers: []ids.PageHandle{"page-1"}, Profile: "profile-1"}
 	if got := profile.downloadStart(adopted, n); !reflect.DeepEqual(got, want) {
 		t.Errorf("an adopted popup's download started as %+v, want %+v", got, want)
 	}

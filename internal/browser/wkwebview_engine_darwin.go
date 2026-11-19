@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/serialqueue"
 )
 
@@ -52,7 +53,7 @@ func newNativeEngine(_ string, opts ManagerOptions, events engineEvents) browser
 	}
 	return &wkEngine{
 		window: opts.NativeWindow, events: events,
-		popups: make(map[string]heldPopupView), slots: make(map[int]bool),
+		popups: make(map[ids.PageHandle]heldPopupView), slots: make(map[int]bool),
 		pane: make(map[uint64]wkPaneState),
 	}
 }
@@ -67,7 +68,7 @@ type wkEngine struct {
 	started bool
 
 	mu       sync.Mutex
-	popups   map[string]heldPopupView
+	popups   map[ids.PageHandle]heldPopupView
 	slots    map[int]bool
 	pane     map[uint64]wkPaneState
 	profiles map[uint64]*wkProfile
@@ -171,7 +172,7 @@ var _ engineAppFocus = (*wkEngine)(nil)
 // with handle opener, until the Manager adopts or discards it. The engine
 // never decides which. It answers the popup's number, the page number its
 // adoption gives it, which the view keeps, and its handle.
-func (e *wkEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string) {
+func (e *wkEngine) holdPopup(view unsafe.Pointer, opener ids.PageHandle) (uint64, ids.PageHandle) {
 	n := wkPageSeq.Add(1)
 	handle := pageHandle(n)
 	e.mu.Lock()
@@ -181,7 +182,7 @@ func (e *wkEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string
 }
 
 // takePopup takes the held popup handle, for its attach or its discard.
-func (e *wkEngine) takePopup(handle string) heldPopupView {
+func (e *wkEngine) takePopup(handle ids.PageHandle) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	held := e.popups[handle]
@@ -190,7 +191,7 @@ func (e *wkEngine) takePopup(handle string) heldPopupView {
 }
 
 // heldOpener answers the opener of the held popup handle, "" for none.
-func (e *wkEngine) heldOpener(handle string) string {
+func (e *wkEngine) heldOpener(handle ids.PageHandle) ids.PageHandle {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.popups[handle].opener
@@ -205,14 +206,14 @@ func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 	var start downloadStart
 	switch {
 	case page != nil:
-		start.Frame = page.handle
+		start.Frame = string(page.handle)
 		if page.popup != "" {
-			start.Popup, start.Openers = page.popup, []string{page.opener}
+			start.Popup, start.Openers = page.popup, []ids.PageHandle{page.opener}
 		}
 	case popup != 0:
 		start.Popup = pageHandle(popup)
 		if opener := p.engine.heldOpener(start.Popup); opener != "" {
-			start.Openers = []string{opener}
+			start.Openers = []ids.PageHandle{opener}
 		}
 	}
 	if start.Popup != "" {
@@ -225,7 +226,7 @@ func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 // publishes each finished file to the user's Downloads folder.
 func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
-func (e *wkEngine) DiscardPage(_ context.Context, handle string) error {
+func (e *wkEngine) DiscardPage(_ context.Context, handle ids.PageHandle) error {
 	if held := e.takePopup(handle); held.view != nil {
 		return wkCloseViewErr(held.view)
 	}
@@ -344,7 +345,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	return page, nil
 }
 
-func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+func (p *wkProfile) AttachPage(_ context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	held := p.engine.takePopup(handle)
 	view := held.view
 	if view == nil {

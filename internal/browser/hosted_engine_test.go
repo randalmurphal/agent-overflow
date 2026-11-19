@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
@@ -117,7 +118,7 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	sink := newDirectiveSink()
 	if events.PageEndReceived == nil {
 		// The Manager's popup admission, which these engines have none of.
-		events.PageEndReceived = func(string, popupadmit.Observation) {}
+		events.PageEndReceived = func(ids.PageHandle, popupadmit.Observation) {}
 	}
 	engine := newHostedEngine(relay, sink.send, nil, events)
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
@@ -242,7 +243,7 @@ func answerCreate(t *testing.T, engine *hostedEngine, sink *directiveSink, kind 
 			t.Errorf("first directive was %q, want create", directive.Op)
 			return
 		}
-		engine.Report(directive.PageID, kind, detail)
+		engine.Report(ids.PageHandle(directive.PageID), kind, detail)
 	}()
 }
 
@@ -323,7 +324,7 @@ func TestHostedEngineRefusesACreatedReportNamingAnotherPagesTarget(t *testing.T)
 			t.Fatalf("a create naming %s's target: %v, want it refused", tc.owner, err)
 		}
 		sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-		if owner, _ := engine.pageForTarget(tc.target); owner != tc.owner {
+		if owner, _ := engine.pageForTarget(tc.target); owner != ids.PageHandle(tc.owner) {
 			t.Fatalf("target %s is page %q's after the refusal, want %s's", tc.target, owner, tc.owner)
 		}
 	}
@@ -367,7 +368,7 @@ func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			var closed []string
 			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-				PageClosed: func(handle string) { closed = append(closed, handle) },
+				PageClosed: func(handle ids.PageHandle) { closed = append(closed, string(handle)) },
 			})
 			bindTestPage(t, engine, "page1", "TARGET-1")
 
@@ -478,8 +479,8 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	// closure it lands in has to be synchronized like the real one.
 	closed := make(chan string, 4)
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageClosed: func(handle string) { closed <- handle },
-		PageInfoChanged: func(handle, url, title string, order uint64) {
+		PageClosed: func(handle ids.PageHandle) { closed <- string(handle) },
+		PageInfoChanged: func(handle ids.PageHandle, url, title string, order uint64) {
 			infos = append(infos, fmt.Sprintf("%s %s %s %d", handle, url, title, order))
 		},
 	})
@@ -542,7 +543,7 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 // A profile attaches only a popup the launcher reported in it, and not
 // once the popup closed (hosted_popups_test.go covers the adoption).
 func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
-	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(string) {}})
+	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(ids.PageHandle) {}})
 	profile := testProfile(t, engine)
 	engine.mu.Lock()
 	engine.popups["popup-other"] = &hostedPopup{target: "T-other", profile: "another-profile"}
@@ -560,7 +561,7 @@ func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
 		"popup-other":  "reported no popup",
 		"popup-closed": "reported no popup",
 	} {
-		if _, err := profile.AttachPage(context.Background(), handle, pageHooks{}); err == nil || !strings.Contains(err.Error(), why) {
+		if _, err := profile.AttachPage(context.Background(), ids.PageHandle(handle), pageHooks{}); err == nil || !strings.Contains(err.Error(), why) {
 			t.Errorf("attach %s: %v, want %q", handle, err, why)
 		}
 	}
@@ -599,7 +600,7 @@ func answerClear(t *testing.T, engine *hostedEngine, sink *directiveSink, kind w
 			return
 		}
 		seen <- directive
-		engine.Report(directive.PageID, kind, detail)
+		engine.Report(ids.PageHandle(directive.PageID), kind, detail)
 	}()
 	return seen
 }
@@ -702,7 +703,7 @@ func TestHostedEngineClearSiteDataRespectsCancellationAndInterrupt(t *testing.T)
 func TestHostedEngineIgnoresAnAbandonedClearReport(t *testing.T) {
 	var closed []string
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageClosed: func(handle string) { closed = append(closed, handle) },
+		PageClosed: func(handle ids.PageHandle) { closed = append(closed, string(handle)) },
 	})
 	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportCleared, "")
 	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportClearFailed, "too late")
@@ -1077,9 +1078,11 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	closed := make(chan string, 1)
 	crashed := make(chan string, 1)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		PageInfoChanged: func(handle, url, title string, _ uint64) { infos <- handle + " " + url + " " + title },
-		PageClosed:      func(handle string) { closed <- handle },
-		PageCrashed:     func(handle, reason string) { crashed <- handle + " " + reason },
+		PageInfoChanged: func(handle ids.PageHandle, url, title string, _ uint64) {
+			infos <- string(handle) + " " + url + " " + title
+		},
+		PageClosed:  func(handle ids.PageHandle) { closed <- string(handle) },
+		PageCrashed: func(handle ids.PageHandle, reason string) { crashed <- string(handle) + " " + reason },
 	})
 	engine.attachTimeout = 5 * time.Second
 	// No launcher reports the close, so the destroy retires the page at the
@@ -1124,7 +1127,7 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 }
 
 // bindTestPage binds a page on no browser connection, one that never ends.
-func bindTestPage(t *testing.T, engine *hostedEngine, pageID, targetID string) {
+func bindTestPage(t *testing.T, engine *hostedEngine, pageID ids.PageHandle, targetID string) {
 	t.Helper()
 	if err := engine.bind(pageID, targetID, context.Background()); err != nil {
 		t.Fatal(err)
@@ -1134,14 +1137,14 @@ func bindTestPage(t *testing.T, engine *hostedEngine, pageID, targetID string) {
 // pendingTestPopup records popup as the launcher's report of it does
 // (popupReported): opened by opener, in its profile, admitting downloads, and
 // not yet attached or listed.
-func pendingTestPopup(engine *hostedEngine, popup, targetID, opener string) {
+func pendingTestPopup(engine *hostedEngine, popup ids.PageHandle, targetID string, opener ids.PageHandle) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	profile := engine.pageProfile[opener]
 	engine.popups[popup] = &hostedPopup{target: targetID, profile: profile, opener: opener}
 	engine.popupByTarget[targetID] = popup
 	engine.pageProfile[popup] = profile
-	engine.pages.addPopup(hostedPageID(popup), hostedPageID(opener), profile)
+	engine.pages.addPopup(popup, opener, profile)
 }
 
 // A browser connection that ends on its own takes the sessions of the pages
@@ -1159,8 +1162,8 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 			endpoint := startFakeCDPEndpoint(t, nil, nil)
 			crashed := make(chan string, 8)
 			engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-				PageClosed:  func(handle string) { t.Errorf("page %s was reported closed", handle) },
-				PageCrashed: func(handle, reason string) { crashed <- handle + ": " + reason },
+				PageClosed:  func(handle ids.PageHandle) { t.Errorf("page %s was reported closed", handle) },
+				PageCrashed: func(handle ids.PageHandle, reason string) { crashed <- string(handle) + ": " + reason },
 			})
 			engine.attachTimeout = 5 * time.Second
 			ended := make(chan struct{}, 4)
@@ -1209,7 +1212,7 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 				t.Fatalf("ensureBrowser: %v", err)
 			}
 			for i, target := range []string{"TARGET-1", "TARGET-2"} {
-				if err := engine.bind(fmt.Sprintf("page%d", i+1), target, connA); err != nil {
+				if err := engine.bind(ids.PageHandle(fmt.Sprintf("page%d", i+1)), target, connA); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1342,7 +1345,7 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 	set := keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}
 	var chords []keybindings.Accelerator
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		KeyChord: func(handle string, pressed keybindings.Accelerator, _ KeyPress) bool {
+		KeyChord: func(handle ids.PageHandle, pressed keybindings.Accelerator, _ KeyPress) bool {
 			if handle != "page1" {
 				t.Errorf("KeyChord for %q, want page1", handle)
 			}

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -77,14 +78,14 @@ func TestKeyChordHandsFocusToTheAppExactlyWhenItClaims(t *testing.T) {
 		handle string
 		set    func(t *testing.T)
 	}{
-		{"the page shown", f.fake.Handle(), func(*testing.T) {}},
-		{"the page hidden", f.fake.Handle(), func(t *testing.T) {
+		{"the page shown", string(f.fake.Handle()), func(*testing.T) {}},
+		{"the page hidden", string(f.fake.Handle()), func(t *testing.T) {
 			hide := false
 			if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"the page navigating", f.fake.Handle(), func(t *testing.T) {
+		{"the page navigating", string(f.fake.Handle()), func(t *testing.T) {
 			f.fake.commitDocument()
 		}},
 		{"a page the Manager does not hold", popup, func(*testing.T) {}},
@@ -94,7 +95,7 @@ func TestKeyChordHandsFocusToTheAppExactlyWhenItClaims(t *testing.T) {
 		for _, row := range rows {
 			engine.take()
 			for range 2 {
-				if got := f.manager.keyChord(state.handle, row.pressed, row.press); got != row.claimed {
+				if got := f.manager.keyChord(ids.PageHandle(state.handle), row.pressed, row.press); got != row.claimed {
 					t.Fatalf("%s, %s: claimed %v, want %v", state.name, row.name, got, row.claimed)
 				}
 				engine.note("returned")
@@ -146,12 +147,12 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 		set       func(t *testing.T, f *findFixture) string
 		wantMount bool
 	}{
-		{"the page shown", func(t *testing.T, f *findFixture) string { return f.fake.Handle() }, true},
+		{"the page shown", func(t *testing.T, f *findFixture) string { return string(f.fake.Handle()) }, true},
 		{"another client's pane mounted, not placed", func(t *testing.T, f *findFixture) string {
 			if _, err := f.manager.AttachPane(f.access.Caller()); err != nil {
 				t.Fatal(err)
 			}
-			return f.fake.Handle()
+			return string(f.fake.Handle())
 		}, true},
 		{"another client's pane off screen", func(t *testing.T, f *findFixture) string {
 			other, err := f.manager.AttachPane(f.access.Caller())
@@ -161,30 +162,30 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 			if err := f.manager.SetPaneRect(other.ID, offscreen); err != nil {
 				t.Fatal(err)
 			}
-			return f.fake.Handle()
+			return string(f.fake.Handle())
 		}, true},
 		{"the companion hidden", func(t *testing.T, f *findFixture) string {
 			hide := false
 			if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
 				t.Fatal(err)
 			}
-			return f.fake.Handle()
+			return string(f.fake.Handle())
 		}, false},
 		{"the pane off screen", func(t *testing.T, f *findFixture) string {
 			if err := f.manager.SetPaneRect(f.mount, offscreen); err != nil {
 				t.Fatal(err)
 			}
-			return f.fake.Handle()
+			return string(f.fake.Handle())
 		}, false},
 		{"the pane closed", func(t *testing.T, f *findFixture) string {
 			f.manager.DetachPane(f.mount)
-			return f.fake.Handle()
+			return string(f.fake.Handle())
 		}, false},
 		{"another tab shown", func(t *testing.T, f *findFixture) string {
 			if _, err := f.manager.NewCompanionPage(t.Context(), f.access, ""); err != nil {
 				t.Fatal(err)
 			}
-			return f.fake.Handle()
+			return string(f.fake.Handle())
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -200,7 +201,7 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 				}
 			})
 			handle := tc.set(t, f)
-			f.manager.emitAccelerator(handle, bound)
+			f.manager.emitAccelerator(ids.PageHandle(handle), bound)
 			mu.Lock()
 			defer mu.Unlock()
 			if !tc.wantMount {

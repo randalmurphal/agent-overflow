@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/browser/quota"
 	"agent-overflow/internal/browser/turnorder"
@@ -196,8 +197,8 @@ type Manager struct {
 	// the newest handles that will not be listed again, and
 	// listingChanged, when set, closes as the next page joins or leaves the
 	// tabs or an adoption ends (listingChangedLocked). Guarded by mu.
-	adopting       map[string]*managedPage
-	unlisted       *boundedMap[string, struct{}]
+	adopting       map[ids.PageHandle]*managedPage
+	unlisted       *boundedMap[ids.PageHandle, struct{}]
 	listingChanged chan struct{}
 	// admissions is each popup's admission from its engine's report until
 	// its listing or its end, which decides whether it becomes a tab, and
@@ -210,15 +211,15 @@ type Manager struct {
 	// what became of the newest popups. Guarded by parkMu, which is taken
 	// before mu.
 	parkMu     sync.Mutex
-	parked     map[string]*parkedPopup
-	parkedIDs  map[string]string
-	popupFates *boundedMap[string, popupFate]
+	parked     map[ids.PageHandle]*parkedPopup
+	parkedIDs  map[string]ids.PageHandle
+	popupFates *boundedMap[ids.PageHandle, popupFate]
 	// parkTimeout overrides popupParkTimeout when set (tests).
 	parkTimeout time.Duration
 	// heldInfo holds a CDP engine's newest report for each handle no page
 	// answers to yet (updatePageInfo). Bounded: a handle no page ever takes,
 	// a target closed before its adoption, ages out.
-	heldInfo *boundedMap[string, heldInfo]
+	heldInfo *boundedMap[ids.PageHandle, heldInfo]
 	// viewportApplied is a test seam for the asynchronous pane-size follow:
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
@@ -439,7 +440,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		scopes:         make(map[string]*jarScope),
 		suspended:      make(map[string]*suspendedPage),
 		pending:        make(map[string]*pendingPage),
-		heldInfo:       newBoundedMap[string, heldInfo](orderSlack),
+		heldInfo:       newBoundedMap[ids.PageHandle, heldInfo](orderSlack),
 		admissions:     popupadmit.New(orderSlack),
 		disposing:      make(map[string]chan struct{}),
 		recordDir:      filepath.Join(configDir, browserPageRecordDir),
@@ -508,7 +509,7 @@ func (m *Manager) ReportPaneHost(pageID string, kind webview2host.ReportKind, de
 	if !ok {
 		return errors.New("browser: this deployment has no pane host")
 	}
-	host.Report(pageID, kind, webview2host.TruncateDetail(detail))
+	host.Report(ids.PageHandle(pageID), kind, webview2host.TruncateDetail(detail))
 	return nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // tabURLs answers the thread's tabs' addresses in tab order.
@@ -145,7 +147,7 @@ func TestABusyPageDoesNotHoldASwitch(t *testing.T) {
 	saved := make(chan error, 1)
 	manager.switchWritten = func() {
 		titles++
-		manager.updatePageInfo(handle, "https://example.test/busy", fmt.Sprintf("title %d", titles), titles)
+		manager.updatePageInfo(ids.PageHandle(handle), "https://example.test/busy", fmt.Sprintf("title %d", titles), titles)
 		if titles == 1 {
 			go func() { saved <- manager.persistThreads([]string{"other"}) }()
 		}
@@ -603,7 +605,7 @@ func TestASwitchFencesPopupAdoption(t *testing.T) {
 		}
 	}
 	engine.mu.Unlock()
-	manager.adoptPopup(enginePopup{Profile: engine.profile(worktree).Handle(), Opener: opener, Handle: "popup", URL: "https://example.test/popup"})
+	manager.adoptPopup(enginePopup{Profile: engine.profile(worktree).Handle(), Opener: ids.PageHandle(opener), Handle: "popup", URL: "https://example.test/popup"})
 	if ids := tabIDs(manager, access); !slices.Equal(ids, []string{page.ID}) {
 		t.Fatalf("tabs after a popup raced the switch = %q, want only the opener", ids)
 	}

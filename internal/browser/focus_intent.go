@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -249,7 +250,7 @@ func (m *Manager) emitPageFocus(threadID, mount string, intent uint64, err error
 // pageFocusReported is engineEvents.PageFocusReported: the launcher's answer
 // to a focus it was asked for after FocusPage answered. It reaches the pane
 // mount that armed the intent, as a Kind "focus" event.
-func (m *Manager) pageFocusReported(handle, mount string, intent uint64, err error) {
+func (m *Manager) pageFocusReported(handle ids.PageHandle, mount string, intent uint64, err error) {
 	m.mu.Lock()
 	page := m.pageByHandleLocked(handle)
 	owner := ""

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -118,7 +119,7 @@ func reportsProcessed(engine *hostedEngine, pageID string) bool {
 	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
 		busy := engine.pages.busy()
 		if pageID != "" {
-			_, busy = engine.pages.laneOf(hostedPageID(pageID))
+			_, busy = engine.pages.laneOf(ids.PageHandle(pageID))
 		}
 		if !busy {
 			return true
@@ -157,7 +158,7 @@ func sendDownload(t *testing.T, engine *hostedEngine, pageID string, report webv
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine.Report(pageID, webview2host.ReportDownload, detail)
+	engine.Report(ids.PageHandle(pageID), webview2host.ReportDownload, detail)
 }
 
 // isCancelOf reports whether directive is the launcher's cancel of download
@@ -554,7 +555,7 @@ func reportAsync(t *testing.T, engine *hostedEngine, pageID string, report webvi
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		engine.Report(pageID, webview2host.ReportDownload, detail)
+		engine.Report(ids.PageHandle(pageID), webview2host.ReportDownload, detail)
 		if !reportsProcessed(engine, pageID) {
 			t.Errorf("the reports of page %s were not processed", pageID)
 		}
@@ -789,7 +790,7 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine, sink, recorder := newDownloadHostedEngine(t)
-			engine.events.PageClosed = func(string) {}
+			engine.events.PageClosed = func(ids.PageHandle) {}
 			bindTestPage(t, engine, "page1", "TARGET-1")
 			bindTestPage(t, engine, "page2", "TARGET-2")
 			reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\one.bin`})
@@ -840,7 +841,7 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 	recorder := &hostedDownloadLog{}
 	crashed := make(chan string, 4)
 	events := recorder.events()
-	events.PageCrashed = func(handle, _ string) { crashed <- handle }
+	events.PageCrashed = func(handle ids.PageHandle, _ string) { crashed <- string(handle) }
 	engine, sink := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, events)
 	engine.backendPath = testBackendPath
 	engine.attachTimeout = 5 * time.Second
@@ -892,7 +893,7 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 	for _, how := range []string{"discard", "close", "discard after its bind", "close after its bind"} {
 		t.Run(how, func(t *testing.T) {
 			engine, _, recorder := newDownloadHostedEngine(t)
-			engine.events.PageClosed = func(string) {}
+			engine.events.PageClosed = func(ids.PageHandle) {}
 			bindTestPage(t, engine, "opener", "T-opener")
 			pendingTestPopup(engine, "popup", "T-popup", "opener")
 			if strings.HasSuffix(how, "after its bind") {

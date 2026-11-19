@@ -14,6 +14,8 @@ import (
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // cdpPage drives one Chrome target. It owns the CDP bookkeeping the tools need
@@ -22,7 +24,7 @@ import (
 type cdpPage struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	handle string
+	handle ids.PageHandle
 	hooks  pageHooks
 
 	frames  *frameTracker
@@ -64,7 +66,7 @@ func attachCDPPage(controller, pageCtx context.Context, pageCancel context.Cance
 	}
 	p := &cdpPage{
 		ctx: pageCtx, cancel: pageCancel, hooks: hooks,
-		handle:  string(chromedp.FromContext(pageCtx).Target.TargetID),
+		handle:  ids.PageHandle(chromedp.FromContext(pageCtx).Target.TargetID),
 		frames:  newFrameTracker(),
 		network: newNetworkTracker(time.Now()),
 	}
@@ -287,14 +289,14 @@ func (p *cdpPage) reportLoading(loading bool, order uint64) {
 }
 
 func (p *cdpPage) Lifetime() context.Context { return p.ctx }
-func (p *cdpPage) Handle() string            { return p.handle }
+func (p *cdpPage) Handle() ids.PageHandle    { return p.handle }
 func (p *cdpPage) Close()                    { p.cancel() }
 
 // OwnsFrame answers from the frames the page has reported, and for its
 // main frame, whose id is the target id, before it has reported any: a
 // download can begin in a navigation that never commits.
 func (p *cdpPage) OwnsFrame(frame string) bool {
-	if frame == p.handle {
+	if frame == string(p.handle) {
 		return true
 	}
 	return p.frames.owns(cdp.FrameID(frame))

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -34,7 +35,7 @@ type hostedDownloadID string
 // hostedDownloadKey is a hosted download's identity: the page that
 // reported it and the launcher's id for it.
 type hostedDownloadKey struct {
-	page hostedPageID
+	page ids.PageHandle
 	id   hostedDownloadID
 }
 
@@ -138,7 +139,7 @@ func (s hostedPageState) next(event hostedPageEvent) (hostedPageState, bool) {
 type hostedPageRecord struct {
 	state hostedPageState
 	// opener and profile are a popup's.
-	opener  hostedPageID
+	opener  ids.PageHandle
 	profile string
 	// downloads are the page's running downloads, admitted or with their
 	// admission in flight; ended its ended or refused ids, oldest first.
@@ -162,10 +163,10 @@ func (r *hostedPageRecord) to(event hostedPageEvent) bool {
 // called, never the reverse.
 type hostedPages struct {
 	mu      sync.Mutex
-	records map[hostedPageID]*hostedPageRecord
+	records map[ids.PageHandle]*hostedPageRecord
 	// owners is the page of each download id a record holds, running or
 	// ended, so a report naming another page's id is refused.
-	owners map[hostedDownloadID]hostedPageID
+	owners map[hostedDownloadID]ids.PageHandle
 	lanes  *reportLanes
 	// process runs one accepted report on its lane; watch starts the
 	// status loop, which runs until stop closes or no download runs.
@@ -177,21 +178,21 @@ type hostedPages struct {
 
 func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{})) *hostedPages {
 	return &hostedPages{
-		records: make(map[hostedPageID]*hostedPageRecord),
-		owners:  make(map[hostedDownloadID]hostedPageID),
+		records: make(map[ids.PageHandle]*hostedPageRecord),
+		owners:  make(map[hostedDownloadID]ids.PageHandle),
 		lanes:   newReportLanes(),
 		process: process,
 		watch:   watch,
 	}
 }
 
-func newPageRecord(state hostedPageState, opener hostedPageID, profile string) *hostedPageRecord {
+func newPageRecord(state hostedPageState, opener ids.PageHandle, profile string) *hostedPageRecord {
 	return &hostedPageRecord{state: state, opener: opener, profile: profile, downloads: make(map[hostedDownloadID]*hostedDownload), retired: make(chan struct{})}
 }
 
 // addOpen records page, which the engine created and bound, as open. A
 // page id is minted once, so a record it already has stays as it is.
-func (p *hostedPages) addOpen(page hostedPageID) {
+func (p *hostedPages) addOpen(page ids.PageHandle) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.records[page] == nil {
@@ -201,7 +202,7 @@ func (p *hostedPages) addOpen(page hostedPageID) {
 
 // addPopup records page, a popup opener opened in profile, as pending,
 // and answers false when page has a record.
-func (p *hostedPages) addPopup(page, opener hostedPageID, profile string) bool {
+func (p *hostedPages) addPopup(page, opener ids.PageHandle, profile string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.records[page] != nil {
@@ -213,7 +214,7 @@ func (p *hostedPages) addPopup(page, opener hostedPageID, profile string) bool {
 
 // admits reports whether page has a record that admits downloads: a page
 // whose close or discard was received opens no popup either.
-func (p *hostedPages) admits(page hostedPageID) bool {
+func (p *hostedPages) admits(page ids.PageHandle) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
@@ -223,7 +224,7 @@ func (p *hostedPages) admits(page hostedPageID) bool {
 // listed records the Manager's listing of popup page: its later work runs
 // on its own lane, once the work it already has drains, and its downloads
 // are its tab's.
-func (p *hostedPages) listed(page hostedPageID) {
+func (p *hostedPages) listed(page ids.PageHandle) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if r := p.records[page]; r != nil {
@@ -253,7 +254,7 @@ const (
 // acceptSnapshot receives one snapshot of a download of page: in one hold
 // it checks the download's owner, starts a download its page admits, and
 // queues the snapshot on the page's lane.
-func (p *hostedPages) acceptSnapshot(page hostedPageID, report webview2host.DownloadReport) snapshotReceipt {
+func (p *hostedPages) acceptSnapshot(page ids.PageHandle, report webview2host.DownloadReport) snapshotReceipt {
 	id := hostedDownloadID(report.ID)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -298,7 +299,7 @@ type endReceipt struct {
 // or acceptedCrash): a close or discard seals its admission and queues its
 // retirement behind its work already accepted, once; a crash queues the
 // Manager's report of it.
-func (p *hostedPages) acceptEnd(page hostedPageID, kind acceptedKind, crash string) endReceipt {
+func (p *hostedPages) acceptEnd(page ids.PageHandle, kind acceptedKind, crash string) endReceipt {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
@@ -326,7 +327,7 @@ func (p *hostedPages) acceptEnd(page hostedPageID, kind acceptedKind, crash stri
 // before its close or discard: it answers the downloads the Manager
 // admitted that still run, and finish, which the caller calls once it has
 // settled them, to wake whoever waits for the page to go.
-func (p *hostedPages) retire(page hostedPageID) (running []hostedDownloadID, finish func()) {
+func (p *hostedPages) retire(page ids.PageHandle) (running []hostedDownloadID, finish func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
@@ -346,7 +347,7 @@ func (p *hostedPages) retire(page hostedPageID) (running []hostedDownloadID, fin
 	return running, func() { close(r.retired) }
 }
 
-func (p *hostedPages) dropOwnerLocked(id hostedDownloadID, page hostedPageID) {
+func (p *hostedPages) dropOwnerLocked(id hostedDownloadID, page ids.PageHandle) {
 	if p.owners[id] == page {
 		delete(p.owners, id)
 	}
@@ -377,7 +378,7 @@ func (p *hostedPages) stopAll() func() {
 	for _, r := range p.records {
 		close(r.retired)
 	}
-	p.records = make(map[hostedPageID]*hostedPageRecord)
-	p.owners = make(map[hostedDownloadID]hostedPageID)
+	p.records = make(map[ids.PageHandle]*hostedPageRecord)
+	p.owners = make(map[hostedDownloadID]ids.PageHandle)
 	return p.stopLanesLocked()
 }

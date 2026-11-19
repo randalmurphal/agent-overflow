@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // ownedPages answers tb's live pages.
@@ -51,7 +53,7 @@ func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *
 
 // pageByHandleLocked resolves an engine handle to the page it drives. Caller
 // holds m.mu.
-func (m *Manager) pageByHandleLocked(handle string) *managedPage {
+func (m *Manager) pageByHandleLocked(handle ids.PageHandle) *managedPage {
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.driver.Handle() == handle {

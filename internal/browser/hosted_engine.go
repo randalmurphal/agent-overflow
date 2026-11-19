@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 )
@@ -111,7 +112,7 @@ type hostedEngine struct {
 	// whose target went (hostClosedFallback), and closeFallbacks are the
 	// pages waiting, each with the timer that retires it at the bound.
 	closeFallback  time.Duration
-	closeFallbacks map[string]*time.Timer
+	closeFallbacks map[ids.PageHandle]*time.Timer
 
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
@@ -128,43 +129,43 @@ type hostedEngine struct {
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
 	attachCancel  context.CancelFunc
-	pending       map[string]chan hostReport
-	pageByTarget  map[string]string
-	targetByPage  map[string]string
+	pending       map[ids.PageHandle]chan hostReport
+	pageByTarget  map[string]ids.PageHandle
+	targetByPage  map[ids.PageHandle]string
 	// pageConn is the browser connection each bound page's session runs on
 	// (bind), until the page leaves or that connection's retirement claims
 	// it (claimLostLocked).
-	pageConn map[string]context.Context
+	pageConn map[ids.PageHandle]context.Context
 	// connectionEnded is a test seam: called by a connection's watcher once
 	// the connection ended, before it retires it. Production leaves it nil.
 	connectionEnded func()
-	shown           map[string]bool
-	bounds          map[string]PanePlacement
+	shown           map[ids.PageHandle]bool
+	bounds          map[ids.PageHandle]PanePlacement
 	// drivers reaches a page's CDP half from its handle, for the one
 	// presentation fact the launcher cannot apply: the scale the device
 	// metrics override draws a presented page at.
-	drivers map[string]*cdpPage
+	drivers map[ids.PageHandle]*cdpPage
 	// ratios caches each page's devicePixelRatio against the pane ratio it
 	// was read under: a rect report arrives per changed frame while the pane
 	// is dragged, and the page's ratio (the OS scale) only changes when the
 	// window changes monitor, which changes the pane's ratio with it.
-	ratios map[string]pageRatio
+	ratios map[ids.PageHandle]pageRatio
 	// scales is the latest-wins queue behind applyViewScale: one CDP override
 	// in flight per page, and every scale asked for while it runs collapses
 	// into the next one.
-	scales map[string]*viewScaleState
+	scales map[ids.PageHandle]*viewScaleState
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
-	noFind map[string]bool
+	noFind map[ids.PageHandle]bool
 	// pageProfile is each page's profile id, created or popup, and policies
 	// each live profile's navigation policy (profileOptions.Allow), for a
 	// popup's profile and the browser-wide policy (hosted_popups.go).
-	pageProfile map[string]string
+	pageProfile map[ids.PageHandle]string
 	policies    map[string]func(owners []string, rawURL string) (allowed, resolved bool)
 	// popups are the popups the launcher reported whose pages have not
 	// gone (hostedPopup), and popupByTarget their pages by CDP target.
-	popups        map[string]*hostedPopup
-	popupByTarget map[string]string
+	popups        map[ids.PageHandle]*hostedPopup
+	popupByTarget map[string]ids.PageHandle
 	// targets is the current connection's record of its targets
 	// (cdp_targets.go): the info of a target no page answers to yet, and
 	// the target that opened each popup target, as the browser reports it.
@@ -188,7 +189,7 @@ type hostedEngine struct {
 	backendPath func(ctx context.Context, path string) (string, error)
 	// viewScaleAsked is a test seam called whenever a page is asked for a
 	// view scale it was not already asked for. Production leaves it nil.
-	viewScaleAsked func(handle string, want viewScale)
+	viewScaleAsked func(handle ids.PageHandle, want viewScale)
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
@@ -203,23 +204,23 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		clearTimeout:  hostClearTimeout,
 		closeFallback: hostClosedFallback,
 
-		pending:      make(map[string]chan hostReport),
-		pageByTarget: make(map[string]string),
-		targetByPage: make(map[string]string),
-		pageConn:     make(map[string]context.Context),
-		shown:        make(map[string]bool),
-		bounds:       make(map[string]PanePlacement),
-		drivers:      make(map[string]*cdpPage),
-		ratios:       make(map[string]pageRatio),
-		scales:       make(map[string]*viewScaleState),
-		noFind:       make(map[string]bool),
+		pending:      make(map[ids.PageHandle]chan hostReport),
+		pageByTarget: make(map[string]ids.PageHandle),
+		targetByPage: make(map[ids.PageHandle]string),
+		pageConn:     make(map[ids.PageHandle]context.Context),
+		shown:        make(map[ids.PageHandle]bool),
+		bounds:       make(map[ids.PageHandle]PanePlacement),
+		drivers:      make(map[ids.PageHandle]*cdpPage),
+		ratios:       make(map[ids.PageHandle]pageRatio),
+		scales:       make(map[ids.PageHandle]*viewScaleState),
+		noFind:       make(map[ids.PageHandle]bool),
 
-		pageProfile:   make(map[string]string),
+		pageProfile:   make(map[ids.PageHandle]string),
 		policies:      make(map[string]func([]string, string) (bool, bool)),
-		popups:        make(map[string]*hostedPopup),
-		popupByTarget: make(map[string]string),
+		popups:        make(map[ids.PageHandle]*hostedPopup),
+		popupByTarget: make(map[string]ids.PageHandle),
 
-		closeFallbacks: make(map[string]*time.Timer),
+		closeFallbacks: make(map[ids.PageHandle]*time.Timer),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
@@ -302,22 +303,22 @@ func (e *hostedEngine) Stop() {
 	browserCancel, allocCancel := e.browserCancel, e.allocCancel
 	e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
 	e.started = false
-	e.pageByTarget = make(map[string]string)
-	e.targetByPage = make(map[string]string)
-	e.pageConn = make(map[string]context.Context)
-	e.shown = make(map[string]bool)
-	e.bounds = make(map[string]PanePlacement)
-	e.drivers = make(map[string]*cdpPage)
-	e.ratios = make(map[string]pageRatio)
-	e.scales = make(map[string]*viewScaleState)
-	e.noFind = make(map[string]bool)
-	e.pageProfile = make(map[string]string)
+	e.pageByTarget = make(map[string]ids.PageHandle)
+	e.targetByPage = make(map[ids.PageHandle]string)
+	e.pageConn = make(map[ids.PageHandle]context.Context)
+	e.shown = make(map[ids.PageHandle]bool)
+	e.bounds = make(map[ids.PageHandle]PanePlacement)
+	e.drivers = make(map[ids.PageHandle]*cdpPage)
+	e.ratios = make(map[ids.PageHandle]pageRatio)
+	e.scales = make(map[ids.PageHandle]*viewScaleState)
+	e.noFind = make(map[ids.PageHandle]bool)
+	e.pageProfile = make(map[ids.PageHandle]string)
 	var cancelAttaches []func()
 	for _, popup := range e.popups {
 		cancelAttaches = append(cancelAttaches, popup.takeAttachCancelLocked())
 	}
-	e.popups = make(map[string]*hostedPopup)
-	e.popupByTarget = make(map[string]string)
+	e.popups = make(map[ids.PageHandle]*hostedPopup)
+	e.popupByTarget = make(map[string]ids.PageHandle)
 	for pageID := range e.closeFallbacks {
 		e.endCloseFallbackLocked(pageID)
 	}
@@ -397,7 +398,7 @@ func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
 	}
 	defer e.unwatch(correlationID)
 
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpClearData, PageID: correlationID}) {
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpClearData, PageID: string(correlationID)}) {
 		return errors.New("browser: pane host refused the clear-data directive")
 	}
 
@@ -495,7 +496,7 @@ func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDrive
 }
 
 // AttachPage adopts a popup the launcher reported (hosted_popups.go).
-func (p *hostedProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+func (p *hostedProfile) AttachPage(_ context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	return p.engine.attachPopup(p, handle, hooks)
 }
 

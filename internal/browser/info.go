@@ -1,6 +1,10 @@
 package browser
 
-import "context"
+import (
+	"context"
+
+	"agent-overflow/internal/browser/ids"
+)
 
 // A page's info has two kinds of writer. An engine report (pageInfoReport)
 // carries the engine's address and title as they changed, numbered in the
@@ -155,7 +159,7 @@ func (p *managedPage) cachedInfo() PageInfo {
 // a page by its handle. A report for a handle no page answers to yet (an
 // engine page the Manager has not attached or adopted) is held, the newest
 // by order, until its page takes it (takeHeldInfoLocked).
-func (m *Manager) updatePageInfo(handle, url, title string, order uint64) {
+func (m *Manager) updatePageInfo(handle ids.PageHandle, url, title string, order uint64) {
 	m.mu.Lock()
 	found := m.pageByHandleLocked(handle)
 	if found == nil {
@@ -185,7 +189,7 @@ type heldInfo struct {
 // that makes a page answer to it, so every report for the handle either was
 // held before or finds the page after. The caller commits it to the page
 // (applyHeldInfo) once it releases m.mu.
-func (m *Manager) takeHeldInfoLocked(handle string) (heldInfo, bool) {
+func (m *Manager) takeHeldInfoLocked(handle ids.PageHandle) (heldInfo, bool) {
 	return m.heldInfo.take(handle)
 }
 
@@ -199,7 +203,7 @@ func (m *Manager) applyHeldInfo(p *managedPage, held heldInfo, ok bool) {
 // commitHeldInfoLocked commits the report held for handle to p in the hold
 // of m.mu that lists p, so the listing's own push carries it and nothing
 // pushes it apart. The caller holds m.mu and pushes p's listing.
-func (m *Manager) commitHeldInfoLocked(p *managedPage, handle string) {
+func (m *Manager) commitHeldInfoLocked(p *managedPage, handle ids.PageHandle) {
 	held, ok := m.heldInfo.take(handle)
 	if !ok {
 		return
@@ -278,7 +282,7 @@ func (m *Manager) refreshHistoryState(p *managedPage, stamp uint64) {
 
 // creatingPageByHandleLocked returns the page being created or restored
 // whose engine page has handle, or nil. The caller holds m.mu.
-func (m *Manager) creatingPageByHandleLocked(handle string) *managedPage {
+func (m *Manager) creatingPageByHandleLocked(handle ids.PageHandle) *managedPage {
 	for _, scope := range m.scopes {
 		for p := range scope.creating {
 			if p.driver != nil && p.driver.Handle() == handle {

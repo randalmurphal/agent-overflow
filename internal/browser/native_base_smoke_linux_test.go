@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // TestNativeEngineRealPageBase shows a page whose document has no
@@ -233,13 +235,15 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 // held until released, as a GTK thread busy elsewhere holds it.
 type heldBaseEngine struct {
 	*webkitEngine
-	handle  string
+	handle  ids.PageHandle
 	entered chan struct{}
 	gate    chan struct{}
 	held    atomic.Bool
 }
 
-func (e *heldBaseEngine) SetPageBase(handle, color string) {
+var _ paneHost = (*heldBaseEngine)(nil)
+
+func (e *heldBaseEngine) SetPageBase(handle ids.PageHandle, color string) {
 	if handle == e.handle && color == documentBase && e.held.CompareAndSwap(false, true) {
 		e.entered <- struct{}{}
 		<-e.gate

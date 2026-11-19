@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The fake engine (spec §10). Pages exist, navigate, carry a URL and a title,
@@ -84,7 +86,7 @@ func (e *fakeEngine) Stop() {
 
 // DiscardPage has nothing to discard: this engine opens no page on its own, so
 // the Manager is never offered one to decline.
-func (e *fakeEngine) DiscardPage(context.Context, string) error { return nil }
+func (e *fakeEngine) DiscardPage(context.Context, ids.PageHandle) error { return nil }
 
 func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {
 	if !e.Running() {
@@ -125,7 +127,7 @@ func (p *fakeProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, e
 	ctx, cancel := context.WithCancel(context.Background())
 	page := &fakePage{
 		profile: p, hooks: hooks, ctx: ctx, cancel: cancel,
-		handle:   fmt.Sprintf("fake-page-%d", p.engine.seq.Add(1)),
+		handle:   ids.PageHandle(fmt.Sprintf("fake-page-%d", p.engine.seq.Add(1))),
 		url:      "about:blank",
 		findMode: FindModeBar,
 	}
@@ -138,7 +140,7 @@ func (p *fakeProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, e
 
 // AttachPage is unreachable: this engine reports no popups, so a driver for a
 // page nobody created would be worse than a loud failure.
-func (p *fakeProfile) AttachPage(context.Context, string, pageHooks) (pageDriver, error) {
+func (p *fakeProfile) AttachPage(context.Context, ids.PageHandle, pageHooks) (pageDriver, error) {
 	return nil, errors.New("browser: the fake browser engine opens no pages of its own")
 }
 
@@ -169,7 +171,7 @@ type fakePage struct {
 	hooks   pageHooks
 	ctx     context.Context
 	cancel  context.CancelFunc
-	handle  string
+	handle  ids.PageHandle
 	// loadOrder numbers the loading reports (pageHooks.Loading).
 	loadOrder atomic.Uint64
 
@@ -224,10 +226,10 @@ type fakePage struct {
 }
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
-func (p *fakePage) Handle() string            { return p.handle }
+func (p *fakePage) Handle() ids.PageHandle    { return p.handle }
 
 // OwnsFrame answers for the page's handle, the one frame a fake page has.
-func (p *fakePage) OwnsFrame(frame string) bool { return frame == p.handle }
+func (p *fakePage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
 
 func (p *fakePage) Close() {
 	p.mu.Lock()
@@ -261,7 +263,7 @@ func (p *fakePage) Navigate(ctx context.Context, rawURL string) error {
 	}
 	if download, ok := fakeDownloadAddress(rawURL); ok {
 		// A response a browser saves rather than shows: the page stays.
-		return p.profile.download(p.handle, download)
+		return p.profile.download(string(p.handle), download)
 	}
 	p.mu.Lock()
 	// A navigation truncates the forward entries AFTER the current one and

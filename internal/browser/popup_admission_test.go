@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 )
 
@@ -16,7 +17,7 @@ import (
 // adoption's last step before the listing, waits for its gate.
 type historyGatePage struct {
 	*handledPage
-	reached chan<- string
+	reached chan<- ids.PageHandle
 	gate    <-chan struct{}
 }
 
@@ -154,7 +155,7 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 						time.Sleep(time.Millisecond)
 						discards = engine.discards()
 					}
-					if !slices.Equal(discards, []string{"popup"}) {
+					if !slices.Equal(discards, []ids.PageHandle{"popup"}) {
 						t.Fatalf("discarded %v: a popup with no driver is the engine's to close", discards)
 					}
 				} else if len(discards) != 0 {
@@ -294,7 +295,7 @@ func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
 	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
 	// Twice the registry's history of popups that came and went.
 	for i := range 2*orderSlack + 1 {
-		handle := fmt.Sprintf("other-%d", i)
+		handle := ids.PageHandle(fmt.Sprintf("other-%d", i))
 		engine.mu.Lock()
 		engine.failing[handle] = true
 		engine.mu.Unlock()
@@ -308,7 +309,7 @@ func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
 	}
 	wantDownloads(t, manager, opener, "dl-1 completed 5")
 	manager.mu.Lock()
-	root := manager.listedPageLocked(opener)
+	root := manager.listedPageLocked(ids.PageHandle(opener))
 	manager.mu.Unlock()
 	path := root.downloads.list()[0].Path
 	if path == "" || path == file {
@@ -325,7 +326,7 @@ func awaitAdmission(t *testing.T, m *Manager, handle string) {
 	t.Helper()
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
-		if d, ok := m.admissions.Disposition(popupadmit.Handle(handle)); ok && d != popupadmit.Pending {
+		if d, ok := m.admissions.Disposition(ids.PageHandle(handle)); ok && d != popupadmit.Pending {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -337,7 +338,7 @@ func awaitAdmission(t *testing.T, m *Manager, handle string) {
 
 // popupOutcome answers what the thread shows of the popup next to its
 // opener's tab: 0 a live tab, 1 a crashed tab, 2 none, -1 anything else.
-func popupOutcome(m *Manager, access Access, opener string) (int, []PageInfo) {
+func popupOutcome(m *Manager, access Access, opener ids.PageHandle) (int, []PageInfo) {
 	pages := m.CompanionState(access.Caller()).Pages
 	m.mu.Lock()
 	livePopup := m.listedPageLocked("popup") != nil

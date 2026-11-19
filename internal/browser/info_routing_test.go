@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // suspendedURL answers the address the suspension saved for pageID.
@@ -78,13 +80,13 @@ type adoptingProfile struct {
 	onAttach, onViewport func()
 }
 
-func (p *adoptingProfile) AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+func (p *adoptingProfile) AttachPage(ctx context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	driver, err := p.NewPage(ctx, hooks)
 	if err != nil {
 		return nil, err
 	}
 	page := driver.(*fakePage)
-	page.handle = handle
+	page.handle = ids.PageHandle(handle)
 	if p.onViewport != nil {
 		var once sync.Once
 		page.viewportHook = func(int, int) { once.Do(p.onViewport) }
@@ -123,7 +125,7 @@ func TestAReportDuringAPopupAdoptionReachesItsTab(t *testing.T) {
 			} else {
 				profile.onViewport = report
 			}
-			manager.adoptPopup(enginePopup{Profile: profile.Handle(), Opener: paneHandle(manager, access, opener.ID), Handle: "popup", URL: "https://example.test/initial"})
+			manager.adoptPopup(enginePopup{Profile: profile.Handle(), Opener: driverHandle(manager, access, opener.ID), Handle: "popup", URL: "https://example.test/initial"})
 			manager.mu.Lock()
 			popup := manager.pageByHandleLocked("popup")
 			manager.mu.Unlock()
@@ -160,7 +162,7 @@ func TestAReportBeforeACreatedPageIsAttachedMovesItsFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.updatePageInfo(paneHandle(manager, access, page.ID), "https://example.test/older", "Older", 1)
+	manager.updatePageInfo(driverHandle(manager, access, page.ID), "https://example.test/older", "Older", 1)
 	if tab, _ := findTab(manager, access, page.ID); tab.URL != final {
 		t.Fatalf("the tab shows %q, want %q: an older report replaced the one made before the attach", tab.URL, final)
 	}
@@ -174,8 +176,8 @@ func TestHostedReportsBeforeTheAttachReachThePage(t *testing.T) {
 	endpoint := startFakeCDPEndpoint(t, nil, nil)
 	hosted, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
 		PageInfoChanged: manager.updatePageInfo,
-		PageClosed:      func(string) {},
-		PageCrashed:     func(string, string) {},
+		PageClosed:      func(ids.PageHandle) {},
+		PageCrashed:     func(ids.PageHandle, string) {},
 	})
 	hosted.attachTimeout = 5 * time.Second
 	if err := hosted.bind("page1", "TARGET-1", context.Background()); err != nil {

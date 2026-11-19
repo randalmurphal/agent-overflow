@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/browser/cdporder"
+	"agent-overflow/internal/browser/ids"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/fetch"
@@ -248,7 +249,7 @@ const browserLostReason = "browser process exited"
 // reportLost tells the Manager each of pages crashed with its browser, in
 // order: the page was not closed by anyone, so its tab stays, failed at its
 // address, and a tool call or its Reload restores it in a new browser.
-func (p *headlessProfile) reportLost(pages []string) {
+func (p *headlessProfile) reportLost(pages []ids.PageHandle) {
 	for _, handle := range pages {
 		p.engine.events.PageCrashed(handle, browserLostReason)
 	}

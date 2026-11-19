@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -12,7 +13,7 @@ import (
 // with a real in-process view implements it; the fake engine and the
 // launcher-hosted engine refuse by name.
 type engineKeyPress interface {
-	PressKey(handle string, chord keybindings.Accelerator) error
+	PressKey(handle ids.PageHandle, chord keybindings.Accelerator) error
 }
 
 // HarnessPressKey is the Harness receiver's door to engineKeyPress. It is

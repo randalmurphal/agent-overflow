@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -138,18 +139,18 @@ func (p *hostedPages) unsent(d *hostedDownload, attempt webview2host.CancelAttem
 // popupStart answers, for a download of page, the start naming the popup
 // it began in, that popup's openers, nearest first, and its profile, when
 // page is a popup the Manager has not listed; empty otherwise.
-func (p *hostedPages) popupStart(page hostedPageID) downloadStart {
+func (p *hostedPages) popupStart(page ids.PageHandle) downloadStart {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
 	if r == nil || !r.state.pendingPopup() {
 		return downloadStart{}
 	}
-	start := downloadStart{Popup: string(page), Profile: r.profile}
+	start := downloadStart{Popup: page, Profile: r.profile}
 	// Each opener is reported before its popups, so the chain ends; the
 	// bound stops a cycle all the same.
 	for opener := r.opener; opener != "" && len(start.Openers) <= len(p.records); {
-		start.Openers = append(start.Openers, string(opener))
+		start.Openers = append(start.Openers, opener)
 		next := p.records[opener]
 		if next == nil || next.opener == "" {
 			break

@@ -11,6 +11,7 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -48,7 +49,7 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 		return downloadAdmitted
 	}
 	engine.events.DownloadProgress = func(p downloadProgress) { note("%s %s %v", p.ID, p.State, p.Received) }
-	engine.events.PageClosed = func(handle string) { note("closed %s", handle) }
+	engine.events.PageClosed = func(handle ids.PageHandle) { note("closed %s", handle) }
 	entered, release := make(chan struct{}), make(chan struct{})
 	engine.backendPath = func(ctx context.Context, path string) (string, error) {
 		close(entered)
@@ -59,7 +60,9 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 		}
 		return testBackendPath(ctx, path)
 	}
-	queue := webview2host.NewReportQueue(engine.Report)
+	queue := webview2host.NewReportQueue(func(pageID string, kind webview2host.ReportKind, detail string) {
+		engine.Report(ids.PageHandle(pageID), kind, detail)
+	})
 	encode := func(report webview2host.DownloadReport) string {
 		t.Helper()
 		detail, err := report.Encode()
@@ -159,14 +162,14 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 	engine, _, recorder := newDownloadHostedEngine(t)
 	var mu sync.Mutex
 	var order []string
-	engine.events.PageClosed = func(handle string) {
+	engine.events.PageClosed = func(handle ids.PageHandle) {
 		mu.Lock()
-		order = append(order, "closed "+handle)
+		order = append(order, "closed "+string(handle))
 		mu.Unlock()
 	}
-	engine.events.PageCrashed = func(handle, _ string) {
+	engine.events.PageCrashed = func(handle ids.PageHandle, _ string) {
 		mu.Lock()
-		order = append(order, "closed "+handle)
+		order = append(order, "closed "+string(handle))
 		mu.Unlock()
 	}
 	recorder.mu.Lock()
@@ -197,7 +200,7 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 		// Its attach binds it.
 		bindTestPage(t, engine, "popup", "T-popup")
 	}
-	engine.Report(closes, kind, "render-process-exited")
+	engine.Report(ids.PageHandle(closes), kind, "render-process-exited")
 	time.Sleep(20 * time.Millisecond)
 	close(release)
 	settleReports(t, engine, "")
@@ -255,7 +258,7 @@ func TestAPagesOwnEndFollowsItsAcceptedReports(t *testing.T) {
 		"its renderer crashed": func(engine *hostedEngine) {
 			engine.targetCrashed(target.EventTargetCrashed{TargetID: "T-1"})
 		},
-		"its connection was lost": func(engine *hostedEngine) { engine.reportLost([]string{"page1"}) },
+		"its connection was lost": func(engine *hostedEngine) { engine.reportLost([]ids.PageHandle{"page1"}) },
 		"the launcher never reported its close": func(engine *hostedEngine) {
 			engine.closeFallback = time.Millisecond
 			engine.awaitLauncherClose("page1")
@@ -270,8 +273,8 @@ func TestAPagesOwnEndFollowsItsAcceptedReports(t *testing.T) {
 				order = append(order, what)
 				mu.Unlock()
 			}
-			engine.events.PageClosed = func(handle string) { note("ended " + handle) }
-			engine.events.PageCrashed = func(handle, _ string) { note("ended " + handle) }
+			engine.events.PageClosed = func(handle ids.PageHandle) { note("ended " + string(handle)) }
+			engine.events.PageCrashed = func(handle ids.PageHandle, _ string) { note("ended " + string(handle)) }
 			recorder.mu.Lock()
 			recorder.progressing = func(p downloadProgress) {
 				if p.State != downloadInProgress {

@@ -1,6 +1,10 @@
 package browser
 
-import "fmt"
+import (
+	"fmt"
+
+	"agent-overflow/internal/browser/ids"
+)
 
 // Read-only probes of hostedPages for tests.
 
@@ -17,7 +21,7 @@ func (p *hostedPages) running() int {
 
 // waiting answers the kinds and downloads of the work waiting on page's
 // lane, in order.
-func (p *hostedPages) waiting(page hostedPageID) []string {
+func (p *hostedPages) waiting(page ids.PageHandle) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out []string
@@ -31,7 +35,7 @@ func (p *hostedPages) waiting(page hostedPageID) []string {
 
 // laneOf answers the key of the lane page's work runs on now, and false
 // when it has none.
-func (p *hostedPages) laneOf(page hostedPageID) (hostedPageID, bool) {
+func (p *hostedPages) laneOf(page ids.PageHandle) (ids.PageHandle, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if lane := p.lanes.pages[page]; lane != nil {
@@ -48,7 +52,7 @@ func (p *hostedPages) busy() bool {
 }
 
 // state answers page's state, and false when it has no record.
-func (p *hostedPages) state(page hostedPageID) (hostedPageState, bool) {
+func (p *hostedPages) state(page ids.PageHandle) (hostedPageState, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if r := p.records[page]; r != nil {
@@ -58,7 +62,7 @@ func (p *hostedPages) state(page hostedPageID) (hostedPageState, bool) {
 }
 
 // cancelsOf answers the last cancel attempt sent for download id of page.
-func (p *hostedPages) cancelsOf(page hostedPageID, id hostedDownloadID) int {
+func (p *hostedPages) cancelsOf(page ids.PageHandle, id hostedDownloadID) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if r := p.records[page]; r != nil && r.downloads[id] != nil {
@@ -68,7 +72,7 @@ func (p *hostedPages) cancelsOf(page hostedPageID, id hostedDownloadID) int {
 }
 
 // endedOf counts page's kept ended ids, and runs whether id runs there.
-func (p *hostedPages) endedOf(page hostedPageID, id hostedDownloadID) (ended int, runs bool) {
+func (p *hostedPages) endedOf(page ids.PageHandle, id hostedDownloadID) (ended int, runs bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]

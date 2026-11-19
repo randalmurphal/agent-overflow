@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The ends of a headless profile's browser, tested against plain contexts
@@ -40,14 +42,14 @@ func newLifetimeProfile(t *testing.T) *lifetimeProfile {
 	lp.engine = &headlessEngine{
 		logf:        func(format string, args ...any) { t.Logf(format, args...) },
 		profiles:    make(map[*headlessProfile]struct{}),
-		pageProfile: make(map[string]*headlessProfile),
-		events: engineEvents{PageCrashed: func(handle, reason string) {
+		pageProfile: make(map[ids.PageHandle]*headlessProfile),
+		events: engineEvents{PageCrashed: func(handle ids.PageHandle, reason string) {
 			if reason != browserLostReason {
 				t.Errorf("page %s lost with reason %q", handle, reason)
 			}
 			lp.mu.Lock()
 			defer lp.mu.Unlock()
-			lp.closed = append(lp.closed, handle)
+			lp.closed = append(lp.closed, string(handle))
 		}},
 	}
 	lp.headlessProfile = &headlessProfile{engine: lp.engine, handle: "workspace-1"}
@@ -165,7 +167,7 @@ func TestAPageBindsOnlyToTheConnectedBrowser(t *testing.T) {
 		t.Error("a page of a lost browser was bound")
 	}
 	for handle, want := range map[string]bool{"page-a": true, "page-other": false, "page-late": false} {
-		if _, bound := lp.engine.profileForPage(handle); bound != want {
+		if _, bound := lp.engine.profileForPage(ids.PageHandle(handle)); bound != want {
 			t.Errorf("page %s bound = %v, want %v", handle, bound, want)
 		}
 	}

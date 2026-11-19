@@ -14,6 +14,8 @@ import (
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // eventStep is one CDP event fed to a handler, named for failure messages.
@@ -225,19 +227,19 @@ func (r *popupRecorder) events() engineEvents {
 	return engineEvents{
 		PopupOpened: func(popup enginePopup) {
 			r.mu.Lock()
-			r.opened[popup.Handle] = popup
+			r.opened[string(popup.Handle)] = popup
 			r.mu.Unlock()
 			r.changed <- struct{}{}
 		},
-		PageClosed: func(handle string) {
+		PageClosed: func(handle ids.PageHandle) {
 			r.mu.Lock()
-			r.closed[handle]++
+			r.closed[string(handle)]++
 			r.mu.Unlock()
 			r.changed <- struct{}{}
 		},
-		PageInfoChanged: func(handle, url, title string, _ uint64) {
+		PageInfoChanged: func(handle ids.PageHandle, url, title string, _ uint64) {
 			r.mu.Lock()
-			r.infos[handle] = append(r.infos[handle], url)
+			r.infos[string(handle)] = append(r.infos[string(handle)], url)
 			r.mu.Unlock()
 		},
 	}
@@ -277,7 +279,7 @@ func newTargetTestProfile(t *testing.T, events engineEvents) *headlessProfile {
 	t.Helper()
 	engine := &headlessEngine{
 		events: events, logf: t.Logf,
-		profiles: make(map[*headlessProfile]struct{}), pageProfile: make(map[string]*headlessProfile),
+		profiles: make(map[*headlessProfile]struct{}), pageProfile: make(map[ids.PageHandle]*headlessProfile),
 	}
 	p := &headlessProfile{engine: engine, handle: "profile"}
 	engine.profiles[p] = struct{}{}
@@ -416,9 +418,9 @@ func TestHeadlessReportsAPopupsEndsAsTheyAreHandled(t *testing.T) {
 		mu.Unlock()
 	}
 	p := newTargetTestProfile(t, engineEvents{
-		PopupOpened: func(opened enginePopup) { record("opened " + opened.Handle) },
-		PageClosed:  func(handle string) { record("closed " + handle) },
-		PageCrashed: func(handle, reason string) { record("crashed " + handle) },
+		PopupOpened: func(opened enginePopup) { record("opened " + string(opened.Handle)) },
+		PageClosed:  func(handle ids.PageHandle) { record("closed " + string(handle)) },
+		PageCrashed: func(handle ids.PageHandle, reason string) { record("crashed " + string(handle)) },
 	})
 	heard := func() []string {
 		mu.Lock()
@@ -500,9 +502,9 @@ func TestHeadlessPopupDownloadSettlesInAnyOrder(t *testing.T) {
 		var got outcome
 		p := newTargetTestProfile(t, engineEvents{
 			PopupOpened: func(enginePopup) {},
-			PageClosed:  func(string) {},
+			PageClosed:  func(ids.PageHandle) {},
 			DownloadStarted: func(start downloadStart) downloadAdmission {
-				ok := start.Popup == popup && slices.Equal(start.Openers, []string{opener})
+				ok := start.Popup == popup && slices.Equal(start.Openers, []ids.PageHandle{opener})
 				mu.Lock()
 				got.admitted = got.admitted || ok
 				mu.Unlock()
@@ -575,7 +577,7 @@ func TestHeadlessTargetsNumberHeldInfoFirst(t *testing.T) {
 	inHeld, releaseHeld := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	orders := map[string]uint64{}
-	events := engineEvents{PageInfoChanged: func(handle, url, title string, order uint64) {
+	events := engineEvents{PageInfoChanged: func(handle ids.PageHandle, url, title string, order uint64) {
 		if url == "https://held.test/" {
 			close(inHeld)
 			<-releaseHeld

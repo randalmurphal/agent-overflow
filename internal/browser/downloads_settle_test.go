@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // settleRig starts a download on a page of an engine keeping downloads as
@@ -82,7 +84,7 @@ func TestAParkedDownloadStoppedAndThenRefusedIsCanceledOnce(t *testing.T) {
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadInProgress, maxDownloadBytes+1))
 	awaitRemoved(t, file)
-	manager.removeClosedPage(opener)
+	manager.removeClosedPage(ids.PageHandle(opener))
 	manager.removeClosedPage("popup")
 	time.Sleep(50 * time.Millisecond)
 	if got := engine.cancels(); len(got) != 1 {

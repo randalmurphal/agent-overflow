@@ -9,11 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/procutil"
 )
 
@@ -103,7 +104,7 @@ type headlessEngine struct {
 	// pageProfile is the only engine-wide page bookkeeping: DiscardPage
 	// and the popup path address a page by handle with no profile in hand,
 	// and a target this engine never bound must not be closed as one.
-	pageProfile map[string]*headlessProfile
+	pageProfile map[ids.PageHandle]*headlessProfile
 	// ownerWait bounds a paused request's wait for its owner
 	// (awaitRequestOwner); zero is requestOwnerWait.
 	ownerWait time.Duration
@@ -129,7 +130,7 @@ func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, e
 		logf:         log.Printf,
 		closeTimeout: chromiumCloseTimeout,
 		profiles:     make(map[*headlessProfile]struct{}),
-		pageProfile:  make(map[string]*headlessProfile),
+		pageProfile:  make(map[ids.PageHandle]*headlessProfile),
 	}, nil
 }
 
@@ -263,7 +264,7 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 // DiscardPage closes a page the Manager declined to adopt — always a popup
 // Chromium opened by itself, since every other page is one the Manager
 // asked for.
-func (e *headlessEngine) DiscardPage(ctx context.Context, handle string) error {
+func (e *headlessEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
 	if p, ok := e.profileForPage(handle); ok {
 		return p.closeTarget(ctx, handle)
 	}
@@ -273,7 +274,7 @@ func (e *headlessEngine) DiscardPage(ctx context.Context, handle string) error {
 // bindPage records which profile a page belongs to. Reported by the
 // profile's own event stream and by NewPage, so a target that arrived from
 // nowhere is never addressable.
-func (e *headlessEngine) bindPage(handle string, p *headlessProfile) {
+func (e *headlessEngine) bindPage(handle ids.PageHandle, p *headlessProfile) {
 	e.mu.Lock()
 	e.pageProfile[handle] = p
 	e.mu.Unlock()
@@ -282,7 +283,7 @@ func (e *headlessEngine) bindPage(handle string, p *headlessProfile) {
 // unbindPage drops a page and reports whether this engine had it, which is
 // what stops a destroyed target nobody owns from being reported as a page
 // the Manager lost.
-func (e *headlessEngine) unbindPage(handle string) bool {
+func (e *headlessEngine) unbindPage(handle ids.PageHandle) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, known := e.pageProfile[handle]
@@ -290,7 +291,7 @@ func (e *headlessEngine) unbindPage(handle string) bool {
 	return known
 }
 
-func (e *headlessEngine) profileForPage(handle string) (*headlessProfile, bool) {
+func (e *headlessEngine) profileForPage(handle ids.PageHandle) (*headlessProfile, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p, ok := e.pageProfile[handle]
@@ -300,10 +301,10 @@ func (e *headlessEngine) profileForPage(handle string) (*headlessProfile, bool) 
 // pagesOf TAKES every page bound to a profile, unbinding each as it goes.
 // Taking rather than reading, because the caller is about to report them
 // closed and a second caller must not report the same page a second time.
-func (e *headlessEngine) pagesOf(p *headlessProfile) []string {
+func (e *headlessEngine) pagesOf(p *headlessProfile) []ids.PageHandle {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	var handles []string
+	var handles []ids.PageHandle
 	for handle, owner := range e.pageProfile {
 		if owner == p {
 			handles = append(handles, handle)
@@ -312,7 +313,7 @@ func (e *headlessEngine) pagesOf(p *headlessProfile) []string {
 	}
 	// Sorted, so a profile that lost several pages reports them in one
 	// order rather than in map order.
-	sort.Strings(handles)
+	slices.Sort(handles)
 	return handles
 }
 

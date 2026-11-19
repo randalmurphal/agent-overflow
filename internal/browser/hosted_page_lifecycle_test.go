@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
@@ -88,7 +89,7 @@ func TestADiscardKeepsAPopupsReceivedCompletion(t *testing.T) {
 	sendDownload(t, l.engine, popupID, completedAt("dl-popup", "popup.bin"))
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if err := l.engine.DiscardPage(ctx, popupID); !errors.Is(err, errDiscardPending) || !errors.Is(err, context.DeadlineExceeded) {
+	if err := l.engine.DiscardPage(ctx, ids.PageHandle(popupID)); !errors.Is(err, errDiscardPending) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("a discard behind a blocked lane answered %v, want it pending", err)
 	}
 	unblock()
@@ -98,7 +99,7 @@ func TestADiscardKeepsAPopupsReceivedCompletion(t *testing.T) {
 		t.Fatalf("the thread lists %v, want both completions", listed)
 	}
 	settleReports(t, l.engine, "")
-	if _, kept := l.engine.pages.state(hostedPageID(popupID)); kept {
+	if _, kept := l.engine.pages.state(ids.PageHandle(popupID)); kept {
 		t.Fatal("the discarded popup's record stayed")
 	}
 }
@@ -199,7 +200,7 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 					t.Fatal("the Manager listed a popup whose close was received")
 				}
 				if gated == "history" {
-					if d, _ := l.manager.admissions.Disposition(popupadmit.Handle(popupID)); d == popupadmit.Ended {
+					if d, _ := l.manager.admissions.Disposition(ids.PageHandle(popupID)); d == popupadmit.Ended {
 						break
 					}
 				}
@@ -241,7 +242,7 @@ func TestListedPopupsDoNotShareTheirOpenersLane(t *testing.T) {
 	entered, unblock := blockPath(t, l.engine, "a.bin")
 	sendDownload(t, l.engine, a, completedAt("dl-a", "a.bin"))
 	awaitClosed(t, entered, "popup a's path conversion")
-	if lane, ok := l.engine.pages.laneOf(hostedPageID(a)); !ok || lane != hostedPageID(a) {
+	if lane, ok := l.engine.pages.laneOf(ids.PageHandle(a)); !ok || lane != ids.PageHandle(a) {
 		t.Fatalf("listed popup a runs on lane %q (%v), want its own", lane, ok)
 	}
 
@@ -330,7 +331,7 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 				}
 				release()
 				deadline := time.Now().Add(hostedTestDeadline)
-				for l.engine.pages.admits(hostedPageID(popupID)) {
+				for l.engine.pages.admits(ids.PageHandle(popupID)) {
 					if time.Now().After(deadline) {
 						t.Fatal("the Manager never discarded the popup")
 					}

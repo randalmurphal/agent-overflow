@@ -393,13 +393,13 @@ func TestABlankPageWithNoPaneColorHasNoBase(t *testing.T) {
 func TestAPageNotInItsTabsIsToldNoBase(t *testing.T) {
 	manager, log, access, firstID, _, _ := newBaseManager(t, false)
 	listed := ownedPage(t, manager, access, firstID)
-	waitForBase(t, log, listed.driver.Handle(), documentBase)
-	_, before := log.of(listed.driver.Handle())
+	waitForBase(t, log, string(listed.driver.Handle()), documentBase)
+	_, before := log.of(string(listed.driver.Handle()))
 	unlisted := newManagedPage(access.tb, access.Caller())
 	unlisted.attach(listed.driver)
 	unlisted.info.URL = "https://example.test/unlisted"
 	manager.applyPageBase(unlisted)
-	if _, after := log.of(listed.driver.Handle()); after != before {
+	if _, after := log.of(string(listed.driver.Handle())); after != before {
 		t.Fatalf("a page not in its tabs was told %d bases", after-before)
 	}
 }

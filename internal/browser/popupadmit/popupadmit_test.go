@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // What ended a popup before its listing decides the listing, whatever the
@@ -118,12 +120,12 @@ func TestAncestorsFollowTheOpenerChain(t *testing.T) {
 	r.Announce("parent", "grandparent")
 	r.Announce("grandparent", "tab")
 	r.Discard("parent")
-	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), []Handle{"parent", "grandparent", "tab"}) {
+	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), []ids.PageHandle{"parent", "grandparent", "tab"}) {
 		t.Fatalf("ancestors = %v", got)
 	}
 	r.Announce("x", "y")
 	r.Announce("y", "x")
-	if got := r.Ancestors("x"); !got.Known() || !slices.Equal(got.Chain(), []Handle{"y"}) {
+	if got := r.Ancestors("x"); !got.Known() || !slices.Equal(got.Chain(), []ids.PageHandle{"y"}) {
 		t.Fatalf("ancestors in a cycle = %v", got)
 	}
 	if got := r.Ancestors("stranger"); got.Known() || got.Chain() != nil {
@@ -144,7 +146,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 	r.Announce("child", "parent")
 	churn := func(prefix string) {
 		for i := range 8 * limit {
-			h := Handle(fmt.Sprintf("%s-%d", prefix, i))
+			h := ids.PageHandle(fmt.Sprintf("%s-%d", prefix, i))
 			r.Announce(h, "elsewhere")
 			if i%2 == 0 {
 				r.Discard(h)
@@ -155,7 +157,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 		}
 	}
 	churn("a")
-	want := []Handle{"parent", "tab"}
+	want := []ids.PageHandle{"parent", "tab"}
 	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), want) {
 		t.Fatalf("after turnover, the pending child's ancestors are %v, want %v", got, want)
 	}
@@ -189,11 +191,11 @@ func TestAPopupOfAnEndedOpenerKeepsItsChain(t *testing.T) {
 	r.Discard("parent")
 	r.Announce("late", "parent")
 	for i := range 4 * limit {
-		h := Handle(fmt.Sprintf("other-%d", i))
+		h := ids.PageHandle(fmt.Sprintf("other-%d", i))
 		r.Announce(h, "elsewhere")
 		r.Discard(h)
 	}
-	if got := r.Ancestors("late"); !got.Known() || !slices.Equal(got.Chain(), []Handle{"parent", "tab"}) {
+	if got := r.Ancestors("late"); !got.Known() || !slices.Equal(got.Chain(), []ids.PageHandle{"parent", "tab"}) {
 		t.Fatalf("the late popup's ancestors are %v", got)
 	}
 }

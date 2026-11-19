@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
@@ -24,10 +25,6 @@ import (
 // its later work runs on its own lane after what it already has drains. A
 // popup's announcement is processed at receipt (popupReported), so it
 // never waits behind a lane.
-
-// hostedPageID is a launcher page id: a hosted page's, or a popup's the
-// launcher reported. The report path converts it once, at Report.
-type hostedPageID string
 
 // acceptedKind is the report an acceptedWork came from.
 type acceptedKind int
@@ -51,7 +48,7 @@ const (
 // snapshot's work always has its download's record.
 type acceptedWork struct {
 	kind     acceptedKind
-	page     hostedPageID
+	page     ids.PageHandle
 	snapshot webview2host.DownloadReport
 	download *hostedDownload
 	crash    string
@@ -72,24 +69,24 @@ func (w *acceptedWork) progressOf() (hostedDownloadKey, bool) {
 // order received, on a goroutine that exists only while work waits.
 // Guarded by hostedPages.mu.
 type reportLane struct {
-	key  hostedPageID
+	key  ids.PageHandle
 	jobs []*acceptedWork
 	// progress is each waiting running snapshot a newer one replaces in its
 	// place, by download.
 	progress map[hostedDownloadKey]*acceptedWork
 	// pages are the pages whose work the lane holds; each keeps the lane
 	// until it goes idle.
-	pages []hostedPageID
+	pages []ids.PageHandle
 	busy  bool
 }
 
 // reportLanes are the lanes of one run, until Stop. Guarded by
 // hostedPages.mu.
 type reportLanes struct {
-	byKey map[hostedPageID]*reportLane
+	byKey map[ids.PageHandle]*reportLane
 	// pages is the lane each page's work runs on while that lane is busy, so
 	// a popup listed meanwhile keeps its order behind what it already sent.
-	pages map[hostedPageID]*reportLane
+	pages map[ids.PageHandle]*reportLane
 	// ctx ends at Stop, which ends a path conversion under way; workers
 	// counts the lane goroutines, which Stop joins.
 	ctx     context.Context
@@ -101,8 +98,8 @@ type reportLanes struct {
 func newReportLanes() *reportLanes {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &reportLanes{
-		byKey:   make(map[hostedPageID]*reportLane),
-		pages:   make(map[hostedPageID]*reportLane),
+		byKey:   make(map[ids.PageHandle]*reportLane),
+		pages:   make(map[ids.PageHandle]*reportLane),
 		ctx:     ctx,
 		cancel:  cancel,
 		workers: new(sync.WaitGroup),
@@ -113,7 +110,7 @@ func newReportLanes() *reportLanes {
 // already has work on, else, for a popup the Manager has not listed, the
 // lane of its nearest opener that has one or is no such popup, else its
 // own. The caller holds p.mu.
-func (p *hostedPages) laneLocked(page hostedPageID) *reportLane {
+func (p *hostedPages) laneLocked(page ids.PageHandle) *reportLane {
 	lanes := p.lanes
 	if lane := lanes.pages[page]; lane != nil {
 		return lane
@@ -219,7 +216,7 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	case acceptedDiscard:
 		e.retirePage(w.page, popupDiscardedReason, false)
 	case acceptedCrash:
-		e.events.PageCrashed(string(w.page), w.crash)
+		e.events.PageCrashed(w.page, w.crash)
 	default:
 		panic(fmt.Sprintf("browser: accepted work of unknown kind %d", w.kind))
 	}
@@ -230,14 +227,14 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 // Manager's admission, so its listing is refused; the page retires on its
 // lane after its work already received (retirePage). Its attach and its
 // wait for the close end now.
-func (e *hostedEngine) acceptClose(page hostedPageID) {
+func (e *hostedEngine) acceptClose(page ids.PageHandle) {
 	receipt := e.pages.acceptEnd(page, acceptedClose, "")
 	if !receipt.accepted {
 		return
 	}
 	e.endPageWaits(page)
 	if receipt.pendingPopup {
-		e.events.PageEndReceived(string(page), popupadmit.Closed())
+		e.events.PageEndReceived(page, popupadmit.Closed())
 	}
 }
 
@@ -245,20 +242,20 @@ func (e *hostedEngine) acceptClose(page hostedPageID) {
 // Manager hears after the page's work already received
 // (engineEvents.PageCrashed); a popup the Manager has not listed is
 // recorded crashed in its admission now.
-func (e *hostedEngine) acceptCrash(page hostedPageID, reason string) {
+func (e *hostedEngine) acceptCrash(page ids.PageHandle, reason string) {
 	receipt := e.pages.acceptEnd(page, acceptedCrash, reason)
 	if receipt.accepted && receipt.pendingPopup {
-		e.events.PageEndReceived(string(page), popupadmit.Crashed(reason))
+		e.events.PageEndReceived(page, popupadmit.Crashed(reason))
 	}
 }
 
 // endPageWaits ends what page waits for as it goes: its popup attach and
 // its wait for the launcher's close (awaitLauncherClose).
-func (e *hostedEngine) endPageWaits(page hostedPageID) {
+func (e *hostedEngine) endPageWaits(page ids.PageHandle) {
 	e.mu.Lock()
-	e.endCloseFallbackLocked(string(page))
+	e.endCloseFallbackLocked(page)
 	var cancelAttach func()
-	if popup := e.popups[string(page)]; popup != nil {
+	if popup := e.popups[page]; popup != nil {
 		cancelAttach = popup.takeAttachCancelLocked()
 	}
 	e.mu.Unlock()

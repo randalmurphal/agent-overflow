@@ -4,6 +4,8 @@ import (
 	"sync"
 
 	"github.com/chromedp/cdproto/target"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // maxKnownTargets bounds the known targets and the opener edges a
@@ -164,24 +166,36 @@ func (t *cdpTargets) isKnownLocked(id target.ID) bool {
 // when frame is a known popup, and frame alone otherwise. A gone popup's
 // edge is no authority for a request.
 func (t *cdpTargets) owners(frame string) []string {
-	return t.chain(frame, false)
+	chain := t.chain(frame, false)
+	owners := make([]string, len(chain))
+	for i, id := range chain {
+		owners[i] = string(id)
+	}
+	return owners
 }
 
-// downloadOwners is owners following gone popups' edges too: a download
-// Chromium starts in a popup reaches its handler in no fixed order with
-// the popup's destroy, and its start names the popup and its openers
-// either way.
-func (t *cdpTargets) downloadOwners(frame string) []string {
-	return t.chain(frame, true)
+// downloadOwners is owners following gone popups' edges too, as the
+// handles of the pages they are: a download Chromium starts in a popup
+// reaches its handler in no fixed order with the popup's destroy, and its
+// start names the popup and its openers either way.
+func (t *cdpTargets) downloadOwners(frame string) []ids.PageHandle {
+	chain := t.chain(frame, true)
+	owners := make([]ids.PageHandle, len(chain))
+	for i, id := range chain {
+		owners[i] = ids.PageHandle(id)
+	}
+	return owners
 }
 
-func (t *cdpTargets) chain(frame string, gone bool) []string {
+// chain answers frame's target followed by the targets that opened it,
+// nearest first.
+func (t *cdpTargets) chain(frame string, gone bool) []target.ID {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	owners := []string{frame}
+	chain := []target.ID{target.ID(frame)}
 	// A popup has one opener, so the chain is at most every recorded popup
 	// long; the bound stops a cycle.
-	for id := target.ID(frame); len(owners) <= t.openers.len()+t.gone.len(); {
+	for id := chain[0]; len(chain) <= t.openers.len()+t.gone.len(); {
 		opener, _ := t.openers.get(id)
 		if opener == "" && gone {
 			opener, _ = t.gone.get(id)
@@ -189,10 +203,10 @@ func (t *cdpTargets) chain(frame string, gone bool) []string {
 		if opener == "" {
 			break
 		}
-		owners = append(owners, string(opener))
+		chain = append(chain, opener)
 		id = opener
 	}
-	return owners
+	return chain
 }
 
 // retained reports how many target ids the record keeps.

@@ -22,6 +22,7 @@ import (
 	"unsafe"
 
 	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
 )
@@ -294,7 +295,7 @@ func aoWKVPageCrashed(pageID, popupID, profileID C.uint64_t) {
 // its page's handle once the view answers to one, and before that, for a
 // popup, the handle its number gives it, which its adoption keeps
 // (pageHandle). The Manager records either at once (engineEvents).
-func wkViewOwner(pageID, popupID, profileID uint64) (engineEvents, string, bool) {
+func wkViewOwner(pageID, popupID, profileID uint64) (engineEvents, ids.PageHandle, bool) {
 	if page := wkLookupPage(pageID); page != nil {
 		return page.engine.events, page.handle, true
 	}
@@ -315,7 +316,7 @@ func wkViewOwner(pageID, popupID, profileID uint64) (engineEvents, string, bool)
 //export aoWKVPopup
 func aoWKVPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := wkTakeString(uri)
-	var opener string
+	var opener ids.PageHandle
 	if page := wkLookupPage(uint64(openerID)); page != nil {
 		opener = page.handle
 	} else if openerPopup != 0 {

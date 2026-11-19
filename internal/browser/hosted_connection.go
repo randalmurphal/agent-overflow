@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/cdporder"
+	"agent-overflow/internal/browser/ids"
 
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
@@ -35,7 +36,7 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// must not wait on this attach.
 	e.mu.Lock()
 	lost := e.browserCtx
-	var pages []string
+	var pages []ids.PageHandle
 	if lost != nil {
 		pages = e.claimLostLocked(lost)
 	}
@@ -142,7 +143,7 @@ func (e *hostedEngine) watchBrowser(browserCtx context.Context) {
 // whichever of the watcher and the next attach claims first, and a page of
 // another connection never is. The caller holds e.mu and reports the pages
 // (reportLost).
-func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
+func (e *hostedEngine) claimLostLocked(conn context.Context) []ids.PageHandle {
 	if e.browserCtx == conn {
 		// The allocator is cancelled nowhere else.
 		e.allocCancel()
@@ -150,7 +151,7 @@ func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
 		// Its targets went with it.
 		e.targets = e.newTargets()
 	}
-	var pages []string
+	var pages []ids.PageHandle
 	for pageID, pageConn := range e.pageConn {
 		if pageConn == conn {
 			pages = append(pages, pageID)
@@ -163,9 +164,9 @@ func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
 
 // reportLost reports pages, claimed from a lost connection, crashed, each
 // after the reports already accepted for it (acceptCrash).
-func (e *hostedEngine) reportLost(pages []string) {
+func (e *hostedEngine) reportLost(pages []ids.PageHandle) {
 	for _, pageID := range pages {
-		e.acceptCrash(hostedPageID(pageID), connectionLostReason)
+		e.acceptCrash(pageID, connectionLostReason)
 	}
 }
 
@@ -227,7 +228,7 @@ func (e *hostedEngine) subscribe(browserCtx context.Context, targets *cdpTargets
 // (acceptCrash), so it overtakes no download's end.
 func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
-		e.acceptCrash(hostedPageID(pageID), cdpCrashReason(event))
+		e.acceptCrash(pageID, cdpCrashReason(event))
 	}
 }
 
@@ -245,7 +246,7 @@ func (e *hostedEngine) targetDestroyed(targets *cdpTargets, event target.EventTa
 // retires the page on its lane, after its reports already accepted and
 // never on the goroutine reading target events: retirePage ends in the
 // Manager's teardown.
-func (e *hostedEngine) awaitLauncherClose(pageID string) {
+func (e *hostedEngine) awaitLauncherClose(pageID ids.PageHandle) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, waiting := e.closeFallbacks[pageID]; waiting {
@@ -254,13 +255,13 @@ func (e *hostedEngine) awaitLauncherClose(pageID string) {
 	wait := e.closeFallback
 	e.closeFallbacks[pageID] = time.AfterFunc(wait, func() {
 		e.logf("browser: pane page %s lost its target and the launcher reported no close within %v", pageID, wait)
-		e.acceptClose(hostedPageID(pageID))
+		e.acceptClose(pageID)
 	})
 }
 
 // endCloseFallbackLocked ends the wait for pageID's close, which has come
 // or is no longer needed. The caller holds e.mu.
-func (e *hostedEngine) endCloseFallbackLocked(pageID string) {
+func (e *hostedEngine) endCloseFallbackLocked(pageID ids.PageHandle) {
 	if timer, waiting := e.closeFallbacks[pageID]; waiting {
 		timer.Stop()
 		delete(e.closeFallbacks, pageID)
@@ -276,7 +277,7 @@ func (e *hostedEngine) targetInfoChanged(targets *cdpTargets, event target.Event
 	if info == nil || info.Type != "page" {
 		return
 	}
-	var pageID string
+	var pageID ids.PageHandle
 	order, ok := targets.changed(info, func() bool {
 		var found bool
 		pageID, found = e.pageForTarget(string(info.TargetID))
@@ -289,7 +290,7 @@ func (e *hostedEngine) targetInfoChanged(targets *cdpTargets, event target.Event
 
 // takeTargetInfo delivers the info held for targetID to pageID, a page that
 // has just come to answer to it.
-func (e *hostedEngine) takeTargetInfo(pageID, targetID string) {
+func (e *hostedEngine) takeTargetInfo(pageID ids.PageHandle, targetID string) {
 	if info, order, ok := e.currentTargets().takeHeld(target.ID(targetID)); ok {
 		e.events.PageInfoChanged(pageID, info.URL, info.Title, order)
 	}

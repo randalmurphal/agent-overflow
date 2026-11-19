@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -11,7 +12,7 @@ import (
 // arrives while the page's create waits, while a popup waits for the
 // Manager, or after the page is bound; any other page id is not one this
 // engine holds.
-func (e *hostedEngine) noteFindUnavailable(pageID string) {
+func (e *hostedEngine) noteFindUnavailable(pageID ids.PageHandle) {
 	e.mu.Lock()
 	_, creating := e.pending[pageID]
 	_, popup := e.popups[pageID]
@@ -39,7 +40,7 @@ func (p *hostedPage) FindMode() string {
 // FindStart opens the page's find bar in the launcher. The bar counts and
 // steps itself, so there is no answer to wait for.
 func (p *hostedPage) FindStart(_ context.Context, query string) (findResult, error) {
-	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFind, PageID: p.id, Query: query}) {
+	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFind, PageID: string(p.id), Query: query}) {
 		return findResult{}, errors.New("browser: pane host refused the find directive")
 	}
 	return findResult{}, nil
@@ -50,7 +51,7 @@ func (p *hostedPage) FindStep(context.Context, bool) (findResult, error) {
 }
 
 func (p *hostedPage) FindStop(context.Context) error {
-	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFindStop, PageID: p.id}) {
+	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFindStop, PageID: string(p.id)}) {
 		return errors.New("browser: pane host refused the find-stop directive")
 	}
 	return nil

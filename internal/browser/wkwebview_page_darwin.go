@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // One WKWebView, driven entirely through JavaScript. WKWebView exposes no
@@ -55,14 +57,14 @@ type wkPage struct {
 	engine  *wkEngine
 	profile *wkProfile
 	id      uint64
-	handle  string
+	handle  ids.PageHandle
 	hooks   pageHooks
 	view    unsafe.Pointer
 	slot    int
 	// popup is the handle the page was adopted under when WebKit opened it
 	// as a popup, and opener the handle of the page that opened it; both
 	// empty otherwise. Set before the view answers to the page.
-	popup, opener string
+	popup, opener ids.PageHandle
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -88,12 +90,12 @@ func (p *wkPage) Lifetime() context.Context { return p.ctx }
 
 // liveView is the view as an operation reaches it: refused once the page
 // closed (wkView.do).
-func (p *wkPage) liveView() wkView { return wkView{ptr: p.view, life: p.ctx} }
-func (p *wkPage) Handle() string   { return p.handle }
+func (p *wkPage) liveView() wkView       { return wkView{ptr: p.view, life: p.ctx} }
+func (p *wkPage) Handle() ids.PageHandle { return p.handle }
 
 // OwnsFrame answers for this page's own handle: this engine addresses every
 // event by page, so a page's only frame identity is itself.
-func (p *wkPage) OwnsFrame(frame string) bool { return frame == p.handle }
+func (p *wkPage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
 
 // ReadOnlyCaveat is non-empty because WKWebView has no equivalent of CDP's
 // throwOnSideEffect: the expression is evaluated as written. The Manager carries

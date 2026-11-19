@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -16,7 +17,7 @@ type hostedScaleRecorder struct {
 	asked []viewScale
 }
 
-func (r *hostedScaleRecorder) record(_ string, want viewScale) {
+func (r *hostedScaleRecorder) record(_ ids.PageHandle, want viewScale) {
 	r.mu.Lock()
 	r.asked = append(r.asked, want)
 	r.mu.Unlock()

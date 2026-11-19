@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 )
 
@@ -32,9 +33,9 @@ func (m *Manager) popupOpened(popup enginePopup) {
 // close for its listing, which it vetoes; the teardown runs either way
 // (removeClosedPage), which for a popup never listed lists what it
 // downloaded in its opener's tab at once.
-func (m *Manager) pageClosed(handle string) {
+func (m *Manager) pageClosed(handle ids.PageHandle) {
 	m.pageEnds.report(handle, func() bool {
-		m.admissions.Observe(popupadmit.Handle(handle), popupadmit.Closed())
+		m.admissions.Observe(handle, popupadmit.Closed())
 		return true
 	}, func() { m.removeClosedPage(handle) })
 }
@@ -42,8 +43,8 @@ func (m *Manager) pageClosed(handle string) {
 // pageEndReceived is engineEvents.PageEndReceived: the close or crash is
 // recorded in the popup's admission now; its PageClosed or PageCrashed
 // follows and acts.
-func (m *Manager) pageEndReceived(handle string, end popupadmit.Observation) {
-	m.admissions.Observe(popupadmit.Handle(handle), end)
+func (m *Manager) pageEndReceived(handle ids.PageHandle, end popupadmit.Observation) {
+	m.admissions.Observe(handle, end)
 }
 
 // listingDriver is a page driver whose engine schedules a popup's work by
@@ -56,9 +57,9 @@ type listingDriver interface {
 // pageCrashedReport is engineEvents.PageCrashed. A popup not listed yet
 // keeps the crash for its listing, which lists it crashed unless it also
 // closed; any other page is handled as a crashed tab (pageCrashed).
-func (m *Manager) pageCrashedReport(handle, reason string) {
+func (m *Manager) pageCrashedReport(handle ids.PageHandle, reason string) {
 	m.pageEnds.report(handle, func() bool {
-		return m.admissions.Observe(popupadmit.Handle(handle), popupadmit.Crashed(reason)) == popupadmit.Unheld
+		return m.admissions.Observe(handle, popupadmit.Crashed(reason)) == popupadmit.Unheld
 	}, func() { m.pageCrashed(handle, reason) })
 }
 
@@ -68,20 +69,20 @@ func (m *Manager) pageCrashedReport(handle, reason string) {
 // apart, so one page's teardown never waits for another's.
 type pageEndQueue struct {
 	mu   sync.Mutex
-	jobs map[string][]func()
+	jobs map[ids.PageHandle][]func()
 }
 
 // report records a report of page handle (record, which answers whether
 // it leaves work to do) and queues that work behind the page's earlier
 // work, in one hold, so the work runs in the order the records were made.
-func (q *pageEndQueue) report(handle string, record func() bool, work func()) {
+func (q *pageEndQueue) report(handle ids.PageHandle, record func() bool, work func()) {
 	q.mu.Lock()
 	if !record() {
 		q.mu.Unlock()
 		return
 	}
 	if q.jobs == nil {
-		q.jobs = make(map[string][]func())
+		q.jobs = make(map[ids.PageHandle][]func())
 	}
 	queued, running := q.jobs[handle]
 	q.jobs[handle] = append(queued, work)
@@ -92,7 +93,7 @@ func (q *pageEndQueue) report(handle string, record func() bool, work func()) {
 }
 
 // run does the queued work of handle until none is left.
-func (q *pageEndQueue) run(handle string) {
+func (q *pageEndQueue) run(handle ids.PageHandle) {
 	for {
 		q.mu.Lock()
 		jobs := q.jobs[handle]
@@ -119,7 +120,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 // announcePopup registers popup's admission and answers false for a popup
 // reported before.
 func (m *Manager) announcePopup(popup enginePopup) bool {
-	if !m.admissions.Announce(popupadmit.Handle(popup.Handle), popupadmit.Handle(popup.Opener)) {
+	if !m.admissions.Announce(popup.Handle, popup.Opener) {
 		log.Printf("browser: popup %s reported twice", popup.Handle)
 		return false
 	}
@@ -223,7 +224,7 @@ func (m *Manager) runAdoption(popup enginePopup) {
 		driver.Close()
 		return
 	}
-	verdict := m.admissions.Commit(popupadmit.Handle(popup.Handle))
+	verdict := m.admissions.Commit(popup.Handle)
 	switch verdict.Kind() {
 	case popupadmit.List:
 	case popupadmit.ListCrashed:
@@ -293,7 +294,7 @@ func (m *Manager) listUnattachedPopup(scope *jarScope, p *managedPage, popup eng
 		m.parkMu.Unlock()
 		return false
 	}
-	verdict := m.admissions.CommitUnattached(popupadmit.Handle(popup.Handle))
+	verdict := m.admissions.CommitUnattached(popup.Handle)
 	listed, released := false, (*jarScope)(nil)
 	if verdict.Kind() == popupadmit.ListCrashed {
 		listed, released = m.listCrashedPopupLocked(scope, p, popup.Handle, verdict.CrashReason())
@@ -315,7 +316,7 @@ func (m *Manager) listUnattachedPopup(scope *jarScope, p *managedPage, popup eng
 // its close detached, whose records that close already dropped. It answers
 // whether it listed the popup, and the jar to dispose when the reservation
 // was the last thing holding it. The caller holds m.parkMu and m.mu.
-func (m *Manager) listCrashedPopupLocked(scope *jarScope, p *managedPage, handle, reason string) (bool, *jarScope) {
+func (m *Manager) listCrashedPopupLocked(scope *jarScope, p *managedPage, handle ids.PageHandle, reason string) (bool, *jarScope) {
 	if m.closed || m.forgettingLocked() || p.owner.detached.Load() {
 		return false, nil
 	}
@@ -355,7 +356,7 @@ func (m *Manager) crashedPopupListed(p *managedPage, released *jarScope) {
 // within popupDiscardTimeout. Its reservation ends whatever the engine
 // answers (endPopupReservation); a page the engine failed to close stays
 // the engine's, closed at its profile's disposal.
-func (m *Manager) discardPopup(handle string) {
+func (m *Manager) discardPopup(handle ids.PageHandle) {
 	ctx, cancel := context.WithTimeout(context.Background(), popupDiscardTimeout)
 	defer cancel()
 	if err := m.engine.DiscardPage(ctx, handle); err != nil {
@@ -369,7 +370,7 @@ const popupDiscardTimeout = 5 * time.Second
 // endPopupReservation ends the reservation of a popup's page that will not
 // be listed, its engine page already closed or discarded, and disposes the
 // jar's profile if that was the last thing holding it.
-func (m *Manager) endPopupReservation(scope *jarScope, p *managedPage, handle string) {
+func (m *Manager) endPopupReservation(scope *jarScope, p *managedPage, handle ids.PageHandle) {
 	m.mu.Lock()
 	delete(scope.creating, p)
 	if m.adopting[handle] == p {
@@ -411,7 +412,7 @@ func (m *Manager) popupRefusedLocked(scope *jarScope, p *managedPage) bool {
 
 // pageWithHandle returns the scope's page whose driver has handle, or nil.
 // The caller holds m.mu.
-func pageWithHandle(scope *jarScope, handle string) *managedPage {
+func pageWithHandle(scope *jarScope, handle ids.PageHandle) *managedPage {
 	for _, p := range scope.pages {
 		if p.driver.Handle() == handle {
 			return p
@@ -422,7 +423,7 @@ func pageWithHandle(scope *jarScope, handle string) *managedPage {
 
 // removeClosedPage is the teardown of a page whose engine reported its
 // close (pageClosed).
-func (m *Manager) removeClosedPage(handle string) {
+func (m *Manager) removeClosedPage(handle ids.PageHandle) {
 	// Before m.mu, so a popup's tab is taken only once the downloads its
 	// listing owes it are in it (adoptPopup).
 	m.parkMu.Lock()

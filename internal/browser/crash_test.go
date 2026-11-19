@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/target"
@@ -177,8 +178,8 @@ func TestHostedEngineReportsAProcessFailureByKind(t *testing.T) {
 		t.Run(tc.detail, func(t *testing.T) {
 			var crashed, closed []string
 			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-				PageCrashed: func(handle, reason string) { crashed = append(crashed, handle+" "+reason) },
-				PageClosed:  func(handle string) { closed = append(closed, handle) },
+				PageCrashed: func(handle ids.PageHandle, reason string) { crashed = append(crashed, string(handle)+" "+reason) },
+				PageClosed:  func(handle ids.PageHandle) { closed = append(closed, string(handle)) },
 			})
 			bindTestPage(t, engine, "page1", "TARGET-1")
 			engine.Report("page1", webview2host.ReportProcessFailed, tc.detail)
@@ -199,7 +200,7 @@ func TestHostedEngineReportsAProcessFailureByKind(t *testing.T) {
 
 func TestHeadlessProfileReportsItsOwnCrashedTarget(t *testing.T) {
 	crashed := make(chan string, 4)
-	p := newTargetTestProfile(t, engineEvents{PageCrashed: func(handle, reason string) { crashed <- handle + " " + reason }})
+	p := newTargetTestProfile(t, engineEvents{PageCrashed: func(handle ids.PageHandle, reason string) { crashed <- string(handle) + " " + reason }})
 	other := &headlessProfile{engine: p.engine, handle: "other"}
 	p.engine.bindPage("T-own", p)
 	p.engine.bindPage("T-other", other)

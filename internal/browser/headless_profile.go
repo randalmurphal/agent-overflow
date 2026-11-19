@@ -14,6 +14,8 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // headlessProfile is one canonical workspace's Chromium: its own process,
@@ -85,7 +87,7 @@ func (p *headlessProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDri
 // AttachPage adopts a page Chromium opened by itself: a popup, reported by
 // its target events and already bound to this profile. Unlike the launcher-hosted
 // engine, this one CAN report popups, because CDP surfaces every target.
-func (p *headlessProfile) AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+func (p *headlessProfile) AttachPage(ctx context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	browserCtx, ok := p.browser()
 	if !ok {
 		return nil, errors.New("browser: the profile's browser is no longer running")
@@ -109,7 +111,7 @@ func (p *headlessProfile) AttachPage(ctx context.Context, handle string, hooks p
 // bind share p.mu with the step that takes a lost browser's pages
 // (watchBrowser or retireLostBrowser), so a page is either bound before
 // that step and reported lost by it, or refused.
-func (p *headlessProfile) bindPage(browserCtx context.Context, handle string) error {
+func (p *headlessProfile) bindPage(browserCtx context.Context, handle ids.PageHandle) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.current == nil || p.current.ctx != browserCtx || browserCtx.Err() != nil {
@@ -234,7 +236,7 @@ func (p *headlessProfile) interrupt() {
 // the popup the Manager declined, within ctx. A target it fails to close
 // stays bound to this profile, whose disposal ends it with its browser,
 // and a later discard tries again.
-func (p *headlessProfile) closeTarget(ctx context.Context, handle string) error {
+func (p *headlessProfile) closeTarget(ctx context.Context, handle ids.PageHandle) error {
 	browserCtx, ok := p.browser()
 	if !ok {
 		// Its browser is gone, and the target with it.
