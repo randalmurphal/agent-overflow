@@ -2,9 +2,11 @@
 // reads its Claude and Codex configuration (GetNativeMemoryStatus). An
 // assistant's banner and Settings > Memory watch a computer while they show.
 // A watched computer is read when a surface starts watching it, again when
-// its settings change (a provider environment edit changes the answer), and
-// when this window comes back into view, because the provider configuration
-// changes outside the app. The answer is dropped with its last watcher.
+// its settings change (a provider environment edit changes the answer), when
+// it reconnects or its settings frames had a gap, and when this window comes
+// back into view, because the provider configuration changes outside the
+// app. A dropped connection keeps the last answer; the reconnect reads it
+// again. The answer is dropped with its last watcher.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { GetNativeMemoryStatus } from './bindings';
@@ -45,11 +47,9 @@ async function read(backend: BackendKey): Promise<void> {
     const status = await withBackendTarget(backend, () => GetNativeMemoryStatus());
     if (generations.get(backend) === generation) answers.set(backend, { status, error: '' });
   } catch (err) {
-    if (generations.get(backend) !== generation) return;
+    if (generations.get(backend) !== generation || isPassiveConnectionFailure(err)) return;
     answers.set(backend, { status: null, error: errString(err) });
-    if (!isPassiveConnectionFailure(err)) {
-      reportFrontendDiagnostic('Could not read whether a provider\'s own memory is on', errString(err));
-    }
+    reportFrontendDiagnostic('Could not read whether a provider\'s own memory is on', errString(err));
   }
 }
 
@@ -86,8 +86,9 @@ export function watchProviderMemory(backend: BackendKey): () => void {
   };
 }
 
-/** `backend`'s settings changed: read it again while watched. */
-export function applyProviderMemorySettingsChanged(backend: BackendKey): void {
+/** `backend`'s settings changed, it reconnected, or its settings frames had
+ * a gap: read it again while watched. */
+export function refreshProviderMemory(backend: BackendKey): void {
   if (watchers.has(backend)) void read(backend);
 }
 

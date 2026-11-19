@@ -11,7 +11,7 @@ import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app
 import type { OwnMemoryOff, Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import { TransportError } from '../../transport/wsClient';
-import { applyProviderMemorySettingsChanged } from '../../stores/providerMemory.svelte';
+import { refreshProviderMemory } from '../../stores/providerMemory.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { NativeMemoryStatus } from '../../types/models';
 
@@ -142,7 +142,7 @@ describe('<MemorySettings>', () => {
     // Turning shared memory on changes the computer's settings, which reads
     // again; that newer read answers first.
     await fireEvent.click(switchNamed(container, 'Toggle shared memory'));
-    applyProviderMemorySettingsChanged(HOME_BACKEND);
+    refreshProviderMemory(HOME_BACKEND);
     await expect.poll(() => answers.length).toBe(2);
     answers[1](native(true, false));
     await expect.poll(() => queryAllByTestId('memory-overlap-warning')).toHaveLength(1);
