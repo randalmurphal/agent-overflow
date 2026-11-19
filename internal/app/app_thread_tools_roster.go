@@ -156,7 +156,8 @@ func (a *App) spawnShape(threadID string, place subThreadPlace, defaults threadt
 	shape := threadtools.SpawnShape{Level: place.level, Limit: place.limit}
 	for _, name := range threadToolsProviders {
 		if a.providerOffered(name) {
-			shape.Providers = append(shape.Providers, name)		}
+			shape.Providers = append(shape.Providers, name)
+		}
 	}
 	roster, err := a.threadTools().Roster(context.Background())
 	if err != nil {
