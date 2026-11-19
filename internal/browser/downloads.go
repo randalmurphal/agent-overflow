@@ -87,7 +87,7 @@ func pathInside(root, path string) bool {
 
 // pageForFrame walks the registry the Manager owns and asks each driver whether
 // the frame is one of its own. Ownership stays here; frame bookkeeping does not.
-func (m *Manager) pageForFrame(frame string) (*managedPage, *jarScope) {
+func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {

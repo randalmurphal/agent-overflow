@@ -295,8 +295,8 @@ func (p *cdpPage) Close()                    { p.cancel() }
 // OwnsFrame answers from the frames the page has reported, and for its
 // main frame, whose id is the target id, before it has reported any: a
 // download can begin in a navigation that never commits.
-func (p *cdpPage) OwnsFrame(frame string) bool {
-	if frame == string(p.handle) {
+func (p *cdpPage) OwnsFrame(frame frameID) bool {
+	if frame == frameID(p.handle) {
 		return true
 	}
 	return p.frames.owns(cdp.FrameID(frame))

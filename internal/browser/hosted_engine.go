@@ -161,7 +161,7 @@ type hostedEngine struct {
 	// each live profile's navigation policy (profileOptions.Allow), for a
 	// popup's profile and the browser-wide policy (hosted_popups.go).
 	pageProfile map[ids.PageHandle]string
-	policies    map[string]func(owners []string, rawURL string) (allowed, resolved bool)
+	policies    map[string]func(owners []frameID, rawURL string) (allowed, resolved bool)
 	// popups are the popups the launcher reported whose pages have not
 	// gone (hostedPopup), and popupByTarget their pages by CDP target.
 	popups        map[ids.PageHandle]*hostedPopup
@@ -216,7 +216,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		noFind:       make(map[ids.PageHandle]bool),
 
 		pageProfile:   make(map[ids.PageHandle]string),
-		policies:      make(map[string]func([]string, string) (bool, bool)),
+		policies:      make(map[string]func([]frameID, string) (bool, bool)),
 		popups:        make(map[ids.PageHandle]*hostedPopup),
 		popupByTarget: make(map[string]ids.PageHandle),
 

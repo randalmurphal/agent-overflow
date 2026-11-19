@@ -46,13 +46,13 @@ func TestAWorkspaceKeepsOnePoolWhileItsDownloadsHoldIt(t *testing.T) {
 		t.Fatal("the workspace has a second pool while its first holds reservations")
 	}
 	frame := paneHandle(manager, access, again.ID)
-	if got := manager.downloadStarted(downloadStart{Frame: frame, ID: "fifth", SuggestedName: "fifth.bin"}); got != downloadRefused {
+	if got := manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "fifth", SuggestedName: "fifth.bin"}); got != downloadRefused {
 		t.Fatalf("a download past the workspace's held quota answered %d, want refused", got)
 	}
 	for _, reservation := range held {
 		reservation.Release()
 	}
-	if got := manager.downloadStarted(downloadStart{Frame: frame, ID: "sixth", SuggestedName: "sixth.bin"}); got != downloadAdmitted {
+	if got := manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "sixth", SuggestedName: "sixth.bin"}); got != downloadAdmitted {
 		t.Fatalf("a download once the quota freed answered %d, want admitted", got)
 	}
 }
@@ -65,7 +65,7 @@ func startPopupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id 
 	profile := e.profile
 	e.mu.Unlock()
 	return m.downloadStarted(downloadStart{
-		Frame: string(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
+		Frame: frameID(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
 		Popup: popup, Openers: openers, Profile: profile,
 	})
 }
@@ -95,7 +95,7 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 		p, _ := manager.livePageLocked(page.ID)
 		manager.mu.Unlock()
 		start := func(id string) downloadAdmission {
-			return manager.downloadStarted(downloadStart{Frame: string(p.driver.Handle()), ID: id, URL: "https://example.test/" + id, SuggestedName: id})
+			return manager.downloadStarted(downloadStart{Frame: frameID(p.driver.Handle()), ID: id, URL: "https://example.test/" + id, SuggestedName: id})
 		}
 		wantAdmission(t, "a download within the quotas", start("a"), downloadAdmitted)
 		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)

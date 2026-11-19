@@ -206,7 +206,7 @@ func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 	var start downloadStart
 	switch {
 	case page != nil:
-		start.Frame = string(page.handle)
+		start.Frame = frameID(page.handle)
 		if page.popup != "" {
 			start.Popup, start.Openers = page.popup, []ids.PageHandle{page.opener}
 		}

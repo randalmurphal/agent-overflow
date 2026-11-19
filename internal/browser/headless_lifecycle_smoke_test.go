@@ -83,7 +83,7 @@ func TestHeadlessChromiumRealLoadingAndFrames(t *testing.T) {
 			if d := owner.Load(); d != nil {
 				owned = (*d).OwnsFrame(start.Frame)
 			}
-			downloads <- begun{frame: start.Frame, owned: owned}
+			downloads <- begun{frame: string(start.Frame), owned: owned}
 			return downloadRefused
 		},
 		DownloadProgress: func(downloadProgress) {},
@@ -182,9 +182,9 @@ func TestHeadlessChromiumRealLoadingAndFrames(t *testing.T) {
 	}
 	run(`(() => { const f = document.createElement('iframe'); f.id = 'f'; f.src = '/frame'; document.body.appendChild(f); })()`)
 	frame := ownerFrame("f")
-	await("the page to own its iframe", func() bool { return driver.OwnsFrame(string(frame)) })
+	await("the page to own its iframe", func() bool { return driver.OwnsFrame(frameID(frame)) })
 	run(`document.getElementById('f').remove()`)
-	await("the removed iframe to leave the page", func() bool { return !driver.OwnsFrame(string(frame)) })
+	await("the removed iframe to leave the page", func() bool { return !driver.OwnsFrame(frameID(frame)) })
 
 	// A cross-site iframe runs in a renderer of its own, and a download it
 	// starts names its frame, which the page still owns.
@@ -201,10 +201,10 @@ func TestHeadlessChromiumRealLoadingAndFrames(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the cross-site iframe's download never began")
 	}
-	if !driver.OwnsFrame(string(cross)) {
+	if !driver.OwnsFrame(frameID(cross)) {
 		t.Fatal("the page let its cross-site iframe go while it is still there")
 	}
 	run(`document.getElementById('x').remove()`)
-	await("the removed cross-site iframe to leave the page", func() bool { return !driver.OwnsFrame(string(cross)) })
+	await("the removed cross-site iframe to leave the page", func() bool { return !driver.OwnsFrame(frameID(cross)) })
 	releaseOnce.Do(func() { close(release) })
 }

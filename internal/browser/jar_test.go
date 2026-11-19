@@ -41,7 +41,7 @@ type jarEngine struct {
 	closeHolds  map[string]chan struct{}
 	disposeGate chan struct{}
 	// lastPage is the handle of the page NewPage created last.
-	lastPage string
+	lastPage ids.PageHandle
 	cleared  atomic.Int64
 	// clearGate, when set, holds the engine's site-data clear, signalling
 	// clearing first; profileInClear records a profile created during it.
@@ -180,7 +180,7 @@ func (p *jarProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, 
 		return nil, err
 	}
 	p.engine.mu.Lock()
-	p.engine.lastPage = string(driver.Handle())
+	p.engine.lastPage = driver.Handle()
 	p.engine.mu.Unlock()
 	return &jarPage{pageDriver: driver, engine: p.engine}, nil
 }
@@ -222,9 +222,9 @@ func (e *jarEngine) holdDispose(t *testing.T) (release func()) {
 	return release
 }
 
-func (p *jarPage) OwnsFrame(frame string) bool {
+func (p *jarPage) OwnsFrame(frame frameID) bool {
 	p.engine.mu.Lock()
-	owner, ok := p.engine.frames[frame]
+	owner, ok := p.engine.frames[string(frame)]
 	p.engine.mu.Unlock()
 	return (ok && ids.PageHandle(owner) == p.Handle()) || p.pageDriver.OwnsFrame(frame)
 }
@@ -544,24 +544,24 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	// adoption, answers with the opener's authority, so the popup may open
 	// what it may open once adopted: its worktree's files, not the other's.
 	allow := resolvedPolicy(t, engine.profile("project:P").allow)
-	openerA, openerB := paneHandle(manager, a, pageA.ID), paneHandle(manager, b, pageB.ID)
-	if !allow([]string{"popup", openerA}, "file://"+files["one"]) || !allow([]string{"popup", openerB}, "file://"+files["two"]) {
+	openerA, openerB := frameID(driverHandle(manager, a, pageA.ID)), frameID(driverHandle(manager, b, pageB.ID))
+	if !allow([]frameID{"popup", openerA}, "file://"+files["one"]) || !allow([]frameID{"popup", openerB}, "file://"+files["two"]) {
 		t.Fatal("a popup in the shared jar is refused its opener's worktree file")
 	}
-	if allow([]string{"popup", openerA}, "file://"+files["two"]) || allow([]string{"popup", openerB}, "file://"+files["one"]) {
+	if allow([]frameID{"popup", openerA}, "file://"+files["two"]) || allow([]frameID{"popup", openerB}, "file://"+files["one"]) {
 		t.Fatal("a popup in the shared jar may open the other worktree's file")
 	}
-	if !allow([]string{openerA}, "file://"+files["one"]) || allow([]string{openerA}, "file://"+files["two"]) {
+	if !allow([]frameID{openerA}, "file://"+files["one"]) || allow([]frameID{openerA}, "file://"+files["two"]) {
 		t.Fatal("a page's own request is not answered with its own authority")
 	}
 
 	manager.mu.Lock()
 	manager.authorities[canonical(t, proj.one)].downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	manager.mu.Unlock()
-	if manager.downloadStarted(downloadStart{Frame: paneHandle(manager, a, pageA.ID), ID: "over"}) == downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(paneHandle(manager, a, pageA.ID)), ID: "over"}) == downloadAdmitted {
 		t.Fatal("a download over its workspace's quota was kept")
 	}
-	if manager.downloadStarted(downloadStart{Frame: paneHandle(manager, b, pageB.ID), ID: "kept"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(paneHandle(manager, b, pageB.ID)), ID: "kept"}) != downloadAdmitted {
 		t.Fatal("the other workspace's download was charged to the exhausted workspace")
 	}
 	manager.mu.Lock()

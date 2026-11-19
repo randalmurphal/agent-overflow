@@ -87,7 +87,7 @@ func (p *webkitPage) Handle() ids.PageHandle { return p.handle }
 
 // OwnsFrame answers for this page's own handle: this engine addresses every
 // event by page, so a page's only frame identity is itself.
-func (p *webkitPage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
+func (p *webkitPage) OwnsFrame(frame frameID) bool { return frame == frameID(p.handle) }
 
 // ReadOnlyCaveat is non-empty because WebKit has no equivalent of CDP's
 // throwOnSideEffect: the expression is evaluated as written. The Manager

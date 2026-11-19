@@ -173,8 +173,8 @@ type handledPage struct {
 	handle ids.PageHandle
 }
 
-func (p *handledPage) Handle() ids.PageHandle      { return p.handle }
-func (p *handledPage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
+func (p *handledPage) Handle() ids.PageHandle       { return p.handle }
+func (p *handledPage) OwnsFrame(frame frameID) bool { return frame == frameID(p.handle) }
 
 // popupDownload starts download id in popup, opened by openers, nearest
 // first, and answers whether the Manager took it.
@@ -183,7 +183,7 @@ func popupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id strin
 	profile := e.profile
 	e.mu.Unlock()
 	return m.downloadStarted(downloadStart{
-		Frame: string(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
+		Frame: frameID(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
 		Popup: popup, Openers: openers, Profile: profile,
 	}) == downloadAdmitted
 }

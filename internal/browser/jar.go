@@ -152,7 +152,7 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 // unresolved, with what a page with no workspace's authority may open: its
 // engine allows that at once, and asks again for anything else
 // (awaitRequestOwner).
-func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (allowed, resolved bool) {
+func (m *Manager) jarAllows(scope *jarScope, owners []frameID, rawURL string) (allowed, resolved bool) {
 	var access Caller
 	m.mu.Lock()
 	for _, owner := range owners {
@@ -168,12 +168,12 @@ func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (al
 // framePageLocked answers the page of scope, live or being created, that
 // frame belongs to, or nil. A page's main frame is its handle. The caller
 // holds m.mu.
-func framePageLocked(scope *jarScope, frame string) *managedPage {
+func framePageLocked(scope *jarScope, frame frameID) *managedPage {
 	if frame == "" {
 		return nil
 	}
 	owns := func(p *managedPage) bool {
-		return p.driver != nil && (string(p.driver.Handle()) == frame || p.driver.OwnsFrame(frame))
+		return p.driver != nil && (frameID(p.driver.Handle()) == frame || p.driver.OwnsFrame(frame))
 	}
 	for _, p := range scope.pages {
 		if owns(p) {

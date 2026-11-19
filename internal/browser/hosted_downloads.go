@@ -82,7 +82,8 @@ func (e *hostedEngine) acceptDownload(page ids.PageHandle, detail string) {
 // applySnapshot applies one received snapshot of download d, on its page's
 // lane. A finished download's path conversion ends with ctx (Stop).
 func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.DownloadReport, d *hostedDownload) {
-	pageID, id := string(d.key.page), string(d.key.id)
+	// The page is the frame its downloads name (hostedPage.OwnsFrame).
+	frame, id := frameID(d.key.page), string(d.key.id)
 	live, admission, cancels := e.pages.live(d, report.Cancel.Attempt())
 	if !live {
 		// Ended, refused, or its page retired, before this snapshot's turn.
@@ -112,7 +113,7 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 			name = windowsBase(report.Path)
 		}
 		start := e.pages.popupStart(d.key.page)
-		start.Frame, start.ID, start.URL, start.SuggestedName = pageID, id, report.URI, name
+		start.Frame, start.ID, start.URL, start.SuggestedName = frame, id, report.URI, name
 		if e.events.DownloadStarted(start) != downloadAdmitted {
 			// The Manager refused it: nothing later reaches a row.
 			e.pages.end(d)

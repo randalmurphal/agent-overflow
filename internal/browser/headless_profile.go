@@ -33,7 +33,7 @@ type headlessProfile struct {
 	downloadDir   string
 	// allow is the jar's navigation policy (profileOptions.Allow), which
 	// connect enables browser-wide.
-	allow func(owners []string, rawURL string) (allowed, resolved bool)
+	allow func(owners []frameID, rawURL string) (allowed, resolved bool)
 
 	// launchMu serializes ensureBrowser so a burst of concurrent page
 	// creations launches one Chromium rather than one each.

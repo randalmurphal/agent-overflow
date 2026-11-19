@@ -21,7 +21,7 @@ func settleRig(t *testing.T) (m *Manager, access Access, file string, workspaceB
 	authority := authorityOf(t, manager, access)
 	workspaceBefore, artifactsBefore = authority.downloadBytes.Used(), manager.artifactBytes.Used()
 	file = engineArtifact(t, manager, "dl-1")
-	if manager.downloadStarted(downloadStart{Frame: paneHandle(manager, access, page.ID), ID: "dl-1", SuggestedName: "a.bin"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(paneHandle(manager, access, page.ID)), ID: "dl-1", SuggestedName: "a.bin"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	return manager, access, file, workspaceBefore, artifactsBefore

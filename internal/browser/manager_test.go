@@ -946,7 +946,7 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owners := []string{paneHandle(manager, access, page.ID)}
+	owners := []frameID{frameID(driverHandle(manager, access, page.ID))}
 	engine.mu.Lock()
 	policy := engine.opts.Allow
 	engine.mu.Unlock()
@@ -957,7 +957,7 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	// A request no page owns is answered unresolved, with what a page with
 	// no workspace's authority may open.
 	for url, want := range map[string]bool{"https://example.test/": true, "file://" + files["workspace"]: false} {
-		if allowed, resolved := policy([]string{"F-none"}, url); allowed != want || resolved {
+		if allowed, resolved := policy([]frameID{"F-none"}, url); allowed != want || resolved {
 			t.Errorf("a request no page owns for %s was answered allowed %v, resolved %v", url, allowed, resolved)
 		}
 	}
@@ -982,8 +982,8 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 
 // resolvedPolicy answers policy's allowed answer, failing the test when an
 // owner it is asked with does not resolve.
-func resolvedPolicy(t *testing.T, policy func([]string, string) (bool, bool)) func([]string, string) bool {
-	return func(owners []string, rawURL string) bool {
+func resolvedPolicy(t *testing.T, policy func([]frameID, string) (bool, bool)) func([]frameID, string) bool {
+	return func(owners []frameID, rawURL string) bool {
 		t.Helper()
 		allowed, resolved := policy(owners, rawURL)
 		if !resolved {
@@ -1011,7 +1011,7 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	if got := manager.downloadStarted(downloadStart{Frame: "unowned", ID: "G-unowned"}); got != downloadUnowned {
 		t.Fatalf("a download no managed page owns was answered %v, want unowned", got)
 	}
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "G-kept", SuggestedName: "a.bin"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G-kept", SuggestedName: "a.bin"}) != downloadAdmitted {
 		t.Fatal("a download in a managed page within quota was refused")
 	}
 	manager.mu.Lock()
@@ -1019,7 +1019,7 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 		authority.downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	}
 	manager.mu.Unlock()
-	if got := manager.downloadStarted(downloadStart{Frame: frame, ID: "G-over"}); got != downloadRefused {
+	if got := manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G-over"}); got != downloadRefused {
 		t.Fatalf("a download over the workspace quota was answered %v, want refused", got)
 	}
 

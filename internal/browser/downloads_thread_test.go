@@ -213,7 +213,7 @@ func TestDownloadProgressCoalescesIntoOneStatePush(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	manager.downloadPushInterval = 50 * time.Millisecond
 	frame := paneHandle(manager, access, page.ID)
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "G", SuggestedName: "big.bin"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G", SuggestedName: "big.bin"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	if n := countKind(log.take(), "state"); n != 1 {
@@ -403,7 +403,7 @@ func TestARefusedCancelReachesTheUserAndTheDownloadRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame := paneHandle(manager, access, page.ID)
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "G", SuggestedName: "a.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G", SuggestedName: "a.bin"})
 	id := threadDownloads(manager, access)[0].ID
 
 	err = manager.CancelThreadDownload(access, id)
@@ -459,14 +459,14 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 		}
 	}
 
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "G1", SuggestedName: "a.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G1", SuggestedName: "a.bin"})
 	refuse("G1")
 	manager.downloadProgress(downloadProgress{ID: "G1", State: downloadFailed})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed || got.Error != "the download stopped before it finished" {
 		t.Fatalf("an end after a refused cancel lists as %+v, want failed", got)
 	}
 
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "G2", SuggestedName: "b.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G2", SuggestedName: "b.bin"})
 	refuse("G2")
 	id := threadDownloads(manager, access)[0].ID
 	if err := manager.CancelThreadDownload(access, id); err != nil {
@@ -477,14 +477,14 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 		t.Fatalf("a second cancel that won lists as %+v, want canceled", got)
 	}
 
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "G3", SuggestedName: "c.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G3", SuggestedName: "c.bin"})
 	refuse("G3")
 	manager.downloadProgress(downloadProgress{ID: "G3", State: downloadFailed, Error: "the network failed"})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed || got.Error != "the network failed" {
 		t.Fatalf("a failure after a refused cancel lists as %+v", got)
 	}
 
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "G4", SuggestedName: "d.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G4", SuggestedName: "d.bin"})
 	refuse("G4")
 	manager.downloadProgress(downloadProgress{ID: "G4", State: downloadPageGone})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
@@ -523,11 +523,11 @@ func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
 	manager, log, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	frame := paneHandle(manager, access, page.ID)
 	authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "over", SuggestedName: "over.bin"}) == downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "over", SuggestedName: "over.bin"}) == downloadAdmitted {
 		t.Fatal("a download over quota was kept")
 	}
 	authorityOf(t, manager, access).downloadBytes.SetUsed(0)
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "kept", SuggestedName: "kept.bin"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "kept", SuggestedName: "kept.bin"}) != downloadAdmitted {
 		t.Fatal("a download within quota was refused")
 	}
 	log.take()
@@ -585,7 +585,7 @@ func TestClearingDownloadsKeepsRunningOnesAndFiles(t *testing.T) {
 func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "first", SuggestedName: "first.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "first", SuggestedName: "first.bin"})
 	for i := 0; i < maxThreadDownloads+5; i++ {
 		startDownload(t, manager, access, page, fmt.Sprintf("f%d.txt", i), 1)
 	}
@@ -608,7 +608,7 @@ func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
 	start := func(id string) {
-		if manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
+		if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
 			t.Fatalf("%s was refused", id)
 		}
 	}
@@ -656,7 +656,7 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	total := maxPageDownloads + 10
 	for i := range total {
 		id := fmt.Sprintf("dl-%d", i)
-		if manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
+		if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
 			t.Fatalf("%s was refused", id)
 		}
 	}
@@ -681,10 +681,10 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
-	manager.downloadStarted(downloadStart{Frame: frame, ID: "running", SuggestedName: "r.bin"})
+	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "running", SuggestedName: "r.bin"})
 	for i := 0; i < maxPageDownloads; i++ {
 		id := fmt.Sprintf("done-%d", i)
-		manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id})
+		manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: id})
 		manager.downloadProgress(downloadProgress{ID: id, State: downloadCanceled})
 	}
 	manager.downloadProgress(downloadProgress{ID: "running", Received: 5, State: downloadInProgress})
@@ -907,7 +907,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			manager.mu.Unlock()
 			manager.downloadAdmitting = func() { tc.leave(t, manager, access, page) }
 
-			if manager.downloadStarted(downloadStart{Frame: string(p.driver.Handle()), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) == downloadAdmitted {
+			if manager.downloadStarted(downloadStart{Frame: frameID(p.driver.Handle()), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) == downloadAdmitted {
 				t.Fatal("a download on a page that left was admitted")
 			}
 			if listed := threadDownloads(manager, access); len(listed) != 0 {
@@ -1120,7 +1120,7 @@ func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
 	}
 	frame := paneHandle(manager, access, blank.ID)
 	long := "data:text/plain," + strings.Repeat("a", 1<<20)
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "listed", URL: long, SuggestedName: "a.txt"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "listed", URL: long, SuggestedName: "a.txt"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	p, _, err := manager.lookupOwnedPage(access, blank.ID)

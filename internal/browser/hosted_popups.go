@@ -251,11 +251,11 @@ func (e *hostedEngine) forgetPopupLocked(pageID ids.PageHandle) func() {
 // page the engine has not bound yet is one of its jar's, and the last
 // answers unresolved with what a page with no workspace's authority may
 // open (jarAllows); with no profile, it is refused unresolved.
-func (e *hostedEngine) allowRequest(targets *cdpTargets, frame, rawURL string) (allowed, resolved bool) {
+func (e *hostedEngine) allowRequest(targets *cdpTargets, frame frameID, rawURL string) (allowed, resolved bool) {
 	owners := targets.owners(frame)
 	e.mu.Lock()
 	owners = e.reportedOpenersLocked(owners)
-	var policies []func([]string, string) (bool, bool)
+	var policies []func([]frameID, string) (bool, bool)
 	for _, owner := range owners {
 		if pageID, ok := e.ownerPageLocked(owner); ok {
 			policies = append(policies, e.policies[e.pageProfile[pageID]])
@@ -284,10 +284,10 @@ func (e *hostedEngine) allowRequest(targets *cdpTargets, frame, rawURL string) (
 // reported with the target of the opener its report names: a window a
 // click opened in a new tab has a target that names no opener. The caller
 // holds e.mu.
-func (e *hostedEngine) reportedOpenersLocked(owners []string) []string {
+func (e *hostedEngine) reportedOpenersLocked(owners []frameID) []frameID {
 	// Each step adds a page not in owners yet, so the chain ends.
 	for {
-		popupID, ok := e.popupByTarget[owners[len(owners)-1]]
+		popupID, ok := e.popupByTarget[string(owners[len(owners)-1])]
 		if !ok {
 			return owners
 		}
@@ -296,18 +296,18 @@ func (e *hostedEngine) reportedOpenersLocked(owners []string) []string {
 		if pending := e.popups[opener]; pending != nil {
 			next = pending.target
 		}
-		if next == "" || slices.Contains(owners, next) {
+		if next == "" || slices.Contains(owners, frameID(next)) {
 			return owners
 		}
-		owners = append(owners, next)
+		owners = append(owners, frameID(next))
 	}
 }
 
 // ownerPageLocked answers the page a frame belongs to: the page whose
 // target it is, a pending popup's, or the page that reported it as one of
 // its frames. The caller holds e.mu.
-func (e *hostedEngine) ownerPageLocked(frame string) (ids.PageHandle, bool) {
-	if pageID, ok := e.targetPageLocked(frame); ok {
+func (e *hostedEngine) ownerPageLocked(frame frameID) (ids.PageHandle, bool) {
+	if pageID, ok := e.targetPageLocked(string(frame)); ok {
 		return pageID, true
 	}
 	for pageID, driver := range e.drivers {

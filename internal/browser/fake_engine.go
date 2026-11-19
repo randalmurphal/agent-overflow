@@ -105,7 +105,7 @@ type fakeProfile struct {
 	// was created with.
 	jar         string
 	ephemeral   bool
-	allow       func(owners []string, rawURL string) (allowed, resolved bool)
+	allow       func(owners []frameID, rawURL string) (allowed, resolved bool)
 	downloadDir string
 	stage       func(id string) (string, error)
 
@@ -229,7 +229,7 @@ func (p *fakePage) Lifetime() context.Context { return p.ctx }
 func (p *fakePage) Handle() ids.PageHandle    { return p.handle }
 
 // OwnsFrame answers for the page's handle, the one frame a fake page has.
-func (p *fakePage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
+func (p *fakePage) OwnsFrame(frame frameID) bool { return frame == frameID(p.handle) }
 
 func (p *fakePage) Close() {
 	p.mu.Lock()
@@ -263,7 +263,7 @@ func (p *fakePage) Navigate(ctx context.Context, rawURL string) error {
 	}
 	if download, ok := fakeDownloadAddress(rawURL); ok {
 		// A response a browser saves rather than shows: the page stays.
-		return p.profile.download(string(p.handle), download)
+		return p.profile.download(frameID(p.handle), download)
 	}
 	p.mu.Lock()
 	// A navigation truncates the forward entries AFTER the current one and

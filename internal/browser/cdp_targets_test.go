@@ -74,13 +74,13 @@ func TestCDPTargetsSettleInEveryOrder(t *testing.T) {
 				}
 				owners := targets.owners("T-popup")
 				if slices.Contains(order, "destroyed") {
-					if !slices.Equal(owners, []string{"T-popup"}) {
+					if !slices.Equal(owners, []frameID{"T-popup"}) {
 						t.Errorf("a destroyed target's owners are %v", owners)
 					}
 					if n := targets.retained(); n != 1 {
 						t.Errorf("a destroyed target retains %d ids, want its tombstone", n)
 					}
-				} else if !slices.Equal(owners, []string{"T-popup", "T-opener"}) {
+				} else if !slices.Equal(owners, []frameID{"T-popup", "T-opener"}) {
 					t.Errorf("a live popup's owners are %v", owners)
 				}
 			})
@@ -98,7 +98,7 @@ func TestTargetDestroyedBeforeCreatedLeavesNoLiveOpener(t *testing.T) {
 	}) {
 		t.Error("created answered true for a gone target")
 	}
-	if owners := targets.owners("T-popup"); !slices.Equal(owners, []string{"T-popup"}) {
+	if owners := targets.owners("T-popup"); !slices.Equal(owners, []frameID{"T-popup"}) {
 		t.Errorf("owners %v", owners)
 	}
 	targets.mu.Lock()
@@ -164,10 +164,10 @@ func TestCDPTargetsOwnersFollowTheOpenerChain(t *testing.T) {
 	targets.created(&target.Info{TargetID: "C", Type: "page", OpenerID: "B"}, nil)
 	// A worker is no popup.
 	targets.created(&target.Info{TargetID: "W", Type: "worker", OpenerID: "C"}, nil)
-	if owners := targets.owners("C"); !slices.Equal(owners, []string{"C", "B", "A"}) {
+	if owners := targets.owners("C"); !slices.Equal(owners, []frameID{"C", "B", "A"}) {
 		t.Errorf("owners %v", owners)
 	}
-	if owners := targets.owners("W"); !slices.Equal(owners, []string{"W"}) {
+	if owners := targets.owners("W"); !slices.Equal(owners, []frameID{"W"}) {
 		t.Errorf("a worker's owners %v", owners)
 	}
 	targets.created(&target.Info{TargetID: "A", Type: "page", OpenerID: "C"}, nil)
@@ -213,7 +213,7 @@ func TestHostedTargetsGoWithTheirConnection(t *testing.T) {
 		}
 	}
 	await("the popup's opener was never recorded", func() bool {
-		return slices.Equal(l.engine.currentTargets().owners("PT-9"), []string{"PT-9", "T-opener"})
+		return slices.Equal(l.engine.currentTargets().owners("PT-9"), []frameID{"PT-9", "T-opener"})
 	})
 	l.endpoint.hangUp()
 	await("the lost connection's targets stayed", func() bool {

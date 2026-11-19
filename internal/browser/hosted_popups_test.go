@@ -448,13 +448,13 @@ func TestHostedPopupCrashAndCloseDuringAdoptionLeaveNoTab(t *testing.T) {
 // profile asked and the owners it was asked with.
 type policyRecorder struct {
 	mu    sync.Mutex
-	asked [][]string
+	asked [][]frameID
 }
 
-func (r *policyRecorder) policy(name string, frames ...string) func([]string, string) (bool, bool) {
-	return func(owners []string, rawURL string) (bool, bool) {
+func (r *policyRecorder) policy(name string, frames ...frameID) func([]frameID, string) (bool, bool) {
+	return func(owners []frameID, rawURL string) (bool, bool) {
 		r.mu.Lock()
-		r.asked = append(r.asked, append([]string{name}, owners...))
+		r.asked = append(r.asked, append([]frameID{frameID(name)}, owners...))
 		r.mu.Unlock()
 		for _, owner := range owners {
 			if slices.Contains(frames, owner) {
@@ -465,7 +465,7 @@ func (r *policyRecorder) policy(name string, frames ...string) func([]string, st
 	}
 }
 
-func (r *policyRecorder) take() [][]string {
+func (r *policyRecorder) take() [][]frameID {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := r.asked
@@ -506,12 +506,12 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 
 	// want is the policy asked, then the owners it is asked with.
 	for _, tc := range []struct {
-		frame string
-		want  []string
+		frame frameID
+		want  []frameID
 	}{
-		{"T-a", []string{"a", "T-a"}},
-		{"T-b", []string{"b", "T-b"}},
-		{"T-grand", []string{"a", "T-grand", "T-popup", "T-a"}},
+		{"T-a", []frameID{"a", "T-a"}},
+		{"T-b", []frameID{"b", "T-b"}},
+		{"T-grand", []frameID{"a", "T-grand", "T-popup", "T-a"}},
 	} {
 		allowed, resolved := engine.allowRequest(engine.currentTargets(), tc.frame, "https://example.test/")
 		asked := r.take()
@@ -522,7 +522,7 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 			t.Errorf("%s: allowed %v by policy %s", tc.frame, allowed, tc.want[0])
 		}
 	}
-	wantNoAuthority := func(step, frame string) {
+	wantNoAuthority := func(step string, frame frameID) {
 		t.Helper()
 		for url, want := range map[string]bool{"https://example.test/": true, "file:///w/one.html": false} {
 			allowed, resolved := engine.allowRequest(engine.currentTargets(), frame, url)
@@ -555,7 +555,7 @@ func TestHostedBrowserPolicyFollowsTheReportedOpener(t *testing.T) {
 	engine.currentTargets().created(&target.Info{TargetID: "T-pop2", Type: "page"}, nil)
 	engine.Report("popup-1", webview2host.ReportPopup, `{"opener":"page-a","target":"T-pop"}`)
 	engine.Report("popup-2", webview2host.ReportPopup, `{"opener":"popup-1","target":"T-pop2"}`)
-	for frame, want := range map[string][]string{
+	for frame, want := range map[frameID][]frameID{
 		"T-pop":  {"a", "T-pop", "T-a"},
 		"T-pop2": {"a", "T-pop2", "T-pop", "T-a"},
 	} {
@@ -575,7 +575,7 @@ func TestHostedBrowserPolicyResolvesASubframeToItsPage(t *testing.T) {
 	engine.drivers["page-a"] = page
 	engine.mu.Unlock()
 	allowed, resolved := engine.allowRequest(engine.currentTargets(), "F-sub", "https://example.test/")
-	if asked := r.take(); !allowed || !resolved || len(asked) != 1 || !slices.Equal(asked[0], []string{"a", "F-sub"}) {
+	if asked := r.take(); !allowed || !resolved || len(asked) != 1 || !slices.Equal(asked[0], []frameID{"a", "F-sub"}) {
 		t.Fatalf("a subframe of page-a: allowed %v, resolved %v, asked %v", allowed, resolved, asked)
 	}
 }
@@ -620,7 +620,7 @@ func TestHostedPausedRequestWaitsForItsOwner(t *testing.T) {
 				if !<-answered {
 					t.Fatalf("the request was refused: asked %v", r.take())
 				}
-				if asked := r.take(); len(asked) == 0 || !slices.Equal(asked[len(asked)-1], []string{"a", "T-pop", "T-a"}) {
+				if asked := r.take(); len(asked) == 0 || !slices.Equal(asked[len(asked)-1], []frameID{"a", "T-pop", "T-a"}) {
 					t.Fatalf("asked %v", asked)
 				}
 			})
@@ -671,7 +671,7 @@ func TestHostedBrowserPolicyAnswersPausedRequests(t *testing.T) {
 	endpoint := startFakeCDPEndpoint(t, nil, nil)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{})
 	engine.attachTimeout = 5 * time.Second
-	engine.policies["prof"] = func(_ []string, rawURL string) (bool, bool) { return !strings.HasPrefix(rawURL, "file:"), true }
+	engine.policies["prof"] = func(_ []frameID, rawURL string) (bool, bool) { return !strings.HasPrefix(rawURL, "file:"), true }
 	if _, err := engine.ensureBrowser(); err != nil {
 		t.Fatal(err)
 	}

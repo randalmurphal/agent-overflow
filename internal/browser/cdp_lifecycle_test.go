@@ -138,7 +138,7 @@ func runWire(t *testing.T, wire []*cdproto.Message, frames []string, delay func(
 	}
 	answers := wireAnswers{loading: loading}
 	for _, frame := range frames {
-		answers.owns += fmt.Sprintf("%s:%v ", frame, p.OwnsFrame(frame))
+		answers.owns += fmt.Sprintf("%s:%v ", frame, p.OwnsFrame(frameID(frame)))
 	}
 	return answers
 }

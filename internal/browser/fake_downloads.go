@@ -64,7 +64,7 @@ func fakeDownloadAddress(rawURL string) (fakeDownloadRequest, bool) {
 }
 
 // download runs one fake download begun in frame.
-func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error {
+func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error {
 	events := p.engine.events
 	if events.DownloadStarted == nil || events.DownloadProgress == nil {
 		return errors.New("browser: this fake engine was built without engine events and cannot download")

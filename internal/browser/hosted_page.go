@@ -364,8 +364,8 @@ func (p *hostedPage) Handle() ids.PageHandle { return p.id }
 
 // OwnsFrame answers for the page id too, which is the frame a launcher
 // download report names (hosted_downloads.go).
-func (p *hostedPage) OwnsFrame(frame string) bool {
-	return frame == string(p.id) || p.pageDriver.OwnsFrame(frame)
+func (p *hostedPage) OwnsFrame(frame frameID) bool {
+	return frame == frameID(p.id) || p.pageDriver.OwnsFrame(frame)
 }
 
 func (p *hostedPage) Close() {

@@ -165,11 +165,11 @@ func (t *cdpTargets) isKnownLocked(id target.ID) bool {
 // owners answers frame followed by the pages that opened it, nearest first,
 // when frame is a known popup, and frame alone otherwise. A gone popup's
 // edge is no authority for a request.
-func (t *cdpTargets) owners(frame string) []string {
+func (t *cdpTargets) owners(frame frameID) []frameID {
 	chain := t.chain(frame, false)
-	owners := make([]string, len(chain))
+	owners := make([]frameID, len(chain))
 	for i, id := range chain {
-		owners[i] = string(id)
+		owners[i] = frameID(id)
 	}
 	return owners
 }
@@ -178,7 +178,7 @@ func (t *cdpTargets) owners(frame string) []string {
 // handles of the pages they are: a download Chromium starts in a popup
 // reaches its handler in no fixed order with the popup's destroy, and its
 // start names the popup and its openers either way.
-func (t *cdpTargets) downloadOwners(frame string) []ids.PageHandle {
+func (t *cdpTargets) downloadOwners(frame frameID) []ids.PageHandle {
 	chain := t.chain(frame, true)
 	owners := make([]ids.PageHandle, len(chain))
 	for i, id := range chain {
@@ -189,7 +189,7 @@ func (t *cdpTargets) downloadOwners(frame string) []ids.PageHandle {
 
 // chain answers frame's target followed by the targets that opened it,
 // nearest first.
-func (t *cdpTargets) chain(frame string, gone bool) []target.ID {
+func (t *cdpTargets) chain(frame frameID, gone bool) []target.ID {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	chain := []target.ID{target.ID(frame)}

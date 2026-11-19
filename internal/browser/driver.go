@@ -237,7 +237,7 @@ type profileOptions struct {
 	// (awaitRequestOwner). The WebKit engines
 	// need none: their glue names a popup's opener for every navigation
 	// decision.
-	Allow func(owners []string, rawURL string) (allowed, resolved bool)
+	Allow func(owners []frameID, rawURL string) (allowed, resolved bool)
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry
@@ -294,7 +294,7 @@ type pageDriver interface {
 	Handle() ids.PageHandle
 	// OwnsFrame reports whether an engine frame handle belongs to this page,
 	// its main frame included.
-	OwnsFrame(frame string) bool
+	OwnsFrame(frame frameID) bool
 	// Close destroys the page.
 	Close()
 
@@ -499,7 +499,7 @@ type enginePopup struct {
 
 // downloadStart is an engine download beginning in one page's frame.
 type downloadStart struct {
-	Frame         string
+	Frame         frameID
 	ID            string
 	URL           string
 	SuggestedName string

@@ -200,7 +200,7 @@ func assertRealDocumentTitleChanges(t *testing.T, engine *headlessEngine) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) (bool, bool) { return true, true },
+		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]frameID, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

@@ -95,7 +95,7 @@ func (p *wkPage) Handle() ids.PageHandle { return p.handle }
 
 // OwnsFrame answers for this page's own handle: this engine addresses every
 // event by page, so a page's only frame identity is itself.
-func (p *wkPage) OwnsFrame(frame string) bool { return frame == string(p.handle) }
+func (p *wkPage) OwnsFrame(frame frameID) bool { return frame == frameID(p.handle) }
 
 // ReadOnlyCaveat is non-empty because WKWebView has no equivalent of CDP's
 // throwOnSideEffect: the expression is evaluated as written. The Manager carries

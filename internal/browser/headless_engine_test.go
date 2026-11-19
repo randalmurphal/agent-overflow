@@ -250,7 +250,7 @@ func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string,
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
-		Allow: func([]string, string) (bool, bool) { return true, true },
+		Allow: func([]frameID, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile for %s: %v", workspace, err)
@@ -448,7 +448,7 @@ func TestCDPPageOwnsTheFramesItHadBeforeItsAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, frame := range []string{"F-child", "F-grandchild"} {
-		if !page.OwnsFrame(frame) {
+		if !page.OwnsFrame(frameID(frame)) {
 			t.Errorf("the page does not own its frame %s", frame)
 		}
 	}
@@ -1348,7 +1348,7 @@ func TestCDPPageOwnsItsMainFrameBeforeReportingOne(t *testing.T) {
 		t.Fatalf("new page: %v", err)
 	}
 	defer page.Close()
-	if !page.OwnsFrame(string(page.Handle())) {
+	if !page.OwnsFrame(frameID(page.Handle())) {
 		t.Fatalf("page %s does not own its main frame", page.Handle())
 	}
 	if page.OwnsFrame("F-elsewhere") {
@@ -1997,7 +1997,7 @@ setTimeout(() => { document.title = typeof __aoDocumentTitle + " by script" }, 3
 	}))
 	defer server.Close()
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) (bool, bool) { return true, true },
+		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]frameID, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
@@ -2071,7 +2071,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []string, url string) (bool, bool) { return inWorkspace(url), true },
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []frameID, url string) (bool, bool) { return inWorkspace(url), true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

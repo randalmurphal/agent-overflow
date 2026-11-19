@@ -155,7 +155,7 @@ func (p *webkitProfile) downloadStart(page *webkitPage, popup uint64) downloadSt
 	var start downloadStart
 	switch {
 	case page != nil:
-		start.Frame = string(page.handle)
+		start.Frame = frameID(page.handle)
 		if page.popup != "" {
 			start.Popup, start.Openers = page.popup, []ids.PageHandle{page.opener}
 		}

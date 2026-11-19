@@ -44,7 +44,7 @@ type downloadTracker struct {
 	// popup answers, for a download's frame, the popup the frame is the
 	// main frame of, as downloadStart's Popup, Openers and Profile, or an
 	// empty start. Nil names none.
-	popup func(frame string) downloadStart
+	popup func(frame frameID) downloadStart
 	// lifetime is the connection's, which ends a start's wait for its
 	// owner; nil waits for none. ownerWait bounds the wait, requestOwnerWait
 	// when zero.
@@ -155,9 +155,9 @@ func (t *downloadTracker) claim(id string) *destination.Claim {
 func (t *downloadTracker) startLocked(event cdpbrowser.EventDownloadWillBegin) downloadStart {
 	var start downloadStart
 	if t.popup != nil {
-		start = t.popup(string(event.FrameID))
+		start = t.popup(frameID(event.FrameID))
 	}
-	start.Frame, start.ID, start.URL, start.SuggestedName = string(event.FrameID), event.GUID, event.URL, event.SuggestedFilename
+	start.Frame, start.ID, start.URL, start.SuggestedName = frameID(event.FrameID), event.GUID, event.URL, event.SuggestedFilename
 	return start
 }
 

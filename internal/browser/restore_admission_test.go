@@ -110,7 +110,7 @@ func TestTheJarPolicyAnswersForAPageBeingCreated(t *testing.T) {
 	page := openWorkspaceFile(t, manager, a)
 	suspendTab(t, manager, a, page.ID)
 	policy := engine.profile("project:P").allow
-	allow := func(owners []string, rawURL string) bool {
+	allow := func(owners []frameID, rawURL string) bool {
 		allowed, _ := policy(owners, rawURL)
 		return allowed
 	}
@@ -123,7 +123,7 @@ func TestTheJarPolicyAnswersForAPageBeingCreated(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				allow([]string{"F-none"}, "https://example.test/")
+				allow([]frameID{"F-none"}, "https://example.test/")
 			}
 		}
 	}()
@@ -134,10 +134,10 @@ func TestTheJarPolicyAnswersForAPageBeingCreated(t *testing.T) {
 	engine.mu.Lock()
 	handle := engine.lastPage
 	engine.mu.Unlock()
-	if !allow([]string{handle}, page.URL) {
+	if !allow([]frameID{frameID(handle)}, page.URL) {
 		t.Fatal("a page being restored is refused its own workspace's file")
 	}
-	if allow([]string{handle}, "file://"+filepath.ToSlash(canonical(t, other))) {
+	if allow([]frameID{frameID(handle)}, "file://"+filepath.ToSlash(canonical(t, other))) {
 		t.Fatal("a page being restored may open the other worktree's file")
 	}
 	release()

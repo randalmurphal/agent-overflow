@@ -335,7 +335,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
 		Jar: jar.key, DownloadDir: downloadDir, StageDownload: stage, ReleaseStaged: releaseStaged, Ephemeral: jar.ephemeral,
-		Allow: func(owners []string, rawURL string) (bool, bool) { return m.jarAllows(scope, owners, rawURL) },
+		Allow: func(owners []frameID, rawURL string) (bool, bool) { return m.jarAllows(scope, owners, rawURL) },
 	})
 	if err != nil {
 		return nil, err

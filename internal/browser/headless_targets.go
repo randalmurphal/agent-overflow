@@ -42,7 +42,7 @@ func (p *headlessProfile) subscribe(browserCtx context.Context, targets *headles
 		// authority it has until adoption gives it its own. The Manager
 		// resolves a subframe to the page that reported it. A frame no page
 		// answers to yet waits for one (awaitRequestOwner).
-		frame := string(event.FrameID)
+		frame := frameID(event.FrameID)
 		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool {
 			return awaitRequestOwner(browserCtx, p.engine.ownerWait, func() (bool, bool) { return p.allow(targets.owners(frame), rawURL) }, logf)
 		})
@@ -117,7 +117,7 @@ func (p *headlessProfile) browserEvent(m cdporder.Message, targets *headlessTarg
 // removed once its end arrives or the browser has stopped.
 func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *headlessTargets) *downloadTracker {
 	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, p.engine.logf), p.removeDownloadFile)
-	downloads.popup = func(frame string) downloadStart {
+	downloads.popup = func(frame frameID) downloadStart {
 		owners := targets.downloadOwners(frame)
 		if len(owners) < 2 {
 			return downloadStart{}

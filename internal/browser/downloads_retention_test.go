@@ -130,7 +130,7 @@ func TestADownloadWithNoAddressOnABlankPageIsListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame := paneHandle(manager, access, blank.ID)
-	if manager.downloadStarted(downloadStart{Frame: frame, ID: "no-address", SuggestedName: "data.bin"}) != downloadAdmitted {
+	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "no-address", SuggestedName: "data.bin"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
 	listed := threadDownloads(manager, access)
