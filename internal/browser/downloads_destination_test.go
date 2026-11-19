@@ -708,7 +708,7 @@ func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {
 	go func() { finished <- profile.finishHeld(item.engineID) }()
 	<-linking
 	log.take()
-	if err := manager.closeLivePage(t.Context(), access.tb, page.ID); err != nil {
+	if err := manager.closeLivePage(t.Context(), access.tb, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateRunning {
@@ -1000,7 +1000,7 @@ func TestOpenFileAllowsAListedDownloadAndNotItsNeighbor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Listed in the thread's pane after its page closed.
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.OpenFile(t.Context(), access, item.path, OpenOptions{}); err != nil {
@@ -1049,7 +1049,7 @@ func TestOpenFileAllowsAListedDownloadAndNotItsNeighbor(t *testing.T) {
 func TestADownloadThePageStillListsOpens(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "notes.txt", 10)
-	entries, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})
+	entries, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: PageID(page.ID)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1085,7 +1085,7 @@ func TestAListedRowStaysOpenableWhateverOthersDownload(t *testing.T) {
 			t.Fatal(err)
 		}
 		startDownload(t, manager, elsewhere, other, "w.txt", 10)
-		if err := manager.ClosePage(t.Context(), elsewhere, other.ID); err != nil {
+		if err := manager.ClosePage(t.Context(), elsewhere, PageID(other.ID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1102,13 +1102,13 @@ func (m *Manager) closeAllPages(t *testing.T, access Access) {
 	for _, scope := range m.scopes {
 		for id, p := range scope.pages {
 			if p.owner == access.tb {
-				ids = append(ids, id)
+				ids = append(ids, string(id))
 			}
 		}
 	}
 	m.mu.Unlock()
 	for _, id := range ids {
-		if err := m.ClosePage(t.Context(), access, id); err != nil {
+		if err := m.ClosePage(t.Context(), access, PageID(id)); err != nil {
 			t.Fatal(err)
 		}
 	}

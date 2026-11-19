@@ -107,11 +107,11 @@ var companionSpecs = map[string]companionSpec{
 // accepted: its kind, and the fields that kind requires, present.
 type companionCommand struct {
 	kind     companionKind
-	page     string
+	page     appbrowser.PageID
 	address  string
 	index    int
 	jar      string
-	download string
+	download appbrowser.DownloadKey
 	// place is the command's numbered place in its pane mount's order:
 	// always set for targetActive, and for a selection that carries one.
 	place    appbrowser.Numbered
@@ -158,8 +158,8 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 		return refuse("has no target rule")
 	}
 	cmd := companionCommand{
-		kind: spec.kind, page: page, address: action.Address, index: action.Index,
-		jar: strings.TrimSpace(action.Jar), download: strings.TrimSpace(action.DownloadID),
+		kind: spec.kind, page: appbrowser.PageID(page), address: action.Address, index: action.Index,
+		jar: strings.TrimSpace(action.Jar), download: appbrowser.DownloadKey(strings.TrimSpace(action.DownloadID)),
 	}
 	switch {
 	case spec.focus:

@@ -37,7 +37,7 @@ func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
 		t.Fatalf("open the opener: %v", err)
 	}
 	popupFile := writeSmokeFile(t, workspace, "popup.html", `<!doctype html><title>popup</title>`)
-	if _, _, err := manager.Evaluate(ctx, access, opener.ID,
+	if _, _, err := manager.Evaluate(ctx, access, PageID(opener.ID),
 		fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(popupFile))), nil); err != nil {
 		t.Fatalf("open the popup: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
 	child := writeSmokeFile(t, workspace, "child.html", `<!doctype html><title>child</title>`)
 	parent := writeSmokeFile(t, workspace, "parent.html", fmt.Sprintf(
 		`<!doctype html><title>parent</title><script>window.open(%s)</script>`, jsonString(smokeFileURL(child))))
-	if _, _, err := manager.Evaluate(ctx, access, opener.ID,
+	if _, _, err := manager.Evaluate(ctx, access, PageID(opener.ID),
 		fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(parent))), nil); err != nil {
 		t.Fatalf("open the parent popup: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestNativeEngineRealPopupThatClosesItselfIsNoTab(t *testing.T) {
 	}
 	popupFile := writeSmokeFile(t, workspace, "closing.html",
 		`<!doctype html><title>closing</title><script>window.close()</script>`)
-	if _, _, err := manager.Evaluate(ctx, access, opener.ID,
+	if _, _, err := manager.Evaluate(ctx, access, PageID(opener.ID),
 		fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(popupFile))), nil); err != nil {
 		t.Fatalf("open the popup: %v", err)
 	}

@@ -122,7 +122,7 @@ func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFil
 // saved is the record as its thread's saved copy holds it.
 func (r *suspendedPage) saved() pageRecord {
 	return pageRecord{
-		ID: r.id, URL: r.url, Title: r.title, Label: r.label,
+		ID: string(r.id), URL: r.url, Title: r.title, Label: r.label,
 		Order: r.tabOrder, Created: r.createdAt, LastUsed: r.lastUse,
 	}
 }
@@ -253,7 +253,7 @@ func (m *Manager) readRecordFile(path string) (pageRecordFile, error) {
 	defer m.mu.Unlock()
 	seen := make(map[string]bool, len(file.Pages))
 	for _, page := range file.Pages {
-		if page.ID == "" || len(page.ID) > maxPageIDBytes || !utf8.ValidString(page.ID) || seen[page.ID] || m.suspended[page.ID] != nil {
+		if page.ID == "" || len(page.ID) > maxPageIDBytes || !utf8.ValidString(page.ID) || seen[page.ID] || m.suspended[PageID(page.ID)] != nil {
 			return file, fmt.Errorf("invalid or repeated page id %q", truncateUTF8(page.ID, maxPageIDBytes))
 		}
 		seen[page.ID] = true
@@ -278,8 +278,8 @@ func (m *Manager) addLoadedRecords(file pageRecordFile) {
 	m.mu.Lock()
 	tb := m.threadLocked(file.ThreadID)
 	for _, page := range file.Pages {
-		m.suspended[page.ID] = &suspendedPage{
-			id: page.ID, owner: tb,
+		m.suspended[PageID(page.ID)] = &suspendedPage{
+			id: PageID(page.ID), owner: tb,
 			url: page.URL, title: page.Title, label: page.Label,
 			tabOrder: page.Order, createdAt: page.Created, lastUse: page.LastUsed,
 		}

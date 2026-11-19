@@ -11,10 +11,10 @@ import (
 func fencePage(t *testing.T, manager *Manager, access Access) (*managedPage, *fakePage) {
 	t.Helper()
 	page := mustOpen(t, manager, access, "https://example.test/first")
-	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: page.ID}); err != nil {
+	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: PageID(page.ID)}); err != nil {
 		t.Fatal(err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestAReportDuringRestoreMovesTheOrderFence(t *testing.T) {
 	}
 	release := engine.hold()
 	restored := make(chan error, 1)
-	go func() { restored <- manager.ActivateCompanionPage(context.Background(), access, page.ID) }()
+	go func() { restored <- manager.ActivateCompanionPage(context.Background(), access, PageID(page.ID)) }()
 	<-engine.navigating
 	engine.mu.Lock()
 	loading := engine.lastPage
@@ -236,11 +236,11 @@ func TestAReportAfterThePageClosedIsANoOp(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	pushes := countStatePushes(manager)

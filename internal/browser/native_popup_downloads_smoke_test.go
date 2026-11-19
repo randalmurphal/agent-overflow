@@ -71,7 +71,7 @@ func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
 	}
 	open := func(pageID, path string) {
 		t.Helper()
-		if _, _, err := manager.Evaluate(ctx, access, pageID, fmt.Sprintf(`window.open(%s); null`, jsonString(server.URL+path)), nil); err != nil {
+		if _, _, err := manager.Evaluate(ctx, access, PageID(pageID), fmt.Sprintf(`window.open(%s); null`, jsonString(server.URL+path)), nil); err != nil {
 			t.Fatalf("open %s: %v", path, err)
 		}
 	}
@@ -85,7 +85,7 @@ func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
 		// In the popup's tab, not its opener's.
 		var inOpener, inPopup int
 		for _, p := range manager.ownedPages(access.tb) {
-			if p.id == opener.ID {
+			if p.id == PageID(opener.ID) {
 				inOpener += len(p.downloads.list())
 			} else {
 				inPopup += len(p.downloads.list())

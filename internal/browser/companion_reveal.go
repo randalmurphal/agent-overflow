@@ -28,7 +28,7 @@ type revealCommand struct {
 // but not file paste (Teams refuses a pasted file object outright — verified
 // live 2026-09-01 against both this app's clipboard copy and Explorer's own).
 // Only file:// pages qualify: there is nothing to reveal for a remote URL.
-func (m *Manager) RevealPageFile(ctx context.Context, access Access, pageID string) error {
+func (m *Manager) RevealPageFile(ctx context.Context, access Access, pageID PageID) error {
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return err

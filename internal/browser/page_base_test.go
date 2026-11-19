@@ -89,7 +89,7 @@ func newBaseManager(t *testing.T, showFirst bool) (*Manager, *baseLog, Access, s
 		shown = first.ID
 	}
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, shown); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(shown)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -123,7 +123,7 @@ func waitForBase(t *testing.T, log *baseLog, handle, want string) {
 
 func ownedPage(t *testing.T, m *Manager, access Access, pageID string) *managedPage {
 	t.Helper()
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +137,10 @@ func TestAPageHasTheBaseItsAddressCallsFor(t *testing.T) {
 	first, second := paneHandle(manager, access, firstID), paneHandle(manager, access, secondID)
 	waitForBase(t, log, first, documentBase)
 	waitForBase(t, log, second, basePane)
-	if err := manager.ActivateCompanionPage(t.Context(), access, firstID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(firstID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, secondID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)); err != nil {
 		t.Fatal(err)
 	}
 	if _, n := log.of(first); n != 1 {
@@ -304,7 +304,7 @@ func TestAShowWaitsForTheBaseUnderWay(t *testing.T) {
 	go manager.pageInfoReport(p, "https://example.test/doc", "example.test/doc", 1000)
 	receiveWithin(t, entered, "the white base to be applied")
 	activated := make(chan error, 1)
-	go func() { activated <- manager.ActivateCompanionPage(t.Context(), access, secondID) }()
+	go func() { activated <- manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)) }()
 	time.Sleep(200 * time.Millisecond)
 	if slices.Contains(log.snapshot(), "show:"+handle) {
 		t.Fatalf("the page was shown while its white base was being applied: %v", log.snapshot())
@@ -357,7 +357,7 @@ func TestARestoredPageTakesItsBaseBeforeItShows(t *testing.T) {
 	if err := manager.SetPaneRect(mountID, baseRect(basePaneDark)); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, secondID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)); err != nil {
 		t.Fatal(err)
 	}
 	handle := paneHandle(manager, access, secondID)

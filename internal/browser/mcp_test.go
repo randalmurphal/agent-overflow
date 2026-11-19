@@ -48,23 +48,23 @@ func (f *fakeController) OpenFile(context.Context, Access, string, OpenOptions) 
 	return PageInfo{}, nil
 }
 func (f *fakeController) Pages(context.Context, Access) ([]PageInfo, error) { return []PageInfo{}, nil }
-func (f *fakeController) SelectPage(context.Context, Access, string) (PageInfo, error) {
+func (f *fakeController) SelectPage(context.Context, Access, PageID) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) LabelPage(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) LabelPage(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
 func (f *fakeController) NameSession(context.Context, Access, string) (SessionInfo, error) {
 	return SessionInfo{}, nil
 }
-func (f *fakeController) Visibility(context.Context, Access, *bool, string) (SessionInfo, error) {
+func (f *fakeController) Visibility(context.Context, Access, *bool, PageID) (SessionInfo, error) {
 	return SessionInfo{}, nil
 }
 func (f *fakeController) Viewport(context.Context, Access, ViewportOptions) (SessionInfo, error) {
 	return SessionInfo{}, nil
 }
-func (f *fakeController) ClosePage(context.Context, Access, string) error { return nil }
-func (f *fakeController) Snapshot(context.Context, Access, string) (Snapshot, error) {
+func (f *fakeController) ClosePage(context.Context, Access, PageID) error { return nil }
+func (f *fakeController) Snapshot(context.Context, Access, PageID) (Snapshot, error) {
 	return Snapshot{}, nil
 }
 func (f *fakeController) Screenshot(context.Context, Access, ScreenshotOptions) ([]byte, error) {
@@ -92,29 +92,29 @@ func (f *fakeController) Assets(context.Context, Access, AssetOptions) (any, err
 func (f *fakeController) WaitAdvanced(context.Context, Access, WaitOptions) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Click(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) Click(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
 func (f *fakeController) Type(context.Context, Access, TypeOptions) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Press(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) Press(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Scroll(context.Context, Access, string, string, float64, float64) (PageInfo, error) {
+func (f *fakeController) Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Wait(context.Context, Access, string, string, int) (PageInfo, error) {
+func (f *fakeController) Wait(context.Context, Access, PageID, string, int) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) History(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) History(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Evaluate(_ context.Context, _ Access, _ string, code string, argument json.RawMessage) (any, string, error) {
+func (f *fakeController) Evaluate(_ context.Context, _ Access, _ PageID, code string, argument json.RawMessage) (any, string, error) {
 	f.evaluations = append(f.evaluations, fakeEvaluation{code: code, argument: string(argument)})
 	return f.evaluated, f.evaluateNote, f.evaluateErr
 }
-func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string, code string, argument json.RawMessage) (any, string, error) {
+func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ PageID, code string, argument json.RawMessage) (any, string, error) {
 	f.evaluations = append(f.evaluations, fakeEvaluation{readOnly: true, code: code, argument: string(argument)})
 	return f.evaluated, f.evaluateNote, f.evaluateErr
 }

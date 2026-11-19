@@ -129,11 +129,11 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 // pageForOpen answers the page an open navigates: the requested one, or a new
 // page. A suspended page asked for by a caller about to navigate it is
 // restored blank (skipLoad), since loading its old address first is wasted.
-func (m *Manager) pageForOpen(ctx context.Context, access Access, requested string, skipLoad bool) (*managedPage, error) {
+func (m *Manager) pageForOpen(ctx context.Context, access Access, requested PageID, skipLoad bool) (*managedPage, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return nil, fmt.Errorf("browser: invalid caller scope")
 	}
-	if requested = strings.TrimSpace(requested); requested != "" {
+	if requested = requested.trim(); requested != "" {
 		p, _, err := m.resolvePage(ctx, access, requested, skipLoad)
 		return p, err
 	}
@@ -330,7 +330,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	}
 	scope := &jarScope{
 		jar: jar, downloadDir: downloadDir,
-		pages: make(map[string]*managedPage), closing: make(map[string]*pageClose),
+		pages: make(map[PageID]*managedPage), closing: make(map[PageID]*pageClose),
 		creating: make(map[*managedPage]struct{}),
 	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{

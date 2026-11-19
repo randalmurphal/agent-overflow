@@ -12,8 +12,8 @@ import (
 // MoveCompanionPage places one of the thread's tabs, in any state, at
 // index in tab order (clamped). Moving a tab is not a touch. A suspended
 // page's new position is saved with it.
-func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) MoveCompanionPage(access Access, pageID PageID, index int) error {
+	pageID = pageID.trim()
 	if err := m.lockStructure(context.Background(), access.tb); err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) err
 // the tab exists. The moved prefix is renumbered 1..n, and a page opened
 // later keeps appending at the end because its creation-time key is always
 // larger. The caller holds m.mu.
-func (m *Manager) placeTabLocked(tb *threadBrowser, pageID string, index int) (savedMoved, found bool) {
+func (m *Manager) placeTabLocked(tb *threadBrowser, pageID PageID, index int) (savedMoved, found bool) {
 	tabs := m.companionTabsLocked(tb)
 	ordered := make([]threadTab, 0, len(tabs))
 	var moved *threadTab
@@ -129,12 +129,12 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorde
 // call answers when it is. A tab closed while it restored is no error.
 // ctx's numbered selection takes its turn in the user's order first
 // (selection.go); a passed one changes and restores nothing.
-func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
+func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil {
 		return err
 	}
-	selected, err := m.selectTab(access, turn, strings.TrimSpace(pageID))
+	selected, err := m.selectTab(access, turn, pageID.trim())
 	if err != nil || selected == "" {
 		return err
 	}
@@ -145,13 +145,13 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 // shows, the thread's active one, to be restored. It selects nothing, so it
 // cannot undo a selection the user made since the pane saw that tab; a tab
 // that is no longer active is left as it is.
-func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID string) error {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	pageID = pageID.trim()
 	if err := access.End(); err != nil {
 		return err
 	}
 	m.mu.Lock()
-	active := access.tb.session.ActivePageID
+	active := access.tb.session.activePage()
 	m.mu.Unlock()
 	if pageID == "" || pageID != active {
 		return nil
@@ -170,7 +170,7 @@ func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int
 	if err != nil {
 		return err
 	}
-	selected, err := m.selectTabWhere(access, turn, func(tabs []threadTab, active string) int {
+	selected, err := m.selectTabWhere(access, turn, func(tabs []threadTab, active PageID) int {
 		n := len(tabs)
 		if n == 0 || step == 0 {
 			return -1
@@ -200,7 +200,7 @@ func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int
 // answers once it is; a tab closed meanwhile is no error. A tab whose page
 // crashed comes back by its Reload only (ReloadCompanionPage), so selecting
 // it does not load a page that may crash again.
-func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID string) error {
+func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID PageID) error {
 	m.mu.Lock()
 	rec := m.suspended[pageID]
 	crashed := rec != nil && rec.failure != ""

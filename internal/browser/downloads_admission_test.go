@@ -32,7 +32,7 @@ func TestAWorkspaceKeepsOnePoolWhileItsDownloadsHoldIt(t *testing.T) {
 		}
 		held = append(held, reservation)
 	}
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if authorityOf(t, manager, access) != nil {
@@ -92,7 +92,7 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 	t.Run("listed page", func(t *testing.T) {
 		manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 		manager.mu.Lock()
-		p, _ := manager.livePageLocked(page.ID)
+		p, _ := manager.livePageLocked(PageID(page.ID))
 		manager.mu.Unlock()
 		start := func(id downloadID) downloadAdmission {
 			return manager.downloadStarted(downloadStart{Frame: frameID(p.driver.Handle()), ID: id, URL: "https://example.test/" + string(id), SuggestedName: string(id)})

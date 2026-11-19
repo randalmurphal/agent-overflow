@@ -102,7 +102,7 @@ type Manager struct {
 	// suspended holds the pages whose engine page was unloaded (suspend.go),
 	// by page id. They belong to their thread's tab set but hold no engine
 	// resource. Guarded by mu.
-	suspended map[string]*suspendedPage
+	suspended map[PageID]*suspendedPage
 	// forgetting counts the forgets of every page running (beginForget),
 	// during which no page becomes a record. Guarded by mu.
 	forgetting int
@@ -111,7 +111,7 @@ type Manager struct {
 	threads map[string]*threadBrowser
 	// pending holds the pages being created, and the failed creations of
 	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
-	pending map[string]*pendingPage
+	pending map[PageID]*pendingPage
 	// disposing holds, per jar key, the disposal in flight of a profile
 	// releaseScopeLocked unregistered; the channel closes when it ends.
 	// Guarded by mu.
@@ -146,12 +146,12 @@ type Manager struct {
 	presenting map[string]*presentSync
 	// presented is, per thread, the page the last presentation pass showed
 	// (presentPanes); a thread showing none has no entry. Guarded by mu.
-	presented map[string]string
+	presented map[string]PageID
 	// awaitingLayout is, per thread, the active page the last presentation
 	// pass held hidden because it lagged the thread viewport. Whichever
 	// apply lays it out first (applyViewportLocked) asks for the pass that
 	// shows it. Guarded by mu.
-	awaitingLayout map[string]string
+	awaitingLayout map[string]PageID
 	// agentLinger is how long a page keeps showing agent activity after the
 	// last tool call on it ends (activity.go); a test shortens it.
 	agentLinger    time.Duration
@@ -326,7 +326,7 @@ type CDPRelay interface {
 }
 
 type managedPage struct {
-	id string
+	id PageID
 	// owner is the thread lifetime the page is a tab of (thread_life.go).
 	owner  *threadBrowser
 	access Caller
@@ -416,7 +416,7 @@ var pageIncarnations atomic.Uint64
 // already report into this page while it is being created.
 func newManagedPage(owner *threadBrowser, access Caller) *managedPage {
 	p := &managedPage{
-		id: uuid.NewString(), owner: owner, access: access,
+		id: PageID(uuid.NewString()), owner: owner, access: access,
 		createdAt:   time.Now().UnixNano(),
 		inventories: make(map[string]AssetInventory),
 		nodeRefs:    make(map[string]nodeReference),
@@ -438,8 +438,8 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		config:         config,
 		profileDir:     filepath.Join(configDir, browserProfileDir),
 		scopes:         make(map[jarKey]*jarScope),
-		suspended:      make(map[string]*suspendedPage),
-		pending:        make(map[string]*pendingPage),
+		suspended:      make(map[PageID]*suspendedPage),
+		pending:        make(map[PageID]*pendingPage),
 		heldInfo:       newBoundedMap[ids.PageHandle, heldInfo](orderSlack),
 		admissions:     popupadmit.New(orderSlack),
 		disposing:      make(map[jarKey]chan struct{}),

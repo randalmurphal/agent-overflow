@@ -37,7 +37,7 @@ var errPageNotFound = errors.New("browser: page not found")
 // after the page closed: the view is never touched then.
 var errViewClosed = errors.New("browser: the page is closed")
 
-func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *jarScope, error) {
+func (m *Manager) lookupOwnedPage(access Access, pageID PageID) (*managedPage, *jarScope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
@@ -64,7 +64,7 @@ func (m *Manager) pageByHandleLocked(handle ids.PageHandle) *managedPage {
 	return nil
 }
 
-func (m *Manager) workspaceForPage(pageID string) string {
+func (m *Manager) workspaceForPage(pageID PageID) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if p, _ := m.livePageLocked(pageID); p != nil {

@@ -94,10 +94,10 @@ func addr(name string) string { return "https://example.test/" + name }
 // selected; the state counts what can be reopened.
 func TestReopenClosedTabPutsItBackWhereItWas(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"), addr("c"))
-	if _, err := m.LabelPage(t.Context(), access, ids[1], "docs"); err != nil {
+	if _, err := m.LabelPage(t.Context(), access, PageID(ids[1]), "docs"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, ids[1]); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
 	if got := closedCount(t, m, access); got != 1 {
@@ -130,13 +130,13 @@ func TestReopenClosedTabPutsItBackWhereItWas(t *testing.T) {
 // it, so the thread's labels stay unique.
 func TestReopenedTabLeavesATakenLabel(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"))
-	if _, err := m.LabelPage(t.Context(), access, ids[0], "docs"); err != nil {
+	if _, err := m.LabelPage(t.Context(), access, PageID(ids[0]), "docs"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, ids[0]); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.LabelPage(t.Context(), access, ids[1], "DOCS"); err != nil {
+	if _, err := m.LabelPage(t.Context(), access, PageID(ids[1]), "DOCS"); err != nil {
 		t.Fatal(err)
 	}
 	if err := reopenTab(t, m, access); err != nil {
@@ -160,10 +160,10 @@ func TestReopenedTabsLabelIsPushedWhenItsAddressFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.LabelPage(t.Context(), access, page.ID, "notes"); err != nil {
+	if _, err := m.LabelPage(t.Context(), access, PageID(page.ID), "notes"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(file); err != nil {
@@ -182,13 +182,13 @@ func TestReopenedTabsLabelIsPushedWhenItsAddressFails(t *testing.T) {
 // one by one restores the strip.
 func TestCloseOthersAndToTheRightReopenInOrder(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"), addr("c"), addr("d"))
-	if err := m.CloseCompanionTabs(t.Context(), access, ids[1], CloseTabsRight); err != nil {
+	if err := m.CloseCompanionTabs(t.Context(), access, PageID(ids[1]), CloseTabsRight); err != nil {
 		t.Fatal(err)
 	}
 	if got := tabURLs(m, access); !slices.Equal(got, []string{addr("a"), addr("b")}) {
 		t.Fatalf("after close to the right: %v", got)
 	}
-	if err := m.CloseCompanionTabs(t.Context(), access, ids[1], CloseOtherTabs); err != nil {
+	if err := m.CloseCompanionTabs(t.Context(), access, PageID(ids[1]), CloseOtherTabs); err != nil {
 		t.Fatal(err)
 	}
 	if got := tabURLs(m, access); !slices.Equal(got, []string{addr("b")}) {
@@ -202,7 +202,7 @@ func TestCloseOthersAndToTheRightReopenInOrder(t *testing.T) {
 	if got := tabURLs(m, access); !slices.Equal(got, []string{addr("a"), addr("b"), addr("c"), addr("d")}) {
 		t.Fatalf("after reopening all: %v", got)
 	}
-	if err := m.CloseCompanionTabs(t.Context(), access, ids[1], "everything"); err == nil {
+	if err := m.CloseCompanionTabs(t.Context(), access, PageID(ids[1]), "everything"); err == nil {
 		t.Fatal("an unknown set of tabs was accepted")
 	}
 	if err := m.CloseCompanionTabs(t.Context(), access, "nope", CloseOtherTabs); err == nil {
@@ -212,7 +212,7 @@ func TestCloseOthersAndToTheRightReopenInOrder(t *testing.T) {
 
 func TestDuplicateOpensBesideTheTabAtItsAddress(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"))
-	if err := m.DuplicateCompanionPage(t.Context(), access, ids[0]); err != nil {
+	if err := m.DuplicateCompanionPage(t.Context(), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	state := m.CompanionState(access.Caller())
@@ -232,11 +232,11 @@ func TestDuplicateOpensBesideTheTabAtItsAddress(t *testing.T) {
 func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), "")
 	// An agent's close is not the user's.
-	if err := m.ClosePage(t.Context(), access, ids[0]); err != nil {
+	if err := m.ClosePage(t.Context(), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	// A blank tab has nothing to reopen.
-	if err := m.CloseCompanionPage(t.Context(), access, ids[1]); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
 	// A close that fails keeps nothing.
@@ -252,7 +252,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+		if err := m.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -276,7 +276,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := closedCount(t, m, access); got != 0 {
@@ -298,10 +298,10 @@ func TestOnlyTheCloseThatTakesATabRecordsIt(t *testing.T) {
 	}
 
 	hold(ids[0])
-	if err := m.closePage(t.Context(), access, ids[0], false, false); err != nil {
+	if err := m.closePage(t.Context(), access, PageID(ids[0]), false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, ids[0]); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[0])); err != nil {
 		t.Fatalf("the user's close of a closing tab: %v", err)
 	}
 	if got := closedCount(t, m, access); got != 0 {
@@ -314,7 +314,7 @@ func TestOnlyTheCloseThatTakesATabRecordsIt(t *testing.T) {
 	for range 16 {
 		wg.Go(func() {
 			<-start
-			if err := m.CloseCompanionPage(context.Background(), access, ids[1]); err != nil {
+			if err := m.CloseCompanionPage(context.Background(), access, PageID(ids[1])); err != nil {
 				t.Errorf("close: %v", err)
 			}
 		})
@@ -329,7 +329,7 @@ func TestOnlyTheCloseThatTakesATabRecordsIt(t *testing.T) {
 // A tab whose close failed after the tab left is still reopenable.
 func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"))
-	if err := m.ClosePage(t.Context(), access, ids[0]); err != nil {
+	if err := m.ClosePage(t.Context(), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 
@@ -344,7 +344,7 @@ func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
 	if err := os.WriteFile(m.recordDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, ids[1]); err == nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[1])); err == nil {
 		t.Fatal("the close's save failure was not reported")
 	}
 	if _, ok := findTab(m, access, ids[1]); ok {
@@ -402,7 +402,7 @@ func TestAReopenedTabForgottenAfterItsPopOpensNothing(t *testing.T) {
 	for _, forget := range forgets {
 		t.Run(forget.name, func(t *testing.T) {
 			m, access, ids := newTabsManager(t, addr("keep"), addr("x"))
-			if err := m.CloseCompanionPage(t.Context(), access, ids[1]); err != nil {
+			if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[1])); err != nil {
 				t.Fatal(err)
 			}
 			m.reopenRead = func() { forget.run(t, m, access) }
@@ -441,7 +441,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+		if err := m.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 			t.Fatal(err)
 		}
 		if closedCount(t, m, access) == 0 {

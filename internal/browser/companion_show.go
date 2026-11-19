@@ -32,7 +32,7 @@ const (
 // before the turn wins, two shows at once open one tab between them, and a
 // show never names a page the user did not see. It answers the tab it
 // showed or opened.
-func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome, string, error) {
+func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome, PageID, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return ShowPassed, "", fmt.Errorf("browser: invalid caller scope")
 	}
@@ -50,9 +50,9 @@ func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome
 	}
 	tb := access.tb
 	tabs := m.companionTabsLocked(tb)
-	pageID := ""
+	var pageID PageID
 	for _, tab := range tabs {
-		if tab.id == tb.session.ActivePageID {
+		if tab.id == tb.session.activePage() {
 			pageID = tab.id
 		}
 	}
@@ -64,7 +64,7 @@ func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome
 			m.mu.Unlock()
 			return ShowPassed, "", nil
 		}
-		tb.session.ActivePageID, tb.session.Visible = pageID, true
+		tb.session.ActivePageID, tb.session.Visible = string(pageID), true
 		tb.session.UpdatedAt = time.Now()
 		m.mu.Unlock()
 		m.emitThreadState(access.ThreadID)

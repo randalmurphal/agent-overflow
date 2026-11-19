@@ -45,11 +45,11 @@ func TestAKeyboardCloseClosesTheTabItsTurnLeavesActive(t *testing.T) {
 	release := engine.hold(&engine.navGate)
 	defer release()
 	selectC := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, c.ID)
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(c.ID))
 	})
 	awaitWaiting(t, m, mount, 1)
 	selectB := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 1), access, b.ID)
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 1), access, PageID(b.ID))
 	})
 	receive(t, engine.navigating, "b's restore")
 	closing := deliver(func() error {
@@ -92,7 +92,7 @@ func TestAKeyboardCloseAfterAMissingNumberIsRefused(t *testing.T) {
 	if got := tabIDs(m, access); len(got) != len(ids) {
 		t.Fatalf("the refused close closed a tab: %v", got)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[1])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("the late selection answered %v", err)
 	}
 	if got := activeTab(m, access); got != ids[3] {
@@ -123,7 +123,7 @@ func TestAKeyboardCloseIsRefusedWhileAPredecessorIsOutstanding(t *testing.T) {
 	mustDeliver(t, reloading, "the reload after a missing number")
 	got, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 3))
 	mustOutcome(t, ActiveOutOfOrder, got, err)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[1])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("the late selection of b answered %v", err)
 	}
 	if got := tabIDs(m, access); len(got) != len(ids) || activeTab(m, access) != ids[0] {
@@ -148,7 +148,7 @@ func TestAnOlderEpochsCommandIsRefused(t *testing.T) {
 	if got, err := m.CloseActiveCompanionPage(t.Context(), access, placeIn(mount, 1, 1)); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("an older epoch's close answered %d, %v", got, err)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, ids[0]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, PageID(ids[0])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("an older epoch's selection answered %v", err)
 	}
 	if got := tabIDs(m, access); len(got) != len(ids)-1 {
@@ -163,7 +163,7 @@ func TestALateKeyboardCommandIsRefused(t *testing.T) {
 	clock := installGapClock(m)
 	loads := livePage(t, m, access, ids[0]).docEpoch.Load()
 	selecting := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[0])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(ids[0]))
 	})
 	clock.awaitTimers(t, 1)
 	clock.expire(t)
@@ -210,7 +210,7 @@ func TestAKeyboardCloseAcrossAReattach(t *testing.T) {
 func TestKeyboardClosesInARowEachCloseOneTab(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	for seq, id := range []string{ids[1], ids[3]} {
-		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, uint64(seq+1)), access, id); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, uint64(seq+1)), access, PageID(id)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -233,7 +233,7 @@ func TestKeyboardClosesInARowEachCloseOneTab(t *testing.T) {
 func TestAKeyboardClosesCommitPicksTheNextActiveTab(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	for seq, id := range []string{ids[1], ids[3]} {
-		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, uint64(seq+1)), access, id); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, uint64(seq+1)), access, PageID(id)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -242,7 +242,7 @@ func TestAKeyboardClosesCommitPicksTheNextActiveTab(t *testing.T) {
 	active := access.tb.session.ActivePageID
 	var left []string
 	for _, tab := range m.companionTabsLocked(access.tb) {
-		left = append(left, tab.id)
+		left = append(left, string(tab.id))
 	}
 	m.mu.Unlock()
 	if got != ActiveApplied {
@@ -312,7 +312,7 @@ func mustAttachEmpty(t *testing.T, m *Manager, access Access) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	return mount.ID
@@ -359,7 +359,7 @@ func TestAKeyboardReloadOfATabClosedMeanwhileDoesNothing(t *testing.T) {
 		return outcome(ActiveNoTab)(m.ReloadActiveCompanionPage(context.Background(), access, place(mount, 1)))
 	})
 	receive(t, engine.navigating, "a's restore")
-	if err := m.CloseCompanionPage(t.Context(), access, a.ID); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(a.ID)); err != nil {
 		t.Fatal(err)
 	}
 	release()

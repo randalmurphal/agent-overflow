@@ -144,7 +144,7 @@ func newFocusWorld(t *testing.T) *focusWorld {
 		mount  *string
 	}{{w.a, w.aPage, &w.aMount}, {w.b, w.bPage, &w.bMount}} {
 		show := true
-		if _, err := m.Visibility(t.Context(), side.access, &show, side.page); err != nil {
+		if _, err := m.Visibility(t.Context(), side.access, &show, PageID(side.page)); err != nil {
 			t.Fatalf("show %s: %v", side.access.ThreadID, err)
 		}
 		*side.mount = attachSizedPane(t, m, e.recordingPaneHost, side.access)
@@ -183,12 +183,12 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 		{
 			name: "a tab switch",
 			hide: func(t *testing.T, w *focusWorld) {
-				if err := w.m.ActivateCompanionPage(t.Context(), w.a, w.aOther); err != nil {
+				if err := w.m.ActivateCompanionPage(t.Context(), w.a, PageID(w.aOther)); err != nil {
 					t.Fatalf("switch tabs: %v", err)
 				}
 			},
 			show: func(t *testing.T, w *focusWorld) {
-				if err := w.m.ActivateCompanionPage(t.Context(), w.a, w.aPage); err != nil {
+				if err := w.m.ActivateCompanionPage(t.Context(), w.a, PageID(w.aPage)); err != nil {
 					t.Fatalf("switch back: %v", err)
 				}
 			},
@@ -225,7 +225,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			},
 			show: func(t *testing.T, w *focusWorld) {
 				show := true
-				if _, err := w.m.Visibility(t.Context(), w.a, &show, w.aPage); err != nil {
+				if _, err := w.m.Visibility(t.Context(), w.a, &show, PageID(w.aPage)); err != nil {
 					t.Fatalf("show the companion: %v", err)
 				}
 			},

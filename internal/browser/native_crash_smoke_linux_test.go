@@ -35,7 +35,7 @@ func TestNativeEngineRealCrashKeepsTheTab(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -56,14 +56,14 @@ func TestNativeEngineRealCrashKeepsTheTab(t *testing.T) {
 	if !tab.Suspended || !strings.Contains(tab.Error, "terminated") || tab.URL != page.URL {
 		t.Fatalf("tab after the web process ended = %+v, want it failed at %s", tab, page.URL)
 	}
-	if err := manager.ReloadCompanionPage(ctx, access, page.ID); err != nil {
+	if err := manager.ReloadCompanionPage(ctx, access, PageID(page.ID)); err != nil {
 		t.Fatalf("reload the crashed tab: %v", err)
 	}
 	tab, _ = findTab(manager, access, page.ID)
 	if tab.Suspended || tab.Error != "" || tab.URL != page.URL {
 		t.Fatalf("tab after its reload = %+v, want it live at %s", tab, page.URL)
 	}
-	value, _, err := manager.Evaluate(ctx, access, page.ID, "document.title", nil)
+	value, _, err := manager.Evaluate(ctx, access, PageID(page.ID), "document.title", nil)
 	if err != nil || value != "crash" {
 		t.Fatalf("the reloaded page answers %v, %v; want its document", value, err)
 	}

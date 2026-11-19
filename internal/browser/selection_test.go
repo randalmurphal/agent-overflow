@@ -166,10 +166,10 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := m.ActivateCompanionPage(numbered(t.Context(), next.ID, 1), access, ids[2]); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), next.ID, 1), access, PageID(ids[2])); err != nil {
 			t.Fatal(err)
 		}
-		if err := m.ActivateCompanionPage(numbered(t.Context(), oldMount, 1), access, ids[1]); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), oldMount, 1), access, PageID(ids[1])); err != nil {
 			t.Fatalf("the old pane's selection answered %v", err)
 		}
 		if got := activeTab(m, access); got != ids[2] {
@@ -185,7 +185,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 			}))
 		}
 		awaitWaiting(t, m, mount, 65)
-		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
 			t.Fatal(err)
 		}
 		for _, step := range steps {
@@ -220,7 +220,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 			return m.StepCompanionPage(numbered(context.Background(), mount.ID, 2), access, 1)
 		})
 		awaitWaiting(t, m, mount.ID, 1)
-		if err := m.ActivateCompanionPage(numbered(t.Context(), mount.ID, 1), access, ids[1]); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), mount.ID, 1), access, PageID(ids[1])); err != nil {
 			t.Fatal(err)
 		}
 		mustDeliver(t, step, "the step")
@@ -253,7 +253,7 @@ func newPairManager(t *testing.T) (*Manager, Access, pairFixture, string) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"), addr("c"), addr("d"), addr("e"))
 	installGapClock(m)
 	t.Cleanup(func() { assertSelectionsSettled(t, m) })
-	if err := m.CloseCompanionPage(t.Context(), access, ids[4]); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[4])); err != nil {
 		t.Fatal(err)
 	}
 	ids = ids[:4]
@@ -262,7 +262,7 @@ func newPairManager(t *testing.T) (*Manager, Access, pairFixture, string) {
 	if len(downloads) != 1 {
 		t.Fatalf("downloads %+v", downloads)
 	}
-	if err := m.ActivateCompanionPage(t.Context(), access, ids[1]); err != nil {
+	if err := m.ActivateCompanionPage(t.Context(), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
 	mount, err := m.AttachPane(access.Caller())
@@ -274,7 +274,7 @@ func newPairManager(t *testing.T) (*Manager, Access, pairFixture, string) {
 
 var selectionCases = []selectionCase{
 	{"activate c", func(ctx context.Context, m *Manager, access Access, f pairFixture) error {
-		return m.ActivateCompanionPage(ctx, access, f.ids[2])
+		return m.ActivateCompanionPage(ctx, access, PageID(f.ids[2]))
 	}},
 	{"next tab", func(ctx context.Context, m *Manager, access Access, _ pairFixture) error {
 		return m.StepCompanionPage(ctx, access, 1)
@@ -290,7 +290,7 @@ var selectionCases = []selectionCase{
 		return m.ReopenClosedTab(ctx, access)
 	}},
 	{"duplicate a", func(ctx context.Context, m *Manager, access Access, f pairFixture) error {
-		return m.DuplicateCompanionPage(ctx, access, f.ids[0])
+		return m.DuplicateCompanionPage(ctx, access, PageID(f.ids[0]))
 	}},
 	{"open download", func(ctx context.Context, m *Manager, access Access, f pairFixture) error {
 		_, err := m.OpenThreadDownload(ctx, access, DownloadKey(f.download))
@@ -373,7 +373,7 @@ func detachAndChooseElsewhere(t *testing.T, m *Manager, access Access, f pairFix
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), next.ID, 1), access, f.ids[3]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), next.ID, 1), access, PageID(f.ids[3])); err != nil {
 		t.Fatal(err)
 	}
 	return selectionOutcome(m, access), m.CompanionState(access.Caller()).ClosedTabs
@@ -467,7 +467,7 @@ func TestADetachDropsTheOutstandingRecord(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
 	third := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[2])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(ids[2]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	clock.expire(t)
@@ -484,7 +484,7 @@ func TestADetachDropsTheOutstandingRecord(t *testing.T) {
 	if skipped != 0 {
 		t.Fatalf("the detached mount kept %d outstanding numbers", skipped)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	if got := activeTab(m, access); got != ids[2] {
@@ -502,7 +502,7 @@ func TestManyStepsBehindOneDelayedActivation(t *testing.T) {
 		}))
 	}
 	awaitWaiting(t, m, mount, 200)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range steps {
@@ -520,11 +520,11 @@ func TestManyStepsBehindOneDelayedActivation(t *testing.T) {
 func TestAMissingNumberLosesItsPlaceAfterOneWait(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	third := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[2])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(ids[2]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	clock.expire(t)
@@ -533,16 +533,16 @@ func TestAMissingNumberLosesItsPlaceAfterOneWait(t *testing.T) {
 		t.Fatalf("active %s, want c (%s)", got, ids[2])
 	}
 	timers := clock.timers()
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 4), access, ids[3]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 4), access, PageID(ids[3])); err != nil {
 		t.Fatal(err)
 	}
 	if clock.timers() != timers || activeTab(m, access) != ids[3] {
 		t.Fatalf("number 4 waited (%d timers, was %d) or did not select d", clock.timers(), timers)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, PageID(ids[1])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("the late number 2 answered %v", err)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, PageID(ids[0])); err != nil {
 		t.Fatalf("a repeat of the refused number 2 answered %v", err)
 	}
 	if got := activeTab(m, access); got != ids[3] {
@@ -564,7 +564,7 @@ func TestALateNumberIsRefused(t *testing.T) {
 			return err
 		}},
 		{"activation", func(ctx context.Context, m *Manager, access Access, ids []string) error {
-			return m.ActivateCompanionPage(ctx, access, ids[0])
+			return m.ActivateCompanionPage(ctx, access, PageID(ids[0]))
 		}},
 		{"step", func(ctx context.Context, m *Manager, access Access, _ []string) error {
 			return m.StepCompanionPage(ctx, access, 1)
@@ -574,7 +574,7 @@ func TestALateNumberIsRefused(t *testing.T) {
 			m, access, ids, mount := newSelectionManager(t)
 			clock := installGapClock(m)
 			second := deliver(func() error {
-				return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, ids[1])
+				return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, PageID(ids[1]))
 			})
 			awaitWaiting(t, m, mount, 1)
 			clock.expire(t)
@@ -599,7 +599,7 @@ func TestAGapWaitDoesNotPassATakenTurn(t *testing.T) {
 		t.Fatalf("turn 1: %+v, %v", first, err)
 	}
 	third := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[2])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(ids[2]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	clock.awaitTimers(t, 1)
@@ -621,7 +621,7 @@ func TestADetachReleasesWaitingSelections(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	before := activeTab(m, access)
 	second := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, ids[0])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, PageID(ids[0]))
 	})
 	third := deliver(func() error {
 		_, err := m.NewCompanionPage(numbered(context.Background(), mount, 3), access, addr("n"))
@@ -648,21 +648,21 @@ func TestTwoMountsKeepTheirOwnOrders(t *testing.T) {
 	}
 	two := other.ID
 	oneSecond := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), one, 2), access, ids[1])
+		return m.ActivateCompanionPage(numbered(context.Background(), one, 2), access, PageID(ids[1]))
 	})
 	twoSecond := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), two, 2), access, ids[3])
+		return m.ActivateCompanionPage(numbered(context.Background(), two, 2), access, PageID(ids[3]))
 	})
 	awaitWaiting(t, m, one, 1)
 	awaitWaiting(t, m, two, 1)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), two, 1), access, ids[2]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), two, 1), access, PageID(ids[2])); err != nil {
 		t.Fatal(err)
 	}
 	mustDeliver(t, twoSecond, "the second mount's 2")
 	if got := activeTab(m, access); got != ids[3] || waiting(m, one) != 1 {
 		t.Fatalf("active %s, want d; %d waiting in the first mount", got, waiting(m, one))
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), one, 1), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), one, 1), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	mustDeliver(t, oneSecond, "the first mount's 2")
@@ -676,7 +676,7 @@ func TestTwoMountsKeepTheirOwnOrders(t *testing.T) {
 func TestUnorderedSelectionsDoNotWait(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	second := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, ids[3])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, PageID(ids[3]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	visible := true
@@ -685,10 +685,10 @@ func TestUnorderedSelectionsDoNotWait(t *testing.T) {
 		page string
 		act  func() error
 	}{
-		{"unnumbered", ids[0], func() error { return m.ActivateCompanionPage(t.Context(), access, ids[0]) }},
-		{"agent", ids[2], func() error { _, err := m.SelectPage(t.Context(), access, ids[2]); return err }},
+		{"unnumbered", ids[0], func() error { return m.ActivateCompanionPage(t.Context(), access, PageID(ids[0])) }},
+		{"agent", ids[2], func() error { _, err := m.SelectPage(t.Context(), access, PageID(ids[2])); return err }},
 		{"header show", ids[0], func() error {
-			_, err := m.Visibility(t.Context(), access, &visible, ids[0])
+			_, err := m.Visibility(t.Context(), access, &visible, PageID(ids[0]))
 			return err
 		}},
 	} {
@@ -699,7 +699,7 @@ func TestUnorderedSelectionsDoNotWait(t *testing.T) {
 			t.Fatalf("%s: active %s, want %s", tc.name, got, tc.page)
 		}
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
 	mustDeliver(t, second, "number 2")
@@ -719,30 +719,30 @@ func TestPassedSelectionsDoNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseCompanionPage(t.Context(), access, ids[3]); err != nil {
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[3])); err != nil {
 		t.Fatal(err)
 	}
 	before := selectionOutcome(m, access)
 	closed := m.CompanionState(access.Caller()).ClosedTabs
 	for name, act := range map[string]func() error{
 		"unknown mount": func() error {
-			return m.ActivateCompanionPage(numbered(t.Context(), "gone", 1), access, ids[0])
+			return m.ActivateCompanionPage(numbered(t.Context(), "gone", 1), access, PageID(ids[0]))
 		},
 		"another thread's mount": func() error {
-			return m.ActivateCompanionPage(numbered(t.Context(), otherMount.ID, 1), access, ids[0])
+			return m.ActivateCompanionPage(numbered(t.Context(), otherMount.ID, 1), access, PageID(ids[0]))
 		},
 		"a repeat": func() error {
-			return m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0])
+			return m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0]))
 		},
 		"a passed new tab": func() error {
 			_, err := m.NewCompanionPage(numbered(t.Context(), mount, 1), access, addr("n"))
 			return err
 		},
 		"a passed reopen":    func() error { return m.ReopenClosedTab(numbered(t.Context(), mount, 1), access) },
-		"a passed duplicate": func() error { return m.DuplicateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]) },
+		"a passed duplicate": func() error { return m.DuplicateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])) },
 		"a passed step":      func() error { return m.StepCompanionPage(numbered(t.Context(), mount, 1), access, 1) },
 	} {
 		if err := act(); err != nil {
@@ -761,16 +761,16 @@ func TestPassedSelectionsDoNothing(t *testing.T) {
 func TestARepeatOfAWaitingNumberDoesNothing(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	third := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[2])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(ids[2]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	if err := await(t, deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[0])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, PageID(ids[0]))
 	}), "the repeat"); err != nil {
 		t.Fatal(err)
 	}
 	for i, id := range ids[:2] {
-		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, uint64(i+1)), access, id); err != nil {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, uint64(i+1)), access, PageID(id)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -791,7 +791,7 @@ func TestWaitingSelectionsAreBounded(t *testing.T) {
 	}
 	awaitWaiting(t, m, mount, turnorder.MaxWaiters)
 	excess := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2+turnorder.MaxWaiters), access, ids[0])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2+turnorder.MaxWaiters), access, PageID(ids[0]))
 	})
 	select {
 	case err := <-excess:
@@ -801,7 +801,7 @@ func TestWaitingSelectionsAreBounded(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("a selection past the bound waited")
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range held {
@@ -810,7 +810,7 @@ func TestWaitingSelectionsAreBounded(t *testing.T) {
 	// The refused number was never admitted: sent again before the count
 	// passes it, it takes its turn.
 	refused := uint64(2 + turnorder.MaxWaiters)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
 	if got := activeTab(m, access); got != ids[1] {
@@ -825,15 +825,15 @@ func TestAWideGapIsSkippedInBoundedWork(t *testing.T) {
 	clock := installGapClock(m)
 	far := uint64(1) << 62
 	waiter := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, far), access, ids[2])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, far), access, PageID(ids[2]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	clock.expire(t)
 	mustDeliver(t, waiter, "the far number")
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("a number below the record answered %v", err)
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, far-1), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, far-1), access, PageID(ids[1])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("the held far-1 answered %v", err)
 	}
 	if got := activeTab(m, access); got != ids[2] {
@@ -854,22 +854,22 @@ func TestARefusedNumberRetriedLateIsRefused(t *testing.T) {
 	}
 	awaitWaiting(t, m, mount, turnorder.MaxWaiters)
 	refused := uint64(2 + turnorder.MaxWaiters)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err == nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, PageID(ids[1])); err == nil {
 		t.Fatal("a selection past the bound was admitted")
 	}
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range held {
 		mustDeliver(t, step, "a step")
 	}
 	after := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, refused+1), access, ids[2])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, refused+1), access, PageID(ids[2]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	clock.expire(t)
 	mustDeliver(t, after, "the number after the refused one")
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); !errors.Is(err, turnorder.ErrLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, PageID(ids[1])); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("the late retry answered %v", err)
 	}
 	if got := activeTab(m, access); got != ids[2] {
@@ -882,7 +882,7 @@ func TestACanceledWaitLeavesNoWaiter(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	second := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(ctx, mount, 2), access, ids[0])
+		return m.ActivateCompanionPage(numbered(ctx, mount, 2), access, PageID(ids[0]))
 	})
 	awaitWaiting(t, m, mount, 1)
 	cancel()
@@ -928,11 +928,11 @@ func TestASelectionDoesNotWaitForARestore(t *testing.T) {
 	release := engine.hold(&engine.navGate)
 	defer release()
 	restoring := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 1), access, a.ID)
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 1), access, PageID(a.ID))
 	})
 	receive(t, engine.navigating, "a's restore")
 	if err := await(t, deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, c.ID)
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, PageID(c.ID))
 	}), "the click on c"); err != nil {
 		t.Fatal(err)
 	}
@@ -979,11 +979,11 @@ func TestASelectionDoesNotWaitForANewTabsLoad(t *testing.T) {
 // A passed activation of a suspended tab restores nothing.
 func TestAPassedActivationRestoresNothing(t *testing.T) {
 	m, _, access, a, b, mount := newSuspendedPair(t)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, b.ID); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(b.ID)); err != nil {
 		t.Fatal(err)
 	}
 	for _, ctx := range []context.Context{numbered(t.Context(), mount, 1), numbered(t.Context(), "gone", 1)} {
-		if err := m.ActivateCompanionPage(ctx, access, a.ID); err != nil {
+		if err := m.ActivateCompanionPage(ctx, access, PageID(a.ID)); err != nil {
 			t.Fatal(err)
 		}
 		if tab, _ := findTab(m, access, a.ID); !tab.Suspended || tab.Restoring {
@@ -1004,7 +1004,7 @@ func TestThePanesRestoreSelectsNothing(t *testing.T) {
 	if activeTab(m, access) == b.ID {
 		active, other = b.ID, a.ID
 	}
-	if err := m.RestoreActiveCompanionPage(t.Context(), access, other); err != nil {
+	if err := m.RestoreActiveCompanionPage(t.Context(), access, PageID(other)); err != nil {
 		t.Fatal(err)
 	}
 	if tab, _ := findTab(m, access, other); !tab.Suspended {
@@ -1013,7 +1013,7 @@ func TestThePanesRestoreSelectsNothing(t *testing.T) {
 	if got := activeTab(m, access); got != active {
 		t.Fatalf("the restore selected %s, want %s still active", got, active)
 	}
-	if err := m.RestoreActiveCompanionPage(t.Context(), access, active); err != nil {
+	if err := m.RestoreActiveCompanionPage(t.Context(), access, PageID(active)); err != nil {
 		t.Fatal(err)
 	}
 	if tab, _ := findTab(m, access, active); tab.Suspended || tab.Restoring {

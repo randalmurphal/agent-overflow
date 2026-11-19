@@ -417,11 +417,11 @@ func TestAPopupClosedPubliclyBeforeItsDownloadsAreListedLeavesThemWithItsOpener(
 		var id string
 		for _, p := range manager.ownedPages(access.tb) {
 			if p.driver.Handle() == "popup" {
-				id = p.id
+				id = string(p.id)
 			}
 		}
 		wg.Go(func() {
-			if err := manager.ClosePage(context.Background(), access, id); err != nil {
+			if err := manager.ClosePage(context.Background(), access, PageID(id)); err != nil {
 				t.Errorf("close the popup's tab: %v", err)
 			}
 		})
@@ -450,7 +450,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 			var pageID string
 			if restored {
 				page := mustOpen(t, manager, access, "https://example.test/")
-				p, _, err := manager.lookupOwnedPage(access, page.ID)
+				p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -475,7 +475,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 				if restored {
 					_, err = manager.Pages(context.Background(), access)
 					if err == nil {
-						_, _, err = manager.Evaluate(context.Background(), access, pageID, "1", nil)
+						_, _, err = manager.Evaluate(context.Background(), access, PageID(pageID), "1", nil)
 					}
 				} else {
 					_, err = manager.Open(context.Background(), access, "https://example.test/", OpenOptions{})
@@ -493,7 +493,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 			if closing && restored {
 				// The restore finds its record gone and abandons the page.
-				if err := manager.ClosePage(context.Background(), access, pageID); err != nil {
+				if err := manager.ClosePage(context.Background(), access, PageID(pageID)); err != nil {
 					t.Fatalf("close the restoring tab: %v", err)
 				}
 			} else if closing {
@@ -502,10 +502,10 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 					t.Fatalf("tabs %+v", tabs)
 				}
 				// The close waits for the creation it marks.
-				go func() { _ = manager.ClosePage(context.Background(), access, tabs[0].ID) }()
+				go func() { _ = manager.ClosePage(context.Background(), access, PageID(tabs[0].ID)) }()
 				for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
 					manager.mu.Lock()
-					pending := manager.pending[tabs[0].ID]
+					pending := manager.pending[PageID(tabs[0].ID)]
 					marked := pending != nil && pending.closed
 					manager.mu.Unlock()
 					if marked {
@@ -537,7 +537,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 // discarded at once.
 func TestAPopupOfAnOpenerThatLeftIsDiscardedAtOnce(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
-	manager.removeClosedPage(ids.PageHandle(opener))
+	manager.removeClosedPage(opener)
 	done := make(chan struct{})
 	go func() { manager.adoptPopup(engine.popup(opener, "popup")); close(done) }()
 	awaitPromptly(t, done)
@@ -614,7 +614,7 @@ func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
 				t.Fatal("the popup's download was refused")
 			}
 			manager.downloadProgress(progressOf("dl-1", state, 100))
-			manager.removeClosedPage(ids.PageHandle(opener))
+			manager.removeClosedPage(opener)
 			manager.removeClosedPage("popup")
 			awaitRemoved(t, file)
 			if got := manager.artifactBytes.Used(); got != before {
@@ -681,7 +681,7 @@ func TestAParkedDownloadOfAClosedJarIsRemovedWithTheBrowser(t *testing.T) {
 		t.Fatal("the popup's download was refused")
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
-	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access.Caller()).Pages[0].ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(manager.CompanionState(access.Caller()).Pages[0].ID)); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
@@ -878,7 +878,7 @@ func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
 func TestPopupFatesAreBounded(t *testing.T) {
 	manager, _, _, opener := newAdoptionManager(t)
 	for i := range 4 * orderSlack {
-		manager.resolveParked(ids.PageHandle(fmt.Sprintf("popup-%d", i)), nil, ids.PageHandle(opener))
+		manager.resolveParked(ids.PageHandle(fmt.Sprintf("popup-%d", i)), nil, opener)
 	}
 	manager.parkMu.Lock()
 	defer manager.parkMu.Unlock()
@@ -981,7 +981,7 @@ func pageInfoOf(m *Manager, access Access, handle ids.PageHandle) PageInfo {
 		return PageInfo{}
 	}
 	for _, page := range m.CompanionState(access.Caller()).Pages {
-		if page.ID == p.id {
+		if PageID(page.ID) == p.id {
 			return page
 		}
 	}
@@ -1013,7 +1013,7 @@ func TestAPopupBeingAdoptedHoldsItsProfile(t *testing.T) {
 	if len(tabs) != 1 {
 		t.Fatalf("the thread has %d tabs, want the opener", len(tabs))
 	}
-	if err := manager.ClosePage(t.Context(), access, tabs[0].ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(tabs[0].ID)); err != nil {
 		t.Fatal(err)
 	}
 	if disposed() {
@@ -1059,7 +1059,7 @@ func TestAPopupBeingAdoptedKeepsNoPrivateJarForANewTab(t *testing.T) {
 		close(done)
 	}()
 	engine.awaitAttach(t, "popup")
-	if err := manager.ClosePage(t.Context(), access, first.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(first.ID)); err != nil {
 		t.Fatal(err)
 	}
 	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/next").ID)

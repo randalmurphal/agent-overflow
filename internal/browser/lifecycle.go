@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"strings"
 	"time"
 )
 
@@ -128,7 +127,7 @@ func (m *Manager) goLife(fn func()) bool {
 // ClosePage closes one of the caller's pages and waits for the engine to
 // finish with it, answering a failure of that teardown. A suspended page has
 // no engine page to close; closing it forgets its record.
-func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) error {
+func (m *Manager) ClosePage(ctx context.Context, access Access, pageID PageID) error {
 	return m.closePage(ctx, access, pageID, true, false)
 }
 
@@ -139,8 +138,8 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 // whichever of those states it is in, and taken out of it, in one m.mu hold,
 // so a creation or restore moving it between states meanwhile cannot hide it.
 // That hold waits for a jar switch of the thread writing its saved copy.
-func (m *Manager) closePage(ctx context.Context, access Access, pageID string, wait, byUser bool) error {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) closePage(ctx context.Context, access Access, pageID PageID, wait, byUser bool) error {
+	pageID = pageID.trim()
 	if err := m.lockStructure(ctx, access.tb); err != nil {
 		return err
 	}
@@ -154,7 +153,7 @@ func (m *Manager) closePage(ctx context.Context, access Access, pageID string, w
 // after releasing m.mu. The rest publishes the close and, with wait, waits
 // for the teardown; it answers errPageNotFound when pageID was no tab of
 // tb. The caller holds m.mu, taken by lockStructure.
-func (m *Manager) closeTabLocked(tb *threadBrowser, pageID string, byUser bool) func(ctx context.Context, wait bool) error {
+func (m *Manager) closeTabLocked(tb *threadBrowser, pageID PageID, byUser bool) func(ctx context.Context, wait bool) error {
 	if m.forgetRecordLocked(tb, pageID, byUser) {
 		return func(context.Context, bool) error { return m.recordForgotten(tb) }
 	}
@@ -184,7 +183,7 @@ func (m *Manager) closeTabLocked(tb *threadBrowser, pageID string, byUser bool) 
 
 // closeLivePage closes a live page of tb and waits for its teardown. It
 // answers errPageNotFound when the page is not live or closing.
-func (m *Manager) closeLivePage(ctx context.Context, tb *threadBrowser, pageID string) error {
+func (m *Manager) closeLivePage(ctx context.Context, tb *threadBrowser, pageID PageID) error {
 	if err := m.lockStructure(ctx, tb); err != nil {
 		return err
 	}
@@ -205,7 +204,7 @@ func (m *Manager) closeLivePage(ctx context.Context, tb *threadBrowser, pageID s
 // page and moving it is one m.mu hold, so concurrent closes agree on one
 // teardown, and only the one that moved it records a user's close. The
 // caller holds m.mu.
-func (m *Manager) beginCloseLiveLocked(tb *threadBrowser, pageID string, byUser bool) (*pageClose, *jarScope, error) {
+func (m *Manager) beginCloseLiveLocked(tb *threadBrowser, pageID PageID, byUser bool) (*pageClose, *jarScope, error) {
 	if m.suspended[pageID] != nil {
 		// A jar switch's record: the tab is the record, and its page closing
 		// under the same id is no longer a tab (SetJar).
@@ -236,7 +235,7 @@ func (m *Manager) beginCloseLiveLocked(tb *threadBrowser, pageID string, byUser 
 func (m *Manager) markClosingLocked(p *managedPage, scope *jarScope) *pageClose {
 	c := &pageClose{p: p, done: make(chan struct{}), ended: m.pageLeftLocked(scope, p, "page closed")}
 	if scope.closing == nil {
-		scope.closing = make(map[string]*pageClose)
+		scope.closing = make(map[PageID]*pageClose)
 	}
 	scope.closing[p.id] = c
 	m.retirePrivateJarLocked(scope)
@@ -290,7 +289,7 @@ func (m *Manager) runClose(scope *jarScope, c *pageClose) {
 // whose wait ends when the creation has finished with it; false when pageID
 // is no such tab of tb. The caller holds m.mu and calls pendingClosed after
 // releasing it when it answers true.
-func (m *Manager) closePendingLocked(tb *threadBrowser, pageID string) (*pendingPage, bool) {
+func (m *Manager) closePendingLocked(tb *threadBrowser, pageID PageID) (*pendingPage, bool) {
 	pending := m.pending[pageID]
 	if pending == nil || pending.p.owner != tb {
 		return nil, false
@@ -422,7 +421,7 @@ func (m *Manager) disposeScope(ctx context.Context, scope *jarScope) error {
 // disposeReleased stops the downloads a page closed by its engine left
 // running and disposes the scope its close released (nil for none), off the
 // caller, reporting a failure as the teardown of that page.
-func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadID, pageID string) {
+func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadID string, pageID PageID) {
 	run := func() {
 		m.stopEndedDownloads(ended)
 		if scope == nil {
@@ -441,7 +440,7 @@ func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadI
 
 // reportTeardown publishes the failure of a teardown that ran after its page
 // left the tab set, for the pane's banner or, with no pane, a toast.
-func (m *Manager) reportTeardown(threadID, pageID string, err error) {
+func (m *Manager) reportTeardown(threadID string, pageID PageID, err error) {
 	log.Printf("browser: close page %s of thread %s: %v", pageID, threadID, err)
-	m.emit(CompanionEvent{Kind: "teardown", ThreadID: threadID, PageID: pageID, Error: err.Error()})
+	m.emit(CompanionEvent{Kind: "teardown", ThreadID: threadID, PageID: string(pageID), Error: err.Error()})
 }

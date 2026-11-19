@@ -196,7 +196,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
 	}
-	page, _, err := manager.lookupOwnedPage(access, info.ID)
+	page, _, err := manager.lookupOwnedPage(access, PageID(info.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

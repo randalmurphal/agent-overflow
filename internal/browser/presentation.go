@@ -85,7 +85,7 @@ func (m *Manager) presentPanes(threadID string) {
 	// of the thread, an earlier lifetime's still closing included, is
 	// hidden.
 	current := m.currentLocked(threadID)
-	candidateID := m.currentSessionLocked(threadID).ActivePageID
+	candidateID := m.currentSessionLocked(threadID).activePage()
 	var pages []*managedPage
 	var candidate *managedPage
 	var closing []*managedPage
@@ -137,7 +137,7 @@ func (m *Manager) presentPanes(threadID string) {
 	}
 	m.mu.Lock()
 	if m.presented == nil {
-		m.presented = make(map[string]string)
+		m.presented = make(map[string]PageID)
 	}
 	if show {
 		m.presented[threadID] = candidate.id
@@ -168,7 +168,7 @@ func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (s
 	}
 	session := tb.session
 	mount, rect, shown := m.presenterLocked(tb)
-	if !session.Visible || !shown || session.ActivePageID != candidate.id {
+	if !session.Visible || !shown || session.activePage() != candidate.id {
 		return false, PanePlacement{}, false
 	}
 	if live, _ := m.livePageLocked(candidate.id); live != candidate {
@@ -187,7 +187,7 @@ func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (s
 		want := packViewport(pageW, pageH)
 		if candidate.viewport.Load() != want && candidate.viewportFailed.Load() != want {
 			if m.awaitingLayout == nil {
-				m.awaitingLayout = make(map[string]string)
+				m.awaitingLayout = make(map[string]PageID)
 			}
 			m.awaitingLayout[threadID] = candidate.id
 			return false, PanePlacement{}, true

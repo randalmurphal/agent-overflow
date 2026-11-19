@@ -44,7 +44,7 @@ func TestNativeEngineRealFailedLoadIsNoRecentAddress(t *testing.T) {
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	info, err := manager.Open(ctx, access, refused, OpenOptions{PageID: page.ID})
+	info, err := manager.Open(ctx, access, refused, OpenOptions{PageID: PageID(page.ID)})
 	t.Logf("the refused load answered %q, %v", info.URL, err)
 	if err == nil && info.URL == refused {
 		t.Fatalf("the refused load reports its own address %q", info.URL)

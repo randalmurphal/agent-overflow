@@ -10,13 +10,13 @@ import (
 
 func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread": {}})
-	pages := make(map[string]*managedPage, 3)
+	pages := make(map[PageID]*managedPage, 3)
 	for i, id := range []string{"first", "second", "third"} {
-		p := &managedPage{id: id, owner: threads["thread"], createdAt: int64(i + 1)}
+		p := &managedPage{id: PageID(id), owner: threads["thread"], createdAt: int64(i + 1)}
 		p.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 		p.tabOrder.Store(p.createdAt)
 		p.info = PageInfo{ID: id}
-		pages[id] = p
+		pages[PageID(id)] = p
 	}
 	m := &Manager{
 		scopes:  map[jarKey]*jarScope{"/repo": {pages: pages}},
@@ -66,7 +66,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 func TestCompanionStateSnapshotsAreNumberedInReadOrder(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"a": {}, "b": {}})
 	m := &Manager{
-		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{}}},
 		threads: threads,
 	}
 	first := m.threadState("a")
@@ -99,14 +99,14 @@ func TestCompanionStateKeepsTabOrderAndUsesExplicitActivePage(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread": {ActivePageID: "first"}})
 	first := &managedPage{id: "first", owner: threads["thread"], createdAt: 1}
 	first.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	first.info = PageInfo{ID: first.id, URL: "https://first.test", Title: "First"}
+	first.info = PageInfo{ID: string(first.id), URL: "https://first.test", Title: "First"}
 	first.lastUse.Store(time.Now().Add(-time.Minute).UnixNano())
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	second.info = PageInfo{ID: second.id, URL: "file:///tmp/second.html", Title: "Second"}
+	second.info = PageInfo{ID: string(second.id), URL: "file:///tmp/second.html", Title: "Second"}
 	second.lastUse.Store(time.Now().UnixNano())
 	m := &Manager{scopes: map[jarKey]*jarScope{
-		"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}},
+		"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}},
 	}, threads: threads}
 
 	state := m.threadState("thread")
@@ -125,17 +125,17 @@ func TestBackgroundPageActivityDoesNotStealCompanionSelection(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread": {ActivePageID: "first", Visible: true}})
 	first := &managedPage{id: "first", owner: threads["thread"], createdAt: 1}
 	first.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	first.info = PageInfo{ID: first.id, URL: "https://first.test"}
+	first.info = PageInfo{ID: string(first.id), URL: "https://first.test"}
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	second.info = PageInfo{ID: second.id, URL: "https://second.test"}
+	second.info = PageInfo{ID: string(second.id), URL: "https://second.test"}
 	m := &Manager{
-		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
 
 	m.pageUsed(second)
-	if got := m.threadState("thread").ActivePageID; got != first.id {
+	if got := m.threadState("thread").ActivePageID; PageID(got) != first.id {
 		t.Fatalf("background activity selected %q, want %q", got, first.id)
 	}
 }
@@ -144,12 +144,12 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 	threads := testThreads(map[string]SessionInfo{"thread": {ActivePageID: "first"}})
 	first := &managedPage{id: "first", owner: threads["thread"], createdAt: 1}
 	first.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	first.info = PageInfo{ID: first.id, Label: "app", URL: "https://first.test"}
+	first.info = PageInfo{ID: string(first.id), Label: "app", URL: "https://first.test"}
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	second.info = PageInfo{ID: second.id, Label: "docs", URL: "https://second.test"}
+	second.info = PageInfo{ID: string(second.id), Label: "docs", URL: "https://second.test"}
 	m := &Manager{
-		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
@@ -158,11 +158,11 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 		t.Fatalf("ambiguous show error = %v", err)
 	}
 	info, err := m.Visibility(context.Background(), access, &show, second.id)
-	if err != nil || !info.Visible || info.ActivePageID != second.id {
+	if err != nil || !info.Visible || PageID(info.ActivePageID) != second.id {
 		t.Fatalf("explicit show = %#v, %v", info, err)
 	}
 	m.pageUsed(first)
-	if got := m.threadState("thread").ActivePageID; got != second.id {
+	if got := m.threadState("thread").ActivePageID; PageID(got) != second.id {
 		t.Fatalf("background page stole pinned selection: %q", got)
 	}
 }
@@ -171,11 +171,11 @@ func TestImplicitPageResolutionIsConvenientOnlyWhenUnambiguous(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread": {}})
 	first := &managedPage{id: "first", owner: threads["thread"], createdAt: 1}
 	first.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	first.info = PageInfo{ID: first.id, Label: "app"}
+	first.info = PageInfo{ID: string(first.id), Label: "app"}
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	second.info = PageInfo{ID: second.id, Label: "docs"}
-	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first}}}}
+	second.info = PageInfo{ID: string(second.id), Label: "docs"}
+	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first}}}}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	resolved, _, err := m.lookupOrSelectPage(context.Background(), access, "")
 	if err != nil || resolved != first {
@@ -191,11 +191,11 @@ func TestPageLabelsAreThreadUniqueAndEditable(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread": {}})
 	first := &managedPage{id: "first", owner: threads["thread"], createdAt: 1}
 	first.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	first.info = PageInfo{ID: first.id}
+	first.info = PageInfo{ID: string(first.id)}
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	second.info = PageInfo{ID: second.id}
-	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}}}
+	second.info = PageInfo{ID: string(second.id)}
+	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}}}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	info, err := m.LabelPage(context.Background(), access, first.id, " app-preview ")
 	if err != nil || info.Label != "app-preview" {
@@ -214,12 +214,12 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread-a": {}, "thread-b": {}})
 	first := &managedPage{id: "first", owner: threads["thread-a"], createdAt: 1}
 	first.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	first.info = PageInfo{ID: first.id}
+	first.info = PageInfo{ID: string(first.id)}
 	second := &managedPage{id: "second", owner: threads["thread-b"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
-	second.info = PageInfo{ID: second.id}
+	second.info = PageInfo{ID: string(second.id)}
 	m := &Manager{
-		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
 	show := true
@@ -242,7 +242,7 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	for threadID, pageID := range map[string]string{"thread-a": first.id, "thread-b": second.id} {
+	for threadID, pageID := range map[string]string{"thread-a": string(first.id), "thread-b": string(second.id)} {
 		state := m.threadState(threadID)
 		if state.ActivePageID != pageID || state.Visible == nil || !*state.Visible || len(state.Pages) != 1 || state.Pages[0].Label != "preview" {
 			t.Fatalf("scoped state %s = %#v", threadID, state)
@@ -262,7 +262,7 @@ func TestStepCompanionPageMovesOneTabPerStepAndWraps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ActivateCompanionPage(t.Context(), access, first); err != nil {
+	if err := m.ActivateCompanionPage(t.Context(), access, PageID(first)); err != nil {
 		t.Fatal(err)
 	}
 	active := func() string { return m.CompanionState(access.Caller()).ActivePageID }

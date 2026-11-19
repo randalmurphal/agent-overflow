@@ -176,7 +176,7 @@ func (h *harnessHost) BrowserPressKey(threadID, pageID string, chord keybindings
 	if err != nil {
 		return err
 	}
-	return h.app.browser.manager.HarnessPressKey(context.Background(), access, pageID, chord)
+	return h.app.browser.manager.HarnessPressKey(context.Background(), access, appbrowser.PageID(pageID), chord)
 }
 
 func (h *harnessHost) BrowserScroll(threadID, pageID string, x, y float64) error {
@@ -187,7 +187,7 @@ func (h *harnessHost) BrowserScroll(threadID, pageID string, x, y float64) error
 	if err != nil {
 		return err
 	}
-	_, err = h.app.browser.manager.Scroll(context.Background(), access, pageID, "", x, y)
+	_, err = h.app.browser.manager.Scroll(context.Background(), access, appbrowser.PageID(pageID), "", x, y)
 	return err
 }
 
@@ -208,10 +208,10 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 	defer func() {
 		if previous.Visible != nil && *previous.Visible {
 			visible := true
-			_, _ = manager.Visibility(context.Background(), access, &visible, previous.ActivePageID)
+			_, _ = manager.Visibility(context.Background(), access, &visible, appbrowser.PageID(previous.ActivePageID))
 		} else {
 			if previous.ActivePageID != "" {
-				_ = manager.ActivateCompanionPage(context.Background(), access, previous.ActivePageID)
+				_ = manager.ActivateCompanionPage(context.Background(), access, appbrowser.PageID(previous.ActivePageID))
 			}
 			visible := false
 			_, _ = manager.Visibility(context.Background(), access, &visible, "")
@@ -230,10 +230,10 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 		return nil, err
 	}
 	visible := true
-	if _, err := manager.Visibility(context.Background(), access, &visible, pageID); err != nil {
+	if _, err := manager.Visibility(context.Background(), access, &visible, appbrowser.PageID(pageID)); err != nil {
 		return nil, err
 	}
-	return manager.Screenshot(context.Background(), access, appbrowser.ScreenshotOptions{PageID: pageID})
+	return manager.Screenshot(context.Background(), access, appbrowser.ScreenshotOptions{PageID: appbrowser.PageID(pageID)})
 }
 
 func (h *harnessHost) CreateProject(path string) (store.Project, error) {

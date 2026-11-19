@@ -40,10 +40,10 @@ func TestAgentActivityShowsOnTransitionsOnly(t *testing.T) {
 	m.agentLinger = time.Hour
 	log := recordEvents(m)
 
-	if _, err := m.Open(t.Context(), access, "https://example.test/user", OpenOptions{PageID: firstID}); err != nil {
+	if _, err := m.Open(t.Context(), access, "https://example.test/user", OpenOptions{PageID: PageID(firstID)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ReloadCompanionPage(t.Context(), access, firstID); err != nil {
+	if err := m.ReloadCompanionPage(t.Context(), access, PageID(firstID)); err != nil {
 		t.Fatal(err)
 	}
 	if agentShown(m, access, firstID) {
@@ -52,7 +52,7 @@ func TestAgentActivityShowsOnTransitionsOnly(t *testing.T) {
 
 	for i := range 3 {
 		ctx, end := withAgentCall(t.Context())
-		if _, err := m.Open(ctx, access, "https://example.test/agent", OpenOptions{PageID: firstID}); err != nil {
+		if _, err := m.Open(ctx, access, "https://example.test/agent", OpenOptions{PageID: PageID(firstID)}); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
 		if !agentShown(m, access, firstID) {
@@ -75,7 +75,7 @@ func TestAgentActivityShowsOnTransitionsOnly(t *testing.T) {
 		})
 		for range 3 {
 			c, end := ctx()
-			if _, err := m.Open(c, access, "https://example.test/count", OpenOptions{PageID: secondID}); err != nil {
+			if _, err := m.Open(c, access, "https://example.test/count", OpenOptions{PageID: PageID(secondID)}); err != nil {
 				t.Fatal(err)
 			}
 			end()
@@ -92,7 +92,7 @@ func TestAgentActivityShowsOnTransitionsOnly(t *testing.T) {
 		t.Fatalf("an agent's run of 3 calls pushed %d states, the user's %d; want exactly one more", agent, user)
 	}
 	// Activity shows; it gates nothing.
-	if err := m.ReloadCompanionPage(t.Context(), access, firstID); err != nil {
+	if err := m.ReloadCompanionPage(t.Context(), access, PageID(firstID)); err != nil {
 		t.Fatalf("the user's reload during agent activity: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func TestAgentActivityClearsAfterTheLastCallOut(t *testing.T) {
 	ctxA, endA := withAgentCall(t.Context())
 	ctxB, endB := withAgentCall(t.Context())
 	for _, ctx := range []context.Context{ctxA, ctxB} {
-		if _, err := m.Open(ctx, access, "https://example.test/agent", OpenOptions{PageID: firstID}); err != nil {
+		if _, err := m.Open(ctx, access, "https://example.test/agent", OpenOptions{PageID: PageID(firstID)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestAgentActivityStaleClearKeepsItShown(t *testing.T) {
 	m.agentLinger = time.Hour
 	p := livePage(t, m, access, firstID)
 	ctx, end := withAgentCall(t.Context())
-	if _, err := m.Open(ctx, access, "https://example.test/a", OpenOptions{PageID: firstID}); err != nil {
+	if _, err := m.Open(ctx, access, "https://example.test/a", OpenOptions{PageID: PageID(firstID)}); err != nil {
 		t.Fatal(err)
 	}
 	end()
@@ -152,7 +152,7 @@ func TestAgentActivityStaleClearKeepsItShown(t *testing.T) {
 	p.activity.mu.Unlock()
 	ctx, end = withAgentCall(t.Context())
 	defer end()
-	if _, err := m.Open(ctx, access, "https://example.test/b", OpenOptions{PageID: firstID}); err != nil {
+	if _, err := m.Open(ctx, access, "https://example.test/b", OpenOptions{PageID: PageID(firstID)}); err != nil {
 		t.Fatal(err)
 	}
 	m.clearAgentActivity(p, stale)

@@ -63,10 +63,11 @@ const (
 
 // pageFocusIntent is one mount's current intent.
 type pageFocusIntent struct {
-	thread, mount, pageID string
-	id                    uint64
-	armed                 time.Time
-	withdrawn             atomic.Bool
+	thread, mount string
+	pageID        PageID
+	id            uint64
+	armed         time.Time
+	withdrawn     atomic.Bool
 	// claimed is set, under Manager.mu, once the intent is handed to the
 	// engine, so it is applied at most once at a time.
 	claimed bool
@@ -99,8 +100,8 @@ func (m *Manager) mountFocusLocked(threadID, mount string) *mountFocus {
 // already withdrawn or superseded, a page that is gone, or an engine with no
 // native views does nothing. The outcome of a focus attempt arrives as a
 // Kind "focus" event (emitPageFocus).
-func (m *Manager) FocusCompanionPage(access Access, mount, pageID string, intent uint64) error {
-	mount, pageID = strings.TrimSpace(mount), strings.TrimSpace(pageID)
+func (m *Manager) FocusCompanionPage(access Access, mount string, pageID PageID, intent uint64) error {
+	mount, pageID = strings.TrimSpace(mount), pageID.trim()
 	if mount == "" || pageID == "" || intent == 0 {
 		return errors.New("browser: a page focus needs its pane mount, page and intent")
 	}
@@ -185,7 +186,7 @@ func (m *Manager) applyFocusIntent(threadID string) {
 	// Presented and still selected, as a pass's show requires: a page shown
 	// by a pass that a newer selection overtook is hidden by the next pass,
 	// which applies the intent if its page is shown then.
-	if m.presented[threadID] == in.pageID && m.currentSessionLocked(threadID).ActivePageID == in.pageID {
+	if m.presented[threadID] == in.pageID && m.currentSessionLocked(threadID).activePage() == in.pageID {
 		// A closing page has left its scope's pages already.
 		if p, _ := m.livePageLocked(in.pageID); p != nil && p.owner == m.currentLocked(threadID) {
 			page = p
@@ -227,7 +228,7 @@ func (m *Manager) applyFocusIntent(threadID string) {
 }
 
 // hasTabLocked is hasTab for a caller holding m.mu.
-func (m *Manager) hasTabLocked(tb *threadBrowser, pageID string) bool {
+func (m *Manager) hasTabLocked(tb *threadBrowser, pageID PageID) bool {
 	for _, tab := range m.companionTabsLocked(tb) {
 		if tab.id == pageID {
 			return true

@@ -75,14 +75,14 @@ func TestAToolCallPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pushes := countStatePushes(manager)
 	wait := func() {
 		t.Helper()
-		if _, err := manager.Wait(t.Context(), access, page.ID, "", 1); err != nil {
+		if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -124,7 +124,7 @@ func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestTwoPublishersOfOneWritePushItOnce(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestTwoPublishersOfOneWritePushItOnce(t *testing.T) {
 // report of it still to come.
 func retitle(t *testing.T, m *Manager, access Access, pageID, title string) *managedPage {
 	t.Helper()
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ var infoReaders = []struct {
 	read func(*testing.T, *Manager, Access, string)
 }{
 	{"SelectPage", func(t *testing.T, m *Manager, access Access, pageID string) {
-		if _, err := m.SelectPage(t.Context(), access, pageID); err != nil {
+		if _, err := m.SelectPage(t.Context(), access, PageID(pageID)); err != nil {
 			t.Error(err)
 		}
 	}},
@@ -223,7 +223,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 				t.Fatalf("after the read the tabs show %q (before: %q), want what it stored", got, old)
 			}
 			manager.updatePageInfo(p.driver.Handle(), page.URL, "Retitled", 1)
-			if _, err := manager.Wait(t.Context(), access, page.ID, "", 1); err != nil {
+			if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
 				t.Fatal(err)
 			}
 			if got := pushes.shownTitle(page.ID); got != "Retitled" {
@@ -245,7 +245,7 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 		if _, err := manager.Pages(t.Context(), access); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := manager.Wait(t.Context(), access, page.ID, "", 1); err != nil {
+		if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -261,17 +261,17 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 	}
 	// The listing stays in the cache until the next read: browser_label_page
 	// answers the page as the last browser_pages listed it.
-	labeled, err := manager.LabelPage(t.Context(), access, page.ID, "docs")
+	labeled, err := manager.LabelPage(t.Context(), access, PageID(page.ID), "docs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !labeled.Selected || labeled.LastOpened != pages[0].LastOpened {
 		t.Fatalf("browser_label_page after browser_pages answers %+v", labeled)
 	}
-	if _, err := manager.Wait(t.Context(), access, page.ID, "", 1); err != nil {
+	if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
 		t.Fatal(err)
 	}
-	relabeled, err := manager.LabelPage(t.Context(), access, page.ID, "docs")
+	relabeled, err := manager.LabelPage(t.Context(), access, PageID(page.ID), "docs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestARestoredPageIsPushedWithWhatItsLoadRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	pushes := countStatePushes(manager)
-	if err := manager.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	pushes.mu.Lock()
@@ -344,7 +344,7 @@ func TestAClientReadLeavesAWriteForThePush(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestAnEngineInfoReportOlderThanTheShownOneIsDropped(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

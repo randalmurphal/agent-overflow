@@ -83,7 +83,7 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 	defer cancel()
 	evalString := func(access Access, pageID, code string) string {
 		t.Helper()
-		value, _, err := manager.Evaluate(ctx, access, pageID, code, nil)
+		value, _, err := manager.Evaluate(ctx, access, PageID(pageID), code, nil)
 		if err != nil {
 			t.Fatalf("evaluate %s: %v", code, err)
 		}
@@ -160,7 +160,7 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 	t.Run("popups", func(t *testing.T) {
 		s := sides[0]
 		for _, button := range []string{"popup", "noopener", "own"} {
-			if _, err := manager.Click(ctx, s.access, s.pageID, "#"+button); err != nil {
+			if _, err := manager.Click(ctx, s.access, PageID(s.pageID), "#"+button); err != nil {
 				t.Fatalf("click %s: %v", button, err)
 			}
 		}
@@ -211,7 +211,7 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 		// error page navigate nowhere.
 		navigate := func(target string) {
 			t.Helper()
-			if _, err := manager.OpenFile(ctx, s.access, index, OpenOptions{PageID: s.pageID}); err != nil {
+			if _, err := manager.OpenFile(ctx, s.access, index, OpenOptions{PageID: PageID(s.pageID)}); err != nil {
 				t.Fatalf("reopen the workspace page: %v", err)
 			}
 			evalString(s.access, s.pageID, fmt.Sprintf(`location.href = %q; "ok"`, target))
@@ -236,7 +236,7 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 				t.Errorf("navigating to %s loaded %q", target, got)
 			}
 		}
-		if _, err := manager.Open(ctx, s.access, "chrome://version", OpenOptions{PageID: s.pageID}); err == nil {
+		if _, err := manager.Open(ctx, s.access, "chrome://version", OpenOptions{PageID: PageID(s.pageID)}); err == nil {
 			t.Error("the Manager opened chrome://version")
 		}
 	})
@@ -284,7 +284,7 @@ func smokePopups(ctx context.Context, t *testing.T, manager *Manager, access Acc
 func smokePopupsShow(ctx context.Context, t *testing.T, manager *Manager, access Access, openerID, text string) bool {
 	t.Helper()
 	for _, id := range smokePopups(ctx, t, manager, access, openerID) {
-		value, _, err := manager.Evaluate(ctx, access, id, `document.body ? document.body.innerText : ""`, nil)
+		value, _, err := manager.Evaluate(ctx, access, PageID(id), `document.body ? document.body.innerText : ""`, nil)
 		if err != nil {
 			t.Fatalf("read popup %s: %v", id, err)
 		}

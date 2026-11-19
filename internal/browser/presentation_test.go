@@ -81,11 +81,11 @@ func TestPlacePageFitsDownCentersAndClips(t *testing.T) {
 // all to the pane size, which with no pane ever mounted is the default.
 func TestViewportLaysOutEveryOwnedPageAndResetsToTheDefault(t *testing.T) {
 	manager, _, access, firstID, secondID := newPaneHostManager(t)
-	first, _, err := manager.lookupOwnedPage(access, firstID)
+	first, _, err := manager.lookupOwnedPage(access, PageID(firstID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := manager.lookupOwnedPage(access, secondID)
+	second, _, err := manager.lookupOwnedPage(access, PageID(secondID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestScreenshotNamesAPageThatProducesNoFrame(t *testing.T) {
 	t.Cleanup(func() { screenshotTimeout = previous })
 
 	manager, _, access, firstID, _ := newPaneHostManager(t)
-	first, _, err := manager.lookupOwnedPage(access, firstID)
+	first, _, err := manager.lookupOwnedPage(access, PageID(firstID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestScreenshotNamesAPageThatProducesNoFrame(t *testing.T) {
 	fake.mu.Unlock()
 
 	started := time.Now()
-	_, err = manager.Screenshot(t.Context(), access, ScreenshotOptions{PageID: firstID})
+	_, err = manager.Screenshot(t.Context(), access, ScreenshotOptions{PageID: PageID(firstID)})
 	if err == nil || !strings.Contains(err.Error(), "produced no frame") {
 		t.Fatalf("expected the no-frame error, got %v", err)
 	}

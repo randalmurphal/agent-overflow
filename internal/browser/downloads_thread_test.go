@@ -127,7 +127,7 @@ func fakeDownloadURL(name string, bytes int, flags ...string) string {
 
 func startDownload(t *testing.T, manager *Manager, access Access, page PageInfo, name string, bytes int, flags ...string) {
 	t.Helper()
-	if _, err := manager.Open(t.Context(), access, fakeDownloadURL(name, bytes, flags...), OpenOptions{PageID: page.ID}); err != nil {
+	if _, err := manager.Open(t.Context(), access, fakeDownloadURL(name, bytes, flags...), OpenOptions{PageID: PageID(page.ID)}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -197,7 +197,7 @@ func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, saving download
 	}
 
 	// browser_downloads still lists the page's download, now with its size.
-	tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})
+	tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: PageID(page.ID)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
 		t.Fatal("a download within quota was refused")
 	}
 	log.take()
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	var reasons []string
@@ -664,7 +664,7 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	for i := total - 1; i >= 0; i-- {
 		manager.downloadProgress(downloadProgress{ID: downloadID(fmt.Sprintf("dl-%d", i)), State: downloadFailed, Error: "stopped"})
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +688,7 @@ func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
 		manager.downloadProgress(downloadProgress{ID: id, State: downloadCanceled})
 	}
 	manager.downloadProgress(downloadProgress{ID: "running", Received: 5, State: downloadInProgress})
-	tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})
+	tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: PageID(page.ID)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +893,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			}
 		}},
 		{"close the page", func(t *testing.T, manager *Manager, access Access, page PageInfo) {
-			if err := manager.closeLivePage(t.Context(), access.tb, page.ID); err != nil {
+			if err := manager.closeLivePage(t.Context(), access.tb, PageID(page.ID)); err != nil {
 				t.Error(err)
 			}
 		}},
@@ -903,7 +903,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			baseline := manager.artifactBytes.Used()
 			authority := authorityOf(t, manager, access)
 			manager.mu.Lock()
-			p, _ := manager.livePageLocked(page.ID)
+			p, _ := manager.livePageLocked(PageID(page.ID))
 			manager.mu.Unlock()
 			manager.downloadAdmitting = func() { tc.leave(t, manager, access, page) }
 
@@ -1044,18 +1044,18 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 		}, false},
 		{"engine page closed", func(t *testing.T, manager *Manager, _ Access, page PageInfo) {
 			manager.mu.Lock()
-			p, _ := manager.livePageLocked(page.ID)
+			p, _ := manager.livePageLocked(PageID(page.ID))
 			manager.mu.Unlock()
 			manager.engine.(*fakeEngine).events.PageClosed(p.driver.Handle())
 		}, false},
 		{"page crashed", func(t *testing.T, manager *Manager, _ Access, page PageInfo) {
 			manager.mu.Lock()
-			p, _ := manager.livePageLocked(page.ID)
+			p, _ := manager.livePageLocked(PageID(page.ID))
 			manager.mu.Unlock()
 			manager.engine.(*fakeEngine).events.PageCrashed(p.driver.Handle(), "killed")
 		}, false},
 		{"close the page", func(t *testing.T, manager *Manager, access Access, page PageInfo) {
-			if err := manager.closeLivePage(t.Context(), access.tb, page.ID); err != nil {
+			if err := manager.closeLivePage(t.Context(), access.tb, PageID(page.ID)); err != nil {
 				t.Fatal(err)
 			}
 		}, false},
@@ -1123,7 +1123,7 @@ func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
 	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "listed", URL: long, SuggestedName: "a.txt"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
 	}
-	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(blank.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

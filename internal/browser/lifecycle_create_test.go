@@ -64,10 +64,10 @@ func TestAFailedCreationShowsOnTheUsersTabOnly(t *testing.T) {
 	if state.ActivePageID != failed {
 		t.Fatalf("active %q, want the failed tab", state.ActivePageID)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, failed); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(failed)); err != nil {
 		t.Fatalf("select the failed tab: %v", err)
 	}
-	if err := manager.CloseCompanionPage(t.Context(), access, failed); err != nil {
+	if err := manager.CloseCompanionPage(t.Context(), access, PageID(failed)); err != nil {
 		t.Fatalf("close the failed tab: %v", err)
 	}
 	if got := tabIDs(manager, access); len(got) != 0 {
@@ -127,7 +127,7 @@ func TestClosingATabWhileItIsCreated(t *testing.T) {
 			})
 			receive(t, engine.creating, "the engine page's creation")
 			id := tabIDs(manager, access)[0]
-			if err := manager.CloseCompanionPage(t.Context(), access, id); err != nil {
+			if err := manager.CloseCompanionPage(t.Context(), access, PageID(id)); err != nil {
 				t.Fatalf("close a creating tab: %v", err)
 			}
 			if got := tabIDs(manager, access); len(got) != 0 {
@@ -277,7 +277,7 @@ func TestSelectPresentsBeforePageWork(t *testing.T) {
 	releaseInfo := engine.hold(&engine.infoGate)
 	defer releaseInfo()
 	selected := async(func() error {
-		_, err := manager.SelectPage(context.Background(), access, a.ID)
+		_, err := manager.SelectPage(context.Background(), access, PageID(a.ID))
 		return err
 	})
 	receive(t, engine.reading, "the page's address read")
@@ -300,7 +300,7 @@ func TestSelectPresentsBeforePageWork(t *testing.T) {
 	}
 	releaseNav := engine.hold(&engine.navGate)
 	defer releaseNav()
-	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, b.ID) })
+	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, PageID(b.ID)) })
 	receive(t, engine.navigating, "the restore's navigation")
 	state := manager.CompanionState(access.Caller())
 	tab, _ := findTab(manager, access, b.ID)
@@ -327,9 +327,9 @@ func TestClosingATabWhileItRestores(t *testing.T) {
 	}
 	release := engine.hold(&engine.navGate)
 	defer release()
-	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, page.ID) })
+	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, PageID(page.ID)) })
 	receive(t, engine.navigating, "the restore's navigation")
-	if err := manager.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := manager.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatalf("close a restoring tab: %v", err)
 	}
 	if got := tabIDs(manager, access); len(got) != 0 {

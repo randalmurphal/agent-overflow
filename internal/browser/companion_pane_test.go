@@ -130,7 +130,7 @@ func paneHandle(m *Manager, access Access, pageID string) string {
 }
 
 func driverHandle(m *Manager, access Access, pageID string) ids.PageHandle {
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		panic(err)
 	}
@@ -143,7 +143,7 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 	secondHandle := paneHandle(manager, access, secondID)
 
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -184,7 +184,7 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -217,7 +217,7 @@ func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -270,7 +270,7 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	secondHandle := paneHandle(manager, access, secondID)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount := attachSizedPane(t, manager, engine, access)
@@ -346,7 +346,7 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	secondHandle := paneHandle(manager, access, secondID)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount := attachSizedPane(t, manager, engine, access)

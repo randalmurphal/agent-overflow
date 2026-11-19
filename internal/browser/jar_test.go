@@ -315,7 +315,7 @@ func pageJar(t *testing.T, m *Manager, pageID string) string {
 	t.Helper()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, scope := m.livePageLocked(pageID)
+	_, scope := m.livePageLocked(PageID(pageID))
 	if scope == nil {
 		t.Fatalf("page %s is not live", pageID)
 	}
@@ -483,7 +483,7 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 		t.Fatal("a private jar was persistent")
 	}
 	for _, page := range []PageInfo{first, second} {
-		if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+		if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -527,13 +527,13 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 		t.Fatal("the two worktrees do not share the project jar")
 	}
 
-	if _, err := manager.OpenFile(t.Context(), a, files["two"], OpenOptions{PageID: pageA.ID}); err == nil {
+	if _, err := manager.OpenFile(t.Context(), a, files["two"], OpenOptions{PageID: PageID(pageA.ID)}); err == nil {
 		t.Fatal("a page opened a file of the other worktree sharing its jar")
 	}
-	if _, err := manager.OpenFile(t.Context(), a, files["one"], OpenOptions{PageID: pageA.ID}); err != nil {
+	if _, err := manager.OpenFile(t.Context(), a, files["one"], OpenOptions{PageID: PageID(pageA.ID)}); err != nil {
 		t.Fatalf("a page could not open its own worktree's file: %v", err)
 	}
-	livePage, _, err := manager.lookupOwnedPage(b, pageB.ID)
+	livePage, _, err := manager.lookupOwnedPage(b, PageID(pageB.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	}
 
 	// A workspace's authority lives while it has a page in any jar.
-	if err := manager.ClosePage(t.Context(), a, pageA.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), a, PageID(pageA.ID)); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
@@ -753,7 +753,7 @@ func TestJarSettingSurvivesARestart(t *testing.T) {
 			t.Fatalf("a page after the restart opened in %q, want the thread's jar", got)
 		}
 		page := tabIDs(restarted, access)[0]
-		if err := restarted.ClosePage(t.Context(), access, page); err != nil {
+		if err := restarted.ClosePage(t.Context(), access, PageID(page)); err != nil {
 			t.Fatal(err)
 		}
 		setJar(t, restarted, access, JarWorktree)
@@ -785,7 +785,7 @@ func TestJarSettingSurvivesARestart(t *testing.T) {
 		if state.Jar != JarProject || len(state.Pages) != 2 || !state.Pages[0].Suspended {
 			t.Fatalf("after a restart: jar %q, pages %+v", state.Jar, state.Pages)
 		}
-		if err := restarted.ActivateCompanionPage(t.Context(), access, state.Pages[0].ID); err != nil {
+		if err := restarted.ActivateCompanionPage(t.Context(), access, PageID(state.Pages[0].ID)); err != nil {
 			t.Fatal(err)
 		}
 		if got := pageJar(t, restarted, state.Pages[0].ID); got != "project:P" {
@@ -821,7 +821,7 @@ func restoreTabs(t *testing.T, m *Manager, access Access) {
 	t.Helper()
 	for _, page := range m.CompanionState(access.Caller()).Pages {
 		if page.Suspended {
-			if err := m.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
+			if err := m.ActivateCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 				t.Fatalf("restore %s: %v", page.ID, err)
 			}
 		}
@@ -919,7 +919,7 @@ func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
 	release := engine.holdClose()
 	defer release()
 	closed := make(chan error, 1)
-	go func() { closed <- manager.ClosePage(context.Background(), access, first.ID) }()
+	go func() { closed <- manager.ClosePage(context.Background(), access, PageID(first.ID)) }()
 	eventually(t, "the closed tab leaves the tab set", func() bool { return len(manager.CompanionState(access.Caller()).Pages) == 0 })
 
 	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/2").ID)
@@ -999,7 +999,7 @@ func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
 	receive(t, engine.profiling, "the thread jar's profile creation")
 	// The workspace's only registered page closes while b's profile is
 	// created: the prune it runs sees no page of the workspace.
-	if err := manager.ClosePage(t.Context(), a, first.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), a, PageID(first.ID)); err != nil {
 		t.Fatal(err)
 	}
 	release()
@@ -1010,11 +1010,11 @@ func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
 		t.Fatalf("create in the new jar: %v", err)
 	}
 	second := openPage(t, manager, a, "https://example.test/again")
-	pb, _, err := manager.lookupOwnedPage(b, info.ID)
+	pb, _, err := manager.lookupOwnedPage(b, PageID(info.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pa, _, err := manager.lookupOwnedPage(a, second.ID)
+	pa, _, err := manager.lookupOwnedPage(a, PageID(second.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

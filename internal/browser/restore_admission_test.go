@@ -73,7 +73,7 @@ func openWorkspaceFile(t *testing.T, m *Manager, access Access) PageInfo {
 // suspendTab suspends one live tab as the session reaper does.
 func suspendTab(t *testing.T, m *Manager, access Access, pageID string) {
 	t.Helper()
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestClearingSiteDataBeforeARestoresAdmissionLeavesNothing(t *testing.T) {
 		{"selection", restore},
 		{"uncancelled restore", func(m *Manager, access Access, pageID string) <-chan error {
 			m.mu.Lock()
-			rec := m.suspended[pageID]
+			rec := m.suspended[PageID(pageID)]
 			m.mu.Unlock()
 			return async(func() error { return m.restorePage(context.Background(), access, rec, false) })
 		}},
@@ -212,7 +212,7 @@ func TestClosingATabCancelsItsRestore(t *testing.T) {
 	t.Cleanup(release)
 	restored := restore(manager, access, page.ID)
 	<-engine.navigating
-	if err := manager.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := manager.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -285,7 +285,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 		fillProfiles(t, s.manager, s.proj, maxWorkspaceContexts-1)
 		release := s.jars.holdDispose(t)
 		// The last page of the old profile has closed; its profile has not.
-		if err := s.manager.CloseCompanionPage(t.Context(), s.access, live.ID); err != nil {
+		if err := s.manager.CloseCompanionPage(t.Context(), s.access, PageID(live.ID)); err != nil {
 			t.Fatal(err)
 		}
 		deadline := time.Now().Add(5 * time.Second)

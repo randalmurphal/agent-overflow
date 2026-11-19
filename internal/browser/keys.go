@@ -69,7 +69,7 @@ func (m *Manager) emitEscape(handle ids.PageHandle) {
 	if p == nil || mount == "" || !m.pageShown(p.owner.id, p.id) {
 		return
 	}
-	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner.id, PageID: p.id, Mount: mount})
+	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner.id, PageID: string(p.id), Mount: mount})
 }
 
 // emitAccelerator routes a claimed chord to the pane mount showing the page,

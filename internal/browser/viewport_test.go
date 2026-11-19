@@ -43,7 +43,7 @@ func newPaneFollowFixture(t *testing.T) *paneFollowFixture {
 		events:  make(chan CompanionEvent, 256),
 	}
 	for _, id := range []string{firstID, secondID} {
-		p, _, err := manager.lookupOwnedPage(access, id)
+		p, _, err := manager.lookupOwnedPage(access, PageID(id))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func newPaneFollowFixture(t *testing.T) *paneFollowFixture {
 		f.mu.Unlock()
 	}
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	return f

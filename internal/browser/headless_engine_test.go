@@ -924,7 +924,7 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		"R-nested":      {"P-nested", files["one"], "allow"},
 	})
 
-	if err := manager.ClosePage(t.Context(), a, pageA.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), a, PageID(pageA.ID)); err != nil {
 		t.Fatal(err)
 	}
 	expect("after the opener closed", map[string][3]string{

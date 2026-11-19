@@ -102,7 +102,7 @@ func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (Comp
 	if tb != nil {
 		session = tb.session
 	}
-	active, _ := m.livePageLocked(session.ActivePageID)
+	active, _ := m.livePageLocked(session.activePage())
 	closedTabs := closedCountLocked(tb)
 	downloads := m.threadDownloadsLocked(tb)
 	m.stateSeq++

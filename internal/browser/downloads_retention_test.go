@@ -98,7 +98,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(first.ID)); err == nil {
 				t.Fatal("a cleared download still resolves")
 			}
-			tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})
+			tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: PageID(page.ID)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,7 +107,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			}
 
 			startDownload(t, manager, access, page, "last.txt", 10)
-			if err := manager.closeLivePage(t.Context(), access.tb, page.ID); err != nil {
+			if err := manager.closeLivePage(t.Context(), access.tb, PageID(page.ID)); err != nil {
 				t.Fatal(err)
 			}
 			kept := threadDownloads(manager, access)

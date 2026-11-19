@@ -37,7 +37,7 @@ func (l *popupLauncher) awaitDownloads(access Access, want ...string) {
 // pageDownloads answers the states of the downloads listed in the tab
 // whose engine page is handle, oldest first.
 func (l *popupLauncher) pageDownloads(threadID, handle string) []string {
-	p := l.tabs(threadID)[handle]
+	p := l.tabs(threadID)[ids.PageHandle(handle)]
 	if p == nil {
 		return nil
 	}

@@ -276,7 +276,7 @@ func TestAClosedTabLeavesTheStateBeforeItsTeardown(t *testing.T) {
 	releaseNav := engine.hold(&engine.navGate)
 	defer releaseNav()
 	navigation := async(func() error {
-		_, err := manager.Open(context.Background(), access, "https://example.test/held", OpenOptions{PageID: a.ID})
+		_, err := manager.Open(context.Background(), access, "https://example.test/held", OpenOptions{PageID: PageID(a.ID)})
 		return err
 	})
 	receive(t, engine.navigating, "the tool operation")
@@ -284,7 +284,7 @@ func TestAClosedTabLeavesTheStateBeforeItsTeardown(t *testing.T) {
 	defer releaseClose()
 	events := recordEvents(manager)
 
-	if err := manager.CloseCompanionPage(t.Context(), access, a.ID); err != nil {
+	if err := manager.CloseCompanionPage(t.Context(), access, PageID(a.ID)); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	if got := tabIDs(manager, access); !slices.Equal(got, []string{b.ID}) {
@@ -328,7 +328,7 @@ func TestAClosingPageHoldsItsCapAndProfileUntilDisposed(t *testing.T) {
 		}
 		release := engine.hold(&engine.closeGate)
 		defer release()
-		if err := manager.CloseCompanionPage(t.Context(), access, first.ID); err != nil {
+		if err := manager.CloseCompanionPage(t.Context(), access, PageID(first.ID)); err != nil {
 			t.Fatal(err)
 		}
 		receive(t, engine.closing, "the engine close")
@@ -349,7 +349,7 @@ func TestAClosingPageHoldsItsCapAndProfileUntilDisposed(t *testing.T) {
 		last := mustOpen(t, manager, access, "https://example.test/")
 		release := engine.hold(&engine.disposeGate)
 		defer release()
-		if err := manager.CloseCompanionPage(t.Context(), access, last.ID); err != nil {
+		if err := manager.CloseCompanionPage(t.Context(), access, PageID(last.ID)); err != nil {
 			t.Fatal(err)
 		}
 		receive(t, engine.disposing, "the profile's disposal")
@@ -389,9 +389,9 @@ func TestATeardownFailureIsReported(t *testing.T) {
 		last := mustOpen(t, manager, access, "https://example.test/")
 		var err error
 		if wait {
-			err = manager.ClosePage(t.Context(), access, last.ID)
+			err = manager.ClosePage(t.Context(), access, PageID(last.ID))
 		} else {
-			err = manager.CloseCompanionPage(t.Context(), access, last.ID)
+			err = manager.CloseCompanionPage(t.Context(), access, PageID(last.ID))
 		}
 		if wait != errors.Is(err, engine.disposeErr) {
 			t.Fatalf("close (waiting %v) = %v", wait, err)
@@ -414,7 +414,7 @@ func TestRepeatedClosesShareOneTeardown(t *testing.T) {
 	release := engine.hold(&engine.closeGate)
 	defer release()
 	for range 2 {
-		if err := manager.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+		if err := manager.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 			t.Fatalf("close: %v", err)
 		}
 	}
@@ -423,7 +423,7 @@ func TestRepeatedClosesShareOneTeardown(t *testing.T) {
 		closeWaiter(t, manager, access, page.ID),
 		closeWaiter(t, manager, access, page.ID),
 	}
-	if err := manager.ClosePage(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), page.ID); !errors.Is(err, errPageNotFound) {
+	if err := manager.ClosePage(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), PageID(page.ID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("another thread's close of the closing page = %v", err)
 	}
 	release()
@@ -445,7 +445,7 @@ func TestRepeatedClosesShareOneTeardown(t *testing.T) {
 	if teardowns != 1 {
 		t.Fatalf("%d teardown reports, want 1", teardowns)
 	}
-	if err := manager.ClosePage(t.Context(), access, page.ID); !errors.Is(err, errPageNotFound) {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("close after the teardown = %v", err)
 	}
 }

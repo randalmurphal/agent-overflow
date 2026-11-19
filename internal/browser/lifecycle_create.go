@@ -55,7 +55,7 @@ func reopenClaimLocked(tb *threadBrowser) (*tabClaim, bool) {
 // duplicateClaimLocked is the claim of a duplicate of tb's tab pageID:
 // placed right after it, at its address when it has one a new tab can
 // load. false when pageID is no tab of tb. The caller holds m.mu.
-func (m *Manager) duplicateClaimLocked(tb *threadBrowser, pageID string) (*tabClaim, bool) {
+func (m *Manager) duplicateClaimLocked(tb *threadBrowser, pageID PageID) (*tabClaim, bool) {
 	for i, tab := range m.companionTabsLocked(tb) {
 		if tab.id != pageID {
 			continue
@@ -167,11 +167,11 @@ func (m *Manager) reserveTabLocked(ctx context.Context, access Access, turn *tur
 		claim.taken = true
 	}
 	p := newManagedPage(tb, access.Caller())
-	p.info = PageInfo{ID: p.id, URL: "about:blank"}
+	p.info = PageInfo{ID: string(p.id), URL: "about:blank"}
 	createCtx, cancel := context.WithCancel(ctx)
 	pending := &pendingPage{p: p, cancel: cancel, done: make(chan struct{})}
 	if m.pending == nil {
-		m.pending = make(map[string]*pendingPage)
+		m.pending = make(map[PageID]*pendingPage)
 	}
 	m.pending[p.id] = pending
 	r := &tabReservation{access: access, pending: pending, ctx: createCtx, user: user, claim: claim}
@@ -179,7 +179,7 @@ func (m *Manager) reserveTabLocked(ctx context.Context, access Access, turn *tur
 		r.savedMoved, _ = m.placeTabLocked(tb, p.id, index)
 	}
 	if user {
-		tb.session.ActivePageID, tb.session.Visible = p.id, true
+		tb.session.ActivePageID, tb.session.Visible = string(p.id), true
 		tb.session.UpdatedAt = time.Now()
 	}
 	return r, nil

@@ -209,7 +209,7 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 						t.Fatal("a popup shows the outside file")
 					}
 					for _, id := range smokePopups(ctx, t, manager, access, openerPage.ID) {
-						frames, _, err := manager.Evaluate(ctx, access, id, `Array.from(document.querySelectorAll("iframe"), (f) => { try { return f.contentWindow.location.href; } catch (e) { return "unreadable"; } })`, nil)
+						frames, _, err := manager.Evaluate(ctx, access, PageID(id), `Array.from(document.querySelectorAll("iframe"), (f) => { try { return f.contentWindow.location.href; } catch (e) { return "unreadable"; } })`, nil)
 						if err != nil {
 							t.Fatalf("read popup %s subframes: %v", id, err)
 						}
@@ -251,10 +251,10 @@ func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
 	}
 	assertEvaluateSemantics(t, evaluateEngineWebKit,
 		func(code string, argument json.RawMessage) (any, string, error) {
-			return manager.Evaluate(ctx, access, page.ID, code, argument)
+			return manager.Evaluate(ctx, access, PageID(page.ID), code, argument)
 		},
 		func(code string, argument json.RawMessage) (any, string, error) {
-			value, note, err := manager.EvaluateReadOnly(ctx, access, page.ID, code, argument)
+			value, note, err := manager.EvaluateReadOnly(ctx, access, PageID(page.ID), code, argument)
 			if err == nil && !strings.HasPrefix(note, "Note: this browser engine cannot reject side effects") {
 				t.Errorf("read-only evaluate of %q carried the note %q, not the caveat: this engine has no side-effect check", code, note)
 			}
@@ -293,7 +293,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 		t.Fatalf("open the page: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -308,7 +308,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 		if kind == FindStart {
 			seq++
 		}
-		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, seq)
+		state, err := manager.Find(ctx, access, PageID(page.ID), kind, query, mount.ID, seq)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
@@ -318,7 +318,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	// selects the match it moves to.
 	selected := func() string {
 		t.Helper()
-		value, _, err := manager.Evaluate(ctx, access, page.ID, `(() => { const s = getSelection(); const n = s && s.rangeCount ? s.getRangeAt(0).startContainer : null; const e = n && (n.nodeType === 1 ? n : n.parentElement); return s && !s.isCollapsed && e ? e.id : ""; })()`, nil)
+		value, _, err := manager.Evaluate(ctx, access, PageID(page.ID), `(() => { const s = getSelection(); const n = s && s.rangeCount ? s.getRangeAt(0).startContainer : null; const e = n && (n.nodeType === 1 ? n : n.parentElement); return s && !s.isCollapsed && e ? e.id : ""; })()`, nil)
 		if err != nil {
 			t.Fatalf("read the selection: %v", err)
 		}
@@ -365,7 +365,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 
 	// Past the engine's most matches the count is a floor and the position
 	// unknown.
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, `document.body.textContent = "beta ".repeat(1500); 1`, nil); err != nil {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), `document.body.textContent = "beta ".repeat(1500); 1`, nil); err != nil {
 		t.Fatalf("fill the page: %v", err)
 	}
 	many := find("start", "beta")
@@ -389,7 +389,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 		}
 	})
 	kept := find("start", "beta")
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, `history.pushState({}, "", "?same-document"); 1`, nil); err != nil {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), `history.pushState({}, "", "?same-document"); 1`, nil); err != nil {
 		t.Fatalf("push a history entry: %v", err)
 	}
 	select {
@@ -400,7 +400,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if state := find("next", ""); !state.Active || state.Session != kept.Session {
 		t.Fatalf("find after a same-document navigation = %+v", state)
 	}
-	if _, err := manager.History(ctx, access, page.ID, "reload"); err != nil {
+	if _, err := manager.History(ctx, access, PageID(page.ID), "reload"); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	select {
@@ -413,11 +413,11 @@ func TestNativeEngineRealFind(t *testing.T) {
 	}
 
 	// A closed page's view is never reached again: the driver refuses.
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
-	if err := manager.ClosePage(ctx, access, page.ID); err != nil {
+	if err := manager.ClosePage(ctx, access, PageID(page.ID)); err != nil {
 		t.Fatalf("close the page: %v", err)
 	}
 	finder := p.driver.(pageFind)
@@ -468,7 +468,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		t.Fatalf("open the page: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -478,13 +478,13 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	t.Cleanup(func() { manager.DetachPane(mount.ID) })
 	eval := func(what, expression string) any {
 		t.Helper()
-		value, _, err := manager.Evaluate(ctx, access, page.ID, expression, nil)
+		value, _, err := manager.Evaluate(ctx, access, PageID(page.ID), expression, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
 		return value
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		if kind == FindStart {
 			seq++
 		}
-		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, seq)
+		state, err := manager.Find(ctx, access, PageID(page.ID), kind, query, mount.ID, seq)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
@@ -708,7 +708,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	}
 	selected("stopped under the overrides", frames, false)
 	// In the page's own world the overrides reach the clearing: it fails.
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
 		t.Fatalf("the clearing in the page's world under its overrides = %v, want a failure", err)
 	}
 
@@ -730,7 +730,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	find(FindStop, "")
 	selected("stopped in the regenerated page", inRegenerated, false)
 	count := func(text string) int {
-		logs, err := manager.ConsoleLogs(ctx, access, ConsoleOptions{PageID: page.ID, Filter: text, Limit: 100})
+		logs, err := manager.ConsoleLogs(ctx, access, ConsoleOptions{PageID: PageID(page.ID), Filter: text, Limit: 100})
 		if err != nil {
 			t.Fatalf("read the console: %v", err)
 		}
@@ -782,7 +782,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 // result. The evaluate tools never reach these cases, since their runner
 // returns a string.
 func assertNativeEvalBridge(ctx context.Context, t *testing.T, manager *Manager, access Access, pageID string) {
-	p, _, err := manager.lookupOwnedPage(access, pageID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}

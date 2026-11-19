@@ -82,14 +82,14 @@ type jarIdentity struct {
 type jarScope struct {
 	jar     jarIdentity
 	profile engineProfile
-	pages   map[string]*managedPage
+	pages   map[PageID]*managedPage
 	// creating holds the pages being created in this scope, reserving it.
 	// Guarded by m.mu.
 	creating map[*managedPage]struct{}
 	// closing holds the pages closed and not yet disposed, by page id
 	// (lifecycle.go). They are out of pages, so nothing finds or presents
 	// them as live, and still count toward every cap. Guarded by m.mu.
-	closing map[string]*pageClose
+	closing map[PageID]*pageClose
 	// downloadDir is where an engine keeping downloads as artifacts writes
 	// this jar's downloads before they move to their workspace's directory;
 	// empty for every other engine (downloadSaving).

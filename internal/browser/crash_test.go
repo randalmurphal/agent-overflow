@@ -15,7 +15,7 @@ import (
 
 func livePage(t *testing.T, m *Manager, access Access, pageID string) *managedPage {
 	t.Helper()
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatalf("page %s is not live: %v", pageID, err)
 	}
@@ -46,7 +46,7 @@ func TestCrashedPageStaysAFailedTabUntilItsReload(t *testing.T) {
 		}
 		return false
 	})
-	if _, _, err := m.lookupOwnedPage(access, firstID); !errors.Is(err, errPageNotFound) {
+	if _, _, err := m.lookupOwnedPage(access, PageID(firstID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("the crashed engine page is still live: %v", err)
 	}
 	if fake := p.driver.(*fakePage); fake.ctx.Err() == nil {
@@ -60,7 +60,7 @@ func TestCrashedPageStaysAFailedTabUntilItsReload(t *testing.T) {
 	}
 
 	// Selecting it, by click or by step, leaves it failed.
-	if err := m.ActivateCompanionPage(t.Context(), access, firstID); err != nil {
+	if err := m.ActivateCompanionPage(t.Context(), access, PageID(firstID)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 	if err := m.StepCompanionPage(t.Context(), access, 1); err != nil {
@@ -73,7 +73,7 @@ func TestCrashedPageStaysAFailedTabUntilItsReload(t *testing.T) {
 		t.Fatalf("selecting the crashed tab restored it: %+v", tab)
 	}
 
-	if err := m.ReloadCompanionPage(t.Context(), access, firstID); err != nil {
+	if err := m.ReloadCompanionPage(t.Context(), access, PageID(firstID)); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	tab, _ = findTab(m, access, firstID)
@@ -116,7 +116,7 @@ func TestCrashEndsTheOperationHoldingThePage(t *testing.T) {
 	}
 	fake.mu.Unlock()
 	done := async(func() error {
-		_, err := m.Open(context.Background(), access, "https://example.test/slow", OpenOptions{PageID: firstID})
+		_, err := m.Open(context.Background(), access, "https://example.test/slow", OpenOptions{PageID: PageID(firstID)})
 		return err
 	})
 	<-entered
@@ -134,7 +134,7 @@ func TestCrashEndsTheOperationHoldingThePage(t *testing.T) {
 func TestToolCallRestoresACrashedPage(t *testing.T) {
 	m, _, access, firstID, _ := newPaneHostManager(t)
 	m.pageCrashed(livePage(t, m, access, firstID).driver.Handle(), "crashed")
-	if _, err := m.History(t.Context(), access, firstID, "reload"); err != nil {
+	if _, err := m.History(t.Context(), access, PageID(firstID), "reload"); err != nil {
 		t.Fatalf("history reload on the crashed page: %v", err)
 	}
 	if tab, _ := findTab(m, access, firstID); tab.Suspended || tab.Error != "" {

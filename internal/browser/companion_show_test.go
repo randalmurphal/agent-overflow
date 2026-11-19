@@ -17,7 +17,7 @@ type showResult struct {
 func show(m *Manager, ctx context.Context, access Access) <-chan showResult {
 	return async(func() showResult {
 		outcome, page, err := m.ShowCompanion(ctx, access)
-		return showResult{outcome, page, err}
+		return showResult{outcome, string(page), err}
 	})
 }
 
@@ -109,7 +109,7 @@ func TestAShowShowsTheTabItsTurnLeavesActive(t *testing.T) {
 	// d is active; the show arrives before the selection of b it follows.
 	shownB := show(m, numbered(context.Background(), mount, 2), access)
 	awaitWaiting(t, m, mount, 1)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[1]); err != nil {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
 	mustShow(t, await(t, shownB, "the show after the selection"), ShowShown, ids[1])
@@ -153,7 +153,7 @@ func TestAShowWhosePaneDetachesBeforeItsCommitDoesNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !tabs {
-			if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+			if err := m.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -189,7 +189,7 @@ func TestAShowWhosePaneDetachesDuringASwitchDoesNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !tabs {
-			if err := manager.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+			if err := manager.CloseCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 				t.Fatal(err)
 			}
 		}

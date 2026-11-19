@@ -76,10 +76,10 @@ func TestFakeEngineCarriesPageOwnershipAndNavigation(t *testing.T) {
 	// A page belongs to the thread that opened it, and no other thread can
 	// address it. That is Manager policy, and it holds on every engine.
 	intruder := manager.Bind(Caller{ThreadID: "intruder", Workspace: workspace})
-	if err := manager.ClosePage(t.Context(), intruder, info.ID); err == nil {
+	if err := manager.ClosePage(t.Context(), intruder, PageID(info.ID)); err == nil {
 		t.Fatal("another thread closed a page it does not own")
 	}
-	if err := manager.ClosePage(t.Context(), owner, info.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), owner, PageID(info.ID)); err != nil {
 		t.Fatalf("close own page: %v", err)
 	}
 	if pages := manager.CompanionState(owner.Caller()).Pages; len(pages) != 0 {
@@ -102,25 +102,25 @@ func TestFakeEngineHistoryWalksBackAndForward(t *testing.T) {
 	if info.CanGoBack || info.CanGoForward {
 		t.Fatalf("first page reports history to walk: %#v", info)
 	}
-	second, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: info.ID})
+	second, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: PageID(info.ID)})
 	if err != nil {
 		t.Fatalf("second navigation: %v", err)
 	}
 	if !second.CanGoBack || second.CanGoForward {
 		t.Fatalf("second page misreports history state: %#v", second)
 	}
-	back, err := manager.History(t.Context(), access, info.ID, "back")
+	back, err := manager.History(t.Context(), access, PageID(info.ID), "back")
 	if err != nil || back.URL != "https://example.test/first" {
 		t.Fatalf("back = %#v, %v", back, err)
 	}
 	if back.CanGoBack || !back.CanGoForward {
 		t.Fatalf("walked-back page misreports history state: %#v", back)
 	}
-	forward, err := manager.History(t.Context(), access, info.ID, "forward")
+	forward, err := manager.History(t.Context(), access, PageID(info.ID), "forward")
 	if err != nil || forward.URL != "https://example.test/second" {
 		t.Fatalf("forward = %#v, %v", forward, err)
 	}
-	if _, err := manager.History(t.Context(), access, info.ID, "forward"); err == nil {
+	if _, err := manager.History(t.Context(), access, PageID(info.ID), "forward"); err == nil {
 		t.Fatal("forward past the newest entry succeeded")
 	}
 }
@@ -137,10 +137,10 @@ func TestPageInfoWithoutHistoryKeepsTheHistoryShown(t *testing.T) {
 	})
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	first := mustOpen(t, manager, access, "https://example.test/first")
-	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: first.ID}); err != nil {
+	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: PageID(first.ID)}); err != nil {
 		t.Fatalf("second navigation: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, first.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(first.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestPageInfoWithoutHistoryKeepsTheHistoryShown(t *testing.T) {
 	}
 	backShown("navigated twice")
 
-	snapshot, err := manager.Snapshot(t.Context(), access, first.ID)
+	snapshot, err := manager.Snapshot(t.Context(), access, PageID(first.ID))
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestFakeEngineRefusesPageContentByName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
 	}
-	if _, err := manager.Snapshot(t.Context(), access, info.ID); err == nil || !strings.Contains(err.Error(), "renders no page content") {
+	if _, err := manager.Snapshot(t.Context(), access, PageID(info.ID)); err == nil || !strings.Contains(err.Error(), "renders no page content") {
 		t.Fatalf("snapshot error = %v, want the fake engine's refusal", err)
 	}
 }
@@ -302,13 +302,13 @@ func TestManagerDisposesAWorkspaceProfileWithItsLastPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a second page: %v", err)
 	}
-	if err := manager.ClosePage(t.Context(), access, first.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(first.ID)); err != nil {
 		t.Fatalf("close the first page: %v", err)
 	}
 	if got := engine.disposed.Load(); got != 0 {
 		t.Fatalf("the workspace profile was disposed with a page still open (%d disposals)", got)
 	}
-	if err := manager.ClosePage(t.Context(), access, second.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(second.ID)); err != nil {
 		t.Fatalf("close the last page: %v", err)
 	}
 	if got := engine.disposed.Load(); got != 1 {
@@ -323,7 +323,7 @@ var lastPageClosers = []struct {
 	close func(t *testing.T, m *Manager, access Access, pageID string)
 }{
 	{"closed by the manager", func(t *testing.T, m *Manager, access Access, pageID string) {
-		if err := m.ClosePage(context.Background(), access, pageID); err != nil {
+		if err := m.ClosePage(context.Background(), access, PageID(pageID)); err != nil {
 			t.Errorf("close page: %v", err)
 		}
 	}},
@@ -380,7 +380,7 @@ func TestAPageOpenedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 			if got := engine.disposed.Load(); got != want {
 				t.Fatalf("%d profile disposals, want %d", got, want)
 			}
-			if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: opened.ID}); err != nil {
+			if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: PageID(opened.ID)}); err != nil {
 				t.Fatalf("navigate the page opened during the close: %v", err)
 			}
 		})
@@ -411,7 +411,7 @@ func TestAPageCreatedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 			if got := engine.disposed.Load(); got != 0 {
 				t.Fatalf("the profile a page was being created in was disposed (%d disposals)", got)
 			}
-			if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: opened.ID}); err != nil {
+			if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: PageID(opened.ID)}); err != nil {
 				t.Fatalf("navigate the page created during the close: %v", err)
 			}
 		})
@@ -435,7 +435,7 @@ func TestAFailedPageCreationDisposesTheProfileItLeavesEmpty(t *testing.T) {
 				t.Fatal(err)
 			}
 			return func() {
-				if err := m.ClosePage(context.Background(), closing, last.ID); err != nil {
+				if err := m.ClosePage(context.Background(), closing, PageID(last.ID)); err != nil {
 					t.Errorf("close page: %v", err)
 				}
 			}
@@ -486,10 +486,10 @@ func TestACloseSpanningABrowserRestartSparesTheReopenedProfile(t *testing.T) {
 			t.Errorf("reopen the workspace: %v", openErr)
 		}
 	}
-	if err := manager.ClosePage(t.Context(), closing, last.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), closing, PageID(last.ID)); err != nil {
 		t.Fatalf("close page: %v", err)
 	}
-	if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: opened.ID}); err != nil {
+	if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: PageID(opened.ID)}); err != nil {
 		t.Fatalf("navigate the page the workspace reopened with: %v", err)
 	}
 }
@@ -537,7 +537,7 @@ func TestAnIdleCloseDuringPageCreationKeepsThePage(t *testing.T) {
 				t.Fatal("the page's creation did not reach the hook")
 			}
 			<-idleClosed
-			if _, err := manager.Open(t.Context(), access, "https://example.test/next", OpenOptions{PageID: page.ID}); err != nil {
+			if _, err := manager.Open(t.Context(), access, "https://example.test/next", OpenOptions{PageID: PageID(page.ID)}); err != nil {
 				t.Fatalf("navigate the page after the idle close: %v", err)
 			}
 		})
@@ -556,7 +556,7 @@ func TestAnIdleCloseStopsTheEngineWithNoPage(t *testing.T) {
 	if !engine.Running() {
 		t.Fatal("the idle close stopped the engine with a page open")
 	}
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	manager.closeIdleBrowser()
@@ -801,7 +801,7 @@ func TestAClosedPageIsNoLongerTheActivePage(t *testing.T) {
 				t.Fatal(err)
 			}
 			show := true
-			if _, err := manager.Visibility(t.Context(), access, &show, second.ID); err != nil {
+			if _, err := manager.Visibility(t.Context(), access, &show, PageID(second.ID)); err != nil {
 				t.Fatal(err)
 			}
 			closer.close(t, manager, access, second.ID)
@@ -888,7 +888,7 @@ func TestAnOpenWhoseProfileIsRefusedLeavesTheEngineToTheIdleClose(t *testing.T) 
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+				if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1023,7 +1023,7 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 		t.Fatalf("a download over the workspace quota was answered %v, want refused", got)
 	}
 
-	listed, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})
+	listed, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: PageID(page.ID)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -196,7 +196,7 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 				deadline = time.Now().Add(hostedTestDeadline)
 			}
 			for {
-				if _, listed := l.tabs(access.ThreadID)[popupID]; listed {
+				if _, listed := l.tabs(access.ThreadID)[ids.PageHandle(popupID)]; listed {
 					t.Fatal("the Manager listed a popup whose close was received")
 				}
 				if gated == "history" {
@@ -216,7 +216,7 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 			l.awaitDownloads(access, downloadStateCompleted)
 			l.awaitTabGone(access.ThreadID, popupID)
 			settleReports(t, l.engine, "")
-			if _, listed := l.tabs(access.ThreadID)[popupID]; listed {
+			if _, listed := l.tabs(access.ThreadID)[ids.PageHandle(popupID)]; listed {
 				t.Fatal("the closed popup was listed")
 			}
 		})
@@ -326,7 +326,7 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 			if how == "targetless and closed" {
 				l.report(popupID, webview2host.ReportClosed, "")
 			} else {
-				if err := l.manager.CloseCompanionPage(t.Context(), access, openerTab); err != nil {
+				if err := l.manager.CloseCompanionPage(t.Context(), access, PageID(openerTab)); err != nil {
 					t.Fatalf("close the opener: %v", err)
 				}
 				release()

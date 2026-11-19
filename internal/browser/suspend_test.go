@@ -120,7 +120,7 @@ func (p *gatedPage) fake() *fakePage { return p.pageDriver.(*fakePage) }
 // liveFakePage answers the fake page behind a live page.
 func liveFakePage(t *testing.T, m *Manager, access Access, pageID string) *fakePage {
 	t.Helper()
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatalf("page %s is not live: %v", pageID, err)
 	}
@@ -157,12 +157,12 @@ func TestSuspendThreadUnloadsPagesAndKeepsThemAsTabs(t *testing.T) {
 	busy := manager.Bind(Caller{ThreadID: "busy", Workspace: shared})
 	first := mustOpen(t, manager, idle, "https://example.test/one")
 	second := mustOpen(t, manager, idle, "https://example.test/two")
-	if _, err := manager.LabelPage(t.Context(), idle, second.ID, "docs"); err != nil {
+	if _, err := manager.LabelPage(t.Context(), idle, PageID(second.ID), "docs"); err != nil {
 		t.Fatal(err)
 	}
 	// The shown page is not the most recently used one, so the selection
 	// that survives is the thread's own, not a fallback.
-	if _, err := manager.Visibility(t.Context(), idle, boolPtr(true), first.ID); err != nil {
+	if _, err := manager.Visibility(t.Context(), idle, boolPtr(true), PageID(first.ID)); err != nil {
 		t.Fatal(err)
 	}
 	other := mustOpen(t, manager, busy, "https://example.test/busy")
@@ -198,7 +198,7 @@ func TestSuspendThreadUnloadsPagesAndKeepsThemAsTabs(t *testing.T) {
 	if after.ActivePageID != first.ID || after.Visible == nil || !*after.Visible {
 		t.Fatalf("selection after suspension = %q visible %v, want %q shown", after.ActivePageID, after.Visible, first.ID)
 	}
-	if _, _, err := manager.lookupOwnedPage(busy, other.ID); err != nil {
+	if _, _, err := manager.lookupOwnedPage(busy, PageID(other.ID)); err != nil {
 		t.Fatalf("another thread's page was suspended: %v", err)
 	}
 	if got := registeredScopes(manager); got != 1 {
@@ -241,7 +241,7 @@ func TestATouchRestoresASuspendedPageAtItsAddress(t *testing.T) {
 		t.Fatal("listing pages restored a suspended page")
 	}
 
-	restored, err := manager.History(t.Context(), access, site.ID, "reload")
+	restored, err := manager.History(t.Context(), access, PageID(site.ID), "reload")
 	if err != nil {
 		t.Fatalf("touch a suspended page: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestATouchRestoresASuspendedPageAtItsAddress(t *testing.T) {
 	if page := liveFakePage(t, manager, access, site.ID); page.url != site.URL {
 		t.Fatalf("restored engine page is at %q, want %q", page.url, site.URL)
 	}
-	if _, err := manager.SelectPage(t.Context(), access, local.ID); err != nil {
+	if _, err := manager.SelectPage(t.Context(), access, PageID(local.ID)); err != nil {
 		t.Fatalf("touch the suspended file page: %v", err)
 	}
 	if page := liveFakePage(t, manager, access, local.ID); page.url != local.URL {
@@ -292,7 +292,7 @@ func TestARestoreThatFailsTheNavigationPolicyStaysSuspended(t *testing.T) {
 	}
 	created := engine.pagesCreated.Load()
 
-	_, err = manager.History(t.Context(), access, local.ID, "reload")
+	_, err = manager.History(t.Context(), access, PageID(local.ID), "reload")
 	if err == nil || !strings.Contains(err.Error(), "cannot be restored") {
 		t.Fatalf("restore of a page the policy refuses = %v", err)
 	}
@@ -317,14 +317,14 @@ func TestARestoreThatFailsTheNavigationPolicyStaysSuspended(t *testing.T) {
 	}
 	// The companion still opens on it, where its pane shows the refusal and
 	// the page can be navigated elsewhere or closed.
-	if info, err := manager.Visibility(t.Context(), access, boolPtr(true), local.ID); err != nil || !info.Visible {
+	if info, err := manager.Visibility(t.Context(), access, boolPtr(true), PageID(local.ID)); err != nil || !info.Visible {
 		t.Fatalf("show a page whose restore is refused = %+v, %v", info, err)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, local.ID); err == nil || !strings.Contains(err.Error(), "cannot be restored") {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(local.ID)); err == nil || !strings.Contains(err.Error(), "cannot be restored") {
 		t.Fatalf("select a page whose restore is refused = %v", err)
 	}
 
-	moved, err := manager.Open(t.Context(), access, "https://example.test/elsewhere", OpenOptions{PageID: local.ID})
+	moved, err := manager.Open(t.Context(), access, "https://example.test/elsewhere", OpenOptions{PageID: PageID(local.ID)})
 	if err != nil {
 		t.Fatalf("navigate a suspended page elsewhere: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestConcurrentTouchesRestoreASuspendedPageOnce(t *testing.T) {
 	results := make(chan error, touches)
 	for range touches {
 		go func() {
-			info, err := manager.SelectPage(context.Background(), access, page.ID)
+			info, err := manager.SelectPage(context.Background(), access, PageID(page.ID))
 			if err == nil && (info.ID != page.ID || info.Suspended) {
 				err = fmt.Errorf("touch answered %#v", info)
 			}
@@ -364,7 +364,7 @@ func TestConcurrentTouchesRestoreASuspendedPageOnce(t *testing.T) {
 	impatient, cancel := context.WithCancel(context.Background())
 	gaveUp := make(chan error, 1)
 	go func() {
-		_, err := manager.SelectPage(impatient, access, page.ID)
+		_, err := manager.SelectPage(impatient, access, PageID(page.ID))
 		gaveUp <- err
 	}()
 	cancel()
@@ -398,11 +398,11 @@ func TestClosingASuspendedPageDuringItsRestoreAbandonsTheRestore(t *testing.T) {
 	defer release()
 	touched := make(chan error, 1)
 	go func() {
-		_, err := manager.SelectPage(context.Background(), access, page.ID)
+		_, err := manager.SelectPage(context.Background(), access, PageID(page.ID))
 		touched <- err
 	}()
 	<-engine.navigating
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatalf("close a suspended page: %v", err)
 	}
 	release()
@@ -426,7 +426,7 @@ func TestAClosePageRacingASuspensionClosesTheRecord(t *testing.T) {
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if state := manager.CompanionState(access.Caller()); len(state.Pages) != 0 {
@@ -440,11 +440,11 @@ func TestSuspendingAClosedPageLeavesItClosed(t *testing.T) {
 	manager, _ := newRestoreManager(t, t.TempDir(), ManagerOptions{})
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/page")
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if moved, err := manager.suspendPage(t.Context(), p); moved || err != nil {
@@ -475,10 +475,10 @@ func TestCloseThreadForgetsSuspendedPagesAndTheirSavedCopy(t *testing.T) {
 	if _, err := os.Stat(manager.recordPath(access.ThreadID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the closed thread's saved pages remain: %v", err)
 	}
-	if _, err := manager.SelectPage(t.Context(), access, suspended.ID); !errors.Is(err, ErrThreadClosed) {
+	if _, err := manager.SelectPage(t.Context(), access, PageID(suspended.ID)); !errors.Is(err, ErrThreadClosed) {
 		t.Fatalf("touch through an action bound before the close = %v, want ErrThreadClosed", err)
 	}
-	if _, err := manager.SelectPage(t.Context(), manager.Bind(access.Caller()), suspended.ID); !errors.Is(err, errPageNotFound) {
+	if _, err := manager.SelectPage(t.Context(), manager.Bind(access.Caller()), PageID(suspended.ID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("touch of a forgotten page = %v", err)
 	}
 }
@@ -497,13 +497,13 @@ func TestSavedPagesComeBackSuspendedAfterARestart(t *testing.T) {
 	unsure := first.Bind(Caller{ThreadID: "unsure", Workspace: workspace})
 	a := mustOpen(t, first, live, "https://example.test/a")
 	b := mustOpen(t, first, live, "https://example.test/b")
-	if _, err := first.LabelPage(t.Context(), live, a.ID, "alpha"); err != nil {
+	if _, err := first.LabelPage(t.Context(), live, PageID(a.ID), "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.MoveCompanionPage(live, b.ID, 0); err != nil {
+	if err := first.MoveCompanionPage(live, PageID(b.ID), 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.SelectPage(t.Context(), live, a.ID); err != nil {
+	if _, err := first.SelectPage(t.Context(), live, PageID(a.ID)); err != nil {
 		t.Fatal(err)
 	}
 	c := mustOpen(t, first, idle, "https://example.test/c")
@@ -552,7 +552,7 @@ func TestSavedPagesComeBackSuspendedAfterARestart(t *testing.T) {
 	}
 
 	live = second.Bind(live.Caller())
-	restored, err := second.History(t.Context(), live, a.ID, "reload")
+	restored, err := second.History(t.Context(), live, PageID(a.ID), "reload")
 	if err != nil {
 		t.Fatalf("touch after restart: %v", err)
 	}
@@ -615,17 +615,17 @@ func TestSuspendedPagesHoldTheirThreadsSlotsButNoEngineSlot(t *testing.T) {
 	for j := range maxPagesPerThread {
 		mustOpen(t, manager, threads[3], fmt.Sprintf("https://example.test/3/%d", j))
 	}
-	_, err := manager.SelectPage(t.Context(), threads[0], first.ID)
+	_, err := manager.SelectPage(t.Context(), threads[0], PageID(first.ID))
 	if err == nil || !strings.Contains(err.Error(), "page limit reached for workspace") {
 		t.Fatalf("restore into a full workspace = %v", err)
 	}
 	if ids := suspendedIDs(manager, threads[0].ThreadID); len(ids) != maxPagesPerThread {
 		t.Fatalf("suspended pages after a refused restore = %d", len(ids))
 	}
-	if err := manager.ClosePage(t.Context(), threads[3], manager.CompanionState(threads[3].Caller()).Pages[0].ID); err != nil {
+	if err := manager.ClosePage(t.Context(), threads[3], PageID(manager.CompanionState(threads[3].Caller()).Pages[0].ID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.SelectPage(t.Context(), threads[0], first.ID); err != nil {
+	if _, err := manager.SelectPage(t.Context(), threads[0], PageID(first.ID)); err != nil {
 		t.Fatalf("restore once the workspace has room: %v", err)
 	}
 }
@@ -648,7 +648,7 @@ func TestARestoreInFlightHoldsItsEngineSlot(t *testing.T) {
 	defer release()
 	touched := make(chan error, 1)
 	go func() {
-		_, err := manager.SelectPage(context.Background(), restoring, page.ID)
+		_, err := manager.SelectPage(context.Background(), restoring, PageID(page.ID))
 		touched <- err
 	}()
 	<-engine.navigating
@@ -670,17 +670,17 @@ func TestLabelsAndTabMovesIncludeSuspendedPages(t *testing.T) {
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	a := mustOpen(t, manager, access, "https://example.test/a")
 	b := mustOpen(t, manager, access, "https://example.test/b")
-	if _, err := manager.LabelPage(t.Context(), access, a.ID, "docs"); err != nil {
+	if _, err := manager.LabelPage(t.Context(), access, PageID(a.ID), "docs"); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
 	live := mustOpen(t, manager, access, "https://example.test/live")
-	if _, err := manager.LabelPage(t.Context(), access, live.ID, "DOCS"); err == nil {
+	if _, err := manager.LabelPage(t.Context(), access, PageID(live.ID), "DOCS"); err == nil {
 		t.Fatal("a live page took a suspended page's label")
 	}
-	if err := manager.MoveCompanionPage(access, b.ID, 0); err != nil {
+	if err := manager.MoveCompanionPage(access, PageID(b.ID), 0); err != nil {
 		t.Fatalf("move a suspended tab: %v", err)
 	}
 	if ids := suspendedIDs(manager, access.ThreadID); len(ids) != 2 || ids[0] != b.ID {
@@ -709,7 +709,7 @@ func TestPresentingASuspendedPageRestoresIt(t *testing.T) {
 	// Showing the companion opens it on the page; the pane that presents it
 	// restores it by selecting it.
 	created := engine.pagesCreated.Load()
-	info, err := manager.Visibility(t.Context(), access, boolPtr(true), a.ID)
+	info, err := manager.Visibility(t.Context(), access, boolPtr(true), PageID(a.ID))
 	if err != nil || !info.Visible || info.ActivePageID != a.ID {
 		t.Fatalf("show a suspended page = %+v, %v", info, err)
 	}
@@ -717,7 +717,7 @@ func TestPresentingASuspendedPageRestoresIt(t *testing.T) {
 		t.Fatalf("showing the companion loaded %d pages", got-created)
 	}
 	for _, id := range []string{a.ID, b.ID} {
-		if err := manager.ActivateCompanionPage(t.Context(), access, id); err != nil {
+		if err := manager.ActivateCompanionPage(t.Context(), access, PageID(id)); err != nil {
 			t.Fatalf("select suspended tab %s: %v", id, err)
 		}
 	}
@@ -836,7 +836,7 @@ func TestTheReaperKeepsThePageAPaneShows(t *testing.T) {
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	shown := mustOpen(t, manager, access, "https://example.test/shown")
 	other := mustOpen(t, manager, access, "https://example.test/other")
-	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), shown.ID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), PageID(shown.ID)); err != nil {
 		t.Fatal(err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -873,7 +873,7 @@ func TestTheReaperKeepsAPageSelectedDuringItsSuspension(t *testing.T) {
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	shown := mustOpen(t, manager, access, "https://example.test/shown")
 	other := mustOpen(t, manager, access, "https://example.test/other")
-	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), shown.ID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), PageID(shown.ID)); err != nil {
 		t.Fatal(err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -891,7 +891,7 @@ func TestTheReaperKeepsAPageSelectedDuringItsSuspension(t *testing.T) {
 	<-engine.reading
 	// The user selects the page whose address the reaper is reading.
 	selected := make(chan error, 1)
-	go func() { selected <- manager.ActivateCompanionPage(context.Background(), access, other.ID) }()
+	go func() { selected <- manager.ActivateCompanionPage(context.Background(), access, PageID(other.ID)) }()
 	eventually(t, "the selection", func() bool { return manager.CompanionState(access.Caller()).ActivePageID == other.ID })
 	release()
 	if err := <-reaped; err != nil {
@@ -947,7 +947,7 @@ func TestARestoreFinishingAfterCloseKeepsThePageSaved(t *testing.T) {
 	defer release()
 	touched := make(chan error, 1)
 	go func() {
-		_, err := manager.SelectPage(context.Background(), access, page.ID)
+		_, err := manager.SelectPage(context.Background(), access, PageID(page.ID))
 		touched <- err
 	}()
 	<-engine.navigating
@@ -1001,7 +1001,7 @@ func TestASuspensionCaughtByShutdownOrAClearRecordsNothing(t *testing.T) {
 			if ids := suspendedIDs(manager, access.ThreadID); len(ids) != 0 {
 				t.Fatalf("suspended pages = %v", ids)
 			}
-			if _, _, err := manager.lookupOwnedPage(access, page.ID); err != nil {
+			if _, _, err := manager.lookupOwnedPage(access, PageID(page.ID)); err != nil {
 				t.Fatalf("the page is no longer live: %v", err)
 			}
 			if _, err := os.Stat(manager.recordPath(access.ThreadID)); !errors.Is(err, os.ErrNotExist) {

@@ -73,7 +73,7 @@ func TestACloseRacingACreationsPromotionFindsTheTab(t *testing.T) {
 		start := make(chan struct{})
 		closed := async(func() error {
 			<-start
-			return manager.closePage(context.Background(), access, id, false, false)
+			return manager.closePage(context.Background(), access, PageID(id), false, false)
 		})
 		close(start)
 		release()
@@ -97,7 +97,7 @@ func TestACloseRacingARestoreFindsTheTab(t *testing.T) {
 	mustOpen(t, manager, access, "https://example.test/keep")
 	for i := range 1000 {
 		page := mustOpen(t, manager, access, "https://example.test/")
-		live, _, err := manager.lookupOwnedPage(access, page.ID)
+		live, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,14 +106,14 @@ func TestACloseRacingARestoreFindsTheTab(t *testing.T) {
 		}
 		release := engine.hold(&engine.newPageGate)
 		restored := async(func() error {
-			_, _, err := manager.resolvePage(context.Background(), access, page.ID, false)
+			_, _, err := manager.resolvePage(context.Background(), access, PageID(page.ID), false)
 			return err
 		})
 		receive(t, engine.creating, "the restore's engine page")
 		start := make(chan struct{})
 		closed := async(func() error {
 			<-start
-			return manager.closePage(context.Background(), access, page.ID, false, false)
+			return manager.closePage(context.Background(), access, PageID(page.ID), false, false)
 		})
 		close(start)
 		release()
@@ -145,7 +145,7 @@ func TestConcurrentClosesJoinOneTeardown(t *testing.T) {
 		for j := range errs {
 			wg.Go(func() {
 				<-start
-				errs[j] = manager.CloseCompanionPage(context.Background(), access, page.ID)
+				errs[j] = manager.CloseCompanionPage(context.Background(), access, PageID(page.ID))
 			})
 		}
 		close(start)

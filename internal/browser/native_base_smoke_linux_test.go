@@ -66,7 +66,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 		t.Fatalf("open a second blank tab: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(blank.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -119,7 +119,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	}
 	activate := func(pageID string) {
 		t.Helper()
-		if err := manager.ActivateCompanionPage(ctx, access, pageID); err != nil {
+		if err := manager.ActivateCompanionPage(ctx, access, PageID(pageID)); err != nil {
 			t.Fatalf("activate %s: %v", pageID, err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	// report tells the Manager.
 	navigateItself := func(pageID, address string) {
 		t.Helper()
-		p, _, err := manager.lookupOwnedPage(access, pageID)
+		p, _, err := manager.lookupOwnedPage(access, PageID(pageID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	navigateItself(blank2.ID, "about:blank")
 	activate(blank2.ID)
 	painted("3-blank-after-document", pane)
-	if _, err := manager.NavigateCompanion(ctx, access, blank2.ID, smokeFileURL(file)); err != nil {
+	if _, err := manager.NavigateCompanion(ctx, access, PageID(blank2.ID), smokeFileURL(file)); err != nil {
 		t.Fatalf("navigate the blank tab: %v", err)
 	}
 	painted("4-blank-tab-navigated-to-the-document", white)
@@ -179,7 +179,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a blank tab: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(blank.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 		t.Fatalf("load about:blank: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(blank.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -206,7 +206,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 		t.Helper()
 		var share float64
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-			raw, err := manager.Screenshot(ctx, access, ScreenshotOptions{PageID: blank.ID})
+			raw, err := manager.Screenshot(ctx, access, ScreenshotOptions{PageID: PageID(blank.ID)})
 			if err != nil {
 				t.Fatalf("%s: screenshot: %v", step, err)
 			}
@@ -225,7 +225,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
 		t.Fatalf("hide the pane: %v", err)
 	}
-	if _, err := manager.NavigateCompanion(ctx, access, blank.ID, smokeFileURL(file)); err != nil {
+	if _, err := manager.NavigateCompanion(ctx, access, PageID(blank.ID), smokeFileURL(file)); err != nil {
 		t.Fatalf("navigate the hidden tab: %v", err)
 	}
 	shot("hidden document", color.RGBA{0xff, 0xff, 0xff, 0xff})
@@ -285,7 +285,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a blank tab: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(blank.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 		t.Fatalf("load about:blank: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(blank.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -343,7 +343,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 	}
 	shown := make(chan error, 1)
 	go func() {
-		_, err := manager.Visibility(ctx, access, &show, blank.ID)
+		_, err := manager.Visibility(ctx, access, &show, PageID(blank.ID))
 		shown <- err
 	}()
 	time.Sleep(time.Second)
@@ -399,12 +399,12 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 		t.Fatalf("open the other page: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
 	activate := func(pageID string) {
 		t.Helper()
-		if err := manager.ActivateCompanionPage(ctx, access, pageID); err != nil {
+		if err := manager.ActivateCompanionPage(ctx, access, PageID(pageID)); err != nil {
 			t.Fatalf("activate %s: %v", pageID, err)
 		}
 	}

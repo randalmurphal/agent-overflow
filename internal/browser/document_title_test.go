@@ -8,7 +8,7 @@ func documentTitlePage(t *testing.T, a string) (*Manager, *managedPage, *statePu
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, a)
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestADocumentTitleReachesTheTabAfterTheNavigationReport(t *testing.T) {
 	if got := p.cachedInfo().Title; got != "Set by script" {
 		t.Fatalf("the tab shows %q, want the document's title", got)
 	}
-	if got := pushes.shownTitle(p.id); got != "Set by script" {
+	if got := pushes.shownTitle(string(p.id)); got != "Set by script" {
 		t.Fatalf("the newest push shows %q, want the document's title", got)
 	}
 	// The same title again changes nothing and pushes nothing.
@@ -53,7 +53,7 @@ func TestADocumentTitleBeforeItsNavigationReportWaitsForTheAddress(t *testing.T)
 	if got := p.cachedInfo(); got.URL != b || got.Title != "Page b" {
 		t.Fatalf("after the navigation report the tab shows %q at %q, want %q at %q", got.Title, got.URL, "Page b", b)
 	}
-	if got := pushes.shownTitle(p.id); got != "Page b" {
+	if got := pushes.shownTitle(string(p.id)); got != "Page b" {
 		t.Fatalf("the newest push shows %q, want %q", got, "Page b")
 	}
 }

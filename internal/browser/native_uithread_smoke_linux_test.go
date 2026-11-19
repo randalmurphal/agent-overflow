@@ -45,7 +45,7 @@ func TestNativeEngineRealWithdrawnOperationNeverRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}

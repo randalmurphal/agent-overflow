@@ -58,7 +58,7 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 		t.Fatalf("the page's driver is %T, want the WebKitGTK page", p.driver)
 	}
 	profile := view.profile
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/slow.bin"), nil); err != nil {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), fmt.Sprintf(`location.href = %q; true`, server.URL+"/slow.bin"), nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
 	var id downloadID
@@ -148,7 +148,7 @@ func TestNativeEngineRealDownloadFailingBeforeItsFileIsFreed(t *testing.T) {
 		t.Fatalf("open the page: %v", err)
 	}
 	before := webkitDownloadsAlive()
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, `document.getElementById("d").click(); true`, nil); err != nil {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), `document.getElementById("d").click(); true`, nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
 	started := false

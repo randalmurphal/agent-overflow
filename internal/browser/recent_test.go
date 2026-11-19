@@ -49,14 +49,14 @@ func TestRecordableAddressKeepsWebAndFileAddressesOnly(t *testing.T) {
 // reload record nothing.
 func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	if _, err := m.NavigateCompanion(t.Context(), access, pageID, "example.test/b"); err != nil {
+	if _, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), "example.test/b"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.OpenFile(t.Context(), access, filepath.Join(access.Workspace, "report.html"), OpenOptions{PageID: pageID}); err != nil {
+	if _, err := m.OpenFile(t.Context(), access, filepath.Join(access.Workspace, "report.html"), OpenOptions{PageID: PageID(pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	// The address again moves it to the front instead of adding it twice.
-	if _, err := m.Open(t.Context(), access, "https://example.test/start", OpenOptions{PageID: pageID}); err != nil {
+	if _, err := m.Open(t.Context(), access, "https://example.test/start", OpenOptions{PageID: PageID(pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	report := "file://" + filepath.ToSlash(filepath.Join(access.Workspace, "report.html"))
@@ -68,7 +68,7 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 		t.Fatalf("an entry kept no title")
 	}
 
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,16 +76,16 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 	fake.mu.Lock()
 	fake.navigateHook = func(context.Context, string) error { return errors.New("net::ERR_CONNECTION_REFUSED") }
 	fake.mu.Unlock()
-	if _, err := m.NavigateCompanion(t.Context(), access, pageID, "localhost:1"); err == nil {
+	if _, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), "localhost:1"); err == nil {
 		t.Fatal("the refused navigation succeeded")
 	}
 	fake.mu.Lock()
 	fake.navigateHook = nil
 	fake.mu.Unlock()
-	if _, err := m.History(t.Context(), access, pageID, "back"); err != nil {
+	if _, err := m.History(t.Context(), access, PageID(pageID), "back"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.History(t.Context(), access, pageID, "reload"); err != nil {
+	if _, err := m.History(t.Context(), access, PageID(pageID), "reload"); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, access); !reflect.DeepEqual(got, want) {
@@ -107,7 +107,7 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 func TestRecentAddressesAreBounded(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
 	for i := range maxRecentAddresses + 5 {
-		if _, err := m.Open(t.Context(), access, fmt.Sprintf("https://example.test/%d", i), OpenOptions{PageID: pageID}); err != nil {
+		if _, err := m.Open(t.Context(), access, fmt.Sprintf("https://example.test/%d", i), OpenOptions{PageID: PageID(pageID)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -135,7 +135,7 @@ func TestRecentAddressesForgetOnJarSwitchAndKeepNothingPrivate(t *testing.T) {
 	if got := recentURLs(m, access); len(got) != 0 {
 		t.Fatalf("recent = %q after a jar switch", got)
 	}
-	if _, err := m.Open(t.Context(), access, "https://example.test/thread-jar", OpenOptions{PageID: pageID}); err != nil {
+	if _, err := m.Open(t.Context(), access, "https://example.test/thread-jar", OpenOptions{PageID: PageID(pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, access); !reflect.DeepEqual(got, []string{"https://example.test/thread-jar"}) {
@@ -144,7 +144,7 @@ func TestRecentAddressesForgetOnJarSwitchAndKeepNothingPrivate(t *testing.T) {
 	if err := m.SetJar(context.Background(), access, JarPrivate, JarSwitchConfirmed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Open(t.Context(), access, "https://example.test/private", OpenOptions{PageID: pageID}); err != nil {
+	if _, err := m.Open(t.Context(), access, "https://example.test/private", OpenOptions{PageID: PageID(pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, access); len(got) != 0 {
@@ -217,7 +217,7 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 		if err := m.Reconfigure(Config{Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.Open(t.Context(), access, "https://example.test/"+strings.ReplaceAll(forget.name, " ", "-"), OpenOptions{PageID: pageIDFor(t, m, access, pageID)}); err != nil {
+		if _, err := m.Open(t.Context(), access, "https://example.test/"+strings.ReplaceAll(forget.name, " ", "-"), OpenOptions{PageID: PageID(pageIDFor(t, m, access, pageID))}); err != nil {
 			t.Fatalf("%s: open: %v", forget.name, err)
 		}
 		before := reported()
@@ -277,7 +277,7 @@ func pageIDFor(t *testing.T, m *Manager, access Access, pageID string) string {
 // overtake's error once both are done.
 func overtakeOpen(t *testing.T, m *Manager, access Access, pageID string, overtake func() error) error {
 	t.Helper()
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func overtakeOpen(t *testing.T, m *Manager, access Access, pageID string, overta
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		m.mu.Lock()
-		live, _ := m.livePageLocked(pageID)
+		live, _ := m.livePageLocked(PageID(pageID))
 		m.mu.Unlock()
 		if live != p {
 			break

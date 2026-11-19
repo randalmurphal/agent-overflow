@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (Snapshot, error) {
+func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (Snapshot, error) {
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return Snapshot{}, err
@@ -25,7 +25,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.ID = p.id
+	snapshot.ID = string(p.id)
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
@@ -76,7 +76,7 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 	return data, nil
 }
 
-func (m *Manager) Click(ctx context.Context, access Access, pageID, selector string) (PageInfo, error) {
+func (m *Manager) Click(ctx context.Context, access Access, pageID PageID, selector string) (PageInfo, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		return PageInfo{}, fmt.Errorf("browser: selector is required")
@@ -121,7 +121,7 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) (PageInfo, error) {
+func (m *Manager) Press(ctx context.Context, access Access, pageID PageID, key string) (PageInfo, error) {
 	if len(key) > maxBrowserInputBytes {
 		return PageInfo{}, fmt.Errorf("browser: key input exceeds %d bytes", maxBrowserInputBytes)
 	}
@@ -210,7 +210,7 @@ func (p *managedPage) setClipboardText(text string) {
 	p.clipboardMu.Unlock()
 }
 
-func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector string, x, y float64) (PageInfo, error) {
+func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, selector string, x, y float64) (PageInfo, error) {
 	if err := validateScrollDelta(x, y); err != nil {
 		return PageInfo{}, err
 	}
@@ -230,7 +230,7 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector st
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) Wait(ctx context.Context, access Access, pageID, selector string, milliseconds int) (PageInfo, error) {
+func (m *Manager) Wait(ctx context.Context, access Access, pageID PageID, selector string, milliseconds int) (PageInfo, error) {
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return PageInfo{}, err
@@ -266,7 +266,7 @@ func (m *Manager) Wait(ctx context.Context, access Access, pageID, selector stri
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) History(ctx context.Context, access Access, pageID, action string) (PageInfo, error) {
+func (m *Manager) History(ctx context.Context, access Access, pageID PageID, action string) (PageInfo, error) {
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return PageInfo{}, err
@@ -297,7 +297,7 @@ func (m *Manager) History(ctx context.Context, access Access, pageID, action str
 // Evaluate runs JavaScript in the page as evaluate.go describes, with the
 // optional JSON argument for code that is one function. It returns the result
 // and a note the tool result carries, or "".
-func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, code string, argument json.RawMessage) (any, string, error) {
+func (m *Manager) Evaluate(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
 	return m.evaluate(ctx, access, pageID, code, argument, false)
 }
 
@@ -307,11 +307,11 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, code stri
 // not a Manager judgement: an engine with engine-level side-effect rejection
 // returns none, and one that can only be best-effort says so in the tool
 // result rather than looking identical.
-func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, code string, argument json.RawMessage) (any, string, error) {
+func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
 	return m.evaluate(ctx, access, pageID, code, argument, true)
 }
 
-func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code string, argument json.RawMessage, readOnly bool) (any, string, error) {
+func (m *Manager) evaluate(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage, readOnly bool) (any, string, error) {
 	// The evaluation's own failures (a refusal, a throw, a result the tools
 	// cannot send) are named for the tool; an engine failure already carries
 	// the package prefix.
@@ -374,8 +374,8 @@ func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage)
 // lookupOrSelectPage answers the live page a page-scoped call acts on: the
 // named page, or with none named the thread's only page, or a new one when it
 // has none. A suspended page is restored, since the call touches it.
-func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID string) (*managedPage, *jarScope, error) {
-	if pageID = strings.TrimSpace(pageID); pageID != "" {
+func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID PageID) (*managedPage, *jarScope, error) {
+	if pageID = pageID.trim(); pageID != "" {
 		return m.resolvePage(ctx, access, pageID, false)
 	}
 	tabs := m.threadTabs(access.tb)

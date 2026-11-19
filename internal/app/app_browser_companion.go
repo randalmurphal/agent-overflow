@@ -175,7 +175,7 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	if err != nil {
 		return err
 	}
-	err = a.browser.manager.RevealPageFile(ctx, access, pageID)
+	err = a.browser.manager.RevealPageFile(ctx, access, appbrowser.PageID(pageID))
 	return errors.Join(err, access.End())
 }
 
@@ -257,11 +257,11 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		// The tab selected at its turn, or one blank tab it opens, which the
 		// answer names.
 		var outcome appbrowser.ShowOutcome
-		var shown string
+		var shown appbrowser.PageID
 		outcome, shown, err = m.ShowCompanion(ctx, access)
 		switch outcome {
 		case appbrowser.ShowOpened:
-			newPage = shown
+			newPage = string(shown)
 		case appbrowser.ShowShown, appbrowser.ShowPassed:
 		}
 	case kindNew:
@@ -295,13 +295,13 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		// unconfirmed, it is refused while a tab is live.
 		err = jarSwitchError(m.SetJar(ctx, access, cmd.jar, cmd.consent))
 	case kindDownloadCancel:
-		err = m.CancelThreadDownload(access, appbrowser.DownloadKey(cmd.download))
+		err = m.CancelThreadDownload(access, cmd.download)
 	case kindDownloadReveal:
-		err = m.RevealThreadDownload(ctx, access, appbrowser.DownloadKey(cmd.download))
+		err = m.RevealThreadDownload(ctx, access, cmd.download)
 	case kindDownloadOpen:
 		// A new tab showing the finished file.
 		var page appbrowser.PageInfo
-		page, err = m.OpenThreadDownload(ctx, access, appbrowser.DownloadKey(cmd.download))
+		page, err = m.OpenThreadDownload(ctx, access, cmd.download)
 		newPage = page.ID
 	case kindDownloadsClear:
 		err = m.ClearThreadDownloads(access)
@@ -360,7 +360,7 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if err != nil {
 		return appbrowser.FindState{}, err
 	}
-	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Seq)
+	state, err := a.browser.manager.Find(ctx, access, appbrowser.PageID(action.PageID), action.Kind, action.Query, action.Mount, action.Seq)
 	if endErr := access.End(); endErr != nil {
 		return appbrowser.FindState{}, errors.Join(err, endErr)
 	}

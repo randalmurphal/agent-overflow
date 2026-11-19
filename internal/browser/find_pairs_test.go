@@ -544,7 +544,7 @@ func newFindTableEnv(t *testing.T, base string) *findTableEnv {
 		t.Fatal(err)
 	}
 	e.other = other.ID
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	e.shown = f.pageID
@@ -594,11 +594,11 @@ func setFindPoint(m *Manager, hook func(point string)) {
 }
 
 // livePages are the table's pages that are live, by id.
-func (e *findTableEnv) livePages() map[string]*managedPage {
-	pages := map[string]*managedPage{}
+func (e *findTableEnv) livePages() map[PageID]*managedPage {
+	pages := map[PageID]*managedPage{}
 	for _, id := range []string{e.f.pageID, e.other} {
-		if p, _, err := e.f.manager.lookupOwnedPage(e.f.access, id); err == nil {
-			pages[id] = p
+		if p, _, err := e.f.manager.lookupOwnedPage(e.f.access, PageID(id)); err == nil {
+			pages[PageID(id)] = p
 		}
 	}
 	return pages
@@ -621,7 +621,7 @@ func (e *findTableEnv) install(t *testing.T) {
 			if e.stopFail == "once" {
 				e.stopFail = ""
 			}
-			e.lastStop[id] = findStopRecord{at: e.actions[id], failed: failed}
+			e.lastStop[string(id)] = findStopRecord{at: e.actions[string(id)], failed: failed}
 			if failed {
 				return errFakeFindStop
 			}
@@ -640,7 +640,7 @@ func (e *findTableEnv) install(t *testing.T) {
 
 func (e *findTableEnv) page(t *testing.T) *managedPage {
 	t.Helper()
-	p, _, err := e.f.manager.lookupOwnedPage(e.f.access, e.f.pageID)
+	p, _, err := e.f.manager.lookupOwnedPage(e.f.access, PageID(e.f.pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,10 +679,10 @@ func (e *findTableEnv) run(t *testing.T, p *findProvider, call *findCall) {
 		ctx = expired
 	}
 	e.mu.Unlock()
-	state, err := e.f.manager.Find(ctx, e.f.access, intent.page, intent.kind, intent.query, p.mount, intent.seq)
+	state, err := e.f.manager.Find(ctx, e.f.access, PageID(intent.page), intent.kind, intent.query, p.mount, intent.seq)
 	e.settle()
 	var owner findOwner
-	if page, ok := e.livePages()[intent.page]; ok {
+	if page, ok := e.livePages()[PageID(intent.page)]; ok {
 		page.findMu.Lock()
 		owner = findOwner{mount: page.find.owner, seq: page.find.seq}
 		page.findMu.Unlock()
@@ -790,16 +790,16 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		p.findMu.Lock()
 		session := p.find
 		p.findMu.Unlock()
-		sessions[id] = session
+		sessions[string(id)] = session
 		fake := p.driver.(*fakePage)
 		fake.mu.Lock()
 		engine := fake.findQuery != ""
 		fake.mu.Unlock()
-		page := e.pageLabel(id)
+		page := e.pageLabel(string(id))
 		e.mu.Lock()
-		actions, lastStop := e.actions[id], e.lastStop[id]
+		actions, lastStop := e.actions[string(id)], e.lastStop[string(id)]
 		e.mu.Unlock()
-		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, id) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
+		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, PageID(id)) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
 			t.Errorf("%s: %s: a search of %s is left on a page not shown, or for a pane that is gone", name, page, e.labels[session.owner])
 		}
 		if !session.active && (session.owner != "" || session.seq != 0) {
@@ -997,7 +997,7 @@ func (e *findTableEnv) goneStart(t *testing.T, p *findProvider) {
 // it.
 func (e *findTableEnv) switchTo(t *testing.T, id string) {
 	t.Helper()
-	if err := e.f.manager.ActivateCompanionPage(t.Context(), e.f.access, id); err != nil {
+	if err := e.f.manager.ActivateCompanionPage(t.Context(), e.f.access, PageID(id)); err != nil {
 		t.Fatal(err)
 	}
 	e.settle()
@@ -1169,7 +1169,7 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 	ends := map[string]func(t *testing.T, e *findTableEnv){
 		"commit": func(_ *testing.T, e *findTableEnv) { e.f.fake.commitDocument() },
 		"switch away": func(t *testing.T, e *findTableEnv) {
-			if err := e.f.manager.ActivateCompanionPage(t.Context(), e.f.access, e.other); err != nil {
+			if err := e.f.manager.ActivateCompanionPage(t.Context(), e.f.access, PageID(e.other)); err != nil {
 				t.Error(err)
 			}
 		},

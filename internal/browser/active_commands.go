@@ -97,7 +97,7 @@ func (m *Manager) ReloadActiveCompanionPage(ctx context.Context, access Access, 
 // tab access's lifetime shows (shownTabLocked) for a turn InOrder, nothing
 // otherwise. A lifetime the thread's close detached acts on nothing, as a
 // Passed turn does. The caller holds m.mu.
-func (m *Manager) commitActiveLocked(access Access, turn *turnorder.Turn) (ActiveOutcome, string) {
+func (m *Manager) commitActiveLocked(access Access, turn *turnorder.Turn) (ActiveOutcome, PageID) {
 	standing := turn.Commit()
 	if access.admitLocked() != nil {
 		return ActivePassed, ""
@@ -121,9 +121,9 @@ func (m *Manager) commitActiveLocked(access Access, turn *turnorder.Turn) (Activ
 // shownTabLocked is the tab the pane shows of tb: the active tab, or with
 // none the first in strip order; "" when tb has no tab. The caller holds
 // m.mu.
-func (m *Manager) shownTabLocked(tb *threadBrowser) string {
+func (m *Manager) shownTabLocked(tb *threadBrowser) PageID {
 	tabs := m.companionTabsLocked(tb)
-	active := tb.session.ActivePageID
+	active := tb.session.activePage()
 	for _, tab := range tabs {
 		if tab.id == active {
 			return active

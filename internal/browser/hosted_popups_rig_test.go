@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -207,10 +208,10 @@ func (l *popupLauncher) reportPopup(pageID string, report webview2host.PopupRepo
 }
 
 // tabs answers the thread's tabs by engine page id.
-func (l *popupLauncher) tabs(threadID string) map[string]*managedPage {
-	out := map[string]*managedPage{}
+func (l *popupLauncher) tabs(threadID string) map[ids.PageHandle]*managedPage {
+	out := map[ids.PageHandle]*managedPage{}
 	for _, p := range l.manager.ownedPages(lifetimeOf(l.manager, threadID)) {
-		out[string(p.driver.Handle())] = p
+		out[p.driver.Handle()] = p
 	}
 	return out
 }
@@ -221,7 +222,7 @@ func (l *popupLauncher) awaitTab(threadID, handle string, want bool) *managedPag
 	l.t.Helper()
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
-		p, has := l.tabs(threadID)[handle]
+		p, has := l.tabs(threadID)[ids.PageHandle(handle)]
 		switch {
 		case want && has:
 			return p
@@ -284,7 +285,7 @@ func (l *popupLauncher) awaitTabGone(threadID, handle string) {
 	l.t.Helper()
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
-		if _, has := l.tabs(threadID)[handle]; !has {
+		if _, has := l.tabs(threadID)[ids.PageHandle(handle)]; !has {
 			return
 		}
 		if time.Now().After(deadline) {

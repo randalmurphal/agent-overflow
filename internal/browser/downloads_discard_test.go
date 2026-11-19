@@ -61,7 +61,7 @@ var discardEnds = []struct {
 		m.downloadProgress(downloadProgress{ID: "dl-1", Received: maxDownloadBytes + 1, State: downloadInProgress})
 	}},
 	{"its page's close", func(t *testing.T, m *Manager, access Access) {
-		if err := m.ClosePage(t.Context(), access, m.CompanionState(access.Caller()).Pages[0].ID); err != nil {
+		if err := m.ClosePage(t.Context(), access, PageID(m.CompanionState(access.Caller()).Pages[0].ID)); err != nil {
 			t.Fatal(err)
 		}
 	}},

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -30,7 +29,7 @@ const restoreTimeout = 2 * operationTimeout
 
 // suspendedPage is one suspended page. Every field is guarded by m.mu.
 type suspendedPage struct {
-	id string
+	id PageID
 	// owner is the thread lifetime the record is a tab of.
 	owner             *threadBrowser
 	url, title, label string
@@ -49,7 +48,7 @@ type suspendedPage struct {
 }
 
 func (r *suspendedPage) info() PageInfo {
-	return PageInfo{ID: r.id, Label: r.label, URL: r.url, Title: r.title, Suspended: true}
+	return PageInfo{ID: string(r.id), Label: r.label, URL: r.url, Title: r.title, Suspended: true}
 }
 
 // restoreCall is one restore of a suspended page. err is written before done
@@ -69,7 +68,7 @@ var errJarTeardown = errors.New("browser: the cookie jar switch is still closing
 // threadTab is one entry of a thread's tab set: a live page or a suspended
 // one.
 type threadTab struct {
-	id      string
+	id      PageID
 	info    PageInfo
 	order   int64
 	created int64
@@ -163,7 +162,7 @@ func (m *Manager) listTabsLocked(tb *threadBrowser, companion bool) []threadTab 
 
 // hasTab reports whether pageID is one of the tabs tb's companion shows:
 // live, suspended or pending.
-func (m *Manager) hasTab(tb *threadBrowser, pageID string) bool {
+func (m *Manager) hasTab(tb *threadBrowser, pageID PageID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, tab := range m.companionTabsLocked(tb) {
@@ -175,7 +174,7 @@ func (m *Manager) hasTab(tb *threadBrowser, pageID string) bool {
 }
 
 // livePageLocked finds a live page by id in any scope. The caller holds m.mu.
-func (m *Manager) livePageLocked(pageID string) (*managedPage, *jarScope) {
+func (m *Manager) livePageLocked(pageID PageID) (*managedPage, *jarScope) {
 	for _, scope := range m.scopes {
 		if p := scope.pages[pageID]; p != nil {
 			return p, scope
@@ -189,8 +188,8 @@ func (m *Manager) livePageLocked(pageID string) (*managedPage, *jarScope) {
 // restore. skipLoad restores the page blank, for a caller that navigates it
 // next. A page of another thread, or of another lifetime of the caller's,
 // is not found.
-func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string, skipLoad bool) (*managedPage, *jarScope, error) {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) resolvePage(ctx context.Context, access Access, pageID PageID, skipLoad bool) (*managedPage, *jarScope, error) {
+	pageID = pageID.trim()
 	for {
 		m.mu.Lock()
 		if p, scope := m.livePageLocked(pageID); p != nil {
@@ -291,7 +290,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		p := newManagedPage(access.tb, access.Caller())
 		p.id, p.createdAt = rec.id, createdAt
 		p.lastUse.Store(lastUse)
-		p.info = PageInfo{ID: rec.id, URL: "about:blank", Label: label}
+		p.info = PageInfo{ID: string(rec.id), URL: "about:blank", Label: label}
 		scope, err := m.openAndLoad(ctx, access.Caller(), p, target, title, func() error { return m.restoreAdmissionLocked(access, rec) })
 		if errors.Is(err, errJarTeardown) {
 			continue
@@ -563,8 +562,8 @@ func (m *Manager) saveOpenPages() error {
 // forgetRecordLocked closes one suspended page: it drops tb's record of
 // pageID, answering whether it had one, and the caller, which holds m.mu,
 // calls recordForgotten after releasing it, so the saved copy goes too.
-func (m *Manager) forgetRecordLocked(tb *threadBrowser, pageID string, byUser bool) bool {
-	rec := m.suspended[strings.TrimSpace(pageID)]
+func (m *Manager) forgetRecordLocked(tb *threadBrowser, pageID PageID, byUser bool) bool {
+	rec := m.suspended[pageID.trim()]
 	if rec == nil || rec.owner != tb {
 		return false
 	}

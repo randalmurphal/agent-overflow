@@ -151,7 +151,7 @@ func TestNavigateCompanionResolvesWindowsAddressesOnTheWSLBuild(t *testing.T) {
 	} {
 		t.Run(address, func(t *testing.T) {
 			m, access, pageID, _ := newNavigateFixture(t, true)
-			if _, err := m.NavigateCompanion(t.Context(), access, pageID, address); err != nil {
+			if _, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), address); err != nil {
 				t.Fatalf("navigate = %v", err)
 			}
 			if got := pageURL(t, m, access, pageID); got != "file://wsl.localhost/Distro/repo/report.html" {
@@ -163,7 +163,7 @@ func TestNavigateCompanionResolvesWindowsAddressesOnTheWSLBuild(t *testing.T) {
 	// spell it otherwise.
 	m, access, pageID, root := newNavigateFixture(t, true)
 	backend := "file://" + filepath.ToSlash(filepath.Join(root, "repo", "report.html"))
-	if _, err := m.NavigateCompanion(t.Context(), access, pageID, backend); err != nil {
+	if _, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), backend); err != nil {
 		t.Fatalf("navigate %s = %v", backend, err)
 	}
 }
@@ -189,7 +189,7 @@ func TestNavigateCompanionRefusesUnreachableWindowsAddresses(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("wsl=%v %s", tc.wsl, tc.address), func(t *testing.T) {
 			m, access, pageID, _ := newNavigateFixture(t, tc.wsl)
-			_, err := m.NavigateCompanion(t.Context(), access, pageID, tc.address)
+			_, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), tc.address)
 			if err == nil || !strings.Contains(err.Error(), tc.names) {
 				t.Fatalf("navigate = %v, want an error naming %s", err, tc.names)
 			}
@@ -205,7 +205,7 @@ func TestNavigateCompanionRefusesUnreachableWindowsAddresses(t *testing.T) {
 // without a stop still reports its failure.
 func TestStopCompanionLoadStopsAHeldNavigationWithoutAnError(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,12 +226,12 @@ func TestStopCompanionLoadStopsAHeldNavigationWithoutAnError(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.NavigateCompanion(context.Background(), access, pageID, "https://example.test/slow")
+		_, err := m.NavigateCompanion(context.Background(), access, PageID(pageID), "https://example.test/slow")
 		done <- err
 	}()
 	<-entered
 	stopped := make(chan error, 1)
-	go func() { stopped <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	go func() { stopped <- m.StopCompanionLoad(context.Background(), access, PageID(pageID)) }()
 	select {
 	case err := <-stopped:
 		if err != nil {
@@ -254,7 +254,7 @@ func TestStopCompanionLoadStopsAHeldNavigationWithoutAnError(t *testing.T) {
 	fake.mu.Lock()
 	fake.navigateHook = func(context.Context, string) error { return errors.New("net::ERR_NAME_NOT_RESOLVED") }
 	fake.mu.Unlock()
-	if _, err := m.NavigateCompanion(t.Context(), access, pageID, "https://example.test/broken"); err == nil || !strings.Contains(err.Error(), "ERR_NAME_NOT_RESOLVED") {
+	if _, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), "https://example.test/broken"); err == nil || !strings.Contains(err.Error(), "ERR_NAME_NOT_RESOLVED") {
 		t.Fatalf("an unstopped failure answered %v", err)
 	}
 }
@@ -296,7 +296,7 @@ func stoppableFake(t *testing.T, p *managedPage, heldErr, queuedErr, stopResult 
 func navigateAsync(m *Manager, access Access, pageID, address string) <-chan error {
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.NavigateCompanion(context.Background(), access, pageID, address)
+		_, err := m.NavigateCompanion(context.Background(), access, PageID(pageID), address)
 		done <- err
 	}()
 	return done
@@ -322,7 +322,7 @@ func TestStopCompanionLoadLeavesAQueuedNavigationsFailureStanding(t *testing.T) 
 	} {
 		t.Run(queuedErr.Error(), func(t *testing.T) {
 			m, access, pageID, _ := newNavigateFixture(t, false)
-			p, _, err := m.lookupOwnedPage(access, pageID)
+			p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -332,7 +332,7 @@ func TestStopCompanionLoadLeavesAQueuedNavigationsFailureStanding(t *testing.T) 
 			queued := navigateAsync(m, access, pageID, "https://example.test/queued")
 			// Let the queued navigation reach the page lock the held one owns.
 			time.Sleep(50 * time.Millisecond)
-			if err := m.StopCompanionLoad(t.Context(), access, pageID); err != nil {
+			if err := m.StopCompanionLoad(t.Context(), access, PageID(pageID)); err != nil {
 				t.Fatalf("stop = %v", err)
 			}
 			if err := awaitResult(t, held); err != nil {
@@ -348,14 +348,14 @@ func TestStopCompanionLoadLeavesAQueuedNavigationsFailureStanding(t *testing.T) 
 // A stop the engine refused stopped nothing, so the abort stands.
 func TestStopCompanionLoadThatFailsLeavesTheAbortStanding(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	entered := stoppableFake(t, p, fmt.Errorf("%w: net::ERR_ABORTED", errNavigationAborted), nil, errors.New("stop refused"))
 	held := navigateAsync(m, access, pageID, "https://example.test/held")
 	<-entered
-	if err := m.StopCompanionLoad(t.Context(), access, pageID); err == nil {
+	if err := m.StopCompanionLoad(t.Context(), access, PageID(pageID)); err == nil {
 		t.Fatal("a refused stop answered no error")
 	}
 	if err := awaitResult(t, held); !errors.Is(err, errNavigationAborted) {
@@ -367,14 +367,14 @@ func TestStopCompanionLoadThatFailsLeavesTheAbortStanding(t *testing.T) {
 // failures stand.
 func TestStopCompanionLoadSuppressesOnlyTheAbort(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	entered := stoppableFake(t, p, errors.New("net::ERR_CONNECTION_RESET"), nil, nil)
 	held := navigateAsync(m, access, pageID, "https://example.test/held")
 	<-entered
-	if err := m.StopCompanionLoad(t.Context(), access, pageID); err != nil {
+	if err := m.StopCompanionLoad(t.Context(), access, PageID(pageID)); err != nil {
 		t.Fatalf("stop = %v", err)
 	}
 	if err := awaitResult(t, held); err == nil || !strings.Contains(err.Error(), "ERR_CONNECTION_RESET") {
@@ -461,7 +461,7 @@ func within(ch <-chan struct{}, d time.Duration) bool {
 // next navigation's load is not the one stopped.
 func TestStopCompanionLoadCannotStopANavigationThatReplacedItsTarget(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func TestStopCompanionLoadCannotStopANavigationThatReplacedItsTarget(t *testing.
 	a := navigateAsync(m, access, pageID, "https://example.test/a")
 	<-loads.entered["a"]
 	stopped := make(chan error, 1)
-	go func() { stopped <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	go func() { stopped <- m.StopCompanionLoad(context.Background(), access, PageID(pageID)) }()
 	<-inStop
 	// A finishes on its own while the stop is in the engine, and B follows.
 	close(loads.release["a"])
@@ -501,7 +501,7 @@ func TestStopCompanionLoadCannotStopANavigationThatReplacedItsTarget(t *testing.
 // navigation registered then, never against a load the first let start.
 func TestStopCompanionLoadTwiceNeverStopsTheNextNavigationUnmarked(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,10 +521,10 @@ func TestStopCompanionLoadTwiceNeverStopsTheNextNavigationUnmarked(t *testing.T)
 	a := navigateAsync(m, access, pageID, "https://example.test/a")
 	<-loads.entered["a"]
 	first := make(chan error, 1)
-	go func() { first <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	go func() { first <- m.StopCompanionLoad(context.Background(), access, PageID(pageID)) }()
 	<-inFirst
 	second := make(chan error, 1)
-	go func() { second <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	go func() { second <- m.StopCompanionLoad(context.Background(), access, PageID(pageID)) }()
 	time.Sleep(50 * time.Millisecond)
 	b := navigateAsync(m, access, pageID, "https://example.test/b")
 	time.Sleep(50 * time.Millisecond)
@@ -561,7 +561,7 @@ func TestCDPNavigateErrorMarksOnlyTheAbort(t *testing.T) {
 func TestStopCompanionLoadRefusesAnotherThreadsPageAndIgnoresATabWithNoPage(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
 	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
-	if err := m.StopCompanionLoad(t.Context(), other, pageID); !errors.Is(err, errPageNotFound) {
+	if err := m.StopCompanionLoad(t.Context(), other, PageID(pageID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("stop of another thread's page = %v", err)
 	}
 	if err := m.StopCompanionLoad(t.Context(), access, "missing"); !errors.Is(err, errPageNotFound) {
@@ -572,10 +572,10 @@ func TestStopCompanionLoadRefusesAnotherThreadsPageAndIgnoresATabWithNoPage(t *t
 	if err := m.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
-	if err := m.StopCompanionLoad(t.Context(), access, pageID); err != nil {
+	if err := m.StopCompanionLoad(t.Context(), access, PageID(pageID)); err != nil {
 		t.Fatalf("stop of a suspended tab = %v", err)
 	}
-	if p, _, _ := m.lookupOwnedPage(access, pageID); p != nil {
+	if p, _, _ := m.lookupOwnedPage(access, PageID(pageID)); p != nil {
 		t.Fatal("stop restored the suspended page")
 	}
 }

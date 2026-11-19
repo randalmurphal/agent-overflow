@@ -22,7 +22,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			manager, engine, access, _, pageID := newPaneHostManager(t)
 			handle := paneHandle(manager, access, pageID)
 			show := true
-			if _, err := manager.Visibility(t.Context(), access, &show, pageID); err != nil {
+			if _, err := manager.Visibility(t.Context(), access, &show, PageID(pageID)); err != nil {
 				t.Fatal(err)
 			}
 			var mu sync.Mutex

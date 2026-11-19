@@ -74,7 +74,7 @@ func newFindFixtureWith(t *testing.T, address string, configure func(*Manager)) 
 	f.pageID = info.ID
 	f.fake = f.page(t, info.ID)
 	show := true
-	if _, err := manager.Visibility(t.Context(), f.access, &show, info.ID); err != nil {
+	if _, err := manager.Visibility(t.Context(), f.access, &show, PageID(info.ID)); err != nil {
 		t.Fatalf("show: %v", err)
 	}
 	f.attach(t)
@@ -103,7 +103,7 @@ func (f *findFixture) attach(t *testing.T) {
 
 func (f *findFixture) page(t *testing.T, pageID string) *fakePage {
 	t.Helper()
-	p, _, err := f.manager.lookupOwnedPage(f.access, pageID)
+	p, _, err := f.manager.lookupOwnedPage(f.access, PageID(pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func (f *findFixture) find(t *testing.T, kind, query string) FindState {
 	if kind == FindStart {
 		seq = f.nextSeq()
 	}
-	state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, query, f.mount, seq)
+	state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, query, f.mount, seq)
 	if err != nil {
 		t.Fatalf("find %s %q: %v", kind, query, err)
 	}
@@ -145,7 +145,7 @@ func (f *findFixture) nextSeq() uint64 {
 // session reads the page's find state.
 func (f *findFixture) session(t *testing.T) findSession {
 	t.Helper()
-	p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+	p, _, err := f.manager.lookupOwnedPage(f.access, PageID(f.pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestFindStartsStepsWrapsAndStops(t *testing.T) {
 		t.Fatalf("stop = %+v", stopped)
 	}
 	// The search is gone: a step answers so, asking the engine nothing.
-	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount, f.seq); err != nil || state.Active || !state.Foreign {
+	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "next", "", f.mount, f.seq); err != nil || state.Active || !state.Foreign {
 		t.Fatalf("next after stop = %+v, %v", state, err)
 	}
 	// The caller ended it; nothing is announced.
@@ -273,12 +273,12 @@ func TestFindRefusesBadRequests(t *testing.T) {
 		{"no sequence", f.pageID, "start", "a", 0, "names its sequence"},
 		{"a stop with no sequence", f.pageID, "stop", "", 0, "names its sequence"},
 	} {
-		if _, err := f.manager.Find(ctx, f.access, tc.pageID, tc.kind, tc.query, f.mount, tc.seq); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := f.manager.Find(ctx, f.access, PageID(tc.pageID), tc.kind, tc.query, f.mount, tc.seq); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("%s: error = %v, want %q", tc.name, err, tc.want)
 		}
 	}
 	intruder := f.manager.Bind(Caller{ThreadID: "intruder", Workspace: f.access.Workspace})
-	if _, err := f.manager.Find(ctx, intruder, f.pageID, "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errPageNotFound) {
+	if _, err := f.manager.Find(ctx, intruder, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("another thread's find error = %v, want page not found", err)
 	}
 	select {
@@ -296,17 +296,17 @@ func TestFindRunsOnlyOnTheShownActivePage(t *testing.T) {
 	if _, err := f.manager.NewCompanionPage(t.Context(), f.access, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); err == nil || !strings.Contains(err.Error(), "shows") {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); err == nil || !strings.Contains(err.Error(), "shows") {
 		t.Fatalf("find on a background tab error = %v", err)
 	}
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	hide := false
 	if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); err == nil || !strings.Contains(err.Error(), "shows") {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); err == nil || !strings.Contains(err.Error(), "shows") {
 		t.Fatalf("find with the companion hidden error = %v", err)
 	}
 }
@@ -317,17 +317,17 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	f.wantCall(t, "start alpha")
 
 	// A fragment move keeps the document.
-	if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/alpha#part", OpenOptions{PageID: f.pageID}); err != nil {
+	if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/alpha#part", OpenOptions{PageID: PageID(f.pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	f.noEvent(t)
 
-	if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/beta", OpenOptions{PageID: f.pageID}); err != nil {
+	if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/beta", OpenOptions{PageID: PageID(f.pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	ended := f.wantEnded(t, started.Session)
 	f.wantCall(t, "stop")
-	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount, f.seq); err != nil || !state.Foreign {
+	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "next", "", f.mount, f.seq); err != nil || !state.Foreign {
 		t.Fatalf("next after the navigation ended the find (session %d) = %+v, %v", ended.Session, state, err)
 	}
 
@@ -335,7 +335,7 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	// stale.
 	restarted := f.find(t, "start", "beta")
 	f.wantCall(t, "start beta")
-	if _, err := f.manager.History(t.Context(), f.access, f.pageID, "reload"); err != nil {
+	if _, err := f.manager.History(t.Context(), f.access, PageID(f.pageID), "reload"); err != nil {
 		t.Fatal(err)
 	}
 	f.wantEnded(t, restarted.Session)
@@ -364,7 +364,7 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 // a search started later.
 func TestFindEndDoesNotStopANewerSession(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
-	p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+	p, _, err := f.manager.lookupOwnedPage(f.access, PageID(f.pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,13 +398,13 @@ func TestFindEndsWhenThePageIsHiddenOrReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, other.ID); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(other.ID)); err != nil {
 		t.Fatal(err)
 	}
 	ended := f.wantEnded(t, started.Session)
 	f.wantCall(t, "stop")
 
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	restarted := f.find(t, "start", "alpha")
@@ -436,7 +436,7 @@ func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 	}
 
 	// Presenting it restores it; then close it mid-find.
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	f.fake = f.page(t, f.pageID)
@@ -456,12 +456,12 @@ func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		state, err := f.manager.Find(context.Background(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq())
+		state, err := f.manager.Find(context.Background(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq())
 		answered <- answer{state, err}
 	}()
 	<-entered
 	closed := make(chan error, 1)
-	go func() { closed <- f.manager.ClosePage(context.Background(), f.access, f.pageID) }()
+	go func() { closed <- f.manager.ClosePage(context.Background(), f.access, PageID(f.pageID)) }()
 	close(gate)
 	got := <-answered
 	if got.err != nil || !got.state.Active {
@@ -472,7 +472,7 @@ func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 	}
 	// The close's end is newer than the answer it overtook.
 	f.wantEnded(t, got.state.Session)
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount, f.seq); !errors.Is(err, errPageNotFound) {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "next", "", f.mount, f.seq); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("find on a closed page error = %v", err)
 	}
 }
@@ -487,7 +487,7 @@ func TestFindEndsWhenItsPaneUnmounts(t *testing.T) {
 		f.manager.DetachPane(f.mount)
 		f.wantEnded(t, started.Session)
 		f.wantCall(t, "stop")
-		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); err == nil {
+		if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); err == nil {
 			t.Fatalf("round %d: a find started with no pane mounted", round)
 		}
 		f.attach(t)
@@ -508,12 +508,12 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 		{
 			name: "navigate",
 			away: func(t *testing.T, f *findFixture) {
-				if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/beta", OpenOptions{PageID: f.pageID}); err != nil {
+				if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/beta", OpenOptions{PageID: PageID(f.pageID)}); err != nil {
 					t.Fatal(err)
 				}
 			},
 			back: func(t *testing.T, f *findFixture) {
-				if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/alpha", OpenOptions{PageID: f.pageID}); err != nil {
+				if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/alpha", OpenOptions{PageID: PageID(f.pageID)}); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -526,12 +526,12 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, other.ID); err != nil {
+				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(other.ID)); err != nil {
 					t.Fatal(err)
 				}
 			},
 			back: func(t *testing.T, f *findFixture) {
-				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -547,7 +547,7 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 			},
 			back: func(t *testing.T, f *findFixture) {
 				show := true
-				if _, err := f.manager.Visibility(t.Context(), f.access, &show, f.pageID); err != nil {
+				if _, err := f.manager.Visibility(t.Context(), f.access, &show, PageID(f.pageID)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -561,7 +561,7 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 				}
 			},
 			back: func(t *testing.T, f *findFixture) {
-				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 					t.Fatal(err)
 				}
 				f.fake = f.page(t, f.pageID)
@@ -683,7 +683,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 	f.manager.accelerators = func() keybindings.AcceleratorSet { return keybindings.AcceleratorSet{ctrl: {}} }
 	// A chord is routed to the pane showing its page.
 	show := true
-	if _, err := f.manager.Visibility(t.Context(), f.access, &show, f.pageID); err != nil {
+	if _, err := f.manager.Visibility(t.Context(), f.access, &show, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	f.place(t)
@@ -736,7 +736,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, info.ID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(info.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if mode := manager.CompanionState(access.Caller()).FindMode; mode != "" {
@@ -746,7 +746,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Find(t.Context(), access, info.ID, "start", "alpha", pane.ID, 1); !errors.Is(err, errFindUnavailable) {
+	if _, err := manager.Find(t.Context(), access, PageID(info.ID), "start", "alpha", pane.ID, 1); !errors.Is(err, errFindUnavailable) {
 		t.Fatalf("find error = %v, want unavailable", err)
 	}
 
@@ -758,7 +758,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	if mode := f.manager.CompanionState(f.access.Caller()).FindMode; mode != "" {
 		t.Fatalf("state find mode = %q for a page without find", mode)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errFindUnavailable) {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errFindUnavailable) {
 		t.Fatalf("find error = %v, want unavailable", err)
 	}
 }
@@ -826,7 +826,7 @@ func TestFindInTheEnginesOwnBar(t *testing.T) {
 	f.fake.mu.Unlock()
 	f.find(t, "start", "")
 	f.wantCall(t, "start alpha beta")
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount, f.seq); err == nil || !strings.Contains(err.Error(), "own find bar") {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "next", "", f.mount, f.seq); err == nil || !strings.Contains(err.Error(), "own find bar") {
 		t.Fatalf("stepping the engine's bar error = %v", err)
 	}
 	f.find(t, "stop", "")
@@ -840,14 +840,14 @@ func TestFindEngineFailureEndsTheSession(t *testing.T) {
 	f.fake.mu.Lock()
 	f.fake.findErr = errors.New("engine went away")
 	f.fake.mu.Unlock()
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount, f.seq); err == nil || !strings.Contains(err.Error(), "engine went away") {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "next", "", f.mount, f.seq); err == nil || !strings.Contains(err.Error(), "engine went away") {
 		t.Fatalf("failed step error = %v", err)
 	}
 	f.wantCall(t, "step")
 	f.fake.mu.Lock()
 	f.fake.findErr = nil
 	f.fake.mu.Unlock()
-	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount, f.seq); err != nil || state.Active {
+	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "next", "", f.mount, f.seq); err != nil || state.Active {
 		t.Fatalf("a failed step left the session running: %+v, %v", state, err)
 	}
 	if state := f.find(t, "start", "alpha"); !state.Active || state.Session <= started.Session {
@@ -865,7 +865,7 @@ func TestFindNeverCallsTheDriverOfAPageClosedWhileItWaited(t *testing.T) {
 				f.find(t, "start", "alpha")
 				f.wantCall(t, "start alpha")
 			}
-			p, scope, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+			p, scope, err := f.manager.lookupOwnedPage(f.access, PageID(f.pageID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -873,7 +873,7 @@ func TestFindNeverCallsTheDriverOfAPageClosedWhileItWaited(t *testing.T) {
 			p.mu.Lock()
 			answered := make(chan error, 1)
 			go func() {
-				_, err := f.manager.Find(context.Background(), f.access, f.pageID, kind, "alpha", f.mount, f.seqFor(kind))
+				_, err := f.manager.Find(context.Background(), f.access, PageID(f.pageID), kind, "alpha", f.mount, f.seqFor(kind))
 				answered <- err
 			}()
 			// Once the find resolved the page and waits for its lock, tear
@@ -907,7 +907,7 @@ func TestFindEndDuringAStartLandsAfterIt(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			if err := f.manager.ActivateCompanionPage(t.Context(), f.access, other.ID); err != nil {
+			if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(other.ID)); err != nil {
 				t.Error(err)
 			}
 		}},
@@ -921,7 +921,7 @@ func TestFindEndDuringAStartLandsAfterIt(t *testing.T) {
 					once.Do(func() { tc.end(t, f) })
 				}
 			})
-			got, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq())
+			got, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq())
 			if err != nil || !got.Active {
 				t.Fatalf("start with an end landing during it = %+v, %v", got, err)
 			}
@@ -962,13 +962,13 @@ func TestFindStopNeverRestoresAndIsIdempotent(t *testing.T) {
 		t.Fatalf("stop on a suspended page = %+v", state)
 	}
 	f.manager.mu.Lock()
-	_, suspended := f.manager.suspended[f.pageID]
-	live, _ := f.manager.livePageLocked(f.pageID)
+	_, suspended := f.manager.suspended[PageID(f.pageID)]
+	live, _ := f.manager.livePageLocked(PageID(f.pageID))
 	f.manager.mu.Unlock()
 	if !suspended || live != nil {
 		t.Fatalf("a stop restored the suspended page (suspended %v, live %v)", suspended, live != nil)
 	}
-	if err := f.manager.ClosePage(t.Context(), f.access, f.pageID); err != nil {
+	if err := f.manager.ClosePage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	if state := f.find(t, "stop", ""); state.Active || state.PageID != f.pageID || !state.Foreign || state.Mount != "" {
@@ -990,7 +990,7 @@ func TestFindDetachedDuringAnActionEndsItAfter(t *testing.T) {
 			once.Do(func() { f.manager.DetachPane(owner) })
 		}
 	})
-	got, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", owner, f.nextSeq())
+	got, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", owner, f.nextSeq())
 	if err != nil || got.Foreign || got.Mount != owner {
 		t.Fatalf("start by a mount detached during it = %+v, %v", got, err)
 	}
@@ -1021,7 +1021,7 @@ func TestFindStartedByAMountThatThenDetachesLeavesNothing(t *testing.T) {
 	if query != "" {
 		t.Fatalf("the engine still searches for %q", query)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errFindNoMount) {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errFindNoMount) {
 		t.Fatalf("start from the detached mount = %v", err)
 	}
 	f.noCall(t)
@@ -1042,7 +1042,7 @@ func TestFindGenerationsOutliveARestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ended := f.wantEnded(t, before.Session)
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
 		t.Fatal(err)
 	}
 	f.fake = f.page(t, f.pageID)
@@ -1080,7 +1080,7 @@ func TestFindTakenOverByAnotherMount(t *testing.T) {
 	for _, kind := range []string{"stop", "next"} {
 		// Not the old owner's search: the answer is marked so and names the
 		// search's real owner.
-		state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "", old, oldSeq+10)
+		state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", old, oldSeq+10)
 		if err != nil || state.Active || !state.Foreign || state.Mount != f.mount || state.Seq != f.seq {
 			t.Fatalf("%s by the old owner = %+v, %v", kind, state, err)
 		}
@@ -1143,7 +1143,7 @@ func TestFindEarlierSearchOfTheSameMountTouchesNothingOfALaterOne(t *testing.T) 
 		t.Fatalf("later start = %+v", later)
 	}
 	for _, kind := range []string{"next", "previous", "stop", "stop"} {
-		state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "", f.mount, earlier)
+		state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", f.mount, earlier)
 		if err != nil || !state.Foreign || state.Seq != f.seq {
 			t.Fatalf("%s by the earlier bar = %+v, %v", kind, state, err)
 		}
@@ -1168,11 +1168,11 @@ func TestFindFromAGoneMountTakesNothingOver(t *testing.T) {
 	gone := f.mount
 	f.mount = owner
 	f.manager.DetachPane(gone)
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "beta", gone, 99); !errors.Is(err, errFindNoMount) {
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "beta", gone, 99); !errors.Is(err, errFindNoMount) {
 		t.Fatalf("start from a gone mount: %v", err)
 	}
 	for _, kind := range []string{"next", "stop"} {
-		if state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "", gone, 99); err != nil || !state.Foreign || state.Mount != owner {
+		if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", gone, 99); err != nil || !state.Foreign || state.Mount != owner {
 			t.Fatalf("%s from a gone mount = %+v, %v", kind, state, err)
 		}
 	}
@@ -1192,7 +1192,7 @@ func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	started := f.find(t, "start", "alpha")
 	f.wantCall(t, "start alpha")
-	p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+	p, _, err := f.manager.lookupOwnedPage(f.access, PageID(f.pageID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1204,7 +1204,7 @@ func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		state, err := f.manager.Find(context.Background(), f.access, f.pageID, "stop", "", f.mount, f.seq)
+		state, err := f.manager.Find(context.Background(), f.access, PageID(f.pageID), "stop", "", f.mount, f.seq)
 		answered <- answer{state, err}
 	}()
 	// The stop resolved the page and waits for its lock; the reload's
@@ -1247,7 +1247,7 @@ func TestFindStopRetriesAStopTheEngineRefused(t *testing.T) {
 				return nil
 			}
 			f.fake.mu.Unlock()
-			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "stop", "", f.mount, f.seq); err == nil {
+			if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "stop", "", f.mount, f.seq); err == nil {
 				t.Fatal("a stop whose engine call failed reported nothing")
 			}
 			// The stop, then the end of its transition making the stop it
@@ -1266,7 +1266,7 @@ func TestFindStopRetriesAStopTheEngineRefused(t *testing.T) {
 				return
 			}
 			for round := range 2 {
-				state, err := f.manager.Find(t.Context(), f.access, f.pageID, "stop", "", f.mount, f.seq)
+				state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "stop", "", f.mount, f.seq)
 				f.wantCall(t, "stop")
 				f.wantCall(t, "stop")
 				f.fake.mu.Lock()
@@ -1298,7 +1298,7 @@ func TestFindFailedEngineCallIsCleared(t *testing.T) {
 				f.calls <- call
 			}
 			f.fake.mu.Unlock()
-			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "beta", f.mount, f.seqFor(kind)); err == nil {
+			if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "beta", f.mount, f.seqFor(kind)); err == nil {
 				t.Fatalf("%s did not fail", kind)
 			}
 			f.fake.mu.Lock()
@@ -1319,7 +1319,7 @@ func TestFindEndsSubmittedDuringCloseAreJoined(t *testing.T) {
 		f := newFindFixture(t, "https://example.test/alpha")
 		f.find(t, "start", "alpha")
 		f.wantCall(t, "start alpha")
-		p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+		p, _, err := f.manager.lookupOwnedPage(f.access, PageID(f.pageID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1379,7 +1379,7 @@ func TestFindActionThatWaitedPastItsDeadlineChangesNothing(t *testing.T) {
 					f.find(t, "start", "alpha")
 					f.wantCall(t, "start alpha")
 				}
-				p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+				p, _, err := f.manager.lookupOwnedPage(f.access, PageID(f.pageID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1392,7 +1392,7 @@ func TestFindActionThatWaitedPastItsDeadlineChangesNothing(t *testing.T) {
 				p.mu.Lock()
 				answered := make(chan error, 1)
 				go func() {
-					_, err := f.manager.Find(ctx, f.access, f.pageID, kind, "beta", f.mount, f.seqFor(kind))
+					_, err := f.manager.Find(ctx, f.access, PageID(f.pageID), kind, "beta", f.mount, f.seqFor(kind))
 					answered <- err
 				}()
 				// The action waits for the lock with its deadline running;
@@ -1475,7 +1475,7 @@ func TestFindStopThatNeverAnswersIsBoundedAndStaysOwed(t *testing.T) {
 			defer cancel()
 			answered := make(chan error, 1)
 			go func() {
-				_, err := f.manager.Find(ctx, f.access, f.pageID, kind, "", f.mount, f.seqFor(kind))
+				_, err := f.manager.Find(ctx, f.access, PageID(f.pageID), kind, "", f.mount, f.seqFor(kind))
 				answered <- err
 			}()
 			<-stopping
@@ -1542,7 +1542,7 @@ func TestFindOwedStopIsMadeWhenThePaneGoes(t *testing.T) {
 			}
 			f.fake.mu.Unlock()
 			f.manager.findWork.Wait()
-			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "stop", "", f.mount, f.seq); err == nil {
+			if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "stop", "", f.mount, f.seq); err == nil {
 				t.Fatal("a refused stop reported nothing")
 			}
 			f.wantCall(t, "stop")
@@ -1622,7 +1622,7 @@ func TestFindRefusesAStartNotAboveTheMountsLast(t *testing.T) {
 	started := f.find(t, "start", "alpha")
 	f.wantCall(t, "start alpha")
 	for _, seq := range []uint64{5, 4, 1} {
-		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "beta", f.mount, seq); !errors.Is(err, errFindStale) {
+		if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "beta", f.mount, seq); !errors.Is(err, errFindStale) {
 			t.Fatalf("start %d after %d = %v, want stale", seq, started.Seq, err)
 		}
 	}
@@ -1633,7 +1633,7 @@ func TestFindRefusesAStartNotAboveTheMountsLast(t *testing.T) {
 	f.wantCall(t, "step")
 	first := f.mount
 	f.attach(t)
-	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, 1); err != nil || !state.Active {
+	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "alpha", f.mount, 1); err != nil || !state.Active {
 		t.Fatalf("another mount's first start = %+v, %v", state, err)
 	}
 	f.wantEndedFor(t, started.Session, first)
@@ -1649,19 +1649,19 @@ func TestFindStopEndsTheMountsSearchAtOrBelowItsBound(t *testing.T) {
 	f.wantCall(t, "start alpha")
 	for _, kind := range []string{"next", "previous"} {
 		for _, seq := range []uint64{2, 4} {
-			if state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "", f.mount, seq); err != nil || !state.Foreign || state.Seq != 3 {
+			if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), kind, "", f.mount, seq); err != nil || !state.Foreign || state.Seq != 3 {
 				t.Fatalf("%s naming %d = %+v, %v", kind, seq, state, err)
 			}
 		}
 	}
-	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "stop", "", f.mount, 2); err != nil || !state.Foreign || state.Seq != 3 {
+	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "stop", "", f.mount, 2); err != nil || !state.Foreign || state.Seq != 3 {
 		t.Fatalf("stop through 2 of search 3 = %+v, %v", state, err)
 	}
 	f.noCall(t)
 	if state := f.session(t); !state.active || state.seq != started.Seq {
 		t.Fatalf("after the earlier stop the page holds %+v", state)
 	}
-	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "stop", "", f.mount, 9); err != nil || state.Foreign || state.Seq != 3 {
+	if state, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "stop", "", f.mount, 9); err != nil || state.Foreign || state.Seq != 3 {
 		t.Fatalf("stop through 9 of search 3 = %+v, %v", state, err)
 	}
 	f.wantCall(t, "stop")

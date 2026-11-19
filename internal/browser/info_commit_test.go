@@ -22,7 +22,7 @@ func TestAReadNeverCommitsOverANavigation(t *testing.T) {
 				manager, _ := newLifecycleManager(t)
 				access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 				page := mustOpen(t, manager, access, "https://example.test/a")
-				p, _, err := manager.lookupOwnedPage(access, page.ID)
+				p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -30,7 +30,7 @@ func TestAReadNeverCommitsOverANavigation(t *testing.T) {
 				const b = "https://example.test/b"
 				navigated := make(chan error, 1)
 				navigate := func() {
-					_, err := manager.Open(context.Background(), access, b, OpenOptions{PageID: page.ID})
+					_, err := manager.Open(context.Background(), access, b, OpenOptions{PageID: PageID(page.ID)})
 					navigated <- err
 				}
 				navigationRead := make(chan struct{})
@@ -86,17 +86,17 @@ var operationReaders = []struct {
 	read func(*testing.T, *Manager, Access, string)
 }{
 	{"Wait", func(t *testing.T, m *Manager, access Access, pageID string) {
-		if _, err := m.Wait(t.Context(), access, pageID, "", 1); err != nil {
+		if _, err := m.Wait(t.Context(), access, PageID(pageID), "", 1); err != nil {
 			t.Error(err)
 		}
 	}},
 	{"Open", func(t *testing.T, m *Manager, access Access, pageID string) {
-		if _, err := m.Open(t.Context(), access, "https://example.test/c", OpenOptions{PageID: pageID}); err != nil {
+		if _, err := m.Open(t.Context(), access, "https://example.test/c", OpenOptions{PageID: PageID(pageID)}); err != nil {
 			t.Error(err)
 		}
 	}},
 	{"Snapshot", func(t *testing.T, m *Manager, access Access, pageID string) {
-		p, _, err := m.lookupOwnedPage(access, pageID)
+		p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +108,7 @@ var operationReaders = []struct {
 			return Snapshot{PageInfo: PageInfo{URL: fake.url, Title: fake.title}}, nil
 		}
 		fake.mu.Unlock()
-		if _, err := m.Snapshot(t.Context(), access, pageID); err != nil {
+		if _, err := m.Snapshot(t.Context(), access, PageID(pageID)); err != nil {
 			t.Error(err)
 		}
 	}},
@@ -123,7 +123,7 @@ func TestAReadNeverCommitsOverAnEngineReport(t *testing.T) {
 			manager, _ := newLifecycleManager(t)
 			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			page := mustOpen(t, manager, access, "https://example.test/a")
-			p, _, err := manager.lookupOwnedPage(access, page.ID)
+			p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -153,10 +153,10 @@ func TestAHistoryRefreshNeverCommitsOverANewerRead(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/a")
-	if _, err := manager.Open(t.Context(), access, "https://example.test/b", OpenOptions{PageID: page.ID}); err != nil {
+	if _, err := manager.Open(t.Context(), access, "https://example.test/b", OpenOptions{PageID: PageID(page.ID)}); err != nil {
 		t.Fatal(err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestAHistoryRefreshNeverCommitsOverANewerRead(t *testing.T) {
 	manager.infoRead = func(*managedPage) {
 		if calls.Add(1) == 1 {
 			// The refresh read back available, forward not; the page goes back.
-			if _, err := manager.History(t.Context(), access, page.ID, "back"); err != nil {
+			if _, err := manager.History(t.Context(), access, PageID(page.ID), "back"); err != nil {
 				t.Error(err)
 			}
 		}

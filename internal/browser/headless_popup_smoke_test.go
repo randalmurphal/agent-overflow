@@ -129,7 +129,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	}
 	click := func(t *testing.T, pageID, button string) {
 		t.Helper()
-		if _, err := manager.Click(ctx, access, pageID, "#"+button); err != nil {
+		if _, err := manager.Click(ctx, access, PageID(pageID), "#"+button); err != nil {
 			t.Fatalf("click %s: %v", button, err)
 		}
 	}
@@ -145,7 +145,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 		var where []string
 		for _, p := range manager.ownedPages(access.tb) {
 			if len(p.downloads.list()) > 0 {
-				where = append(where, p.id)
+				where = append(where, string(p.id))
 			}
 		}
 		if len(where) != 1 || where[0] != opener.ID {
@@ -175,7 +175,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 		await(t, "the frame's document", func() bool { return served("/inner") })
 		navigateFrame := func(path string) {
 			t.Helper()
-			if _, _, err := manager.Evaluate(ctx, access, framer, fmt.Sprintf(`document.getElementById("f").contentWindow.location.href = %q; true`, path), nil); err != nil {
+			if _, _, err := manager.Evaluate(ctx, access, PageID(framer), fmt.Sprintf(`document.getElementById("f").contentWindow.location.href = %q; true`, path), nil); err != nil {
 				t.Fatalf("navigate the frame to %s: %v", path, err)
 			}
 		}
@@ -183,7 +183,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 		// the one no event of the tab's reported.
 		navigateFrame("/framed.bin")
 		await(t, "the frame's download to finish in the framer's tab", func() bool {
-			p, _, err := manager.lookupOwnedPage(access, framer)
+			p, _, err := manager.lookupOwnedPage(access, PageID(framer))
 			if err != nil {
 				return false
 			}

@@ -169,7 +169,7 @@ func (m *Manager) drainViewport(threadID string, st *viewportSync) {
 func (m *Manager) applyActiveViewport(threadID string, st *viewportSync) error {
 	m.mu.Lock()
 	current := m.currentLocked(threadID)
-	active, _ := m.livePageLocked(m.currentSessionLocked(threadID).ActivePageID)
+	active, _ := m.livePageLocked(m.currentSessionLocked(threadID).activePage())
 	m.mu.Unlock()
 	if active == nil || active.owner != current {
 		return nil

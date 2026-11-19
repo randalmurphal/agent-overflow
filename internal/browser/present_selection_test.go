@@ -15,7 +15,7 @@ func holdPresentation(m *Manager, pageID string) (held, release chan struct{}) {
 	held, release = make(chan struct{}), make(chan struct{})
 	var once atomic.Bool
 	m.presentDeciding = func(_ string, candidate *managedPage) {
-		if candidate == nil || candidate.id != pageID || !m.pageViewportCurrent(candidate) {
+		if candidate == nil || candidate.id != PageID(pageID) || !m.pageViewportCurrent(candidate) {
 			return
 		}
 		if once.CompareAndSwap(false, true) {
@@ -43,21 +43,21 @@ func shows(calls []string) []string {
 func TestASwitchAwayAndBackNeverShowsTheLeftTab(t *testing.T) {
 	manager, engine, access, firstID, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	attachSizedPane(t, manager, engine, access)
 	firstHandle := paneHandle(manager, access, firstID)
 	secondHandle := paneHandle(manager, access, secondID)
-	if p, _, _ := manager.lookupOwnedPage(access, firstID); manager.pageViewportCurrent(p) {
+	if p, _, _ := manager.lookupOwnedPage(access, PageID(firstID)); manager.pageViewportCurrent(p) {
 		t.Fatal("the unselected tab is already at the pane's size; nothing lays it out")
 	}
 	held, release := holdPresentation(manager, firstID)
 
 	away := make(chan error, 1)
-	go func() { away <- manager.ActivateCompanionPage(t.Context(), access, firstID) }()
+	go func() { away <- manager.ActivateCompanionPage(t.Context(), access, PageID(firstID)) }()
 	<-held
-	if err := manager.ActivateCompanionPage(t.Context(), access, secondID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)); err != nil {
 		t.Fatalf("switch back: %v", err)
 	}
 	close(release)
@@ -75,7 +75,7 @@ func TestASwitchAwayAndBackNeverShowsTheLeftTab(t *testing.T) {
 	manager.mu.Lock()
 	presented := manager.presented[access.ThreadID]
 	manager.mu.Unlock()
-	if presented != secondID {
+	if presented != PageID(secondID) {
 		t.Fatalf("presented %q, want the selected tab %q (calls %v)", presented, secondID, calls)
 	}
 	if got := shows(calls); len(got) == 0 || got[len(got)-1] != secondHandle {
@@ -88,12 +88,12 @@ func TestASwitchAwayAndBackNeverShowsTheLeftTab(t *testing.T) {
 func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 	manager, engine, access, firstID, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, firstID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(firstID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	attachSizedPane(t, manager, engine, access)
 	firstHandle := paneHandle(manager, access, firstID)
-	second, _, err := manager.lookupOwnedPage(access, secondID)
+	second, _, err := manager.lookupOwnedPage(access, PageID(secondID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +104,9 @@ func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 	held, release := holdPresentation(manager, secondID)
 
 	restored := make(chan error, 1)
-	go func() { restored <- manager.ActivateCompanionPage(t.Context(), access, secondID) }()
+	go func() { restored <- manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)) }()
 	<-held
-	if err := manager.ActivateCompanionPage(t.Context(), access, firstID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(firstID)); err != nil {
 		t.Fatalf("select the first tab: %v", err)
 	}
 	close(release)
@@ -121,13 +121,13 @@ func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 			t.Fatalf("the engine was told to show %s, not the selected tab %s: %v", handle, firstHandle, calls)
 		}
 	}
-	if _, _, err := manager.lookupOwnedPage(access, secondID); err != nil {
+	if _, _, err := manager.lookupOwnedPage(access, PageID(secondID)); err != nil {
 		t.Fatalf("the second tab did not restore: %v", err)
 	}
 	manager.mu.Lock()
 	presented := manager.presented[access.ThreadID]
 	manager.mu.Unlock()
-	if presented != firstID {
+	if presented != PageID(firstID) {
 		t.Fatalf("presented %q, want the selected tab %q (calls %v)", presented, firstID, calls)
 	}
 }
@@ -138,11 +138,11 @@ func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 	manager, engine, access, firstID, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	attachSizedPane(t, manager, engine, access)
-	if _, err := manager.Wait(t.Context(), access, firstID, "", 1); err != nil {
+	if _, err := manager.Wait(t.Context(), access, PageID(firstID), "", 1); err != nil {
 		t.Fatalf("lay the first tab out: %v", err)
 	}
 	awaitViewportIdle(t, manager, access.ThreadID)
@@ -151,7 +151,7 @@ func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 	held, release := holdPresentation(manager, firstID)
 
 	switched := make(chan error, 1)
-	go func() { switched <- manager.ActivateCompanionPage(t.Context(), access, firstID) }()
+	go func() { switched <- manager.ActivateCompanionPage(t.Context(), access, PageID(firstID)) }()
 	<-held
 	manager.pageCrashed(ids.PageHandle(firstHandle), "test crash")
 	close(release)
@@ -176,12 +176,12 @@ func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 func TestAFocusIntentNeverReachesATabASwitchLeft(t *testing.T) {
 	manager, engine, access, firstID, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount := attachSizedPane(t, manager, engine, access)
 	// An operation lays the other tab out, so the switch shows it at once.
-	if _, err := manager.Wait(t.Context(), access, firstID, "", 1); err != nil {
+	if _, err := manager.Wait(t.Context(), access, PageID(firstID), "", 1); err != nil {
 		t.Fatalf("lay the first tab out: %v", err)
 	}
 	awaitViewportIdle(t, manager, access.ThreadID)
@@ -190,9 +190,9 @@ func TestAFocusIntentNeverReachesATabASwitchLeft(t *testing.T) {
 	held, release := holdPresentation(manager, firstID)
 
 	switched := make(chan error, 1)
-	go func() { switched <- manager.ActivateCompanionPage(t.Context(), access, firstID) }()
+	go func() { switched <- manager.ActivateCompanionPage(t.Context(), access, PageID(firstID)) }()
 	<-held
-	if err := manager.FocusCompanionPage(access, mount, secondID, 1); err != nil {
+	if err := manager.FocusCompanionPage(access, mount, PageID(secondID), 1); err != nil {
 		t.Fatalf("focus: %v", err)
 	}
 	close(release)

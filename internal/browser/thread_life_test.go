@@ -38,7 +38,7 @@ func setActiveTab(m *Manager, access Access, pageID string) {
 // close of it does.
 func closePendingTab(m *Manager, access Access, pageID string) (*pendingPage, bool) {
 	m.mu.Lock()
-	pending, ok := m.closePendingLocked(access.tb, pageID)
+	pending, ok := m.closePendingLocked(access.tb, PageID(pageID))
 	m.mu.Unlock()
 	if ok {
 		m.pendingClosed(access.tb)
@@ -50,7 +50,7 @@ func closePendingTab(m *Manager, access Access, pageID string) (*pendingPage, bo
 // running, and answers it.
 func beginCloseLive(m *Manager, access Access, pageID string) (*pageClose, error) {
 	m.mu.Lock()
-	c, started, err := m.beginCloseLiveLocked(access.tb, pageID, false)
+	c, started, err := m.beginCloseLiveLocked(access.tb, PageID(pageID), false)
 	m.mu.Unlock()
 	if started != nil {
 		m.startClose(started, c)
@@ -222,7 +222,7 @@ func TestADuplicateWhoseBrowsingWasForgottenOpensNothing(t *testing.T) {
 			}
 		}
 	})
-	if err := m.DuplicateCompanionPage(t.Context(), access, ids[1]); !errors.Is(err, errPageNotFound) {
+	if err := m.DuplicateCompanionPage(t.Context(), access, PageID(ids[1])); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("the duplicate answered %v, want its source gone", err)
 	}
 	if !cleared {

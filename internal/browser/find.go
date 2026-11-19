@@ -151,7 +151,7 @@ type findEnds struct {
 
 // identify stamps a state with the search's identity on page p.
 func (s *findSession) identify(p *managedPage, state FindState) FindState {
-	state.PageID = p.id
+	state.PageID = string(p.id)
 	state.Incarnation = p.incarnation
 	state.Mount = s.owner
 	state.Seq = s.seq
@@ -207,7 +207,7 @@ func findSeed(selection string) string {
 // stop never restore a suspended page, and stop answers for a page that is
 // gone as for one with no search, still ending the mount's search on the
 // thread's other pages.
-func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, mount string, seq uint64) (FindState, error) {
+func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, query, mount string, seq uint64) (FindState, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case FindStart, FindNext, FindPrev, FindStop:
@@ -217,7 +217,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	if len(query) > maxFindQueryBytes {
 		return FindState{}, errFindQueryTooLong
 	}
-	if pageID = strings.TrimSpace(pageID); pageID == "" {
+	if pageID = pageID.trim(); pageID == "" {
 		return FindState{}, fmt.Errorf("browser: page id is required")
 	}
 	if mount = strings.TrimSpace(mount); mount == "" {
@@ -293,8 +293,8 @@ func (m *Manager) findTransition(actionCtx context.Context, p *managedPage, kind
 // stopFind ends the mount's search at or below the stop's bound on the named
 // page and on every other page of the thread holding one, and answers for
 // the named page. A page that is gone answers as one with no search.
-func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID string, owner findOwner) (FindState, error) {
-	answer := FindState{PageID: pageID, Current: -1, Foreign: true}
+func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID PageID, owner findOwner) (FindState, error) {
+	answer := FindState{PageID: string(pageID), Current: -1, Foreign: true}
 	named, _, err := m.lookupOwnedPage(access, pageID)
 	if err != nil && !errors.Is(err, errPageNotFound) {
 		return FindState{}, err
@@ -375,11 +375,11 @@ func (m *Manager) pageLive(p *managedPage) bool {
 
 // pageShown reports whether pageID is the active page of the thread's shown
 // companion with a pane mounted to show it.
-func (m *Manager) pageShown(threadID, pageID string) bool {
+func (m *Manager) pageShown(threadID string, pageID PageID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session := m.currentSessionLocked(threadID)
-	return session.Visible && session.ActivePageID == pageID && m.paneMountedLocked(threadID)
+	return session.Visible && session.activePage() == pageID && m.paneMountedLocked(threadID)
 }
 
 // paneMountedLocked reports whether a pane is mounted for the thread, painted
@@ -412,7 +412,7 @@ var (
 // mount must be the thread's, the start's sequence above every start the
 // mount made before, and the page the shown active one. A start it takes
 // raises the mount's sequence.
-func (m *Manager) admitFindStart(threadID, pageID string, owner findOwner) error {
+func (m *Manager) admitFindStart(threadID string, pageID PageID, owner findOwner) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pane, ok := m.panes[owner.mount]
@@ -422,7 +422,7 @@ func (m *Manager) admitFindStart(threadID, pageID string, owner findOwner) error
 	if owner.seq <= pane.findSeq {
 		return fmt.Errorf("%w: %d after %d", errFindStale, owner.seq, pane.findSeq)
 	}
-	if session := m.currentSessionLocked(threadID); !session.Visible || session.ActivePageID != pageID {
+	if session := m.currentSessionLocked(threadID); !session.Visible || session.activePage() != pageID {
 		return errFindNotShown
 	}
 	pane.findSeq = owner.seq
@@ -481,7 +481,7 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	p.find.doc = p.docEpoch.Load()
 	p.findMu.Unlock()
 	if taken != nil {
-		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: p.id, Find: taken})
+		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: string(p.id), Find: taken})
 	}
 	if mode == FindModeEngine && query == "" {
 		query = findSeed(p.driver.SelectionText(ctx))
@@ -650,7 +650,7 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 	owed := live && !p.find.active && !p.find.settled()
 	p.findMu.Unlock()
 	if ends {
-		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: p.id, Find: &state})
+		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: string(p.id), Find: &state})
 	}
 	if !owed {
 		return nil

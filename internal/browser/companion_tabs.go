@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"agent-overflow/internal/browser/turnorder"
 )
@@ -71,7 +70,7 @@ func reopenable(rawURL string) bool {
 // CloseCompanionPage is the user closing a tab: it returns once the tab is
 // gone from the state, and a failure of the teardown after it arrives as a
 // "teardown" event. The tab can be reopened (ReopenClosedTab).
-func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID string) error {
+func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID PageID) error {
 	return m.closePage(ctx, access, pageID, false, true)
 }
 
@@ -79,7 +78,7 @@ func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID 
 // close. The close that takes the tab out of the tab set calls it in that
 // same m.mu hold, so only the close that removed the tab records it, and
 // the state that close pushes counts it. The caller holds m.mu.
-func (m *Manager) recordUserCloseLocked(tb *threadBrowser, pageID string) {
+func (m *Manager) recordUserCloseLocked(tb *threadBrowser, pageID PageID) {
 	if jarKindOf(tb.session) == JarPrivate {
 		return
 	}
@@ -141,8 +140,8 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 // forget of it, so a clear of site data while the duplicate runs leaves it
 // no address to load. With ctx's numbered selection passed or its pane
 // detached (selection.go) it does nothing.
-func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID string) error {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	pageID = pageID.trim()
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
@@ -179,8 +178,8 @@ const (
 // CloseCompanionTabs closes, as the user, every tab of the thread but
 // pageID (CloseOtherTabs) or every tab after it (CloseTabsRight), left to
 // right, so reopening them one by one puts each back where it was.
-func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID, which string) error {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID PageID, which string) error {
+	pageID = pageID.trim()
 	if which != CloseOtherTabs && which != CloseTabsRight {
 		return fmt.Errorf("browser: unknown set of tabs to close %q", truncateUTF8(which, 32))
 	}
@@ -212,8 +211,8 @@ func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID,
 // ReloadCompanionPage is the user's reload. A suspended tab, a crashed one
 // included, is restored at its address, which is its reload; a live page
 // reloads.
-func (m *Manager) ReloadCompanionPage(ctx context.Context, access Access, pageID string) error {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) ReloadCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	pageID = pageID.trim()
 	m.mu.Lock()
 	rec := m.suspended[pageID]
 	m.mu.Unlock()

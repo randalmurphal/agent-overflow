@@ -108,7 +108,7 @@ func TestAParkedDownloadWhoseJarWentIsRemovedAtItsFate(t *testing.T) {
 		t.Fatalf("before its fate the download holds %d workspace bytes, want %d", got, maxDownloadBytes)
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadInProgress, 3))
-	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access.Caller()).Pages[0].ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, PageID(manager.CompanionState(access.Caller()).Pages[0].ID)); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()

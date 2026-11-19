@@ -81,7 +81,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 	case "browser_open":
 		var a struct {
 			URL    string `json:"url"`
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
@@ -92,7 +92,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 	case "browser_open_file":
 		var a struct {
 			Path   string `json:"path"`
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
@@ -102,7 +102,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		result, err = s.controller.Pages(ctx, access)
 	case "browser_select_page":
 		var a struct {
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
@@ -110,7 +110,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_label_page":
 		var a struct {
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 			Label  string `json:"label"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
@@ -128,7 +128,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 	case "browser_visibility":
 		var a struct {
 			Visible *bool  `json:"visible"`
-			PageID  string `json:"page_id"`
+			PageID  PageID `json:"page_id"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
@@ -142,7 +142,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_close_page":
 		var a struct {
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
@@ -151,7 +151,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_snapshot":
 		var a struct {
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
@@ -159,7 +159,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_screenshot":
 		var a struct {
-			PageID   string    `json:"page_id"`
+			PageID   PageID    `json:"page_id"`
 			FullPage bool      `json:"full_page"`
 			Clip     *ClipRect `json:"clip"`
 		}
@@ -174,7 +174,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_click":
 		var a struct {
-			PageID   string `json:"page_id"`
+			PageID   PageID `json:"page_id"`
 			Selector string `json:"selector"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
@@ -201,7 +201,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_type":
 		var a struct {
-			PageID   string `json:"page_id"`
+			PageID   PageID `json:"page_id"`
 			Selector string `json:"selector"`
 			Text     string `json:"text"`
 			Clear    bool   `json:"clear"`
@@ -212,7 +212,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_press":
 		var a struct {
-			PageID string   `json:"page_id"`
+			PageID PageID   `json:"page_id"`
 			Key    string   `json:"key"`
 			Keys   []string `json:"keys"`
 		}
@@ -232,7 +232,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_scroll":
 		var a struct {
-			PageID   string  `json:"page_id"`
+			PageID   PageID  `json:"page_id"`
 			Selector string  `json:"selector"`
 			X        float64 `json:"x"`
 			Y        float64 `json:"y"`
@@ -249,7 +249,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_history":
 		var a struct {
-			PageID string `json:"page_id"`
+			PageID PageID `json:"page_id"`
 			Action string `json:"action"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
@@ -258,7 +258,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_evaluate":
 		var a struct {
-			PageID     string          `json:"page_id"`
+			PageID     PageID          `json:"page_id"`
 			Expression string          `json:"expression"`
 			Argument   json.RawMessage `json:"argument"`
 		}
@@ -268,7 +268,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_evaluate_readonly":
 		var a struct {
-			PageID     string          `json:"page_id"`
+			PageID     PageID          `json:"page_id"`
 			Expression string          `json:"expression"`
 			Argument   json.RawMessage `json:"argument"`
 			TimeoutMS  int             `json:"timeout_ms"`

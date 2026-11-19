@@ -55,7 +55,7 @@ func TestALaggingPageTakesTheViewportBeforeAToolOperation(t *testing.T) {
 	}
 	hidden.mu.Unlock()
 	hiddenID := f.ids[0]
-	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: hiddenID}); err != nil {
+	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: PageID(hiddenID)}); err != nil {
 		t.Fatalf("screenshot: %v", err)
 	}
 	if seenW != 800 || seenH != 600 {
@@ -72,7 +72,7 @@ func TestALaggingPageTakesTheViewportBeforeAToolOperation(t *testing.T) {
 	hidden.mu.Lock()
 	hidden.viewportErr = errors.New("engine refused")
 	hidden.mu.Unlock()
-	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: hiddenID}); err == nil || !strings.Contains(err.Error(), "engine refused") {
+	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: PageID(hiddenID)}); err == nil || !strings.Contains(err.Error(), "engine refused") {
 		t.Fatalf("an operation on a page that refused the viewport = %v", err)
 	}
 }
@@ -93,18 +93,18 @@ func TestAResizeBetweenLookupAndLockIsAppliedBeforeTheOperation(t *testing.T) {
 	hiddenID := f.ids[0]
 	hidden := f.pages[0]
 	seen := recordScreenshotViewport(hidden)
-	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: hiddenID}); err != nil {
+	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: PageID(hiddenID)}); err != nil {
 		t.Fatalf("screenshot: %v", err)
 	}
 
-	page, _, err := f.manager.lookupOwnedPage(f.access, hiddenID)
+	page, _, err := f.manager.lookupOwnedPage(f.access, PageID(hiddenID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	page.mu.Lock()
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: hiddenID})
+		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: PageID(hiddenID)})
 		done <- err
 	}()
 	if !awaitPageLockWaitIn("(*Manager).Screenshot(", done) {
@@ -147,7 +147,7 @@ func TestAResizeDuringTheApplyIsAppliedBeforeTheOperation(t *testing.T) {
 		}
 	}
 	hidden.mu.Unlock()
-	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: f.ids[0]}); err != nil {
+	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: PageID(f.ids[0])}); err != nil {
 		t.Fatalf("screenshot: %v", err)
 	}
 	select {
@@ -203,11 +203,11 @@ func TestASelectedPageShowsOnceAnOperationLaysItOut(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: f.ids[0]})
+		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: PageID(f.ids[0])})
 		done <- err
 	}()
 	<-applying
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.ids[0]); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.ids[0])); err != nil {
 		close(releaseApply)
 		close(releaseShot)
 		t.Fatalf("activate: %v", err)
@@ -286,13 +286,13 @@ func TestALayoutLandingAsThePassHidesThePageStillShowsIt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: f.ids[0]})
+		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: PageID(f.ids[0])})
 		done <- err
 	}()
 	<-applying
 	// Selecting the lagging page starts a drain that waits on the page lock
 	// the operation holds; selecting back leaves nothing awaiting a layout.
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.ids[0]); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.ids[0])); err != nil {
 		close(releaseApply)
 		close(releaseShot)
 		t.Fatalf("activate: %v", err)
@@ -302,14 +302,14 @@ func TestALayoutLandingAsThePassHidesThePageStillShowsIt(t *testing.T) {
 		close(releaseShot)
 		t.Fatal("the selection's drain never waited on the page lock")
 	}
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.ids[1]); err != nil {
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.ids[1])); err != nil {
 		close(releaseApply)
 		close(releaseShot)
 		t.Fatalf("activate: %v", err)
 	}
 	armed.Store(true)
 	activated := make(chan error, 1)
-	go func() { activated <- f.manager.ActivateCompanionPage(context.Background(), f.access, f.ids[0]) }()
+	go func() { activated <- f.manager.ActivateCompanionPage(context.Background(), f.access, PageID(f.ids[0])) }()
 	select {
 	case <-shown:
 	case <-time.After(5 * time.Second):
@@ -381,11 +381,11 @@ func TestALaggingPageIsLaidOutBeforeItIsShown(t *testing.T) {
 		activate func(f *paneFollowFixture, pageID string) error
 	}{
 		{"tab selection", func(f *paneFollowFixture, pageID string) error {
-			return f.manager.ActivateCompanionPage(context.Background(), f.access, pageID)
+			return f.manager.ActivateCompanionPage(context.Background(), f.access, PageID(pageID))
 		}},
 		{"visibility", func(f *paneFollowFixture, pageID string) error {
 			show := true
-			_, err := f.manager.Visibility(context.Background(), f.access, &show, pageID)
+			_, err := f.manager.Visibility(context.Background(), f.access, &show, PageID(pageID))
 			return err
 		}},
 	} {

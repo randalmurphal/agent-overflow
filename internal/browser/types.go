@@ -206,18 +206,18 @@ type SnapshotElement struct {
 }
 
 type OpenOptions struct {
-	PageID string
+	PageID PageID
 }
 
 type TypeOptions struct {
-	PageID   string
+	PageID   PageID
 	Selector string
 	Text     string
 	Clear    bool
 }
 
 type ScreenshotOptions struct {
-	PageID   string
+	PageID   PageID
 	FullPage bool
 	Clip     *ClipRect
 }
@@ -255,7 +255,7 @@ type Locator struct {
 }
 
 type LocatorOptions struct {
-	PageID           string      `json:"page_id,omitempty"`
+	PageID           PageID      `json:"page_id,omitempty"`
 	Locator          Locator     `json:"locator"`
 	Action           string      `json:"action"`
 	Value            string      `json:"value,omitempty"`
@@ -306,7 +306,7 @@ type LocatorMatch struct {
 }
 
 type PointerOptions struct {
-	PageID    string   `json:"page_id,omitempty"`
+	PageID    PageID   `json:"page_id,omitempty"`
 	Action    string   `json:"action"`
 	X         float64  `json:"x,omitempty"`
 	Y         float64  `json:"y,omitempty"`
@@ -323,7 +323,7 @@ type Point struct {
 }
 
 type DOMActionOptions struct {
-	PageID string   `json:"page_id,omitempty"`
+	PageID PageID   `json:"page_id,omitempty"`
 	Action string   `json:"action"`
 	NodeID string   `json:"node_id,omitempty"`
 	Text   string   `json:"text,omitempty"`
@@ -334,7 +334,7 @@ type DOMActionOptions struct {
 }
 
 type WaitOptions struct {
-	PageID       string   `json:"page_id,omitempty"`
+	PageID       PageID   `json:"page_id,omitempty"`
 	TimeoutMS    int      `json:"timeout_ms,omitempty"`
 	Milliseconds int      `json:"milliseconds,omitempty"`
 	Selector     string   `json:"selector,omitempty"`
@@ -356,7 +356,7 @@ type ClipboardItem struct {
 }
 
 type ClipboardOptions struct {
-	PageID string          `json:"page_id,omitempty"`
+	PageID PageID          `json:"page_id,omitempty"`
 	Action string          `json:"action"`
 	Text   string          `json:"text,omitempty"`
 	Items  []ClipboardItem `json:"items,omitempty"`
@@ -370,7 +370,7 @@ type ConsoleLog struct {
 }
 
 type ConsoleOptions struct {
-	PageID string   `json:"page_id,omitempty"`
+	PageID PageID   `json:"page_id,omitempty"`
 	Filter string   `json:"filter,omitempty"`
 	Levels []string `json:"levels,omitempty"`
 	Limit  int      `json:"limit,omitempty"`
@@ -412,7 +412,7 @@ type DownloadInfo struct {
 }
 
 type DownloadOptions struct {
-	PageID    string `json:"page_id,omitempty"`
+	PageID    PageID `json:"page_id,omitempty"`
 	Action    string `json:"action"`
 	After     uint64 `json:"after,omitempty"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
@@ -454,7 +454,7 @@ type AssetSummary struct {
 }
 
 type AssetOptions struct {
-	PageID      string   `json:"page_id,omitempty"`
+	PageID      PageID   `json:"page_id,omitempty"`
 	Action      string   `json:"action"`
 	InventoryID string   `json:"inventory_id,omitempty"`
 	AssetIDs    []string `json:"asset_ids,omitempty"`
@@ -517,6 +517,10 @@ type SessionInfo struct {
 	privateJar string
 }
 
+// activePage is the session's active tab; the DTO carries its id as a
+// string.
+func (s SessionInfo) activePage() PageID { return PageID(s.ActivePageID) }
+
 type Controller interface {
 	// Bind binds one tool call to its thread's browser lifetime
 	// (Manager.Bind).
@@ -525,13 +529,13 @@ type Controller interface {
 	NewPage(context.Context, Access) (PageInfo, error)
 	OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error)
 	Pages(context.Context, Access) ([]PageInfo, error)
-	SelectPage(context.Context, Access, string) (PageInfo, error)
-	LabelPage(context.Context, Access, string, string) (PageInfo, error)
+	SelectPage(context.Context, Access, PageID) (PageInfo, error)
+	LabelPage(context.Context, Access, PageID, string) (PageInfo, error)
 	NameSession(context.Context, Access, string) (SessionInfo, error)
-	Visibility(context.Context, Access, *bool, string) (SessionInfo, error)
+	Visibility(context.Context, Access, *bool, PageID) (SessionInfo, error)
 	Viewport(context.Context, Access, ViewportOptions) (SessionInfo, error)
-	ClosePage(context.Context, Access, string) error
-	Snapshot(context.Context, Access, string) (Snapshot, error)
+	ClosePage(context.Context, Access, PageID) error
+	Snapshot(context.Context, Access, PageID) (Snapshot, error)
 	Screenshot(context.Context, Access, ScreenshotOptions) ([]byte, error)
 	Locator(context.Context, Access, LocatorOptions) (LocatorResult, error)
 	Pointer(context.Context, Access, PointerOptions) (PageInfo, error)
@@ -541,12 +545,12 @@ type Controller interface {
 	Downloads(context.Context, Access, DownloadOptions) (any, error)
 	Assets(context.Context, Access, AssetOptions) (any, error)
 	WaitAdvanced(context.Context, Access, WaitOptions) (PageInfo, error)
-	Click(context.Context, Access, string, string) (PageInfo, error)
+	Click(context.Context, Access, PageID, string) (PageInfo, error)
 	Type(context.Context, Access, TypeOptions) (PageInfo, error)
-	Press(context.Context, Access, string, string) (PageInfo, error)
-	Scroll(context.Context, Access, string, string, float64, float64) (PageInfo, error)
-	Wait(context.Context, Access, string, string, int) (PageInfo, error)
-	History(context.Context, Access, string, string) (PageInfo, error)
-	Evaluate(context.Context, Access, string, string, json.RawMessage) (any, string, error)
-	EvaluateReadOnly(context.Context, Access, string, string, json.RawMessage) (any, string, error)
+	Press(context.Context, Access, PageID, string) (PageInfo, error)
+	Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error)
+	Wait(context.Context, Access, PageID, string, int) (PageInfo, error)
+	History(context.Context, Access, PageID, string) (PageInfo, error)
+	Evaluate(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)
+	EvaluateReadOnly(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)
 }

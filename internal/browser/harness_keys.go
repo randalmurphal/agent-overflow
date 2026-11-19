@@ -20,7 +20,7 @@ type engineKeyPress interface {
 // what makes the keyboard path (browser-tools.md § Keyboard) testable on a
 // machine where the driver holds no Accessibility trust: the app posts the
 // key event into its own window, and the chord gate sees a real NSEvent.
-func (m *Manager) HarnessPressKey(ctx context.Context, access Access, pageID string, chord keybindings.Accelerator) error {
+func (m *Manager) HarnessPressKey(ctx context.Context, access Access, pageID PageID, chord keybindings.Accelerator) error {
 	engine, ok := m.engine.(engineKeyPress)
 	if !ok {
 		return fmt.Errorf("browser: key injection is not available on this browser engine")

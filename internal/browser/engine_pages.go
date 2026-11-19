@@ -164,7 +164,7 @@ func (m *Manager) runAdoption(popup enginePopup) {
 	}
 	p := newManagedPage(opener.owner, opener.access)
 	p.jarGen, p.authority = opener.jarGen, opener.authority
-	p.info = PageInfo{ID: p.id, URL: truncateUTF8(popup.URL, maxBrowserURLBytes), Title: truncateUTF8(popup.Title, maxBrowserTitleBytes)}
+	p.info = PageInfo{ID: string(p.id), URL: truncateUTF8(popup.URL, maxBrowserURLBytes), Title: truncateUTF8(popup.Title, maxBrowserTitleBytes)}
 	scope.creating[p] = struct{}{}
 	m.adopting[popup.Handle] = p
 	m.mu.Unlock()

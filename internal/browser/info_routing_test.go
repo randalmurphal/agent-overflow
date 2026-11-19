@@ -16,7 +16,7 @@ func suspendedURL(t *testing.T, m *Manager, pageID string) string {
 	t.Helper()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rec := m.suspended[pageID]
+	rec := m.suspended[PageID(pageID)]
 	if rec == nil {
 		t.Fatalf("page %s was not suspended", pageID)
 	}
@@ -42,7 +42,7 @@ func TestASuspendSavesTheNewerAddressReportedDuringItsRead(t *testing.T) {
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
-	if got := suspendedURL(t, manager, p.id); got != b {
+	if got := suspendedURL(t, manager, string(p.id)); got != b {
 		t.Fatalf("the suspension saved %q, want the address the page reached, %q", got, b)
 	}
 }
@@ -67,7 +67,7 @@ func TestASuspendOfAPageThatKeepsNavigatingIsBounded(t *testing.T) {
 		t.Fatalf("the suspension read %d times, want %d", n, maxSettleReads)
 	}
 	// The last read answered the address the page reached before it.
-	if got, want := suspendedURL(t, manager, p.id), address(maxSettleReads-1); got != want {
+	if got, want := suspendedURL(t, manager, string(p.id)), address(maxSettleReads-1); got != want {
 		t.Fatalf("the suspension saved %q, want its last read, %q", got, want)
 	}
 }
@@ -132,11 +132,11 @@ func TestAReportDuringAPopupAdoptionReachesItsTab(t *testing.T) {
 			if popup == nil {
 				t.Fatal("the popup was not adopted")
 			}
-			if tab, _ := findTab(manager, access, popup.id); tab.URL != final || tab.Title != "Final" {
+			if tab, _ := findTab(manager, access, string(popup.id)); tab.URL != final || tab.Title != "Final" {
 				t.Fatalf("the adopted tab shows %q %q, want the report made %s", tab.URL, tab.Title, during)
 			}
 			manager.updatePageInfo("popup", "https://example.test/older", "Older", 1)
-			if tab, _ := findTab(manager, access, popup.id); tab.URL != final {
+			if tab, _ := findTab(manager, access, string(popup.id)); tab.URL != final {
 				t.Fatalf("an older report delivered after the adoption replaced the tab's %q with %q", final, tab.URL)
 			}
 		})

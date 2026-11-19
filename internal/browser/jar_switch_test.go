@@ -40,7 +40,7 @@ func waitDisposed(t *testing.T, engine *jarEngine, jar string) {
 // restore restores one tab as the pane's selection does, in the background.
 func restore(m *Manager, access Access, pageID string) <-chan error {
 	done := make(chan error, 1)
-	go func() { done <- m.ActivateCompanionPage(context.Background(), access, pageID) }()
+	go func() { done <- m.ActivateCompanionPage(context.Background(), access, PageID(pageID)) }()
 	return done
 }
 
@@ -55,16 +55,16 @@ func TestSwitchingTheJarSuspendsTheTabsIntoTheNewJar(t *testing.T) {
 	first := openPage(t, manager, access, "https://example.test/first")
 	second := openPage(t, manager, access, "https://example.test/second")
 	third := openPage(t, manager, access, "https://example.test/third")
-	if _, err := manager.LabelPage(t.Context(), access, second.ID, "login"); err != nil {
+	if _, err := manager.LabelPage(t.Context(), access, PageID(second.ID), "login"); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.MoveCompanionPage(access, third.ID, 0); err != nil {
+	if err := manager.MoveCompanionPage(access, PageID(third.ID), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, second.ID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(second.ID)); err != nil {
 		t.Fatal(err)
 	}
-	live, _, err := manager.lookupOwnedPage(access, first.ID)
+	live, _, err := manager.lookupOwnedPage(access, PageID(first.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestSwitchingTheJarSuspendsTheTabsIntoTheNewJar(t *testing.T) {
 	waitDisposed(t, engine, canonical(t, proj.one))
 
 	for _, id := range []string{second.ID, first.ID} {
-		if err := manager.ActivateCompanionPage(t.Context(), access, id); err != nil {
+		if err := manager.ActivateCompanionPage(t.Context(), access, PageID(id)); err != nil {
 			t.Fatalf("restore %s: %v", id, err)
 		}
 		if got := pageJar(t, manager, id); got != "thread:a" {
@@ -193,7 +193,7 @@ func TestTabsChangedDuringASwitchChangeAfterIt(t *testing.T) {
 			}
 			opened <- info
 		}()
-		go func() { closed <- manager.ClosePage(context.Background(), access, gone.ID) }()
+		go func() { closed <- manager.ClosePage(context.Background(), access, PageID(gone.ID)) }()
 		// Time for both to reach the gate; neither may pass it.
 		time.Sleep(50 * time.Millisecond)
 		if got := tabURLs(manager, access); !slices.Equal(got, []string{"https://example.test/gone", "https://example.test/kept"}) {
@@ -314,13 +314,13 @@ func TestASwitchedTabThatCannotComeBackStaysSuspended(t *testing.T) {
 	engine.mu.Unlock()
 
 	setJar(t, manager, access, JarThread)
-	if err := manager.ActivateCompanionPage(t.Context(), access, down.ID); err == nil || !strings.Contains(err.Error(), "ERR_CONNECTION_REFUSED") {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(down.ID)); err == nil || !strings.Contains(err.Error(), "ERR_CONNECTION_REFUSED") {
 		t.Fatalf("restoring the failing tab answered %v", err)
 	}
 	if page, found := findTab(manager, access, down.ID); !found || !page.Suspended || page.URL != "https://example.test/down" {
 		t.Fatalf("the failed tab = %+v (found %v), want it suspended at its address", page, found)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, ok.ID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(ok.ID)); err != nil {
 		t.Fatalf("restore the other tab: %v", err)
 	}
 }
@@ -339,7 +339,7 @@ func TestASwitchAtTheThreadCapKeepsEveryTab(t *testing.T) {
 		t.Fatalf("a page past the cap after the switch answered %v", err)
 	}
 	for _, id := range tabIDs(manager, access) {
-		if err := manager.ActivateCompanionPage(t.Context(), access, id); err != nil {
+		if err := manager.ActivateCompanionPage(t.Context(), access, PageID(id)); err != nil {
 			t.Fatalf("restore %s at the cap: %v", id, err)
 		}
 	}
@@ -381,7 +381,7 @@ func TestClosedSwitchedTabsKeepTheirSlotsUntilTheirPagesClose(t *testing.T) {
 	t.Cleanup(release)
 	setJar(t, manager, access, JarThread)
 	for _, id := range tabIDs(manager, access) {
-		if err := manager.CloseCompanionPage(t.Context(), access, id); err != nil {
+		if err := manager.CloseCompanionPage(t.Context(), access, PageID(id)); err != nil {
 			t.Fatalf("close switched tab %s: %v", id, err)
 		}
 	}
@@ -563,7 +563,7 @@ func TestASwitchFencesAnInFlightRestore(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	page := openPage(t, manager, access, "https://example.test/saved")
-	live, _, err := manager.lookupOwnedPage(access, page.ID)
+	live, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,7 +609,7 @@ func TestASwitchFencesPopupAdoption(t *testing.T) {
 	if ids := tabIDs(manager, access); !slices.Equal(ids, []string{page.ID}) {
 		t.Fatalf("tabs after a popup raced the switch = %q, want only the opener", ids)
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := pageJar(t, manager, page.ID); got != "thread:a" {
@@ -651,7 +651,7 @@ func TestASecondSwitchMovesTheTabsToTheNewestJar(t *testing.T) {
 	page := openPage(t, manager, access, "https://example.test/")
 	setJar(t, manager, access, JarThread)
 	setJar(t, manager, access, JarProject)
-	if err := manager.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := pageJar(t, manager, page.ID); got != "project:P" {

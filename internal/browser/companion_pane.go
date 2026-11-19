@@ -326,7 +326,7 @@ func (m *Manager) presenterLocked(tb *threadBrowser) (string, PaneRect, bool) {
 // presentedPageLocked answers the page a mounted pane shows: tb's active
 // page while its companion is visible and a pane can show it, or "". The
 // caller holds m.mu.
-func (m *Manager) presentedPageLocked(tb *threadBrowser) string {
+func (m *Manager) presentedPageLocked(tb *threadBrowser) PageID {
 	if tb == nil || !tb.session.Visible {
 		return ""
 	}
@@ -339,14 +339,14 @@ func (m *Manager) presentedPageLocked(tb *threadBrowser) string {
 	if _, ok := placePage(rect, pageW, pageH); !ok {
 		return ""
 	}
-	return session.ActivePageID
+	return session.activePage()
 }
 
 // OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
 // Only engines with an inspector they can open implement paneDevTools;
 // WKWebView (Safari's Develop menu is the inspector) and the fake engine
 // answer with an explained refusal rather than a silent no-op.
-func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID string) error {
+func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID PageID) error {
 	host, ok := m.engine.(paneDevTools)
 	if !ok {
 		return fmt.Errorf("browser: devtools are not available on this browser engine")

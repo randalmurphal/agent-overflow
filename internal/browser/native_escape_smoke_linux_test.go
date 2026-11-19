@@ -56,7 +56,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		t.Fatalf("open the page: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
 	mount, err := manager.AttachPane(access.Caller())
@@ -68,7 +68,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	if err := manager.SetPaneRect(mount.ID, PaneRect{Width: 640, Height: 400, ViewportWidth: 1280, ViewportHeight: 800, Visible: true}); err != nil {
 		t.Fatalf("place the pane: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	announced("no search")
 
-	started, err := manager.Find(ctx, access, page.ID, FindStart, "alpha", mount.ID, 1)
+	started, err := manager.Find(ctx, access, PageID(page.ID), FindStart, "alpha", mount.ID, 1)
 	if err != nil || !started.Active {
 		t.Fatalf("start a search = %+v, %v", started, err)
 	}
@@ -147,7 +147,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	announced("a search running")
 	// The Escape changed nothing of the search: the pane decides.
-	if state, err := manager.Find(ctx, access, page.ID, FindNext, "", mount.ID, 1); err != nil || !state.Active || state.Session != started.Session {
+	if state, err := manager.Find(ctx, access, PageID(page.ID), FindNext, "", mount.ID, 1); err != nil || !state.Active || state.Session != started.Session {
 		t.Fatalf("step after the Escape = %+v, %v", state, err)
 	}
 

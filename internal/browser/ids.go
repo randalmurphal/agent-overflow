@@ -1,10 +1,21 @@
 package browser
 
+import "strings"
+
 // The identifiers this package owns, one defined type per kind, so a value
 // of one kind cannot be passed where another is meant. Each is converted
 // from or to a plain string once, where it enters or leaves the package: a
 // bound DTO, an MCP argument, a wire message or a log keeps its plain
 // string. A kind the subpackages share is in internal/browser/ids.
+
+// PageID is AO's id for a thread's tab (PageInfo.ID), the page_id the
+// browser tools and the pane name. It lasts across the tab's suspension,
+// restore and saved record, unlike the engine's handle for its live page
+// (ids.PageHandle).
+type PageID string
+
+// trim is the page id without the spaces around it a caller may send.
+func (id PageID) trim() PageID { return PageID(strings.TrimSpace(string(id))) }
 
 // DownloadKey names one download in its thread's list (ThreadDownload.ID),
 // which the pane's download actions pass back. The Manager numbers it as the

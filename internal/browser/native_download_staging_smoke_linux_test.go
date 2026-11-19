@@ -51,7 +51,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 		return stage(id)
 	}
 
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
 	select {
@@ -135,7 +135,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 		releaseStaged(id)
 	}
 	before := webkitDownloadsAlive()
-	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
+	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
 	var id downloadID

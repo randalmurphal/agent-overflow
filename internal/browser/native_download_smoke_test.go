@@ -144,7 +144,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 	download := func(path string) ThreadDownload {
 		t.Helper()
 		before := len(manager.CompanionState(access.Caller()).Downloads)
-		if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+path), nil); err != nil {
+		if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), fmt.Sprintf(`location.href = %q; true`, server.URL+path), nil); err != nil {
 			t.Fatalf("start %s: %v", path, err)
 		}
 		for {
@@ -348,7 +348,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			}
 		}()
 		count := len(manager.CompanionState(access.Caller()).Downloads)
-		if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
+		if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
 			t.Fatal(err)
 		}
 		staged := ""
@@ -504,7 +504,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			if after := len(manager.CompanionState(access.Caller()).Downloads); after != before {
 				t.Fatalf("opening %s started another download", item.Name)
 			}
-			value, _, err := manager.Evaluate(ctx, access, opened.ID, `document.contentType`, nil)
+			value, _, err := manager.Evaluate(ctx, access, PageID(opened.ID), `document.contentType`, nil)
 			if err != nil {
 				t.Fatalf("read the tab: %v", err)
 			}
