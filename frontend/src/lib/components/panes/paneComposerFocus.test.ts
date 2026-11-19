@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  carryCaretIntoPane,
+  delayedFocusStillCurrent,
   focusPaneComposer,
-  focusPaneComposerIfEditableActive,
+  isEditingFocused,
+  isEditingFocusedIn,
   restorePickerFocus,
 } from './paneComposerFocus';
 
@@ -40,17 +43,37 @@ describe('paneComposerFocus', () => {
     expect(focusPaneComposer('left')).toBe(false);
   });
 
-  it('moves the caret only when an editable element was active', () => {
+  it('carries the caret to the composer, else to the pane section, without scrolling', () => {
     const target = mountPaneComposer('right');
-    const focus = vi.spyOn(target, 'focus');
+    const section = target.parentElement!;
+    section.tabIndex = -1;
+    const left = mountPaneComposer('left');
+    left.focus();
+    expect(isEditingFocused()).toBe(true);
+    expect(isEditingFocusedIn('left')).toBe(true);
+    expect(isEditingFocusedIn('right')).toBe(false);
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(target);
 
-    (document.activeElement as HTMLElement | null)?.blur?.();
-    focusPaneComposerIfEditableActive('right');
-    expect(focus).not.toHaveBeenCalled();
-
-    mountPaneComposer('left').focus();
-    focusPaneComposerIfEditableActive('right');
+    target.disabled = true;
+    left.focus();
+    const focus = vi.spyOn(section, 'focus');
+    carryCaretIntoPane('right');
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(document.activeElement).toBe(section);
+    expect(isEditingFocused()).toBe(false);
+  });
+
+  // A terminal asked for focus mounts a frame later; by then the user may
+  // have moved into another pane, whose caret stays.
+  it('lets a delayed focus land only while focus is in its pane or nowhere', () => {
+    const a = mountPaneComposer('a');
+    const b = mountPaneComposer('b');
+    a.focus();
+    expect(delayedFocusStillCurrent(a)).toBe(true);
+    expect(delayedFocusStillCurrent(b)).toBe(false);
+    a.blur();
+    expect(delayedFocusStillCurrent(b)).toBe(true);
   });
 
   describe('restorePickerFocus', () => {

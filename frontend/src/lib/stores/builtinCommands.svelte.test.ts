@@ -13,8 +13,7 @@ import {
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
 import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
-import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { stepBack } from '../utils/stepBack';
+import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';import { stepBack } from '../utils/stepBack';
 import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
@@ -158,8 +157,10 @@ function mountComposerForPane(paneId: string): {
   textarea: HTMLTextAreaElement;
   cleanup: () => void;
 } {
-  const root = document.createElement('div');
+  // PaneHost's section, focusable by script.
+  const root = document.createElement('section');
   root.setAttribute('data-pane-id', paneId);
+  root.tabIndex = -1;
   const textarea = document.createElement('textarea');
   textarea.setAttribute('aria-label', 'Message Input');
   root.appendChild(textarea);
@@ -1635,8 +1636,8 @@ describe('pane find under compact', () => {
     expect(ctx.flags.paneFindAvailable).toBe(false);
   });
 
-  // The bar's input keeps DOM focus while keyboard navigation reveals the
-  // companion: Back must close the companion on screen, not the bar behind it.
+  // The bar's input keeps DOM focus while a swipe shows the companion:
+  // Back must close the companion on screen, not the bar behind it.
   it('a focused bar\'s Escape goes through the same target: Back passes an off-screen bar, desktop Escape closes it', async () => {
     const pane = readyPane();
     registerPaneForTest('a', pane);
@@ -1682,8 +1683,7 @@ describe('pane find under compact', () => {
     const input = sections.get('a')!.querySelector<HTMLInputElement>('[data-testid="pane-find-input"]')!;
     await vi.waitFor(() => expect(document.activeElement).toBe(input));
 
-    // Keyboard navigation reveals the plan; DOM focus stays in A's input.
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, bubbles: true, cancelable: true }));
+    // A swipe shows the plan; DOM focus stays in A's input.
     onScreen = plan.paneId;
     noteCompactPaneShown(onScreen);
     expect(document.activeElement).toBe(input);
@@ -2463,26 +2463,21 @@ describe('pane navigation into a terminal pane', () => {
       registerFixtureCommands(left);
       const leftComposer = mountComposerForPane('main');
       const hostedComposer = mountComposerForPane(`${kind}-main`);
-      const hostedRoot = hostedComposer.textarea.parentElement!;
-      const fallback = document.createElement('div');
-      fallback.tabIndex = -1;
-      fallback.setAttribute('data-pane-focus-fallback', '');
-      hostedRoot.appendChild(fallback);
+      const hostedSection = hostedComposer.textarea.parentElement!;
       try {
         hostedComposer.textarea.disabled = true;
         focusPane('main');
         leftComposer.textarea.focus();
         runCommand('pane.focusRight', makeCommandContext(left, {}));
         expect(getFocusedPaneId()).toBe(`${kind}-main`);
-        expect(document.activeElement).toBe(fallback);
+        expect(document.activeElement).toBe(hostedSection);
 
         hostedComposer.textarea.remove();
-        fallback.remove();
         focusPane('main');
         leftComposer.textarea.focus();
         runCommand('pane.focusRight', makeCommandContext(left, {}));
         expect(getFocusedPaneId()).toBe(`${kind}-main`);
-        expect(document.activeElement).not.toBe(leftComposer.textarea);
+        expect(document.activeElement).toBe(hostedSection);
       } finally {
         leftComposer.cleanup();
         hostedComposer.cleanup();
@@ -2500,13 +2495,43 @@ describe('pane navigation into a terminal pane', () => {
       focusPane('main');
       registerFixtureCommands(left);
       const leftComposer = mountComposerForPane('main');
+      // PaneHost renders the companion's section, with no composer yet.
+      const preparing = mountComposerForPane(`${kind}-main`);
+      preparing.textarea.remove();
+      const section = document.querySelector(`[data-pane-id="${kind}-main"]`);
       try {
         leftComposer.textarea.focus();
         runCommand('pane.focusRight', makeCommandContext(left, {}));
         expect(getFocusedPaneId()).toBe(`${kind}-main`);
-        expect(document.activeElement).not.toBe(leftComposer.textarea);
+        expect(document.activeElement).toBe(section);
       } finally {
         leftComposer.cleanup();
+        preparing.cleanup();
+      }
+    });
+
+    // Mod+W from the composer of the pane it closes: the caret goes to the
+    // pane focus falls to, not to <body>, and a caret elsewhere stays.
+    it(`pane.close carries a caret typing in the closed ${kind} pane to the pane focus falls to`, () => {
+      installCompanionPanes();
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      setPaneLayoutItemsForTest([{ id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 }]);
+      const plan = openCompanion('main', 'plan')!;
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      const planSection = mountComposerForPane(plan.paneId);
+      try {
+        focusPane(plan.paneId);
+        planSection.textarea.focus();
+        runCommand('pane.close', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe('main');
+        expect(document.activeElement).toBe(leftComposer.textarea);
+      } finally {
+        leftComposer.cleanup();
+        planSection.cleanup();
+        resetCompanionPanesForTest();
       }
     });
   }

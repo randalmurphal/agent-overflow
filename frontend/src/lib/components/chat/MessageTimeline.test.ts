@@ -14,7 +14,6 @@ import {
 import { getToasts } from '../../stores/toast.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import MessageTimeline from './MessageTimeline.svelte';
-import { focusPaneComposerIfEditableActive } from '../panes/paneComposerFocus';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
@@ -79,26 +78,6 @@ describe('<MessageTimeline>', () => {
     pane.upsertItem(makeItem());
     await tick();
     expect(queryByTestId('empty-thread-greeting')).toBeNull();
-  });
-
-  // Pane navigation onto a pane whose composer is disabled (a blocking
-  // approval) carries the caret to its transcript instead.
-  it('takes a navigated caret when the pane has no enabled composer', async () => {
-    const pane = await buildPane();
-    const section = document.createElement('section');
-    section.setAttribute('data-pane-id', pane.paneId);
-    document.body.appendChild(section);
-    const input = document.createElement('textarea');
-    document.body.appendChild(input);
-    try {
-      const { getByTestId } = render(MessageTimeline, { props: { pane }, target: section });
-      input.focus();
-      focusPaneComposerIfEditableActive(pane.paneId);
-      expect(document.activeElement).toBe(getByTestId('message-timeline-scroll'));
-    } finally {
-      input.remove();
-      section.remove();
-    }
   });
 
   it('keeps active-turn status out of the virtualized history', async () => {

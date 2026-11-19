@@ -27,11 +27,8 @@ import { toggleAccountSwitcher } from './accountSwitcher.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
-  focusAdjacentPane,
   getFocusedPaneId,
   paneCommandTarget,
-  getFocusedThreadPaneId,
-  getPane,
   moveFocusedPane,
   openThreadFromNavigation,
   openThreadInNewPane,
@@ -45,8 +42,8 @@ import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closePaneById } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserActions';
 import { isReplayingBrowserPageChord } from './browserCompanion.svelte';
-import { isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
-import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
+import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
+import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
@@ -308,26 +305,13 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       if (closeFocusedBrowserTab()) return;
       const target = paneCommandTarget();
       if (!target) return;
+      // A caret typing in the closed pane goes to the pane focus falls to.
+      const carrying = isEditingFocusedIn(target);
       closePaneById(target);
-      const nextFocused = getFocusedThreadPaneId();
-      if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
+      const nextFocused = getFocusedPaneId();
+      if (carrying && nextFocused) carryCaretIntoPane(nextFocused);
     },
   });
-
-  // Landing on a pane that hosts a conversation (a thread pane, a side chat,
-  // an agent thread) moves DOM focus with the logical focus: latch a
-  // terminal-mode thread's xterm, otherwise carry an editing caret to the
-  // pane's composer, so typing goes to the conversation now focused. Other
-  // companion and take-control stops keep logical focus only: they have no
-  // composer, and yanking the caret out of one would surprise.
-  function followPaneNavDomFocus(item: PaneLayoutItem): void {
-    if (item.kind !== 'thread' && !isThreadHostingPaneKind(item.kind)) return;
-    // A companion still preparing may have no registered pane yet; the
-    // caret still leaves the pane it was in.
-    const nextPane = getPane(item.paneId);
-    if (nextPane?.thread?.mode === 'terminal') nextPane.requestTerminalFocus();
-    else focusPaneComposerIfEditableActive(item.paneId);
-  }
 
   // Pane navigation stays reachable from inside a focused terminal: the default
   // vim chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go
@@ -339,8 +323,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '←',
     editableReachable: true,
     run: () => {
-      const next = focusAdjacentPane(-1);
-      if (next) followPaneNavDomFocus(next);
+      navigateToAdjacentPane(-1);
     },
   });
 
@@ -350,8 +333,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '→',
     editableReachable: true,
     run: () => {
-      const next = focusAdjacentPane(1);
-      if (next) followPaneNavDomFocus(next);
+      navigateToAdjacentPane(1);
     },
   });
 

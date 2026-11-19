@@ -31,6 +31,7 @@
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
   import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { delayedFocusStillCurrent } from '../panes/paneComposerFocus';
   import { paneFindSurface } from '../panes/paneFindRegion';
   import { hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -71,7 +72,12 @@
     // Defer one frame past the mount flush so the terminal claims focus after
     // any focus changes that ran during this commit (e.g. the composer's own
     // mount/autofocus), rather than being immediately overridden by them.
-    requestAnimationFrame(() => el.focus());
+    // By then the user may have moved into another pane, whose caret stays.
+    requestAnimationFrame(() => {
+      const target = el.focusTarget();
+      if (target && !delayedFocusStillCurrent(target)) return;
+      el.focus();
+    });
   });
 
   // Consume the pane's focus intent reactively. The read-and-clear runs on
