@@ -162,8 +162,8 @@ type hostedEngine struct {
 	// pageProfile is each page's profile id, created or popup, and policies
 	// each live profile's navigation policy (profileOptions.Allow), for a
 	// popup's profile and the browser-wide policy (hosted_popups.go).
-	pageProfile map[ids.PageHandle]string
-	policies    map[string]func(owners []frameID, rawURL string) (allowed, resolved bool)
+	pageProfile map[ids.PageHandle]profileHandle
+	policies    map[profileHandle]func(owners []frameID, rawURL string) (allowed, resolved bool)
 	// popups are the popups the launcher reported whose pages have not
 	// gone (hostedPopup), and popupByTarget their pages by CDP target.
 	popups        map[ids.PageHandle]*hostedPopup
@@ -217,8 +217,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		scales:       make(map[ids.PageHandle]*viewScaleState),
 		noFind:       make(map[ids.PageHandle]bool),
 
-		pageProfile:   make(map[ids.PageHandle]string),
-		policies:      make(map[string]func([]frameID, string) (bool, bool)),
+		pageProfile:   make(map[ids.PageHandle]profileHandle),
+		policies:      make(map[profileHandle]func([]frameID, string) (bool, bool)),
 		popups:        make(map[ids.PageHandle]*hostedPopup),
 		popupByTarget: make(map[target.ID]ids.PageHandle),
 
@@ -314,7 +314,7 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[ids.PageHandle]pageRatio)
 	e.scales = make(map[ids.PageHandle]*viewScaleState)
 	e.noFind = make(map[ids.PageHandle]bool)
-	e.pageProfile = make(map[ids.PageHandle]string)
+	e.pageProfile = make(map[ids.PageHandle]profileHandle)
 	var cancelAttaches []func()
 	for _, popup := range e.popups {
 		cancelAttaches = append(cancelAttaches, popup.takeAttachCancelLocked())
@@ -361,7 +361,7 @@ func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (eng
 // hostedProfileID is the WebView2 profile name of a jar. A worktree jar's
 // identity is its workspace path, so its name is the one every earlier build
 // derived.
-func hostedProfileID(jar jarKey) (string, error) {
+func hostedProfileID(jar jarKey) (profileHandle, error) {
 	trimmed := strings.TrimSpace(string(jar))
 	if trimmed == "" {
 		return "", errors.New("browser: a cookie jar is required for a pane profile")
@@ -371,7 +371,7 @@ func hostedProfileID(jar jarKey) (string, error) {
 	if err := webview2host.ValidateProfileID(id); err != nil {
 		return "", fmt.Errorf("browser: derive pane profile id: %w", err)
 	}
-	return id, nil
+	return profileHandle(id), nil
 }
 
 // ClearSiteData is the engineSiteData half of Settings → Clear site data.
@@ -487,11 +487,11 @@ func windowsFileURL(windowsPath string) (string, error) {
 // launcher's pane environment.
 type hostedProfile struct {
 	engine    *hostedEngine
-	id        string
+	id        profileHandle
 	ephemeral bool
 }
 
-func (p *hostedProfile) Handle() string { return p.id }
+func (p *hostedProfile) Handle() profileHandle { return p.id }
 
 func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
 	return p.engine.createPage(ctx, p, hooks)
@@ -508,7 +508,7 @@ func (p *hostedProfile) Dispose(context.Context) error {
 	p.engine.mu.Lock()
 	delete(p.engine.policies, p.id)
 	p.engine.mu.Unlock()
-	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: p.id, Ephemeral: p.ephemeral})
+	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: string(p.id), Ephemeral: p.ephemeral})
 	return nil
 }
 

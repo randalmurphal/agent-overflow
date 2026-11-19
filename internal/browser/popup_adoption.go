@@ -334,7 +334,7 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 
 // profileScopeLocked answers the open jar whose profile has handle, or nil.
 // The caller holds m.mu.
-func (m *Manager) profileScopeLocked(handle string) *jarScope {
+func (m *Manager) profileScopeLocked(handle profileHandle) *jarScope {
 	for _, scope := range m.scopes {
 		if scope.profile.Handle() == handle {
 			return scope

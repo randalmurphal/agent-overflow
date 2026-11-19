@@ -302,8 +302,8 @@ func TestHeadlessEngineLaunchesOneChromiumPerProfile(t *testing.T) {
 		t.Fatal("two workspace profiles shared one Chromium process")
 	}
 
-	oneDir := filepath.Join(engine.configDir, browserProfileDir, one.handle, "chromium")
-	twoDir := filepath.Join(engine.configDir, browserProfileDir, two.handle, "chromium")
+	oneDir := filepath.Join(engine.configDir, browserProfileDir, string(one.handle), "chromium")
+	twoDir := filepath.Join(engine.configDir, browserProfileDir, string(two.handle), "chromium")
 	if oneDir == twoDir {
 		t.Fatal("two workspaces resolved to one user-data directory")
 	}

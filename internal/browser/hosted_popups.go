@@ -61,7 +61,7 @@ const (
 // page goes: its lineage and its attach.
 type hostedPopup struct {
 	target  target.ID
-	profile string
+	profile profileHandle
 	// opener is the page id of the page that opened it.
 	opener ids.PageHandle
 	// conn is its opener's browser connection, the one its target is on;

@@ -838,7 +838,7 @@ func TestEnginesDeriveTodaysIdentityForAWorktreeJar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "ws" + hex.EncodeToString(digest[:16]); hosted != want {
+	if want := "ws" + hex.EncodeToString(digest[:16]); hosted != profileHandle(want) {
 		t.Fatalf("WebView2 profile = %q, want today's %q", hosted, want)
 	}
 	var raw [16]byte
@@ -852,16 +852,16 @@ func TestEnginesDeriveTodaysIdentityForAWorktreeJar(t *testing.T) {
 		t.Fatalf("profile directory = %q, want today's %q", got, want)
 	}
 
-	seen := map[string]string{hosted: workspace}
+	seen := map[string]string{string(hosted): workspace}
 	for _, jar := range []string{"project:P", "thread:a", "private:a:token"} {
 		id, err := hostedProfileID(jarKey(jar))
 		if err != nil {
 			t.Fatalf("WebView2 profile for %s: %v", jar, err)
 		}
-		if other, dup := seen[id]; dup {
+		if other, dup := seen[string(id)]; dup {
 			t.Fatalf("%s and %s share WebView2 profile %q", jar, other, id)
 		}
-		seen[id] = jar
+		seen[string(id)] = jar
 		if !uuidPattern.MatchString(wkStoreIdentifier(jarKey(jar))) {
 			t.Fatalf("WebKit store for %s is not a valid identifier", jar)
 		}

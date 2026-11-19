@@ -28,7 +28,7 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	}
 	defer e.unwatch(pageID)
 
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: string(pageID), ProfileID: profile.id, Ephemeral: profile.ephemeral}) {
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: string(pageID), ProfileID: string(profile.id), Ephemeral: profile.ephemeral}) {
 		return nil, errors.New("browser: pane host refused the create directive")
 	}
 

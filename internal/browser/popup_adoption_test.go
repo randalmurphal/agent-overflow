@@ -29,7 +29,7 @@ type adoptionEngine struct {
 	histories map[ids.PageHandle][]string
 	discarded []ids.PageHandle
 	canceled  []string
-	profile   string
+	profile   profileHandle
 	// stallDiscard makes a discard wait for its deadline, as an engine
 	// whose browser stopped answering does.
 	stallDiscard bool

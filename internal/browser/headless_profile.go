@@ -23,7 +23,7 @@ import (
 // by the first page and dies with the profile.
 type headlessProfile struct {
 	engine      *headlessEngine
-	handle      string
+	handle      profileHandle
 	userDataDir string
 	// ephemeralRoot is the temp directory holding userDataDir when the
 	// site-data setting is off, removed on Dispose. Empty when the profile
@@ -63,7 +63,7 @@ func (p *headlessProfile) closeBrowser(b *launchedBrowser) error {
 	return b.close()
 }
 
-func (p *headlessProfile) Handle() string { return p.handle }
+func (p *headlessProfile) Handle() profileHandle { return p.handle }
 
 func (p *headlessProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
 	browserCtx, err := p.ensureBrowser()

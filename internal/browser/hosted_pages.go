@@ -140,7 +140,7 @@ type hostedPageRecord struct {
 	state hostedPageState
 	// opener and profile are a popup's.
 	opener  ids.PageHandle
-	profile string
+	profile profileHandle
 	// downloads are the page's running downloads, admitted or with their
 	// admission in flight; ended its ended or refused ids, oldest first.
 	downloads map[hostedDownloadID]*hostedDownload
@@ -186,7 +186,7 @@ func newHostedPages(process func(context.Context, *acceptedWork), watch func(sto
 	}
 }
 
-func newPageRecord(state hostedPageState, opener ids.PageHandle, profile string) *hostedPageRecord {
+func newPageRecord(state hostedPageState, opener ids.PageHandle, profile profileHandle) *hostedPageRecord {
 	return &hostedPageRecord{state: state, opener: opener, profile: profile, downloads: make(map[hostedDownloadID]*hostedDownload), retired: make(chan struct{})}
 }
 
@@ -202,7 +202,7 @@ func (p *hostedPages) addOpen(page ids.PageHandle) {
 
 // addPopup records page, a popup opener opened in profile, as pending,
 // and answers false when page has a record.
-func (p *hostedPages) addPopup(page, opener ids.PageHandle, profile string) bool {
+func (p *hostedPages) addPopup(page, opener ids.PageHandle, profile profileHandle) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.records[page] != nil {

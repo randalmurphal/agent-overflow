@@ -15,3 +15,9 @@ type frameID string
 // its open scope and the identity an engine derives its profile from
 // (profileOptions.Jar). A worktree jar's key is its canonical workspace.
 type jarKey string
+
+// profileHandle names one engine profile (engineProfile.Handle) in the
+// engine's reports: a popup's and a popup download's profile. An engine
+// derives it from its jar's key or numbers it; the hosted engine's is the
+// WebView2 profile name the launcher's directives carry.
+type profileHandle string

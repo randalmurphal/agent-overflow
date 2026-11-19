@@ -209,7 +209,7 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 		return nil, err
 	}
 	profile := &webkitProfile{
-		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session,
+		engine: e, id: id, handle: profileHandle(fmt.Sprintf("profile-%d", id)), session: session,
 		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
 		destinations: destination.NewDecisions[string, webkitPendingDownload](),
 		pages:        make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
@@ -230,7 +230,7 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 type webkitProfile struct {
 	engine  *webkitEngine
 	id      uint64
-	handle  string
+	handle  profileHandle
 	session unsafe.Pointer
 
 	// stage names the staged file each download is written to
@@ -253,7 +253,7 @@ type webkitProfile struct {
 	beforeView func()
 }
 
-func (p *webkitProfile) Handle() string { return p.handle }
+func (p *webkitProfile) Handle() profileHandle { return p.handle }
 
 // webkitUserScript is what every page in this engine has injected at document
 // start in every frame: the console capture that stands in for CDP's Runtime

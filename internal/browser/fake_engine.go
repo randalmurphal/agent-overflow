@@ -93,14 +93,14 @@ func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineP
 		return nil, errors.New("browser: engine unavailable")
 	}
 	return &fakeProfile{
-		engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow,
+		engine: e, handle: profileHandle(fmt.Sprintf("fake-profile-%d", e.seq.Add(1))), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow,
 		downloadDir: opts.DownloadDir, stage: opts.StageDownload,
 	}, nil
 }
 
 type fakeProfile struct {
 	engine *fakeEngine
-	handle string
+	handle profileHandle
 	// jar, ephemeral, allow, downloadDir and stage are what the profile
 	// was created with.
 	jar         jarKey
@@ -116,7 +116,7 @@ type fakeProfile struct {
 	held map[string]fakeDownload
 }
 
-func (p *fakeProfile) Handle() string { return p.handle }
+func (p *fakeProfile) Handle() profileHandle { return p.handle }
 
 func (p *fakeProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
 	p.mu.Lock()

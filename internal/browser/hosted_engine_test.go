@@ -163,7 +163,7 @@ func TestHostedProfileIDIsDerivedStableAndValid(t *testing.T) {
 	if other == first {
 		t.Fatal("two workspaces share one profile id")
 	}
-	if err := webview2host.ValidateProfileID(first); err != nil {
+	if err := webview2host.ValidateProfileID(string(first)); err != nil {
 		t.Fatalf("derived id is not a legal profile id: %v", err)
 	}
 	if _, err := hostedProfileID("   "); err == nil {
@@ -535,7 +535,7 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	}
 	sink.expectOps(t, webview2host.OpCloseProfile)
 	directive := sink.next(t)
-	if directive.ProfileID != profile.Handle() || !directive.Ephemeral {
+	if profileHandle(directive.ProfileID) != profile.Handle() || !directive.Ephemeral {
 		t.Fatalf("close-profile directive is %+v", directive)
 	}
 }

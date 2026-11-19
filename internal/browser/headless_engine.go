@@ -229,9 +229,9 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if opts.Allow == nil {
 		return nil, errors.New("browser: a navigation policy is required for a browser profile")
 	}
-	p := &headlessProfile{engine: e, handle: jarDirName(opts.Jar), downloadDir: opts.DownloadDir, allow: opts.Allow}
+	p := &headlessProfile{engine: e, handle: profileHandle(jarDirName(opts.Jar)), downloadDir: opts.DownloadDir, allow: opts.Allow}
 	if !opts.Ephemeral {
-		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, p.handle, "chromium")
+		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, string(p.handle), "chromium")
 	} else {
 		// An ephemeral session is a real Chromium profile on a directory
 		// nothing outlives (spec §4: browserPersistSiteData=false is an

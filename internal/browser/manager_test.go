@@ -843,7 +843,7 @@ func TestAPopupThatFailsToAttachIsDiscarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
-	var profile string
+	var profile profileHandle
 	for _, scope := range manager.scopes {
 		profile = scope.profile.Handle()
 	}

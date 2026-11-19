@@ -178,7 +178,7 @@ type paneDevTools interface {
 // nothing here reads or writes it.
 type engineProfile interface {
 	// Handle identifies this profile in engine events.
-	Handle() string
+	Handle() profileHandle
 	// NewPage creates a hidden page in this profile.
 	NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error)
 	// AttachPage adopts a page the engine created on its own (a popup). On an
@@ -490,7 +490,7 @@ type pageAssets struct {
 // ownership is decided here: the Manager matches the opener and applies its
 // own per-thread and per-workspace limits before adopting it.
 type enginePopup struct {
-	Profile string
+	Profile profileHandle
 	Opener  ids.PageHandle
 	Handle  ids.PageHandle
 	URL     string
@@ -511,7 +511,7 @@ type downloadStart struct {
 	// the profile when neither is (popup_adoption.go).
 	Popup   ids.PageHandle
 	Openers []ids.PageHandle
-	Profile string
+	Profile profileHandle
 }
 
 // downloadAdmission is the Manager's answer to a download's start

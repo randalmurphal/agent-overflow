@@ -262,7 +262,7 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 		return nil, err
 	}
 	profile := &wkProfile{
-		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
+		engine: e, id: id, handle: profileHandle(fmt.Sprintf("profile-%d", id)), store: store,
 		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
 		destinations: destination.NewDecisions[string, wkPendingDownload](),
 		pages:        make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
@@ -283,7 +283,7 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 type wkProfile struct {
 	engine *wkEngine
 	id     uint64
-	handle string
+	handle profileHandle
 	// store is this workspace's WKWebsiteDataStore. It survives a restart only
 	// on macOS 14+ with the site-data setting on: WebKit offers no
 	// per-identifier persistent store below that, and an in-memory one is the
@@ -313,7 +313,7 @@ type wkDownload struct {
 	stop   chan struct{}
 }
 
-func (p *wkProfile) Handle() string { return p.handle }
+func (p *wkProfile) Handle() profileHandle { return p.handle }
 
 // wkUserScript is what every page in this engine has injected at document start
 // in every frame: the console capture that stands in for CDP's Runtime and Log
