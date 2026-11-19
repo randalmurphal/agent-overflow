@@ -28,6 +28,8 @@ type adoptionEngine struct {
 	discarded []string
 	canceled  []string
 	profile   string
+	// wrap, when set, answers the driver an attach returns.
+	wrap func(pageDriver) pageDriver
 }
 
 func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, string) {
@@ -140,7 +142,11 @@ func (p *adoptionProfile) AttachPage(ctx context.Context, handle string, hooks p
 		page.history, page.index = history, len(history)-1
 		page.mu.Unlock()
 	}
-	return &handledPage{pageDriver: driver, handle: handle}, nil
+	page := &handledPage{pageDriver: driver, handle: handle}
+	if p.engine.wrap != nil {
+		return p.engine.wrap(page), nil
+	}
+	return page, nil
 }
 
 func (p *adoptionProfile) CancelDownload(id string) error {

@@ -20,7 +20,10 @@ func (e pageEnd) merge(other pageEnd) pageEnd {
 // pageEnds is a page's crash and close, as the WebKit engines and headless
 // Chromium report them. The Manager acts on those only for a listed page,
 // so an adopted popup's are held from its creation until its listing
-// (adoptedPage) and delivered then, the crash first. A close also reaches
+// (adoptedPage) and delivered then: its close if it closed, its crash
+// otherwise. A crash delivered first would keep the tab as a crashed one
+// (crash.go), which the close, looking only among live pages, could not
+// remove. A close also reaches
 // the Manager at once, as the hosted engine's does, so what the popup
 // downloaded is listed while its opener still is. Every other page's go
 // straight to the Manager.
@@ -67,11 +70,11 @@ func (p *pageEnds) adopted(events engineEvents, handle string) {
 	held := p.held
 	p.held = pageEnd{}
 	p.mu.Unlock()
-	if held.crashed != "" {
-		events.PageCrashed(handle, held.crashed)
-	}
-	if held.closed {
+	switch {
+	case held.closed:
 		events.PageClosed(handle)
+	case held.crashed != "":
+		events.PageCrashed(handle, held.crashed)
 	}
 }
 

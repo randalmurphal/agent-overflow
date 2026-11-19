@@ -391,6 +391,31 @@ func TestHostedPopupCrashDuringAdoptionReachesItsTab(t *testing.T) {
 	l.settledEngine()
 }
 
+// A popup that crashed and then closed after its attach and before its
+// listing leaves no tab, crashed or live.
+func TestHostedPopupCrashAndCloseDuringAdoptionLeaveNoTab(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := popupTestAccess(t, "thread")
+	_, opener := l.open(access)
+	release := l.gateHistory("PT-1")
+	defer release()
+	popupID, _ := l.popup(opener, "https://example.test/popup")
+	l.awaitAttach("history PT-1")
+	l.report(popupID, webview2host.ReportProcessFailed, "render-process-exited")
+	l.report(popupID, webview2host.ReportClosed, "")
+	release()
+	select {
+	case <-l.adopted:
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("the adoption never ended")
+	}
+	l.settledEngine()
+	l.awaitTabGone(access.ThreadID, popupID)
+	if state := l.manager.CompanionState(access); len(state.Pages) != 1 {
+		t.Fatalf("tabs %+v, want only the opener's", state.Pages)
+	}
+}
+
 // policyRecorder stands in for the profiles' policies: each answers
 // resolved for owners that name one of its frames, allowing what profile
 // "a" asks, and otherwise answers unresolved, allowing a web address alone,

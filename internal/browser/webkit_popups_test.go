@@ -10,7 +10,7 @@ import (
 )
 
 // A WebKit popup's crash and close before its listing reach the Manager at
-// the listing, the crash first, and the close also at once; what ended its
+// the listing, the close alone when it closed, and the close also at once; what ended its
 // view before its attach is held the same way. Once listed, the page's go
 // straight on, as an ordinary page's always do. A held popup's end is kept
 // only while the engine holds or attaches it.
@@ -51,9 +51,9 @@ func TestWebKitPopupEndsWaitForTheListing(t *testing.T) {
 	popup.report(pageEnd{closed: true}, events, "page-2")
 	expect("closed page-2")
 	popup.adopted(events, "page-2")
-	expect("closed page-2", "crashed page-2 early", "closed page-2")
+	expect("closed page-2", "closed page-2")
 	popup.report(pageEnd{crashed: "late"}, events, "page-2")
-	expect("closed page-2", "crashed page-2 early", "closed page-2", "crashed page-2 late")
+	expect("closed page-2", "closed page-2", "crashed page-2 late")
 
 	mu.Lock()
 	got = nil

@@ -219,7 +219,8 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 }
 
 // popupListed delivers what a popup reported while it was pending, once the
-// Manager lists it: its crash, then its close.
+// Manager lists it: its close if it closed, its crash otherwise, as
+// pageEnds.adopted does.
 func (e *hostedEngine) popupListed(pageID string) {
 	e.mu.Lock()
 	popup := e.popups[pageID]
@@ -231,11 +232,11 @@ func (e *hostedEngine) popupListed(pageID string) {
 	if popup == nil {
 		return
 	}
-	if popup.crashed != "" {
-		e.events.PageCrashed(pageID, popup.crashed)
-	}
-	if popup.closed {
+	switch {
+	case popup.closed:
 		e.retirePage(pageID)
+	case popup.crashed != "":
+		e.events.PageCrashed(pageID, popup.crashed)
 	}
 }
 

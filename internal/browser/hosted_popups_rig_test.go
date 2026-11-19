@@ -21,7 +21,8 @@ import (
 
 // popupLauncher is the launcher's side: it answers each create with the
 // page's target and each close with closed, as reports through the
-// Manager, and holds the attach of any target in gated until released.
+// Manager, and holds the attach of any target in gated, and a history read
+// of any in gatedHistory, until released.
 type popupLauncher struct {
 	t        *testing.T
 	manager  *Manager
@@ -33,16 +34,18 @@ type popupLauncher struct {
 	// stallFrameTree leaves every Page.getFrameTree unanswered.
 	stallFrameTree atomic.Bool
 
-	mu      sync.Mutex
-	closes  []string
-	gated   map[string]chan struct{}
-	reached chan string
-	seq     int
+	mu     sync.Mutex
+	closes []string
+	gated  map[string]chan struct{}
+	// gatedHistory holds Page.getNavigationHistory by target.
+	gatedHistory map[string]chan struct{}
+	reached      chan string
+	seq          int
 }
 
 func newPopupLauncher(t *testing.T) *popupLauncher {
 	t.Helper()
-	l := &popupLauncher{t: t, gated: map[string]chan struct{}{}, reached: make(chan string, 16), adopted: make(chan struct{}, 16)}
+	l := &popupLauncher{t: t, gated: map[string]chan struct{}{}, gatedHistory: map[string]chan struct{}{}, reached: make(chan string, 16), adopted: make(chan struct{}, 16)}
 	l.endpoint = startFakeCDPEndpoint(t, l.respond, nil)
 	l.manager = NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{PaneHost: &PaneHostOptions{
 		Directive: l.send,
@@ -88,6 +91,18 @@ func (l *popupLauncher) respond(call fakeCDPCall) any {
 		return map[string]any{"sessionId": "S-" + params.TargetID}
 	case "Runtime.evaluate":
 		return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
+	case "Page.getNavigationHistory":
+		targetID := strings.TrimPrefix(call.SessionID, "S-")
+		l.mu.Lock()
+		gate := l.gatedHistory[targetID]
+		l.mu.Unlock()
+		if gate != nil {
+			l.reached <- "history " + targetID
+			<-gate
+		}
+		return map[string]any{"currentIndex": 0, "entries": []any{map[string]any{
+			"id": 1, "url": "about:blank", "userTypedURL": "about:blank", "title": "", "transitionType": "link",
+		}}}
 	case "Page.getFrameTree":
 		if l.stallFrameTree.Load() {
 			return fakeCDPNoReply{}
@@ -128,6 +143,17 @@ func (l *popupLauncher) gate(target string) (release func()) {
 	ch := make(chan struct{})
 	l.mu.Lock()
 	l.gated[target] = ch
+	l.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
+}
+
+// gateHistory holds the history reads of target until the answered
+// release; awaitAttach("history "+target) waits for the first.
+func (l *popupLauncher) gateHistory(target string) (release func()) {
+	ch := make(chan struct{})
+	l.mu.Lock()
+	l.gatedHistory[target] = ch
 	l.mu.Unlock()
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
