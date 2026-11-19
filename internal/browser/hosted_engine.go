@@ -173,6 +173,8 @@ type hostedEngine struct {
 	// downloads is the record of the launcher's downloads
 	// (hosted_downloads.go).
 	downloads hostedDownloads
+	// lanes run the launcher's accepted reports (hosted_report_lanes.go).
+	lanes *reportLanes
 	// downloadQuiet overrides hostedDownloadQuiet when set (tests).
 	downloadQuiet time.Duration
 
@@ -212,6 +214,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		scales:       make(map[string]*viewScaleState),
 		noFind:       make(map[string]bool),
 		downloads:    newHostedDownloads(),
+		lanes:        newReportLanes(),
 
 		pageProfile:   make(map[string]string),
 		policies:      make(map[string]func([]string, string) (bool, bool)),
@@ -321,6 +324,7 @@ func (e *hostedEngine) Stop() {
 	}
 	e.targets = e.newTargets()
 	e.stopDownloadsLocked()
+	joinLanes := e.stopLanesLocked()
 	e.mu.Unlock()
 	for _, cancel := range cancelAttaches {
 		cancel()
@@ -331,6 +335,7 @@ func (e *hostedEngine) Stop() {
 	if allocCancel != nil {
 		allocCancel()
 	}
+	joinLanes()
 }
 
 // NewProfile derives a launcher profile id from the jar identity: one

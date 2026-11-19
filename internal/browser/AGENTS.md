@@ -197,7 +197,11 @@ callbacks, and only when newer than the last applied; an answer never
 creates a row, and a download is asked about only once admitted; a cancel
 made while its admission is in flight is kept and sent as it is admitted.
 Cancels are numbered, and the refusal of the last one sent withdraws the
-Manager's cancel from whichever snapshot first carries it. A hosted page ends at the launcher's close, which follows
+Manager's cancel from whichever snapshot first carries it. A launcher
+report is acknowledged once accepted, never after its processing
+(`hosted_report_lanes.go`): a snapshot, close or crash runs afterwards on
+its page's lane, in order, with a pending popup's on its opener's, so no
+path conversion holds another page's report. A hosted page ends at the launcher's close, which follows
 its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a

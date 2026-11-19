@@ -13,8 +13,8 @@ import (
 // a pane page starts, so WebView2's dialog does not open for it, lets
 // WebView2 save it to the Windows user's Downloads folder, and reports each
 // one as whole snapshots (ReportDownload, internal/webview2host/download.go),
-// each numbered in the order the launcher took it. Reports arrive on RPC
-// goroutines of their own, so they can overtake each other; this engine
+// each numbered in the order the launcher took it. Report accepts each and
+// its page's lane applies it (hosted_report_lanes.go); this engine
 // applies one download's snapshots one at a time (hostedDownload.apply,
 // held across the Manager's callbacks), each only if it is newer than the
 // last it applied: a snapshot of a download it has no row for starts the
@@ -118,9 +118,15 @@ func (d *hostedDownloads) noteEnded(page, id string) {
 	d.ended[page] = ended
 }
 
-// downloadReport applies one launcher snapshot of a download of page
-// pageID, in the download's apply section.
-func (e *hostedEngine) downloadReport(pageID, detail string) {
+// acceptDownload accepts one launcher snapshot of a download of page
+// pageID: in one e.mu hold it records the download, a new one under its
+// page, and queues the snapshot on the page's lane (applySnapshot). A
+// snapshot of an ended download, or an answer about a download the engine
+// no longer has, is dropped. One accepted after its page's close runs after
+// the close, which ends the download first (retirePage), so it reaches
+// no row.
+func (e *hostedEngine) acceptDownload(page hostedPageID, detail string) {
+	pageID := string(page)
 	report, err := webview2host.ParseDownloadReport(detail)
 	if err != nil {
 		e.logf("browser: pane host download report for page %s: %v", pageID, err)
@@ -152,8 +158,15 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		e.watchDownloadsLocked()
 	}
 	known.heard = time.Now()
+	e.submitLocked(&acceptedWork{kind: acceptedSnapshot, page: page, snapshot: report, download: known})
 	e.mu.Unlock()
+}
 
+// applySnapshot applies one accepted snapshot of a download of page
+// pageID, on the page's lane, in the download's apply section. A finished
+// download's path conversion ends with ctx (Stop).
+func (e *hostedEngine) applySnapshot(ctx context.Context, page hostedPageID, report webview2host.DownloadReport, known *hostedDownload) {
+	pageID := string(page)
 	known.apply.Lock()
 	defer known.apply.Unlock()
 	e.mu.Lock()
@@ -228,9 +241,13 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			progress.Error = report.Reason
 			break
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), hostedPathTimeout)
-		path, err := e.backendPath(ctx, report.Path)
+		pathCtx, cancel := context.WithTimeout(ctx, hostedPathTimeout)
+		path, err := e.backendPath(pathCtx, report.Path)
 		cancel()
+		if ctx.Err() != nil {
+			// The engine stopped; the Manager settled the page's rows first.
+			return
+		}
 		if err != nil {
 			progress.Error = fmt.Sprintf("the file was saved to %s, which this backend cannot reach, so it is not opened from here: %v", report.Path, err)
 		} else {

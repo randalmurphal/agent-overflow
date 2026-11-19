@@ -182,6 +182,7 @@ func TestHostedEngineReportsAProcessFailureByKind(t *testing.T) {
 			})
 			bindTestPage(t, engine, "page1", "TARGET-1")
 			engine.Report("page1", webview2host.ReportProcessFailed, tc.detail)
+			settleReports(t, engine, "")
 			if len(closed) != 0 {
 				t.Fatalf("a process failure retired the page: %v", closed)
 			}

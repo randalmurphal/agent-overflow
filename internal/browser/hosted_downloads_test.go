@@ -97,9 +97,46 @@ var testSnapshotNumbers = struct {
 	last map[string]uint64
 }{last: map[string]uint64{}}
 
+// settleReports waits until the engine has processed every report of
+// pageID it accepted, or of every page when pageID is empty.
+func settleReports(t *testing.T, engine *hostedEngine, pageID string) {
+	t.Helper()
+	if !reportsProcessed(engine, pageID) {
+		t.Fatalf("the reports of page %q were not processed", pageID)
+	}
+}
+
+// reportsProcessed answers whether the engine processed every report of
+// pageID (of every page when empty) it accepted, within hostedTestDeadline.
+func reportsProcessed(engine *hostedEngine, pageID string) bool {
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		engine.mu.Lock()
+		busy := len(engine.lanes.byKey) != 0
+		if pageID != "" {
+			busy = engine.lanes.pages[hostedPageID(pageID)] != nil
+		}
+		engine.mu.Unlock()
+		if !busy {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
+}
+
 // reportDownload has the launcher send one snapshot of a page's download,
-// numbered after the download's last one unless it carries its number.
+// numbered after the download's last one unless it carries its number, and
+// waits until the engine processed it.
 func reportDownload(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) {
+	t.Helper()
+	sendDownload(t, engine, pageID, report)
+	settleReports(t, engine, pageID)
+}
+
+// sendDownload is reportDownload without the wait: it returns once the
+// engine acknowledged the snapshot.
+func sendDownload(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) {
 	t.Helper()
 	if report.Seq == 0 && report.State != webview2host.DownloadUnknown {
 		key := fmt.Sprintf("%p/%s", engine, report.ID)
@@ -500,8 +537,8 @@ func heldAdmission(recorder *hostedDownloadLog) (entered, release chan struct{})
 }
 
 // reportAsync sends a snapshot from a goroutine of its own, as the
-// launcher's reports arrive, and answers a channel closed once it is
-// applied.
+// launcher's reports arrive, and answers a channel closed once the page's
+// accepted reports are applied.
 func reportAsync(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) chan struct{} {
 	t.Helper()
 	detail, err := report.Encode()
@@ -512,6 +549,9 @@ func reportAsync(t *testing.T, engine *hostedEngine, pageID string, report webvi
 	go func() {
 		defer close(done)
 		engine.Report(pageID, webview2host.ReportDownload, detail)
+		if !reportsProcessed(engine, pageID) {
+			t.Errorf("the reports of page %s were not processed", pageID)
+		}
 	}()
 	return done
 }
@@ -734,7 +774,10 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 		leave func(engine *hostedEngine)
 	}{
 		{"the Manager closes it", func(engine *hostedEngine) { engine.closePage("page1") }},
-		{"the launcher reports it closed", func(engine *hostedEngine) { engine.Report("page1", webview2host.ReportClosed, "") }},
+		{"the launcher reports it closed", func(engine *hostedEngine) {
+			engine.Report("page1", webview2host.ReportClosed, "")
+			reportsProcessed(engine, "page1")
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine, sink, recorder := newDownloadHostedEngine(t)
@@ -853,7 +896,9 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 			recorder.mu.Lock()
 			recorder.progressing = func(progress downloadProgress) {
 				if progress.ID == "dl-1" && progress.State == downloadCanceled {
-					once.Do(func() { reportDownload(t, engine, "popup", snapshot("dl-2", webview2host.DownloadRunning, 10)) })
+					// On the popup's lane, running its close: the report is
+					// accepted or refused, never waited for.
+					once.Do(func() { sendDownload(t, engine, "popup", snapshot("dl-2", webview2host.DownloadRunning, 10)) })
 				}
 			}
 			recorder.mu.Unlock()
@@ -863,6 +908,7 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 			case "close":
 				engine.Report("popup", webview2host.ReportClosed, "")
 			}
+			settleReports(t, engine, "")
 			starts, progress := recorder.take()
 			ended := map[string]bool{}
 			for _, p := range progress {
