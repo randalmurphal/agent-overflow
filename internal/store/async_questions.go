@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,20 @@ type AsyncQuestion struct {
 	SendID     string   `json:"sendId"`
 	UserItemID string   `json:"userItemId"`
 	CreatedAt  int64    `json:"createdAt"`
+	// run is the run identity of the Store that recorded the question
+	// (async_questions.run_id), read only where a copy carries it
+	// (copyForkQuestionsTx). Unexported, it is on no wire: a transfer's
+	// question lands with the empty mark, which is no run's.
+	run string
+}
+
+// newRunID makes a Store's run identity (Store.run).
+func newRunID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("store: make a run identity: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 type AsyncQuestionAnswer struct {
@@ -33,6 +49,10 @@ type AsyncQuestionAnswer struct {
 
 // RecordAsyncQuestions admits the immutable prompt and its answerable questions together.
 // Repeated started/completed frames cannot reset answers or reorder the prompt.
+// A prompt it writes is marked with this Store's run (Store.run); one already
+// stored keeps the mark it has, and its missing rows, if any, get none, so a
+// provider replaying an old prompt after a restart does not make it this
+// run's.
 func (s *Store) RecordAsyncQuestions(item Item) (Item, error) {
 	meta, found, err := userquestion.Decode([]byte(item.Meta))
 	if err != nil {
@@ -48,16 +68,17 @@ func (s *Store) RecordAsyncQuestions(item Item) (Item, error) {
 		if err != nil {
 			return err
 		}
+		run := s.run
 		if exists {
 			previous, structured, err := userquestion.Decode([]byte(existing.Meta))
 			if err != nil || !structured || !reflect.DeepEqual(previous.Questions, meta.Questions) {
 				return fmt.Errorf("question identity %s has different content", item.ID)
 			}
-			item = existing
+			item, run = existing, ""
 		} else if err := writeItemWithIndexFn(tx, w, &item, nextItemIndexTx); err != nil {
 			return err
 		}
-		if err := insertAsyncQuestions(tx, item, meta.Questions, "unanswered"); err != nil {
+		if err := insertAsyncQuestions(tx, item, meta.Questions, "unanswered", run); err != nil {
 			return err
 		}
 		if err := w.finish(); err != nil {
@@ -72,14 +93,17 @@ func (s *Store) RecordAsyncQuestions(item Item) (Item, error) {
 	return persisted, nil
 }
 
-func insertAsyncQuestions(tx *sql.Tx, item Item, questions []userquestion.Question, state string) error {
+// insertAsyncQuestions inserts item's questions it does not hold yet, in
+// state and marked with run (empty for none), and checks those it holds
+// carry the same content. A row it already holds keeps its state and mark.
+func insertAsyncQuestions(tx *sql.Tx, item Item, questions []userquestion.Question, state, run string) error {
 	for index, q := range questions {
 		options, err := json.Marshal(q.Options)
 		if err != nil {
 			return err
 		}
-		result, err := tx.Exec(`INSERT INTO async_questions(thread_id,item_id,question_index,title,options,state,created_at)
- VALUES(?,?,?,?,?,?,?) ON CONFLICT(thread_id,item_id,question_index) DO NOTHING`, item.ThreadID, item.ID, index, q.Title, string(options), state, item.CreatedAt)
+		result, err := tx.Exec(`INSERT INTO async_questions(thread_id,item_id,question_index,title,options,state,created_at,run_id)
+ VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(thread_id,item_id,question_index) DO NOTHING`, item.ThreadID, item.ID, index, q.Title, string(options), state, item.CreatedAt, run)
 		if err != nil {
 			return err
 		}
@@ -151,11 +175,15 @@ func (s *Store) ListAsyncQuestions(threadID, itemID string) ([]AsyncQuestion, er
 // AsyncQuestionGroup is one item's questions still waiting for an answer,
 // with the item's revision: the highest of its rows', which every change of
 // state of any of them raises (async_question_revision), so two readings
-// with one revision ask the same questions.
+// with one revision ask the same questions. AskedThisRun says this Store's
+// run recorded every one of them (Store.run); one an earlier run recorded,
+// or no run (a row from before the mark, an imported or transferred
+// question), was asked before this run of the app.
 type AsyncQuestionGroup struct {
-	ItemID    string
-	Revision  int64
-	Questions []AsyncQuestion
+	ItemID       string
+	Revision     int64
+	AskedThisRun bool
+	Questions    []AsyncQuestion
 }
 
 // UnansweredAsyncQuestions reads threadID's questions still waiting for an
@@ -163,7 +191,7 @@ type AsyncQuestionGroup struct {
 // statement: none for a thread this computer does not hold (gone, being
 // deleted or moved away) or that is archived, whose questions ask nobody.
 func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup, error) {
-	rows, err := s.reader().Query(unansweredAsyncQuestionsSQL, threadID)
+	rows, err := s.reader().Query(unansweredAsyncQuestionsSQL, threadID, s.run)
 	if err != nil {
 		return nil, fmt.Errorf("store: read the unanswered questions of %s: %w", threadID, err)
 	}
@@ -172,7 +200,8 @@ func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup,
 		var options string
 		var q AsyncQuestion
 		var revision int64
-		if err := rows.Scan(&q.ItemID, &q.Index, &q.Title, &options, &q.CreatedAt, &revision); err != nil {
+		var thisRun bool
+		if err := rows.Scan(&q.ItemID, &q.Index, &q.Title, &options, &q.CreatedAt, &revision, &thisRun); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if err := json.Unmarshal([]byte(options), &q.Options); err != nil {
@@ -181,9 +210,10 @@ func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup,
 		q.State = "unanswered"
 		if n := len(out); n > 0 && out[n-1].ItemID == q.ItemID {
 			out[n-1].Questions = append(out[n-1].Questions, q)
+			out[n-1].AskedThisRun = out[n-1].AskedThisRun && thisRun
 			continue
 		}
-		out = append(out, AsyncQuestionGroup{ItemID: q.ItemID, Revision: revision, Questions: []AsyncQuestion{q}})
+		out = append(out, AsyncQuestionGroup{ItemID: q.ItemID, Revision: revision, AskedThisRun: thisRun, Questions: []AsyncQuestion{q}})
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: read the unanswered questions of %s: %w", threadID, err)
@@ -194,9 +224,10 @@ func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup,
 // The state IN term is idx_async_questions_pending's predicate, which lets
 // the plan use the partial index; its order keeps an item's rows together.
 // The revision is read from the item's rows by the primary key, and the
-// thread's row once, by its own.
+// thread's row once, by its own. ?2 is the Store's run, never empty.
 const unansweredAsyncQuestionsSQL = `SELECT q.item_id,q.question_index,q.title,q.options,q.created_at,
- (SELECT MAX(r.revision) FROM async_questions r WHERE r.thread_id=q.thread_id AND r.item_id=q.item_id)
+ (SELECT MAX(r.revision) FROM async_questions r WHERE r.thread_id=q.thread_id AND r.item_id=q.item_id),
+ q.run_id=?2
  FROM async_questions q WHERE q.thread_id=?1 AND q.state IN ('unanswered','submitted','restored') AND q.state='unanswered'
  AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id=?1 AND t.archived=0)
  ORDER BY q.created_at,q.item_id,q.question_index`
@@ -424,7 +455,8 @@ func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAn
 }
 
 // SetAsyncQuestionDismissed can expose imported questions on explicit request, but
-// never infers that historic questions are still awaiting an answer.
+// never infers that historic questions are still awaiting an answer. The rows
+// it writes for such a question carry no run: it was not asked in this run.
 func (s *Store) SetAsyncQuestionDismissed(threadID, itemID string, index int, dismissed bool) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -443,7 +475,7 @@ func (s *Store) SetAsyncQuestionDismissed(threadID, itemID string, index int, di
 		if !structured {
 			return fmt.Errorf("item has no structured questions")
 		}
-		if err := insertAsyncQuestions(tx, item, meta.Questions, "dismissed"); err != nil {
+		if err := insertAsyncQuestions(tx, item, meta.Questions, "dismissed", ""); err != nil {
 			return err
 		}
 	}

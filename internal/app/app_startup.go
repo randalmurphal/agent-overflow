@@ -56,8 +56,6 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	}()
 	started := time.Now()
 	defer logBootPhase("app.service_startup.total", started)
-	// Before the store opens, so every reconcile of async questions reads it.
-	a.started = started
 
 	// Initialise the App-lifetime ctx before any goroutine spawn so the
 	// probe loops, OAuth poller, MCP reconcile callbacks, and any future

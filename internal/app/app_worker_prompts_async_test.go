@@ -78,28 +78,12 @@ func wireAsyncQuestionApp(a *App) *recordingNotificationSender {
 }
 
 // restart is the fixture after a restart: a second App over the same
-// database, started now, with nothing in memory. Nothing of its boot has
-// run yet.
+// database, whose store is a new run, with nothing in memory. Nothing of
+// its boot has run yet.
 func (f asyncQuestionFixture) restart(t *testing.T) asyncQuestionFixture {
 	t.Helper()
 	a := newTestAppAtStorePath(t, f.dbPath)
-	a.started = time.Now()
 	return asyncQuestionFixture{app: a, dbPath: f.dbPath, spawner: f.spawner, worker: f.worker, notified: wireAsyncQuestionApp(a)}
-}
-
-// forgetPromptsAtRestart is what a restart is to the app's prompts: the
-// registry and the routes of open async questions are gone, and the run
-// starts after every question asked so far and before any asked later.
-func forgetPromptsAtRestart(a *App) {
-	a.workerPrompts.mu.Lock()
-	a.workerPrompts.byToken, a.workerPrompts.current = nil, nil
-	a.workerPrompts.mu.Unlock()
-	a.workerPrompts.async.mu.Lock()
-	a.workerPrompts.async.open = nil
-	a.workerPrompts.async.mu.Unlock()
-	// Past the millisecond the last question may have been asked in.
-	time.Sleep(time.Millisecond)
-	a.started = time.Now()
 }
 
 // drain waits out the prompts, notice starts and settlements begun; a start
@@ -445,7 +429,7 @@ func TestAStopOfAWorkerDismissesItsAsyncQuestions(t *testing.T) {
 func TestAQuestionAskedBeforeTheRestartIsThePersons(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-boot", store.PlacementOwned)
-	// Asked two weeks ago, and put to the spawner in the run that asked it.
+	// Asked in the run before the restart, and put to the spawner in it.
 	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
 		ID: "question:old", ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
 		Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`, CreatedAt: time.Now().Add(-14 * 24 * time.Hour).UnixMilli(),
@@ -516,91 +500,59 @@ func TestAQuestionAskedBeforeTheRestartIsThePersons(t *testing.T) {
 	}
 }
 
-// The run's start against the wall clock: unchanged with no step, moved
-// back with a clock set back, and kept with a clock set forward, so a
-// question this run asked is never before it and one from before the run
-// is, outside the documented misread of a backward step's size.
-func TestRunStartOnWallClockFollowsAClockStep(t *testing.T) {
+// A question this run recorded is this run's whatever time its provider
+// event carries: one stamped two weeks ago goes to the spawner.
+func TestAQuestionThisRunRecordedWithAnOldTimeGoesToTheSpawner(t *testing.T) {
 	t.Parallel()
-	const start = int64(1_700_000_000_000)
-	minute, hour := time.Minute.Milliseconds(), time.Hour.Milliseconds()
-	cases := []struct {
-		name                     string
-		startWall, nowWall, past int64
-		want                     int64
-		// asked maps a question's wall time to whether it is this run's.
-		asked map[int64]bool
-	}{
-		{
-			name: "no step", startWall: start, nowWall: start + 20*minute, past: 20 * minute, want: start,
-			asked: map[int64]bool{start: true, start + 5*minute: true, start - 1: false, start - 14*24*hour: false},
-		},
-		{
-			// Set back an hour ten minutes into the run, read ten minutes later.
-			name: "a step back of an hour", startWall: start, nowWall: start + 20*minute - hour, past: 20 * minute, want: start - hour,
-			asked: map[int64]bool{
-				start + 10*minute - hour + 1000: true, // right after the step
-				start + 5*minute:                true, // before the step
-				start - 2*hour:                  false,
-				start - 30*minute:               true, // from before the run, within the step: the misread left
-			},
-		},
-		{
-			// Set forward an hour ten minutes into the run, read ten minutes later.
-			name: "a step forward of an hour", startWall: start, nowWall: start + 20*minute + hour, past: 20 * minute, want: start,
-			asked: map[int64]bool{
-				start + 5*minute:                true, // before the step
-				start + 10*minute + hour + 1000: true, // right after the step
-				start - 1:                       false,
-			},
-		},
-		{
-			name: "the zero start", startWall: 0, nowWall: start, past: 20 * minute, want: 0,
-			asked: map[int64]bool{0: true, start - 14*24*hour: true, start: true},
-		},
+	f := newAsyncQuestionFixture(t, "async-old-time", store.PlacementOwned)
+	f.askAt(t, "question:old-time", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`, time.Now().Add(-14*24*time.Hour))
+	if _, body := f.wake(t, f.spawner.ID); !strings.Contains(body, "Which scope?") {
+		t.Fatalf("the spawner's wake asks:\n%s\nwant the question this run recorded", body)
 	}
-	for _, tc := range cases {
-		got := runStartOnWallClock(tc.startWall, tc.nowWall, tc.past)
-		if got != tc.want {
-			t.Errorf("%s: the run's start = %d, want %d", tc.name, got, tc.want)
-		}
-		for asked, thisRun := range tc.asked {
-			if (asked >= got) != thisRun {
-				t.Errorf("%s: a question asked at %d (start %+d ms) reads as this run's = %v, want %v", tc.name, asked, asked-start, asked >= got, thisRun)
-			}
-		}
+	if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || promptRouteTitle(route) != f.spawner.Title {
+		t.Fatalf("the worker asks %q of %q (%v), want its spawner", detail, promptRouteTitle(route), asking)
 	}
 }
 
-// A question a worker asks after the wall clock was set back is this run's
-// even though its time is before the clock's reading at the start: it goes
-// to the spawner. One from before the run, before the step's reach, stays
-// the person's.
-func TestAQuestionAskedAfterTheClockWasSetBackGoesToTheSpawner(t *testing.T) {
+// A question an earlier run recorded is the person's whatever time its
+// provider event carries: one stamped a day ahead goes to no agent after
+// the restart and is not what the worker waits on.
+func TestAQuestionAnEarlierRunRecordedWithALaterTimeIsThePersons(t *testing.T) {
 	t.Parallel()
-	f := newAsyncQuestionFixture(t, "async-clock-back", store.PlacementOwned)
-	// The run started a minute ago; the clock has since been set back an hour.
-	f.app.started = time.Now().Add(-time.Minute)
-	f.app.wallClockStepForTest = -time.Hour
-	for id, asked := range map[string]time.Time{
-		"question:before-run": f.app.started.Add(-2 * time.Hour),
-		"question:after-step": time.Now().Add(-time.Hour),
-	} {
-		if _, err := f.app.store.RecordAsyncQuestions(store.Item{
-			ID: id, ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
-			Meta: fmt.Sprintf(`{"delivery":"async","questions":[{"title":%q}]}`, id), CreatedAt: asked.UnixMilli(),
-		}); err != nil {
-			t.Fatal(err)
-		}
+	f := newAsyncQuestionFixture(t, "async-later-time", store.PlacementOwned)
+	f.askAt(t, "question:later-time", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`, time.Now().Add(24*time.Hour))
+	f.wake(t, f.spawner.ID)
+
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	after.drain(t)
+	after.app.syncAsyncQuestionPrompts(after.worker.ID)
+	after.drain(t)
+	if tokens := workerPromptTokens(t, after.app, after.spawner.ID); len(tokens) != 0 {
+		t.Fatalf("the restart put the earlier run's question to the spawner under %q", tokens)
+	}
+	if _, _, asking := after.app.asyncQuestionBlocked(after.worker.ID); asking {
+		t.Fatal("the earlier run's question is open to an agent")
+	}
+	if waiting := after.app.threadWaitingOn(after.worker.ID); waiting.on == "question" {
+		t.Fatalf("the worker waits on %q (%q)", waiting.on, waiting.detail)
+	}
+	if sends := after.notified.snapshot(); len(sends) != 0 {
+		t.Fatalf("the restart notified %+v", sends)
+	}
+}
+
+// askAt is ask with the time the provider event stamped on the item.
+func (f asyncQuestionFixture) askAt(t *testing.T, itemID, meta string, at time.Time) {
+	t.Helper()
+	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+		ID: itemID, ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: meta,
+		CreatedAt: at.UnixMilli(), UpdatedAt: at.UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
 	}
 	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
 	f.drain(t)
-	if _, body := f.wake(t, f.spawner.ID); !strings.Contains(body, "question:after-step") || strings.Contains(body, "question:before-run") {
-		t.Fatalf("the spawner's wake asks:\n%s\nwant only the question asked after the step", body)
-	}
-	if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "question:after-step" || promptRouteTitle(route) != f.spawner.Title {
-		t.Fatalf("the worker asks %q of %q (%v), want the question asked after the step, of its spawner", detail, promptRouteTitle(route), asking)
-	}
 }
 
 // answered has the spawner answer the worker's one question with "One" and
@@ -700,15 +652,13 @@ func TestASpawnerAnswerQueuedAtQuitIsReturnedAtBoot(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-answer-boot", store.PlacementOwned)
 	sendID := f.answered(t)
-	forgetPromptsAtRestart(f.app)
-	f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
-	f.app.configureTriageQueueCallbacks()
-	f.app.restoreDurableFlushQueueAtBoot()
-	f.drain(t)
-	f.requireReturned(t, sendID)
-	f.app.syncAsyncQuestionPrompts(f.worker.ID)
-	f.drain(t)
-	f.requireThePersons(t)
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	after.drain(t)
+	after.requireReturned(t, sendID)
+	after.app.syncAsyncQuestionPrompts(after.worker.ID)
+	after.drain(t)
+	after.requireThePersons(t)
 }
 
 // A session that ends with the spawner's answer still queued gives it back

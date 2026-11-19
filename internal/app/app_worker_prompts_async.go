@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
@@ -28,13 +27,17 @@ import (
 // (triage.cleanupThread), and an async question outlives its session in
 // async_questions: it stays open until it is answered or dismissed.
 //
-// The record is this run's: a question asked before this run of the app
-// started (App.runStartMillis) is the person's, as every question was
-// before a spawner could take one. No reconcile opens it, so it is put to
-// no agent, notifies nobody and is not what its thread waits on, and the
-// boot reads nothing. The time an item asked never changes, so an answer
-// or a return that leaves some of its questions open leaves them the
-// person's too. The person answers it in the thread as any question.
+// The record is this run's: a question not recorded by this run of the app
+// is the person's, as every question was before a spawner could take one.
+// The store marks each question with the run that recorded it and says
+// whether that is this one (store.AsyncQuestionGroup.AskedThisRun); a time
+// cannot say it, since the wall clock can be set during a run. No reconcile
+// opens such a question, so it is put to no agent, notifies nobody and is
+// not what its thread waits on, and the boot reads nothing. The mark never
+// changes and a fork copies it, so an answer or a return that leaves some
+// of an item's questions open leaves them the person's too, and a fork's
+// copy of one is the person's. A question that arrives by transfer carries
+// no mark. The person answers it in the thread as any question.
 //
 // The record follows the store, not the other way round: every change to a
 // thread's questions emits provider:async_questions_changed, a revert emits
@@ -177,21 +180,20 @@ func (a *App) reconcileAsyncQuestions(threadID string, adopt bool) {
 
 // openAsyncQuestions reads threadID's unanswered async questions, by item,
 // as the prompts they make, unrouted, in one store read: none for a thread
-// that is gone, moved away or archived, and none for an item asked before
-// this run started, which is the person's.
+// that is gone, moved away or archived, and none for an item this run of
+// the app did not record, which is the person's.
 func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPrompt, error) {
 	groups, err := a.store.UnansweredAsyncQuestions(threadID)
 	if err != nil {
 		return nil, err
 	}
 	open := make(map[string]asyncQuestionPrompt, len(groups))
-	runStart := a.runStartMillis()
 	for _, group := range groups {
-		// An item's rows share the item's time, which no later change moves.
-		asked := group.Questions[0].CreatedAt
-		if asked < runStart {
+		if !group.AskedThisRun {
 			continue
 		}
+		// An item's rows share the item's time, which orders its prompts.
+		asked := group.Questions[0].CreatedAt
 		request := provider.UserInputRequest{
 			RequestID: group.ItemID, ThreadID: threadID, Occurrence: provider.PromptOccurrence(group.Revision),
 		}
@@ -205,41 +207,6 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPromp
 		open[group.ItemID] = asyncQuestionPrompt{request: request, asked: asked}
 	}
 	return open, nil
-}
-
-// runStartMillis is this run's start on the wall clock as it reads now
-// (runStartOnWallClock), in Unix milliseconds: 0 before Start.
-func (a *App) runStartMillis() int64 {
-	if a.started.IsZero() {
-		return runStartOnWallClock(0, 0, 0)
-	}
-	now := time.Now()
-	return runStartOnWallClock(a.started.UnixMilli(), now.Add(a.wallClockStepForTest).UnixMilli(), now.Sub(a.started).Milliseconds())
-}
-
-// runStartOnWallClock is the start of this run against which a time a
-// provider event stamped from the wall clock is compared, in Unix
-// milliseconds. startWall is the wall clock's reading at the start, nowWall
-// its reading now, and elapsed the monotonic time since the start, which no
-// change of the wall clock moves.
-//
-// The wall clock can be set during a run (an NTP correction, a manual
-// change). nowWall-elapsed is where the start falls on the clock as it reads
-// now: after a step back it moves back with the clock, so a time stamped
-// after the step is still after it, and a time stamped before the step is at
-// or after startWall. After a step forward it moves forward past times this
-// run stamped before the step, which startWall still precedes; so the start
-// is the earlier of the two, and with no step they are equal. What is left
-// misread: a time stamped before this run that falls within a backward
-// step's size before startWall reads as this run's, and a clock set back and
-// then forward again puts the times stamped while it was back before the
-// start. A
-// zero startWall, a run Start never began, puts nothing before it.
-func runStartOnWallClock(startWall, nowWall, elapsed int64) int64 {
-	if startWall == 0 {
-		return 0
-	}
-	return min(startWall, nowWall-elapsed)
 }
 
 // announceAsyncQuestion delivers an async question prompt to the thread it
@@ -417,8 +384,8 @@ func isWorkerAnswer(sendID string) bool {
 // boot.
 //
 // Returned by the app or a failure, the questions go where the worker's
-// questions route now, the spawner when it can take them, unless they were
-// asked before this run, as those the boot returns were: they are the
+// questions route now, the spawner when it can take them, unless this run
+// did not record them, as for those the boot returns: they are the
 // person's. Withdrawn by a
 // person (byPerson), who overruled the agent, they go to the person, as a
 // hand-back does: each item is marked with the revision the return leaves
