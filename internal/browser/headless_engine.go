@@ -105,6 +105,10 @@ type headlessEngine struct {
 	// and the popup path address a page by handle with no profile in hand,
 	// and a target this engine never bound must not be closed as one.
 	pageProfile map[string]*headlessProfile
+	// popupEnds are the crash and close of each popup bound and not yet
+	// listed or discarded (pageEnds), which the Manager hears at the
+	// popup's listing (headlessPopupPage.Adopted).
+	popupEnds map[string]*pageEnds
 	// ownerWait bounds a paused request's wait for its owner
 	// (awaitRequestOwner); zero is requestOwnerWait.
 	ownerWait time.Duration
@@ -265,6 +269,7 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 // Chromium opened by itself, since every other page is one the Manager
 // asked for.
 func (e *headlessEngine) DiscardPage(handle string) {
+	e.takePopupEnds(handle)
 	if p, ok := e.profileForPage(handle); ok {
 		p.closeTarget(handle)
 	}
@@ -277,6 +282,51 @@ func (e *headlessEngine) bindPage(handle string, p *headlessProfile) {
 	e.mu.Lock()
 	e.pageProfile[handle] = p
 	e.mu.Unlock()
+}
+
+// bindPopup binds a popup Chromium opened, as bindPage does, and holds
+// what ends it until its listing or its discard (popupEnds).
+func (e *headlessEngine) bindPopup(handle string, p *headlessProfile) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pageProfile[handle] = p
+	if e.popupEnds == nil {
+		e.popupEnds = make(map[string]*pageEnds)
+	}
+	if e.popupEnds[handle] == nil {
+		e.popupEnds[handle] = &pageEnds{popup: true}
+	}
+}
+
+// pageEnded reports what ended page handle to the Manager, or holds it for
+// a popup not listed yet (pageEnds.report).
+func (e *headlessEngine) pageEnded(handle string, end pageEnd) {
+	e.mu.Lock()
+	ends := e.popupEnds[handle]
+	e.mu.Unlock()
+	if ends == nil {
+		ends = &pageEnds{}
+	}
+	ends.report(end, e.events, handle)
+}
+
+// keepPopupEnd holds end for popup handle's listing, and answers whether
+// handle is a popup not listed yet.
+func (e *headlessEngine) keepPopupEnd(handle string, end pageEnd) bool {
+	e.mu.Lock()
+	ends := e.popupEnds[handle]
+	e.mu.Unlock()
+	return ends != nil && ends.keep(end)
+}
+
+// takePopupEnds ends the hold of popup handle and answers it, nil for a
+// page that is no popup being adopted.
+func (e *headlessEngine) takePopupEnds(handle string) *pageEnds {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ends := e.popupEnds[handle]
+	delete(e.popupEnds, handle)
+	return ends
 }
 
 // unbindPage drops a page and reports whether this engine had it, which is
@@ -322,6 +372,7 @@ func (e *headlessEngine) forgetProfile(p *headlessProfile) {
 	for handle, owner := range e.pageProfile {
 		if owner == p {
 			delete(e.pageProfile, handle)
+			delete(e.popupEnds, handle)
 		}
 	}
 	e.mu.Unlock()

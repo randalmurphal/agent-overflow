@@ -236,7 +236,10 @@ const browserLostReason = "browser process exited"
 // address, and a tool call or its Reload restores it in a new browser.
 func (p *headlessProfile) reportLost(pages []string) {
 	for _, handle := range pages {
-		p.engine.events.PageCrashed(handle, browserLostReason)
+		// A popup not listed yet hears it at its listing.
+		if !p.engine.keepPopupEnd(handle, pageEnd{crashed: browserLostReason}) {
+			p.engine.events.PageCrashed(handle, browserLostReason)
+		}
 	}
 }
 

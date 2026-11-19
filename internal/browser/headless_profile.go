@@ -101,7 +101,26 @@ func (p *headlessProfile) AttachPage(ctx context.Context, handle string, hooks p
 		driver.Close()
 		return nil, err
 	}
-	return driver, nil
+	return headlessPopupPage{pageDriver: driver, engine: p.engine}, nil
+}
+
+// headlessPopupPage is an adopted popup's driver: its listing delivers the
+// crash and close held for it (adoptedPage), and a close before its
+// listing ends the hold.
+type headlessPopupPage struct {
+	pageDriver
+	engine *headlessEngine
+}
+
+func (p headlessPopupPage) Adopted() {
+	if ends := p.engine.takePopupEnds(p.Handle()); ends != nil {
+		ends.adopted(p.engine.events, p.Handle())
+	}
+}
+
+func (p headlessPopupPage) Close() {
+	p.engine.takePopupEnds(p.Handle())
+	p.pageDriver.Close()
 }
 
 // bindPage binds a page created on browserCtx to this profile while that

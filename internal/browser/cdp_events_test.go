@@ -531,6 +531,65 @@ func TestHeadlessTargetsSettleInAnyOrder(t *testing.T) {
 	})
 }
 
+// A headless popup's close and crash before its listing reach the Manager
+// at the listing, which acts only on a listed page; the close also at
+// once, so what the popup downloaded is listed while its opener still is.
+// A page the Manager created hears its crash at once.
+func TestHeadlessPopupEndsWaitForTheListing(t *testing.T) {
+	const popup, crashed, own = "T-popup", "T-crashed", "T-own"
+	var mu sync.Mutex
+	var got []string
+	p := newTargetTestProfile(t, engineEvents{
+		PopupOpened: func(enginePopup) {},
+		PageClosed: func(handle string) {
+			mu.Lock()
+			got = append(got, "closed "+handle)
+			mu.Unlock()
+		},
+		PageCrashed: func(handle, reason string) {
+			mu.Lock()
+			got = append(got, "crashed "+handle)
+			mu.Unlock()
+		},
+	})
+	expect := func(want ...string) {
+		t.Helper()
+		deadline := time.Now().Add(headlessTestDeadline)
+		for {
+			mu.Lock()
+			now := slices.Clone(got)
+			mu.Unlock()
+			slices.Sort(now)
+			if slices.Equal(now, want) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the Manager heard %q, want %q", now, want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	h := newHeadlessTargets(p)
+	for _, id := range []target.ID{popup, crashed} {
+		h.created(target.EventTargetCreated{TargetInfo: &target.Info{TargetID: id, Type: "page", OpenerID: "T-opener"}})
+	}
+	p.engine.bindPage(own, p)
+	listed := func(handle string) adoptedPage {
+		return headlessPopupPage{pageDriver: &handledPage{handle: handle}, engine: p.engine}
+	}
+
+	h.destroyed(target.EventTargetDestroyed{TargetID: popup})
+	p.targetCrashed(target.EventTargetCrashed{TargetID: crashed})
+	p.targetCrashed(target.EventTargetCrashed{TargetID: own})
+	expect("closed "+popup, "crashed "+own)
+	listed(popup).Adopted()
+	listed(crashed).Adopted()
+	expect("closed "+popup, "closed "+popup, "crashed "+crashed, "crashed "+own)
+	if len(p.engine.popupEnds) != 0 {
+		t.Fatalf("the engine still holds %d popups' ends after their listing", len(p.engine.popupEnds))
+	}
+}
+
 // A download in a frame no page owns yet and no popup names, a popup's
 // subframe before the popup is listed, is admitted once a listed page owns
 // the frame within ownerWait, and never cancelled for the wait.
