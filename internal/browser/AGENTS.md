@@ -166,12 +166,15 @@ fed there by several methods, such as the hosted connection's targets,
 must settle the same way under any interleaving and bound what it keeps
 for unmatched events (`cdp_targets.go`).
 
-All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
-`wkDo`. Do not call either while holding a lock reachable from a native
-callback. A closure posted to the UI thread carries ids and looks the
-profile or download up there (`withProfileOnUI`, `withDownloadOnUI`); an
-action whose answer is reported runs through `uicall.Run`, which never runs
-it after it answered withdrawn. A download's destination decision is held
+All GTK/WebKit and AppKit/WKWebView calls go through `uiThread`
+(`native_uithread.go`, a `uicall.Thread`): `Run` for an operation, which
+never runs it after it answered withdrawn, and `Release` for giving up
+what is held, which is never withdrawn. Nothing else in this package posts
+to the UI thread; the forbidigo rule in `.golangci.yml` refuses any other
+call of Wails' `Invoke*`. Do not call `uiThread` while holding a lock
+reachable from a native callback. A closure posted to the UI thread
+carries ids and looks the profile or download up there
+(`withProfileOnUI`, `withDownloadOnUI`). A download's destination decision is held
 by its profile from WebKit's hand-over until its completion or the
 profile's close takes it, once (`internal/browser/destination`). Native
 callbacks carry integer IDs, never Go pointers. Keep shared page-operation

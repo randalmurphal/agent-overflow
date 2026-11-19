@@ -68,7 +68,7 @@ func nativeSmokeMain(m *testing.M) (code int, ran bool) {
 }
 
 // runInNativeWindow runs the tests inside an application loop with one
-// window, which is what gtkDo and wkDo dispatch to. The loop owns the main
+// window, which is what uiThread posts to. The loop owns the main
 // thread, so the tests run beside it and the process exits when they end.
 func runInNativeWindow(m *testing.M) int {
 	// The engine and the window's own webview inherit these, so nothing the
@@ -131,6 +131,7 @@ func runInNativeWindow(m *testing.M) int {
 // creates after NewWithOptions returns.
 func awaitNativeHandle(window *application.WebviewWindow) bool {
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		//nolint:forbidigo // The smoke's own window, read before any engine exists; no engine call.
 		if application.InvokeSyncWithResult(window.NativeWindow) != nil {
 			return true
 		}

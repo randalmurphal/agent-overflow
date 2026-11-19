@@ -18,14 +18,11 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"agent-overflow/internal/browser/destination"
 	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
-
-	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // The only cgo in the WebKitGTK engine. Everything above it — the engine, the
@@ -35,45 +32,17 @@ import (
 // Two rules this file exists to enforce:
 //
 //  1. EVERY GTK or WebKit call happens on the GTK main thread, through
-//     `gtkDo`. Wails owns that thread; calling into GTK from a Go goroutine is
+//     `uiThread`: Run for an operation, Release for giving up what is held.
+//     Wails owns that thread; calling into GTK from a Go goroutine is
 //     undefined behaviour, not a race that shows up under load.
 //  2. No Go pointer is ever handed to C. Callbacks address a page or a profile
 //     by a uint64 id and this file resolves it, which is also what makes a
 //     callback arriving after teardown a lookup miss rather than a crash.
 
-// gtkCallTimeout bounds a main-thread dispatch. The app loop can already be
-// gone during shutdown, and a browser operation must fail rather than park a
-// goroutine on a queue nothing will drain again.
-const gtkCallTimeout = 10 * time.Second
-
-// gtkDo runs fn on the GTK main thread and reports whether it completed. A
-// false answer means the loop did not run it in time; fn may still run later,
-// so fn must only write to variables the caller reads after a true answer.
-// gtkAlive reports whether there is an app loop to dispatch to at all. It is
-// the difference between "this will never run" and "this did not run yet",
-// which is what decides who owns a C allocation a closure would have freed.
-func gtkAlive() bool { return application.Get() != nil }
-
-// gtkOnMainThread answers whether gtkDo would run its closure inline right now —
-// true only on the GTK thread, where Wails' dispatch short-circuits.
+// gtkOnMainThread answers whether a closure posted to uiThread would run
+// inline right now: true only on the GTK thread, where Wails' dispatch
+// short-circuits.
 func gtkOnMainThread() bool { return C.ao_wk_on_main_thread() == 1 }
-
-func gtkDo(fn func()) bool {
-	if !gtkAlive() {
-		return false
-	}
-	done := make(chan struct{})
-	application.InvokeAsync(func() {
-		defer close(done)
-		fn()
-	})
-	select {
-	case <-done:
-		return true
-	case <-time.After(gtkCallTimeout):
-		return false
-	}
-}
 
 var errGTKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
 
@@ -90,16 +59,17 @@ type webkitView struct {
 	life context.Context
 }
 
-// do runs fn with the view on the GTK thread, unless the page closed first.
+// do runs fn with the view on the GTK thread, unless the page closed first
+// or the thread did not take it in time, after which fn never runs.
 func (v webkitView) do(fn func(view unsafe.Pointer)) error {
 	closed := false
-	if !gtkDo(func() {
+	if uiThread.Run(func() {
 		if v.life.Err() != nil {
 			closed = true
 			return
 		}
 		fn(v.ptr)
-	}) {
+	}) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
 	if closed {
@@ -198,9 +168,10 @@ func aoWebKitAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 		if webkitNavigationAllowed(page, target) {
 			allow = 1
 		}
-		// A loop that is gone takes the page with it, so an unanswered
-		// decision dies with the process rather than blocking anything.
-		gtkDo(func() { C.ao_wk_policy_finish(decision, allow) })
+		// The decision's reference is given up with its answer. A loop that
+		// is gone takes the page with it, so an unanswered decision dies
+		// with the process rather than blocking anything.
+		uiThread.Release(func() { C.ao_wk_policy_finish(decision, allow) })
 	}()
 }
 
@@ -335,9 +306,9 @@ func aoWebKitPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Poin
 		// Nothing can own it, so nothing may keep it alive — but not YET, and
 		// not from here. This export runs on the GTK thread inside `create`,
 		// which is about to return this very widget to WebKit: unreffing it now
-		// would hand WebKit a finalized object. And a bare gtkDo would queue the
-		// close behind the delegate it is running inside, freezing the UI for a
-		// full gtkCallTimeout. The goroutine's dispatch lands on a later GTK
+		// would hand WebKit a finalized object. And a close posted from here
+		// would queue behind the delegate it is running inside, freezing the UI
+		// for a full nativeCallTimeout. The goroutine's dispatch lands on a later GTK
 		// turn, which is both safe and immediate.
 		go webkitCloseView(view)
 		return 0
@@ -386,7 +357,7 @@ func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64
 	// staging directory, file system work this GTK thread must not wait on;
 	// the decision is completed on it afterwards, by whichever of its
 	// worker and Dispose takes it first.
-	go destination.Settle(gtkDo, func() bool { return !gtkAlive() || profile.isDisposed() },
+	go destination.Settle(uiThread, func() bool { return !uiThread.Alive() || profile.isDisposed() },
 		func() destination.Staged { return stageFor(profile.stage, profile.releaseStaged, handle) },
 		func(staged destination.Staged) bool {
 			pending, ok := profile.destinations.Take(handle)
@@ -400,7 +371,7 @@ func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64
 // webkitCancelDestinations cancels and releases, on the GTK thread, the
 // destination decisions p still holds, and refuses later ones (Dispose).
 func webkitCancelDestinations(p *webkitProfile) {
-	if !gtkDo(func() {
+	if !uiThread.Release(func() {
 		for _, pending := range p.destinations.Close() {
 			C.ao_wk_download_decide(pending.ptr, nil)
 			C.ao_wk_download_unref(pending.ptr)
@@ -487,7 +458,7 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, s
 	if progress.State != downloadInProgress {
 		// Released before the event goes out: releasing dispatches BACK to the
 		// GTK thread, which would queue behind the signal handler this export
-		// is running inside and freeze the UI for a full gtkCallTimeout on
+		// is running inside and freeze the UI for a full nativeCallTimeout on
 		// every finished download.
 		profile.engine.downloadEvents.Go(func() {
 			profile.releaseDownload(handle)
@@ -521,25 +492,29 @@ func webkitLookupProfile(id uint64) *webkitProfile {
 // added beneath it. The SPA survives the reparent without a reload.
 func webkitAttachHost(window unsafe.Pointer) error {
 	ok := false
-	// The glue copies both strings. A dispatch that did not run in time may
-	// still run, so they are freed only after it did.
+	// The glue copies both strings, and a withdrawn call never reads them.
 	script, world := C.CString(webkitFindFrameScript), C.CString(webkitFindWorld)
-	if !gtkDo(func() {
+	defer C.free(unsafe.Pointer(script))
+	defer C.free(unsafe.Pointer(world))
+	if uiThread.Run(func() {
 		ok = C.ao_wk_host_attach(window) == 1
 		C.ao_wk_set_find_frame_script(script, world)
-	}) {
+	}) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
-	C.free(unsafe.Pointer(script))
-	C.free(unsafe.Pointer(world))
 	if !ok {
 		return fmt.Errorf("browser: the desktop window has no webview to host the browser pane beside")
 	}
 	return nil
 }
 
-func webkitParkView(view unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_host_park(view) })
+// webkitParkView parks a new view in the host, or answers that the GTK
+// thread did not take it in time, after which it never parks it.
+func webkitParkView(view unsafe.Pointer) error {
+	if uiThread.Run(func() { C.ao_wk_host_park(view) }) == uicall.Withdrawn {
+		return errGTKUnavailable
+	}
+	return nil
 }
 
 // webkitPresentView shows the view at its placement: the fitted rect, its
@@ -585,23 +560,23 @@ func webkitHideView(view webkitView) error {
 	return focusReleaseError(released)
 }
 
-// Every C string below is allocated INSIDE its dispatch closure and freed
-// there. A dispatch that misses its deadline still runs afterwards, so a
-// string allocated out here and freed on return would be read after free.
+// webkitNewSession makes profile profileID's session on the GTK thread. A
+// session it made is the caller's to free (webkitFreeSession); a withdrawn
+// call made none.
 func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
 	var session unsafe.Pointer
 	flag := C.int(0)
 	if ephemeral {
 		flag = 1
 	}
-	if !gtkDo(func() {
+	if uiThread.Run(func() {
 		cData, cCache := C.CString(dataDir), C.CString(cacheDir)
 		cCookie := C.CString(cookieFile)
 		session = C.ao_wk_session_new(cData, cCache, cCookie, flag, C.uint64_t(profileID))
 		C.free(unsafe.Pointer(cData))
 		C.free(unsafe.Pointer(cCache))
 		C.free(unsafe.Pointer(cCookie))
-	}) {
+	}) == uicall.Withdrawn {
 		return nil, errGTKUnavailable
 	}
 	if session == nil {
@@ -611,7 +586,7 @@ func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, prof
 }
 
 func webkitFreeSession(session unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_session_free(session) })
+	uiThread.Release(func() { C.ao_wk_session_free(session) })
 }
 
 // webkitNewView builds a page's view in profile profileID's session on the
@@ -623,7 +598,7 @@ func webkitNewView(profileID, pageID uint64, userScript, consoleHandler string) 
 	disposed := false
 	// Withdrawn unless it ran: a view built after the caller gave up would
 	// belong to no page.
-	if uicall.Run(gtkDo, func() {
+	if uiThread.Run(func() {
 		disposed = !withProfileOnUI(profileID, func(p *webkitProfile) {
 			cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
 			view = C.ao_wk_view_new(p.session, C.uint64_t(pageID), cScript, cHandler)
@@ -655,13 +630,16 @@ func withProfileOnUI(id uint64, fn func(p *webkitProfile)) bool {
 	return true
 }
 
+// webkitAdoptView makes a held popup's view page pageID's, or answers that
+// the GTK thread did not take it in time, after which it never does: the
+// caller closes the view.
 func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHandler string) error {
-	if !gtkDo(func() {
+	if uiThread.Run(func() {
 		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
 		C.ao_wk_view_adopt(view, C.uint64_t(pageID), cScript, cHandler)
 		C.free(unsafe.Pointer(cScript))
 		C.free(unsafe.Pointer(cHandler))
-	}) {
+	}) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
 	return nil
@@ -676,12 +654,12 @@ func webkitCloseView(view unsafe.Pointer) {
 }
 
 // webkitCloseViewErr closes the view on the GTK thread and answers how its
-// focus handoff ended. A dispatch that timed out answers
-// errGTKUnavailable, and the close may still run; its answer is read only
-// from the closure that ran (a buffered completion).
+// focus handoff ended. A close that timed out answers errGTKUnavailable,
+// and still runs; its answer is read only from the closure that ran (a
+// buffered completion).
 func webkitCloseViewErr(view unsafe.Pointer) error {
 	released := make(chan int, 1)
-	if !gtkDo(func() { released <- int(C.ao_wk_view_close(view)) }) {
+	if !uiThread.Release(func() { released <- int(C.ao_wk_view_close(view)) }) {
 		return errGTKUnavailable
 	}
 	return focusReleaseError(<-released)
@@ -736,7 +714,7 @@ func webkitIsLoading(view webkitView) bool {
 // world. An undefined result is an empty answer, matching what CDP reports
 // for a void expression.
 func gtkEvaluate(ctx context.Context, view webkitView, world, body string) (string, error) {
-	if !gtkAlive() {
+	if !uiThread.Alive() {
 		return "", errGTKUnavailable
 	}
 	id, ch := webkitRegisterCall()
@@ -858,8 +836,7 @@ func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (r
 
 // webkitFocusPresentedView gives a presented page's view keyboard focus
 // while live holds. Both are checked on the GTK thread, where hides run,
-// immediately before the grab: a dispatch that outlives gtkDo's deadline
-// still runs, and still checks.
+// immediately before the grab.
 func webkitFocusPresentedView(view webkitView, live func() bool) (focusResult, error) {
 	result := C.int(0)
 	withdrawn := false
@@ -886,7 +863,7 @@ func webkitFocusPresentedView(view webkitView, live func() bool) (focusResult, e
 // webkitFocusApp hands keyboard focus to the SPA's webview.
 func webkitFocusApp() error {
 	ok := false
-	if !gtkDo(func() { ok = C.ao_wk_focus_app() == 1 }) {
+	if uiThread.Run(func() { ok = C.ao_wk_focus_app() == 1 }) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
 	if !ok {
@@ -1002,7 +979,7 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 // still held through the cancel.
 func webkitCancelDownload(p *webkitProfile, id string) nativeCancel {
 	found := false
-	if uicall.Run(gtkDo, func() {
+	if uiThread.Run(func() {
 		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wk_download_cancel(download) })
 	}) == uicall.Withdrawn {
 		return nativeCancelWithdrawn
@@ -1025,7 +1002,7 @@ func withDownloadOnUI(p *webkitProfile, id string, fn func(download unsafe.Point
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_download_unref(download) })
+	uiThread.Release(func() { C.ao_wk_download_unref(download) })
 }
 
 // webkitDownloadsAlive is how many downloads WebKit made are not finalized

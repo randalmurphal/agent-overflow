@@ -22,10 +22,10 @@ import (
 //
 //	NEVER call into AppKit or WebKit while holding a lock a delegate can take.
 //
-// `wkDo` waits for the main thread, and that thread may be running a delegate —
-// a popup, a navigation-authority answer, a dialog — that wants the very lock
-// being held. So a lock here only ever covers map bookkeeping, and every
-// wkDo-backed call happens after it is released.
+// A call on `uiThread` waits for the main thread, and that thread may be
+// running a delegate — a popup, a navigation-authority answer, a dialog — that
+// wants the very lock being held. So a lock here only ever covers map
+// bookkeeping, and every call on uiThread happens after it is released.
 
 const (
 	// wkDownloadPollInterval is how often a live download's NSProgress is
@@ -148,7 +148,7 @@ func (e *wkEngine) ClearSiteData(ctx context.Context) error {
 var _ engineSiteData = (*wkEngine)(nil)
 
 // OnUIThread is the Manager's cue (engineUIThread in driver.go) that every
-// wkDo below would run inline from the caller. It is what lets a teardown
+// call on uiThread would run inline from the caller. It is what lets a teardown
 // issued from the blocked main thread at quit finish instead of parking on a
 // queue that thread is not draining.
 func (e *wkEngine) OnUIThread() bool { return wkOnMainThread() }
@@ -161,8 +161,8 @@ func (e *wkEngine) WaitDownloadEvents() { e.downloadEvents.Wait() }
 var _ engineDownloadEvents = (*wkEngine)(nil)
 
 // FocusApp is engineAppFocus: the SPA's webview becomes the first
-// responder. Called on the main thread from the key gate, where wkDo runs
-// inline.
+// responder. Called on the main thread from the key gate, where uiThread
+// runs it inline.
 func (e *wkEngine) FocusApp() error { return wkFocusApp() }
 
 var _ engineAppFocus = (*wkEngine)(nil)
@@ -335,7 +335,9 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 		return nil, err
 	}
 	page.view = view
-	p.parkNew(page)
+	if err := p.parkNew(page); err != nil {
+		return nil, err
+	}
 	if err := p.publish(page); err != nil {
 		return nil, err
 	}
@@ -367,7 +369,9 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 	}
 	// What ended the view before reached the Manager by the popup's handle,
 	// which its page keeps: the Manager's listing reads it.
-	p.parkNew(page)
+	if err := p.parkNew(page); err != nil {
+		return nil, err
+	}
 	if err := p.publish(page); err != nil {
 		return nil, err
 	}
@@ -420,10 +424,16 @@ func (p *wkProfile) publish(page *wkPage) error {
 // parkNew gives a page its slot in the park view. Parked is IN THE WINDOW: the
 // view has a real viewport and a snapshot WebKit will actually render, it simply
 // costs the window no space. An unparented WKWebView is the trap this avoids —
-// WebKit only guarantees layout and snapshots for a view inside a window.
-func (p *wkProfile) parkNew(page *wkPage) {
+// WebKit only guarantees layout and snapshots for a view inside a window. A
+// view the main thread did not park in time is never parked: its page is
+// closed with it, which gives its slot back.
+func (p *wkProfile) parkNew(page *wkPage) error {
 	page.slot = p.engine.claimSlot()
-	wkParkView(page.view, page.slot)
+	if err := wkParkView(page.view, page.slot); err != nil {
+		page.Close()
+		return err
+	}
+	return nil
 }
 
 // registerDownload keeps download ptr under handle and starts its sampler,

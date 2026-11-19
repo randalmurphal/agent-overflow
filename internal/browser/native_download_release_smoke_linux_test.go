@@ -87,7 +87,7 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 	// The GTK thread is held while the cancel is asked and the release
 	// begins, so both wait there, the cancel first.
 	entered, gate := make(chan struct{}), make(chan struct{})
-	go gtkDo(func() {
+	go uiThread.Run(func() {
 		close(entered)
 		<-gate
 	})

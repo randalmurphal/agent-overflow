@@ -107,12 +107,12 @@ type Staged struct {
 }
 
 // Settle is a decision's worker. It runs stage off the UI thread, then
-// complete on the UI thread through dispatch, until complete ran or gone
-// says it never will (the UI loop is gone, or the profile closed, which
-// cancels the decision itself). complete answers whether it took the
-// decision; a claim no taken decision handed off is released here, without
-// the UI loop or the claim's owner.
-func Settle(dispatch uicall.Dispatch, gone func() bool, stage func() Staged, complete func(Staged) bool) {
+// complete on thread, until complete ran or gone says it never will (the
+// UI loop is gone, or the profile closed, which cancels the decision
+// itself). complete answers whether it took the decision; a claim no taken
+// decision handed off is released here, without the UI loop or the claim's
+// owner.
+func Settle(thread *uicall.Thread, gone func() bool, stage func() Staged, complete func(Staged) bool) {
 	staged := stage()
 	claim := staged.Claim
 	if claim == nil {
@@ -121,7 +121,7 @@ func Settle(dispatch uicall.Dispatch, gone func() bool, stage func() Staged, com
 	defer claim.Release()
 	for {
 		taken := false
-		if uicall.Run(dispatch, func() { taken = complete(staged) }) == uicall.Ran {
+		if thread.Run(func() { taken = complete(staged) }) == uicall.Ran {
 			if taken {
 				claim.HandOff()
 			}
