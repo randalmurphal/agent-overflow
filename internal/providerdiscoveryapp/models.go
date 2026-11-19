@@ -29,6 +29,21 @@ func (s *Service) ModelsForProvider(ctx context.Context, providerName string) (p
 	}
 }
 
+// LatestModelsForProvider is ModelsForProvider without waiting on a
+// subprocess: for Codex the last successful live catalog, whose refresh it
+// starts in the background (codexmodels.Cache.Latest); for the rest the
+// catalog ModelsForProvider answers, which never spawns. Known is false
+// while no Codex lookup has succeeded since the cache was last reset.
+func (s *Service) LatestModelsForProvider(ctx context.Context, providerName string) (catalog provider.ModelCatalog, known bool) {
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog != provider.CodexLiveModelCatalog {
+		catalog, err := s.ModelsForProvider(ctx, providerName)
+		return catalog, err == nil
+	}
+	binary := normalizedCodexBinary(s.deps.ProviderBinary(providerName))
+	models, known := s.caches.CodexModels.Latest(ctx, binary, s.deps.Reaper)
+	return provider.ModelCatalog{Models: models, Provenance: provider.CatalogLive}, known
+}
+
 // CodexModelsForBinary returns the TTL-cached live Codex model catalog.
 func (s *Service) CodexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 	return s.caches.CodexModels.Get(ctx, normalizedCodexBinary(binary), s.deps.Reaper)

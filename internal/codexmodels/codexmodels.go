@@ -44,8 +44,12 @@ type Cache struct {
 }
 
 type entry struct {
-	models    []provider.ModelInfo
-	known     []provider.ModelInfo
+	models []provider.ModelInfo
+	known  []provider.ModelInfo
+	// latest is the most recent successful catalog, which expiry and a
+	// later failed lookup leave in place; hasLatest says one arrived.
+	latest    []provider.ModelInfo
+	hasLatest bool
 	err       error
 	expiresAt time.Time
 }
@@ -113,17 +117,43 @@ func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) 
 		}
 	}
 
-	l := &load{done: make(chan struct{})}
-	c.inflight[binary] = l
+	l := c.startLocked(ctx, binary, reaper)
 	c.mu.Unlock()
-
-	go c.run(context.WithoutCancel(ctx), binary, reaper, l)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-l.done:
 		return provider.CloneModels(l.models), l.err
 	}
+}
+
+// startLocked starts the shared lookup for binary. The caller holds c.mu
+// and has checked that none is in flight.
+func (c *Cache) startLocked(ctx context.Context, binary string, reaper procutil.Reaper) *load {
+	l := &load{done: make(chan struct{})}
+	c.inflight[binary] = l
+	go c.run(context.WithoutCancel(ctx), binary, reaper, l)
+	return l
+}
+
+// Latest returns the most recent successful catalog for the binary without
+// waiting, and whether one exists. Expiry and later failed lookups keep it;
+// Reset clears it. When the cached answer, success or failure, is absent or
+// expired and no lookup is in flight, Latest starts one in the background,
+// which the caller's cancellation does not end, so a later read sees its
+// answer.
+func (c *Cache) Latest(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, bool) {
+	binary = strings.TrimSpace(binary)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, cached := c.entries[binary]
+	if _, running := c.inflight[binary]; !running && (!cached || !c.now().Before(e.expiresAt)) {
+		c.startLocked(ctx, binary, reaper)
+	}
+	if !e.hasLatest {
+		return nil, false
+	}
+	return provider.CloneModels(e.latest), true
 }
 
 // run is one shared lookup. It belongs to no caller: it keeps the first
@@ -141,17 +171,23 @@ func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, 
 	// lookup that started after the reset.
 	if c.inflight[binary] == l {
 		delete(c.inflight, binary)
-		known := c.entries[binary].known
+		previous := c.entries[binary]
+		stored := provider.CloneModels(models)
+		known, latest, hasLatest := previous.known, previous.latest, previous.hasLatest
 		if err == nil {
+			// Entries are read only through clones, so latest shares stored.
 			known = rememberModels(known, models)
+			latest, hasLatest = stored, true
 		}
 		entryTTL := c.ttl
 		if err != nil {
 			entryTTL = DefaultErrorTTL
 		}
 		c.entries[binary] = entry{
-			models:    provider.CloneModels(models),
+			models:    stored,
 			known:     known,
+			latest:    latest,
+			hasLatest: hasLatest,
 			err:       err,
 			expiresAt: c.now().Add(entryTTL),
 		}

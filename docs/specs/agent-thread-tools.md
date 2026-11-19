@@ -1178,7 +1178,13 @@ model" reads "another model" (or "a provider another computer offers"
 when one is paired), the read-only sentence names only that provider's
 effect, and the profile names are those its catalog runs, in roster
 order; with no profile it can run the profile sentence is left out, or
-points at `thread_options` when a paired computer may run some. A
+points at `thread_options` when a paired computer may run some. The
+guide never waits on a provider's model list: a profile is named when its
+provider is offered and, where that provider's model list is known, the
+spawn resolution accepts it, and on a provider whose list is not known
+yet (no Codex `model/list` has answered since the app started or the
+Codex binary changed) it is
+named without the model check, which the spawn itself still applies. A
 session at the deepest sub-thread level reads a Starting paragraph
 without `thread_spawn`, no Defaults paragraph, and no Waiting sentences
 on when a spawn ends ([Sub-thread depth](#sub-thread-depth)); one level

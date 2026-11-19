@@ -299,3 +299,155 @@ func TestGet_FirstCallerLeavingEndsOnlyItsWait(t *testing.T) {
 		t.Fatalf("lister calls = %d, want 1", n)
 	}
 }
+
+// scriptedLister answers each lookup with the next result it is handed and
+// reports each lookup's start, so a test orders the background lookups
+// Latest starts without sleeping.
+type scriptedLister struct {
+	started chan struct{}
+	results chan scriptedResult
+	calls   atomic.Int32
+}
+
+type scriptedResult struct {
+	models []provider.ModelInfo
+	err    error
+}
+
+func newScriptedLister() *scriptedLister {
+	return &scriptedLister{started: make(chan struct{}, 16), results: make(chan scriptedResult)}
+}
+
+func (l *scriptedLister) list(ctx context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+	l.calls.Add(1)
+	l.started <- struct{}{}
+	select {
+	case result := <-l.results:
+		return result.models, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// answer hands the lookup in flight its result and returns once the cache
+// holds it: Get joins that lookup and returns after it is stored.
+func (l *scriptedLister) answer(t *testing.T, cache *Cache, result scriptedResult) {
+	t.Helper()
+	select {
+	case <-l.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no lookup started")
+	}
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		_, _ = cache.Get(context.Background(), "codex", procutiltest.Reaper())
+	}()
+	select {
+	case l.results <- result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lookup in flight stopped waiting for its answer")
+	}
+	<-joined
+}
+
+type testClock struct{ nanos atomic.Int64 }
+
+func (c *testClock) now() time.Time           { return time.Unix(0, c.nanos.Load()) }
+func (c *testClock) advance(by time.Duration) { c.nanos.Add(int64(by)) }
+
+func TestLatest_NeverWaitsAndKeepsTheLastGoodCatalog(t *testing.T) {
+	lister := newScriptedLister()
+	clock := &testClock{}
+	clock.advance(time.Hour)
+	cache := NewWith(time.Minute, lister.list, clock.now)
+	ctx, cancel := context.WithCancel(context.Background())
+	latest := func() ([]provider.ModelInfo, bool) {
+		return cache.Latest(ctx, "codex", procutiltest.Reaper())
+	}
+
+	if models, ok := latest(); ok || models != nil {
+		t.Fatalf("cold Latest = (%v, %v), want not known", models, ok)
+	}
+	if _, ok := latest(); ok {
+		t.Fatal("Latest is known while the first lookup is in flight")
+	}
+	// The caller's context ending does not end the lookup it started.
+	cancel()
+	lister.answer(t, cache, scriptedResult{models: []provider.ModelInfo{{Slug: "first", Capabilities: []string{"fast"}}}})
+	if got := lister.calls.Load(); got != 1 {
+		t.Fatalf("lookups after two cold reads = %d, want 1", got)
+	}
+
+	models, ok := latest()
+	if !ok || len(models) != 1 || models[0].Slug != "first" {
+		t.Fatalf("Latest after success = (%v, %v)", models, ok)
+	}
+	models[0].Capabilities[0] = "mutated"
+	if again, _ := latest(); again[0].Capabilities[0] != "fast" {
+		t.Fatalf("Latest returned shared cache storage: %v", again)
+	}
+	if got := lister.calls.Load(); got != 1 {
+		t.Fatalf("lookups while the catalog is fresh = %d, want 1", got)
+	}
+
+	clock.advance(2 * time.Minute)
+	for _, when := range []string{"expired", "expired, refresh in flight"} {
+		if models, ok := latest(); !ok || len(models) != 1 || models[0].Slug != "first" {
+			t.Fatalf("%s: Latest = (%v, %v), want the last good catalog", when, models, ok)
+		}
+	}
+	lister.answer(t, cache, scriptedResult{err: errors.New("initialize for model/list: context deadline exceeded")})
+	if got := lister.calls.Load(); got != 2 {
+		t.Fatalf("lookups after the catalog expired = %d, want 2", got)
+	}
+
+	if models, ok := latest(); !ok || len(models) != 1 || models[0].Slug != "first" {
+		t.Fatalf("Latest after a failed refresh = (%v, %v), want the last good catalog", models, ok)
+	}
+	if got := lister.calls.Load(); got != 2 {
+		t.Fatalf("lookups while the failure is fresh = %d, want 2", got)
+	}
+	clock.advance(DefaultErrorTTL + time.Second)
+	if _, ok := latest(); !ok {
+		t.Fatal("Latest forgot the last good catalog when the failure expired")
+	}
+	lister.answer(t, cache, scriptedResult{models: []provider.ModelInfo{{Slug: "second"}}})
+	if models, ok := latest(); !ok || len(models) != 1 || models[0].Slug != "second" {
+		t.Fatalf("Latest after a later success = (%v, %v)", models, ok)
+	}
+
+	cache.Reset()
+	if models, ok := latest(); ok || models != nil {
+		t.Fatalf("Latest after Reset = (%v, %v), want not known", models, ok)
+	}
+	lister.answer(t, cache, scriptedResult{err: errors.New("down")})
+	if _, ok := latest(); ok {
+		t.Fatal("a failed lookup made the catalog known")
+	}
+	if got := lister.calls.Load(); got != 4 {
+		t.Fatalf("lookups = %d, want 4", got)
+	}
+}
+
+func TestLatest_ConcurrentColdReadsStartOneLookup(t *testing.T) {
+	lister := newScriptedLister()
+	cache := NewWith(time.Minute, lister.list, nil)
+	const n = 16
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			if _, ok := cache.Latest(context.Background(), "codex", procutiltest.Reaper()); ok {
+				t.Error("a cold Latest was known")
+			}
+		})
+	}
+	wg.Wait()
+	lister.answer(t, cache, scriptedResult{models: []provider.ModelInfo{{Slug: "only"}}})
+	if got := lister.calls.Load(); got != 1 {
+		t.Fatalf("lookups = %d, want 1", got)
+	}
+	if models, ok := cache.Latest(context.Background(), "codex", procutiltest.Reaper()); !ok || models[0].Slug != "only" {
+		t.Fatalf("Latest = (%v, %v)", models, ok)
+	}
+}

@@ -14,7 +14,9 @@ import (
 // calling thread is on; what a profile resolves to is a fact about the
 // computer a spawn targets. One resolution serves thread_options, the
 // guide's list of names and the spawn that names a profile, so the three
-// never disagree about what a computer can run.
+// never disagree about what a computer can run, except that the guide names
+// a provider's profiles unchecked until its model list is known
+// (GuideProfileNames).
 
 // AgentProfile is one profile of the roster, as the person set it up.
 // Every setting but Name and UseFor may be empty, which inherits the
@@ -224,11 +226,28 @@ func ListProfiles(roster Roster, providers []ProviderOption, defaults SpawnDefau
 	return out
 }
 
-// ProfileNames are the names of listed, for the guide.
-func ProfileNames(listed []ProfileOption) []string {
-	names := make([]string, 0, len(listed))
-	for _, option := range listed {
-		names = append(names, option.Name)
+// GuideProfileNames are the profiles a session's guide names, in the
+// person's order: those on an offered provider that ResolveSpawn accepts,
+// and on an offered provider whose model list is not known yet
+// (unknownModels), every one, since the guide is written without waiting
+// for that list. A profile that inherits its provider is on the spawner's.
+// The spawn itself still resolves against a real catalog.
+func GuideProfileNames(roster Roster, providers []ProviderOption, unknownModels map[string]bool, defaults SpawnDefaults) []string {
+	names := make([]string, 0, len(roster.Profiles))
+	for _, profile := range roster.Profiles {
+		providerID := profile.Provider
+		if providerID == "" {
+			providerID = defaults.Provider
+		}
+		if !slices.ContainsFunc(providers, func(candidate ProviderOption) bool { return candidate.ID == providerID }) {
+			continue
+		}
+		if !unknownModels[providerID] {
+			if _, err := ResolveSpawn(defaults, SpawnChoice{}.WithProfile(profile), providers, ""); err != nil {
+				continue
+			}
+		}
+		names = append(names, profile.Name)
 	}
 	return names
 }

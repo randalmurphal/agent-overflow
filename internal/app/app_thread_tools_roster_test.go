@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -316,6 +319,85 @@ func TestTheCatalogOffersOnlyInstalledEnabledProviders(t *testing.T) {
 	}
 }
 
+// A session's spawn shape never waits on the Codex model probe: while the
+// first probe is out, Codex is offered and its profiles are named without
+// the model check; once the probe answers, a profile whose model it lacks
+// is left out and the others stay.
+func TestTheSpawnShapeDoesNotWaitOnTheCodexModelProbe(t *testing.T) {
+	t.Parallel()
+	f := newThreadToolsFixture(t)
+	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseProbe)
+	var calls atomic.Int32
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		calls.Add(1)
+		started <- struct{}{}
+		<-release
+		// The shipped catalog has no gpt-6-astra, Astra's model.
+		return provider.CodexModels, nil
+	}, time.Now)
+	if _, err := f.app.settings.Update(map[string]any{
+		"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"),
+		"codexBinaryPath":  createMockBinary(t, "codex-cli 0.160.0"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	caller, err := createTestThread(t, f.app, string(provider.Claude), f.project.Path, "claude-opus-5", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shapeNow := func() threadtools.SpawnShape {
+		t.Helper()
+		done := make(chan threadtools.SpawnShape, 1)
+		go func() { done <- f.app.threadToolsShape(caller.ID, subThreadPlace{}).Spawn }()
+		select {
+		case shape := <-done:
+			return shape
+		case <-time.After(10 * time.Second):
+			releaseProbe()
+			<-done
+			t.Fatal("the spawn shape waited on the Codex model probe")
+			return threadtools.SpawnShape{}
+		}
+	}
+
+	cold := shapeNow()
+	if !slices.Contains(cold.Providers, string(provider.Codex)) {
+		t.Errorf("while the probe is out the shape offers %v, want codex among them", cold.Providers)
+	}
+	for _, name := range []string{"Luna", "Terra", "Sol", "Astra", "Opus"} {
+		if !slices.Contains(cold.Profiles, name) {
+			t.Errorf("while the probe is out the shape names %v, want %s among them", cold.Profiles, name)
+		}
+	}
+
+	<-started
+	releaseProbe()
+	// Joining the probe returns once the cache holds its answer.
+	if _, err := f.app.codexModelsForBinary(t.Context(), f.app.providerBinaryPath(string(provider.Codex))); err != nil {
+		t.Fatal(err)
+	}
+	warm := shapeNow()
+	if slices.Contains(warm.Profiles, "Astra") {
+		t.Errorf("after the probe answered without gpt-6-astra the shape names %v", warm.Profiles)
+	}
+	for _, name := range []string{"Luna", "Terra", "Sol", "Opus"} {
+		if !slices.Contains(warm.Profiles, name) {
+			t.Errorf("after the probe answered the shape names %v, want %s among them", warm.Profiles, name)
+		}
+	}
+	if !slices.Contains(warm.Providers, string(provider.Codex)) {
+		t.Errorf("after the probe answered the shape offers %v", warm.Providers)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("model probes = %d, want 1", got)
+	}
+}
+
 // For every seeded profile, three that inherit, one with an effort on a
 // model that has none, and each caller and catalog below, what
 // thread_options lists for a profile is what a spawn naming it runs with,
@@ -394,11 +476,11 @@ func TestEveryListedProfileSpawnsWithWhatItLists(t *testing.T) {
 			if len(options.Profiles) == 0 {
 				t.Fatalf("%s: thread_options lists no profiles", where)
 			}
-			t.Logf("%s: lists %v", where, threadtools.ProfileNames(options.Profiles))
 			listed := map[string]threadtools.ProfileOption{}
 			for _, option := range options.Profiles {
 				listed[option.Name] = option
 			}
+			t.Logf("%s: lists %v", where, slices.Sorted(maps.Keys(listed)))
 			for _, profile := range profiles {
 				option, offered := listed[profile.Name]
 				if !offered {

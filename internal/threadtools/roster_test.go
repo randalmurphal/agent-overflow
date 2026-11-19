@@ -55,7 +55,13 @@ func testRoster() Roster {
 	}
 }
 
-func profileNames(listed []ProfileOption) []string { return ProfileNames(listed) }
+func profileNames(listed []ProfileOption) []string {
+	names := make([]string, 0, len(listed))
+	for _, option := range listed {
+		names = append(names, option.Name)
+	}
+	return names
+}
 
 // A profile is listed where its provider and model are offered and its
 // effort fits its model: a model the computer lacks leaves it out, and so
@@ -100,6 +106,35 @@ func TestListProfilesKeepsWhatTheComputerCanRun(t *testing.T) {
 		listed := ListProfiles(roster, []ProviderOption{claudeOption}, SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: spawnerEffort})
 		if len(listed) != 1 || listed[0].Effort != want {
 			t.Errorf("spawner effort %q: listed %+v, want effort %q", spawnerEffort, listed, want)
+		}
+	}
+}
+
+// The guide names a profile its computer runs: on a provider whose model
+// list is known, one ResolveSpawn accepts; on an offered provider whose
+// list is not known yet, every one; on a provider not offered, none. An
+// inheriting profile is on the spawner's provider.
+func TestGuideProfileNamesSkipTheModelCheckOnlyWhereModelsAreUnknown(t *testing.T) {
+	claudeSpawner := SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: "medium"}
+	codexSpawner := SpawnDefaults{Provider: "codex", Model: "sol", Effort: "high"}
+	codexUnknown := ProviderOption{ID: "codex", Name: "Codex", Models: []ModelOption{}}
+	cases := []struct {
+		name      string
+		providers []ProviderOption
+		unknown   map[string]bool
+		defaults  SpawnDefaults
+		want      []string
+	}{
+		{"both known", []ProviderOption{claudeOption, codexOption}, nil, claudeSpawner, []string{"Opus", "Haiku", "Sol", "Mine"}},
+		{"codex unknown", []ProviderOption{claudeOption, codexUnknown}, map[string]bool{"codex": true}, claudeSpawner, []string{"Opus", "Haiku", "Sol", "Astra", "Mine"}},
+		{"codex unknown, codex spawner", []ProviderOption{claudeOption, codexUnknown}, map[string]bool{"codex": true}, codexSpawner, []string{"Opus", "Haiku", "Sol", "Astra", "Mine"}},
+		{"codex unknown and not offered", []ProviderOption{claudeOption}, map[string]bool{"codex": true}, claudeSpawner, []string{"Opus", "Haiku", "Mine"}},
+		{"codex unknown and not offered, codex spawner", []ProviderOption{claudeOption}, map[string]bool{"codex": true}, codexSpawner, []string{"Opus", "Haiku"}},
+		{"nothing offered", nil, map[string]bool{"codex": true}, claudeSpawner, []string{}},
+	}
+	for _, tc := range cases {
+		if got := GuideProfileNames(testRoster(), tc.providers, tc.unknown, tc.defaults); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: named %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
