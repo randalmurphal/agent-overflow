@@ -216,7 +216,9 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 // thread is placed here, whether it is archived, and what prompt it waits
 // on, routed back to the calling thread or not (RoutedToAsker),
 // and for a call that names the spawn whose link owns it, the prompts
-// routed to that spawn's thread (peerPromptsOf).
+// routed to that spawn's thread (peerPromptsOf). Once the calling thread's
+// runs on it all ended here, it says what the thread had done when the last
+// ended (RunEnd).
 func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, args threadAgentPeerArgs) (ThreadAgentRows, error) {
 	var listing ThreadAgentRows
 	if !args.StateOnly {
@@ -256,6 +258,13 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	}
 	open := rest.unrest != ""
 	listing.Open = &open
+	run, err := a.store.ReceiptRunOf(owner, source, args.ThreadID)
+	if err != nil {
+		return ThreadAgentRows{}, err
+	}
+	if run.End != nil {
+		listing.RunEnd = &ThreadAgentRunEnd{ToolCalls: run.End.ToolCalls, Tokens: run.End.Tokens, RuntimeMs: run.End.TurnMs}
+	}
 	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, time.Now())
 	if err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read what thread %s did: %w", args.ThreadID, err)

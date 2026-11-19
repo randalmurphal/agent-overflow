@@ -413,7 +413,9 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 // wake went to, and the prompt is still picked up at the poll's pace
 // through the spawn. After the spawner's handoff that is its successor, by
 // the successor's name now, though the worker's computer still names the
-// spawner the link came from.
+// spawner the link came from. The worker never came to rest after its
+// spawn, its background work still running, so the send's turn is still
+// in the spawner's run, whose prompts are the spawner's.
 func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 	t.Parallel()
 	for name, handoff := range map[string]bool{"the spawner": false, "the spawner's successor": true} {
@@ -424,16 +426,13 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 			routeWorkerPromptsOn(pair.dest, pair.destBus)
 			pair.source.startSessionFn = func(string) error { return nil }
 			installMockClaudeTurns(t, pair.dest, [][]string{
-				{mockClaudeInitLine, `{"type":"result","subtype":"success","is_error":false}`},
+				append(restShellLaunch("sibling-bg", "sibling-task", "Tailing the deploy."), mockClaudeResultLine),
 				{remoteApproveLine},
 			})
 			ack := pair.spawnThere(t, "work over there", map[string]any{"runtime_mode": string(provider.RuntimeApprovalRequired)})
 			worker := pair.receipt(t, ack.Token).TargetThreadID
 			t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
-			waitUntil(t, 15*time.Second, func() bool {
-				pair.poll(t)
-				return threadRequestSettled(pair.request(t, ack.Token))
-			})
+			waitUntil(t, 15*time.Second, func() bool { return pair.dest.restHeld(worker, ack.Token) })
 			pair.source.retireThreadRequestPoll(ack.Token)
 			startReconciledOwner(t, pair)
 			holder := pair.caller

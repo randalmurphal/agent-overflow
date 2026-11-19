@@ -8,6 +8,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -57,16 +58,26 @@ func paneShowsTheRemoteSpawnOpen(t *testing.T, pair *reachPair, token string, do
 	return row
 }
 
-// A remote worker at rest whose only open work is a worker of its own that
-// its listing has no room for, past 128 rows settled since, stays open: its
-// computer's answer says so whatever rows it returns, so the source keeps
-// the spawn waiting, counted and out of Past.
+// A remote worker with nothing of its own left whose only open work is a
+// worker it started in its spawn's run, which its listing has no room for
+// past 128 rows settled since, stays open: its computer's answer says so
+// whatever rows it returns, so the source keeps the spawn waiting, counted
+// and out of Past.
 func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	spawn, child := remoteRestedWorker(t, pair)
+	gate := filepath.Join(t.TempDir(), "spawn-turn")
+	installMockClaudeTurns(t, pair.dest, [][]string{gatedTurn(gate, "Handing it on.")})
+	ack := pair.spawnThere(t, "do the first pass", nil)
+	child := pair.receipt(t, ack.Token).TargetThreadID
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	late := remoteWorkerStartsOneOfItsOwn(t, pair, child)
+	release(t, gate)
+	waitUntil(t, 10*time.Second, func() bool { return pair.dest.restHeld(child, ack.Token) })
+	spawn := pair.request(t, ack.Token)
 	// Answering for the caller one level deep, as for a computer that asked
 	// about it, this computer has the spawn at its last level: the first
 	// answer shows it waiting on the work there, with more nested below.

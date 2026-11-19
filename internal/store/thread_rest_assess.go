@@ -51,7 +51,8 @@ type ThreadRestSources struct {
 	ReminderNote string
 	// OpenWork: a request it made that is open work below it
 	// (agentOpenWorkSQL): an open spawn, an open send or ask with its wake
-	// armed, or a spawn on another computer that last reported open work.
+	// armed, or a spawn on another computer that last reported open work
+	// while a run of its is open there (spawnActiveSQL).
 	OpenWork bool
 	// Unarmed are its open sends and asks with no wake armed, by token:
 	// open work while a call is parked on one.
@@ -62,8 +63,9 @@ type ThreadRestSources struct {
 // from some roots.
 type SubtreeRest struct {
 	// Reached lists, for each root, the root and every thread a local spawn
-	// link reaches below it, at any depth, settled and lineage links
-	// included, each once. A root that is no thread reaches nothing.
+	// link with a run of its caller's open reaches below it, at any depth,
+	// settled and lineage links included, each once (subtreeReachedSQL). A
+	// root that is no thread reaches nothing.
 	Reached map[string][]string
 	// Sources holds each reached thread's sources.
 	Sources map[string]ThreadRestSources
@@ -245,16 +247,18 @@ func decodeRestFields(encoded string, fields ...*string) error {
 }
 
 // subtreeReachedSQL walks from each root (?1, a JSON array) down the local
-// spawn links, one link a step, keyed by the queued thread
-// (idx_thread_requests_spawn_caller holds only links, so a thread's
-// sends, asks and reminders are never read). A thread is reached once per
-// root, so a cycle ends. Only threads that exist are listed.
+// spawn links with a run of their caller's open (spawnActiveSQL), one link
+// a step, keyed by the queued thread (idx_thread_requests_spawn_caller holds
+// only links, so a thread's sends, asks and reminders are never read): a
+// worker whose spawner's runs on it all ended is at rest for that spawner,
+// whoever runs it since. A thread is reached once per root, so a cycle
+// ends. Only threads that exist are listed.
 var subtreeReachedSQL = `WITH RECURSIVE reached(root, id) AS (
     SELECT value, value FROM json_each(?1)
     UNION
     SELECT reached.root, link.target_thread_id
       FROM reached CROSS JOIN thread_requests AS link INDEXED BY idx_thread_requests_spawn_caller
-     WHERE link.caller_thread_id = reached.id AND ` + agentSpawnLinkSQL("link") + `)
+     WHERE link.caller_thread_id = reached.id AND ` + agentSpawnLinkSQL("link") + ` AND ` + spawnActiveSQL("link") + `)
 SELECT reached.root, reached.id FROM reached CROSS JOIN threads ON threads.id = reached.id`
 
 // remoteCommandRunningSQL matches a remote command watch the background
@@ -302,7 +306,7 @@ var threadRestSourcesSQL = `SELECT j.value,
        EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_created
                 WHERE o.caller_thread_id = j.value AND o.lineage_only = 0 AND o.settled_at IS NULL AND ` + agentOpenWorkSQL("o") + `)
          OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_nested_caller
-                     WHERE o.caller_thread_id = j.value AND ` + nestedRemoteSpawnSQL("o") + `),
+                     WHERE o.caller_thread_id = j.value AND ` + nestedRemoteSpawnSQL("o") + ` AND ` + spawnActiveSQL("o") + `),
        (SELECT json_group_array(u.token) FROM thread_requests u INDEXED BY idx_thread_requests_open_created
          WHERE u.caller_thread_id = j.value AND u.lineage_only = 0 AND u.settled_at IS NULL
            AND u.kind IN ('send','ask') AND u.notify = 0)

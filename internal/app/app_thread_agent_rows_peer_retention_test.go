@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,21 +19,33 @@ import (
 	"agent-overflow/internal/threadtools"
 )
 
-// remoteLoopWorker spawns a thread on the pair's destination that arms a
-// loop and ends its turn, and waits until the source records it open there.
+// remoteLoopWorker spawns a thread on the pair's destination that answers,
+// arms a loop and ends its turn, its spawn's run kept open by the loop, and
+// waits until the source records it open there.
 func remoteLoopWorker(t *testing.T, pair *reachPair) (*agentPeerPair, string) {
 	t.Helper()
-	installMockClaudeReplies(t, pair.dest, "watching the deploy")
+	gate := filepath.Join(t.TempDir(), "spawn-turn")
+	installMockClaudeTurns(t, pair.dest, [][]string{gatedTurn(gate, "watching the deploy")})
 	// The caller here is told when a person stops the worker.
-	installMockClaudeReplies(t, pair.source, "noted")
+	installMockClaudeReplies(t, pair.source, "noted", "noted")
 	ack := pair.spawnThere(t, "watch the deploy", nil)
 	child := pair.receipt(t, ack.Token).TargetThreadID
-	waitUntil(t, 10*time.Second, func() bool { return pair.receipt(t, ack.Token).SettledAt != 0 })
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	destID, _ := pair.dest.backendIdentity()
 	there := threadtools.Caller{ThreadID: child, ComputerID: destID, ComputerName: "destination"}
+	if _, err := (threadToolsApp{app: pair.dest}).Reply(t.Context(), there, threadtools.ReplyCall{Token: ack.Token, Text: "Watching the deploy."}); err != nil {
+		t.Fatalf("Reply there: %v", err)
+	}
 	if _, err := (threadToolsApp{app: pair.dest}).Loop(t.Context(), there, threadtools.LoopCall{Label: "deploy check", Note: "check", EverySeconds: 3600}); err != nil {
 		t.Fatalf("Loop there: %v", err)
 	}
+	release(t, gate)
+	waitUntil(t, 10*time.Second, func() bool {
+		return pair.receipt(t, ack.Token).SettledAt != 0 &&
+			!threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	pair.poll(t)
 	agentPair := &agentPeerPair{reachPair: pair, spawn: pair.request(t, ack.Token)}
 	agentPair.askAgainUntil(t, func(row store.ThreadRequest) bool { return threadRequestSettled(row) && row.NestedOpen })

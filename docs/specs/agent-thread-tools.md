@@ -646,7 +646,10 @@ start on their own, not whether they can answer.
 A spawner also answers its workers with it
 ([ruling 19](standing-agents.md#decisions)). A thread another thread
 spawned on this computer does not put an approval or a question to the
-user while that spawner is not archived: each prompt is delivered to
+user while that spawner is not archived and the worker works in a run
+the spawner started, its spawn or a later send of its, until the worker
+is next at rest (`store.SpawnOwnerOf`); in a run the person or another
+thread started, the prompt is the user's. Each prompt the spawner takes is delivered to
 the spawner, an assistant, an ordinary thread or another worker alike,
 as a wake badged with the worker, the worker's text quoted as data,
 carrying a token for this tool. The spawner is the caller of the
@@ -1462,7 +1465,8 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing. A spawn, and a send from the
    thread that spawned its target, settle `finished` only once that
-   thread and every thread below it are at rest, by the rule for
+   thread is at rest with everything below it that its own runs started
+   ([at rest](standing-agents.md#at-rest)), by the rule for
    decisions that cannot be taken back
    ([owned workers](standing-agents.md#owned-workers)): a turn that ends as it would settle `finished` while
    the thread is not at rest leaves the request `running`, its gate in
@@ -2031,7 +2035,10 @@ lists instead), and says why that thread is not at rest (`worker`) and
 whether it is open at any depth below it (`open`), so the caller nests
 them under its spawn named by their computer and keeps the spawn open
 while its thread works there
-([owned workers](standing-agents.md#owned-workers)), and `agent_stop` over `ThreadToolCall` runs a Stop's
+([owned workers](standing-agents.md#owned-workers)); once every run the
+calling thread started there ended, it says what the thread had done
+when the last ended (`runEnd`), which ends those runs on the caller's
+computer whoever runs the thread since, and `agent_stop` over `ThreadToolCall` runs a Stop's
 cascade there, for the whole thread (its Backgrounded items, its turn and
 its own rows) or for one nested row by token. A request inside that
 lineage is cancelled with its wake disarmed. A forwarded spawn, send or

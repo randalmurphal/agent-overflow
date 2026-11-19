@@ -101,17 +101,24 @@ func (a *App) remoteRunWorker(row store.ThreadRequest) workerRest {
 }
 
 // endRemoteRunsAtRest ends the runs of the settled requests to spawn's
-// thread on its paired computer when that computer's answer says the
-// thread is at rest, with what it reported the thread did over its life.
-// A computer that predates the open state says nothing of rest, and its
-// runs stay open: its rows read as they did before runs were kept.
+// thread on its paired computer when that computer's answer says they
+// ended there, with what the thread had done over its life when they did
+// (ThreadAgentRows.RunEnd), whoever runs it since; or, from a computer
+// that does not say, when its answer says the thread is at rest, with what
+// it reported the thread did over its life. A computer that predates the
+// open state says nothing of rest, and its runs stay open: its rows read
+// as they did before runs were kept.
 func (a *App) endRemoteRunsAtRest(spawn store.ThreadRequest, listing ThreadAgentRows) error {
-	if listing.Open == nil || *listing.Open {
+	var figures store.RunFigures
+	switch {
+	case listing.RunEnd != nil:
+		figures = store.RunFigures{ToolCalls: listing.RunEnd.ToolCalls, Tokens: listing.RunEnd.Tokens, TurnMs: listing.RunEnd.RuntimeMs}
+	case listing.Open != nil && !*listing.Open:
+		figures = store.RunFigures{ToolCalls: listing.ToolCalls, Tokens: listing.Tokens, TurnMs: listing.RuntimeMs}
+	default:
 		return nil
 	}
-	return a.store.EndRemoteThreadRequestRuns(spawn.TargetComputerID, spawn.TargetThreadID, store.RunFigures{
-		ToolCalls: listing.ToolCalls, Tokens: listing.Tokens, TurnMs: listing.RuntimeMs,
-	})
+	return a.store.EndRemoteThreadRequestRuns(spawn.TargetComputerID, spawn.TargetThreadID, figures)
 }
 
 // remoteRunBase is where the run of row, a request to a paired computer
@@ -251,6 +258,22 @@ func (a *App) endRestedRuns() {
 	}
 	for _, thread := range threads {
 		a.endRunsAtRest(thread)
+	}
+}
+
+// endRunsBeforeWork ends the runs on threadID that its rest has already
+// ended and the rest pass has not yet recorded, before a message starts work
+// there: that work is a run of its own, the person's, another thread's or a
+// later request's, and never extends a run that ended. A read that fails is
+// logged and leaves the runs as they are.
+func (a *App) endRunsBeforeWork(threadID string) {
+	open, err := a.store.ThreadRunsEnding(threadID)
+	if err != nil {
+		log.Printf("thread tools: read the runs on %s: %v", threadID, err)
+		return
+	}
+	if open {
+		a.endRunsAtRest(threadID)
 	}
 }
 

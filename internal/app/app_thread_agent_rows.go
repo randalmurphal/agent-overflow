@@ -226,6 +226,21 @@ type ThreadAgentRows struct {
 	// computer's spawn thread, answered by agent_rows for a call that names
 	// the spawn whose link owns the thread (peerPromptsOf).
 	Prompts []ThreadAgentPrompt `json:"prompts,omitempty"`
+	// RunEnd is the listed thread's figures over its life when the asking
+	// thread's last run on it ended, answered by agent_rows when that
+	// thread's requests there track runs and none is open
+	// (store.ReceiptRunOf). The asking computer ends its runs on the thread
+	// with them, whoever runs the thread since (endRemoteRunsAtRest). Nil
+	// while a run is open, and from a computer that predates it.
+	RunEnd *ThreadAgentRunEnd `json:"runEnd,omitempty"`
+}
+
+// ThreadAgentRunEnd is what a thread had done over its life when a run on it
+// ended.
+type ThreadAgentRunEnd struct {
+	ToolCalls int64 `json:"toolCalls"`
+	Tokens    int64 `json:"tokens"`
+	RuntimeMs int64 `json:"runtimeMs"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request

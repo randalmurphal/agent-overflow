@@ -17,8 +17,11 @@ import (
 )
 
 // A worker's question goes to the thread that spawned it (standing agents,
-// ruling 19), whoever that is. A thread another thread on this computer
-// spawned does not stop at the user while its spawner is not archived:
+// ruling 19), whoever that is, while it works in a run that thread started;
+// in any other run it is the person's (store.SpawnOwnerOf, the one place
+// that decides, for approvals, questions and async questions alike). A
+// thread another thread on this computer spawned does not stop at the user
+// while its spawner is not archived and its run is open:
 // triage stamps each of its approval and user-input prompts with the
 // spawner (routeWorkerPrompt), the emit tap queues the prompt to the
 // spawner as a badged wake, and the spawner's agent answers it with
@@ -65,8 +68,9 @@ const workerPromptSendIDRoot = "agent-ask:"
 const workerAnswerSendIDRoot = "agent-answer:"
 
 // routeWorkerPrompt is triage's prompt router: the thread that owns
-// threadID (store.SpawnOwnerOf), here or on the paired computer whose
-// spawn's link owns it, or nil when the prompt is the user's.
+// threadID with a run of its open there (store.SpawnOwnerOf), here or on
+// the paired computer whose spawn's link owns it, or nil when the prompt is
+// the user's.
 func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 	owner, found, err := a.store.SpawnOwnerOf(threadID)
 	if err != nil {

@@ -79,7 +79,9 @@ func agentRowArms(alias, caller string) []agentArm {
 // caller's link, which no mark counts (idx_thread_requests_open_deep, which
 // holds only such spawns). `held` climbs one spawn a step from each,
 // keyed by the queued thread (idx_thread_requests_spawn_link), up to the
-// root, each spawn held by its caller. Each link has one caller, so a link
+// root, each spawn held by its caller, through a spawn only while a run of
+// its caller's is open on its thread (spawnActiveSQL): work in a run its
+// spawner did not start holds no thread above it. Each link has one caller, so a link
 // enters it once however many seeds lie below it, and a cycle ends: its
 // cost is one search per parked request, live thread and deep spawn, and
 // one per distinct link above them.
@@ -90,21 +92,21 @@ var agentHeldSQL = `held(token, thread) AS (
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM json_each(?2, '$.live') CROSS JOIN thread_requests ps
-     WHERE ps.target_thread_id = json_each.value AND ` + agentSpawnLinkSQL("ps") + `
+     WHERE ps.target_thread_id = json_each.value AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM thread_requests f INDEXED BY idx_thread_requests_open_deep CROSS JOIN thread_requests ps
      WHERE ` + agentSpawnLinkSQL("f") + ` AND f.open_below_3 > 0
-       AND ps.target_thread_id = f.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
+       AND ps.target_thread_id = f.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM thread_requests d INDEXED BY idx_thread_requests_answer_due CROSS JOIN thread_requests ps
      WHERE ` + threadAnswerDueSQL("d") + `
-       AND ps.target_thread_id = d.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
+       AND ps.target_thread_id = d.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM held CROSS JOIN thread_requests ps
-     WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + `)`
+     WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `)`
 
 // agentTargetOpenSQL is whether request alias has a run open (or tracks
 // none, request_runs.go) on a thread not at rest as the ledger and the held
@@ -224,14 +226,17 @@ func agentOpenWorkSQL(alias string) string {
 // agentOpenUnderSQL is whether thread, or a thread up to agentOpenDepth
 // spawns below it, made open work: a request thread made that is open work
 // (agentOpenWorkSQL), or a local spawn it made with open work under that
-// spawn's target (agentOpenBelowSQL). Each arm is read through its index.
+// spawn's target (agentOpenBelowSQL). A spawn counts only while a run of
+// thread's is open on its target (spawnActiveSQL). Each arm is read through
+// its index.
 func agentOpenUnderSQL(thread string) string {
 	return `(EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_created
               WHERE o.caller_thread_id = ` + thread + ` AND o.lineage_only = 0 AND o.settled_at IS NULL AND ` + agentOpenWorkSQL("o") + `)
            OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_nested_caller
-              WHERE o.caller_thread_id = ` + thread + ` AND ` + nestedRemoteSpawnSQL("o") + `)
+              WHERE o.caller_thread_id = ` + thread + ` AND ` + nestedRemoteSpawnSQL("o") + ` AND ` + spawnActiveSQL("o") + `)
            OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_below
-              WHERE o.caller_thread_id = ` + thread + ` AND ` + agentSpawnLinkSQL("o") + ` AND ` + agentOpenBelowSQL("o") + `))`
+              WHERE o.caller_thread_id = ` + thread + ` AND ` + agentSpawnLinkSQL("o") + ` AND ` + agentOpenBelowSQL("o") + `
+                AND ` + spawnActiveSQL("o") + `))`
 }
 
 // agentOpenBelowThreadSQL is whether thread has open work at any depth

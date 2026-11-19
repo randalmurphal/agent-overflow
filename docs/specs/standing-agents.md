@@ -127,7 +127,12 @@ user changes it.
     thread another thread spawned on this computer does not put a
     question or approval to the user while its spawner is not archived,
     whoever the spawner is: an assistant, an ordinary thread or another
-    worker, whose own worker then asks it. Its awaiting-input and
+    worker, whose own worker then asks it. It does so only in a run its
+    spawner started: the spawn, or a later send of the spawner's, until
+    the worker is next at rest ([At rest](#at-rest)). In a run the
+    person or another thread started, it asks the person, as a thread
+    nobody spawned does. An open prompt keeps the worker from rest, so a
+    prompt put to the spawner stays with it until it is answered. Its awaiting-input and
     approval stops are delivered to the spawner as a badged wake, the
     worker shows `waiting on <spawner>` rather than needs-you, and the
     spawner answers through `thread_reply` or escalates by asking the
@@ -947,10 +952,13 @@ Ruling 36, as built:
   settled with its answer owed as a message, not yet echoed by the turn
   that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
-  wakeup or an armed cron job), and no open work below it at any depth:
-  a thread whose own work is done is not at rest while a worker below it
-  is not, so every spawn above a live worker whose run is open is open up
-  to the root, whatever the listing has room to show. One place answers a thread's own
+  wakeup or an armed cron job), and no open work below it that its own
+  runs started ([At rest](#at-rest)): a thread whose own work is done is
+  not at rest while a worker in one of its runs is not, so every spawn
+  above a live worker whose run is open is open up to the root, whatever
+  the listing has room to show, and a spawn whose run ended is open for
+  nothing its worker does later (`spawnActiveSQL` on every step of the
+  climb, the walk and the counts). One place answers a thread's own
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
@@ -966,10 +974,11 @@ Ruling 36, as built:
   request's run ending ([Agents segment](#agents-segment)), and
   the retention sweep clearing a spawn past the floor or its receipt, are
   taken only when the thread in question and every thread a local spawn
-  link reaches below it are at rest by their own sources, by the rule
-  `workerUnrest` applies, and none has open work outstanding: a request
-  it made that is open, a remote spawn its computer last listed open work
-  under (`nested_open`), or a send or ask of it a tool call is parked on.
+  link with a run of its caller's open reaches below it are at rest by
+  their own sources, by the rule `workerUnrest` applies, and none has open
+  work outstanding: a request it made that is open, a remote spawn with
+  its run open whose computer last listed open work under it
+  (`nested_open`), or a send or ask of it a tool call is parked on.
   `threadRest` serves status; these two decisions read neither it, the
   memory record (`liveWorkers`) nor the counts below, and write neither.
   The decision reads first (`readRest`): the subtree, walked from the
@@ -1107,7 +1116,15 @@ Ruling 36, as built:
 A thread is at rest when it has no turn, no queued message, no open
 prompt, no background work, no armed loop, watch or reminder, no
 workflow run that reports to it running or owing it its report, no answer
-on its way to it, and no open work below it. A Stop of a thread a thread spawned brings it to
+on its way to it, and nothing below it still open that its own runs
+started. A run is its spawn of a thread, or a later send of its to that
+thread, from the request until that thread is next at rest; the thread
+holds it through the whole run, with the background work, loops, watches
+and threads it started in that run. Once that thread came to rest, work
+the person or another thread's send starts there is not its run: it
+holds neither the spawner nor any thread above it, is not what their
+`waiting_on` names, and its prompts go to the person
+([Owned workers](#owned-workers)). A Stop of a thread a thread spawned brings it to
 rest: the Agents row's Stop of a spawn and Stop All
 ([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
 thread id of a thread it spawned
@@ -1303,7 +1320,7 @@ Mechanics, as built:
   ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
   (`SpawnOwnerOf`) and the Agents tree still find the row, so a reused
-  worker's prompts route to its owner, and its owner's own send to it
+  worker's prompts route to its owner in a run its owner starts, and its owner's own send to it
   lists, counts and stops under the owner, as before the sweep. On the computer a remote spawn reached, the
   same sweep keeps the spawn's receipt as `lineage_only` while the
   thread it created exists, its answer and late reply cleared: that
@@ -1902,7 +1919,12 @@ closes up their spacing so the row holds at a phone width.
   its thread rested, work anything else starts there (the person, another
   thread's send, its own wake) is no row, no count and no Stop of the
   spawner's, and does not move the spawn out of Past. A worker that never
-  came to rest stays in its spawn's run. A row shows the
+  came to rest stays in its spawn's run. A run on a paired computer is
+  kept there too, on its request's receipt (`run_open`), and ends there
+  at the worker's rest; here it ends when that computer's `agent_rows`
+  answer says it ended, with the worker's figures then (`runEnd`),
+  whatever the worker does since, or, from a computer that does not say,
+  when the answer says the thread is at rest. A row shows the
   target's provider (a paired computer's from its acknowledgement), the
   kind, its title, its computer when it is not this
   one (an ask on this computer shows the thread asked, its title and

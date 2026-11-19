@@ -6,9 +6,9 @@ import (
 	"fmt"
 )
 
-// SpawnOwner is the thread that owns a worker, the one its questions and
-// approvals go to: a thread on this computer, or one on a paired computer,
-// named by the link that computer's spawn made here.
+// SpawnOwner is the thread that answers a worker's questions and approvals
+// now: a thread on this computer, or one on a paired computer, named by the
+// link that computer's spawn made here.
 type SpawnOwner struct {
 	// ThreadID and Title are the local spawner, or the link's source thread
 	// and the title its spawn carried.
@@ -19,25 +19,36 @@ type SpawnOwner struct {
 	ComputerID, ComputerName, DeviceID, Token string
 }
 
-// SpawnOwnerOf names the owner of a thread on this computer. A local owner
-// is the caller of its spawn link (spawnerOfSQL), while that caller is not
-// archived. Any thread can be the spawner, an assistant, an ordinary thread
-// or another worker. A handoff moves its predecessors' spawn rows to the
-// current thread, so a worker an earlier thread of an assistant spawned
-// names the current one. A worker past the request ledger's retention
-// still names its spawner: the sweep keeps its spawn row as lineage
-// (spawnLineageSQL), so its prompts keep routing there. While assistants
-// are paused, a spawner that lives under one takes no prompt either
-// (assistants_paused.go): the worker asks the user. A thread no local spawn
-// reaches is owned remotely while it is owned and a paired computer's link
-// reaches it; only that computer knows whether its thread can take a
-// prompt. Found is false for any other thread and for one whose local
-// spawner is archived.
+// SpawnOwnerOf names the thread that answers threadID's prompts now: the
+// thread whose spawn made it, while a run that thread started on it is open
+// (docs/specs/standing-agents.md, "Owned workers"). A run is its spawn's,
+// or a later send's of the same thread, from when it was made until the
+// worker is at rest after it; one that tracks none, made before runs were
+// kept, reads open. In any other run, the person's or one another thread's
+// send started, the prompt is the person's, as for a thread nobody
+// spawned. An open prompt keeps the worker from rest, so the run it was
+// asked in stays open until it is answered.
+//
+// A local owner is the caller of its spawn link (spawnerOfSQL), with a run
+// open (spawnActiveSQL), while that caller is not archived. Any thread can
+// be the spawner, an assistant, an ordinary thread or another worker. A
+// handoff moves its predecessors' spawn rows to the current thread, so a
+// worker an earlier thread of an assistant spawned names the current one. A
+// worker past the request ledger's retention still names its spawner: the
+// sweep keeps its spawn row as lineage (spawnLineageSQL), so its prompts
+// keep routing there. While assistants are paused, a spawner that lives
+// under one takes no prompt either (assistants_paused.go): the worker asks
+// the user. A thread no local spawn reaches is owned remotely while it is
+// owned, a paired computer's link reaches it, and a run that link's thread
+// started is open on its receipt here (linkRunOpenSQL); only that computer
+// knows whether its thread can take a prompt. Found is false for any other
+// thread and for one whose local spawner is archived.
 func (s *Store) SpawnOwnerOf(threadID string) (SpawnOwner, bool, error) {
 	var owner SpawnOwner
 	var archived bool
-	err := s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM threads t
-		WHERE t.id = `+spawnerOfSQL("?")+` AND `+s.assistantPauseSQL("t.id"), threadID).Scan(&owner.ThreadID, &owner.Title, &archived)
+	err := s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM thread_requests AS link CROSS JOIN threads t ON t.id = link.caller_thread_id
+		WHERE `+agentSpawnLinkSQL("link")+` AND link.target_thread_id = ? AND `+spawnActiveSQL("link")+`
+		  AND `+s.assistantPauseSQL("t.id"), threadID).Scan(&owner.ThreadID, &owner.Title, &archived)
 	switch {
 	case err == nil && archived:
 		return SpawnOwner{}, false, nil
@@ -57,11 +68,13 @@ func (s *Store) SpawnOwnerOf(threadID string) (SpawnOwner, bool, error) {
 	return owner, true, nil
 }
 
-// spawnOwnerRemoteSQL reads the link that owns thread ?1.
-const spawnOwnerRemoteSQL = `SELECT rlink.source_thread_id, rlink.source_thread_title, rlink.source_computer_id,
+// spawnOwnerRemoteSQL reads the link that owns thread ?1 with a run of its
+// thread's open.
+var spawnOwnerRemoteSQL = `SELECT rlink.source_thread_id, rlink.source_thread_title, rlink.source_computer_id,
 	    rlink.source_computer_name, rlink.owner_device_id, rlink.token
 	  FROM thread_request_receipts AS rlink CROSS JOIN threads ON threads.id = rlink.target_thread_id
-	 WHERE rlink.target_thread_id = ?1 AND rlink.spawn_link = 1 AND threads.placement = 'owned'`
+	 WHERE rlink.target_thread_id = ?1 AND rlink.spawn_link = 1 AND threads.placement = 'owned'
+	   AND ` + linkRunOpenSQL("rlink")
 
 // RemotePromptHolder names the thread here that answers the prompts of the
 // worker this computer's spawn token made on a paired computer: the

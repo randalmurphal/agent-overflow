@@ -477,6 +477,9 @@ func (a *App) sendMessageWithOptions(
 		}
 	}
 
+	// Work this message starts on a thread at rest is a run of its own.
+	a.endRunsBeforeWork(threadID)
+
 	// Per-thread critical section: only one Send per thread at a time.
 	// This keeps the runtime-mode update, turn-index read, optimistic
 	// user-item persist, lazy session start, pending-send registration, and

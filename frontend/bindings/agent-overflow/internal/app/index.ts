@@ -196,6 +196,7 @@ export {
     ThreadAgentRow,
     ThreadAgentRowRead,
     ThreadAgentRows,
+    ThreadAgentRunEnd,
     ThreadAgentStop,
     ThreadContextUsage,
     ThreadContextUsageCategory,

@@ -24,8 +24,9 @@ import (
 //     (SettleLocalThreadRequestAtRest), by the rest pass for one that settled
 //     before its worker rested (EndThreadRequestRunsAtRest), or, for a
 //     worker on a paired computer, by an answer of that computer that says
-//     the thread is at rest (EndRemoteThreadRequestRuns). Its totals are the
-//     tally then less the base, and never change afterward.
+//     the run ended there (receipt_runs.go) or the thread is at rest
+//     (EndRemoteThreadRequestRuns). Its totals are the tally then less the
+//     base, and never change afterward.
 //
 // A row with no base tracks no run: one written before v159, or one whose
 // base could not be read. It reads as rows did before.
@@ -149,11 +150,21 @@ type endedRun struct {
 }
 
 // endThreadRunsTx ends the open runs of the settled requests to thread on
-// this computer, their totals the tally now less their bases.
+// this computer, their totals the tally now less their bases, and those of
+// the settled receipts of paired computers' requests to it
+// (endReceiptRunsTx).
 func endThreadRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
+	now := nowMillis()
 	tally := tallyFiguresSQL("?1", "?2")
-	return endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1`,
-		[3]string{tally[0], tally[1], tally[2]}, threadID, nowMillis())
+	runs, err := endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1`,
+		[3]string{tally[0], tally[1], tally[2]}, threadID, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := endReceiptRunsTx(tx, threadID, now); err != nil {
+		return nil, err
+	}
+	return runs, nil
 }
 
 // endRunsTx ends the open runs of the settled requests where matches, with
@@ -219,14 +230,20 @@ func (s *Store) EndThreadRequestRunsAtRest(threadID string, rest *RestGuard) (_ 
 }
 
 // OpenRunThreads lists the threads on this computer that requests with an
-// open run went to, and whether all of those requests are unsettled, for
-// the rest pass: a settled one's run ends on its worker's rest. Any is
-// false when no run is open on this computer at all.
+// open run went to, this computer's or, on their receipts, a paired
+// computer's, with one of those requests settled, for the rest pass: a
+// settled one's run ends on its worker's rest. Any is false when no run is
+// open on this computer at all.
 func (s *Store) OpenRunThreads() (settled []string, any bool, err error) {
-	rows, err := s.reader().Query(`SELECT target_thread_id, MAX(settled_at IS NOT NULL)
-		  FROM thread_requests INDEXED BY idx_thread_requests_run_open
-		 WHERE ` + runOpenSQL("thread_requests") + ` AND target_computer_id = '' AND target_thread_id <> ''
-		 GROUP BY target_thread_id`)
+	rows, err := s.reader().Query(`SELECT thread, MAX(settled) FROM (
+		  SELECT target_thread_id AS thread, settled_at IS NOT NULL AS settled
+		    FROM thread_requests INDEXED BY idx_thread_requests_run_open
+		   WHERE ` + runOpenSQL("thread_requests") + ` AND target_computer_id = '' AND target_thread_id <> ''
+		  UNION ALL
+		  SELECT target_thread_id, settled_at IS NOT NULL
+		    FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_run_open
+		   WHERE run_open = 1 AND target_thread_id IS NOT NULL)
+		 GROUP BY thread`)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: list the open runs: %w", err)
 	}
