@@ -5,8 +5,11 @@
 // over instead, and replays it as the keydown the window withheld: it goes
 // through the one keybinding dispatcher, as a chord pressed in the native
 // page does (browserCompanion.svelte.ts replayBrowserAccelerator). A chord
-// nothing runs goes back to the shell, which reloads the app. The Go half
-// is internal/uikeys/pagechords.go; the names mirror it.
+// nothing runs goes back to the shell, which reloads the app. The shell
+// advertises itself with its number for this document, and every message
+// names it; reports are numbered too, since the shell may apply them out of
+// order and keeps only the newest. The Go half is
+// internal/uikeys/pagechords.go; the names mirror it.
 
 import type { CommandContext } from '../stores/commandRegistry.svelte';
 import { isBrowserPaneFocused } from '../stores/browserCommands.svelte';
@@ -17,11 +20,17 @@ const MESSAGE_PREFIX = 'ao:shell:';
 const CAPABILITY_GLOBAL = '__aoShellChords';
 const READY_EVENT = 'ao-shell-chords';
 const HANDLER_GLOBAL = '__aoShellChord';
-export const RELOAD_APP_MESSAGE = MESSAGE_PREFIX + 'reload-app';
-
-export function routeMessage(route: boolean): string {
-  return `${MESSAGE_PREFIX}route-reload:${route ? 1 : 0}`;
+export function reloadAppMessage(document: number): string {
+  return `${MESSAGE_PREFIX}reload-app:${document}`;
 }
+
+/** The SPA's seq-th report, in the shell's document `document`. */
+export function routeMessage(document: number, seq: number, route: boolean): string {
+  return `${MESSAGE_PREFIX}route-reload:${document}:${seq}:${route ? 1 : 0}`;
+}
+
+// The number of the last report, across installs in this document.
+let reportSeq = 0;
 
 interface ShellWindow {
   [CAPABILITY_GLOBAL]?: unknown;
@@ -40,19 +49,26 @@ function reloadChord(): KeyboardEvent {
   return new KeyboardEvent('keydown', { key: 'r', metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true });
 }
 
+/** The shell's number for this document, or null when it does not route chords. */
+function shellDocument(): number | null {
+  const document = shellWindow()[CAPABILITY_GLOBAL];
+  return typeof document === 'number' && Number.isSafeInteger(document) && document > 0 ? document : null;
+}
+
 /** Posts to the shell when it routes chords; false when it does not. */
-function post(message: string): boolean {
+function post(message: (document: number) => string): boolean {
   const w = shellWindow();
-  if (w[CAPABILITY_GLOBAL] !== 1) return false;
+  const document = shellDocument();
+  if (document === null) return false;
   // Each bridge method needs its owning receiver.
   const webview = w.chrome?.webview;
   if (typeof webview?.postMessage === 'function') {
-    webview.postMessage(message);
+    webview.postMessage(message(document));
     return true;
   }
   const external = w.webkit?.messageHandlers?.external;
   if (typeof external?.postMessage === 'function') {
-    external.postMessage(message);
+    external.postMessage(message(document));
     return true;
   }
   return false;
@@ -71,13 +87,13 @@ export function installShellChords(context: () => CommandContext): () => void {
     (document.activeElement ?? document.body).dispatchEvent(event);
     // Nothing ran it (focus or bindings changed since the last report): the
     // shell reloads the app, as the chord means there.
-    if (!event.defaultPrevented) post(RELOAD_APP_MESSAGE);
+    if (!event.defaultPrevented) post(reloadAppMessage);
   };
 
   let posted: boolean | null = null;
   const report = (route: boolean, force: boolean) => {
     if (!force && posted === route) return;
-    if (post(routeMessage(route))) posted = route;
+    if (post((document) => routeMessage(document, ++reportSeq, route))) posted = route;
   };
   const wanted = () => isBrowserPaneFocused() && keyWouldDispatch(reloadChord(), context());
   const stopEffect = $effect.root(() => {

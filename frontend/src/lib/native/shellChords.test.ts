@@ -11,7 +11,7 @@ import { dispatchKey, resetKeybindingsStore, setKeybindingsForTest, type Keybind
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeThread } from '../../test/helpers/chat';
-import { installShellChords, RELOAD_APP_MESSAGE, routeMessage } from './shellChords.svelte';
+import { installShellChords, reloadAppMessage } from './shellChords.svelte';
 
 const THREAD = 'thread-shell';
 
@@ -79,9 +79,24 @@ describe('shell chords', () => {
     flushSync();
   }
 
-  function advertise(): void {
-    (window as Window & ShellGlobals).__aoShellChords = 1;
+  function advertise(document = 1): void {
+    (window as Window & ShellGlobals).__aoShellChords = document;
     window.dispatchEvent(new Event('ao-shell-chords'));
+  }
+
+  /** The route reports posted, as document:answer, each numbered after the last. */
+  function routes(): string[] {
+    let last = 0;
+    const out: string[] = [];
+    for (const message of posted) {
+      const match = /^ao:shell:route-reload:(\d+):(\d+):([01])$/.exec(message);
+      if (!match) continue;
+      const seq = Number(match[2]);
+      expect(seq).toBeGreaterThan(last);
+      last = seq;
+      out.push(`${match[1]}:${match[3] === '1'}`);
+    }
+    return out;
   }
 
   function routedChord(): void {
@@ -98,16 +113,17 @@ describe('shell chords', () => {
   it('asks for the chord while the browser pane is focused, and again when the shell advertises', () => {
     install();
     advertise();
-    expect(posted).toEqual([routeMessage(false)]);
+    expect(routes()).toEqual(['1:false']);
     focusPane('browser-main');
     flushSync();
     focusPane('main');
     flushSync();
-    expect(posted).toEqual([routeMessage(false), routeMessage(true), routeMessage(false)]);
-    // A new document's shell starts not routing: the SPA repeats its answer.
-    advertise();
+    expect(routes()).toEqual(['1:false', '1:true', '1:false']);
+    // A new document's shell starts not routing: the SPA repeats its answer
+    // under that document's number.
+    advertise(2);
     expect(posted).toHaveLength(4);
-    expect(posted.at(-1)).toBe(routeMessage(false));
+    expect(routes().at(-1)).toBe('2:false');
   });
 
   it('replays the routed chord through the keybinding dispatcher: the default reloads the page', () => {
@@ -117,7 +133,7 @@ describe('shell chords', () => {
     flushSync();
     routedChord();
     expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'p1' }));
-    expect(posted).not.toContain(RELOAD_APP_MESSAGE);
+    expect(posted).not.toContain(reloadAppMessage(1));
   });
 
   it('leaves the chord to the shell when the effective bindings unbind it', () => {
@@ -126,11 +142,11 @@ describe('shell chords', () => {
     advertise();
     focusPane('browser-main');
     flushSync();
-    expect(posted).toEqual([routeMessage(false)]);
+    expect(routes()).toEqual(['1:false']);
     // A chord the shell still hands over (a report in flight) goes back.
     routedChord();
     expect(act).not.toHaveBeenCalled();
-    expect(posted.at(-1)).toBe(RELOAD_APP_MESSAGE);
+    expect(posted.at(-1)).toBe(reloadAppMessage(1));
   });
 
   it('runs the command the chord is rebound to there', () => {
@@ -139,7 +155,7 @@ describe('shell chords', () => {
     advertise();
     focusPane('browser-main');
     flushSync();
-    expect(posted.at(-1)).toBe(routeMessage(true));
+    expect(routes().at(-1)).toBe('1:true');
     routedChord();
     expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
     expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload' }));
@@ -150,7 +166,7 @@ describe('shell chords', () => {
     advertise();
     routedChord();
     expect(act).not.toHaveBeenCalled();
-    expect(posted.at(-1)).toBe(RELOAD_APP_MESSAGE);
+    expect(posted.at(-1)).toBe(reloadAppMessage(1));
   });
 
   it('removes the handler and stops routing on uninstall', () => {
@@ -161,6 +177,6 @@ describe('shell chords', () => {
     uninstall!();
     uninstall = null;
     expect((window as Window & ShellGlobals).__aoShellChord).toBeUndefined();
-    expect(posted.at(-1)).toBe(routeMessage(false));
+    expect(routes().at(-1)).toBe('1:false');
   });
 });

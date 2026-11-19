@@ -57,7 +57,9 @@ func TestWebviewShellRoutesReloadToTheFocusedBrowserPane(t *testing.T) {
 	if w.reloads != 1 || len(w.scripts) != 0 {
 		t.Fatalf("unfocused: reloads=%d scripts=%d", w.reloads, len(w.scripts))
 	}
-	shell.chords.HandleMessage(w, uikeys.RouteMessage(true))
+	shell.chords.DocumentLoaded(w)
+	w.scripts = nil
+	shell.chords.HandleMessage(w, uikeys.RouteMessage(1, 1, true))
 	reload(w)
 	if w.reloads != 1 || len(w.scripts) != 1 || w.scripts[0] != uikeys.DispatchScript {
 		t.Fatalf("focused: reloads=%d scripts=%v", w.reloads, w.scripts)
@@ -68,7 +70,9 @@ func TestWebviewShellRoutesReloadToTheFocusedBrowserPane(t *testing.T) {
 func TestWebviewShellRawMessagesNeedTheOwnWindow(t *testing.T) {
 	shell := webviewShell{pageURL: func() string { return "http://127.0.0.1:4100/" }, chords: uikeys.NewPageChords()}
 	handle := shell.rawMessageHandler(func() *application.WebviewWindow { return nil })
-	handle(&scriptWindow{}, uikeys.RouteMessage(true), &application.OriginInfo{Origin: "http://127.0.0.1:4100"})
+	w := &scriptWindow{}
+	shell.chords.DocumentLoaded(w)
+	handle(w, uikeys.RouteMessage(1, 1, true), &application.OriginInfo{Origin: "http://127.0.0.1:4100"})
 	if shell.chords.Routing() {
 		t.Fatal("a message with no own window set the focus")
 	}
