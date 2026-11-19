@@ -139,7 +139,7 @@ type CompanionSubscription struct {
 // from. A read or a registration takes it as it is; an action that can add a
 // tab takes it bound to the thread's lifetime (Access, thread_life.go).
 type Caller struct {
-	ThreadID    string
+	ThreadID    ThreadID
 	Workspace   string
 	ProjectRoot string
 	// ProjectID is the store's id of the thread's project, which a

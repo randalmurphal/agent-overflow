@@ -420,7 +420,7 @@ func TestAPaneColorIsItsThreads(t *testing.T) {
 	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
-	if fresh := lifetimeOf(manager, access.ThreadID); fresh != nil && fresh.paneColor != "" {
+	if fresh := lifetimeOf(manager, string(access.ThreadID)); fresh != nil && fresh.paneColor != "" {
 		t.Fatal("a closed thread's pane color is kept")
 	}
 }

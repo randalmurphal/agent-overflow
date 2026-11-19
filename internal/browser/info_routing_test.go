@@ -86,7 +86,7 @@ func (p *adoptingProfile) AttachPage(ctx context.Context, handle ids.PageHandle,
 		return nil, err
 	}
 	page := driver.(*fakePage)
-	page.handle = ids.PageHandle(handle)
+	page.handle = handle
 	if p.onViewport != nil {
 		var once sync.Once
 		page.viewportHook = func(int, int) { once.Do(p.onViewport) }

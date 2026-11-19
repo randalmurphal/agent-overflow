@@ -79,7 +79,7 @@ func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string
 		return nil, nil
 	}
 	return a.browser.mcp.RegisterThread(appbrowser.Caller{
-		ThreadID:    thread.ID,
+		ThreadID:    appbrowser.ThreadID(thread.ID),
 		Workspace:   thread.WorkspacePath,
 		ProjectRoot: thread.ProjectPath,
 		ProjectID:   thread.ProjectID,
@@ -174,7 +174,7 @@ func (a *App) closeThreadBrowserPages(threadID string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return a.browser.manager.CloseThread(ctx, threadID)
+	return a.browser.manager.CloseThread(ctx, appbrowser.ThreadID(threadID))
 }
 
 // suspendThreadBrowserPages unloads the browser pages of a thread whose idle
@@ -188,14 +188,14 @@ func (a *App) suspendThreadBrowserPages(threadID string) error {
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
 	defer cancel()
-	return a.browser.manager.SuspendThread(ctx, threadID)
+	return a.browser.manager.SuspendThread(ctx, appbrowser.ThreadID(threadID))
 }
 
 // browserThreadKeepsPages answers at boot whether a thread's saved browser
 // pages still belong to it: the thread exists and is not archived. Pages a
 // delete or archive could not close (the app stopped mid-way) go here.
-func (a *App) browserThreadKeepsPages(threadID string) (bool, error) {
-	thread, err := a.browserThread(threadID)
+func (a *App) browserThreadKeepsPages(threadID appbrowser.ThreadID) (bool, error) {
+	thread, err := a.browserThread(string(threadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

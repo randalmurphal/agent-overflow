@@ -243,7 +243,7 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 	}
 	wg.Wait()
 	for threadID, pageID := range map[string]string{"thread-a": string(first.id), "thread-b": string(second.id)} {
-		state := m.threadState(threadID)
+		state := m.threadState(ThreadID(threadID))
 		if state.ActivePageID != pageID || state.Visible == nil || !*state.Visible || len(state.Pages) != 1 || state.Pages[0].Label != "preview" {
 			t.Fatalf("scoped state %s = %#v", threadID, state)
 		}

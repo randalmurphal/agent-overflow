@@ -108,7 +108,7 @@ type Manager struct {
 	forgetting int
 	// threads is each thread's current browser lifetime, which owns the
 	// thread's browser state (thread_life.go). Guarded by mu.
-	threads map[string]*threadBrowser
+	threads map[ThreadID]*threadBrowser
 	// pending holds the pages being created, and the failed creations of
 	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
 	pending map[PageID]*pendingPage
@@ -139,19 +139,19 @@ type Manager struct {
 	recentGen    uint64
 	recentLaunch string
 	// viewportSyncs serializes viewport application per thread (viewport.go).
-	viewportSyncs map[string]*viewportSync
+	viewportSyncs map[ThreadID]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and
 	// whether another was asked for during it (syncPanePresentation); made
 	// on first use, and an idle thread's entry is removed.
-	presenting map[string]*presentSync
+	presenting map[ThreadID]*presentSync
 	// presented is, per thread, the page the last presentation pass showed
 	// (presentPanes); a thread showing none has no entry. Guarded by mu.
-	presented map[string]PageID
+	presented map[ThreadID]PageID
 	// awaitingLayout is, per thread, the active page the last presentation
 	// pass held hidden because it lagged the thread viewport. Whichever
 	// apply lays it out first (applyViewportLocked) asks for the pass that
 	// shows it. Guarded by mu.
-	awaitingLayout map[string]PageID
+	awaitingLayout map[ThreadID]PageID
 	// agentLinger is how long a page keeps showing agent activity after the
 	// last tool call on it ends (activity.go); a test shortens it.
 	agentLinger    time.Duration
@@ -223,7 +223,7 @@ type Manager struct {
 	// viewportApplied is a test seam for the asynchronous pane-size follow:
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
-	viewportApplied func(threadID string)
+	viewportApplied func(threadID ThreadID)
 	// pushCopied is a test seam: called, with m.mu held, once a push has
 	// taken the unpushed records and copied the tabs. Production leaves it
 	// nil.
@@ -231,7 +231,7 @@ type Manager struct {
 	// presentDeciding is a test seam: called, with no lock held, by a
 	// presentation pass after it hid every page but its candidate and before
 	// it decides whether to show it. Production leaves it nil.
-	presentDeciding func(threadID string, candidate *managedPage)
+	presentDeciding func(threadID ThreadID, candidate *managedPage)
 	// infoRead is a test seam: called between a read of a page's info (or
 	// history state) and its commit. Production leaves it nil.
 	infoRead func(p *managedPage)
@@ -296,7 +296,7 @@ type ManagerOptions struct {
 	// found still exists and is not archived. The pages of a thread it
 	// rejects are removed; an error keeps them for the next boot. Nil keeps
 	// every saved page.
-	KeepThread func(threadID string) (bool, error)
+	KeepThread func(threadID ThreadID) (bool, error)
 
 	// NativeWindow returns the desktop window an in-process engine hosts its
 	// views inside (spec docs/specs/embedded-browser.md §6), or nil when this
@@ -445,8 +445,8 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		disposing:      make(map[jarKey]chan struct{}),
 		recordDir:      filepath.Join(configDir, browserPageRecordDir),
 		panes:          make(map[string]paneMount),
-		threads:        make(map[string]*threadBrowser),
-		viewportSyncs:  make(map[string]*viewportSync),
+		threads:        make(map[ThreadID]*threadBrowser),
+		viewportSyncs:  make(map[ThreadID]*viewportSync),
 		artifactRoot:   filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:    findActionTimeout,
 		agentLinger:    agentActivityLinger,

@@ -50,7 +50,7 @@ func newPaneFollowFixture(t *testing.T) *paneFollowFixture {
 		f.pages = append(f.pages, p.driver.(*fakePage))
 		f.ids = append(f.ids, id)
 	}
-	manager.viewportApplied = func(threadID string) { f.applied <- threadID }
+	manager.viewportApplied = func(threadID ThreadID) { f.applied <- string(threadID) }
 	manager.SetEventSink(func(event CompanionEvent) {
 		select {
 		case f.events <- event:
@@ -87,7 +87,7 @@ func (f *paneFollowFixture) awaitActiveAt(t *testing.T, w, h int) {
 	deadline := time.After(5 * time.Second)
 	for {
 		if pw, ph := f.pages[1].lastViewport(); pw == w && ph == h {
-			awaitViewportIdle(t, f.manager, f.access.ThreadID)
+			awaitViewportIdle(t, f.manager, string(f.access.ThreadID))
 			return
 		}
 		select {

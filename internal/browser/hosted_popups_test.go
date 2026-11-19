@@ -23,7 +23,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 	access := l.access("thread")
 	_, opener := l.open(access)
 	popupID, targetID := l.popup(opener, "https://example.test/popup")
-	p := l.awaitTab(access.ThreadID, popupID, true)
+	p := l.awaitTab(string(access.ThreadID), popupID, true)
 	if got := l.tabInfo(p); got.URL != "https://example.test/popup" {
 		t.Errorf("the popup's tab is at %q", got.URL)
 	}
@@ -34,7 +34,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 
 	// Its close is the launcher's, as any page's.
 	l.report(popupID, webview2host.ReportClosed, "")
-	l.awaitTabGone(access.ThreadID, popupID)
+	l.awaitTabGone(string(access.ThreadID), popupID)
 
 	// The browser may report a popup's target before the launcher reports
 	// the popup; the tab takes what it said.
@@ -42,7 +42,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 		TargetID: "PT-2", Type: "page", URL: "https://example.test/early", Title: "early",
 	}})
 	second, _ := l.popup(opener, "https://example.test/popup")
-	if got := l.tabInfo(l.awaitTab(access.ThreadID, second, true)); got.Title != "early" || got.URL != "https://example.test/early" {
+	if got := l.tabInfo(l.awaitTab(string(access.ThreadID), second, true)); got.Title != "early" || got.URL != "https://example.test/early" {
 		t.Errorf("the popup's tab reads %q at %q, want the target's report", got.Title, got.URL)
 	}
 }
@@ -53,10 +53,10 @@ func TestHostedPopupOfAPopupIsAdopted(t *testing.T) {
 	access := l.access("thread")
 	_, opener := l.open(access)
 	first, _ := l.popup(opener, "https://example.test/1")
-	l.awaitTab(access.ThreadID, first, true)
+	l.awaitTab(string(access.ThreadID), first, true)
 	second, _ := l.popup(first, "https://example.test/2")
-	l.awaitTab(access.ThreadID, second, true)
-	if n := len(l.tabs(access.ThreadID)); n != 3 {
+	l.awaitTab(string(access.ThreadID), second, true)
+	if n := len(l.tabs(string(access.ThreadID))); n != 3 {
 		t.Errorf("%d tabs, want 3", n)
 	}
 	l.settledEngine()
@@ -83,7 +83,7 @@ func TestHostedPopupPastACapIsClosed(t *testing.T) {
 			access := l.access("opener")
 			_, opener := l.open(access)
 			for i := range maxPagesPerWorkspace - 1 {
-				l.open(l.manager.Bind(Caller{ThreadID: fmt.Sprintf("thread-%d", i/maxPagesPerThread), Workspace: access.Workspace}))
+				l.open(l.manager.Bind(Caller{ThreadID: ThreadID(fmt.Sprintf("thread-%d", i/maxPagesPerThread)), Workspace: access.Workspace}))
 			}
 			return access, opener
 		}},
@@ -103,10 +103,10 @@ func TestHostedPopupPastACapIsClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newPopupLauncher(t)
 			access, opener := tc.fill(l)
-			before := len(l.tabs(access.ThreadID))
+			before := len(l.tabs(string(access.ThreadID)))
 			popupID, _ := l.popup(opener, "https://example.test/popup")
-			l.awaitTab(access.ThreadID, popupID, false)
-			if n := len(l.tabs(access.ThreadID)); n != before {
+			l.awaitTab(string(access.ThreadID), popupID, false)
+			if n := len(l.tabs(string(access.ThreadID))); n != before {
 				t.Errorf("%d tabs after a refused popup, want %d", n, before)
 			}
 			l.settledEngine()
@@ -127,12 +127,12 @@ func TestHostedPopupOfAnOpenerThatClosesMidAdoptionIsClosed(t *testing.T) {
 	go func() { closed <- l.manager.CloseThread(context.Background(), access.ThreadID) }()
 	// The opener leaves the tabs before its teardown, which waits on the
 	// fake's one connection, held by the attach.
-	l.awaitTabGone(access.ThreadID, opener)
+	l.awaitTabGone(string(access.ThreadID), opener)
 	release()
 	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
-	l.awaitTab(access.ThreadID, popupID, false)
+	l.awaitTab(string(access.ThreadID), popupID, false)
 	l.settledEngine()
 }
 
@@ -143,7 +143,7 @@ func TestHostedPopupOfAnUnknownOpenerIsClosed(t *testing.T) {
 	access := l.access("thread")
 	_, opener := l.open(access)
 	l.reportPopup("popup-t-1", webview2host.PopupReport{Opener: "0123456789abcdef0123456789abcdef", Target: "PT-1"})
-	l.awaitTab(access.ThreadID, "popup-t-1", false)
+	l.awaitTab(string(access.ThreadID), "popup-t-1", false)
 	l.engine.Stop()
 	l.reportPopup("popup-t-2", webview2host.PopupReport{Opener: opener, Target: "PT-2"})
 	if !l.closed("popup-t-2") {
@@ -253,7 +253,7 @@ func TestHostedPopupAttachOnALostConnectionIsClosed(t *testing.T) {
 	l.awaitAttach("PT-1")
 	l.endpoint.hangUp()
 	release()
-	l.awaitTab(access.ThreadID, popupID, false)
+	l.awaitTab(string(access.ThreadID), popupID, false)
 	l.settledEngine()
 }
 
@@ -326,7 +326,7 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 	reportDownload(t, l.engine, popupID, snapshot("dl-1", webview2host.DownloadRunning, 10))
 	l.report(popupID, webview2host.ReportFindUnavailable, "")
 	release()
-	p := l.awaitTab(access.ThreadID, popupID, true)
+	p := l.awaitTab(string(access.ThreadID), popupID, true)
 	got := l.tabInfo(p)
 	if got.Title != "late" || got.URL != "https://example.test/late" {
 		t.Errorf("the popup's tab reads %q at %q, want the newest report", got.Title, got.URL)
@@ -358,7 +358,7 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 	l.report(second, webview2host.ReportClosed, "")
 	release2()
 	l.settledEngine()
-	l.awaitTabGone(access.ThreadID, second)
+	l.awaitTabGone(string(access.ThreadID), second)
 }
 
 // A popup that crashed while it was adopted becomes a crashed tab.
@@ -660,7 +660,7 @@ func TestHostedEnginePausesARequestOnce(t *testing.T) {
 	access := l.access("thread")
 	_, opener := l.open(access)
 	popupID, _ := l.popup(opener, "https://example.test/popup")
-	l.awaitTab(access.ThreadID, popupID, true)
+	l.awaitTab(string(access.ThreadID), popupID, true)
 	l.settledEngine()
 	assertOnePolicyPause(t, l.endpoint.calls, l.endpoint.send)
 }

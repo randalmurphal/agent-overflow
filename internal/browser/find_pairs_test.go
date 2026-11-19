@@ -799,7 +799,7 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		e.mu.Lock()
 		actions, lastStop := e.actions[string(id)], e.lastStop[string(id)]
 		e.mu.Unlock()
-		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, PageID(id)) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
+		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, id) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
 			t.Errorf("%s: %s: a search of %s is left on a page not shown, or for a pane that is gone", name, page, e.labels[session.owner])
 		}
 		if !session.active && (session.owner != "" || session.seq != 0) {

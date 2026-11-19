@@ -15,14 +15,14 @@ import (
 
 // testThreads makes a hand-built Manager's thread lifetimes, one per id,
 // each with the session given, or the default session for a zero one.
-func testThreads(sessions map[string]SessionInfo) map[string]*threadBrowser {
-	threads := make(map[string]*threadBrowser, len(sessions))
+func testThreads(sessions map[string]SessionInfo) map[ThreadID]*threadBrowser {
+	threads := make(map[ThreadID]*threadBrowser, len(sessions))
 	for id, session := range sessions {
-		tb := newThreadBrowser(id)
+		tb := newThreadBrowser(ThreadID(id))
 		if !reflect.DeepEqual(session, SessionInfo{}) {
 			tb.session = session
 		}
-		threads[id] = tb
+		threads[ThreadID(id)] = tb
 	}
 	return threads
 }
@@ -62,7 +62,7 @@ func beginCloseLive(m *Manager, access Access, pageID string) (*pageClose, error
 func lifetimeOf(m *Manager, threadID string) *threadBrowser {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.currentLocked(threadID)
+	return m.currentLocked(ThreadID(threadID))
 }
 
 // A keyboard close bound before the thread's close, delivered through the
@@ -157,13 +157,13 @@ func TestAnOldThreadsCloseLeavesTheFreshLifetime(t *testing.T) {
 	page := openPage(t, manager, old, addr("old"))
 	release := engine.holdCloseOf(t, string(livePage(t, manager, old, page.ID).driver.Handle()))
 	closed := async(func() error { return manager.CloseThread(context.Background(), old.ThreadID) })
-	eventually(t, "the close detaches the old lifetime", func() bool { return lifetimeOf(manager, old.ThreadID) != old.tb })
+	eventually(t, "the close detaches the old lifetime", func() bool { return lifetimeOf(manager, string(old.ThreadID)) != old.tb })
 
 	fresh := manager.Bind(old.Caller())
 	saved := openPage(t, manager, fresh, addr("saved"))
 	live := openPage(t, manager, fresh, addr("live"))
 	suspendTab(t, manager, fresh, saved.ID)
-	if err := manager.persistThreads([]string{fresh.ThreadID}); err != nil {
+	if err := manager.persistThreads([]ThreadID{fresh.ThreadID}); err != nil {
 		t.Fatal(err)
 	}
 	release()
@@ -209,7 +209,7 @@ func TestADuplicateWhoseBrowsingWasForgottenOpensNothing(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("keep"), addr("x"))
 	var cleared bool
 	m.SetEventSink(func(event CompanionEvent) {
-		if cleared || event.ThreadID != access.ThreadID {
+		if cleared || ThreadID(event.ThreadID) != access.ThreadID {
 			return
 		}
 		for _, page := range event.Pages {
@@ -250,7 +250,7 @@ func holdCloseAfterDetach(m *Manager, access Access) (reached <-chan struct{}, r
 	var held atomic.Bool
 	m.SetEventSink(func(event CompanionEvent) {
 		// Only the first push after the detach waits; any other passes.
-		if event.ThreadID == access.ThreadID && access.tb.detached.Load() && held.CompareAndSwap(false, true) {
+		if ThreadID(event.ThreadID) == access.ThreadID && access.tb.detached.Load() && held.CompareAndSwap(false, true) {
 			close(at)
 			<-gate
 		}

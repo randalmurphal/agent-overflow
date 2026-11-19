@@ -69,7 +69,7 @@ func (m *Manager) emitEscape(handle ids.PageHandle) {
 	if p == nil || mount == "" || !m.pageShown(p.owner.id, p.id) {
 		return
 	}
-	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner.id, PageID: string(p.id), Mount: mount})
+	m.emit(CompanionEvent{Kind: "escape", ThreadID: string(p.owner.id), PageID: string(p.id), Mount: mount})
 }
 
 // emitAccelerator routes a claimed chord to the pane mount showing the page,
@@ -90,7 +90,7 @@ func (m *Manager) emitAccelerator(handle ids.PageHandle, bound keybindings.Accel
 		log.Printf("browser: drop the chord %+v pressed in page %s: no pane shows the page", bound, p.id)
 		return
 	}
-	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner.id, Mount: mount, Accelerator: &bound})
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: string(p.owner.id), Mount: mount, Accelerator: &bound})
 }
 
 // AcceleratorsChanged tells an engine that matches chords out of process

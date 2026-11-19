@@ -48,7 +48,7 @@ func NewMCPServer(controller Controller, enabled bool) *MCPServer {
 // RegisterThread issues the thread's browser tools URL to one provider
 // session, replacing any earlier session's URL.
 func (s *MCPServer) RegisterThread(caller Caller, session string) (map[string]any, error) {
-	caller.ThreadID = strings.TrimSpace(caller.ThreadID)
+	caller.ThreadID = caller.ThreadID.trim()
 	caller.Workspace = strings.TrimSpace(caller.Workspace)
 	if caller.ThreadID == "" || caller.Workspace == "" {
 		return nil, fmt.Errorf("browser MCP: thread and workspace are required")
@@ -56,7 +56,7 @@ func (s *MCPServer) RegisterThread(caller Caller, session string) (map[string]an
 	if s.controller == nil {
 		return nil, fmt.Errorf("browser MCP: controller unavailable")
 	}
-	return s.Server.RegisterThread(caller.ThreadID, session, caller)
+	return s.Server.RegisterThread(string(caller.ThreadID), session, caller)
 }
 func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) { s.ServeHTTP(w, r) }
 func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, caller Caller) {

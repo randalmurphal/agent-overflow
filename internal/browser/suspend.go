@@ -336,7 +336,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		}
 		// The tab leaves its suspended state.
 		m.pageAdded(p)
-		if err := m.persistThreads([]string{p.owner.id}); err != nil {
+		if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {
 			// The page is live; its saved copy still lists it as suspended, which
 			// only brings it back as a suspended page after a crash.
 			log.Printf("browser: restore page %s: update saved pages: %v", p.id, err)
@@ -436,7 +436,7 @@ func (m *Manager) openAndLoad(ctx context.Context, access Caller, p *managedPage
 //
 // The reaper names the thread by id; the lifetime current then is the one
 // whose pages it suspends.
-func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
+func (m *Manager) SuspendThread(ctx context.Context, threadID ThreadID) error {
 	m.mu.Lock()
 	tb := m.currentLocked(threadID)
 	presented := m.presentedPageLocked(tb)
@@ -468,7 +468,7 @@ func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
 	if ctx.Err() == nil {
 		m.syncPanePresentation(threadID)
 	}
-	errs = append(errs, m.persistThreads([]string{threadID}))
+	errs = append(errs, m.persistThreads([]ThreadID{threadID}))
 	return errors.Join(errs...)
 }
 
@@ -544,8 +544,8 @@ func (m *Manager) saveOpenPages() error {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.mu.Lock()
-	var threads []string
-	seen := make(map[string]bool)
+	var threads []ThreadID
+	seen := make(map[ThreadID]bool)
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			m.suspended[p.id] = recordOf(p, p.cachedInfo())
@@ -580,7 +580,7 @@ func (m *Manager) recordForgotten(tb *threadBrowser) error {
 	m.repairActivePage(tb)
 	m.emitThreadState(tb.id)
 	m.syncPanePresentation(tb.id)
-	return m.persistThreads([]string{tb.id})
+	return m.persistThreads([]ThreadID{tb.id})
 }
 
 // dropRecordLocked forgets rec and cancels its restore in flight, which
@@ -603,7 +603,7 @@ func (m *Manager) forgetAllRecords(keepJars bool) error {
 		threads[rec.owner] = true
 		m.dropRecordLocked(rec)
 	}
-	var jarThreads []string
+	var jarThreads []ThreadID
 	for threadID, tb := range m.threads {
 		switch {
 		case jarKindOf(tb.session) == JarWorktree:

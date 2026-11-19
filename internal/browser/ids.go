@@ -8,6 +8,13 @@ import "strings"
 // bound DTO, an MCP argument, a wire message or a log keeps its plain
 // string. A kind the subpackages share is in internal/browser/ids.
 
+// ThreadID is the AO thread a browser belongs to (Caller.ThreadID), the
+// store's thread id. A thread's browser lifetimes (threadBrowser) share it.
+type ThreadID string
+
+// trim is the thread id without the spaces around it a caller may send.
+func (id ThreadID) trim() ThreadID { return ThreadID(strings.TrimSpace(string(id))) }
+
 // PageID is AO's id for a thread's tab (PageInfo.ID), the page_id the
 // browser tools and the pane name. It lasts across the tab's suspension,
 // restore and saved record, unlike the engine's handle for its live page

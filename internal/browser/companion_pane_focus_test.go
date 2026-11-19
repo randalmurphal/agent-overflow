@@ -249,8 +249,8 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			// out a tab the switch made active) is left to that pass's loop,
 			// which runs once more and reads the newest selection.
 			settle := func() {
-				awaitViewportIdle(t, w.m, w.a.ThreadID)
-				awaitViewportIdle(t, w.m, w.b.ThreadID)
+				awaitViewportIdle(t, w.m, string(w.a.ThreadID))
+				awaitViewportIdle(t, w.m, string(w.b.ThreadID))
 			}
 
 			tc.hide(t, w)

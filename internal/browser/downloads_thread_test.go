@@ -189,7 +189,7 @@ func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, saving download
 	}
 	at := slices.IndexFunc(events, func(event CompanionEvent) bool { return event.Kind == "download" })
 	announced := events[at]
-	if announced.Download == nil || *announced.Download != want || announced.ThreadID != access.ThreadID {
+	if announced.Download == nil || *announced.Download != want || ThreadID(announced.ThreadID) != access.ThreadID {
 		t.Fatalf("the announcement is %+v, want %+v in thread %q", announced, want, access.ThreadID)
 	}
 	if at == 0 || events[at-1].Kind != "state" || len(events[at-1].Downloads) != 1 || events[at-1].Downloads[0] != want {

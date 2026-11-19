@@ -1079,7 +1079,7 @@ func TestAListedRowStaysOpenableWhateverOthersDownload(t *testing.T) {
 		startDownload(t, manager, busy, busyPage, fmt.Sprintf("b%d.txt", i), 10)
 	}
 	for i := range 40 {
-		elsewhere := manager.Bind(Caller{ThreadID: fmt.Sprintf("w%d", i), Workspace: t.TempDir()})
+		elsewhere := manager.Bind(Caller{ThreadID: ThreadID(fmt.Sprintf("w%d", i)), Workspace: t.TempDir()})
 		other, err := manager.Open(t.Context(), elsewhere, "https://example.test/files", OpenOptions{})
 		if err != nil {
 			t.Fatal(err)

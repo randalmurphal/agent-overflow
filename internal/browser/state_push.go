@@ -1,7 +1,5 @@
 package browser
 
-import "strings"
-
 // A thread's state push shows each of its tabs' info, loading state and
 // favicon. Every write that changes one of them sets the page's unpushed
 // record (pageLoad.unpushed, under metaMu), and only a push to every client
@@ -35,7 +33,7 @@ func (m *Manager) threadPagesLocked(tb *threadBrowser) []*managedPage {
 
 // publishPages pushes the thread's state when a write to one of its pages
 // is not in a push yet.
-func (m *Manager) publishPages(threadID string) {
+func (m *Manager) publishPages(threadID ThreadID) {
 	if event, ok := m.buildThreadState(threadID, true, true); ok {
 		if m.publishDecided != nil {
 			m.publishDecided()
@@ -69,7 +67,7 @@ func (m *Manager) pageUsed(p *managedPage) {
 
 // threadState is the thread's state for one client's read (an attach, a
 // call's answer). It leaves the unpushed records for the next push.
-func (m *Manager) threadState(threadID string) CompanionEvent {
+func (m *Manager) threadState(threadID ThreadID) CompanionEvent {
 	event, _ := m.buildThreadState(threadID, false, false)
 	return event
 }
@@ -78,7 +76,7 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 // empty one when it has none). For a push to every client (push) it first
 // takes the unpushed records of the thread's pages; with ifUnpushed it
 // builds nothing, answering false, when none holds one.
-func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (CompanionEvent, bool) {
+func (m *Manager) buildThreadState(threadID ThreadID, push, ifUnpushed bool) (CompanionEvent, bool) {
 	m.mu.Lock()
 	tb := m.currentLocked(threadID)
 	if push {
@@ -109,7 +107,7 @@ func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (Comp
 	seq := m.stateSeq
 	recentGen := m.recentGenTokenLocked()
 	m.mu.Unlock()
-	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), ClosedTabs: closedTabs, Downloads: downloads, Seq: seq}
+	event := CompanionEvent{Kind: "state", ThreadID: string(threadID), Pages: make([]PageInfo, 0, len(tabs)), ClosedTabs: closedTabs, Downloads: downloads, Seq: seq}
 	if active != nil && tb != nil && active.owner == tb {
 		event.FindMode = findModeOf(active)
 	}
@@ -137,8 +135,8 @@ func (m *Manager) emit(event CompanionEvent) {
 }
 
 // emitThreadState pushes the thread's state to every client.
-func (m *Manager) emitThreadState(threadID string) {
-	if strings.TrimSpace(threadID) != "" {
+func (m *Manager) emitThreadState(threadID ThreadID) {
+	if threadID.trim() != "" {
 		event, _ := m.buildThreadState(threadID, true, false)
 		m.emit(event)
 	}

@@ -188,7 +188,7 @@ func (f *findFixture) wantEndedFor(t *testing.T, after uint64, mount string) Fin
 	t.Helper()
 	select {
 	case event := <-f.events:
-		if event.Find == nil || event.Find.Active || event.Find.PageID != f.pageID || event.Find.Mount != mount || event.ThreadID != f.access.ThreadID {
+		if event.Find == nil || event.Find.Active || event.Find.PageID != f.pageID || event.Find.Mount != mount || ThreadID(event.ThreadID) != f.access.ThreadID {
 			t.Fatalf("find end event = %+v (%+v)", event, event.Find)
 		}
 		if event.Find.Session <= after {
@@ -633,7 +633,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 			if !announced {
 				t.Fatalf("%s: an Escape was announced: %+v", state, event)
 			}
-			if event.ThreadID != f.access.ThreadID || event.PageID != f.pageID || event.Find != nil || event.Accelerator != nil {
+			if ThreadID(event.ThreadID) != f.access.ThreadID || event.PageID != f.pageID || event.Find != nil || event.Accelerator != nil {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
 		case <-time.After(5 * time.Second):

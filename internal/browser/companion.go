@@ -28,7 +28,7 @@ func (m *Manager) MoveCompanionPage(access Access, pageID PageID, index int) err
 	}
 	m.emitThreadState(access.ThreadID)
 	if savedMoved {
-		return m.persistThreads([]string{access.ThreadID})
+		return m.persistThreads([]ThreadID{access.ThreadID})
 	}
 	return nil
 }
@@ -92,7 +92,7 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 // taking claim (createPageAt). It answers errSelectionPassed, opening
 // nothing, when the turn's pane detached before the tab was added.
 func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorder.Turn, address, label string, index int, claim *tabClaim) (PageInfo, error) {
-	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
+	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
 		return PageInfo{}, fmt.Errorf("browser: invalid caller scope")
 	}
 	p, err := m.createPageAt(ctx, access, turn, index, claim)

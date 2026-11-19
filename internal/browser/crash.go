@@ -102,7 +102,7 @@ func (m *Manager) pageCrashed(handle ids.PageHandle, reason string) {
 	m.emitThreadState(p.owner.id)
 	// Hides the dead view; the pane shows the failure in its place.
 	m.syncPanePresentation(p.owner.id)
-	if err := m.persistThreads([]string{p.owner.id}); err != nil {
+	if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {
 		// The tab is in memory; only a restart before the next save loses
 		// it, as it would have lost the live page.
 		log.Printf("browser: page %s crashed: save the thread's pages: %v", p.id, err)

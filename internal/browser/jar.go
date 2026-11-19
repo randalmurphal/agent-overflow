@@ -70,7 +70,7 @@ type jarIdentity struct {
 	kind      string
 	ephemeral bool
 	// thread is the owner of a thread or private jar, "" otherwise.
-	thread string
+	thread ThreadID
 	// private is a private jar's instance token, and owner the thread
 	// lifetime that holds it; "" and nil otherwise.
 	private string
@@ -116,7 +116,7 @@ func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (j
 		if tb.session.privateJar == "" {
 			tb.session.privateJar = uuid.NewString()
 		}
-		jar.key = jarKey("private:" + access.ThreadID + ":" + tb.session.privateJar)
+		jar.key = jarKey("private:" + string(access.ThreadID) + ":" + tb.session.privateJar)
 		jar.thread, jar.private, jar.owner, jar.ephemeral = access.ThreadID, tb.session.privateJar, tb, true
 	default:
 		return jarIdentity{}, fmt.Errorf("browser: unknown cookie jar %q", kind)

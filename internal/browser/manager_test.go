@@ -265,12 +265,12 @@ func TestCloseThreadReportsAProfileThatFailsToDispose(t *testing.T) {
 	engine.disposeErr = errors.New("the profile's browser would not stop")
 	thread := "thread"
 	for range 2 {
-		access := manager.Bind(Caller{ThreadID: thread, Workspace: t.TempDir()})
+		access := manager.Bind(Caller{ThreadID: ThreadID(thread), Workspace: t.TempDir()})
 		if _, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{}); err != nil {
 			t.Fatalf("open: %v", err)
 		}
 	}
-	err := manager.CloseThread(t.Context(), thread)
+	err := manager.CloseThread(t.Context(), ThreadID(thread))
 	if !errors.Is(err, engine.disposeErr) {
 		t.Fatalf("CloseThread = %v, want the dispose failure", err)
 	}
@@ -280,7 +280,7 @@ func TestCloseThreadReportsAProfileThatFailsToDispose(t *testing.T) {
 	if got := engine.disposed.Load(); got != 2 {
 		t.Fatalf("%d of 2 workspace profiles were disposed", got)
 	}
-	if err := manager.CloseThread(t.Context(), thread); err != nil {
+	if err := manager.CloseThread(t.Context(), ThreadID(thread)); err != nil {
 		t.Fatalf("a second close of the closed thread: %v", err)
 	}
 }
@@ -358,7 +358,7 @@ func TestAPageOpenedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 			// Either close reports the closing thread's empty state between
 			// emptying the workspace and disposing its profile.
 			manager.SetEventSink(func(event CompanionEvent) {
-				if event.ThreadID == closing.ThreadID && len(event.Pages) == 0 && reported.CompareAndSwap(false, true) {
+				if ThreadID(event.ThreadID) == closing.ThreadID && len(event.Pages) == 0 && reported.CompareAndSwap(false, true) {
 					opened, openErr = manager.Open(context.Background(), other, "https://example.test/other", OpenOptions{})
 				}
 			})

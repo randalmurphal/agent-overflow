@@ -195,7 +195,7 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 	p := pending.p
 	m.emitThreadState(threadID)
 	if r.savedMoved {
-		if err := m.persistThreads([]string{threadID}); err != nil {
+		if err := m.persistThreads([]ThreadID{threadID}); err != nil {
 			// The suspended tabs keep their new places in memory; only a
 			// restart before the next save puts them back.
 			log.Printf("browser: place a new tab of thread %s: save the thread's pages: %v", threadID, err)

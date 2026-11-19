@@ -139,7 +139,7 @@ func TestCloseDisposesInlineOnTheUIThread(t *testing.T) {
 	engine := &uiThreadEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
 	for _, thread := range []string{"a", "b"} {
-		access := manager.Bind(Caller{ThreadID: thread, Workspace: t.TempDir()})
+		access := manager.Bind(Caller{ThreadID: ThreadID(thread), Workspace: t.TempDir()})
 		if _, err := manager.Open(t.Context(), access, "https://example.test/"+thread, OpenOptions{}); err != nil {
 			t.Fatalf("open for %s: %v", thread, err)
 		}

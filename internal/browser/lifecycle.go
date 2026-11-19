@@ -421,7 +421,7 @@ func (m *Manager) disposeScope(ctx context.Context, scope *jarScope) error {
 // disposeReleased stops the downloads a page closed by its engine left
 // running and disposes the scope its close released (nil for none), off the
 // caller, reporting a failure as the teardown of that page.
-func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadID string, pageID PageID) {
+func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadID ThreadID, pageID PageID) {
 	run := func() {
 		m.stopEndedDownloads(ended)
 		if scope == nil {
@@ -440,7 +440,7 @@ func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadI
 
 // reportTeardown publishes the failure of a teardown that ran after its page
 // left the tab set, for the pane's banner or, with no pane, a toast.
-func (m *Manager) reportTeardown(threadID string, pageID PageID, err error) {
+func (m *Manager) reportTeardown(threadID ThreadID, pageID PageID, err error) {
 	log.Printf("browser: close page %s of thread %s: %v", pageID, threadID, err)
-	m.emit(CompanionEvent{Kind: "teardown", ThreadID: threadID, PageID: string(pageID), Error: err.Error()})
+	m.emit(CompanionEvent{Kind: "teardown", ThreadID: string(threadID), PageID: string(pageID), Error: err.Error()})
 }

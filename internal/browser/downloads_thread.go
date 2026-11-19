@@ -295,7 +295,7 @@ func (m *Manager) publishDownloads(notes ...downloadNote) {
 	m.emitThreadState(threadID)
 	for _, note := range notes {
 		if note.announce != nil {
-			m.emit(CompanionEvent{Kind: "download", ThreadID: threadID, Download: note.announce})
+			m.emit(CompanionEvent{Kind: "download", ThreadID: string(threadID), Download: note.announce})
 		}
 	}
 }

@@ -273,7 +273,7 @@ func (l *popupLauncher) settledEngine() {
 // access binds a caller of thread, in a workspace of its own, on l's
 // Manager.
 func (l *popupLauncher) access(thread string) Access {
-	return l.manager.Bind(Caller{ThreadID: thread, Workspace: l.t.TempDir()})
+	return l.manager.Bind(Caller{ThreadID: ThreadID(thread), Workspace: l.t.TempDir()})
 }
 
 // tabInfo answers a tab's info as the Manager holds it.

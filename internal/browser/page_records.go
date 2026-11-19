@@ -60,7 +60,7 @@ type pageRecord struct {
 	LastUsed int64  `json:"lastUsed"`
 }
 
-func (m *Manager) recordPath(threadID string) string {
+func (m *Manager) recordPath(threadID ThreadID) string {
 	digest := sha256.Sum256([]byte(threadID))
 	return filepath.Join(m.recordDir, hex.EncodeToString(digest[:16])+".json")
 }
@@ -68,7 +68,7 @@ func (m *Manager) recordPath(threadID string) string {
 // persistThreads rewrites the saved copy of each thread from its current
 // suspended pages and jar setting, removing the file of a thread that has no
 // page and the default jar.
-func (m *Manager) persistThreads(threadIDs []string) error {
+func (m *Manager) persistThreads(threadIDs []ThreadID) error {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	return m.writeRecordFilesLocked(threadIDs)
@@ -77,7 +77,7 @@ func (m *Manager) persistThreads(threadIDs []string) error {
 // writeRecordFilesLocked snapshots the threads' records under m.mu and writes
 // them. The caller holds persistMu, which keeps the snapshot and its write in
 // order with every other write.
-func (m *Manager) writeRecordFilesLocked(threadIDs []string) error {
+func (m *Manager) writeRecordFilesLocked(threadIDs []ThreadID) error {
 	m.mu.Lock()
 	files := make([]pageRecordFile, 0, len(threadIDs))
 	for _, threadID := range threadIDs {
@@ -100,8 +100,8 @@ func (m *Manager) writeRecordFilesLocked(threadIDs []string) error {
 // every lifetime of the thread, so it is only ever written from the current
 // one, in persistMu order: an earlier lifetime's cleanup, or a save it
 // asks for, writes the current lifetime's tabs. The caller holds m.mu.
-func (m *Manager) recordFileLocked(threadID string, withLive bool) pageRecordFile {
-	file := pageRecordFile{Version: pageRecordVersion, ThreadID: threadID}
+func (m *Manager) recordFileLocked(threadID ThreadID, withLive bool) pageRecordFile {
+	file := pageRecordFile{Version: pageRecordVersion, ThreadID: string(threadID)}
 	tb := m.currentLocked(threadID)
 	for _, tab := range m.threadTabsLocked(tb) {
 		rec := tab.rec
@@ -130,7 +130,7 @@ func (r *suspendedPage) saved() pageRecord {
 // writeRecordFile writes one thread's saved copy, or removes it when it
 // holds no page and the default jar. The caller holds persistMu.
 func (m *Manager) writeRecordFile(file pageRecordFile) error {
-	path := m.recordPath(file.ThreadID)
+	path := m.recordPath(ThreadID(file.ThreadID))
 	if len(file.Pages) == 0 && file.Jar == "" {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("browser: remove saved pages: %w", err)
@@ -165,7 +165,7 @@ func removeRecordDir(dir string) error {
 // read, is not a valid record of its thread, or belongs to a thread keep
 // rejects is removed; each such outcome is logged, because the pages it held
 // are gone from their thread.
-func (m *Manager) loadPageRecords(keep func(threadID string) (bool, error)) {
+func (m *Manager) loadPageRecords(keep func(threadID ThreadID) (bool, error)) {
 	if !m.Available() {
 		return
 	}
@@ -188,7 +188,7 @@ func (m *Manager) loadPageRecords(keep func(threadID string) (bool, error)) {
 		file, err := m.readRecordFile(path)
 		if err == nil && keep != nil {
 			var kept bool
-			if kept, err = keep(file.ThreadID); err != nil {
+			if kept, err = keep(ThreadID(file.ThreadID)); err != nil {
 				log.Printf("browser: saved pages of thread %s kept for the next boot: %v", file.ThreadID, err)
 				continue
 			}
@@ -243,7 +243,7 @@ func (m *Manager) readRecordFile(path string) (pageRecordFile, error) {
 	if file.Version != pageRecordVersion {
 		return file, fmt.Errorf("unknown version %d", file.Version)
 	}
-	if file.ThreadID == "" || m.recordPath(file.ThreadID) != path {
+	if file.ThreadID == "" || m.recordPath(ThreadID(file.ThreadID)) != path {
 		return file, errors.New("not the saved pages of the thread it names")
 	}
 	if file.Jar != "" && !validJarKind(file.Jar) {
@@ -276,7 +276,7 @@ func (m *Manager) readRecordFile(path string) (pageRecordFile, error) {
 // one.
 func (m *Manager) addLoadedRecords(file pageRecordFile) {
 	m.mu.Lock()
-	tb := m.threadLocked(file.ThreadID)
+	tb := m.threadLocked(ThreadID(file.ThreadID))
 	for _, page := range file.Pages {
 		m.suspended[PageID(page.ID)] = &suspendedPage{
 			id: PageID(page.ID), owner: tb,

@@ -118,7 +118,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		t.Helper()
 		select {
 		case event := <-escapes:
-			if event.ThreadID != access.ThreadID || event.PageID != page.ID {
+			if ThreadID(event.ThreadID) != access.ThreadID || event.PageID != page.ID {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
 		case <-time.After(30 * time.Second):

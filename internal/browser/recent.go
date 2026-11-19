@@ -116,8 +116,8 @@ func (m *Manager) forgetBrowsingLocked(tb *threadBrowser) bool {
 // forgetAllBrowsingLocked forgets every thread lifetime's browsing history
 // and advances the forget generation, answering the threads that had any.
 // The caller holds m.mu.
-func (m *Manager) forgetAllBrowsingLocked() []string {
-	var threads []string
+func (m *Manager) forgetAllBrowsingLocked() []ThreadID {
+	var threads []ThreadID
 	for threadID, tb := range m.threads {
 		if len(tb.browsing.recent) > 0 || closedCountLocked(tb) > 0 {
 			threads = append(threads, threadID)

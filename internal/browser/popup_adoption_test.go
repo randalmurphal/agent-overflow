@@ -919,7 +919,7 @@ func TestAPopupListedWithAHeldReportIsPushedOnce(t *testing.T) {
 	var mu sync.Mutex
 	var pushed []CompanionEvent
 	manager.SetEventSink(func(event CompanionEvent) {
-		if event.ThreadID == access.ThreadID && event.Kind == "state" {
+		if ThreadID(event.ThreadID) == access.ThreadID && event.Kind == "state" {
 			mu.Lock()
 			pushed = append(pushed, event)
 			mu.Unlock()
@@ -948,7 +948,7 @@ func TestAPopupIsListedWithItsHistory(t *testing.T) {
 	var mu sync.Mutex
 	var pushed []CompanionEvent
 	manager.SetEventSink(func(event CompanionEvent) {
-		if event.ThreadID == access.ThreadID && event.Kind == "state" {
+		if ThreadID(event.ThreadID) == access.ThreadID && event.Kind == "state" {
 			mu.Lock()
 			pushed = append(pushed, event)
 			mu.Unlock()

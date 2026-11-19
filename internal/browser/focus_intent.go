@@ -63,11 +63,12 @@ const (
 
 // pageFocusIntent is one mount's current intent.
 type pageFocusIntent struct {
-	thread, mount string
-	pageID        PageID
-	id            uint64
-	armed         time.Time
-	withdrawn     atomic.Bool
+	thread    ThreadID
+	mount     string
+	pageID    PageID
+	id        uint64
+	armed     time.Time
+	withdrawn atomic.Bool
 	// claimed is set, under Manager.mu, once the intent is handed to the
 	// engine, so it is applied at most once at a time.
 	claimed bool
@@ -82,7 +83,7 @@ type mountFocus struct {
 
 // mountFocusLocked answers a mounted pane's focus state, nil for a mount the
 // thread does not hold. The caller holds m.mu.
-func (m *Manager) mountFocusLocked(threadID, mount string) *mountFocus {
+func (m *Manager) mountFocusLocked(threadID ThreadID, mount string) *mountFocus {
 	pane, ok := m.panes[mount]
 	if !ok || pane.threadID != threadID {
 		return nil
@@ -164,7 +165,7 @@ func (m *Manager) dropFocusIntentLocked(in *pageFocusIntent) {
 // restoring or held for its layout is applied once the page shows. An intent
 // that was withdrawn, outlived focusIntentMaxAge, or whose tab closed is
 // dropped.
-func (m *Manager) applyFocusIntent(threadID string) {
+func (m *Manager) applyFocusIntent(threadID ThreadID) {
 	host, ok := m.engine.(paneHost)
 	if !ok {
 		return
@@ -240,8 +241,8 @@ func (m *Manager) hasTabLocked(tb *threadBrowser, pageID PageID) bool {
 // emitPageFocus tells the mount's pane how its focus intent ended: moved
 // into the page (err nil) or refused. The pane shows a refusal only while it
 // is the newest thing the user asked of the browser.
-func (m *Manager) emitPageFocus(threadID, mount string, intent uint64, err error) {
-	event := CompanionEvent{Kind: "focus", ThreadID: threadID, Mount: mount, FocusIntent: intent}
+func (m *Manager) emitPageFocus(threadID ThreadID, mount string, intent uint64, err error) {
+	event := CompanionEvent{Kind: "focus", ThreadID: string(threadID), Mount: mount, FocusIntent: intent}
 	if err != nil {
 		event.Error = err.Error()
 	}
@@ -254,7 +255,7 @@ func (m *Manager) emitPageFocus(threadID, mount string, intent uint64, err error
 func (m *Manager) pageFocusReported(handle ids.PageHandle, mount string, intent uint64, err error) {
 	m.mu.Lock()
 	page := m.pageByHandleLocked(handle)
-	owner := ""
+	var owner ThreadID
 	if page != nil && m.panes[mount].owner == page.owner {
 		owner = page.owner.id
 	}

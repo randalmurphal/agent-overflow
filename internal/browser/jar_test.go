@@ -342,7 +342,7 @@ func newProject(t *testing.T, id string) project {
 }
 
 func (p project) access(m *Manager, thread, workspace string) Access {
-	return m.Bind(Caller{ThreadID: thread, Workspace: workspace, ProjectRoot: p.root, ProjectID: p.id})
+	return m.Bind(Caller{ThreadID: ThreadID(thread), Workspace: workspace, ProjectRoot: p.root, ProjectID: p.id})
 }
 
 func canonical(t *testing.T, path string) string {

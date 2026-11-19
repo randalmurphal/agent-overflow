@@ -154,7 +154,7 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 	// The rect resizes the thread viewport, so the active page is laid out at
 	// it before it is shown: the presentation lands after the drain pass.
 	applied := make(chan string, 8)
-	manager.viewportApplied = func(threadID string) { applied <- threadID }
+	manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
 	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
@@ -296,7 +296,7 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, access Access) string {
 	t.Helper()
 	applied := make(chan string, 16)
-	manager.viewportApplied = func(threadID string) { applied <- threadID }
+	manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
@@ -305,12 +305,12 @@ func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, 
 	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
-	if got := <-applied; got != access.ThreadID {
+	if got := <-applied; ThreadID(got) != access.ThreadID {
 		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID)
 	}
 	// The drain may owe another pass (a presentation pass that saw the page
 	// lag asks for one); a pass left running would race the caller's.
-	awaitViewportIdle(t, manager, access.ThreadID)
+	awaitViewportIdle(t, manager, string(access.ThreadID))
 	for len(applied) > 0 {
 		<-applied
 	}
@@ -325,8 +325,8 @@ func awaitViewportIdle(t *testing.T, manager *Manager, threadID string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		manager.mu.Lock()
-		st := manager.viewportSyncLocked(threadID)
-		_, presenting := manager.presenting[threadID]
+		st := manager.viewportSyncLocked(ThreadID(threadID))
+		_, presenting := manager.presenting[ThreadID(threadID)]
 		busy := st.busy || st.dirty || presenting
 		manager.mu.Unlock()
 		if !busy {

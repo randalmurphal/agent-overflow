@@ -112,7 +112,7 @@ type viewportSync struct {
 }
 
 // viewportSyncLocked answers the thread's sync record. Caller holds m.mu.
-func (m *Manager) viewportSyncLocked(threadID string) *viewportSync {
+func (m *Manager) viewportSyncLocked(threadID ThreadID) *viewportSync {
 	st := m.viewportSyncs[threadID]
 	if st == nil {
 		st = &viewportSync{}
@@ -124,7 +124,7 @@ func (m *Manager) viewportSyncLocked(threadID string) *viewportSync {
 // scheduleViewport asks for the thread's active page to take the session
 // viewport and returns at once; the newest request while a pass runs is the
 // only one applied after it.
-func (m *Manager) scheduleViewport(threadID string) {
+func (m *Manager) scheduleViewport(threadID ThreadID) {
 	m.mu.Lock()
 	st := m.viewportSyncLocked(threadID)
 	st.dirty = true
@@ -141,7 +141,7 @@ func (m *Manager) scheduleViewport(threadID string) {
 // active page out and re-presents the thread; the thread's state, which
 // carries the viewport, is pushed once when the drain settles rather than
 // once per pass.
-func (m *Manager) drainViewport(threadID string, st *viewportSync) {
+func (m *Manager) drainViewport(threadID ThreadID, st *viewportSync) {
 	for {
 		m.mu.Lock()
 		if !st.dirty {
@@ -155,7 +155,7 @@ func (m *Manager) drainViewport(threadID string, st *viewportSync) {
 		// A page left at the old size while the pane places it at the new
 		// one is visibly wrong, so the failure replaces the pane body.
 		if err := m.applyActiveViewport(threadID, st); err != nil {
-			m.emit(CompanionEvent{Kind: "error", ThreadID: threadID, Error: err.Error()})
+			m.emit(CompanionEvent{Kind: "error", ThreadID: string(threadID), Error: err.Error()})
 		}
 		m.syncPanePresentation(threadID)
 		if m.viewportApplied != nil {
@@ -166,7 +166,7 @@ func (m *Manager) drainViewport(threadID string, st *viewportSync) {
 
 // applyActiveViewport lays the thread's active page out at the session
 // viewport. A page already at it costs nothing.
-func (m *Manager) applyActiveViewport(threadID string, st *viewportSync) error {
+func (m *Manager) applyActiveViewport(threadID ThreadID, st *viewportSync) error {
 	m.mu.Lock()
 	current := m.currentLocked(threadID)
 	active, _ := m.livePageLocked(m.currentSessionLocked(threadID).activePage())
@@ -185,7 +185,7 @@ func (m *Manager) applyActiveViewport(threadID string, st *viewportSync) error {
 // applyThreadViewport lays every page the thread owns out at the session
 // viewport as it stands when each page is reached. Every page is attempted;
 // the first failure of a page that is not closing is the answer.
-func (m *Manager) applyThreadViewport(threadID string) error {
+func (m *Manager) applyThreadViewport(threadID ThreadID) error {
 	m.mu.Lock()
 	st := m.viewportSyncLocked(threadID)
 	current := m.currentLocked(threadID)

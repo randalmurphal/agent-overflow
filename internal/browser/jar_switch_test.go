@@ -149,7 +149,7 @@ func TestABusyPageDoesNotHoldASwitch(t *testing.T) {
 		titles++
 		manager.updatePageInfo(ids.PageHandle(handle), "https://example.test/busy", fmt.Sprintf("title %d", titles), titles)
 		if titles == 1 {
-			go func() { saved <- manager.persistThreads([]string{"other"}) }()
+			go func() { saved <- manager.persistThreads([]ThreadID{"other"}) }()
 		}
 	}
 	switched := make(chan error, 1)

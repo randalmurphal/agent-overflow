@@ -60,7 +60,7 @@ func (a *App) browserCaller(threadID string) (appbrowser.Caller, error) {
 		return appbrowser.Caller{}, err
 	}
 	return appbrowser.Caller{
-		ThreadID: thread.ID, Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath, ProjectID: thread.ProjectID,
+		ThreadID: appbrowser.ThreadID(thread.ID), Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath, ProjectID: thread.ProjectID,
 	}, nil
 }
 
@@ -69,7 +69,7 @@ func (a *App) browserCaller(threadID string) (appbrowser.Caller, error) {
 // action's Access sees, so the action changes nothing after it and its
 // End answers appbrowser.ErrThreadClosed.
 func (a *App) bindBrowser(threadID string) (appbrowser.Access, error) {
-	binding := a.browser.manager.BindThread(strings.TrimSpace(threadID))
+	binding := a.browser.manager.BindThread(appbrowser.ThreadID(strings.TrimSpace(threadID)))
 	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.Access{}, err

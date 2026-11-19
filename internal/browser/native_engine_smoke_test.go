@@ -176,7 +176,7 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 					"<!doctype html><title>opener</title><script>const SECRET = %s; %s window.open(%s);</script>",
 					jsonString(smokeFileURL(secret)), tc.open, jsonString(smokeFileURL(allowed))))
 				access := manager.Bind(Caller{
-					ThreadID: "native-smoke-" + jar + "-" + tc.name, Workspace: workspace,
+					ThreadID: ThreadID("native-smoke-" + jar + "-" + tc.name), Workspace: workspace,
 					ProjectRoot: resolvedTempDir(t), ProjectID: "native-smoke",
 				})
 				t.Cleanup(func() {

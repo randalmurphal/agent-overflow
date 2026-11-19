@@ -228,8 +228,8 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 		if after == before {
 			t.Fatalf("%s: the generation stayed %q", forget.name, after)
 		}
-		if forget.pushes && lastPushed(access.ThreadID) != after {
-			t.Fatalf("%s: the last push carried %q, want %q", forget.name, lastPushed(access.ThreadID), after)
+		if forget.pushes && lastPushed(string(access.ThreadID)) != after {
+			t.Fatalf("%s: the last push carried %q, want %q", forget.name, lastPushed(string(access.ThreadID)), after)
 		}
 	}
 }

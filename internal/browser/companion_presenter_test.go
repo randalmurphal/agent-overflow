@@ -37,15 +37,15 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			// The pages take a presenter's new size on their own goroutine,
 			// whose pass also presents; each change of size is waited for.
 			applied := make(chan string, 16)
-			manager.viewportApplied = func(threadID string) { applied <- threadID }
+			manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 			resized := func() {
 				t.Helper()
-				if got := <-applied; got != access.ThreadID {
+				if got := <-applied; ThreadID(got) != access.ThreadID {
 					t.Fatalf("viewport applied for %q", got)
 				}
 				// A pass that saw the page lag may owe the drain another
 				// pass; it settles before the next step.
-				awaitViewportIdle(t, manager, access.ThreadID)
+				awaitViewportIdle(t, manager, string(access.ThreadID))
 				for len(applied) > 0 {
 					<-applied
 				}

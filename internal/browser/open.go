@@ -130,7 +130,7 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 // page. A suspended page asked for by a caller about to navigate it is
 // restored blank (skipLoad), since loading its old address first is wasted.
 func (m *Manager) pageForOpen(ctx context.Context, access Access, requested PageID, skipLoad bool) (*managedPage, error) {
-	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
+	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
 		return nil, fmt.Errorf("browser: invalid caller scope")
 	}
 	if requested = requested.trim(); requested != "" {

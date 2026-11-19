@@ -397,7 +397,7 @@ func TestATeardownFailureIsReported(t *testing.T) {
 			t.Fatalf("close (waiting %v) = %v", wait, err)
 		}
 		event := events.waitFor(t, "the teardown failure", func(e CompanionEvent) bool { return e.Kind == "teardown" })
-		if event.ThreadID != access.ThreadID || event.PageID != last.ID || !strings.Contains(event.Error, "would not stop") {
+		if ThreadID(event.ThreadID) != access.ThreadID || event.PageID != last.ID || !strings.Contains(event.Error, "would not stop") {
 			t.Fatalf("teardown event = %+v", event)
 		}
 	}

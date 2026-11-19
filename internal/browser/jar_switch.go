@@ -70,7 +70,7 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consen
 	if !validJarKind(kind) {
 		return fmt.Errorf("browser: unknown cookie jar %q", truncateUTF8(kind, 32))
 	}
-	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
+	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
 		return fmt.Errorf("browser: invalid caller scope")
 	}
 	if kind == JarProject && strings.TrimSpace(access.ProjectID) == "" {
@@ -133,7 +133,7 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consen
 	if err != nil {
 		// The copy on disk is the switch's: write the thread back as it is,
 		// before a write waiting on persistMu writes its own.
-		if werr := m.writeRecordFilesLocked([]string{access.ThreadID}); werr != nil {
+		if werr := m.writeRecordFilesLocked([]ThreadID{access.ThreadID}); werr != nil {
 			return errors.Join(err, fmt.Errorf("browser: the saved tabs still name the %s cookie jar the switch did not make: %w", kind, werr))
 		}
 		return err
@@ -241,7 +241,7 @@ type jarSwitch struct {
 // m.mu.
 func (m *Manager) captureJarSwitchLocked(tb *threadBrowser, kind string) *jarSwitch {
 	sw := &jarSwitch{tb: tb, kind: kind, records: make(map[*managedPage]*suspendedPage)}
-	sw.file = pageRecordFile{Version: pageRecordVersion, ThreadID: tb.id, ActivePageID: tb.session.ActivePageID, Jar: savedJar(kind)}
+	sw.file = pageRecordFile{Version: pageRecordVersion, ThreadID: string(tb.id), ActivePageID: tb.session.ActivePageID, Jar: savedJar(kind)}
 	for _, tab := range m.threadTabsLocked(tb) {
 		rec := tab.rec
 		if tab.live != nil {

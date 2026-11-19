@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 )
 
@@ -46,7 +45,7 @@ var errUnbound = errors.New("browser: the action is not bound to its thread's br
 // guarded by m.mu, except detached (written under it, read atomically) and
 // downloads (m.downloadsMu).
 type threadBrowser struct {
-	id string
+	id ThreadID
 	// detached is set when CloseThread took the lifetime out of the
 	// registry; it is never cleared.
 	detached atomic.Bool
@@ -67,7 +66,7 @@ type threadBrowser struct {
 	downloads *threadDownloadList
 }
 
-func newThreadBrowser(id string) *threadBrowser {
+func newThreadBrowser(id ThreadID) *threadBrowser {
 	return &threadBrowser{
 		id:       id,
 		session:  SessionInfo{ViewportW: defaultViewportWidth, ViewportH: defaultViewportHeight, Jar: JarWorktree},
@@ -77,12 +76,12 @@ func newThreadBrowser(id string) *threadBrowser {
 
 // threadLocked answers the thread's current lifetime, beginning one when it
 // has none. The caller holds m.mu.
-func (m *Manager) threadLocked(threadID string) *threadBrowser {
+func (m *Manager) threadLocked(threadID ThreadID) *threadBrowser {
 	if tb := m.threads[threadID]; tb != nil {
 		return tb
 	}
 	if m.threads == nil {
-		m.threads = make(map[string]*threadBrowser)
+		m.threads = make(map[ThreadID]*threadBrowser)
 	}
 	tb := newThreadBrowser(threadID)
 	m.threads[threadID] = tb
@@ -91,14 +90,14 @@ func (m *Manager) threadLocked(threadID string) *threadBrowser {
 
 // currentLocked answers the thread's current lifetime, nil when it has
 // none. The caller holds m.mu.
-func (m *Manager) currentLocked(threadID string) *threadBrowser {
+func (m *Manager) currentLocked(threadID ThreadID) *threadBrowser {
 	return m.threads[threadID]
 }
 
 // currentSessionLocked is the session of the thread's current lifetime, the
 // default one when it has none, for what shows the thread as it is now: its
 // pane's presentation and its state. The caller holds m.mu.
-func (m *Manager) currentSessionLocked(threadID string) SessionInfo {
+func (m *Manager) currentSessionLocked(threadID ThreadID) SessionInfo {
 	if tb := m.threads[threadID]; tb != nil {
 		return tb.session
 	}
@@ -108,7 +107,7 @@ func (m *Manager) currentSessionLocked(threadID string) SessionInfo {
 // detachLocked takes the thread's current lifetime out of the registry and
 // answers it, nil for none; the next bind begins a new one. The caller holds
 // m.mu.
-func (m *Manager) detachLocked(threadID string) *threadBrowser {
+func (m *Manager) detachLocked(threadID ThreadID) *threadBrowser {
 	tb := m.threads[threadID]
 	if tb == nil {
 		return nil
@@ -191,10 +190,10 @@ type ThreadBinding struct {
 // BindThread binds an action to the thread's current browser lifetime. A
 // caller binds before it reads the thread's row, so a close after that read
 // is one the binding sees.
-func (m *Manager) BindThread(threadID string) ThreadBinding {
+func (m *Manager) BindThread(threadID ThreadID) ThreadBinding {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return ThreadBinding{tb: m.threadLocked(strings.TrimSpace(threadID))}
+	return ThreadBinding{tb: m.threadLocked(threadID.trim())}
 }
 
 // Access answers caller bound to b's lifetime. A caller of another thread
@@ -217,7 +216,7 @@ func (b ThreadBinding) End() error {
 // Bind binds an action for caller to its thread's current lifetime: an MCP
 // tool call at its entry.
 func (m *Manager) Bind(caller Caller) Access {
-	if strings.TrimSpace(caller.ThreadID) == "" {
+	if caller.ThreadID.trim() == "" {
 		// No thread to bind: every change through it is refused.
 		return Access{boundCaller: &caller}
 	}

@@ -343,7 +343,7 @@ func (m *Manager) crashedPopupListed(p *managedPage, released *jarScope) {
 	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner.id)
 	m.syncPanePresentation(p.owner.id)
-	if err := m.persistThreads([]string{p.owner.id}); err != nil {
+	if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {
 		// The tab is in memory; only a restart before the next save loses it.
 		log.Printf("browser: popup %s crashed: save the thread's pages: %v", p.id, err)
 	}

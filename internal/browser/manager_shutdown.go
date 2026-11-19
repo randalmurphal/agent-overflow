@@ -28,7 +28,7 @@ import (
 // saved copy that cannot be written is logged instead: its pages are gone
 // from memory, and the next boot removes the saved copy of a deleted or
 // archived thread.
-func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
+func (m *Manager) CloseThread(ctx context.Context, threadID ThreadID) error {
 	// persistMu first, so the detach and the save that follows are one step
 	// in the order of the thread's saves: a save of a new lifetime is
 	// ordered after this one.
@@ -51,7 +51,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 		}
 	}
 	m.mu.Unlock()
-	if err := m.writeRecordFilesLocked([]string{threadID}); err != nil {
+	if err := m.writeRecordFilesLocked([]ThreadID{threadID}); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
 	m.persistMu.Unlock()

@@ -67,7 +67,7 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 				var pushMu sync.Mutex
 				publishedLive := false
 				manager.SetEventSink(func(event CompanionEvent) {
-					if event.Kind != "state" || event.ThreadID != access.ThreadID {
+					if event.Kind != "state" || ThreadID(event.ThreadID) != access.ThreadID {
 						return
 					}
 					live := 0

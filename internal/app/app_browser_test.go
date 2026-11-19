@@ -423,7 +423,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 	if err := <-deleted; err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if pages := manager.CompanionState(appbrowser.Caller{ThreadID: thread.ID}).Pages; len(pages) != 0 {
+	if pages := manager.CompanionState(appbrowser.Caller{ThreadID: appbrowser.ThreadID(thread.ID)}).Pages; len(pages) != 0 {
 		t.Fatalf("the deleted thread owns %d browser pages", len(pages))
 	}
 }
@@ -574,7 +574,7 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			} else {
 				thread := makeWorkspaceThread(t, app, "thread-companion-late")
 				threadID = thread.ID
-				binding = manager.BindThread(threadID)
+				binding = manager.BindThread(appbrowser.ThreadID(threadID))
 				if err := app.deleteThread(threadID); err != nil {
 					t.Fatal(err)
 				}
@@ -587,7 +587,7 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			}
 			// An action that read the row before the delete opens its page
 			// after the delete's last close.
-			access, err := binding.Access(appbrowser.Caller{ThreadID: threadID, Workspace: t.TempDir()})
+			access, err := binding.Access(appbrowser.Caller{ThreadID: appbrowser.ThreadID(threadID), Workspace: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -614,14 +614,14 @@ func TestACompanionActionOverlappingAPageCloseLeavesNoPage(t *testing.T) {
 	thread, access := browserTestThread(t, app, "thread-companion-retired")
 
 	caller := access.Caller()
-	stale, err := manager.BindThread(thread.ID).Access(caller)
+	stale, err := manager.BindThread(appbrowser.ThreadID(thread.ID)).Access(caller)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	later, err := manager.BindThread(thread.ID).Access(caller)
+	later, err := manager.BindThread(appbrowser.ThreadID(thread.ID)).Access(caller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,7 +787,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 			if _, err := manager.Open(t.Context(), access, "https://example.test/suspended", appbrowser.OpenOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if err := manager.SuspendThread(t.Context(), thread.ID); err != nil {
+			if err := manager.SuspendThread(t.Context(), appbrowser.ThreadID(thread.ID)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := manager.Open(t.Context(), access, "https://example.test/live", appbrowser.OpenOptions{}); err != nil {
@@ -844,7 +844,7 @@ func TestBrowserThreadKeepsPagesOnlyWhileListed(t *testing.T) {
 		id   string
 		want bool
 	}{{listed.ID, true}, {archivedThread.ID, false}, {"thread-missing", false}} {
-		got, err := app.browserThreadKeepsPages(tc.id)
+		got, err := app.browserThreadKeepsPages(appbrowser.ThreadID(tc.id))
 		if err != nil || got != tc.want {
 			t.Fatalf("browserThreadKeepsPages(%s) = %v, %v; want %v", tc.id, got, err, tc.want)
 		}

@@ -137,7 +137,7 @@ func overlayPaneLayout(placement PanePlacement, overlayW, overlayH int) (layout 
 // unit connection cleanup releases, so a dead UI can never leave a native view
 // painted over a window that no longer renders the pane under it.
 type paneMount struct {
-	threadID string
+	threadID ThreadID
 	// owner is the thread lifetime the mount attached to: it presents that
 	// lifetime's pages and orders that lifetime's commands, and nothing
 	// after the lifetime's close (CloseThread ends its order).

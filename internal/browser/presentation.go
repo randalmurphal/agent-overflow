@@ -26,12 +26,12 @@ package browser
 // runs leaves it to that caller, which runs one more pass after its own, so
 // the last pass always reads the newest state and no caller waits on a pass
 // it did not start (an engine's UI thread among them).
-func (m *Manager) syncPanePresentation(threadID string) {
+func (m *Manager) syncPanePresentation(threadID ThreadID) {
 	m.mu.Lock()
 	st := m.presenting[threadID]
 	if st == nil {
 		if m.presenting == nil {
-			m.presenting = make(map[string]*presentSync)
+			m.presenting = make(map[ThreadID]*presentSync)
 		}
 		st = &presentSync{}
 		m.presenting[threadID] = st
@@ -78,7 +78,7 @@ type presentSync struct{ busy, dirty bool }
 // show waits for a base application already under way and then carries
 // whatever the address and the pane's color call for at that moment. No
 // Manager.mu is held there, and nothing holding a page's baseMu runs a pass.
-func (m *Manager) presentPanes(threadID string) {
+func (m *Manager) presentPanes(threadID ThreadID) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
 	// The candidate is the current lifetime's selection; every other page
@@ -137,7 +137,7 @@ func (m *Manager) presentPanes(threadID string) {
 	}
 	m.mu.Lock()
 	if m.presented == nil {
-		m.presented = make(map[string]PageID)
+		m.presented = make(map[ThreadID]PageID)
 	}
 	if show {
 		m.presented[threadID] = candidate.id
@@ -158,7 +158,7 @@ func (m *Manager) presentPanes(threadID string) {
 // thread's selected live page is not shown. A lagging candidate is recorded
 // as awaiting its layout in the same hold, so the apply that lays it out
 // either is seen here or finds the record (presentLaidOut).
-func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (show bool, placement PanePlacement, lagging bool) {
+func (m *Manager) decidePresentation(threadID ThreadID, candidate *managedPage) (show bool, placement PanePlacement, lagging bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.awaitingLayout, threadID)
@@ -187,7 +187,7 @@ func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (s
 		want := packViewport(pageW, pageH)
 		if candidate.viewport.Load() != want && candidate.viewportFailed.Load() != want {
 			if m.awaitingLayout == nil {
-				m.awaitingLayout = make(map[string]PageID)
+				m.awaitingLayout = make(map[ThreadID]PageID)
 			}
 			m.awaitingLayout[threadID] = candidate.id
 			return false, PanePlacement{}, true

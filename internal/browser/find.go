@@ -334,7 +334,7 @@ func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID Page
 
 // findStopPages are the pages a stop runs on: the named page, if it exists,
 // and every other live page of the thread whose search the stop ends.
-func (m *Manager) findStopPages(threadID string, named *managedPage, owner findOwner) []*managedPage {
+func (m *Manager) findStopPages(threadID ThreadID, named *managedPage, owner findOwner) []*managedPage {
 	var pages []*managedPage
 	if named != nil {
 		pages = append(pages, named)
@@ -375,7 +375,7 @@ func (m *Manager) pageLive(p *managedPage) bool {
 
 // pageShown reports whether pageID is the active page of the thread's shown
 // companion with a pane mounted to show it.
-func (m *Manager) pageShown(threadID string, pageID PageID) bool {
+func (m *Manager) pageShown(threadID ThreadID, pageID PageID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session := m.currentSessionLocked(threadID)
@@ -385,7 +385,7 @@ func (m *Manager) pageShown(threadID string, pageID PageID) bool {
 // paneMountedLocked reports whether a pane is mounted for the thread, painted
 // or not: an occluded pane still shows its find, and no pane shows none. The
 // caller holds m.mu.
-func (m *Manager) paneMountedLocked(threadID string) bool {
+func (m *Manager) paneMountedLocked(threadID ThreadID) bool {
 	for _, mount := range m.panes {
 		if mount.threadID == threadID {
 			return true
@@ -395,7 +395,7 @@ func (m *Manager) paneMountedLocked(threadID string) bool {
 }
 
 // mountOf reports whether mount is a pane mount of the thread's.
-func (m *Manager) mountOf(threadID, mount string) bool {
+func (m *Manager) mountOf(threadID ThreadID, mount string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pane, ok := m.panes[mount]
@@ -412,7 +412,7 @@ var (
 // mount must be the thread's, the start's sequence above every start the
 // mount made before, and the page the shown active one. A start it takes
 // raises the mount's sequence.
-func (m *Manager) admitFindStart(threadID string, pageID PageID, owner findOwner) error {
+func (m *Manager) admitFindStart(threadID ThreadID, pageID PageID, owner findOwner) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pane, ok := m.panes[owner.mount]
@@ -481,7 +481,7 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	p.find.doc = p.docEpoch.Load()
 	p.findMu.Unlock()
 	if taken != nil {
-		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: string(p.id), Find: taken})
+		m.emit(CompanionEvent{Kind: "find", ThreadID: string(p.owner.id), PageID: string(p.id), Find: taken})
 	}
 	if mode == FindModeEngine && query == "" {
 		query = findSeed(p.driver.SelectionText(ctx))
@@ -650,7 +650,7 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 	owed := live && !p.find.active && !p.find.settled()
 	p.findMu.Unlock()
 	if ends {
-		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: string(p.id), Find: &state})
+		m.emit(CompanionEvent{Kind: "find", ThreadID: string(p.owner.id), PageID: string(p.id), Find: &state})
 	}
 	if !owed {
 		return nil
