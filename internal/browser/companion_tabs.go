@@ -30,22 +30,28 @@ type closedTab struct {
 	index int
 }
 
-// closedTabs is one thread's closed-tab history. A forget of the thread's
-// browsing history removes the object (forgetBrowsingLocked), and the next
-// close starts a new one, so a reopen that took an entry can tell whether
-// the history it took from is still the thread's: the same object is.
-// Emptied by reopens, it stays until a forget.
+// closedTabs is one thread lifetime's closed-tab history, most recent
+// last.
 type closedTabs struct {
 	tabs []closedTab
 }
 
-// closedCountLocked is how many tabs threadID can reopen. The caller holds
-// m.mu.
-func (m *Manager) closedCountLocked(threadID string) int {
-	if stack := m.closedTabs[threadID]; stack != nil {
-		return len(stack.tabs)
+// browsing is a thread lifetime's browsing history: its closed tabs and its
+// recent addresses (recent.go). A forget of it (a jar switch, a clear of
+// site data, the browser turned off) replaces the object
+// (forgetBrowsingLocked), so a claim taken on the old one before the forget
+// is void after it (tabClaim). Emptied by reopens, it stays until a forget.
+type browsing struct {
+	closed closedTabs
+	recent []RecentAddress
+}
+
+// closedCountLocked is how many tabs tb can reopen. The caller holds m.mu.
+func closedCountLocked(tb *threadBrowser) int {
+	if tb == nil {
+		return 0
 	}
-	return 0
+	return len(tb.browsing.closed.tabs)
 }
 
 // reopenable reports whether a closed tab at rawURL is worth keeping: an
@@ -69,34 +75,23 @@ func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID 
 	return m.closePage(ctx, access, pageID, false, true)
 }
 
-// recordUserCloseLocked keeps the thread's tab pageID as the user's most
-// recent close. The close that takes the tab out of the tab set calls it in
-// that same m.mu hold, so only the close that removed the tab records it,
-// and the state that close pushes counts it. The caller holds m.mu.
-func (m *Manager) recordUserCloseLocked(threadID, pageID string) {
-	if jarKindOf(m.sessions[threadID]) == JarPrivate {
+// recordUserCloseLocked keeps tb's tab pageID as the user's most recent
+// close. The close that takes the tab out of the tab set calls it in that
+// same m.mu hold, so only the close that removed the tab records it, and
+// the state that close pushes counts it. The caller holds m.mu.
+func (m *Manager) recordUserCloseLocked(tb *threadBrowser, pageID string) {
+	if jarKindOf(tb.session) == JarPrivate {
 		return
 	}
-	for i, tab := range m.companionTabsLocked(threadID) {
+	for i, tab := range m.companionTabsLocked(tb) {
 		if tab.id != pageID {
 			continue
 		}
 		if tab.pending == nil && reopenable(tab.info.URL) {
-			m.pushClosedLocked(threadID, closedTab{url: tab.info.URL, label: tab.info.Label, index: i})
+			tb.browsing.closed.push(closedTab{url: tab.info.URL, label: tab.info.Label, index: i})
 		}
 		return
 	}
-}
-
-// pushClosedLocked adds tab as the thread's most recently closed, dropping
-// the oldest past maxClosedTabs. The caller holds m.mu.
-func (m *Manager) pushClosedLocked(threadID string, tab closedTab) {
-	stack := m.closedTabs[threadID]
-	if stack == nil {
-		stack = &closedTabs{}
-		m.closedTabs[threadID] = stack
-	}
-	stack.push(tab)
 }
 
 func (s *closedTabs) push(tab closedTab) {
@@ -111,60 +106,66 @@ func (s *closedTabs) push(tab closedTab) {
 // tab and its entry's removal from the closed tabs are one admission
 // (createPageAt), so an entry is never off the history without its tab, and
 // a forget of the history after it (a clear, a jar switch, the thread's
-// close) leaves the tab nothing to load. With none to reopen, or with ctx's
-// numbered selection passed or its pane detached (selection.go), or a tab
-// refused, it does nothing and the closed tab stays.
+// close) leaves the tab nothing to load (tabClaim). With none to reopen, or
+// with ctx's numbered selection passed or its pane detached (selection.go),
+// or a tab refused, it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
-	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
 	}
 	defer turn.Release()
 	m.mu.Lock()
-	stack := m.closedTabs[access.ThreadID]
-	if stack == nil || len(stack.tabs) == 0 || turn.Standing() == turnorder.Passed {
+	if err := access.admitLocked(); err != nil {
 		m.mu.Unlock()
+		return err
+	}
+	claim, ok := reopenClaimLocked(access.tb)
+	m.mu.Unlock()
+	if !ok || turn.Standing() == turnorder.Passed {
 		return nil
 	}
-	claim := &tabClaim{stack: stack, tab: stack.tabs[len(stack.tabs)-1]}
-	m.mu.Unlock()
 	if m.reopenRead != nil {
 		m.reopenRead()
 	}
-	_, err = m.openUserTab(ctx, access, turn, claim.tab.url, claim.tab.label, claim.tab.index, claim)
-	if errors.Is(err, errSelectionPassed) || errors.Is(err, errReopenForgotten) {
+	_, err = m.openUserTab(ctx, access, turn, claim.address, claim.label, claim.index, claim)
+	if errors.Is(err, errSelectionPassed) || errors.Is(err, errClaimVoid) {
 		return nil
 	}
 	return err
 }
 
 // DuplicateCompanionPage opens a new tab right after pageID, selected, at
-// pageID's address. A tab with no address yet opens a blank one. With ctx's
-// numbered selection passed or its pane detached (selection.go) it does
-// nothing.
+// pageID's address. A tab with no address yet opens a blank one. The
+// address is a claim on the thread's browsing (tabClaim), void after a
+// forget of it, so a clear of site data while the duplicate runs leaves it
+// no address to load. With ctx's numbered selection passed or its pane
+// detached (selection.go) it does nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
-	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
 	}
 	defer turn.Release()
 	m.mu.Lock()
-	index, address := -1, ""
-	for i, tab := range m.companionTabsLocked(access.ThreadID) {
-		if tab.id == pageID {
-			index = i + 1
-			if tab.pending == nil && reopenable(tab.info.URL) {
-				address = tab.info.URL
-			}
-		}
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return err
 	}
+	claim, ok := m.duplicateClaimLocked(access.tb, pageID)
 	m.mu.Unlock()
-	if index < 0 {
+	if !ok {
 		return errPageNotFound
 	}
-	if _, err = m.openUserTab(ctx, access, turn, address, "", index, nil); errors.Is(err, errSelectionPassed) {
+	_, err = m.openUserTab(ctx, access, turn, claim.address, "", claim.index, claim)
+	if errors.Is(err, errSelectionPassed) {
 		return nil
+	}
+	if errors.Is(err, errClaimVoid) {
+		// The thread's browsing was forgotten (a clear, a jar switch) after
+		// the duplicate read its source: it has nothing to duplicate.
+		return errPageNotFound
 	}
 	return err
 }
@@ -184,7 +185,7 @@ func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID,
 		return fmt.Errorf("browser: unknown set of tabs to close %q", truncateUTF8(which, 32))
 	}
 	m.mu.Lock()
-	tabs := m.companionTabsLocked(access.ThreadID)
+	tabs := m.companionTabsLocked(access.tb)
 	m.mu.Unlock()
 	at := -1
 	for i := range tabs {

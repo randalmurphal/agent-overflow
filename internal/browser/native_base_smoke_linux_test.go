@@ -42,7 +42,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-base", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-base", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -67,7 +67,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-hidden-base", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-hidden-base", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -189,7 +189,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-held-base", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-held-base", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -293,7 +293,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-show-again", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-show-again", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -409,7 +409,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
 		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 
 	manager.DetachPane(mount.ID)
 	shows("2-pane-detached", blue, false)
-	if mount, err = manager.AttachPane(access); err != nil {
+	if mount, err = manager.AttachPane(access.Caller()); err != nil {
 		t.Fatalf("mount the pane again: %v", err)
 	}
 	place(rect)

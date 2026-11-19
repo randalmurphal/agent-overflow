@@ -50,7 +50,7 @@ func newFindFixtureWith(t *testing.T, address string, configure func(*Manager)) 
 	})
 	f := &findFixture{
 		manager: manager,
-		access:  Access{ThreadID: "thread", Workspace: t.TempDir()},
+		access:  manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()}),
 		events:  make(chan CompanionEvent, 64),
 		escapes: make(chan CompanionEvent, 64),
 		keys:    make(chan keybindings.Accelerator, 64),
@@ -94,7 +94,7 @@ func (f *findFixture) place(t *testing.T) {
 // attach mounts a pane for the thread, as the browser pane does.
 func (f *findFixture) attach(t *testing.T) {
 	t.Helper()
-	mount, err := f.manager.AttachPane(f.access)
+	mount, err := f.manager.AttachPane(f.access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -212,7 +212,7 @@ func (f *findFixture) noEvent(t *testing.T) {
 
 func TestFindStartsStepsWrapsAndStops(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha-beta-alpha")
-	if mode := f.manager.CompanionState(f.access).FindMode; mode != FindModeBar {
+	if mode := f.manager.CompanionState(f.access.Caller()).FindMode; mode != FindModeBar {
 		t.Fatalf("state find mode = %q, want %q", mode, FindModeBar)
 	}
 
@@ -277,7 +277,7 @@ func TestFindRefusesBadRequests(t *testing.T) {
 			t.Fatalf("%s: error = %v, want %q", tc.name, err, tc.want)
 		}
 	}
-	intruder := Access{ThreadID: "intruder", Workspace: f.access.Workspace}
+	intruder := f.manager.Bind(Caller{ThreadID: "intruder", Workspace: f.access.Workspace})
 	if _, err := f.manager.Find(ctx, intruder, f.pageID, "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("another thread's find error = %v, want page not found", err)
 	}
@@ -730,7 +730,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 		}
 	})
 	manager.engine = findlessEngine{manager.engine.(*fakeEngine)}
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	info, err := manager.Open(t.Context(), access, "https://example.test/alpha", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -739,10 +739,10 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, info.ID); err != nil {
 		t.Fatal(err)
 	}
-	if mode := manager.CompanionState(access).FindMode; mode != "" {
+	if mode := manager.CompanionState(access.Caller()).FindMode; mode != "" {
 		t.Fatalf("state find mode = %q on an engine without find", mode)
 	}
-	pane, err := manager.AttachPane(access)
+	pane, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +755,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	f.fake.mu.Lock()
 	f.fake.findMode = ""
 	f.fake.mu.Unlock()
-	if mode := f.manager.CompanionState(f.access).FindMode; mode != "" {
+	if mode := f.manager.CompanionState(f.access.Caller()).FindMode; mode != "" {
 		t.Fatalf("state find mode = %q for a page without find", mode)
 	}
 	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errFindUnavailable) {
@@ -813,7 +813,7 @@ func TestFindInTheEnginesOwnBar(t *testing.T) {
 	f.fake.findMode = FindModeEngine
 	f.fake.selection = "alpha\nbeta"
 	f.fake.mu.Unlock()
-	if mode := f.manager.CompanionState(f.access).FindMode; mode != FindModeEngine {
+	if mode := f.manager.CompanionState(f.access.Caller()).FindMode; mode != FindModeEngine {
 		t.Fatalf("state find mode = %q", mode)
 	}
 	if state := f.find(t, "start", ""); !state.Active {

@@ -68,7 +68,7 @@ func newSelectionManager(t *testing.T) (*Manager, Access, []string, string) {
 	t.Helper()
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"), addr("c"), addr("d"))
 	installGapClock(m)
-	mount, err := m.AttachPane(access)
+	mount, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func orderStats(m *Manager, mount string) turnorder.Stats {
 }
 
 func activeTab(m *Manager, access Access) string {
-	return m.CompanionState(access).ActivePageID
+	return m.CompanionState(access.Caller()).ActivePageID
 }
 
 // waiting is the number of selections waiting for their turn in mount.
@@ -157,7 +157,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		// The user clicked b in the old pane; the request is held while the
 		// pane reconnects as a new mount, where the user clicks c.
 		m.DetachPane(oldMount)
-		next, err := m.AttachPane(access)
+		next, err := m.AttachPane(access.Caller())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,12 +194,12 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 	t.Run("a reordered activation restores the tab it selects", func(t *testing.T) {
 		m, engine := newLifecycleManager(t)
 		installGapClock(m)
-		access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+		access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 		var ids []string
 		for _, name := range []string{"a", "b", "c", "d"} {
 			ids = append(ids, mustOpen(t, m, access, addr(name)).ID)
 		}
-		mount, err := m.AttachPane(access)
+		mount, err := m.AttachPane(access.Caller())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +207,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		if err := m.SuspendThread(t.Context(), access.ThreadID); err != nil {
 			t.Fatal(err)
 		}
-		m.setActivePage(access.ThreadID, ids[3])
+		setActiveTab(m, access, ids[3])
 		engine.take()
 		// The user clicked b (1) and then pressed next (2); the step
 		// arrives first.
@@ -260,7 +260,7 @@ func newPairManager(t *testing.T) (*Manager, Access, pairFixture, string) {
 	if err := m.ActivateCompanionPage(t.Context(), access, ids[1]); err != nil {
 		t.Fatal(err)
 	}
-	mount, err := m.AttachPane(access)
+	mount, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ var selectionCases = []selectionCase{
 // selectionOutcome is what the user sees: the tabs' addresses in order and
 // the active one's place.
 func selectionOutcome(m *Manager, access Access) string {
-	state := m.CompanionState(access)
+	state := m.CompanionState(access.Caller())
 	var urls []string
 	active := -1
 	for i, page := range state.Pages {
@@ -364,14 +364,14 @@ func pauseAdmissions(m *Manager, mount string) (admitted chan Numbered, resume c
 func detachAndChooseElsewhere(t *testing.T, m *Manager, access Access, f pairFixture, mount string) (string, int) {
 	t.Helper()
 	m.DetachPane(mount)
-	next, err := m.AttachPane(access)
+	next, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ActivateCompanionPage(numbered(t.Context(), next.ID, 1), access, f.ids[3]); err != nil {
 		t.Fatal(err)
 	}
-	return selectionOutcome(m, access), m.CompanionState(access).ClosedTabs
+	return selectionOutcome(m, access), m.CompanionState(access.Caller()).ClosedTabs
 }
 
 // A selection admitted before its pane detached commits nothing: the
@@ -399,7 +399,7 @@ func TestADetachBetweenAdmissionAndCommit(t *testing.T) {
 			if got := selectionOutcome(m, access); got != want {
 				t.Fatalf("after the old pane's %s: %s, want %s", kind.name, got, want)
 			}
-			if got := m.CompanionState(access).ClosedTabs; got != closed {
+			if got := m.CompanionState(access.Caller()).ClosedTabs; got != closed {
 				t.Fatalf("%d closed tabs, want %d", got, closed)
 			}
 			var stats turnorder.Stats
@@ -422,7 +422,7 @@ func TestADetachDuringAReopenKeepsTheClosedTab(t *testing.T) {
 		popped <- struct{}{}
 		<-resume
 	}
-	closed := m.CompanionState(access).ClosedTabs
+	closed := m.CompanionState(access.Caller()).ClosedTabs
 	done := deliver(func() error { return m.ReopenClosedTab(numbered(context.Background(), mount, 1), access) })
 	receive(t, popped, "the reopen's pop")
 	want, _ := detachAndChooseElsewhere(t, m, access, fixture, mount)
@@ -431,7 +431,7 @@ func TestADetachDuringAReopenKeepsTheClosedTab(t *testing.T) {
 	if got := selectionOutcome(m, access); got != want {
 		t.Fatalf("after the reopen: %s, want %s", got, want)
 	}
-	if got := m.CompanionState(access).ClosedTabs; got != closed {
+	if got := m.CompanionState(access.Caller()).ClosedTabs; got != closed {
 		t.Fatalf("%d closed tabs, want %d", got, closed)
 	}
 }
@@ -646,7 +646,7 @@ func TestSkippedNumbersAreBounded(t *testing.T) {
 func TestAGapWaitDoesNotPassATakenTurn(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
-	first, err := m.awaitTurn(t.Context(), access.ThreadID, place(mount, 1))
+	first, err := m.awaitTurn(t.Context(), access, place(mount, 1))
 	if err != nil || first.Standing() == turnorder.Passed {
 		t.Fatalf("turn 1: %+v, %v", first, err)
 	}
@@ -694,7 +694,7 @@ func TestADetachReleasesWaitingSelections(t *testing.T) {
 // Two mounts keep their own orders: one waiting does not hold the other.
 func TestTwoMountsKeepTheirOwnOrders(t *testing.T) {
 	m, access, ids, one := newSelectionManager(t)
-	other, err := m.AttachPane(access)
+	other, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,9 +765,9 @@ func TestUnorderedSelectionsDoNotWait(t *testing.T) {
 // another thread, a repeat, and an opening passed by its mount's count.
 func TestPassedSelectionsDoNothing(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
-	other := Access{ThreadID: "other thread", Workspace: t.TempDir()}
+	other := m.Bind(Caller{ThreadID: "other thread", Workspace: t.TempDir()})
 	mustOpen(t, m, other, addr("x"))
-	otherMount, err := m.AttachPane(other)
+	otherMount, err := m.AttachPane(other.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +778,7 @@ func TestPassedSelectionsDoNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := selectionOutcome(m, access)
-	closed := m.CompanionState(access).ClosedTabs
+	closed := m.CompanionState(access.Caller()).ClosedTabs
 	for name, act := range map[string]func() error{
 		"unknown mount": func() error {
 			return m.ActivateCompanionPage(numbered(t.Context(), "gone", 1), access, ids[0])
@@ -803,7 +803,7 @@ func TestPassedSelectionsDoNothing(t *testing.T) {
 		if got := selectionOutcome(m, access); got != before {
 			t.Fatalf("%s changed the tabs: %s, was %s", name, got, before)
 		}
-		if got := m.CompanionState(access).ClosedTabs; got != closed {
+		if got := m.CompanionState(access.Caller()).ClosedTabs; got != closed {
 			t.Fatalf("%s: %d closed tabs, was %d", name, got, closed)
 		}
 	}
@@ -952,10 +952,10 @@ func newSuspendedPair(t *testing.T) (*Manager, *lifecycleEngine, Access, PageInf
 	t.Helper()
 	m, engine := newLifecycleManager(t)
 	installGapClock(m)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	a := mustOpen(t, m, access, addr("a"))
 	b := mustOpen(t, m, access, addr("b"))
-	mount, err := m.AttachPane(access)
+	mount, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import (
 // with a pane.
 func TestLoadingKeepsTheNewestReportAndReadsTheFavicon(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestALoadBeforeAttachmentReadsTheFaviconOnceAttached(t *testing.T) {
 		// A read begun now would find no driver or context.
 		time.Sleep(20 * time.Millisecond)
 	}
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := manager.NewCompanionPage(t.Context(), access, "")
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestALoadBeforeAttachmentReadsTheFaviconOnceAttached(t *testing.T) {
 // older, is dropped, and no loading edge was seen.
 func TestAStopHandledBeforeItsStartReadsTheFavicon(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	waitFavicon(t, manager, access, page.ID, "")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
@@ -116,7 +116,7 @@ func TestAStopHandledBeforeItsStartReadsTheFavicon(t *testing.T) {
 // old document's. The new load's stop reads the new one.
 func TestAReadANewLoadOvertakesIsDropped(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	waitFavicon(t, manager, access, page.ID, "")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
@@ -139,7 +139,7 @@ func TestAReadANewLoadOvertakesIsDropped(t *testing.T) {
 // An engine with no pane reads no favicon.
 func TestAnEngineWithNoPaneReadsNoFavicon(t *testing.T) {
 	manager, _ := newDisposeCountingManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {

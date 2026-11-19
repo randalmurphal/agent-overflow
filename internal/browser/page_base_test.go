@@ -68,7 +68,7 @@ func newBaseEngine(t *testing.T) (*Manager, *recordingPaneHost, *baseLog, Access
 		}
 	}
 	manager.engine = engine
-	return manager, engine, log, Access{ThreadID: "thread", Workspace: t.TempDir()}
+	return manager, engine, log, manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 }
 
 // newBaseManager opens a document page (first) and a blank new tab
@@ -92,7 +92,7 @@ func newBaseManager(t *testing.T, showFirst bool) (*Manager, *baseLog, Access, s
 	if _, err := manager.Visibility(t.Context(), access, &show, shown); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestThePresentingPanesColorIsTheBase(t *testing.T) {
 	manager, log, access, _, secondID, mountID := newBaseManager(t, true)
 	handle := paneHandle(manager, access, secondID)
 	waitForBase(t, log, handle, basePane)
-	later, err := manager.AttachPane(access)
+	later, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestAPageNotInItsTabsIsToldNoBase(t *testing.T) {
 	listed := ownedPage(t, manager, access, firstID)
 	waitForBase(t, log, listed.driver.Handle(), documentBase)
 	_, before := log.of(listed.driver.Handle())
-	unlisted := newManagedPage(access)
+	unlisted := newManagedPage(access.tb, access.Caller())
 	unlisted.attach(listed.driver)
 	unlisted.info.URL = "https://example.test/unlisted"
 	manager.applyPageBase(unlisted)
@@ -409,7 +409,7 @@ func TestAPageNotInItsTabsIsToldNoBase(t *testing.T) {
 func TestAPaneColorIsItsThreads(t *testing.T) {
 	manager, log, access, _, secondID, _ := newBaseManager(t, true)
 	waitForBase(t, log, paneHandle(manager, access, secondID), basePane)
-	other := Access{ThreadID: "other", Workspace: t.TempDir()}
+	other := manager.Bind(Caller{ThreadID: "other", Workspace: t.TempDir()})
 	blank, err := manager.NewCompanionPage(t.Context(), other, "")
 	if err != nil {
 		t.Fatal(err)
@@ -420,10 +420,7 @@ func TestAPaneColorIsItsThreads(t *testing.T) {
 	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
-	manager.mu.Lock()
-	_, kept := manager.paneColors[access.ThreadID]
-	manager.mu.Unlock()
-	if kept {
+	if fresh := lifetimeOf(manager, access.ThreadID); fresh != nil && fresh.paneColor != "" {
 		t.Fatal("a closed thread's pane color is kept")
 	}
 }

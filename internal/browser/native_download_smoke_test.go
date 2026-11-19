@@ -115,7 +115,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "native-smoke-downloads", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-downloads", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -129,12 +129,12 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 	}
 	download := func(path string) ThreadDownload {
 		t.Helper()
-		before := len(manager.CompanionState(access).Downloads)
+		before := len(manager.CompanionState(access.Caller()).Downloads)
 		if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+path), nil); err != nil {
 			t.Fatalf("start %s: %v", path, err)
 		}
 		for {
-			if listed := manager.CompanionState(access).Downloads; len(listed) > before {
+			if listed := manager.CompanionState(access.Caller()).Downloads; len(listed) > before {
 				return listed[0]
 			}
 			select {
@@ -147,14 +147,14 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 	settled := func(id string, want func(ThreadDownload) bool) ThreadDownload {
 		t.Helper()
 		for {
-			for _, item := range manager.CompanionState(access).Downloads {
+			for _, item := range manager.CompanionState(access.Caller()).Downloads {
 				if item.ID == id && want(item) {
 					return item
 				}
 			}
 			select {
 			case <-ctx.Done():
-				t.Fatalf("download %s never reached the expected state: %+v", id, manager.CompanionState(access).Downloads)
+				t.Fatalf("download %s never reached the expected state: %+v", id, manager.CompanionState(access.Caller()).Downloads)
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
@@ -214,14 +214,14 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		}
 		// browser_open_file opens the download and not a file beside it.
 		saved := filepath.Join(downloads, "file (1).bin")
-		if _, err := manager.authorizeFile(access, saved); err != nil {
+		if _, err := manager.authorizeFile(access.Caller(), saved); err != nil {
 			t.Fatalf("the finished download is refused: %v", err)
 		}
 		neighbor := filepath.Join(downloads, "neighbor.txt")
 		if err := os.WriteFile(neighbor, []byte("not a download"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := manager.authorizeFile(access, neighbor); err == nil {
+		if _, err := manager.authorizeFile(access.Caller(), neighbor); err == nil {
 			t.Fatal("a file beside the download is allowed")
 		}
 		if err := os.Remove(neighbor); err != nil {
@@ -339,7 +339,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 				release()
 			}
 		}()
-		count := len(manager.CompanionState(access).Downloads)
+		count := len(manager.CompanionState(access.Caller()).Downloads)
 		if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +369,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		released = true
 		var item ThreadDownload
 		for item.ID == "" {
-			if listed := manager.CompanionState(access).Downloads; len(listed) > count {
+			if listed := manager.CompanionState(access.Caller()).Downloads; len(listed) > count {
 				item = listed[0]
 			}
 			select {
@@ -382,7 +382,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		if item.State != downloadStateFailed || !strings.Contains(item.Error, "not a regular file") {
 			t.Fatalf("the swapped download settled as %+v, want failed", item)
 		}
-		if _, err := manager.authorizeFile(access, private); err == nil {
+		if _, err := manager.authorizeFile(access.Caller(), private); err == nil {
 			t.Fatal("the link's target is openable")
 		}
 		unchanged(before)
@@ -483,7 +483,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			if item.State != downloadStateCompleted || !item.Openable {
 				t.Fatalf("the download settled as %+v, want completed and openable", item)
 			}
-			before := len(manager.CompanionState(access).Downloads)
+			before := len(manager.CompanionState(access.Caller()).Downloads)
 			opened, err := manager.OpenThreadDownload(ctx, access, item.ID)
 			if err != nil {
 				t.Fatalf("open: %v", err)
@@ -493,7 +493,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			}
 			// A type the engine cannot show would download again instead.
 			time.Sleep(time.Second)
-			if after := len(manager.CompanionState(access).Downloads); after != before {
+			if after := len(manager.CompanionState(access.Caller()).Downloads); after != before {
 				t.Fatalf("opening %s started another download", item.Name)
 			}
 			value, _, err := manager.Evaluate(ctx, access, opened.ID, `document.contentType`, nil)

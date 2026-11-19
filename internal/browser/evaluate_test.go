@@ -168,7 +168,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	for _, tc := range []struct {
 		code, argument string
 		readOnly       bool
@@ -188,7 +188,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 			t.Fatalf("evaluate %q error = %v, want %q", tc.code, err, tc.want)
 		}
 	}
-	if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
+	if pages := manager.CompanionState(access.Caller()).Pages; len(pages) != 0 {
 		t.Fatalf("refused code opened pages %+v", pages)
 	}
 
@@ -264,7 +264,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Fatalf("evaluate error = %v, want %q", err, tc.want)
 			}
-			if title := manager.CompanionState(access).Pages[0].Title; title != "after "+strconv.Itoa(len(calls)) {
+			if title := manager.CompanionState(access.Caller()).Pages[0].Title; title != "after "+strconv.Itoa(len(calls)) {
 				t.Fatalf("page title = %q: the Manager did not refresh the page after the code ran", title)
 			}
 		})

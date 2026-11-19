@@ -93,7 +93,7 @@ func (m *Manager) noteAgentOperation(ctx context.Context, p *managedPage) {
 	a.shown = true
 	a.mu.Unlock()
 	if changed {
-		m.emitThreadState(p.owner)
+		m.emitThreadState(p.owner.id)
 	}
 }
 
@@ -124,7 +124,7 @@ func (m *Manager) clearAgentActivity(p *managedPage, gen uint64) {
 	}
 	a.shown, a.timer = false, nil
 	a.mu.Unlock()
-	m.emitThreadState(p.owner)
+	m.emitThreadState(p.owner.id)
 }
 
 // agentActive is what the page's tab shows.

@@ -14,8 +14,14 @@ import (
 // page's new position is saved with it.
 func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
 	pageID = strings.TrimSpace(pageID)
-	m.mu.Lock()
-	savedMoved, found := m.placeTabLocked(access.ThreadID, pageID, index)
+	if err := m.lockStructure(context.Background(), access.tb); err != nil {
+		return err
+	}
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	savedMoved, found := m.placeTabLocked(access.tb, pageID, index)
 	m.mu.Unlock()
 	if !found {
 		return errPageNotFound
@@ -27,13 +33,13 @@ func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) err
 	return nil
 }
 
-// placeTabLocked places the thread's tab pageID at index in tab order
-// (clamped), and reports whether a suspended tab's saved position changed
-// and whether the tab exists. The moved prefix is renumbered 1..n, and a
-// page opened later keeps appending at the end because its creation-time
-// key is always larger. The caller holds m.mu.
-func (m *Manager) placeTabLocked(threadID, pageID string, index int) (savedMoved, found bool) {
-	tabs := m.companionTabsLocked(threadID)
+// placeTabLocked places tb's tab pageID at index in tab order (clamped),
+// and reports whether a suspended tab's saved position changed and whether
+// the tab exists. The moved prefix is renumbered 1..n, and a page opened
+// later keeps appending at the end because its creation-time key is always
+// larger. The caller holds m.mu.
+func (m *Manager) placeTabLocked(tb *threadBrowser, pageID string, index int) (savedMoved, found bool) {
+	tabs := m.companionTabsLocked(tb)
 	ordered := make([]threadTab, 0, len(tabs))
 	var moved *threadTab
 	for i := range tabs {
@@ -69,7 +75,7 @@ func (m *Manager) placeTabLocked(threadID, pageID string, index int) (savedMoved
 // it was created or shows why it could not be, or when ctx's numbered
 // selection was passed (selection.go) and nothing opened.
 func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address string) (PageInfo, error) {
-	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return PageInfo{}, err
 	}
@@ -101,12 +107,14 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorde
 		// A closed tab's label, unless another tab took it meanwhile, which
 		// keeps it (labelHolderLocked). The tab was pushed without it, and
 		// a navigation that fails before its operation would not push it.
-		m.mu.Lock()
+		// A relabel waits out a jar switch (lockStructure); no cancel, a
+		// switch ends with its one write.
+		_ = m.lockStructure(context.Background(), p.owner)
 		if m.labelHolderLocked(p.owner, p.id, label) == "" {
 			p.commitInfo(pageUpdate{Label: &label})
 		}
 		m.mu.Unlock()
-		m.publishPages(p.owner)
+		m.publishPages(p.owner.id)
 	}
 	if strings.TrimSpace(address) != "" {
 		if _, err := m.NavigateCompanion(ctx, access, p.id, address); err != nil {
@@ -122,7 +130,7 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorde
 // ctx's numbered selection takes its turn in the user's order first
 // (selection.go); a passed one changes and restores nothing.
 func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
-	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil {
 		return err
 	}
@@ -139,8 +147,11 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 // that is no longer active is left as it is.
 func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
+	if err := access.End(); err != nil {
+		return err
+	}
 	m.mu.Lock()
-	active := m.sessionLocked(access.ThreadID).ActivePageID
+	active := access.tb.session.ActivePageID
 	m.mu.Unlock()
 	if pageID == "" || pageID != active {
 		return nil
@@ -155,7 +166,7 @@ func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access,
 // the first tab and a backward one the last. Then it is ActivateCompanionPage,
 // in the user's order with the mount's other selections (selection.go).
 func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
-	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil {
 		return err
 	}
@@ -198,7 +209,7 @@ func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID 
 		return nil
 	}
 	_, _, err := m.resolvePage(ctx, access, pageID, false)
-	if err != nil && errors.Is(err, errPageNotFound) && !m.hasTab(access.ThreadID, pageID) {
+	if err != nil && errors.Is(err, errPageNotFound) && !m.hasTab(access.tb, pageID) {
 		return nil
 	}
 	return err

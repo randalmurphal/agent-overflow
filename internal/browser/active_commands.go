@@ -38,12 +38,14 @@ const (
 // opening or restoring closes at once; its page work and the teardown never
 // delay the next turn.
 func (m *Manager) CloseActiveCompanionPage(ctx context.Context, access Access, at Numbered) (ActiveOutcome, error) {
-	turn, err := m.awaitTurn(ctx, access.ThreadID, at)
+	turn, err := m.awaitTurn(ctx, access, at)
 	if err != nil {
 		return ActivePassed, err
 	}
 	defer turn.Release()
-	m.mu.Lock()
+	if err := m.lockStructure(ctx, access.tb); err != nil {
+		return ActivePassed, err
+	}
 	outcome, finish := m.closeActiveLocked(access, turn)
 	m.mu.Unlock()
 	if outcome != ActiveApplied {
@@ -55,33 +57,34 @@ func (m *Manager) CloseActiveCompanionPage(ctx context.Context, access Access, a
 // closeActiveLocked is CloseActiveCompanionPage's commit: it ends turn and,
 // when the turn acts, takes the active tab out of the tab set with the next
 // active tab picked, and answers the rest of the close (closeTabLocked),
-// which the caller runs after releasing m.mu. The caller holds m.mu.
+// which the caller runs after releasing m.mu. The caller holds m.mu, taken
+// by lockStructure for access's lifetime.
 func (m *Manager) closeActiveLocked(access Access, turn *turnorder.Turn) (ActiveOutcome, func(ctx context.Context, wait bool) error) {
-	outcome, pageID := m.commitActiveLocked(access.ThreadID, turn)
+	outcome, pageID := m.commitActiveLocked(access, turn)
 	if outcome != ActiveApplied {
 		return outcome, nil
 	}
-	finish := m.closeTabLocked(access, pageID, true)
-	m.repairActivePageLocked(access.ThreadID)
+	finish := m.closeTabLocked(access.tb, pageID, true)
+	m.repairActivePageLocked(access.tb)
 	return outcome, finish
 }
 
 // ReloadActiveCompanionPage reloads the tab active at at's turn, as
 // ReloadCompanionPage reloads it, after the turn.
 func (m *Manager) ReloadActiveCompanionPage(ctx context.Context, access Access, at Numbered) (ActiveOutcome, error) {
-	turn, err := m.awaitTurn(ctx, access.ThreadID, at)
+	turn, err := m.awaitTurn(ctx, access, at)
 	if err != nil {
 		return ActivePassed, err
 	}
 	defer turn.Release()
 	m.mu.Lock()
-	outcome, pageID := m.commitActiveLocked(access.ThreadID, turn)
+	outcome, pageID := m.commitActiveLocked(access, turn)
 	m.mu.Unlock()
 	if outcome != ActiveApplied {
 		return outcome, nil
 	}
 	if err := m.ReloadCompanionPage(ctx, access, pageID); err != nil {
-		if !m.hasTab(access.ThreadID, pageID) {
+		if !m.hasTab(access.tb, pageID) {
 			// The tab closed after the turn (a Mod+W pressed next).
 			return ActiveNoTab, nil
 		}
@@ -91,16 +94,21 @@ func (m *Manager) ReloadActiveCompanionPage(ctx context.Context, access Access, 
 }
 
 // commitActiveLocked commits turn and answers what its command acts on: the
-// tab the pane shows (shownTabLocked) for a turn InOrder, nothing
-// otherwise. The caller holds m.mu.
-func (m *Manager) commitActiveLocked(threadID string, turn *turnorder.Turn) (ActiveOutcome, string) {
-	switch standing := turn.Commit(); standing {
+// tab access's lifetime shows (shownTabLocked) for a turn InOrder, nothing
+// otherwise. A lifetime the thread's close detached acts on nothing, as a
+// Passed turn does. The caller holds m.mu.
+func (m *Manager) commitActiveLocked(access Access, turn *turnorder.Turn) (ActiveOutcome, string) {
+	standing := turn.Commit()
+	if access.admitLocked() != nil {
+		return ActivePassed, ""
+	}
+	switch standing {
 	case turnorder.Passed:
 		return ActivePassed, ""
 	case turnorder.OutOfOrder:
 		return ActiveOutOfOrder, ""
 	case turnorder.InOrder:
-		if pageID := m.shownTabLocked(threadID); pageID != "" {
+		if pageID := m.shownTabLocked(access.tb); pageID != "" {
 			return ActiveApplied, pageID
 		}
 		return ActiveNoTab, ""
@@ -110,12 +118,12 @@ func (m *Manager) commitActiveLocked(threadID string, turn *turnorder.Turn) (Act
 	}
 }
 
-// shownTabLocked is the tab the pane shows: the active tab, or with none
-// the first in strip order; "" when the thread has no tab. The caller holds
+// shownTabLocked is the tab the pane shows of tb: the active tab, or with
+// none the first in strip order; "" when tb has no tab. The caller holds
 // m.mu.
-func (m *Manager) shownTabLocked(threadID string) string {
-	tabs := m.companionTabsLocked(threadID)
-	active := m.sessionLocked(threadID).ActivePageID
+func (m *Manager) shownTabLocked(tb *threadBrowser) string {
+	tabs := m.companionTabsLocked(tb)
+	active := tb.session.ActivePageID
 	for _, tab := range tabs {
 		if tab.id == active {
 			return active

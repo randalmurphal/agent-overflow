@@ -378,7 +378,7 @@ func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID 
 	if pageID = strings.TrimSpace(pageID); pageID != "" {
 		return m.resolvePage(ctx, access, pageID, false)
 	}
-	tabs := m.threadTabs(access.ThreadID)
+	tabs := m.threadTabs(access.tb)
 	switch len(tabs) {
 	case 0:
 		p, err := m.createPage(ctx, access)

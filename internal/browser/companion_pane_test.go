@@ -108,7 +108,7 @@ func newPaneHostManager(t *testing.T) (*Manager, *recordingPaneHost, Access, str
 	t.Cleanup(func() { manager.Close() })
 	engine := &recordingPaneHost{fakeEngine: manager.engine.(*fakeEngine)}
 	manager.engine = engine
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	first, err := manager.Open(t.Context(), access, "https://example.test/first", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open first page: %v", err)
@@ -138,7 +138,7 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -289,7 +289,7 @@ func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, 
 	t.Helper()
 	applied := make(chan string, 16)
 	manager.viewportApplied = func(threadID string) { applied <- threadID }
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}

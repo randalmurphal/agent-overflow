@@ -20,7 +20,8 @@ import (
 // persists: forgetAllPages) and closing the thread (delete, archive) forget
 // the list, and every forget goes through forgetBrowsingLocked or
 // forgetAllBrowsingLocked, which forget the closed tabs with it and advance
-// the Manager's forget generation.
+// the Manager's forget generation; a thread's close detaches its lifetime,
+// browsing and all (thread_life.go).
 //
 // The generation rides each thread's state push (CompanionEvent.RecentGen):
 // a client that cached a list drops it when the token changes, which a round
@@ -68,7 +69,7 @@ func recordableAddress(raw string) bool {
 }
 
 // recordRecentAddress records the address p shows after an open. It is kept
-// only while p is still the thread's live page in its thread's current jar
+// only while p is still its thread lifetime's live page in its current jar
 // and that jar is not private, so an open that a jar switch, the close of
 // every page or the thread's close overtook records nothing.
 func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
@@ -81,10 +82,11 @@ func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
 	if live, _ := m.livePageLocked(p.id); live != p || !m.jarCurrentLocked(p) {
 		return
 	}
-	if jarKindOf(m.sessionLocked(p.owner)) == JarPrivate {
+	tb := p.owner
+	if jarKindOf(tb.session) == JarPrivate {
 		return
 	}
-	previous := m.recent[p.owner]
+	previous := tb.browsing.recent
 	next := make([]RecentAddress, 0, min(len(previous)+1, maxRecentAddresses))
 	next = append(next, entry)
 	for _, kept := range previous {
@@ -95,41 +97,33 @@ func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
 			next = append(next, kept)
 		}
 	}
-	if m.recent == nil {
-		m.recent = make(map[string][]RecentAddress)
-	}
-	m.recent[p.owner] = next
+	tb.browsing.recent = next
 }
 
-// forgetBrowsingLocked forgets threadID's browsing history, its recent
-// addresses and its closed tabs (companion_tabs.go), and advances the forget
-// generation the address cache reads. Removing the closed-tab object is what
-// a reopen in flight checks (closedTabs), so another thread's forget leaves
-// it alone. It answers whether closed tabs were forgotten, which the
-// thread's state shows. The caller holds m.mu.
-func (m *Manager) forgetBrowsingLocked(threadID string) bool {
-	hadClosed := m.closedCountLocked(threadID) > 0
-	delete(m.recent, threadID)
-	delete(m.closedTabs, threadID)
+// forgetBrowsingLocked forgets tb's browsing history, its recent addresses
+// and its closed tabs (companion_tabs.go), by replacing the object that
+// holds them, which voids every claim on the old one (tabClaim), and
+// advances the forget generation the address cache reads. It answers
+// whether closed tabs were forgotten, which the thread's state shows. The
+// caller holds m.mu.
+func (m *Manager) forgetBrowsingLocked(tb *threadBrowser) bool {
+	hadClosed := closedCountLocked(tb) > 0
+	tb.browsing = &browsing{}
 	m.recentGen++
 	return hadClosed
 }
 
-// forgetAllBrowsingLocked forgets every thread's browsing history and
-// advances the forget generation, answering the threads that had any. The
-// caller holds m.mu.
+// forgetAllBrowsingLocked forgets every thread lifetime's browsing history
+// and advances the forget generation, answering the threads that had any.
+// The caller holds m.mu.
 func (m *Manager) forgetAllBrowsingLocked() []string {
-	threads := make([]string, 0, len(m.recent)+len(m.closedTabs))
-	for threadID := range m.recent {
-		threads = append(threads, threadID)
-	}
-	for threadID := range m.closedTabs {
-		if m.recent[threadID] == nil && m.closedCountLocked(threadID) > 0 {
+	var threads []string
+	for threadID, tb := range m.threads {
+		if len(tb.browsing.recent) > 0 || closedCountLocked(tb) > 0 {
 			threads = append(threads, threadID)
 		}
+		tb.browsing = &browsing{}
 	}
-	m.recent = nil
-	clear(m.closedTabs)
 	m.recentGen++
 	return threads
 }
@@ -140,10 +134,15 @@ func (m *Manager) recentGenTokenLocked() string {
 	return m.recentLaunch + "." + strconv.FormatUint(m.recentGen, 10)
 }
 
-// RecentAddresses answers the thread's recent addresses, newest first.
-func (m *Manager) RecentAddresses(access Access) []RecentAddress {
+// RecentAddresses answers the recent addresses of caller's thread as it is
+// now, newest first.
+func (m *Manager) RecentAddresses(caller Caller) []RecentAddress {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	kept := m.recent[access.ThreadID]
+	tb := m.currentLocked(caller.ThreadID)
+	if tb == nil {
+		return []RecentAddress{}
+	}
+	kept := tb.browsing.recent
 	return append(make([]RecentAddress, 0, len(kept)), kept...)
 }

@@ -77,7 +77,7 @@ func (m *Manager) applyPageBase(p *managedPage) {
 	defer p.baseMu.Unlock()
 	m.mu.Lock()
 	listed := m.pageListedLocked(p)
-	pane := m.paneColors[p.owner]
+	pane := p.owner.paneColor
 	m.mu.Unlock()
 	if !listed {
 		return
@@ -90,22 +90,19 @@ func (m *Manager) applyPageBase(p *managedPage) {
 	host.SetPageBase(p.driver.Handle(), base)
 }
 
-// notePaneColorLocked records the color of the thread's presenting pane and
-// answers the thread's pages when it changed, for the caller to apply their
-// bases once it releases m.mu. The caller holds m.mu.
-func (m *Manager) notePaneColorLocked(threadID string, rect PaneRect) []*managedPage {
+// notePaneColorLocked records the color of tb's presenting pane and answers
+// tb's pages when it changed, for the caller to apply their bases once it
+// releases m.mu. The caller holds m.mu.
+func (m *Manager) notePaneColorLocked(tb *threadBrowser, rect PaneRect) []*managedPage {
 	color, ok := paneColor(rect.Background)
-	if !ok || m.paneColors[threadID] == color {
+	if !ok || tb.paneColor == color {
 		return nil
 	}
-	if m.paneColors == nil {
-		m.paneColors = make(map[string]string)
-	}
-	m.paneColors[threadID] = color
+	tb.paneColor = color
 	var pages []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID {
+			if p.owner == tb {
 				pages = append(pages, p)
 			}
 		}

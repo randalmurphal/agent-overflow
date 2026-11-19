@@ -52,7 +52,7 @@ func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *a
 	}
 	engine.saving = saving
 	manager.engine = engine
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestNestedPopupBeforeParentListed(t *testing.T) {
 	if !listed(manager, "parent") || !listed(manager, "child") {
 		t.Fatalf("listed parent %v child %v", listed(manager, "parent"), listed(manager, "child"))
 	}
-	if n := len(manager.ownedPages(access.ThreadID)); n != 3 {
+	if n := len(manager.ownedPages(access.tb)); n != 3 {
 		t.Fatalf("the thread has %d tabs, want 3", n)
 	}
 	wantDownloads(t, manager, "child", "dl-1 in_progress 0")
@@ -387,7 +387,7 @@ func TestAPopupsDownloadEndsBeforeItsCloseInEveryOrder(t *testing.T) {
 				s(manager, engine)
 			}
 			var got []string
-			for _, d := range manager.CompanionState(access).Downloads {
+			for _, d := range manager.CompanionState(access.Caller()).Downloads {
 				got = append(got, d.State)
 			}
 			if !slices.Equal(got, []string{downloadStateCompleted}) {
@@ -415,7 +415,7 @@ func TestAPopupClosedPubliclyBeforeItsDownloadsAreListedLeavesThemWithItsOpener(
 	var wg sync.WaitGroup
 	manager.popupListing = func() {
 		var id string
-		for _, p := range manager.ownedPages(access.ThreadID) {
+		for _, p := range manager.ownedPages(access.tb) {
 			if p.driver.Handle() == "popup" {
 				id = p.id
 			}
@@ -446,7 +446,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 		closing := name == "closed while created" || name == "closed while restored"
 		t.Run(name, func(t *testing.T) {
 			manager, engine := newLifecycleManager(t)
-			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			var pageID string
 			if restored {
 				page := mustOpen(t, manager, access, "https://example.test/")
@@ -497,7 +497,7 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 					t.Fatalf("close the restoring tab: %v", err)
 				}
 			} else if closing {
-				tabs := manager.CompanionState(access).Pages
+				tabs := manager.CompanionState(access.Caller()).Pages
 				if len(tabs) != 1 {
 					t.Fatalf("tabs %+v", tabs)
 				}
@@ -678,7 +678,7 @@ func TestAParkedDownloadOfAClosedJarIsRemovedWithTheBrowser(t *testing.T) {
 		t.Fatal("the popup's download was refused")
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
-	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access).Pages[0].ID); err != nil {
+	if err := manager.ClosePage(t.Context(), access, manager.CompanionState(access.Caller()).Pages[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
@@ -751,7 +751,7 @@ func TestAPopupReportedBeforeItsOpenerWaitsForIt(t *testing.T) {
 	}
 	manager.adoptPopup(engine.popup(opener, "parent"))
 	<-childDone
-	if n := len(manager.ownedPages(access.ThreadID)); n != 3 {
+	if n := len(manager.ownedPages(access.tb)); n != 3 {
 		t.Fatalf("the thread has %d tabs, want 3", n)
 	}
 }
@@ -810,7 +810,7 @@ func TestParkedDownloadsAreBounded(t *testing.T) {
 func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManager(t)
 	// Another thread's page keeps the profile, which cancels.
-	if _, err := manager.Open(t.Context(), Access{ThreadID: "other", Workspace: access.Workspace}, "https://example.test/", OpenOptions{}); err != nil {
+	if _, err := manager.Open(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), "https://example.test/", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	popupDownload(manager, engine, "popup", "dl-running", opener)
@@ -977,7 +977,7 @@ func pageInfoOf(m *Manager, access Access, handle string) PageInfo {
 	if p == nil {
 		return PageInfo{}
 	}
-	for _, page := range m.CompanionState(access).Pages {
+	for _, page := range m.CompanionState(access.Caller()).Pages {
 		if page.ID == p.id {
 			return page
 		}
@@ -1006,7 +1006,7 @@ func TestAPopupBeingAdoptedHoldsItsProfile(t *testing.T) {
 	done := make(chan struct{})
 	go func() { manager.adoptPopup(engine.popup(opener, "popup")); close(done) }()
 	engine.awaitAttach(t, "popup")
-	tabs := manager.CompanionState(access).Pages
+	tabs := manager.CompanionState(access.Caller()).Pages
 	if len(tabs) != 1 {
 		t.Fatalf("the thread has %d tabs, want the opener", len(tabs))
 	}
@@ -1120,7 +1120,7 @@ func TestPopupsBeingAdoptedCountAgainstTheCaps(t *testing.T) {
 	for _, done := range dones {
 		<-done
 	}
-	if got := len(manager.CompanionState(access).Pages); got != maxPagesPerThread {
+	if got := len(manager.CompanionState(access.Caller()).Pages); got != maxPagesPerThread {
 		t.Fatalf("the thread has %d tabs, want its cap of %d", got, maxPagesPerThread)
 	}
 }

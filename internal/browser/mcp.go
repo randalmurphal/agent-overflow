@@ -34,37 +34,41 @@ func ToolNames() []string {
 func Instructions() string { return browserMCPInstructions }
 
 type MCPServer struct {
-	*threadmcp.Server[Access]
+	*threadmcp.Server[Caller]
 	controller Controller
 }
 
 func NewMCPServer(controller Controller, enabled bool) *MCPServer {
 	s := &MCPServer{controller: controller}
-	s.Server = threadmcp.New(ServerName, browserMCPInstructions, func(Access) []map[string]any { return cachedToolDefinitions }, s.handleToolCall)
+	s.Server = threadmcp.New(ServerName, browserMCPInstructions, func(Caller) []map[string]any { return cachedToolDefinitions }, s.handleToolCall)
 	s.SetEnabled(enabled)
 	return s
 }
 
 // RegisterThread issues the thread's browser tools URL to one provider
 // session, replacing any earlier session's URL.
-func (s *MCPServer) RegisterThread(access Access, session string) (map[string]any, error) {
-	access.ThreadID = strings.TrimSpace(access.ThreadID)
-	access.Workspace = strings.TrimSpace(access.Workspace)
-	if access.ThreadID == "" || access.Workspace == "" {
+func (s *MCPServer) RegisterThread(caller Caller, session string) (map[string]any, error) {
+	caller.ThreadID = strings.TrimSpace(caller.ThreadID)
+	caller.Workspace = strings.TrimSpace(caller.Workspace)
+	if caller.ThreadID == "" || caller.Workspace == "" {
 		return nil, fmt.Errorf("browser MCP: thread and workspace are required")
 	}
 	if s.controller == nil {
 		return nil, fmt.Errorf("browser MCP: controller unavailable")
 	}
-	return s.Server.RegisterThread(access.ThreadID, session, access)
+	return s.Server.RegisterThread(caller.ThreadID, session, caller)
 }
 func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) { s.ServeHTTP(w, r) }
-func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, access Access) {
+func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, caller Caller) {
 	call, err := threadmcp.DecodeToolCall(req.Params)
 	if err != nil {
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
+	// Bound at the call's entry, as a pane action is: everything the call
+	// does reaches the thread's browser as it was then, and a close of the
+	// thread during the call refuses what it would commit after it.
+	access := s.controller.Bind(caller)
 	// The tabs of the pages the call acts on show it while it runs.
 	ctx, endCall := withAgentCall(ctx)
 	defer endCall()
@@ -307,6 +311,10 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 	default:
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "unknown tool")
 		return
+	}
+	if err == nil {
+		// What the call changed before the thread's close, the close closed.
+		err = access.End()
 	}
 	if err != nil {
 		writeToolError(w, req.ID, err)

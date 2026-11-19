@@ -57,7 +57,11 @@ func paneViewportSize(rect PaneRect) (int, int, bool) {
 // set pins a bounded size; reset returns to following the pane.
 func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOptions) (SessionInfo, error) {
 	m.mu.Lock()
-	info := m.sessionLocked(access.ThreadID)
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return SessionInfo{}, err
+	}
+	info := access.tb.session
 	switch strings.ToLower(strings.TrimSpace(opts.Action)) {
 	case "get", "":
 		m.mu.Unlock()
@@ -77,7 +81,7 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 		return SessionInfo{}, fmt.Errorf("browser: viewport action must be get, set, or reset")
 	}
 	info.UpdatedAt = time.Now()
-	m.sessions[access.ThreadID] = info
+	access.tb.session = info
 	m.mu.Unlock()
 	if err := m.applyThreadViewport(access.ThreadID); err != nil {
 		return SessionInfo{}, err
@@ -164,9 +168,10 @@ func (m *Manager) drainViewport(threadID string, st *viewportSync) {
 // viewport. A page already at it costs nothing.
 func (m *Manager) applyActiveViewport(threadID string, st *viewportSync) error {
 	m.mu.Lock()
-	active, _ := m.livePageLocked(m.sessionLocked(threadID).ActivePageID)
+	current := m.currentLocked(threadID)
+	active, _ := m.livePageLocked(m.currentSessionLocked(threadID).ActivePageID)
 	m.mu.Unlock()
-	if active == nil || active.owner != threadID {
+	if active == nil || active.owner != current {
 		return nil
 	}
 	st.apply.Lock()
@@ -183,11 +188,12 @@ func (m *Manager) applyActiveViewport(threadID string, st *viewportSync) error {
 func (m *Manager) applyThreadViewport(threadID string) error {
 	m.mu.Lock()
 	st := m.viewportSyncLocked(threadID)
+	current := m.currentLocked(threadID)
 	m.mu.Unlock()
 	st.apply.Lock()
 	defer st.apply.Unlock()
 	var firstErr error
-	for _, p := range m.ownedPages(threadID) {
+	for _, p := range m.ownedPages(current) {
 		p.mu.Lock()
 		err := m.applyViewportLocked(p)
 		p.mu.Unlock()
@@ -254,7 +260,7 @@ func (m *Manager) syncPageViewport(p *managedPage) error {
 // viewport now.
 func (m *Manager) pageViewportCurrent(p *managedPage) bool {
 	m.mu.Lock()
-	width, height := sessionViewport(m.sessionLocked(p.owner))
+	width, height := sessionViewport(p.owner.session)
 	m.mu.Unlock()
 	return p.viewport.Load() == packViewport(width, height)
 }
@@ -278,7 +284,7 @@ func (m *Manager) applyViewport(p *managedPage) error {
 // records the size the page took, or the size it refused.
 func (m *Manager) applyViewportLocked(p *managedPage) error {
 	m.mu.Lock()
-	width, height := sessionViewport(m.sessionLocked(p.owner))
+	width, height := sessionViewport(p.owner.session)
 	m.mu.Unlock()
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
@@ -301,12 +307,12 @@ func (m *Manager) applyViewportLocked(p *managedPage) error {
 // it, so an apply that lands before the record is seen there instead.
 func (m *Manager) presentLaidOut(p *managedPage) {
 	m.mu.Lock()
-	awaiting := m.awaitingLayout[p.owner] == p.id
+	awaiting := m.awaitingLayout[p.owner.id] == p.id
 	if awaiting {
-		delete(m.awaitingLayout, p.owner)
+		delete(m.awaitingLayout, p.owner.id)
 	}
 	m.mu.Unlock()
 	if awaiting {
-		m.goLife(func() { m.syncPanePresentation(p.owner) })
+		m.goLife(func() { m.syncPanePresentation(p.owner.id) })
 	}
 }

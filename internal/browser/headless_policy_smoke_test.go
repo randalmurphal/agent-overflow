@@ -108,8 +108,8 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 		ownName, otherName string
 	}
 	sides := []*side{
-		{access: proj.access("policy-one", proj.one), own: one, other: two},
-		{access: proj.access("policy-two", proj.two), own: two, other: one},
+		{access: proj.access(manager, "policy-one", proj.one), own: one, other: two},
+		{access: proj.access(manager, "policy-two", proj.two), own: two, other: one},
 	}
 	for _, s := range sides {
 		s.ownName, s.otherName = filepath.Base(s.own), filepath.Base(s.other)

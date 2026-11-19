@@ -37,7 +37,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "native-smoke-download-staging", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-download-staging", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -88,7 +88,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 	}
 	release.Do(func() { close(unblock) })
 	for {
-		listed := manager.CompanionState(access).Downloads
+		listed := manager.CompanionState(access.Caller()).Downloads
 		if len(listed) == 1 && listed[0].State != downloadStateRunning {
 			if listed[0].State != downloadStateCompleted || listed[0].ReceivedBytes != int64(len(payload)) {
 				t.Fatalf("the download settled as %+v", listed[0])
@@ -126,7 +126,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "native-smoke-download-staging-close", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-download-staging-close", Workspace: resolvedTempDir(t)})
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	page, err := manager.Open(ctx, access, server.URL+"/", OpenOptions{})
@@ -193,7 +193,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 	if path := manager.stagedPath(id); path != "" {
 		t.Fatalf("the download still holds its staged file %s", path)
 	}
-	if listed := manager.CompanionState(access).Downloads; len(listed) != 0 {
+	if listed := manager.CompanionState(access.Caller()).Downloads; len(listed) != 0 {
 		t.Fatalf("a download canceled before its destination is listed: %+v", listed)
 	}
 }

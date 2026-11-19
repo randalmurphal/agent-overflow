@@ -141,7 +141,7 @@ func awaitAdmission(t *testing.T, m *Manager, handle string) {
 // popupOutcome answers what the thread shows of the popup next to its
 // opener's tab: 0 a live tab, 1 a crashed tab, 2 none, -1 anything else.
 func popupOutcome(m *Manager, access Access, opener string) (int, []PageInfo) {
-	pages := m.CompanionState(access).Pages
+	pages := m.CompanionState(access.Caller()).Pages
 	m.mu.Lock()
 	livePopup := m.listedPageLocked("popup") != nil
 	m.mu.Unlock()

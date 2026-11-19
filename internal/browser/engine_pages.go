@@ -147,7 +147,7 @@ func (m *Manager) runAdoption(popup enginePopup) {
 		m.discardPopup(popup.Handle)
 		return
 	}
-	p := newManagedPage(opener.access)
+	p := newManagedPage(opener.owner, opener.access)
 	p.jarGen, p.authority = opener.jarGen, opener.authority
 	p.info = PageInfo{ID: p.id, URL: truncateUTF8(popup.URL, maxBrowserURLBytes), Title: truncateUTF8(popup.Title, maxBrowserTitleBytes)}
 	scope.creating[p] = struct{}{}
@@ -187,14 +187,19 @@ func (m *Manager) runAdoption(popup enginePopup) {
 	// m.parkMu hold, which a page's close takes too (removeClosedPage), so
 	// a close never takes the tab before its downloads are in it.
 	m.parkMu.Lock()
-	m.mu.Lock()
+	// The listing waits out a jar switch of the opener's lifetime
+	// (lockStructure), whose commit closes the opener. Without a cancel: a
+	// switch ends with its one write.
+	_ = m.lockStructure(context.Background(), opener.owner)
 	// The opener may have closed meanwhile, with its thread's other pages. A
 	// jar switch is one such close: it moves every live page of the thread
 	// to closing in the hold that advances the generation, so a live opener
-	// is always in its thread's current jar and the popup is too. The caps
-	// were taken at admission by the reservation the listing ends. The
-	// commit, in the same hold, reads what ended the popup before it: a
-	// close refuses it, a crash alone lists it crashed.
+	// is always in its thread's current jar and the popup is too. The
+	// thread's close is another: it closes every live page of the lifetime
+	// it detached until none is left, a popup listed after the detach
+	// included. The caps were taken at admission by the reservation the
+	// listing ends. The commit, in the same hold, reads what ended the
+	// popup before it: a close refuses it, a crash alone lists it crashed.
 	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil {
 		m.mu.Unlock()
 		m.parkMu.Unlock()
@@ -266,7 +271,7 @@ func (m *Manager) endPopupReservation(scope *jarScope, p *managedPage, handle st
 		return
 	}
 	if err := m.disposeScope(context.Background(), scope); err != nil {
-		m.reportTeardown(p.owner, p.id, err)
+		m.reportTeardown(p.owner.id, p.id, err)
 	}
 }
 
@@ -311,8 +316,18 @@ func (m *Manager) removeClosedPage(handle string) {
 	// Before m.mu, so a popup's tab is taken only once the downloads its
 	// listing owes it are in it (adoptPopup).
 	m.parkMu.Lock()
+	// The page's tab leaves in a hold that waits out a jar switch of its
+	// lifetime (lockStructure), whose commit may close it first. Without a
+	// cancel: a switch ends with its one write.
 	m.mu.Lock()
-	var owner string
+	p := m.pageByHandleLocked(handle)
+	m.mu.Unlock()
+	if p != nil {
+		_ = m.lockStructure(context.Background(), p.owner)
+	} else {
+		m.mu.Lock()
+	}
+	var owner *threadBrowser
 	var closed *managedPage
 	var released *jarScope
 	var ended endedDownloads
@@ -338,11 +353,11 @@ func (m *Manager) removeClosedPage(handle string) {
 		// Off the engine's callback, as a closed page's disposal always is,
 		// and started before the state push: a page opened in the workspace
 		// on that push waits for it.
-		m.disposeReleased(ended, released, owner, closed.id)
+		m.disposeReleased(ended, released, owner.id, closed.id)
 	}
-	if owner != "" {
+	if owner != nil {
 		m.repairActivePage(owner)
-		m.emitThreadState(owner)
-		m.syncPanePresentation(owner)
+		m.emitThreadState(owner.id)
+		m.syncPanePresentation(owner.id)
 	}
 }

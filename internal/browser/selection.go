@@ -26,8 +26,11 @@ import (
 //     A selection names its tab or steps from what has arrived and acts
 //     whatever its standing.
 //   - A number from a mount the Manager does not have (detached, never
-//     attached, or another thread's) is Passed: a quiet success that
-//     selects, opens and restores nothing. A detach ends the mount's Order.
+//     attached, another thread's, or another lifetime's of the thread) is
+//     Passed: a quiet success that selects, opens and restores nothing. A
+//     detach ends the mount's Order, and so does the close of the thread
+//     lifetime the mount attached to (CloseThread), so an earlier
+//     lifetime's mount still registered commits nothing.
 //
 // A selection with no number, an agent's browser_select_page, the chat
 // header's show, the pane's restore of the tab it shows
@@ -75,14 +78,14 @@ func selectionOf(ctx context.Context) (Numbered, bool) {
 // acts on nothing, and the caller answers success.
 var errSelectionPassed = errors.New("browser: the pane this tab action came from is gone")
 
-// awaitTurn admits sel in its mount's order for threadID. A mount the
-// Manager does not have, or another thread's, answers a Passed turn. The
-// caller commits the turn in the m.mu hold that acts and releases it when
-// done.
-func (m *Manager) awaitTurn(ctx context.Context, threadID string, sel Numbered) (*turnorder.Turn, error) {
+// awaitTurn admits sel in its mount's order for access's lifetime. A mount
+// the Manager does not have, or another lifetime's, answers a Passed turn,
+// and so does one whose lifetime was closed. The caller commits the turn in
+// the m.mu hold that acts and releases it when done.
+func (m *Manager) awaitTurn(ctx context.Context, access Access, sel Numbered) (*turnorder.Turn, error) {
 	m.mu.Lock()
 	mount, ok := m.panes[string(sel.mount)]
-	if !ok || mount.threadID != threadID {
+	if !ok || access.tb == nil || mount.owner != access.tb || access.tb.detached.Load() {
 		m.mu.Unlock()
 		return turnorder.PassedTurn(), nil
 	}
@@ -101,9 +104,9 @@ func (m *Manager) awaitTurn(ctx context.Context, threadID string, sel Numbered) 
 
 // selectionTurn is the turn of ctx's numbered selection, or an unordered
 // turn for none.
-func (m *Manager) selectionTurn(ctx context.Context, threadID string) (*turnorder.Turn, error) {
+func (m *Manager) selectionTurn(ctx context.Context, access Access) (*turnorder.Turn, error) {
 	if sel, ok := selectionOf(ctx); ok {
-		return m.awaitTurn(ctx, threadID, sel)
+		return m.awaitTurn(ctx, access, sel)
 	}
 	return turnorder.Unordered(), nil
 }

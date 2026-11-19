@@ -79,7 +79,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "headless-popups", Workspace: resolvedTempDir(t)}
+	access := manager.Bind(Caller{ThreadID: "headless-popups", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -102,14 +102,14 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 				continue
 			}
 			var tabs []string
-			for _, tab := range manager.CompanionState(access).Pages {
+			for _, tab := range manager.CompanionState(access.Caller()).Pages {
 				tabs = append(tabs, tab.Title+" "+tab.URL)
 			}
-			t.Fatalf("%s never happened: tabs %q, downloads %+v", what, tabs, manager.CompanionState(access).Downloads)
+			t.Fatalf("%s never happened: tabs %q, downloads %+v", what, tabs, manager.CompanionState(access.Caller()).Downloads)
 		}
 	}
 	tabNamed := func(title string) string {
-		for _, tab := range manager.CompanionState(access).Pages {
+		for _, tab := range manager.CompanionState(access.Caller()).Pages {
 			if tab.Title == title {
 				return tab.ID
 			}
@@ -126,13 +126,13 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	t.Run("a download a popup starts before its listing", func(t *testing.T) {
 		click(t, opener.ID, "download")
 		await(t, "the popup's download to finish", func() bool {
-			listed := manager.CompanionState(access).Downloads
+			listed := manager.CompanionState(access.Caller()).Downloads
 			return len(listed) == 1 && listed[0].State == downloadStateCompleted && listed[0].ReceivedBytes == int64(len(payload))
 		})
 		// Chromium closes a popup whose first navigation is a download, so
 		// the popup never becomes a tab and its opener's lists the download.
 		var where []string
-		for _, p := range manager.ownedPages(access.ThreadID) {
+		for _, p := range manager.ownedPages(access.tb) {
 			p.downloadMu.Lock()
 			if len(p.downloads) > 0 {
 				where = append(where, p.id)

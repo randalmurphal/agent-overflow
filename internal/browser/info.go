@@ -242,7 +242,7 @@ func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64
 	stamp := p.readStamp()
 	// An engine reports the same address and title again (a target info
 	// change that touched neither); that alone pushes nothing.
-	m.publishPages(p.owner)
+	m.publishPages(p.owner.id)
 	go m.refreshHistoryState(p, stamp)
 }
 
@@ -254,7 +254,7 @@ func (m *Manager) pageDocumentTitle(p *managedPage, url, title string) {
 	listed := m.pageListedLocked(p)
 	m.mu.Unlock()
 	if listed {
-		m.publishPages(p.owner)
+		m.publishPages(p.owner.id)
 	}
 }
 
@@ -273,7 +273,7 @@ func (m *Manager) refreshHistoryState(p *managedPage, stamp uint64) {
 		return
 	}
 	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, stamp)
-	m.publishPages(p.owner)
+	m.publishPages(p.owner.id)
 }
 
 // creatingPageByHandleLocked returns the page being created or restored

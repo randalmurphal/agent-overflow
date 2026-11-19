@@ -356,11 +356,11 @@ func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
 	if code, _, _ := errorsx.PublicDetails(err); code != browserJarUnconfirmedCode {
 		t.Fatalf("an unconfirmed switch with a live tab answered %v, want code %s", err, browserJarUnconfirmedCode)
 	}
-	access, err := app.browserAccess(thread.ID)
+	access, err := app.bindBrowser(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := manager.CompanionState(access).Jar; got == appbrowser.JarProject {
+	if got := manager.CompanionState(access.Caller()).Jar; got == appbrowser.JarProject {
 		t.Fatal("the refused switch changed the jar")
 	}
 	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject, Confirmed: true})

@@ -823,7 +823,7 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		}
 		files[name] = "file://" + canonical(t, path)
 	}
-	a, b := proj.access("a", proj.one), proj.access("b", proj.two)
+	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two)
 	setJar(t, manager, a, JarProject)
 	setJar(t, manager, b, JarProject)
 	pageA := openPage(t, manager, a, "https://example.test/a")

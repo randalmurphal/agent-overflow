@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ func newTabsManager(t *testing.T, addresses ...string) (*Manager, Access, []stri
 	t.Cleanup(func() { _ = m.Close() })
 	tabPushes.Store(m, countStatePushes(m))
 	t.Cleanup(func() { tabPushes.Delete(m) })
-	access := Access{ThreadID: "thread", Workspace: t.TempDir(), ProjectID: "project"}
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir(), ProjectID: "project"})
 	var ids []string
 	for _, address := range addresses {
 		page, err := m.NewCompanionPage(t.Context(), access, address)
@@ -80,7 +81,7 @@ func newestPush(t *testing.T, m *Manager) CompanionEvent {
 // must already show.
 func closedCount(t *testing.T, m *Manager, access Access) int {
 	t.Helper()
-	read := m.CompanionState(access).ClosedTabs
+	read := m.CompanionState(access.Caller()).ClosedTabs
 	if pushed := newestPush(t, m).ClosedTabs; pushed != read {
 		t.Fatalf("the newest push shows %d closed tabs, the state %d", pushed, read)
 	}
@@ -105,7 +106,7 @@ func TestReopenClosedTabPutsItBackWhereItWas(t *testing.T) {
 	if err := reopenTab(t, m, access); err != nil {
 		t.Fatal(err)
 	}
-	state := m.CompanionState(access)
+	state := m.CompanionState(access.Caller())
 	if got := tabURLs(m, access); !slices.Equal(got, []string{addr("a"), addr("b"), addr("c")}) {
 		t.Fatalf("tabs = %v, want b back in the middle", got)
 	}
@@ -141,7 +142,7 @@ func TestReopenedTabLeavesATakenLabel(t *testing.T) {
 	if err := reopenTab(t, m, access); err != nil {
 		t.Fatal(err)
 	}
-	pages := m.CompanionState(access).Pages
+	pages := m.CompanionState(access.Caller()).Pages
 	if len(pages) != 2 || pages[0].Label != "" || pages[1].Label != "DOCS" {
 		t.Fatalf("tabs = %+v, want the reopened tab unlabelled and the other keeping DOCS", pages)
 	}
@@ -214,7 +215,7 @@ func TestDuplicateOpensBesideTheTabAtItsAddress(t *testing.T) {
 	if err := m.DuplicateCompanionPage(t.Context(), access, ids[0]); err != nil {
 		t.Fatal(err)
 	}
-	state := m.CompanionState(access)
+	state := m.CompanionState(access.Caller())
 	if got := tabURLs(m, access); !slices.Equal(got, []string{addr("a"), addr("a"), addr("b")}) {
 		t.Fatalf("tabs = %v, want the copy right after its source", got)
 	}
@@ -387,7 +388,7 @@ func TestAReopenedTabForgottenAfterItsPopOpensNothing(t *testing.T) {
 					m.mu.Lock()
 					waiting := len(m.pending) > 0
 					if waiting {
-						m.forgetBrowsingLocked(access.ThreadID)
+						m.forgetBrowsingLocked(access.tb)
 					}
 					m.mu.Unlock()
 					if waiting {
@@ -405,10 +406,15 @@ func TestAReopenedTabForgottenAfterItsPopOpensNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			m.reopenRead = func() { forget.run(t, m, access) }
-			if err := m.ReopenClosedTab(t.Context(), access); err != nil {
-				t.Fatalf("reopen: %v", err)
+			// A close of the thread answers the action bound before it.
+			var want error
+			if forget.name == "its close" {
+				want = ErrThreadClosed
 			}
-			for _, tab := range m.CompanionState(access).Pages {
+			if err := m.ReopenClosedTab(t.Context(), access); !errors.Is(err, want) {
+				t.Fatalf("reopen: %v, want %v", err, want)
+			}
+			for _, tab := range m.CompanionState(access.Caller()).Pages {
 				if tab.URL == addr("x") {
 					t.Fatalf("the forgotten tab was reopened: %+v", tab)
 				}

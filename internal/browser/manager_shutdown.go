@@ -8,64 +8,70 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"agent-overflow/internal/browser/threadlife"
 )
 
-// CloseThread closes every page the thread owns, including a popup one of
-// them opens while it runs, closes its tabs still being created and forgets
-// its failed ones, forgets its suspended pages and their saved copy, and
-// forgets the thread's browser session. A page the engine closed
-// meanwhile counts as closed. A workspace profile that fails to dispose once
-// its last page is gone (a browser process that would not stop, ephemeral
-// site data left on disk) is returned, as ClosePage returns it, after every
-// page is closed; the profile is no longer registered, so a second close
-// does not repeat the failure. A saved copy that cannot be removed is logged
-// instead: its pages are gone from memory, and the next boot removes the
-// saved copy of a deleted or archived thread.
-//
-// The records go first, so no restore can register a page after the loop
-// below has closed the thread's live ones; the thread's jar setting goes with
-// them.
+// CloseThread ends the thread's browser lifetime (thread_life.go): every
+// tab it has, in every state, its session, browsing history, pane color and
+// download list. In its first hold it detaches the lifetime from the
+// registry, drops its suspended pages and ends the order of every pane mount
+// attached to it, so from then an action bound to it changes nothing
+// (ErrThreadClosed), a numbered command of its mount passes, and a bind
+// begins a new, empty lifetime the cleanup below never reaches. It then
+// saves the thread's copy as its current lifetime is, which removes it
+// unless a new lifetime saved tabs meanwhile, and closes what it detached:
+// the tabs still being created and the live pages, a popup listed before
+// the detach included. A page the engine closed meanwhile counts as closed.
+// A workspace profile that fails to dispose once its last page is gone (a
+// browser process that would not stop, ephemeral site data left on disk) is
+// returned, as ClosePage returns it, after every page is closed; the profile
+// is no longer registered, so a second close does not repeat the failure. A
+// saved copy that cannot be written is logged instead: its pages are gone
+// from memory, and the next boot removes the saved copy of a deleted or
+// archived thread.
 func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
+	// persistMu first, so the detach and the save that follows are one step
+	// in the order of the thread's saves: a save of a new lifetime is
+	// ordered after this one.
+	m.persistMu.Lock()
 	m.mu.Lock()
-	// Before anything closes: a pane action bound to the thread opens
-	// nothing from here (thread_life.go).
-	m.lives.Retire(threadlife.ThreadID(threadID))
-	if info, ok := m.sessions[threadID]; ok {
-		info.Jar = JarWorktree
-		m.sessions[threadID] = info
+	tb := m.detachLocked(threadID)
+	if tb != nil {
+		// The lifetime's browsing goes with it: a cache of the thread's
+		// recent addresses reads the forget generation (forgetBrowsingLocked).
+		m.recentGen++
+		for _, rec := range m.suspended {
+			if rec.owner == tb {
+				m.dropRecordLocked(rec)
+			}
+		}
+		for _, mount := range m.panes {
+			if mount.owner == tb && mount.order != nil {
+				mount.order.End()
+			}
+		}
 	}
-	// Forgotten here for a close that stops early, and again with the
-	// session below, after any open or user close the closing pages were
-	// running.
-	hadClosed := m.forgetBrowsingLocked(threadID)
 	m.mu.Unlock()
-	if hadClosed {
-		m.emitThreadState(threadID)
-	}
-	if err := m.forgetThreadRecords(threadID); err != nil {
+	if err := m.writeRecordFilesLocked([]string{threadID}); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
-	m.closeThreadPending(threadID)
+	m.persistMu.Unlock()
+	if tb == nil {
+		return nil
+	}
+	m.emitThreadState(threadID)
+	m.closeThreadPending(tb)
 	var errs []error
-	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
+	for pages := m.ownedPages(tb); len(pages) > 0; pages = m.ownedPages(tb) {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(errs, fmt.Errorf("browser: close thread pages: %w", err))...)
 		}
 		for _, p := range pages {
-			access := Access{ThreadID: threadID, Workspace: m.workspaceForPage(p.id)}
-			if err := m.closeLivePage(ctx, access, p.id); err != nil && !errors.Is(err, errPageNotFound) {
+			if err := m.closeLivePage(ctx, tb, p.id); err != nil && !errors.Is(err, errPageNotFound) {
 				errs = append(errs, fmt.Errorf("browser: close thread %s: %w", threadID, err))
 			}
 		}
 	}
-	m.mu.Lock()
-	delete(m.sessions, threadID)
-	delete(m.paneColors, threadID)
-	m.forgetBrowsingLocked(threadID)
-	m.mu.Unlock()
-	m.forgetThreadDownloads(threadID)
+	m.forgetThreadDownloads(tb)
 	return errors.Join(errs...)
 }
 
@@ -213,7 +219,7 @@ func (m *Manager) closeIdleBrowser() {
 func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Lock()
 	scopes := make([]*jarScope, 0, len(m.scopes))
-	owners := make(map[string]struct{})
+	owners := make(map[*threadBrowser]struct{})
 	var pages []*managedPage
 	var ended []endedDownloads
 	for _, scope := range m.scopes {
@@ -239,19 +245,14 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		disposing = append(disposing, done)
 	}
 	for owner := range owners {
-		info := m.sessionLocked(owner)
-		info.ActivePageID = ""
-		info.Visible = false
-		info.UpdatedAt = time.Now()
-		m.sessions[owner] = info
+		owner.session.ActivePageID = ""
+		owner.session.Visible = false
+		owner.session.UpdatedAt = time.Now()
 	}
 	// Every private jar goes with the browser; the next private page opens
 	// a new one.
-	for threadID, info := range m.sessions {
-		if info.privateJar != "" {
-			info.privateJar = ""
-			m.sessions[threadID] = info
-		}
+	for _, tb := range m.threads {
+		tb.session.privateJar = ""
 	}
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
@@ -269,7 +270,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		m.stopEndedDownloads(e)
 	}
 	for owner := range owners {
-		m.emitThreadState(owner)
+		m.emitThreadState(owner.id)
 	}
 	closeCtx, closeCancel := context.WithTimeout(caller, 20*time.Second)
 	defer closeCancel()

@@ -83,8 +83,8 @@ per-platform no-op.
   them from its frame tree.
 - Switching the jar with tabs open asks first in the pane. The pane sends
   the switch unconfirmed; the Manager refuses it, changing nothing, when the
-  thread has a live tab as it captures the switch or in the hold that would
-  commit it (`SetJar` with `JarSwitchIfNoLiveTab`, code
+  thread has a live tab as it captures the switch (`SetJar` with
+  `JarSwitchIfNoLiveTab`, code
   `browser_jar_unconfirmed`), and the pane then asks and sends it confirmed
   (`JarSwitchConfirmed`). A tab still being created is not live: the switch
   creates it again in the new jar. The Manager then suspends every live tab
@@ -92,10 +92,14 @@ per-platform no-op.
   position, label and address, the active tab staying active, and the
   records are captured once and saved before the switch takes effect, so a
   shutdown or crash mid-switch loses no tab, and a switch whose save fails
-  changes nothing and reports the failure. A switch refused after its save
-  (unconfirmed, the app shutting down, the thread closed) saves the thread
-  again as it is, so the saved copy never names a jar the thread is not in,
-  and reports when that save fails. The tabs come back through the
+  changes nothing and reports the failure. From the capture to the switch
+  taking effect, any change to the thread's tabs (one opened, closed,
+  moved, relabeled, selected, suspended, restored, crashed or adopted)
+  waits for the switch, one save long, and then applies in the new jar, so
+  the tabs the switch suspends are the tabs it saved. A switch refused
+  after its save (the app shutting down) saves the thread again as it is,
+  so the saved copy never names a jar the thread is not in, and reports
+  when that save fails; a close of the thread waits for the switch. The tabs come back through the
   ordinary restore: the pane brings back the tab it shows, and the others
   return when selected or used, with the navigation policy applied and no
   page history. A tab that cannot come back stays suspended with the error.

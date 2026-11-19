@@ -23,7 +23,7 @@ func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-adopted-popup", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-adopted-popup", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -42,14 +42,14 @@ func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
 		t.Fatalf("open the popup: %v", err)
 	}
 	for {
-		for _, tab := range manager.CompanionState(access).Pages {
+		for _, tab := range manager.CompanionState(access.Caller()).Pages {
 			if tab.ID != opener.ID && tab.Title == "popup" && tab.URL == smokeFileURL(popupFile) {
 				return
 			}
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("the adopted popup's tab never showed its page: %+v", manager.CompanionState(access).Pages)
+			t.Fatalf("the adopted popup's tab never showed its page: %+v", manager.CompanionState(access.Caller()).Pages)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -68,7 +68,7 @@ func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-popup-child", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-popup-child", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -90,14 +90,14 @@ func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
 	}
 	for {
 		titles := map[string]int{}
-		for _, tab := range manager.CompanionState(access).Pages {
+		for _, tab := range manager.CompanionState(access.Caller()).Pages {
 			titles[tab.Title]++
 		}
 		if titles["parent"] > 0 && titles["child"] > 0 {
 			// One window, one tab.
 			time.Sleep(500 * time.Millisecond)
 			titles = map[string]int{}
-			for _, tab := range manager.CompanionState(access).Pages {
+			for _, tab := range manager.CompanionState(access.Caller()).Pages {
 				titles[tab.Title]++
 			}
 			if titles["parent"] != 1 || titles["child"] != 1 {
@@ -107,7 +107,7 @@ func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("the parent's and the child's tabs never both opened: %+v", manager.CompanionState(access).Pages)
+			t.Fatalf("the parent's and the child's tabs never both opened: %+v", manager.CompanionState(access.Caller()).Pages)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -127,7 +127,7 @@ func TestNativeEngineRealPopupThatClosesItselfIsNoTab(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-popup-closes", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-popup-closes", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -161,7 +161,7 @@ func TestNativeEngineRealPopupThatClosesItselfIsNoTab(t *testing.T) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	if tabs := manager.CompanionState(access).Pages; len(tabs) != 1 || tabs[0].ID != opener.ID {
+	if tabs := manager.CompanionState(access.Caller()).Pages; len(tabs) != 1 || tabs[0].ID != opener.ID {
 		t.Fatalf("the thread's tabs are %+v, want only the opener", tabs)
 	}
 }

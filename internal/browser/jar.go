@@ -71,8 +71,10 @@ type jarIdentity struct {
 	ephemeral bool
 	// thread is the owner of a thread or private jar, "" otherwise.
 	thread string
-	// private is a private jar's instance token, "" otherwise.
+	// private is a private jar's instance token, and owner the thread
+	// lifetime that holds it; "" and nil otherwise.
 	private string
+	owner   *threadBrowser
 }
 
 // jarScope is one open cookie jar: its engine profile and the pages in it,
@@ -94,10 +96,11 @@ type jarScope struct {
 	downloadDir string
 }
 
-// jarForLocked maps a thread's access and a jar kind to the jar its pages
-// open in. access.Workspace is canonical. A private jar without a live
-// instance takes a new token here. The caller holds m.mu.
-func (m *Manager) jarForLocked(access Access, kind string) (jarIdentity, error) {
+// jarForLocked maps a page of the thread lifetime tb, with its caller
+// access, and a jar kind to the jar the page opens in. access.Workspace is
+// canonical. A private jar without a live instance takes a new token here.
+// The caller holds m.mu.
+func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (jarIdentity, error) {
 	jar := jarIdentity{kind: kind, ephemeral: !m.config.PersistSiteData}
 	switch kind {
 	case JarWorktree:
@@ -110,13 +113,11 @@ func (m *Manager) jarForLocked(access Access, kind string) (jarIdentity, error) 
 	case JarThread:
 		jar.key, jar.thread = "thread:"+access.ThreadID, access.ThreadID
 	case JarPrivate:
-		info := m.sessionLocked(access.ThreadID)
-		if info.privateJar == "" {
-			info.privateJar = uuid.NewString()
-			m.sessions[access.ThreadID] = info
+		if tb.session.privateJar == "" {
+			tb.session.privateJar = uuid.NewString()
 		}
-		jar.key = "private:" + access.ThreadID + ":" + info.privateJar
-		jar.thread, jar.private, jar.ephemeral = access.ThreadID, info.privateJar, true
+		jar.key = "private:" + access.ThreadID + ":" + tb.session.privateJar
+		jar.thread, jar.private, jar.owner, jar.ephemeral = access.ThreadID, tb.session.privateJar, tb, true
 	default:
 		return jarIdentity{}, fmt.Errorf("browser: unknown cookie jar %q", kind)
 	}
@@ -132,12 +133,12 @@ func jarDirName(jar string) string {
 	return fmt.Sprintf("%x", digest[:12])
 }
 
-// jarCurrentLocked reports whether p was opened under its thread's current
-// jar setting. A switch advances the generation, so a page opened before it
+// jarCurrentLocked reports whether p was opened under its thread lifetime's
+// current jar setting. A switch advances the generation, so a page opened before it
 // is refused at admission (create, restore, popup) and nothing lands in the
 // old jar. The caller holds m.mu.
 func (m *Manager) jarCurrentLocked(p *managedPage) bool {
-	return m.sessionLocked(p.owner).jarGen == p.jarGen
+	return p.owner.session.jarGen == p.jarGen
 }
 
 // jarAllows is a jar profile's own navigation policy (profileOptions.Allow).
@@ -152,7 +153,7 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 // engine allows that at once, and asks again for anything else
 // (awaitRequestOwner).
 func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (allowed, resolved bool) {
-	var access Access
+	var access Caller
 	m.mu.Lock()
 	for _, owner := range owners {
 		if p := framePageLocked(scope, owner); p != nil {

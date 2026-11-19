@@ -343,7 +343,7 @@ func (m *Manager) findStopPages(threadID string, named *managedPage, owner findO
 	var others []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID && p != named {
+			if p.owner.id == threadID && p != named {
 				others = append(others, p)
 			}
 		}
@@ -378,8 +378,8 @@ func (m *Manager) pageLive(p *managedPage) bool {
 func (m *Manager) pageShown(threadID, pageID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session, ok := m.sessions[threadID]
-	return ok && session.Visible && session.ActivePageID == pageID && m.paneMountedLocked(threadID)
+	session := m.currentSessionLocked(threadID)
+	return session.Visible && session.ActivePageID == pageID && m.paneMountedLocked(threadID)
 }
 
 // paneMountedLocked reports whether a pane is mounted for the thread, painted
@@ -422,8 +422,7 @@ func (m *Manager) admitFindStart(threadID, pageID string, owner findOwner) error
 	if owner.seq <= pane.findSeq {
 		return fmt.Errorf("%w: %d after %d", errFindStale, owner.seq, pane.findSeq)
 	}
-	session, ok := m.sessions[threadID]
-	if !ok || !session.Visible || session.ActivePageID != pageID {
+	if session := m.currentSessionLocked(threadID); !session.Visible || session.ActivePageID != pageID {
 		return errFindNotShown
 	}
 	pane.findSeq = owner.seq
@@ -482,7 +481,7 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	p.find.doc = p.docEpoch.Load()
 	p.findMu.Unlock()
 	if taken != nil {
-		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: taken})
+		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: p.id, Find: taken})
 	}
 	if mode == FindModeEngine && query == "" {
 		query = findSeed(p.driver.SelectionText(ctx))
@@ -641,7 +640,7 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 		case epoch != 0 && p.find.doc < epoch:
 			ends = true
 		case review:
-			ends = !m.pageShown(p.owner, p.id) || !m.mountOf(p.owner, p.find.owner)
+			ends = !m.pageShown(p.owner.id, p.id) || !m.mountOf(p.owner.id, p.find.owner)
 		}
 	}
 	var state FindState
@@ -651,7 +650,7 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 	owed := live && !p.find.active && !p.find.settled()
 	p.findMu.Unlock()
 	if ends {
-		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: &state})
+		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner.id, PageID: p.id, Find: &state})
 	}
 	if !owed {
 		return nil

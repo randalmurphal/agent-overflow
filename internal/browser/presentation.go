@@ -81,22 +81,26 @@ type presentSync struct{ busy, dirty bool }
 func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
-	candidateID := m.sessions[threadID].ActivePageID
+	// The candidate is the current lifetime's selection; every other page
+	// of the thread, an earlier lifetime's still closing included, is
+	// hidden.
+	current := m.currentLocked(threadID)
+	candidateID := m.currentSessionLocked(threadID).ActivePageID
 	var pages []*managedPage
 	var candidate *managedPage
 	var closing []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner != threadID {
+			if p.owner.id != threadID {
 				continue
 			}
 			pages = append(pages, p)
-			if p.id == candidateID {
+			if p.owner == current && p.id == candidateID {
 				candidate = p
 			}
 		}
 		for _, c := range scope.closing {
-			if c.p.owner == threadID {
+			if c.p.owner.id == threadID {
 				closing = append(closing, c.p)
 			}
 		}
@@ -158,9 +162,13 @@ func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (s
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.awaitingLayout, threadID)
-	session, hasSession := m.sessions[threadID]
-	mount, rect, shown := m.presenterLocked(threadID)
-	if candidate == nil || !hasSession || !session.Visible || !shown || session.ActivePageID != candidate.id {
+	tb := m.currentLocked(threadID)
+	if candidate == nil || tb == nil || candidate.owner != tb {
+		return false, PanePlacement{}, false
+	}
+	session := tb.session
+	mount, rect, shown := m.presenterLocked(tb)
+	if !session.Visible || !shown || session.ActivePageID != candidate.id {
 		return false, PanePlacement{}, false
 	}
 	if live, _ := m.livePageLocked(candidate.id); live != candidate {

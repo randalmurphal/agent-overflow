@@ -52,7 +52,7 @@ func expectFlags(t *testing.T, p *managedPage, back, forward bool, state string)
 // the suspension saves the address it read.
 func TestAHistoryCommitDuringASuspendReadKeepsTheAddressItRead(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, fake := fencePage(t, manager, access)
 	// A report's history refresh is outstanding; the engine then moves to
 	// B, whose report is still on its way.
@@ -81,7 +81,7 @@ func TestAHistoryCommitDuringASuspendReadKeepsTheAddressItRead(t *testing.T) {
 // read commits, does not replace the address the suspension read.
 func TestASuspendSavesTheAddressItReadOverALateReport(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, _ := fencePage(t, manager, access)
 	var calls atomic.Int32
 	manager.infoRead = func(*managedPage) {
@@ -104,7 +104,7 @@ func TestASuspendSavesTheAddressItReadOverALateReport(t *testing.T) {
 // the engine's report still commits after it.
 func TestAHistoryRefreshCommitsAfterASnapshot(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, fake := fencePage(t, manager, access)
 	engineBack(t, fake)
 	// The engine reports the back; its report keeps the shown flags and
@@ -123,7 +123,7 @@ func TestAHistoryRefreshCommitsAfterASnapshot(t *testing.T) {
 // not void the snapshot's address.
 func TestASnapshotCommitsAfterAHistoryRefresh(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, fake := fencePage(t, manager, access)
 	refresh := p.readStamp()
 	engineBack(t, fake)
@@ -147,7 +147,7 @@ func TestASnapshotCommitsAfterAHistoryRefresh(t *testing.T) {
 // whichever commits first, and an address commit does not void it.
 func TestAStaleHistoryRefreshLosesToALaterRead(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	p, fake := fencePage(t, manager, access)
 	refresh := p.readStamp()
 	held, release := make(chan struct{}), make(chan struct{})
@@ -181,7 +181,7 @@ func TestAStaleHistoryRefreshLosesToALaterRead(t *testing.T) {
 // the page joined its tabs does not replace it.
 func TestAReportDuringCreationMovesTheOrderFence(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	var hooks pageHooks
 	engine.mu.Lock()
 	engine.onNewPage = func(h pageHooks) {
@@ -206,7 +206,7 @@ func TestAReportDuringCreationMovesTheOrderFence(t *testing.T) {
 // after the page joined its tabs is dropped.
 func TestAReportDuringRestoreMovesTheOrderFence(t *testing.T) {
 	manager, engine := newRestoreManager(t, t.TempDir(), ManagerOptions{})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/one")
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestAReportDuringRestoreMovesTheOrderFence(t *testing.T) {
 // a push shows.
 func TestAReportAfterThePageClosedIsANoOp(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {

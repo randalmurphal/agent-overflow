@@ -221,14 +221,14 @@ func receive(t *testing.T, ch <-chan struct{}, what string) {
 
 func tabIDs(m *Manager, access Access) []string {
 	var ids []string
-	for _, page := range m.CompanionState(access).Pages {
+	for _, page := range m.CompanionState(access.Caller()).Pages {
 		ids = append(ids, page.ID)
 	}
 	return ids
 }
 
 func findTab(m *Manager, access Access, pageID string) (PageInfo, bool) {
-	for _, page := range m.CompanionState(access).Pages {
+	for _, page := range m.CompanionState(access.Caller()).Pages {
 		if page.ID == pageID {
 			return page, true
 		}
@@ -257,7 +257,7 @@ func await[T any](t *testing.T, ch <-chan T, what string) T {
 // returns: the close it joins answers it.
 func closeWaiter(t *testing.T, m *Manager, access Access, pageID string) <-chan error {
 	t.Helper()
-	c, err := m.beginCloseLive(access, pageID, false)
+	c, err := beginCloseLive(m, access, pageID)
 	if err != nil {
 		t.Fatalf("join the close of %s: %v", pageID, err)
 	}
@@ -269,7 +269,7 @@ func closeWaiter(t *testing.T, m *Manager, access Access, pageID string) <-chan 
 // the engine close runs after it lets go.
 func TestAClosedTabLeavesTheStateBeforeItsTeardown(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	a := mustOpen(t, manager, access, "https://example.test/a")
 	b := mustOpen(t, manager, access, "https://example.test/b")
 
@@ -318,7 +318,7 @@ func TestAClosedTabLeavesTheStateBeforeItsTeardown(t *testing.T) {
 func TestAClosingPageHoldsItsCapAndProfileUntilDisposed(t *testing.T) {
 	t.Run("thread cap", func(t *testing.T) {
 		manager, engine := newLifecycleManager(t)
-		access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+		access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 		var first PageInfo
 		for i := range maxPagesPerThread {
 			page := mustOpen(t, manager, access, "https://example.test/")
@@ -345,7 +345,7 @@ func TestAClosingPageHoldsItsCapAndProfileUntilDisposed(t *testing.T) {
 
 	t.Run("workspace profile", func(t *testing.T) {
 		manager, engine := newLifecycleManager(t)
-		access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+		access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 		last := mustOpen(t, manager, access, "https://example.test/")
 		release := engine.hold(&engine.disposeGate)
 		defer release()
@@ -385,7 +385,7 @@ func TestATeardownFailureIsReported(t *testing.T) {
 	engine.disposeErr = errors.New("the profile's browser would not stop")
 	events := recordEvents(manager)
 	for _, wait := range []bool{false, true} {
-		access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+		access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 		last := mustOpen(t, manager, access, "https://example.test/")
 		var err error
 		if wait {
@@ -409,7 +409,7 @@ func TestRepeatedClosesShareOneTeardown(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
 	engine.disposeErr = errors.New("would not stop")
 	events := recordEvents(manager)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
 	release := engine.hold(&engine.closeGate)
 	defer release()
@@ -423,7 +423,7 @@ func TestRepeatedClosesShareOneTeardown(t *testing.T) {
 		closeWaiter(t, manager, access, page.ID),
 		closeWaiter(t, manager, access, page.ID),
 	}
-	if err := manager.ClosePage(t.Context(), Access{ThreadID: "other", Workspace: access.Workspace}, page.ID); !errors.Is(err, errPageNotFound) {
+	if err := manager.ClosePage(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), page.ID); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("another thread's close of the closing page = %v", err)
 	}
 	release()

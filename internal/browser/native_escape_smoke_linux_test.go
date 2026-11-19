@@ -42,7 +42,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-escape", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-escape", Workspace: workspace})
 	t.Cleanup(func() {
 		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
@@ -59,7 +59,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}

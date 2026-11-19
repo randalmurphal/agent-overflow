@@ -55,16 +55,21 @@ func engineSavedDownload(path string, size int64) (string, os.FileInfo, error) {
 // lists, and is still that file.
 func (m *Manager) listedDownloadAllows(workspace, path string) bool {
 	var listed []os.FileInfo
+	// The lists of the threads' current lifetimes: a closed thread's list
+	// went with it.
+	m.mu.Lock()
 	m.downloadsMu.Lock()
-	for _, list := range m.threadDownloads {
-		for _, item := range list.items {
+	for _, tb := range m.threads {
+		if tb.downloads == nil {
+			continue
+		}
+		for _, item := range tb.downloads.items {
 			if item.State == downloadStateCompleted && item.workspace == workspace && item.path == path && item.file != nil {
 				listed = append(listed, item.file)
 			}
 		}
 	}
 	m.downloadsMu.Unlock()
-	m.mu.Lock()
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.access.Workspace != workspace {
