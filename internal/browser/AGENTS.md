@@ -119,12 +119,16 @@ Headless Chromium runs with its popup blocker off, so a window a page opens
 with no gesture is a popup there as on WebView2. On the hosted engine a
 popup is the launcher's report (`hosted_popups.go`), attached only on its
 opener's connection, within the attach timeout, and canceled by its close.
-Every engine reports a popup, and any page's close and crash, as it
-observes them and holds none back: the Manager records each in the
-popup's admission (`popupadmit`) before it acts, and the listing's one
-commit decides the tab (a close refuses it, a crash alone lists it
-crashed); a listed page's close and crash run in report order
-(`engine_pages.go`). A WebKit popup view's close and crash handlers are
+Every engine reports a popup before anything else of it, and any page's
+close and crash as it observes them, holding none back: the Manager
+records each in the popup's admission (`popupadmit`) before it acts, and
+the listing's one commit decides the tab (a close refuses it, a crash
+alone lists it as a crashed tab from its first push, also when its attach
+then fails); a listed page's close and crash run in report order
+(`engine_pages.go`). An admission is kept while its popup is pending or
+listed or a popup of it is, so a download finds the nearest open
+ancestor however many popups come and go; only ended ones go to a bounded
+history, past which a popup's ancestry is unknown, never empty. A WebKit popup view's close and crash handlers are
 installed at its creation, and until its adoption it names itself by its
 popup number. A hosted page admits downloads from its bind or popup
 report until it goes, which ends those still running

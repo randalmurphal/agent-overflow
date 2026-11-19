@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"agent-overflow/internal/browser/popupadmit"
 )
 
 // The states a DownloadInfo, and the ThreadDownload behind it, moves through.
@@ -145,8 +147,11 @@ type endedDownloads struct {
 func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string) endedDownloads {
 	delete(scope.pages, p.id)
 	if p.driver != nil {
-		// A popup it opened is not adopted (awaitOpener).
+		// A popup it opened is not adopted (awaitOpener), and its own
+		// admission, if it was a popup, keeps its chain only while a popup
+		// of it is live.
 		m.unlistedLocked().put(p.driver.Handle(), struct{}{})
+		m.admissions.Leave(popupadmit.Handle(p.driver.Handle()))
 	}
 	ended := endedDownloads{scope: scope}
 	p.downloadMu.Lock()

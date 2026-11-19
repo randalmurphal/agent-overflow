@@ -1,70 +1,76 @@
 package popupadmit
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 )
 
 // What ended a popup before its listing decides the listing, whatever the
-// order of the observations and whether they came before its
-// announcement: a close refuses it, a crash alone lists it crashed.
+// order of the observations: a close refuses it, a crash alone lists it
+// crashed. Attached or not, a crash alone lists it crashed; with no crash,
+// a popup whose attach failed is refused.
 func TestCommitReadsWhatEndedThePopup(t *testing.T) {
 	cases := []struct {
-		name    string
-		early   []Observation
-		pending []Observation
-		want    VerdictKind
-		reason  string
+		name       string
+		pending    []Observation
+		want       VerdictKind
+		unattached VerdictKind
+		reason     string
 	}{
-		{"nothing", nil, nil, List, ""},
-		{"a crash", nil, []Observation{Crashed("oom")}, ListCrashed, "oom"},
-		{"a close", nil, []Observation{Closed()}, Refuse, ""},
-		{"a crash, then a close", nil, []Observation{Crashed("oom"), Closed()}, Refuse, ""},
-		{"a close, then a crash", nil, []Observation{Closed(), Crashed("oom")}, Refuse, ""},
-		{"a close before its announcement", []Observation{Closed()}, nil, Refuse, ""},
-		{"a crash before, a close after its announcement", []Observation{Crashed("oom")}, []Observation{Closed()}, Refuse, ""},
-		{"a crash before its announcement", []Observation{Crashed("gone")}, nil, ListCrashed, "gone"},
+		{"nothing", nil, List, Refuse, ""},
+		{"a crash", []Observation{Crashed("oom")}, ListCrashed, ListCrashed, "oom"},
+		{"a close", []Observation{Closed()}, Refuse, Refuse, ""},
+		{"a crash, then a close", []Observation{Crashed("oom"), Closed()}, Refuse, Refuse, ""},
+		{"a close, then a crash", []Observation{Closed(), Crashed("oom")}, Refuse, Refuse, ""},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			r := New(8)
-			for _, o := range tc.early {
-				if got := r.Observe("p", o); got != Unheld {
-					t.Fatalf("an observation before the announcement was %v", got)
+		for _, attached := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, attached %v", tc.name, attached), func(t *testing.T) {
+				r := New(8)
+				if !r.Announce("p", "opener") {
+					t.Fatal("the first announcement was refused")
 				}
-			}
-			if !r.Announce("p", "opener") {
-				t.Fatal("the first announcement was refused")
-			}
-			for _, o := range tc.pending {
-				if got := r.Observe("p", o); got != Held {
-					t.Fatalf("an observation of a pending popup was %v", got)
+				for _, o := range tc.pending {
+					if got := r.Observe("p", o); got != Held {
+						t.Fatalf("an observation of a pending popup was %v", got)
+					}
 				}
-			}
-			v := r.Commit("p")
-			if v.Kind() != tc.want || v.CrashReason() != tc.reason {
-				t.Fatalf("commit = %v %q, want %v %q", v.Kind(), v.CrashReason(), tc.want, tc.reason)
-			}
-			want := Listed
-			if tc.want == Refuse {
-				want = Ended
-			}
-			if d, _ := r.Disposition("p"); d != want {
-				t.Fatalf("the admission is %v after the commit, want %v", d, want)
-			}
-			if got := r.Observe("p", Closed()); got != Unheld {
-				t.Fatalf("an observation after the commit was %v", got)
-			}
-			if again := r.Commit("p"); again.Kind() != Refuse {
-				t.Fatalf("a second commit answered %v", again.Kind())
-			}
-		})
+				commit, want := r.Commit, tc.want
+				if !attached {
+					commit, want = r.CommitUnattached, tc.unattached
+				}
+				v := commit("p")
+				wantReason := tc.reason
+				if want != ListCrashed {
+					wantReason = ""
+				}
+				if v.Kind() != want || v.CrashReason() != wantReason {
+					t.Fatalf("commit = %v %q, want %v %q", v.Kind(), v.CrashReason(), want, wantReason)
+				}
+				wantDisposition := Ended
+				if want == List {
+					wantDisposition = Listed
+				}
+				if d, _ := r.Disposition("p"); d != wantDisposition {
+					t.Fatalf("the admission is %v after the commit, want %v", d, wantDisposition)
+				}
+				if got := r.Observe("p", Closed()); got != Unheld {
+					t.Fatalf("an observation after the commit was %v", got)
+				}
+				if again := r.Commit("p"); again.Kind() != Refuse {
+					t.Fatalf("a second commit answered %v", again.Kind())
+				}
+			})
+		}
 	}
 }
 
 // An admission ends once: a discard ends a pending one and changes
-// nothing after a listing, a popup is announced once, and a commit of an
-// unknown or discarded popup refuses it.
+// nothing after a listing, a listed one ends when its tab leaves, a popup
+// is announced once, and a commit of an unknown or discarded popup refuses
+// it. An observation of a handle never announced is the caller's, and
+// nothing keeps it for an announcement.
 func TestAnAdmissionEndsOnce(t *testing.T) {
 	r := New(8)
 	if r.Commit("unknown").Kind() != Refuse {
@@ -81,52 +87,113 @@ func TestAnAdmissionEndsOnce(t *testing.T) {
 	if r.Commit("a").Kind() != Refuse {
 		t.Fatal("a discarded popup was listed")
 	}
+	if r.Announce("a", "o") {
+		t.Fatal("an ended popup was announced again")
+	}
 	r.Announce("b", "o")
 	r.Commit("b")
 	r.Discard("b")
 	if d, _ := r.Disposition("b"); d != Listed {
 		t.Fatalf("a discard after the listing moved the popup to %v", d)
 	}
+	r.Leave("b")
+	if d, _ := r.Disposition("b"); d != Ended {
+		t.Fatalf("a popup whose tab left is %v", d)
+	}
+	if got := r.Observe("never", Closed()); got != Unheld {
+		t.Fatalf("an observation of a handle never announced was %v", got)
+	}
+	r.Announce("never", "o")
+	if v := r.Commit("never"); v.Kind() != List {
+		t.Fatalf("a popup observed before its announcement commits as %v; an engine announces first, and nothing is kept", v.Kind())
+	}
 }
 
-// A popup's ancestors are its opener chain, nearest first, through
-// popups listed, ended or pending, each once even in a cycle.
+// A popup's ancestors are its opener chain, nearest first, through popups
+// listed, ended or pending, each once even in a cycle; a handle the
+// registry never had has an unknown ancestry.
 func TestAncestorsFollowTheOpenerChain(t *testing.T) {
 	r := New(8)
 	r.Announce("child", "parent")
 	r.Announce("parent", "grandparent")
 	r.Announce("grandparent", "tab")
 	r.Discard("parent")
-	if got := r.Ancestors("child"); !slices.Equal(got, []Handle{"parent", "grandparent", "tab"}) {
+	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), []Handle{"parent", "grandparent", "tab"}) {
 		t.Fatalf("ancestors = %v", got)
 	}
 	r.Announce("x", "y")
 	r.Announce("y", "x")
-	if got := r.Ancestors("x"); !slices.Equal(got, []Handle{"y"}) {
+	if got := r.Ancestors("x"); !got.Known() || !slices.Equal(got.Chain(), []Handle{"y"}) {
 		t.Fatalf("ancestors in a cycle = %v", got)
+	}
+	if got := r.Ancestors("stranger"); got.Known() || got.Chain() != nil {
+		t.Fatalf("a handle never announced has ancestors %v", got)
 	}
 }
 
-// Settled admissions and early observations are kept within the limit,
-// oldest first out; a pending admission is never dropped for room.
-func TestTheRegistryIsBounded(t *testing.T) {
-	r := New(2)
-	r.Announce("pending", "o")
-	for _, h := range []Handle{"a", "b", "c"} {
-		r.Announce(h, "o")
+// A live popup keeps its chain however many other popups come and go: a
+// listed parent and every ancestor above it, while a child of it is
+// pending, even after the parent's tab left. Once nothing depends on it,
+// an ended admission goes to the history, which keeps the newest within
+// its limit, a child before its parent, and answers unknown past it.
+func TestALiveChainOutlivesTurnover(t *testing.T) {
+	const limit = 4
+	r := New(limit)
+	r.Announce("parent", "tab")
+	r.Commit("parent")
+	r.Announce("child", "parent")
+	churn := func(prefix string) {
+		for i := range 8 * limit {
+			h := Handle(fmt.Sprintf("%s-%d", prefix, i))
+			r.Announce(h, "elsewhere")
+			if i%2 == 0 {
+				r.Discard(h)
+			} else {
+				r.Commit(h)
+				r.Leave(h)
+			}
+		}
+	}
+	churn("a")
+	want := []Handle{"parent", "tab"}
+	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), want) {
+		t.Fatalf("after turnover, the pending child's ancestors are %v, want %v", got, want)
+	}
+	r.Leave("parent")
+	churn("b")
+	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), want) {
+		t.Fatalf("after its parent's tab left and more turnover, the pending child's ancestors are %v, want %v", got, want)
+	}
+	if live, kept := r.retained(); live != 2 || kept != limit {
+		t.Fatalf("the registry keeps %d live and %d settled admissions, want 2 and %d", live, kept, limit)
+	}
+	r.Discard("child")
+	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), want) {
+		t.Fatalf("just after its end, the child's ancestors are %v, want %v", got, want)
+	}
+	churn("c")
+	if got := r.Ancestors("child"); got.Known() {
+		t.Fatalf("past the history's limit, the child's ancestors are still %v", got)
+	}
+	if live, kept := r.retained(); live != 0 || kept != limit {
+		t.Fatalf("the registry keeps %d live and %d settled admissions, want 0 and %d", live, kept, limit)
+	}
+}
+
+// A popup announced with an opener that already went to the history makes
+// that opener live again, with its own chain, while the popup is.
+func TestAPopupOfAnEndedOpenerKeepsItsChain(t *testing.T) {
+	const limit = 2
+	r := New(limit)
+	r.Announce("parent", "tab")
+	r.Discard("parent")
+	r.Announce("late", "parent")
+	for i := range 4 * limit {
+		h := Handle(fmt.Sprintf("other-%d", i))
+		r.Announce(h, "elsewhere")
 		r.Discard(h)
-		r.Observe("early-"+h, Closed())
 	}
-	if _, ok := r.Disposition("a"); ok {
-		t.Fatal("the oldest settled admission was kept past the limit")
-	}
-	if _, ok := r.Disposition("c"); !ok {
-		t.Fatal("the newest settled admission was dropped")
-	}
-	if d, ok := r.Disposition("pending"); !ok || d != Pending {
-		t.Fatal("a pending admission was dropped for room")
-	}
-	if len(r.early) != 2 {
-		t.Fatalf("kept %d early observations, want 2", len(r.early))
+	if got := r.Ancestors("late"); !got.Known() || !slices.Equal(got.Chain(), []Handle{"parent", "tab"}) {
+		t.Fatalf("the late popup's ancestors are %v", got)
 	}
 }

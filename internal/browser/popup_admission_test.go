@@ -2,6 +2,10 @@ package browser
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,10 +29,12 @@ func (p historyGatePage) HistoryState(ctx context.Context) (bool, bool, error) {
 // A close or crash an engine reports of a popup decides its tab at the
 // listing, wherever it falls from the popup's report on: a popup that
 // closed is no tab, live or crashed, whether it crashed too and in either
-// order, and one that only crashed is a crashed tab. Reported after the
+// order, and one that only crashed is a crashed tab, also when its attach
+// then fails, and is never published live first. Reported after the
 // listing, they act on the tab: a close removes it and a crash keeps it
 // crashed. The reports go through the Manager's engine events, as every
-// engine sends them, at each stage of the adoption.
+// engine sends them, at each stage of the adoption, and every state push
+// is read.
 func TestAPopupsEndsDecideItsTab(t *testing.T) {
 	type outcome int
 	const (
@@ -40,20 +46,41 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 		name string
 		ends []string
 		// before is the outcome of the ends reported before the listing,
-		// after of those reported after it.
-		before, after outcome
+		// unattached of those reported before an attach that fails, and
+		// after of those reported after the listing.
+		before, unattached, after outcome
 	}{
-		{"nothing", nil, live, live},
-		{"a close", []string{"close"}, none, none},
-		{"a crash", []string{"crash"}, crashed, crashed},
-		{"a crash, then a close", []string{"crash", "close"}, none, crashed},
-		{"a close, then a crash", []string{"close", "crash"}, none, none},
+		{"nothing", nil, live, none, live},
+		{"a close", []string{"close"}, none, none, none},
+		{"a crash", []string{"crash"}, crashed, crashed, crashed},
+		{"a crash, then a close", []string{"crash", "close"}, none, none, crashed},
+		{"a close, then a crash", []string{"close", "crash"}, none, none, none},
 	}
-	stages := []string{"before its report", "during its attach", "during its history read", "after its listing"}
+	stages := []string{"during its attach", "during an attach that fails", "during its history read", "after its listing"}
 	for _, stage := range stages {
 		for _, trace := range traces {
 			t.Run(stage+"/"+trace.name, func(t *testing.T) {
 				manager, engine, access, opener := newAdoptionManager(t)
+				// The thread has the opener's tab and the popup's alone, so a
+				// push with two live tabs published the popup live.
+				var pushMu sync.Mutex
+				publishedLive := false
+				manager.SetEventSink(func(event CompanionEvent) {
+					if event.Kind != "state" || event.ThreadID != access.ThreadID {
+						return
+					}
+					live := 0
+					for _, page := range event.Pages {
+						if !page.Suspended {
+							live++
+						}
+					}
+					if live > 1 {
+						pushMu.Lock()
+						publishedLive = true
+						pushMu.Unlock()
+					}
+				})
 				report := func() {
 					for _, end := range trace.ends {
 						if end == "close" {
@@ -71,10 +98,17 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 						close(history)
 					}
 				}()
+				want := trace.before
 				switch stage {
-				case "during its attach":
+				case "during its attach", "during an attach that fails":
 					release := engine.gate("popup")
 					defer release()
+					if stage == "during an attach that fails" {
+						engine.mu.Lock()
+						engine.failing["popup"] = true
+						engine.mu.Unlock()
+						want = trace.unattached
+					}
 					manager.popupOpened(engine.popup(opener, "popup"))
 					engine.awaitAttach(t, "popup")
 					report()
@@ -87,9 +121,6 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 					engine.awaitAttach(t, "history popup")
 					report()
 					close(history)
-				case "before its report":
-					report()
-					manager.popupOpened(engine.popup(opener, "popup"))
 				case "after its listing":
 					manager.popupOpened(engine.popup(opener, "popup"))
 					awaitAdmission(t, manager, "popup")
@@ -97,9 +128,6 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 						t.Fatal("the popup was not listed")
 					}
 					report()
-				}
-				want := trace.before
-				if stage == "after its listing" {
 					want = trace.after
 				}
 				awaitAdmission(t, manager, "popup")
@@ -114,11 +142,76 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 					}
 					time.Sleep(time.Millisecond)
 				}
-				if got := engine.discards(); len(got) != 0 {
-					t.Fatalf("discarded %v: the attached popup's own driver closes it", got)
+				pushMu.Lock()
+				wasLive := publishedLive
+				pushMu.Unlock()
+				if want != live && stage != "after its listing" && wasLive {
+					t.Fatal("a state push listed the popup live before its tab was decided")
+				}
+				discards := engine.discards()
+				if stage == "during an attach that fails" {
+					for len(discards) == 0 && time.Now().Before(deadline) {
+						time.Sleep(time.Millisecond)
+						discards = engine.discards()
+					}
+					if !slices.Equal(discards, []string{"popup"}) {
+						t.Fatalf("discarded %v: a popup with no driver is the engine's to close", discards)
+					}
+				} else if len(discards) != 0 {
+					t.Fatalf("discarded %v: the attached popup's own driver closes it", discards)
 				}
 			})
 		}
+	}
+}
+
+// A child popup still being adopted keeps its parent's chain however many
+// unrelated popups come and go: its parent closes, the child is never
+// listed, and the download it finished meanwhile is listed, finished, in
+// the tab that opened its parent, its file kept, though its engine named
+// only its parent.
+func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
+	manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	manager.adoptPopup(engine.popup(opener, "parent"))
+	if !listed(manager, "parent") {
+		t.Fatal("the parent was not listed")
+	}
+	release := engine.gate("child")
+	defer release()
+	childDone := make(chan struct{})
+	go func() { manager.adoptPopup(engine.popup("parent", "child")); close(childDone) }()
+	engine.awaitAttach(t, "child")
+	file := engineArtifact(t, manager, "dl-1")
+	if !popupDownload(manager, engine, "child", "dl-1", "parent") {
+		t.Fatal("the child's download was refused")
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
+	// Twice the registry's history of popups that came and went.
+	for i := range 2*orderSlack + 1 {
+		handle := fmt.Sprintf("other-%d", i)
+		engine.mu.Lock()
+		engine.failing[handle] = true
+		engine.mu.Unlock()
+		manager.adoptPopup(engine.popup(opener, handle))
+	}
+	manager.removeClosedPage("parent")
+	release()
+	<-childDone
+	if listed(manager, "child") {
+		t.Fatal("a popup whose opener closed was listed")
+	}
+	wantDownloads(t, manager, opener, "dl-1 completed 5")
+	manager.mu.Lock()
+	root := manager.listedPageLocked(opener)
+	manager.mu.Unlock()
+	root.downloadMu.Lock()
+	path := root.downloads[0].Path
+	root.downloadMu.Unlock()
+	if path == "" || path == file {
+		t.Fatalf("the finished download's file is %q, want it published from %s", path, file)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the finished download's file is gone: %v", err)
 	}
 }
 

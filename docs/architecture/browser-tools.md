@@ -1055,7 +1055,8 @@ the popup no `window.opener`. A page whose `window.close()` the engine
 honors (on WebView2, a popup or a page with one history entry) closes its
 tab. A popup that closes before its tab is listed never becomes one, even
 if its page also crashed; one whose page only crashed is listed as a
-crashed tab. On
+crashed tab, never shown live first, also when AO could not attach to its
+page. On
 WebView2 the launcher answers the page's `NewWindowRequested` with a hidden
 controller of its own in the opener's profile, starting at the opener's
 bounds, so no window of WebView2's own opens and `window.opener` and
