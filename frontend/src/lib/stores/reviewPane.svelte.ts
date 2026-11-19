@@ -19,7 +19,7 @@ import {
   type PRDraftsTarget,
 } from './prDiffReviewComments.svelte';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import { isPaneOnScreen } from './layoutMode.svelte';
+import { isPaneOnScreen } from './paneLayout.svelte';
 import { untrack } from 'svelte';
 import {
   ApprovePR,
@@ -1068,11 +1068,12 @@ export function createReviewPaneState(
   let conflictView = $state(false);
   // The conflict view's reconcile permit, held for exactly as long as the
   // view is open AND a mounted pane that renders this state is on screen
-  // (`isPaneOnScreen`: every mounted pane on the desktop, the one compact
-  // shows): a head move recomputes the merged tree only for a view
-  // somebody is looking at (see prReviewConflicts.svelte.ts). A retained
-  // state off screen (a pinned review the page keeps for a step back, a
-  // companion compact navigated away from) holds none.
+  // (`isPaneOnScreen`: every mounted pane on the desktop, or only the
+  // promoted one while a pane is promoted; the one compact shows): a head
+  // move recomputes the merged tree only for a view somebody is looking at
+  // (see prReviewConflicts.svelte.ts). A retained state off screen (a
+  // pinned review the page keeps for a step back, a companion compact
+  // navigated away from, a pane under another's promotion) holds none.
   let conflictReconcilePermit: { key: string; release: () => void } | null = null;
   // Mounted surfaces by the layout pane that hosts them.
   const surfacePanes = new SvelteMap<string, number>();
