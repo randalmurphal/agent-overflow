@@ -288,17 +288,6 @@ func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, 
 	return catalog, nil
 }
 
-// latestModelsForProvider is GetModelsForProvider without starting or
-// waiting on a provider probe
-// (providerdiscoveryapp.Service.LatestModelsForProvider).
-// Known is false while Codex has not answered a model list since the cache
-// was last reset.
-func (a *App) latestModelsForProvider(providerName string) (catalog provider.ModelCatalog, known bool) {
-	catalog, known = a.providerDiscoveryService().LatestModelsForProvider(context.Background(), providerName)
-	a.listRecentlyUsedModels(&catalog)
-	return catalog, known
-}
-
 // recentModelUseWindow is how long a model that ran keeps its picker row after
 // the provider's list stops offering it. The provider's list is a
 // server-gated shortlist that can omit a working model from one answer; a model

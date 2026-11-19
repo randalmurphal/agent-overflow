@@ -12,10 +12,9 @@ import (
 // Agent profiles (docs/specs/agent-thread-tools.md, "Agent profiles"). The
 // roster is the person's, read from the settings of the computer the
 // calling thread is on; what a profile resolves to is a fact about the
-// computer a spawn targets. One resolution serves thread_options, the
-// guide's list of names and the spawn that names a profile, so the three
-// never disagree about what a computer can run, except that the guide names
-// a provider's profiles unchecked until its model list is known
+// computer a spawn targets. One resolution serves thread_options and the
+// spawn that names a profile, so the two never disagree about what a
+// computer can run. The guide names profiles by offered provider alone
 // (GuideProfileNames).
 
 // AgentProfile is one profile of the roster, as the person set it up.
@@ -227,27 +226,21 @@ func ListProfiles(roster Roster, providers []ProviderOption, defaults SpawnDefau
 }
 
 // GuideProfileNames are the profiles a session's guide names, in the
-// person's order: those on an offered provider that ResolveSpawn accepts,
-// and on an offered provider whose model list is not known yet
-// (unknownModels), every one, since the guide is written without waiting
-// for that list. A profile that inherits its provider is on the spawner's.
-// The spawn itself still resolves against a real catalog.
-func GuideProfileNames(roster Roster, providers []ProviderOption, unknownModels map[string]bool, defaults SpawnDefaults) []string {
+// person's order: every one whose provider is offered, a profile that
+// inherits its provider being on the spawner's. No model is checked: the
+// guide is fixed when the session starts, so a model list read then could
+// be stale or absent and still be wrong later. thread_options and the
+// spawn check the model (ResolveSpawn) and refuse with the reason.
+func GuideProfileNames(roster Roster, offered []string, spawnerProvider string) []string {
 	names := make([]string, 0, len(roster.Profiles))
 	for _, profile := range roster.Profiles {
 		providerID := profile.Provider
 		if providerID == "" {
-			providerID = defaults.Provider
+			providerID = spawnerProvider
 		}
-		if !slices.ContainsFunc(providers, func(candidate ProviderOption) bool { return candidate.ID == providerID }) {
-			continue
+		if slices.Contains(offered, providerID) {
+			names = append(names, profile.Name)
 		}
-		if !unknownModels[providerID] {
-			if _, err := ResolveSpawn(defaults, SpawnChoice{}.WithProfile(profile), providers, ""); err != nil {
-				continue
-			}
-		}
-		names = append(names, profile.Name)
 	}
 	return names
 }

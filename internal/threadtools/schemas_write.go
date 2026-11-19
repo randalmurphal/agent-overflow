@@ -97,12 +97,13 @@ func spawnSchema(shape Shape) map[string]any {
 	return tool("thread_spawn", description, properties, "prompt")
 }
 
-// profileDescription states the profiles this computer can run beside the
-// parameter, so a spawn by profile needs no discovery call for the name.
+// profileDescription states the profiles on this computer's providers
+// beside the parameter (GuideProfileNames), so a spawn by profile needs no
+// discovery call for the name.
 func profileDescription(names []string) string {
 	text := "Agent profile to spawn as, by name: the provider, model, effort, runtime mode and instructions the user set up for one kind of work. provider, model, effort and runtime_mode passed beside it override that part of it. thread_options lists each profile's use-for line and what it runs on each computer."
 	if len(names) > 0 {
-		text += " This computer runs: " + strings.Join(names, ", ") + "."
+		text += " Profiles on this computer's providers: " + strings.Join(names, ", ") + "."
 	}
 	return text
 }

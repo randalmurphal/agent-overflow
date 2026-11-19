@@ -147,34 +147,23 @@ func (a *App) subThreadPlaceOf(threadID string) (subThreadPlace, error) {
 }
 
 // spawnShape is what a session's guide and tool list say about spawning:
-// its place, fixed at its start, and the providers and profiles this
-// computer offers now. It is built at every session start and handshake,
-// so it never starts or waits on a provider probe: it reads the model
-// lists already known, and a provider whose list is not known yet has its
-// profiles named unchecked (threadtools.GuideProfileNames) until a read
-// made on purpose, such as the model picker's, fetches it. A roster that
-// cannot be read leaves the names out rather than the guide.
+// its place, fixed at its start, and the providers this computer offers
+// now with the profiles on them (threadtools.GuideProfileNames). It reads
+// no model list, so a session's start or handshake never starts or waits
+// on a provider probe. A roster that cannot be read leaves the names out
+// rather than the guide.
 func (a *App) spawnShape(threadID string, place subThreadPlace, defaults threadtools.SpawnDefaults) threadtools.SpawnShape {
 	shape := threadtools.SpawnShape{Level: place.level, Limit: place.limit}
-	var options []threadtools.ProviderOption
-	unknownModels := map[string]bool{}
 	for _, name := range threadToolsProviders {
-		if !a.providerOffered(name) {
-			continue
-		}
-		shape.Providers = append(shape.Providers, name)
-		models, known := a.latestModelsForProvider(name)
-		options = append(options, providerOptionOf(name, models))
-		if !known {
-			unknownModels[name] = true
-		}
+		if a.providerOffered(name) {
+			shape.Providers = append(shape.Providers, name)		}
 	}
 	roster, err := a.threadTools().Roster(context.Background())
 	if err != nil {
 		log.Printf("thread tools: agent profiles for the guide of %s: %v", threadID, err)
 		return shape
 	}
-	shape.Profiles = threadtools.GuideProfileNames(roster, options, unknownModels, defaults)
+	shape.Profiles = threadtools.GuideProfileNames(roster, shape.Providers, defaults.Provider)
 	return shape
 }
 

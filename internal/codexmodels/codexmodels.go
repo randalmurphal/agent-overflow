@@ -44,12 +44,8 @@ type Cache struct {
 }
 
 type entry struct {
-	models []provider.ModelInfo
-	known  []provider.ModelInfo
-	// latest is the most recent successful catalog, which expiry and a
-	// later failed lookup leave in place; hasLatest says one arrived.
-	latest    []provider.ModelInfo
-	hasLatest bool
+	models    []provider.ModelInfo
+	known     []provider.ModelInfo
 	err       error
 	expiresAt time.Time
 }
@@ -121,20 +117,6 @@ func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) 
 	}
 }
 
-// Latest returns the most recent catalog a lookup for the binary answered,
-// and whether one has. It never starts, joins or waits on a lookup: the
-// catalog becomes known only through Get. Expiry and later failed lookups
-// keep it; Reset clears it.
-func (c *Cache) Latest(binary string) ([]provider.ModelInfo, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e := c.entries[strings.TrimSpace(binary)]
-	if !e.hasLatest {
-		return nil, false
-	}
-	return provider.CloneModels(e.latest), true
-}
-
 // run is one shared lookup. It belongs to no caller: it keeps the first
 // caller's values but not its cancellation, ends at the lister's own
 // bound, and each caller waits on its own context.
@@ -150,23 +132,17 @@ func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, 
 	// lookup that started after the reset.
 	if c.inflight[binary] == l {
 		delete(c.inflight, binary)
-		previous := c.entries[binary]
-		stored := provider.CloneModels(models)
-		known, latest, hasLatest := previous.known, previous.latest, previous.hasLatest
+		known := c.entries[binary].known
 		if err == nil {
-			// Entries are read only through clones, so latest shares stored.
 			known = rememberModels(known, models)
-			latest, hasLatest = stored, true
 		}
 		entryTTL := c.ttl
 		if err != nil {
 			entryTTL = DefaultErrorTTL
 		}
 		c.entries[binary] = entry{
-			models:    stored,
+			models:    provider.CloneModels(models),
 			known:     known,
-			latest:    latest,
-			hasLatest: hasLatest,
 			err:       err,
 			expiresAt: c.now().Add(entryTTL),
 		}

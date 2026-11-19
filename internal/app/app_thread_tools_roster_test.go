@@ -3,14 +3,12 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -324,20 +322,17 @@ func TestTheCatalogOffersOnlyInstalledEnabledProviders(t *testing.T) {
 // lister can tell that read's lookup from one something else started.
 type lookupBy struct{}
 
-// A session's spawn shape reads the Codex model list already known and
-// starts no lookup of its own, cold or expired, so a session's start or
-// handshake never launches Codex. Until a lookup the app makes on purpose
-// answers, Codex is offered and its profiles are named without the model
-// check; after one answers without a profile's model that profile is left
-// out, and it stays out on that last good catalog after it expires and a
-// later lookup fails.
-func TestTheSpawnShapeStartsNoCodexModelLookup(t *testing.T) {
+// A session's spawn shape names every profile whose provider this computer
+// offers, in the person's order, and reads no model list for either
+// provider: it starts and waits on no Codex lookup, cold or warm, and names
+// a profile whose model the Codex or Claude catalog lacks, before that
+// catalog is known and after. thread_options for the same roster leaves
+// those profiles out, and a spawn by one is refused with the reason. A
+// provider turned off takes its profiles out of the shape.
+func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.T) {
 	t.Parallel()
 	f := newThreadToolsFixture(t)
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
-	var offset atomic.Int64
-	now := func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
-	var failing atomic.Bool
 	// Each lookup reports who started it, then blocks until the test asks
 	// for answers, so a shape that waited on one would not return.
 	entered := make(chan string, 8)
@@ -349,13 +344,22 @@ func TestTheSpawnShapeStartsNoCodexModelLookup(t *testing.T) {
 		by, _ := ctx.Value(lookupBy{}).(string)
 		entered <- by
 		<-asked
-		if failing.Load() {
-			return nil, errors.New("initialize for model/list: context deadline exceeded")
-		}
 		// The shipped catalog has no gpt-6-astra, Astra's model.
 		return provider.CodexModels, nil
-	}, now)
+	}, time.Now)
+	roster := append(slices.Clone(f.app.currentSettings().AgentProfiles),
+		settings.AgentProfile{Name: "Ghost", UseFor: "x", Provider: "claude", Model: "claude-ghost-9"},
+		settings.AgentProfile{Name: "Like me", UseFor: "x"})
+	encoded, err := json.Marshal(roster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawRoster []any
+	if err := json.Unmarshal(encoded, &rawRoster); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.app.settings.Update(map[string]any{
+		"agentProfiles":    rawRoster,
 		"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"),
 		"codexBinaryPath":  createMockBinary(t, "codex-cli 0.160.0"),
 	}); err != nil {
@@ -396,39 +400,66 @@ func TestTheSpawnShapeStartsNoCodexModelLookup(t *testing.T) {
 			t.Fatalf("%s: no Codex model lookup started", by)
 		}
 	}
-	requireNamed := func(when string, shape threadtools.SpawnShape, astra bool) {
+	every := []string{"Luna", "Terra", "Sol", "Astra", "Haiku", "Sonnet", "Opus", "Fable", "Ghost", "Like me"}
+	requireNamed := func(when string, shape threadtools.SpawnShape, providers, names []string) {
 		t.Helper()
-		if !slices.Contains(shape.Providers, string(provider.Codex)) {
-			t.Errorf("%s: the shape offers %v, want codex among them", when, shape.Providers)
+		if !slices.Equal(shape.Providers, providers) {
+			t.Errorf("%s: the shape offers %v, want %v", when, shape.Providers, providers)
 		}
-		for _, name := range []string{"Luna", "Terra", "Sol", "Opus"} {
-			if !slices.Contains(shape.Profiles, name) {
-				t.Errorf("%s: the shape names %v, want %s among them", when, shape.Profiles, name)
-			}
-		}
-		if got := slices.Contains(shape.Profiles, "Astra"); got != astra {
-			t.Errorf("%s: the shape names %v; Astra named = %v, want %v", when, shape.Profiles, got, astra)
+		if !slices.Equal(shape.Profiles, names) {
+			t.Errorf("%s: the shape names %v, want %v", when, shape.Profiles, names)
 		}
 	}
+	both := []string{string(provider.Claude), string(provider.Codex)}
 
-	requireNamed("cold", shapeNow("cold"), true)
+	requireNamed("cold", shapeNow("cold"), both, every)
 	readOnPurpose("cold")
 	ask()
 	// The model picker's read joins that lookup and returns once the cache
-	// holds its answer.
+	// holds its answer, which lacks Astra's model.
 	if _, err := f.app.GetModelsForProvider(string(provider.Codex)); err != nil {
 		t.Fatal(err)
 	}
-	requireNamed("after a lookup answered", shapeNow("after a lookup answered"), false)
+	requireNamed("after the Codex catalog answered", shapeNow("after the Codex catalog answered"), both, every)
 
-	offset.Store(int64(2 * time.Minute))
-	requireNamed("expired", shapeNow("expired"), false)
-	failing.Store(true)
-	readOnPurpose("expired")
-	if _, err := f.app.GetModelsForProvider(string(provider.Codex)); err == nil {
-		t.Fatal("the picker's read after the failing lookup succeeded")
+	server := f.app.threadToolsServer()
+	who := threadtools.Caller{ThreadID: caller.ID}
+	answer, err := server.Call(t.Context(), who, "thread_options", json.RawMessage(`{"what":"models"}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-	requireNamed("after a later lookup failed", shapeNow("after a later lookup failed"), false)
+	encoded, err = json.Marshal(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var options struct {
+		Profiles []threadtools.ProfileOption `json:"profiles"`
+	}
+	if err := json.Unmarshal(encoded, &options); err != nil {
+		t.Fatal(err)
+	}
+	var listed []string
+	for _, option := range options.Profiles {
+		listed = append(listed, option.Name)
+	}
+	if slices.Contains(listed, "Astra") || slices.Contains(listed, "Ghost") || !slices.Contains(listed, "Sol") || !slices.Contains(listed, "Opus") {
+		t.Errorf("thread_options lists %v, want Sol and Opus and neither Astra nor Ghost", listed)
+	}
+	for profile, reason := range map[string]string{
+		"Astra": `Agent profile "Astra" cannot run: Codex does not offer model "gpt-6-astra" on this computer.`,
+		"Ghost": `Agent profile "Ghost" cannot run: Claude Code does not offer model "claude-ghost-9" on this computer.`,
+	} {
+		_, err := server.Call(t.Context(), who, "thread_spawn", json.RawMessage(`{"prompt":"work","profile":"`+profile+`"}`))
+		if _, message, public := errorsx.PublicDetails(err); !public || !strings.HasPrefix(message, reason) {
+			t.Errorf("a spawn by %s = %v, want it refused with %q", profile, err, reason)
+		}
+	}
+
+	if _, err := f.app.settings.Update(map[string]any{"codexEnabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	requireNamed("Codex turned off", shapeNow("Codex turned off"), []string{string(provider.Claude)},
+		[]string{"Haiku", "Sonnet", "Opus", "Fable", "Ghost", "Like me"})
 	select {
 	case by := <-entered:
 		t.Errorf("an unasked Codex model lookup started (marked %q)", by)

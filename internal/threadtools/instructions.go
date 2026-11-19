@@ -97,7 +97,8 @@ func spawnWhen(shape Shape) string {
 	return "when the user asks for a separate thread, when " + better + ", when the work needs " + checkout + ", when it should outlive your turn or a restart or take follow-up messages with its context kept, or when the user should be able to open, steer or take it over"
 }
 
-// The Defaults paragraph names the agent profiles this computer can run, so
+// The Defaults paragraph names the agent profiles on the providers this
+// computer offers (GuideProfileNames), so
 // an agent that never calls thread_options still knows they exist; their
 // use-for lines and the notes on choosing stay in thread_options, which
 // only an agent that is choosing pays for. It keeps amendment 11's rule

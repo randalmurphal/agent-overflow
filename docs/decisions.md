@@ -755,8 +755,10 @@ and anti-changes that live only here:
   mode for unattended work.
 - Agent profiles (2026-11-16): the person's roster of named agents, each
   with a use-for line, is how a thread picks another agent. A spawn
-  still inherits by default. The guide names only the profiles this
-  computer runs; use-for lines and choosing notes are in
+  still inherits by default. The guide names every profile whose
+  provider this computer offers and checks no model, because it is fixed
+  when the session starts; `thread_options` and the spawn check the model
+  and refuse with the reason. Use-for lines and choosing notes are in
   `thread_options`, paid for only by a thread that is choosing. A
   profile, note or listing never points at a provider the computer does
   not run: availability is the provider switch plus a binary that

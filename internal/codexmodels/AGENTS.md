@@ -3,9 +3,7 @@
 `Cache` coalesces Codex `model/list` calls per binary and caches successful
 and failed results for separate TTLs. `Peek` returns only a fresh completed
 entry and never starts or joins a subprocess. `KnownModel` retains observed
-capabilities across expiry and refresh failure until `Reset`. `Latest`
-returns the last successful catalog, kept the same way; it never starts,
-joins or waits on a lookup, so only `Get` makes the catalog known.
+capabilities across expiry and refresh failure until `Reset`.
 
 Subprocess selection and settings reactions belong to the application layer.
 This package owns cache coordination, the `Lister` seam, and defensive copies.
