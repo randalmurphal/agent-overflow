@@ -4,7 +4,6 @@ import { isBrowserPaneFocused, registerBrowserCommands } from './browserCommands
 import {
   applyBrowserCompanionState,
   resetBrowserCompanionForTest,
-  setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, registerBrowserAddressBar } from './browserAddressFocus.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
@@ -14,6 +13,7 @@ import { dispatchKey, resetKeybindingsStore, setKeybindingsForTest } from './key
 import { makeCommandContext } from './builtinCommands.svelte';
 import { evaluateWhen, parseWhen } from './keybindingParser';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { closeFocusedBrowserTab } from './browserActions';
 import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactThread } from './layoutMode.svelte';
@@ -195,8 +195,8 @@ describe('browser commands', () => {
     expect(isBrowserPaneFocused()).toBe(true);
   });
 
-  it('a chord pressed in the page focuses the browser pane and runs there', () => {
-    setBrowserPaneMountForTest(THREAD, 'mount-1');
+  it('a chord pressed in the page focuses the browser pane and runs there', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('main');
     const dispatcher = (event: KeyboardEvent): void => {
       dispatchKey(event, ctx(), { isMac: false });

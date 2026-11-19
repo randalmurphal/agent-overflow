@@ -3,13 +3,14 @@ import { browserCompanionAct } from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
+  browserThreadSnapshot,
+  browserThreadState,
   browserPaneMountId,
   canUseNativeBrowser,
   hydrateBrowserCompanionState,
   reconcileBrowserCompanionForPane,
   refreshBrowserCompanionStates,
   resetBrowserCompanionForTest,
-  setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
 import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
@@ -18,6 +19,7 @@ import { createPane, focusPane, getFocusedPaneId, getPane, resetPanesForTest } f
 import { makeCommandContext } from './builtinCommands.svelte';
 import { notifyTerminalFocus } from '../components/terminal/terminalStore.svelte';
 import { makeThread } from '../../test/helpers/chat';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { flushSync } from 'svelte';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
@@ -323,7 +325,7 @@ describe('browser companion state routing', () => {
       setBindingMock('BrowserCompanionPaneDetach', async () => {});
       const attachment = attachBrowserCompanion('thread-browser');
       await vi.waitFor(() => expect(attachment.current).not.toBeNull());
-      expect(attachment.current?.state.pages).toEqual([]);
+      expect(browserThreadState('thread-browser')?.pages).toEqual([]);
       attachment.release();
     });
 
@@ -353,9 +355,9 @@ describe('browser companion state routing', () => {
       setBindingMock('BrowserCompanionPaneDetach', async () => {});
       const attachment = attachBrowserCompanion('thread-browser');
       await vi.waitFor(() => expect(attachment.current).not.toBeNull());
-      expect(attachment.current?.state.pages).toHaveLength(1);
+      expect(browserThreadState('thread-browser')?.pages).toHaveLength(1);
       applyBrowserCompanionState(closed(8));
-      expect(attachment.current?.state.pages).toEqual([]);
+      expect(browserThreadState('thread-browser')?.pages).toEqual([]);
       attachment.release();
     });
   });
@@ -379,6 +381,21 @@ describe('browser companion state routing', () => {
       await vi.waitFor(() => expect(browserCompanionState('thread-browser')?.pages).toHaveLength(1));
       expect(read).toHaveBeenCalledTimes(2);
     });
+
+    // A push sent while the window was away is lost, so an answer to a call
+    // made before the edge may be older than what the backend holds now.
+    it('admits no answer to a call made before the edge', async () => {
+      applyBrowserCompanionState(hidden(1));
+      const read = setBindingMock('BrowserCompanionThreadState', vi.fn(() => new Promise(() => {})));
+      setBindingMock('BrowserCompanionDo', async () => {
+        refreshBrowserCompanionStates();
+        return none(2);
+      });
+      await browserCompanionAct('thread-browser', { kind: 'close', pageId: 'page-1' });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(browserThreadState('thread-browser')?.pages).toHaveLength(1);
+      expect(browserThreadSnapshot('thread-browser')).toEqual({ status: 'unknown' });
+    });
   });
 
   it('does not ask the local host to hydrate another computer’s native browser', () => {
@@ -399,7 +416,7 @@ describe('browser companion state routing', () => {
 });
 
 describe('accelerators from the native page view', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();
     resetPaneLayoutForTest();
@@ -414,7 +431,7 @@ describe('accelerators from the native page view', () => {
       visible: true,
       pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example', canGoBack: false, canGoForward: false }],
     });
-    setBrowserPaneMountForTest('thread-browser', 'mount-1');
+    await attachBrowserPaneForTest('thread-browser', 'mount-1');
   });
 
   it('focuses the companion and replays the chord as a window keydown', () => {

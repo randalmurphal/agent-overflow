@@ -274,6 +274,21 @@ describe('<BrowserPane> find', () => {
       .toEqual(['start', 'stop', 'start', 'stop']);
   });
 
+  // The thread's state can be known before the pane's attach answers; a find
+  // then would address no mount.
+  it('offers find only once its mount is attached', async () => {
+    let attach!: () => void;
+    setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
+      attach = () => resolve({ id: 'mount-1', state: { ...state([page('a', false)]), findMode: 'bar' } });
+    }));
+    applyBrowserCompanionState({ ...state([page('a', false)]), findMode: 'bar' } as never);
+    render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD, paneId: 'main' }) });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(hasPaneFindProvider('browser-main')).toBe(false);
+    attach();
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
+  });
+
   // A bare Escape pressed in the page is the page's; the backend announces
   // it, and the pane closes its open bar for the page it shows.
   it('closes its open bar on an Escape announced for its shown page, and only then', async () => {

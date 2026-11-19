@@ -53,14 +53,11 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
-    browserCompanionState,
-    browserPaneShown,
-    canPresentNativeBrowser,
-    canUseNativeBrowser,
+    browserPresentationWanted,
     hydrateBrowserCompanionState,
     reconcileBrowserCompanionForPane,
   } from '../../stores/browserCompanion.svelte';
-  import { toggleBrowserFromHeader } from '../../stores/browserActions';
+  import { browserHeaderButton, runBrowserHeaderIntent } from '../../stores/browserActions';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -170,25 +167,14 @@
     toggle();
   }
 
-  // The browser chip renders wherever this page can open the thread's
-  // browser and show it (canPresentNativeBrowser), tabs or not, and for a
-  // thread with tabs. It hides a shown pane, shows hidden tabs, and with
-  // none opens the pane on a new tab with its address bar focused
-  // (toggleBrowserFromHeader, which reads a state this connection has not
-  // seen before choosing between the last two). The state read is
-  // per-key reactive, and the hydration read fills in what the ephemeral
-  // `browser:companion-state` channel cannot replay to a fresh UI.
+  // The browser chip: how it renders and what a press means are one answer
+  // (browserHeaderButton), its intent chosen from what it shows. The
+  // hydration read fills in what the ephemeral `browser:companion-state`
+  // channel cannot replay to a fresh UI, and a state the layout could not
+  // present when it arrived (compact) is presented once it can.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserAvailable = $derived(threadIdForBrowser !== '' && canPresentNativeBrowser(threadIdForBrowser));
-  let browserState = $derived(
-    threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser) ? browserCompanionState(threadIdForBrowser) : null,
-  );
-  // Pressed is what this layout presents, which a press decides from
-  // (toggleBrowserFromHeader), not the session's recorded visibility.
-  let browserPressed = $derived(threadIdForBrowser !== '' && browserPaneShown(threadIdForBrowser));
-  // A visible session compact did not present (it never opens the pane) is
-  // presented once the layout can: the push that recorded it is not resent.
-  let browserWanted = $derived(!compact && browserState?.visible === true);
+  let browserButton = $derived(browserHeaderButton(threadIdForBrowser));
+  let browserWanted = $derived(threadIdForBrowser !== '' && browserPresentationWanted(threadIdForBrowser));
 
   $effect(() => {
     if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
@@ -196,13 +182,9 @@
 
   $effect(() => {
     const threadId = threadIdForBrowser;
-    if (!threadId || !browserWanted) return;
+    if (!browserWanted) return;
     untrack(() => reconcileBrowserCompanionForPane(pane.paneId, threadId));
   });
-
-  function toggleBrowserCompanion(): void {
-    if (threadIdForBrowser) void toggleBrowserFromHeader(threadIdForBrowser);
-  }
 
   // Plain click on the PR badge opens the companion review pane on the PR
   // scope; mod+click falls through to the external forge link. False (no
@@ -431,7 +413,8 @@
     </Button>
   {/if}
 
-  {#if browserState || browserAvailable}
+  {#if browserButton.rendered}
+    {@const intent = browserButton.intent}
     <!-- Browser companion toggle, on the desktop only (compact has no
          browser row). Pressed while the pane is in the layout, and a press
          then hides it; otherwise a press shows the tabs, or opens the pane
@@ -440,10 +423,10 @@
     <Button
       variant="secondary"
       size="xs"
-      pressed={browserPressed}
-      ariaLabel={browserState ? 'Toggle browser pane' : 'Open browser'}
-      title={browserState ? 'Toggle browser pane' : 'Open browser'}
-      onclick={toggleBrowserCompanion}
+      pressed={browserButton.pressed}
+      ariaLabel={browserButton.label}
+      title={browserButton.label}
+      onclick={() => void runBrowserHeaderIntent(intent)}
       testId="browser-companion-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
     >

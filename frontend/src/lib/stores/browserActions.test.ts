@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserCompanionAct, closeFocusedBrowserTab, openBrowserTab, toggleBrowserFromHeader } from './browserActions';
+import { browserCompanionAct, browserHeaderIntent, closeFocusedBrowserTab, openBrowserTab, runBrowserHeaderIntent } from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
+  browserThreadState,
   resetBrowserCompanionForTest,
-  setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, takeAddressFocus } from './browserAddressFocus.svelte';
-import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, resetPanesForTest } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { canPresentNativeBrowser, canUseNativeBrowser } from './browserCompanion.svelte';
@@ -43,7 +44,7 @@ describe('the chat header browser button', () => {
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string }) => (
       action.kind === 'show' ? { ...hidden(3), visible: true } : none(3)
     )));
-    const toggled = toggleBrowserFromHeader('thread-browser');
+    const toggled = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     await Promise.resolve();
     expect(act).not.toHaveBeenCalled();
     answer(hidden(2));
@@ -58,7 +59,7 @@ describe('the chat header browser button', () => {
     let answer: (state: unknown) => void = () => {};
     setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => none(9)));
-    const toggled = toggleBrowserFromHeader('thread-browser');
+    const toggled = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     await Promise.resolve();
     answer({ ...hidden(2), visible: true });
     await toggled;
@@ -73,11 +74,11 @@ describe('the chat header browser button', () => {
     setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
     let reply: (state: unknown) => void = () => {};
     const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { reply = resolve; })));
-    const first = toggleBrowserFromHeader('thread-browser');
-    const second = toggleBrowserFromHeader('thread-browser');
+    const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    const second = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     answer(none(1));
     await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(1));
-    expect(toggleBrowserFromHeader('thread-browser')).toBe(first);
+    expect(runBrowserHeaderIntent(browserHeaderIntent('thread-browser'))).toBe(first);
     reply({ ...hidden(2), visible: true });
     await Promise.all([first, second]);
     expect(act).toHaveBeenCalledTimes(1);
@@ -90,7 +91,7 @@ describe('the chat header browser button', () => {
     expect(companionForSource('main', 'browser')).not.toBeNull();
     const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => hidden(2)));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(3)));
-    await toggleBrowserFromHeader('thread-browser');
+    await runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     expect(read).not.toHaveBeenCalled();
     expect(act).toHaveBeenCalledTimes(1);
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'hide' });
@@ -100,16 +101,96 @@ describe('the chat header browser button', () => {
   it('the header button opens a tab once the state is known to have none', async () => {
     setBindingMock('BrowserCompanionThreadState', async () => none(1));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
-    await toggleBrowserFromHeader('thread-browser');
+    await runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     expect(act).toHaveBeenCalledTimes(1);
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
+  });
+
+  const second = { ...tab, id: 'page-2', url: 'https://example.com/b', title: 'B' };
+  const twoTabs = (seq: number, visible: boolean) => ({
+    kind: 'state', threadId: 'thread-browser', activePageId: 'page-2', visible, pages: [tab, second], seq,
+  });
+
+  it('two presses during a cold read that finds visible tabs show them and send nothing', async () => {
+    let answer: (state: unknown) => void = () => {};
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => none(9)));
+    const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    answer(twoTabs(2, true));
+    await Promise.all([first, again]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(act).not.toHaveBeenCalled();
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    expect(browserThreadState('thread-browser')?.activePageId).toBe('page-2');
+  });
+
+  it('two presses during a cold read that finds hidden tabs send one show of the active tab', async () => {
+    let answer: (state: unknown) => void = () => {};
+    setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+    const replies: Array<(state: unknown) => void> = [];
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
+    const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    answer(twoTabs(2, false));
+    await vi.waitFor(() => expect(act).toHaveBeenCalled());
+    // Both presses have read the state by now; the show is still on its way.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (const reply of replies) reply(twoTabs(3, true));
+    await Promise.all([first, again]);
+    expect(act.mock.calls.map((call) => call[1])).toEqual([expect.objectContaining({ kind: 'show', pageId: 'page-2' })]);
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    expect(browserThreadState('thread-browser')?.activePageId).toBe('page-2');
+  });
+
+  it('a tab an agent opens during the read is shown, with no blank tab beside it', async () => {
+    let answer: (state: unknown) => void = () => {};
+    setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => none(9)));
+    const pressed = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    applyBrowserCompanionState({ ...hidden(3), visible: true } as never);
+    answer(none(2));
+    await pressed;
+    expect(act).not.toHaveBeenCalled();
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    expect(browserThreadState('thread-browser')?.activePageId).toBe('page-1');
+  });
+
+  // The stand-in for a Manager show-or-reserve operation: a tab the agent
+  // opens while the header's `new` is on its way still gets the blank tab
+  // beside it. The answer, newer than the push, decides the selected tab.
+  it('a tab an agent opens while the header asks for a new one leaves one new tab, selected', async () => {
+    setBindingMock('BrowserCompanionThreadState', async () => none(1));
+    let reply: (state: unknown) => void = () => {};
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const pressed = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    applyBrowserCompanionState({ ...hidden(2), visible: true } as never);
+    reply({ ...twoTabs(3, true), pageId: 'page-2' });
+    await pressed;
+    expect(act.mock.calls.map((call) => (call[1] as { kind: string }).kind)).toEqual(['new']);
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    expect(browserThreadState('thread-browser')?.activePageId).toBe('page-2');
+  });
+
+  // No backend change follows a show of a session already shown, so no push
+  // would bring the pane; the layout presents it.
+  it('a press for a visible session whose pane this layout lacks presents it without asking', async () => {
+    applyBrowserCompanionState({ ...hidden(1), visible: true } as never);
+    closeCompanion('browser-main');
+    const intent = browserHeaderIntent('thread-browser');
+    expect(intent.kind).toBe('show');
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ ...hidden(1), visible: true })));
+    await runBrowserHeaderIntent(intent);
+    expect(act).not.toHaveBeenCalled();
+    expect(companionForSource('main', 'browser')).not.toBeNull();
   });
 
   it('the header button opens nothing when the state cannot be read, and says so', async () => {
     resetToastsForTest();
     setBindingMock('BrowserCompanionThreadState', async () => { throw new Error('backend restarting'); });
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
-    await toggleBrowserFromHeader('thread-browser');
+    await runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     expect(act).not.toHaveBeenCalled();
     expect(getToasts().map((toast) => toast.message)).toContain("The browser's tabs could not be read: backend restarting");
   });
@@ -170,7 +251,7 @@ describe('pane.close on a browser companion', () => {
       return { kind: 'state', threadId, activePageId: 'page-1', visible: true, seq: 3, pages: [tab('page-1')] };
     });
     const attachment = attachBrowserCompanion('thread-browser');
-    await vi.waitFor(() => expect(attachment.current?.state.activePageId).toBe('page-2'));
+    await vi.waitFor(() => expect(browserThreadState('thread-browser')?.activePageId).toBe('page-2'));
     focusPane('browser-main');
     expect(closeFocusedBrowserTab()).toBe(true);
     await vi.waitFor(() => expect(closes).toEqual(['page-2']));
@@ -185,9 +266,9 @@ describe('pane.close on a browser companion', () => {
     let sent: Array<{ kind: string; pageId: string }>;
     let answers: Array<() => void>;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       applyBrowserCompanionState(state('a', ['a', 'b', 'c'], 1));
-      setBrowserPaneMountForTest('thread-browser', 'mount-1');
+      await attachBrowserPaneForTest('thread-browser', 'mount-1');
       sent = [];
       answers = [];
       // The backend applies each action as it arrives and answers when the
@@ -302,7 +383,7 @@ describe('a thread whose ownership two computers claim', () => {
     let answer: (state: unknown) => void = () => {};
     setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: THREAD, pages: [] })));
-    const toggled = toggleBrowserFromHeader(THREAD);
+    const toggled = runBrowserHeaderIntent(browserHeaderIntent(THREAD));
     await Promise.resolve();
     contest();
     answer({ kind: 'state', threadId: THREAD, pages: [], seq: 1 });

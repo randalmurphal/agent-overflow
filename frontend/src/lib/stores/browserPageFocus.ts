@@ -1,9 +1,10 @@
 import type { BrowserCompanionEvent } from './bindings';
 import { browserActionsStarted, sendBrowserPageFocus, type BrowserActionFailure } from './browserActions';
 import {
-  applyBrowserCompanionState,
+  admitBrowserState,
   browserActionError,
   browserPaneMountId,
+  browserStateGeneration,
   canUseNativeBrowser,
   noteBrowserActionError,
   observeBrowserCompanion,
@@ -82,8 +83,9 @@ export async function focusBrowserPage(
     reportFrontendDiagnostic('Browser page focus post to the window host failed', errString(err));
   }
   try {
+    const generation = browserStateGeneration();
     const state = await sendBrowserPageFocus(threadId, 'focus-page', pageId, mount, intent);
-    applyBrowserCompanionState(state);
+    admitBrowserState(state, generation);
     return null;
   } catch (err) {
     // The arm may still have landed: the request stays watched, and the

@@ -242,7 +242,11 @@ per-platform no-op.
   state channel has no replay, so the client reads the state of each thread
   it shows once per connection of the home backend, and the button decides
   between showing the pane and opening a tab only from a state read or
-  pushed on the current connection, reading one first when it has none. A new tab the user
+  pushed on the current connection, reading one first when it has none.
+  The button reads pressed while this layout shows the thread's pane, and
+  a press is chosen from that at the click: hide it, or show the browser
+  (a session already visible is presented here without a backend call,
+  hidden tabs are shown, and a thread with no tab gets one). A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted
