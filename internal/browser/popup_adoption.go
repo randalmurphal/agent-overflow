@@ -2,7 +2,10 @@ package browser
 
 import (
 	"errors"
+	"io/fs"
 	"log"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 )
@@ -374,11 +377,15 @@ func (m *Manager) fates() *boundedMap[string, popupFate] {
 	return m.popupFates
 }
 
-// dropParked refuses every parked download and forgets every fate, for an
-// engine that stopped.
-func (m *Manager) dropParked() {
+// dropParked refuses every parked download and forgets every fate, for a
+// browser closing with scopes, its profiles. It answers the files the
+// parked downloads of an engine keeping them as artifacts were written to,
+// in their jars' download directories, for the caller to remove once the
+// engine that writes them has stopped.
+func (m *Manager) dropParked(scopes []*jarScope) []string {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
+	var files []string
 	for handle, popup := range m.parked {
 		popup.timer.Stop()
 		for _, d := range popup.downloads {
@@ -387,9 +394,25 @@ func (m *Manager) dropParked() {
 			if m.downloadsStagedHere() {
 				m.releaseStagedDownload(d.start.ID)
 			}
+			for _, scope := range scopes {
+				if scope.downloadDir != "" && scope.profile.Handle() == d.start.Profile {
+					files = append(files, filepath.Join(scope.downloadDir, filepath.Base(d.start.ID)))
+				}
+			}
 		}
 	}
 	m.parked, m.parkedIDs, m.popupFates = nil, nil, nil
+	return files
+}
+
+// removeStoppedDownloads removes the files of downloads whose engine has
+// stopped writing them.
+func removeStoppedDownloads(files []string) {
+	for _, file := range files {
+		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("browser: remove the download file %s: %v", file, err)
+		}
+	}
 }
 
 // mergeOpeners appends to openers those of more it lacks, in order,

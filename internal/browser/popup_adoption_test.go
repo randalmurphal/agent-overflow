@@ -751,6 +751,30 @@ func TestTheBrowsersCloseDropsParkedDownloads(t *testing.T) {
 	}
 }
 
+// A headless popup's download the browser's close drops takes its file in
+// the jar's download directory with it, finished or not, and its
+// reservation: no row lists it, and nothing else would remove it.
+func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
+	for _, state := range []string{downloadCompleted, downloadInProgress} {
+		t.Run(state, func(t *testing.T) {
+			manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+			before := manager.artifactBytes.Load()
+			file := engineArtifact(t, manager, "dl-1")
+			popupDownload(manager, engine, "popup", "dl-1", opener)
+			manager.downloadProgress(progressOf("dl-1", state, 100))
+			if err := manager.closeBrowser(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(file); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the parked download's file survives the browser's close: %v", err)
+			}
+			if got := manager.artifactBytes.Load(); got != before {
+				t.Fatalf("after the close %d artifact bytes are reserved, want %d", got, before)
+			}
+		})
+	}
+}
+
 // The fates the Manager remembers are bounded.
 func TestPopupFatesAreBounded(t *testing.T) {
 	manager, _, _, opener := newAdoptionManager(t)
