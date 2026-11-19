@@ -298,17 +298,28 @@ func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repea
 }
 
 //export aoWKVPageClosed
-func aoWKVPageClosed(pageID C.uint64_t) {
-	if page := wkLookupPage(uint64(pageID)); page != nil {
-		go page.engine.events.PageClosed(page.handle)
-	}
+func aoWKVPageClosed(pageID, popupID, profileID C.uint64_t) {
+	wkViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{closed: true})
 }
 
 //export aoWKVPageCrashed
-func aoWKVPageCrashed(pageID C.uint64_t) {
-	if page := wkLookupPage(uint64(pageID)); page != nil {
-		// Off the main thread: the Manager closes the view through wkDo.
-		go page.engine.events.PageCrashed(page.handle, "web content process terminated")
+func aoWKVPageCrashed(pageID, popupID, profileID C.uint64_t) {
+	wkViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{crashed: "web content process terminated"})
+}
+
+// wkViewEnded routes what ended a view, on the main thread: to its page
+// once the view answers to one, and before that, for a popup, to the
+// engine of its profile by the popup's number.
+func wkViewEnded(pageID, popupID, profileID uint64, end pageEnd) {
+	if page := wkLookupPage(pageID); page != nil {
+		page.ends.report(end, page.engine.events, page.handle)
+		return
+	}
+	if popupID == 0 {
+		return
+	}
+	if profile := wkLookupProfile(profileID); profile != nil {
+		profile.engine.popupEnded(pageHandle(popupID), end)
 	}
 }
 

@@ -115,7 +115,10 @@ with no gesture is a popup there as on WebView2. On the hosted engine a
 popup is the launcher's report (`hosted_popups.go`), attached only on its
 opener's connection, within the attach timeout, and canceled by its close;
 until the Manager lists its tab, the engine holds its crash and close and
-delivers them at the listing (`adoptedPage`). The CDP engines answer the
+delivers them at the listing (`adoptedPage`). The WebKit engines do the
+same (`pageEnds`): a popup view's close and crash handlers are installed
+at its creation, and until its adoption it names itself by its popup
+number. The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per
 request, so a popup's requests before its adoption have its opener chain's
 authority, the launcher's popup report counting as an opener edge on the

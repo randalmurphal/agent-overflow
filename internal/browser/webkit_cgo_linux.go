@@ -279,17 +279,28 @@ func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, he
 }
 
 //export aoWebKitPageClosed
-func aoWebKitPageClosed(pageID C.uint64_t) {
-	if page := webkitLookupPage(uint64(pageID)); page != nil {
-		go page.engine.events.PageClosed(page.handle)
-	}
+func aoWebKitPageClosed(pageID, popupID, profileID C.uint64_t) {
+	webkitViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{closed: true})
 }
 
 //export aoWebKitPageCrashed
-func aoWebKitPageCrashed(pageID C.uint64_t, reason *C.char) {
-	if page := webkitLookupPage(uint64(pageID)); page != nil {
-		// Off the GTK thread: the Manager closes the view through gtkDo.
-		go page.engine.events.PageCrashed(page.handle, C.GoString(reason))
+func aoWebKitPageCrashed(pageID, popupID, profileID C.uint64_t, reason *C.char) {
+	webkitViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{crashed: C.GoString(reason)})
+}
+
+// webkitViewEnded routes what ended a view, on the GTK thread: to its page
+// once the view answers to one, and before that, for a popup, to the
+// engine of its profile by the popup's number.
+func webkitViewEnded(pageID, popupID, profileID uint64, end pageEnd) {
+	if page := webkitLookupPage(pageID); page != nil {
+		page.ends.report(end, page.engine.events, page.handle)
+		return
+	}
+	if popupID == 0 {
+		return
+	}
+	if profile := webkitLookupProfile(profileID); profile != nil {
+		profile.engine.popupEnded(pageHandle(popupID), end)
 	}
 }
 

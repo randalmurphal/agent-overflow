@@ -20,8 +20,8 @@ extern void aoWKVConsole(uint64_t page_id, char *payload);
 extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWKVDocumentCommitted(uint64_t page_id);
 extern void aoWKVPageLoading(uint64_t page_id, int loading);
-extern void aoWKVPageClosed(uint64_t page_id);
-extern void aoWKVPageCrashed(uint64_t page_id);
+extern void aoWKVPageClosed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id);
+extern void aoWKVPageCrashed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id);
 extern uint64_t aoWKVPopup(uint64_t opener_page_id, uint64_t opener_popup_id, uint64_t profile_id,
                            void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
@@ -877,14 +877,19 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   return popup;
 }
 
+// A popup can close itself or lose its process before the Manager adopts it,
+// while its page id is still zero: it names itself by its popup number
+// until then.
 - (void)webViewDidClose:(WKWebView *)webView {
-  aoWKVPageClosed(ao_view_page_id(webView));
+  aoWKVPageClosed(ao_view_page_id(webView), ao_view_popup_id(webView),
+                  ao_view_profile_id(webView));
 }
 
 // WKNavigationDelegate.h: the view's web content process ended while the
 // view lives on, showing nothing.
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
-  aoWKVPageCrashed(ao_view_page_id(webView));
+  aoWKVPageCrashed(ao_view_page_id(webView), ao_view_popup_id(webView),
+                   ao_view_profile_id(webView));
 }
 
 // ---- dialogs ----

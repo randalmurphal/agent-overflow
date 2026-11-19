@@ -16,8 +16,9 @@ extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWebKitDocumentCommitted(uint64_t page_id);
 extern void aoWebKitPageLoading(uint64_t page_id, int loading);
-extern void aoWebKitPageClosed(uint64_t page_id);
-extern void aoWebKitPageCrashed(uint64_t page_id, const char *reason);
+extern void aoWebKitPageClosed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id);
+extern void aoWebKitPageCrashed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id,
+                                const char *reason);
 extern uint64_t aoWebKitPopup(uint64_t opener_page_id, uint64_t opener_popup_id,
                               uint64_t profile_id, void *view, char *uri);
 extern int aoWebKitPagePresented(uint64_t page_id);
@@ -656,9 +657,13 @@ static void ao_notify_loading(GObject *object, GParamSpec *spec, gpointer data) 
   aoWebKitPageLoading(ao_view_page_id(view), webkit_web_view_is_loading(view) ? 1 : 0);
 }
 
+// ao_view_closed and ao_web_process_terminated are connected where each view
+// is created (ao_wk_view_new, ao_create_view): a popup can close itself or
+// lose its process before the Manager adopts it, and names itself by its
+// popup number until then.
 static void ao_view_closed(WebKitWebView *view, gpointer data) {
   (void)data;
-  aoWebKitPageClosed(ao_view_page_id(view));
+  aoWebKitPageClosed(ao_view_page_id(view), ao_view_popup_id(view), ao_view_profile_id(view));
 }
 
 // WebKitWebView::web-process-terminated (WebKit-6.0.gir): the view's web
@@ -679,7 +684,8 @@ static void ao_web_process_terminated(WebKitWebView *view, WebKitWebProcessTermi
     name = "terminated";
     break;
   }
-  aoWebKitPageCrashed(ao_view_page_id(view), name);
+  aoWebKitPageCrashed(ao_view_page_id(view), ao_view_popup_id(view), ao_view_profile_id(view),
+                      name);
 }
 
 // ao_script_dialog answers JavaScript dialogs the way the CDP driver does:
@@ -751,6 +757,8 @@ static GtkWidget *ao_create_view(WebKitWebView *view, WebKitNavigationAction *ac
   // Manager adopts it: it gets the create handler and the window setting
   // now, and names this view by its popup number until adoption.
   g_signal_connect(popup, "create", G_CALLBACK(ao_create_view), NULL);
+  g_signal_connect(popup, "close", G_CALLBACK(ao_view_closed), NULL);
+  g_signal_connect(popup, "web-process-terminated", G_CALLBACK(ao_web_process_terminated), NULL);
   webkit_settings_set_javascript_can_open_windows_automatically(
       webkit_web_view_get_settings(popup), TRUE);
   WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
@@ -1044,8 +1052,6 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "notify::uri", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "load-changed", G_CALLBACK(ao_load_changed), NULL);
   g_signal_connect(view, "notify::is-loading", G_CALLBACK(ao_notify_loading), NULL);
-  g_signal_connect(view, "close", G_CALLBACK(ao_view_closed), NULL);
-  g_signal_connect(view, "web-process-terminated", G_CALLBACK(ao_web_process_terminated), NULL);
   g_signal_connect(view, "script-dialog", G_CALLBACK(ao_script_dialog), NULL);
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);
   g_signal_connect(view, "context-menu", G_CALLBACK(ao_context_menu), NULL);
@@ -1063,11 +1069,13 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
     return NULL;
   }
   g_object_ref_sink(view);
-  // The policy and the create handler are connected where each view is
-  // created, never in ao_connect_view: a popup needs them before adoption
-  // (ao_create_view).
+  // The policy, create, close and termination handlers are connected where
+  // each view is created, never in ao_connect_view: a popup needs them
+  // before adoption (ao_create_view).
   g_signal_connect(view, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
   g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
+  g_signal_connect(view, "close", G_CALLBACK(ao_view_closed), NULL);
+  g_signal_connect(view, "web-process-terminated", G_CALLBACK(ao_web_process_terminated), NULL);
   ao_connect_view(view, page_id, user_script, console_handler);
   return view;
 }

@@ -58,6 +58,8 @@ type webkitEngine struct {
 	pane      map[uint64]webkitPaneState
 	stopped   bool
 	pageCount int
+	// popupEnds is what ended a popup's view before its adoption.
+	popupEnds heldPopupEnds
 
 	// downloadEvents carries every download report to the Manager off the
 	// GTK thread, one at a time in the order they were made, so a fast
@@ -106,6 +108,7 @@ func (e *webkitEngine) Stop() {
 		orphans = append(orphans, held.view)
 		delete(e.popups, handle)
 	}
+	e.popupEnds = heldPopupEnds{}
 	e.stopped = true
 	e.mu.Unlock()
 	// The window and its overlay stay: the SPA lives in it, and re-attaching
@@ -129,12 +132,40 @@ func (e *webkitEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, st
 	return n, handle
 }
 
-func (e *webkitEngine) takePopup(handle string) heldPopupView {
+// takePopup takes the held popup handle, for its attach when attach is
+// set (popupEnds), and otherwise for its discard.
+func (e *webkitEngine) takePopup(handle string, attach bool) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	held := e.popups[handle]
+	held, ok := e.popups[handle]
 	delete(e.popups, handle)
+	if ok && attach {
+		e.popupEnds.attachLocked(handle)
+	} else {
+		e.popupEnds.forgetLocked(handle)
+	}
 	return held
+}
+
+// popupEnded keeps what ended the view of the popup handle before its
+// adoption named the view's page (heldPopupEnds). A close also reaches the
+// Manager at once (pageEnds).
+func (e *webkitEngine) popupEnded(handle string, end pageEnd) {
+	e.mu.Lock()
+	_, held := e.popups[handle]
+	kept := e.popupEnds.recordLocked(handle, held, end)
+	e.mu.Unlock()
+	if kept && end.closed {
+		go e.events.PageClosed(handle)
+	}
+}
+
+// endAttach ends the attach of the popup handle and answers what ended its
+// view before its adoption.
+func (e *webkitEngine) endAttach(handle string) pageEnd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.popupEnds.takeLocked(handle)
 }
 
 // heldOpener answers the opener of the held popup handle, "" for none.
@@ -174,7 +205,7 @@ func (p *webkitProfile) downloadStart(page *webkitPage, popup uint64) downloadSt
 func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
 func (e *webkitEngine) DiscardPage(handle string) {
-	if held := e.takePopup(handle); held.view != nil {
+	if held := e.takePopup(handle, false); held.view != nil {
 		webkitCloseView(held.view)
 	}
 }
@@ -271,7 +302,7 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver,
 }
 
 func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
-	held := p.engine.takePopup(handle)
+	held := p.engine.takePopup(handle, true)
 	view := held.view
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
@@ -279,20 +310,31 @@ func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageH
 	script := webkitUserScript()
 	page, err := p.newPageShell(hooks, held.n)
 	if err != nil {
+		p.engine.endAttach(handle)
 		webkitCloseView(view)
 		return nil, err
 	}
 	page.view = view
 	page.popup, page.opener = handle, held.opener
+	page.ends.popup = true
 	// The popup already exists and may already be loading, so its document
 	// start is gone: the injected script applies from its next document on.
 	// That is the same trade CDP's addScriptToEvaluateOnNewDocument makes for
 	// an adopted target.
 	if err := webkitAdoptView(view, page.id, script, webkitConsoleHandler); err != nil {
+		p.engine.endAttach(handle)
 		page.discard()
 		webkitCloseView(view)
 		return nil, err
 	}
+	// The view answers to the page from its adoption on, so what ended it
+	// before has reached the engine by now.
+	end := p.engine.endAttach(handle)
+	if end.closed {
+		page.Close()
+		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
+	}
+	page.ends.hold(end)
 	p.parkNew(page)
 	if err := p.publish(page); err != nil {
 		return nil, err

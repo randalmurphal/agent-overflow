@@ -63,6 +63,8 @@ type wkPage struct {
 	// as a popup, and opener the handle of the page that opened it; both
 	// empty otherwise. Set before the view answers to the page.
 	popup, opener string
+	// ends are the view's crash and close (pageEnds).
+	ends pageEnds
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -112,6 +114,10 @@ func (p *wkPage) discard() {
 	delete(p.profile.pages, p)
 	p.profile.mu.Unlock()
 }
+
+// Adopted is adoptedPage: a popup's tab is listed, so what ended its view
+// meanwhile is delivered (pageEnds).
+func (p *wkPage) Adopted() { p.ends.adopted(p.engine.events, p.handle) }
 
 func (p *wkPage) Close() {
 	p.mu.Lock()
