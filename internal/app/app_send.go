@@ -478,7 +478,9 @@ func (a *App) sendMessageWithOptions(
 	}
 
 	// Work this message starts on a thread at rest is a run of its own.
-	a.endRunsBeforeWork(threadID)
+	if err := a.endRunsBeforeWork(threadID); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
 
 	// Per-thread critical section: only one Send per thread at a time.
 	// This keeps the runtime-mode update, turn-index read, optimistic

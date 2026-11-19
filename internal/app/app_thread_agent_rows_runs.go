@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"log"
 
 	"agent-overflow/internal/store"
@@ -131,28 +132,29 @@ func (a *App) endRemoteRunsAtRest(spawn store.ThreadRequest, listing ThreadAgent
 // computer last reported for it (at rest, they have not moved since), none
 // when it reported nothing, or the open run's base, which the store
 // prefers (store.InsertThreadRequest). Nil, no run, for any other request.
-func (a *App) remoteRunBase(row store.ThreadRequest) *store.RunFigures {
+// A failed read of the spawn is the error: the request is not written
+// without the run it would start.
+func (a *App) remoteRunBase(row store.ThreadRequest) (*store.RunFigures, error) {
 	switch {
 	case row.Kind == store.ThreadRequestSpawn:
-		return &store.RunFigures{}
+		return &store.RunFigures{}, nil
 	case row.Kind != store.ThreadRequestSend || row.TargetThreadID == "":
-		return nil
+		return nil, nil
 	}
 	spawn, found, err := a.store.RemoteSpawnLinkTo(row.TargetComputerID, row.TargetThreadID)
 	if err != nil {
-		log.Printf("thread tools: read the spawn of %s on %s: %v", row.TargetThreadID, row.TargetComputerID, err)
-		return nil
+		return nil, fmt.Errorf("read the spawn of %s on %s: %w", row.TargetThreadID, row.TargetComputerID, err)
 	}
 	if !found || spawn.CallerThreadID != row.CallerThreadID {
-		return nil
+		return nil, nil
 	}
 	answer, ok := a.cachedPeerAgentRows(spawn)
 	if !ok || answer.err != nil {
 		// Nothing reported: the run counts the worker's life, as rows did
 		// before runs were kept.
-		return &store.RunFigures{}
+		return &store.RunFigures{}, nil
 	}
-	return &store.RunFigures{ToolCalls: answer.listing.ToolCalls, Tokens: answer.listing.Tokens, TurnMs: answer.listing.RuntimeMs}
+	return &store.RunFigures{ToolCalls: answer.listing.ToolCalls, Tokens: answer.listing.Tokens, TurnMs: answer.listing.RuntimeMs}, nil
 }
 
 // threadAgentRunKey names the worker a row's request went to, for
@@ -261,51 +263,55 @@ func (a *App) endRestedRuns() {
 		return
 	}
 	for _, thread := range threads {
-		a.endRunsAtRest(thread)
+		if err := a.endRunsAtRest(thread); err != nil {
+			log.Printf("thread tools: %v", err)
+		}
 	}
 }
 
 // endRunsBeforeWork ends the runs on threadID that its rest has already
 // ended and the rest pass has not yet recorded, before a message starts work
 // there: that work is a run of its own, the person's, another thread's or a
-// later request's, and never extends a run that ended. A read that fails is
-// logged and leaves the runs as they are.
-func (a *App) endRunsBeforeWork(threadID string) {
+// later request's, and never extends a run that ended. Its caller fails
+// with the error before it dispatches anything, since the work would
+// otherwise count in a run that ended.
+func (a *App) endRunsBeforeWork(threadID string) error {
 	open, err := a.store.ThreadRunsEnding(threadID)
 	if err != nil {
-		log.Printf("thread tools: read the runs on %s: %v", threadID, err)
-		return
+		return err
 	}
-	if open {
-		a.endRunsAtRest(threadID)
+	if !open {
+		return nil
 	}
+	return a.endRunsAtRest(threadID)
 }
 
 // endRunsAtRest ends the runs of the settled requests to threadID if it is
 // at rest now, by the rule for decisions that cannot be taken back: no read
 // while the boot has not recovered every source of rest or a stop brings
 // the thread to rest, as heldThreadAtRest. Its read leaves the held
-// requests' retries (noteRestRead) to their own attempts; one that fails is
-// logged, and the next pass reads again.
-func (a *App) endRunsAtRest(threadID string) {
+// requests' retries (noteRestRead) to their own attempts. A read or write
+// that fails returns its error and ends nothing.
+func (a *App) endRunsAtRest(threadID string) error {
 	a.threadRequests.mu.Lock()
 	barred := a.threadRequests.rest.barred
 	a.threadRequests.mu.Unlock()
 	if barred || a.resting.holds(threadID) {
-		return
+		return nil
 	}
 	if _, held := a.runEndsHeldForTest.Load(threadID); held {
-		return
+		return nil
 	}
 	read, err := a.readRest([]string{threadID})
-	if err != nil {
-		log.Printf("thread tools: read whether %s is at rest to end its runs: %v", threadID, err)
-	}
 	defer read.done()
+	if err != nil {
+		return fmt.Errorf("read whether %s is at rest to end its runs: %w", threadID, err)
+	}
 	if !read.rests(threadID) {
-		return
+		return nil
 	}
 	if _, err := a.store.EndThreadRequestRunsAtRest(threadID, read.guard(threadID)); err != nil {
-		log.Printf("thread tools: end the runs on %s: %v", threadID, err)
+		return fmt.Errorf("end the runs on %s: %w", threadID, err)
 	}
+	return nil
 }

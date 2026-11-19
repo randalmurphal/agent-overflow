@@ -110,7 +110,9 @@ func TestAWorkersPromptsGoToItsSpawnerOnlyInItsSpawnersRun(t *testing.T) {
 			acceptRequest(t, app, "middle-worker", middle.ID, store.ThreadRequestSpawn, worker.ID)
 			settleTaken(t, app, "middle-worker")
 			if c.passEnded {
-				app.endRunsAtRest(worker.ID)
+				if err := app.endRunsAtRest(worker.ID); err != nil {
+					t.Fatal(err)
+				}
 				if row := requestRow(t, app, "middle-worker"); !row.RunEnded() {
 					t.Fatalf("the spawn %+v; want its run ended at its worker's rest", row)
 				}
@@ -210,7 +212,9 @@ func TestAWorkersAsyncQuestionOutsideItsSpawnersRunIsThePersons(t *testing.T) {
 		t.Fatal(err)
 	}
 	settleTaken(t, a, "async-runs-spawn")
-	a.endRunsAtRest(worker.ID)
+	if err := a.endRunsAtRest(worker.ID); err != nil {
+		t.Fatal(err)
+	}
 	if row := requestRow(t, a, "async-runs-spawn"); !row.RunEnded() {
 		t.Fatalf("the spawn %+v; want its run ended at its worker's rest", row)
 	}

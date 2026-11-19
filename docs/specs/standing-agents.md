@@ -1915,7 +1915,11 @@ closes up their spacing so the row holds at a phone width.
   the worker's own rows nested under it. A send made while the caller's
   run on that thread is open joins the run; a send to a thread the caller
   spawned after it rested starts a new run, and the earlier run's row
-  stays in Past with its figures. A spawn's run is never reopened: once
+  stays in Past with its figures. A message that starts work on a worker
+  first ends the runs its rest already ended; a send, an edit and resend
+  or a thread tools request that cannot read or write that boundary, or
+  read where its run starts on a paired computer, fails with the error
+  before anything is sent. A spawn's run is never reopened: once
   its thread rested, work anything else starts there (the person, another
   thread's send, its own wake) is no row, no count and no Stop of the
   spawner's, and does not move the spawn out of Past. A worker that never

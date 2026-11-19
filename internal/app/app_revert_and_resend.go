@@ -124,7 +124,9 @@ func (a *App) RevertConversationAndResendMessage(
 	}
 	defer releaseAdmission()
 	// Work the replacement starts on a thread at rest is a run of its own.
-	a.endRunsBeforeWork(threadID)
+	if err := a.endRunsBeforeWork(threadID); err != nil {
+		return result, fmt.Errorf("revert and resend: %w", err)
+	}
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	if err := a.threadApplication().CheckMutable(threadID); err != nil {

@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
@@ -245,9 +244,11 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	// caller's the rest pass has not ended yet ends first, so the send does
 	// not join it.
 	if open, err := t.app.store.CallerRunOpen(caller.ThreadID, "", target.ID); err != nil {
-		log.Printf("thread tools: read the runs of %s on %s: %v", caller.ThreadID, target.ID, err)
+		return threadtools.RequestAck{}, err
 	} else if open {
-		t.app.endRunsAtRest(target.ID)
+		if err := t.app.endRunsAtRest(target.ID); err != nil {
+			return threadtools.RequestAck{}, err
+		}
 	}
 	if _, err := t.app.store.AcceptLocalThreadRequest(store.ThreadRequest{
 		Token:          token,
