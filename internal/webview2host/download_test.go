@@ -6,7 +6,30 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 )
+
+// A download keeps a bounded copy of its address, never a slice of a long
+// one, and a digest of the whole address that tells two long addresses
+// with one prefix apart.
+func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
+	long := "data:application/octet-stream;base64," + strings.Repeat("QUJD", 250_000)
+	addr := newDownloadAddress(long)
+	if len(addr.shown) > MaxDownloadURIBytes || !strings.HasPrefix(long, addr.shown) {
+		t.Fatalf("the kept address is %d bytes, want a prefix of at most %d", len(addr.shown), MaxDownloadURIBytes)
+	}
+	start := uintptr(unsafe.Pointer(unsafe.StringData(long)))
+	kept := uintptr(unsafe.Pointer(unsafe.StringData(addr.shown)))
+	if kept >= start && kept < start+uintptr(len(long)) {
+		t.Fatal("the kept address shares the long address's memory")
+	}
+	if newDownloadAddress(long).digest != addr.digest || newDownloadAddress(long+"x").digest == addr.digest {
+		t.Fatal("the digest does not name the whole address")
+	}
+	if short := newDownloadAddress("https://example.test/f"); short.shown != "https://example.test/f" {
+		t.Fatalf("a short address is kept as %q", short.shown)
+	}
+}
 
 func TestDownloadReportRoundTrips(t *testing.T) {
 	want := DownloadReport{ID: "dl-abc-1", Seq: 7, Answer: true, State: DownloadCompleted, URI: "https://example.test/a.bin?x=1&y=<2>", Name: "a (1).bin", Path: `C:\Users\u\Downloads\a (1).bin`, Received: 4096, Total: 4096}

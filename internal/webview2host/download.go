@@ -2,10 +2,12 @@ package webview2host
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -91,6 +93,29 @@ type DownloadReport struct {
 // maxDownloadNameBytes bounds the name a report carries; Windows bounds a
 // file name to 255 UTF-16 units.
 const maxDownloadNameBytes = 1024
+
+// MaxDownloadURIBytes bounds the address the launcher keeps for a download
+// and reports with each of its snapshots.
+const MaxDownloadURIBytes = 2048
+
+// downloadAddress is a download's address as the launcher keeps it, taken
+// once as the download starts: at most MaxDownloadURIBytes of it, copied,
+// for its reports and its kept terminal snapshot, so an address of any
+// length (a data URL carries its whole file) is neither retained nor
+// encoded again on every report; and a digest of the whole address, which
+// a resume is matched by (resumedDownload).
+type downloadAddress struct {
+	shown  string
+	digest [sha256.Size]byte
+}
+
+func newDownloadAddress(uri string) downloadAddress {
+	shown := truncateUTF8(uri, MaxDownloadURIBytes)
+	if len(shown) < len(uri) {
+		shown = strings.Clone(shown)
+	}
+	return downloadAddress{shown: shown, digest: sha256.Sum256([]byte(uri))}
+}
 
 // Encode answers the report as a report detail of at most
 // MaxReportDetailBytes. The optional address is shortened, on a character

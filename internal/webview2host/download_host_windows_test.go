@@ -420,6 +420,44 @@ func TestAPageKeepsBoundedEndedSnapshotsUntilItGoes(t *testing.T) {
 	}
 }
 
+// A download from a long address (a data URL) keeps and reports at most
+// MaxDownloadURIBytes of it, in every snapshot and the terminal one it
+// keeps, and a resume is matched by the whole address: of two dropped
+// downloads whose addresses share that prefix, the resume takes its own.
+func TestALongAddressIsKeptBoundedAndResumesByTheWholeAddress(t *testing.T) {
+	r := newDownloadRig(t)
+	prefix := "data:application/octet-stream;base64," + strings.Repeat("QUJD", 2000)
+	a := newFakeOp(`C:\\D\\a.bin`)
+	a.uri = prefix + "AAAA"
+	start(t, r.page, a)
+	b := newFakeOp(`C:\\D\\b.bin`)
+	b.uri = prefix + "BBBB"
+	start(t, r.page, b)
+	drop(a)
+	drop(b)
+	ofB := newFakeOp(`C:\\D\\b (1).bin`)
+	ofB.uri = b.uri
+	resume(t, r.page, ofB)
+	if got := r.page.downloads["dl-t-2"]; got == nil || got.op != ofB.com() {
+		t.Fatal("the resume did not take the download of its whole address")
+	}
+	ofB.received = 100
+	ofB.set(downloadStateCompleted, 0)
+	reports := r.take()
+	if got := states(reports); got != "dl-t-1:running dl-t-2:running dl-t-2:completed" {
+		t.Fatalf("reports %s", got)
+	}
+	for _, report := range reports {
+		if len(report.URI) > MaxDownloadURIBytes || !strings.HasPrefix(prefix, report.URI) {
+			t.Fatalf("a report carries %d bytes of the address, want at most %d", len(report.URI), MaxDownloadURIBytes)
+		}
+	}
+	if kept := r.page.ended.byID["dl-t-2"]; len(kept.URI) > MaxDownloadURIBytes {
+		t.Fatalf("the kept terminal snapshot holds %d bytes of the address", len(kept.URI))
+	}
+	r.done(t, a, b, ofB)
+}
+
 // resume raises DownloadStarting for op as WebView2 resumes a download: op
 // is in progress and carries the interruption's reason.
 func resume(t *testing.T, page *hostPage, op *fakeOp) *fakeStartingArgs {

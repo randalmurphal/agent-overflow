@@ -38,7 +38,8 @@ type hostDownload struct {
 	gate                   progressGate
 	// uri and path are the snapshot's address and file; received and total
 	// its bytes as last read from an operation.
-	uri, path       string
+	uri             downloadAddress
+	path            string
 	received, total int64
 	// cancelRequested is the backend's cancel, applied to a resume too.
 	// cancelBound numbers the cancels that started a bound (settleCancel).
@@ -114,7 +115,7 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		h.config.Logf("browser host: page %s: a download has no operation: %v", page.id, err)
 		return
 	}
-	path, uri := args.resultFilePath(), op.uri()
+	path, uri := args.resultFilePath(), newDownloadAddress(op.uri())
 	reason, err := op.interruptReason()
 	if err != nil {
 		// Read as no resume: a download of its own, nothing running touched.
@@ -158,10 +159,10 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 // already resumed once, whose operation (a resume's) reads its reason for
 // good, dropped or not. An operation from uri whose state cannot be read
 // makes the answer as uncertain, so it is nil too.
-func (p *hostPage) resumedDownload(uri string) *hostDownload {
+func (p *hostPage) resumedDownload(uri downloadAddress) *hostDownload {
 	var dropped *hostDownload
 	for _, d := range p.downloads {
-		if d.op == nil || d.uri != uri {
+		if d.op == nil || d.uri.digest != uri.digest {
 			continue
 		}
 		state, err := d.op.state()
@@ -213,7 +214,7 @@ func (d *hostDownload) snapshot(state, reason string) DownloadReport {
 	}
 	d.snapshots++
 	return DownloadReport{
-		ID: d.id, Seq: d.snapshots, State: state, URI: d.uri, Name: windowsFileName(d.path), Path: d.path,
+		ID: d.id, Seq: d.snapshots, State: state, URI: d.uri.shown, Name: windowsFileName(d.path), Path: d.path,
 		Received: d.received, Total: d.total, Reason: reason,
 	}
 }

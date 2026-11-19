@@ -123,9 +123,11 @@ change never arrived ends then, and is answered with a snapshot marked
 `Answer`, which the
 backend never creates a row from: a running one's, an ended one's kept
 terminal snapshot under its own number (up to `MaxEndedDownloads` per page
-while the page lives), or `DownloadUnknown` for an id with no record. A
-report is bounded: the address is shortened, then the path left out,
-never the start or end. WebView2 resumes a dropped download as a new
+while the page lives), or `DownloadUnknown` for an id with no record. The
+launcher keeps a copy of at most `MaxDownloadURIBytes` of a download's
+address, taken as it starts, and a digest of the whole address that a
+resume is matched by (`downloadAddress`). A report is bounded: the
+address is shortened, then the path left out, never the start or end. WebView2 resumes a dropped download as a new
 `DownloadStarting` whose operation carries the
 interruption's reason, while the dropped operation stays in progress with
 that reason and never ends. The resume is adopted only when exactly one
