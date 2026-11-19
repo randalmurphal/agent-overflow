@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
@@ -28,7 +29,7 @@ import (
 // async_questions: it stays open until it is answered or dismissed.
 //
 // The record is this run's: a question asked before this run of the app
-// started (App.startedAtMillis) is the person's, as every question was
+// started (App.runStartMillis) is the person's, as every question was
 // before a spawner could take one. No reconcile opens it, so it is put to
 // no agent, notifies nobody and is not what its thread waits on, and the
 // boot reads nothing. The time an item asked never changes, so an answer
@@ -184,10 +185,11 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPromp
 		return nil, err
 	}
 	open := make(map[string]asyncQuestionPrompt, len(groups))
+	runStart := a.runStartMillis()
 	for _, group := range groups {
 		// An item's rows share the item's time, which no later change moves.
 		asked := group.Questions[0].CreatedAt
-		if asked < a.startedAtMillis {
+		if asked < runStart {
 			continue
 		}
 		request := provider.UserInputRequest{
@@ -203,6 +205,41 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPromp
 		open[group.ItemID] = asyncQuestionPrompt{request: request, asked: asked}
 	}
 	return open, nil
+}
+
+// runStartMillis is this run's start on the wall clock as it reads now
+// (runStartOnWallClock), in Unix milliseconds: 0 before Start.
+func (a *App) runStartMillis() int64 {
+	if a.started.IsZero() {
+		return runStartOnWallClock(0, 0, 0)
+	}
+	now := time.Now()
+	return runStartOnWallClock(a.started.UnixMilli(), now.Add(a.wallClockStepForTest).UnixMilli(), now.Sub(a.started).Milliseconds())
+}
+
+// runStartOnWallClock is the start of this run against which a time a
+// provider event stamped from the wall clock is compared, in Unix
+// milliseconds. startWall is the wall clock's reading at the start, nowWall
+// its reading now, and elapsed the monotonic time since the start, which no
+// change of the wall clock moves.
+//
+// The wall clock can be set during a run (an NTP correction, a manual
+// change). nowWall-elapsed is where the start falls on the clock as it reads
+// now: after a step back it moves back with the clock, so a time stamped
+// after the step is still after it, and a time stamped before the step is at
+// or after startWall. After a step forward it moves forward past times this
+// run stamped before the step, which startWall still precedes; so the start
+// is the earlier of the two, and with no step they are equal. What is left
+// misread: a time stamped before this run that falls within a backward
+// step's size before startWall reads as this run's, and a clock set back and
+// then forward again puts the times stamped while it was back before the
+// start. A
+// zero startWall, a run Start never began, puts nothing before it.
+func runStartOnWallClock(startWall, nowWall, elapsed int64) int64 {
+	if startWall == 0 {
+		return 0
+	}
+	return min(startWall, nowWall-elapsed)
 }
 
 // announceAsyncQuestion delivers an async question prompt to the thread it

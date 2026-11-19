@@ -114,12 +114,16 @@ type App struct {
 	// workerPrompts routes the prompts of a spawned thread to its spawner
 	// (app_worker_prompts.go).
 	workerPrompts workerPrompts
-	// startedAtMillis is when this run of the app started, in Unix
-	// milliseconds, set by Start before anything can reconcile: an async
-	// question asked before it is the person's and no agent's
-	// (reconcileAsyncQuestions). Zero, as a test fixture leaves it, puts no
+	// started is when this run of the app started, read from time.Now so it
+	// carries a monotonic reading, set by Start before anything can
+	// reconcile: an async question asked before it is the person's and no
+	// agent's (runStartMillis). Zero, as a test fixture leaves it, puts no
 	// question before it.
-	startedAtMillis int64
+	started time.Time
+	// wallClockStepForTest is a test-only change of the wall clock after
+	// the start, added to its reading now (runStartMillis): negative is a
+	// clock set back. Production leaves it zero.
+	wallClockStepForTest time.Duration
 	// resting holds the threads being brought to rest, which take no
 	// app-written message and start no work meanwhile (app_thread_rest_fence.go).
 	resting threadRestFence

@@ -83,7 +83,7 @@ func wireAsyncQuestionApp(a *App) *recordingNotificationSender {
 func (f asyncQuestionFixture) restart(t *testing.T) asyncQuestionFixture {
 	t.Helper()
 	a := newTestAppAtStorePath(t, f.dbPath)
-	a.startedAtMillis = time.Now().UnixMilli()
+	a.started = time.Now()
 	return asyncQuestionFixture{app: a, dbPath: f.dbPath, spawner: f.spawner, worker: f.worker, notified: wireAsyncQuestionApp(a)}
 }
 
@@ -99,7 +99,7 @@ func forgetPromptsAtRestart(a *App) {
 	a.workerPrompts.async.mu.Unlock()
 	// Past the millisecond the last question may have been asked in.
 	time.Sleep(time.Millisecond)
-	a.startedAtMillis = time.Now().UnixMilli()
+	a.started = time.Now()
 }
 
 // drain waits out the prompts, notice starts and settlements begun; a start
@@ -513,6 +513,93 @@ func TestAQuestionAskedBeforeTheRestartIsThePersons(t *testing.T) {
 	}
 	if questions, err := after.app.store.ListAsyncQuestions(after.worker.ID, "question:old"); err != nil || len(questions) != 1 || questions[0].State != "submitted" || questions[0].Answer != "Two" {
 		t.Fatalf("the old question = %+v, %v; want the person's answer submitted", questions, err)
+	}
+}
+
+// The run's start against the wall clock: unchanged with no step, moved
+// back with a clock set back, and kept with a clock set forward, so a
+// question this run asked is never before it and one from before the run
+// is, outside the documented misread of a backward step's size.
+func TestRunStartOnWallClockFollowsAClockStep(t *testing.T) {
+	t.Parallel()
+	const start = int64(1_700_000_000_000)
+	minute, hour := time.Minute.Milliseconds(), time.Hour.Milliseconds()
+	cases := []struct {
+		name                     string
+		startWall, nowWall, past int64
+		want                     int64
+		// asked maps a question's wall time to whether it is this run's.
+		asked map[int64]bool
+	}{
+		{
+			name: "no step", startWall: start, nowWall: start + 20*minute, past: 20 * minute, want: start,
+			asked: map[int64]bool{start: true, start + 5*minute: true, start - 1: false, start - 14*24*hour: false},
+		},
+		{
+			// Set back an hour ten minutes into the run, read ten minutes later.
+			name: "a step back of an hour", startWall: start, nowWall: start + 20*minute - hour, past: 20 * minute, want: start - hour,
+			asked: map[int64]bool{
+				start + 10*minute - hour + 1000: true, // right after the step
+				start + 5*minute:                true, // before the step
+				start - 2*hour:                  false,
+				start - 30*minute:               true, // from before the run, within the step: the misread left
+			},
+		},
+		{
+			// Set forward an hour ten minutes into the run, read ten minutes later.
+			name: "a step forward of an hour", startWall: start, nowWall: start + 20*minute + hour, past: 20 * minute, want: start,
+			asked: map[int64]bool{
+				start + 5*minute:                true, // before the step
+				start + 10*minute + hour + 1000: true, // right after the step
+				start - 1:                       false,
+			},
+		},
+		{
+			name: "the zero start", startWall: 0, nowWall: start, past: 20 * minute, want: 0,
+			asked: map[int64]bool{0: true, start - 14*24*hour: true, start: true},
+		},
+	}
+	for _, tc := range cases {
+		got := runStartOnWallClock(tc.startWall, tc.nowWall, tc.past)
+		if got != tc.want {
+			t.Errorf("%s: the run's start = %d, want %d", tc.name, got, tc.want)
+		}
+		for asked, thisRun := range tc.asked {
+			if (asked >= got) != thisRun {
+				t.Errorf("%s: a question asked at %d (start %+d ms) reads as this run's = %v, want %v", tc.name, asked, asked-start, asked >= got, thisRun)
+			}
+		}
+	}
+}
+
+// A question a worker asks after the wall clock was set back is this run's
+// even though its time is before the clock's reading at the start: it goes
+// to the spawner. One from before the run, before the step's reach, stays
+// the person's.
+func TestAQuestionAskedAfterTheClockWasSetBackGoesToTheSpawner(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-clock-back", store.PlacementOwned)
+	// The run started a minute ago; the clock has since been set back an hour.
+	f.app.started = time.Now().Add(-time.Minute)
+	f.app.wallClockStepForTest = -time.Hour
+	for id, asked := range map[string]time.Time{
+		"question:before-run": f.app.started.Add(-2 * time.Hour),
+		"question:after-step": time.Now().Add(-time.Hour),
+	} {
+		if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+			ID: id, ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
+			Meta: fmt.Sprintf(`{"delivery":"async","questions":[{"title":%q}]}`, id), CreatedAt: asked.UnixMilli(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
+	f.drain(t)
+	if _, body := f.wake(t, f.spawner.ID); !strings.Contains(body, "question:after-step") || strings.Contains(body, "question:before-run") {
+		t.Fatalf("the spawner's wake asks:\n%s\nwant only the question asked after the step", body)
+	}
+	if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "question:after-step" || promptRouteTitle(route) != f.spawner.Title {
+		t.Fatalf("the worker asks %q of %q (%v), want the question asked after the step, of its spawner", detail, promptRouteTitle(route), asking)
 	}
 }
 
