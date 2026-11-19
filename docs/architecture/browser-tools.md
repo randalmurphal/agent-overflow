@@ -569,7 +569,9 @@ so AO's chords have to be taken back at the engine:
   window only). Being presented, visible or in the foreground makes a page
   eligible; none of them overrides the user's next focus choice. The store
   withdraws the intent on a focus or pointer press outside the page area
-  (the composer, the address bar again), another active tab, or the pane
+  (the composer, the address bar again), a newer deferred focus anywhere in
+  the window (`utils/focusIntent.ts`, which a terminal's focus once it
+  mounts also registers with), another active tab, or the pane
   unmounting, whatever the arm's answer was and however long it took,
   posting the withdrawal to the Windows launcher directly
   (`ao:pane-focus:`, beside the pane geometry) and sending
@@ -617,8 +619,11 @@ so AO's chords have to be taken back at the engine:
   (`mount`). Every host client receives the event, and only the one holding
   that mount replays it; a chord in a page no pane shows is dropped. An
   `escape` event carries the mount too, and closes only that client's find
-  bar. The
-  store focuses the thread's
+  bar. The client (`browserPageChords.ts`) acts in that mount's pane or
+  nowhere: when a pane promoted over it, or a compact screen that no longer
+  shows it, means the keyboard's commands would not reach it, the chord is
+  dropped rather than resolved against another pane. Otherwise it focuses
+  the thread's
   browser companion and replays the chord as a window keydown, so `when`
   gates, rebinds and the palette all behave as if the SPA had been focused.
   A bound chord whose `when` fails there is a no-op — the page never gets it

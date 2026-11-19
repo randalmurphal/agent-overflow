@@ -15,7 +15,7 @@ import {
 } from './browserCompanion.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
 import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { demotePane, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, getFocusedPaneId, getPane, resetPanesForTest } from './panes.svelte';
 import { makeCommandContext } from './builtinCommands.svelte';
 import { notifyTerminalFocus } from '../components/terminal/terminalStore.svelte';
@@ -555,6 +555,43 @@ describe('accelerators from the native page view', () => {
     }
     expect(seen).toEqual([]);
     expect(getFocusedPaneId()).not.toBe('browser-main');
+  });
+
+  // A chord pressed in the page arrives after the user moved on: it acts in
+  // the pane it was pressed in or nowhere, never in the pane that covers it.
+  it.each([
+    ['another pane was promoted over it', () => promotePane('main')],
+    ['the compact list screen covers it', () => setCompactLayoutForTest(true)],
+  ])('drops a chord whose pane is no longer the keyboard\'s target because %s', (_name, cover) => {
+    focusPane('browser-main');
+    const seen: KeyboardEvent[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', listener);
+    try {
+      cover();
+      focusPane('main');
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount: 'mount-1', accelerator: { key: 'w', ctrl: true } });
+      expect(seen).toEqual([]);
+      expect(getFocusedPaneId()).toBe('main');
+    } finally {
+      window.removeEventListener('keydown', listener);
+      demotePane();
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  it('replays a chord in the browser pane promoted over the strip', () => {
+    expect(promotePane('browser-main')).toBe(true);
+    const seen: KeyboardEvent[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', listener);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount: 'mount-1', accelerator: { key: 'w', ctrl: true } });
+    } finally {
+      window.removeEventListener('keydown', listener);
+      demotePane();
+    }
+    expect(seen).toHaveLength(1);
   });
 
   it('does not replay a chord in a client with no pane mounted', () => {

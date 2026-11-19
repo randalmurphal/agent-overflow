@@ -6,8 +6,9 @@
 // timeline or the diff with each key; a click on a pane's text outside its
 // scroller focuses nothing; a keyboard pane move (Alt+L) from a composer
 // onto the review pane, which has no composer, puts the caret in the diff,
-// so those keys scroll it and typing never reaches the composer left; a
-// click on the timeline then type-to-focus puts the caret in the composer,
+// so those keys scroll it and typing never reaches the composer left, and
+// the move back (Alt+H) takes the caret out of the diff into the thread's
+// composer; a click on the timeline then type-to-focus puts the caret in the composer,
 // where Escape keeps it and PageDown is the text field's.
 
 import { randomBytes } from 'node:crypto';
@@ -105,6 +106,16 @@ test('keys scroll the timeline and the review diff after a click on their text, 
   await expectKeysScroll(page, diff);
   await page.keyboard.type('x');
   await expect(composer).toHaveValue('kept draft');
+
+  // The move back leaves nothing focused in the review: the caret is in the
+  // thread's composer, where typing lands.
+  await page.keyboard.press('Alt+h');
+  await expect(thread).toHaveAttribute('data-pane-focused', 'true');
+  await expect(composer).toBeFocused();
+  expect(await review.evaluate((section) => section.contains(document.activeElement))).toBe(false);
+  await page.keyboard.press('End');
+  await page.keyboard.type('!');
+  await expect(composer).toHaveValue('kept draft!');
 });
 
 test('type-to-focus after a click on the timeline puts the caret in the composer, and Escape keeps it there', async ({ harness, page }) => {

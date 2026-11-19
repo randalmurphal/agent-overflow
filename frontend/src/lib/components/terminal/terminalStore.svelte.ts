@@ -511,8 +511,12 @@ export function getTerminalFocused(paneId: string): boolean {
 
 /** Counts focus inside `node` as the pane's terminal focus while it is
  * attached. */
+/** The selector of a terminal's focus region (terminalFocusRegion): where a press is on the terminal. */
+export const TERMINAL_FOCUS_REGION = '[data-terminal-focus-region]';
+
 export function terminalFocusRegion(paneId: string): (node: HTMLElement) => () => void {
   return (node) => {
+    node.dataset.terminalFocusRegion = '';
     let counted = false;
     const set = (focused: boolean) => {
       if (counted === focused) return;

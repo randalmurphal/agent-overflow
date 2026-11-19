@@ -209,7 +209,7 @@ describe('applyTerminalExit — focus follows the active tab into a promoted sib
     // focused in the terminal, the cursor follows into the promoted sibling.
     expect(handle.tabs.map((tab) => tab.terminalID)).toEqual(['t2']);
     expect(handle.activeTerminalID).toBe('t2');
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('does NOT steal focus when a BACKGROUNDED active terminal exits (composer focused)', () => {
@@ -226,7 +226,7 @@ describe('applyTerminalExit — focus follows the active tab into a promoted sib
     fireExit('term-1', 't1');
 
     expect(handle.activeTerminalID).toBe('t2'); // sibling still promoted
-    expect(pane.consumeTerminalFocusRequest()).toBe(false); // but no focus steal
+    expect(pane.consumeTerminalFocusRequest()).toBeNull(); // but no focus steal
   });
 
   it('does NOT request focus when a NON-active tab exits (no remount, nothing moved)', () => {
@@ -240,7 +240,7 @@ describe('applyTerminalExit — focus follows the active tab into a promoted sib
     fireExit('term-1', 't1'); // a background tab exits; active stays t2
 
     expect(handle.activeTerminalID).toBe('t2');
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('does NOT request focus when the LAST tab exits (no sibling to focus)', () => {
@@ -253,7 +253,7 @@ describe('applyTerminalExit — focus follows the active tab into a promoted sib
     fireExit('chat-1', 't1');
 
     expect(handle.tabs).toHaveLength(0);
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('re-latches ONLY the focused pane when two panes show the same terminal thread', () => {
@@ -274,7 +274,7 @@ describe('applyTerminalExit — focus follows the active tab into a promoted sib
     fireExit('term-1', 't1');
 
     expect(handle.activeTerminalID).toBe('t2'); // both panes remount to t2
-    expect(focusedPane.consumeTerminalFocusRequest()).toBe(true);
-    expect(otherPane.consumeTerminalFocusRequest()).toBe(false);
+    expect(focusedPane.consumeTerminalFocusRequest()?.current).toBe(true);
+    expect(otherPane.consumeTerminalFocusRequest()).toBeNull();
   });
 });

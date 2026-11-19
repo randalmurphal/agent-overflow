@@ -1,3 +1,5 @@
+import type { FocusIntent } from '../../utils/focusIntent';
+
 export interface ThreadTerminalSurfaceContext {
   paneId: string;
   threadId: string | null;
@@ -7,10 +9,10 @@ export interface ThreadTerminalSurfaceContext {
   canAdoptOpenedTerminal?(threadID: string, workspacePath: string | undefined): boolean;
   /**
    * Read-and-clear the pane's "focus the terminal on open" intent. The drawer
-   * calls this once when it mounts; a true result means latch focus into the
-   * xterm as soon as TerminalBody binds.
+   * calls this once when it mounts; an intent means land focus in the xterm
+   * as soon as TerminalBody binds, unless a later focus choice cancels it.
    */
-  consumeFocusRequest(): boolean;
+  consumeFocusRequest(): FocusIntent | null;
   /**
    * Re-settle the scroll controller after the drawer mounts ASYNCHRONOUSLY.
    * On a cold first open the drawer is a lazy `import()`, so the real in-flow

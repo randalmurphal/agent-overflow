@@ -73,7 +73,7 @@ function makeSurface(): ThreadTerminalSurfaceContext {
     workspacePath: undefined,
     setVisible: () => {},
     acquireResizeLease: () => null,
-    consumeFocusRequest: () => false,
+    consumeFocusRequest: () => null,
   };
 }
 

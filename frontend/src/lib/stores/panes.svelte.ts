@@ -333,6 +333,16 @@ export function paneCommandTarget(): string | null {
 }
 
 /**
+ * Whether `paneId`, focused, would be the keyboard's target
+ * (paneCommandTarget): no promoted pane covers it on the desktop, and the
+ * compact thread screen shows it. Reactive.
+ */
+export function paneTakesCommandsWhenFocused(paneId: string): boolean {
+  if (isCompactLayout()) return getCompactScreen() === 'thread' && compactShownPaneId() === paneId;
+  return (getPromotedPaneId() ?? paneId) === paneId;
+}
+
+/**
  * The header button, title double-click and `pane.togglePromoted`: demote
  * the promoted pane, or focus and promote this one. Focus comes first
  * because focus moving to another pane demotes (PaneHost).

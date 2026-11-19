@@ -870,7 +870,7 @@ describe('terminal tab management commands', () => {
     await Promise.resolve();
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']);
     // The new tab is now active → focus is requested so the cursor lands in it.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.newTab adds no tab for a shell whose exit overtook the OpenTerminal reply', async () => {
@@ -887,7 +887,7 @@ describe('terminal tab management commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
     expect(handle.activeTerminalID).toBe('term-existing');
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('terminal.newTab removes the tab when the exit follows the reply', async () => {
@@ -915,7 +915,7 @@ describe('terminal tab management commands', () => {
     expect(closeMock).toHaveBeenCalledWith('term-b');
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-a']);
     // term-a is promoted to active → focus follows the user into it.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.closeTab does not request focus when the last tab is closed', () => {
@@ -928,7 +928,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.closeTab', makeCommandContext(pane, { terminalFocus: true }));
     expect(handle.tabs).toHaveLength(0);
     // Nothing remains to focus (the surface collapses instead), so no intent.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('terminal.nextTab / prevTab cycle the active tab with wraparound', () => {
@@ -947,7 +947,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.prevTab', ctx); // c → b
     expect(handle.activeTerminalID).toBe('b');
     // A switch remounts the body, so the cursor must follow into the new tab.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.nextTab is a no-op with a single tab', () => {
@@ -959,7 +959,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.nextTab', makeCommandContext(pane, { terminalFocus: true }));
     expect(handle.activeTerminalID).toBe('only');
     // No switch happened (< 2 tabs), so no focus intent is set.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('newTab/closeTab/nextTab are safe no-ops when the pane has no terminal state', () => {
@@ -984,7 +984,7 @@ describe('terminal tab management commands', () => {
     expect(closeMock).not.toHaveBeenCalled();
     // Every command bailed at its state guard before mutating, so none of them
     // requested terminal focus.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 });
 
@@ -2087,10 +2087,10 @@ describe('terminal.toggle command', () => {
     // Opening latches a one-shot focus intent synchronously (no rAF). The
     // drawer consumes it in onMount — whenever its lazily-loaded chunk
     // resolves — so the intent survives the cold-open mount delay.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
     // Read-and-clear: a second consume (e.g. a drawer remount) returns false,
     // so focus is never re-grabbed without a fresh open.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('closes the terminal and returns focus to the composer when the terminal was focused', () => {
@@ -2107,7 +2107,7 @@ describe('terminal.toggle command', () => {
       // Focus handed back to the composer so the unmount doesn't orphan it.
       expect(document.activeElement).toBe(composer.textarea);
       // A close never latches a focus request — it only ever closes.
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     } finally {
       composer.cleanup();
     }
@@ -2132,7 +2132,7 @@ describe('terminal.toggle command', () => {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
       expect(pane.showTerminal).toBe(false);
       expect(document.activeElement).toBe(sentinel);
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     } finally {
       document.body.removeChild(sentinel);
       composer.cleanup();
@@ -2414,7 +2414,7 @@ describe('pane navigation into a terminal pane', () => {
     const ran = runCommand('pane.focusRight', makeCommandContext(left, {}));
     expect(ran).toBe(true);
     // requestTerminalFocus was called → the read-and-clear intent is set.
-    expect(right.consumeTerminalFocusRequest()).toBe(true);
+    expect(right.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   // A side chat and an agent thread host a conversation under the companion
@@ -2539,7 +2539,7 @@ describe('pane navigation into a terminal pane', () => {
   it('does not latch terminal focus when focusRight lands on a chat pane', () => {
     const { left, right } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
     runCommand('pane.focusRight', makeCommandContext(left, {}));
-    expect(right.consumeTerminalFocusRequest()).toBe(false);
+    expect(right.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('pane.togglePromoted promotes the focused pane, restores it on the second run, and is off under compact', () => {

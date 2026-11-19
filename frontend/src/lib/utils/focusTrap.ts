@@ -17,6 +17,7 @@
 // we don't try to gate rendering from here.
 
 import type { Action } from 'svelte/action';
+import { returnFocus } from './focusIntent';
 
 export interface FocusTrapOptions {
   /**
@@ -227,7 +228,8 @@ export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (nod
       // (see panes/paneComposerFocus.ts); the in-trap moves above stay
       // bare on purpose, because scrolling the trap container's own body
       // to the Tab target IS the desired reveal.
-      instance.previousFocus.focus({ preventScroll: true });
+      const previous = instance.previousFocus;
+      returnFocus(() => previous.focus({ preventScroll: true }));
     }
     instance = null;
     removeListenerIfIdle();

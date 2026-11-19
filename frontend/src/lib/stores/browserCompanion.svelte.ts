@@ -14,7 +14,7 @@ import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { closeCompanion, companionForSource, openCompanion } from './companionPanes.svelte';
-import { addPaneThreadMountedObserver, focusPane, getAllPanes } from './panes.svelte';
+import { addPaneThreadMountedObserver, getAllPanes } from './panes.svelte';
 import { hasScope } from '../transport/scopes';
 import { isCompactLayout } from './layoutMode.svelte';
 import { createSequenceGate } from './snapshotStream';
@@ -38,8 +38,9 @@ import { addErrorToast } from './toast.svelte';
 // Every state, pushed or answered, lands through one admission
 // (`admitBrowserState`). The parts that keep their own state beside this
 // store follow it through observeBrowserCompanion: the user's actions
-// (browserActions.ts), the host rect reports (browserPaneRectReports.ts) and
-// the page keyboard focus intent (browserPageFocus.ts). Address bar focus
+// (browserActions.ts), the host rect reports (browserPaneRectReports.ts),
+// the page keyboard focus intent (browserPageFocus.ts) and the chords
+// pressed in a page (browserPageChords.ts). Address bar focus
 // is a leaf it imports (browserAddressFocus.svelte.ts).
 
 /** The backend's id of one pane mount, minted from BrowserCompanionPaneAttach's answer. */
@@ -79,6 +80,8 @@ export interface BrowserPaneMount {
 export interface BrowserCompanionObserver {
   /** An admitted Kind "state" event, before it is applied. */
   stateAdmitted?(event: BrowserCompanionEvent): void;
+  /** A Kind "accelerator" event: a bound chord pressed in a page. */
+  accelerator?(event: BrowserCompanionEvent): void;
   /** A Kind "focus" event: how a page focus intent ended. */
   focusSettled?(event: BrowserCompanionEvent): void;
   /** The thread's pane mount ended with its attachment. */
@@ -287,7 +290,8 @@ export function browserPaneOfMount(mount: string): BrowserPaneAttachment | null 
   return null;
 }
 
-function sourcePaneIdForThread(threadId: string): string | null {
+/** The pane showing the thread, which its browser pane opens beside; null for none. */
+export function sourcePaneIdForThread(threadId: string): string | null {
   for (const [paneId, pane] of getAllPanes()) {
     if (pane.threadId === threadId) return paneId;
   }
@@ -311,7 +315,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     return;
   }
   if (event.kind === 'accelerator') {
-    replayBrowserAccelerator(event);
+    for (const observer of observers) observer.accelerator?.(event);
     return;
   }
   if (event.kind === 'find' || event.kind === 'escape') {
@@ -398,59 +402,6 @@ export function browserPaneShown(threadId: string): boolean {
 /** Whether the thread's browser pane is open here, with its banner. */
 export function browserPaneOpen(threadId: string): boolean {
   return browserPaneShown(threadId) && !!store.snapshot(threadId);
-}
-
-// True while a chord the page claimed is dispatched (replayBrowserAccelerator).
-let replayingPageChord = false;
-
-/**
- * Whether the keydown being dispatched is a chord pressed in a browser page.
- * It was typed with keyboard focus in the page, so it resolves outside any
- * terminal whatever focus the SPA has by the time it arrives: the engine
- * hands focus back to the SPA when it claims the chord, and the terminal
- * caret left there may already have it again.
- */
-export function isReplayingBrowserPageChord(): boolean {
-  return replayingPageChord;
-}
-
-/**
- * A bound chord pressed while the thread's NATIVE page view held keyboard
- * focus (spec §7). The engine swallowed it and the backend routed it here;
- * replaying it as a window keydown puts it through the one dispatcher every
- * other keystroke uses, so `when` gates, user rebinds, and the palette all
- * behave exactly as if the SPA had been focused. The companion pane is
- * focused first: the click that gave the page focus moved no DOM focus, and
- * pane-scoped commands (pane.close → this pane's tab) need the logical focus
- * to be where the user is looking. The engine already handed keyboard focus
- * to the SPA. DOM focus left in the SPA stays where it is, so a surface the
- * chord opens returns focus there on close; it gates nothing for this chord
- * (isReplayingBrowserPageChord).
- *
- * Every host client receives the event; only the one holding the pane
- * mount that showed the page (`event.mount`) replays it.
- */
-function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
-  const chord = event.accelerator;
-  if (!chord || !event.mount || event.mount !== browserPaneMountId(event.threadId)) return;
-  const sourcePaneId = sourcePaneIdForThread(event.threadId);
-  const companion = sourcePaneId ? companionForSource(sourcePaneId, 'browser') : null;
-  if (companion) focusPane(companion.paneId);
-  replayingPageChord = true;
-  try {
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: chord.key,
-        ctrlKey: chord.ctrl === true,
-        metaKey: chord.meta === true,
-        altKey: chord.alt === true,
-        shiftKey: chord.shift === true,
-        cancelable: true,
-      }),
-    );
-  } finally {
-    replayingPageChord = false;
-  }
 }
 
 // A find stop that could not be delivered, per thread (stores/browserFind):

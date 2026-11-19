@@ -41,7 +41,7 @@ import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closePaneById } from './companionPanes.svelte';
 import { closeFocusedBrowserTab, isBrowserPaneUnattached } from './browserActions';
-import { isReplayingBrowserPageChord } from './browserCompanion.svelte';
+import { isReplayingBrowserPageChord } from './browserPageChords';
 import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
 import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';

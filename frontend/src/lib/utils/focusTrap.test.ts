@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { focusTrap } from './focusTrap';
+import { elementFocusScope, intendFocus, resetFocusIntentForTest } from './focusIntent';
 
 function dispatchTab(target: EventTarget, shift = false): KeyboardEvent {
   const ev = new KeyboardEvent('keydown', {
@@ -130,6 +131,36 @@ describe('focusTrap', () => {
 
     trigger.remove();
     host.remove();
+  });
+
+  // A modal giving focus back to its opener is no new focus choice: a
+  // deferred focus asked for while it was up (a palette command opening a
+  // terminal) still lands. Its own first focus is a choice.
+  it('gives focus back without canceling a deferred focus asked for while it was up', async () => {
+    const trigger = document.createElement('button');
+    const target = document.createElement('div');
+    document.body.append(trigger, target);
+    trigger.focus();
+    const host = document.createElement('div');
+    host.innerHTML = '<button id="a">A</button>';
+    document.body.appendChild(host);
+    const handle = focusTrap(host, { active: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    const intent = intendFocus(elementFocusScope(target));
+    try {
+      handle!.destroy!();
+      expect(document.activeElement).toBe(trigger);
+      expect(intent.current).toBe(true);
+      // The trap's own first focus cancels one asked for before it opened.
+      const next = focusTrap(host, { active: true });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(intent.current).toBe(false);
+      next!.destroy!();
+    } finally {
+      resetFocusIntentForTest();
+    }
   });
 
   it('leaves focus that moved elsewhere after close where it is', async () => {
