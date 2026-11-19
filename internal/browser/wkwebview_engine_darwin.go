@@ -457,7 +457,9 @@ func (p *wkProfile) parkNew(page *wkPage) {
 }
 
 // registerDownload keeps download ptr under handle and starts its sampler,
-// unless the profile was disposed, and reports whether it did.
+// unless the profile was disposed, and reports whether it did. Both
+// registrations are made in one hold of p.mu, so a Dispose that takes the
+// entry also finds, and deletes, its owner (releaseDownload).
 func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) bool {
 	entry := &wkDownload{handle: handle, ptr: ptr, stop: make(chan struct{})}
 	p.mu.Lock()
@@ -466,8 +468,8 @@ func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) bool {
 		return false
 	}
 	p.downloads[handle] = entry
-	p.mu.Unlock()
 	wkDownloadOwners.Store(handle, p)
+	p.mu.Unlock()
 	go p.sampleDownload(entry)
 	return true
 }
