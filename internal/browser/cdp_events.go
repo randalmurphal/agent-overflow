@@ -208,29 +208,55 @@ func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 // exactly when more starts than stops were handled, in whatever order. Each
 // handled event answers that with the number of events handled, which only
 // grows, and the Manager keeps the answer with the highest number
-// (pageHooks.Loading), so the last answer it keeps is the settled one. A load
-// already running when the page subscribed shows its stop alone, which leaves
-// the count one stop ahead for the page's life: its loads then never read as
-// loading, which shows no spinner rather than one that never stops. Only a
-// page attached mid-load can be in that state (a popup); a created page
-// subscribes before its first navigation. Two counters are all it keeps.
+// (pageHooks.Loading), so the last answer it keeps is the settled one.
+//
+// A load already running when the page subscribed (a popup attached
+// mid-load) shows its stop alone. A stop that leaves more stops than starts
+// is held as unmatched from when it was handled: a start handled within
+// loadReorderWindow of it is its own start handled late, and one handled
+// after belongs to a new load, so the unmatched stops are dropped first.
+// The two readers drift apart by microseconds, the window by a second, so
+// a load the page starts within a second of such a stop reads as idle,
+// and the next one reads right again. Three counters and a time are all it
+// keeps.
 type cdpLoadTracker struct {
 	mu            sync.Mutex
 	starts, stops uint64
+	// handled numbers the answers; dropped stops do not lower it.
+	handled uint64
+	// unmatchedAt is when stops last came to exceed starts.
+	unmatchedAt time.Time
 }
 
-func (t *cdpLoadTracker) started() (bool, uint64) {
+// loadReorderWindow is how long after an unmatched stop a start is taken
+// as that stop's own (cdpLoadTracker).
+const loadReorderWindow = time.Second
+
+func (t *cdpLoadTracker) started(now time.Time) (bool, uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.stops > t.starts && now.Sub(t.unmatchedAt) >= loadReorderWindow {
+		t.stops = t.starts
+	}
 	t.starts++
-	return t.starts > t.stops, t.starts + t.stops
+	return t.answerLocked()
 }
 
-func (t *cdpLoadTracker) stopped() (bool, uint64) {
+func (t *cdpLoadTracker) stopped(now time.Time) (bool, uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.stops <= t.starts {
+		t.unmatchedAt = now
+	}
 	t.stops++
-	return t.starts > t.stops, t.starts + t.stops
+	return t.answerLocked()
+}
+
+// answerLocked is whether the frame is loading and the answer's number.
+// The caller holds t.mu.
+func (t *cdpLoadTracker) answerLocked() (bool, uint64) {
+	t.handled++
+	return t.starts > t.stops, t.handled
 }
 
 // frameTracker is the set of frames a page has reported, which downloads are

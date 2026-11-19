@@ -294,12 +294,12 @@ func (p *cdpPage) installHandlers() error {
 	// The main frame's id is the target's.
 	onTargetEvent(ctx, page.FrameStartedLoading, logf, func(event page.EventFrameStartedLoading) {
 		if string(event.FrameID) == p.handle {
-			p.reportLoading(p.loads.started())
+			p.reportLoading(p.loads.started(time.Now()))
 		}
 	})
 	onTargetEvent(ctx, page.FrameStoppedLoading, logf, func(event page.EventFrameStoppedLoading) {
 		if string(event.FrameID) == p.handle {
-			p.reportLoading(p.loads.stopped())
+			p.reportLoading(p.loads.stopped(time.Now()))
 		}
 	})
 	// chromedp.Console is the one ordered join of several event methods that

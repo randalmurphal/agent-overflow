@@ -188,6 +188,7 @@ func TestBoundedFaviconAcceptsOnlySmallImageDataURLs(t *testing.T) {
 func TestCDPLoadTrackerSettlesUnderAnyInterleaving(t *testing.T) {
 	// Two loads, then a third still running: start/stop pairs alternate per
 	// frame; the subscriptions may hand them over in any order.
+	at := time.Unix(1000, 0)
 	for _, events := range []string{"SsSsS", "sSSsS", "SSssS", "ssSSS", "SsSSs", "sSsSS", "SSSss"} {
 		var tracker cdpLoadTracker
 		var kept uint64
@@ -196,9 +197,9 @@ func TestCDPLoadTrackerSettlesUnderAnyInterleaving(t *testing.T) {
 			var now bool
 			var order uint64
 			if event == 'S' {
-				now, order = tracker.started()
+				now, order = tracker.started(at)
 			} else {
-				now, order = tracker.stopped()
+				now, order = tracker.stopped(at)
 			}
 			if order > kept {
 				kept, loading = order, now
@@ -208,5 +209,49 @@ func TestCDPLoadTrackerSettlesUnderAnyInterleaving(t *testing.T) {
 		if loading != want {
 			t.Errorf("events %s settled loading=%v, want %v", events, loading, want)
 		}
+	}
+}
+
+// A page attached mid-load (a popup) sees the stop of a load whose start
+// was before it subscribed. Its later loads still read as loading, from
+// their start to their stop; a stop handled just before its own start
+// still reads as idle.
+func TestCDPLoadTrackerRecoversFromAStopWithNoStart(t *testing.T) {
+	var tracker cdpLoadTracker
+	var kept uint64
+	// step handles one event and answers what the Manager keeps.
+	step := func(event func(time.Time) (bool, uint64), at time.Time) bool {
+		t.Helper()
+		loading, order := event(at)
+		if order <= kept {
+			t.Fatalf("answer numbered %d after %d: the Manager would drop it", order, kept)
+		}
+		kept = order
+		return loading
+	}
+	at := time.Unix(1000, 0)
+	if step(tracker.stopped, at) {
+		t.Fatal("the stop of the load running at attach reads as loading")
+	}
+	for load := range 3 {
+		at = at.Add(2 * loadReorderWindow)
+		if !step(tracker.started, at) {
+			t.Fatalf("load %d: its start reads as idle", load)
+		}
+		at = at.Add(2 * loadReorderWindow)
+		if step(tracker.stopped, at) {
+			t.Fatalf("load %d: its stop reads as loading", load)
+		}
+	}
+	// A load whose stop is handled before its start, within the window.
+	if step(tracker.stopped, at) {
+		t.Fatal("a stop handled first reads as loading")
+	}
+	if step(tracker.started, at.Add(loadReorderWindow/2)) {
+		t.Fatal("the start of a load already stopped reads as loading")
+	}
+	at = at.Add(2 * loadReorderWindow)
+	if !step(tracker.started, at) {
+		t.Fatal("the next load reads as idle")
 	}
 }
