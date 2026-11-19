@@ -308,8 +308,11 @@ One `tempo.Client` per site and region. Worklogs are read by author and
 date range and written with the numeric issue ID, which the client gets
 from an `IssueIDs` its caller supplies. Tempo replaces the whole record on
 an update, so a change starts from the record as read: fields it does not
-set are sent as read, except that a fully billable record's billable time
-follows a new time spent.
+set are sent as read. Billable time is the exception when the change sets
+a new time spent and no billable time: a fully billable record stays fully
+billable, and a record billed below its time is never left billed above
+the new time. Tempo bills the whole time when an update names none, so a
+billable time that was read is always sent.
 
 Checks run before a write. Those decidable from the op alone (issue,
 author, start date, durations, each attribute given once with a key and a

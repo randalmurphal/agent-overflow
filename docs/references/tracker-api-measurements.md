@@ -230,6 +230,12 @@ API v4.
   by Atlassian account ID
   ([v4 comparison](https://help.tempo.io/planner/latest/tempo-api-version-4-0-vs-version-3-0-a-comparison)).
   `PUT /4/worklogs/{id}` replaces the whole record.
+- `billableSeconds` is optional on create and update, and the spec names no
+  default. `atl` records that an update without it bills the whole time
+  spent, which would make a non-billable worklog billable; this was not
+  measured again here. Tempo's update example bills 7200 seconds on 3600
+  spent, so billable time is not capped at the time spent
+  ([worklog migration](https://help.tempo.io/cloudmigration/latest/worklog-rest-apis-for-jira-cloud)).
 - Required hours per day come from `GET /4/user-schedule`; approval status
   and submit from `/4/timesheet-approvals/user/{accountId}`; work attributes
   and their allowed values from `/4/work-attributes`.

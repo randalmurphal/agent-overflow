@@ -30,9 +30,10 @@ type Draft struct {
 
 // Change is an update of one worklog. Tempo replaces the whole record on
 // an update, so a change starts from the record as read: every field
-// the change does not set is sent as From has it, with one exception: when
-// From is fully billable (Billable equal to Spent) and the change sets
-// Spent but not Billable, the billable time sent is the new Spent.
+// the change does not set is sent as From has it. The billable time is the
+// exception when the change sets Spent but not Billable: a fully billable
+// From (Billable equal to Spent) stays fully billable, and a From billed
+// below its Spent is never left billed above the new Spent.
 type Change struct {
 	// From is the worklog as read; its ID names the worklog to change.
 	From Worklog
@@ -82,11 +83,8 @@ func (ch Change) draft() Draft {
 	switch {
 	case ch.Billable != nil:
 		d.Billable = ch.Billable
-	case from.Billable != nil && *from.Billable == from.Spent:
-		spent := d.Spent
-		d.Billable = &spent
 	case from.Billable != nil:
-		billable := *from.Billable
+		billable := billableAfter(*from.Billable, from.Spent, d.Spent)
 		d.Billable = &billable
 	}
 	for _, a := range from.Attributes {
@@ -96,6 +94,21 @@ func (ch Change) draft() Draft {
 	}
 	d.Attributes = append(d.Attributes, ch.SetAttributes...)
 	return d
+}
+
+// billableAfter is the billable time of a record whose time spent goes
+// from spent to next with no billable time named. A fully billable record
+// stays fully billable. A record billed below its time keeps its billable
+// time up to the new time spent, so the change never bills more than was
+// worked. A record already billed above its time keeps that billable time.
+func billableAfter(billable, spent, next time.Duration) time.Duration {
+	switch {
+	case billable == spent:
+		return next
+	case billable < spent:
+		return min(billable, next)
+	}
+	return billable
 }
 
 // worklogBody is a worklog as a create or update sends it. Attributes are
