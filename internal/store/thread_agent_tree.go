@@ -78,11 +78,12 @@ type ThreadAgentTreeRead struct {
 
 // ListThreadAgentTree returns the spawns, sends and asks Root made that its
 // activity rail lists as agents, then under each local spawn those its
-// thread made, in tree order, oldest first among siblings: every spawn, and
-// a send or ask whose answer its caller is still owed a wake for (`notify`)
-// or is parked waiting on (one of Waiting). Each is open, settled at or
-// after SettledSince, or a spawn whose thread is not at rest
-// (agentTargetOpenSQL): a local spawn with open work at any depth below its
+// thread made, in tree order, oldest first among siblings: every spawn, a
+// send that tracks a run, and a send or ask whose answer its caller is
+// still owed a wake for (`notify`) or is parked waiting on (one of
+// Waiting). Each is open, settled at or after SettledSince, or has its run
+// open on a thread not at rest (agentTargetOpenSQL): a local spawn with
+// open work at any depth below its
 // target, its own thread included (its marks, a parked request, a thread
 // among Live, or stored work deeper than the marks count), or a remote
 // spawn whose computer last reported open work or its thread live
@@ -149,21 +150,21 @@ func threadAgentTreeSQL(limit int) string {
 	var seeds, steps []string
 	for _, arm := range agentRowArms("a", agentRootSQL) {
 		seeds = append(seeds, `SELECT r.token, 0, printf('%020d', r.created_at) || r.token || char(1), json_array(r.caller_thread_id),
-           r.kind, r.target_computer_id, r.target_thread_id
+           r.kind, r.target_computer_id, r.target_thread_id, `+spawnActiveSQL("r")+`
       FROM thread_requests r
      WHERE r.token IN (`+arm.first(n)+`)`)
 	}
 	for _, arm := range agentRowArms("a", "tree.t_target") {
 		steps = append(steps, `SELECT r.token, tree.t_depth + 1, tree.t_sort || printf('%020d', r.created_at) || r.token || char(1),
-           json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id
+           json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id, tree.t_active AND `+spawnActiveSQL("r")+`
       FROM tree CROSS JOIN thread_requests r
-     WHERE tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
+     WHERE tree.t_kind = 'spawn' AND (tree.t_active OR `+doneRowSQL("r")+`) AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
        AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
        AND r.token IN (`+arm.first(n)+`)`)
 	}
 	return `WITH RECURSIVE
   ` + agentHeldSQL + `,
-  tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target) AS (
+  tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target, t_active) AS (
     ` + strings.Join(seeds, `
     UNION ALL
     `) + `
@@ -173,7 +174,7 @@ func threadAgentTreeSQL(limit int) string {
     `) + `
     ORDER BY 3 LIMIT ` + n + `)
 SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
-       tree.t_depth = ?4 - 1 AND tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> ''
+       tree.t_depth = ?4 - 1 AND tree.t_kind = 'spawn' AND tree.t_active AND tree.t_computer = '' AND tree.t_target <> ''
          AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
          AND (` + agentRowsUnderSQL("tree.t_target") + `),
        ` + agentTargetOpenSQL("r") + `
@@ -187,20 +188,23 @@ SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
 // `up` climbs from each named row's caller to the root, one spawn a step
 // (idx_thread_requests_spawn_link), prefixing each spawn's part of the
 // listing's sort key: the row is listed when the row and every spawn above
-// it are, within the depth. The cost is the depth per named row.
+// it are, within the depth, and every row below a spawn whose run ended is
+// done (doneRowSQL), as the tree nests them. The cost is the depth per
+// named row.
 var threadAgentNamedRowsSQL = `WITH RECURSIVE
   ` + agentHeldSQL + `,
-  up(token, at, depth, sort) AS (
-    SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1)
+  up(token, at, depth, sort, done) AS (
+    SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1), ` + doneRowSQL("r") + `
       FROM json_each(?6) CROSS JOIN thread_requests r
      WHERE r.token = json_each.value AND ` + agentRowListedSQL("r") + ` AND ` + agentRowKindSQL("r") + `
     UNION ALL
-    SELECT up.token, sp.caller_thread_id, up.depth + 1, printf('%020d', sp.created_at) || sp.token || char(1) || up.sort
+    SELECT up.token, sp.caller_thread_id, up.depth + 1, printf('%020d', sp.created_at) || sp.token || char(1) || up.sort,
+           up.done AND ` + doneRowSQL("sp") + `
       FROM up CROSS JOIN thread_requests sp
      WHERE up.at <> ` + agentRootSQL + ` AND up.depth + 1 < ?4 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.at
-       AND ` + agentRowListedSQL("sp") + `)
+       AND ` + agentRowListedSQL("sp") + ` AND (` + spawnActiveSQL("sp") + ` OR up.done))
 SELECT ` + threadAgentRequestColumns + `, up.depth,
-       up.depth = ?4 - 1 AND ` + agentSpawnLinkSQL("r") + ` AND (` + agentRowsUnderSQL("r.target_thread_id") + `),
+       up.depth = ?4 - 1 AND ` + agentSpawnLinkSQL("r") + ` AND ` + spawnActiveSQL("r") + ` AND (` + agentRowsUnderSQL("r.target_thread_id") + `),
        ` + agentTargetOpenSQL("r") + `
   FROM up CROSS JOIN thread_requests r
  WHERE up.at = ` + agentRootSQL + ` AND r.token = up.token
@@ -323,7 +327,8 @@ const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE
     COALESCE(r.confirmed_at, 0), COALESCE(r.late_confirmed_at, 0), r.answer_agent, r.answer_agent_role,
     r.target_provider, r.nested_open, r.late_delivered_how, r.made_in_thread_id,
     r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, r.answer_cause, r.answer_cause_arg, r.admit_until,
-    r.late_reply_expired, r.ack_owed, r.target_computer_name, r.link_end, ` + wakeItemSQL
+    r.late_reply_expired, r.ack_owed, r.target_computer_name, r.link_end,
+    r.run_base_tool_calls, r.run_base_tokens, r.run_base_turn_ms, r.run_tool_calls, r.run_tokens, r.run_turn_ms, ` + wakeItemSQL
 
 // wakeItemSQL is the caller's row that carried request r's answer: the late
 // reply's confirmed wake, else the first answer's, each while the caller's

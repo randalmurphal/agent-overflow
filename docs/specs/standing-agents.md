@@ -927,9 +927,12 @@ Ruling 36, as built:
   read (v0.0.19) has no workers, and its answer is none. The sidebar, a
   selection, the palette, the archived threads list and the compact
   layout share this confirmation (`ThreadDeleteNote`).
-- A spawn's Agents row follows its worker's lifetime, not only its
-  request's: it is open while its request is open or the thread the spawn
-  made is not at rest, whatever its placement. A thread is at rest when it
+- A spawn's Agents row follows its run, not only its request: it is open
+  while its request is open or the thread the spawn made has not come to
+  rest since, whatever its placement. Once that thread rested, work that
+  anything but its spawner's own request starts in it (the person, another
+  thread's send, its own wake) opens no row of the spawner's
+  ([Agents segment](#agents-segment)). A thread is at rest when it
   has no turn (its latest turn row open, or a turn triage is opening), no queued message, no open prompt (`threadWaitingOn`:
   the session's prompts, and a Codex async question not yet answered or
   dismissed, which reads `blocked` while nothing else runs or is queued,
@@ -946,8 +949,8 @@ Ruling 36, as built:
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
   wakeup or an armed cron job), and no open work below it at any depth:
   a thread whose own work is done is not at rest while a worker below it
-  is not, so every spawn above a live worker is open up to the root,
-  whatever the listing has room to show. One place answers a thread's own
+  is not, so every spawn above a live worker whose run is open is open up
+  to the root, whatever the listing has room to show. One place answers a thread's own
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
@@ -959,7 +962,8 @@ Ruling 36, as built:
 
   A decision that cannot be taken back has one rule of its own: a held
   request settling `finished`
-  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)), and
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)), a
+  request's run ending ([Agents segment](#agents-segment)), and
   the retention sweep clearing a spawn past the floor or its receipt, are
   taken only when the thread in question and every thread a local spawn
   link reaches below it are at rest by their own sources, by the rule
@@ -1298,14 +1302,14 @@ Mechanics, as built:
   never takes rows out of a tree. The
   ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
-  (`SpawnOwnerOf`) and the Agents tree still find the row, so work a
-  reused worker opens after the sweep lists, counts and stops under
-  its owner as before it. On the computer a remote spawn reached, the
+  (`SpawnOwnerOf`) and the Agents tree still find the row, so a reused
+  worker's prompts route to its owner, and its owner's own send to it
+  lists, counts and stops under the owner, as before the sweep. On the computer a remote spawn reached, the
   same sweep keeps the spawn's receipt as `lineage_only` while the
   thread it created exists, its answer and late reply cleared: that
-  receipt is what lets the spawner's computer list and stop the
-  thread's work, so a worker continued there after the floor still
-  lists and stops under its owner. Its token is unknown to the ledger
+  receipt is what lets the spawner's computer reach the thread's work,
+  so the owner's computer still learns when a worker continued there
+  after the floor runs, and its owner can still stop and archive it. Its token is unknown to the ledger
   there as well.
 - `SetThreadGroup` refuses an assistant's thread
   (`ErrStandingAgentGrouped`). The drag payload marks only assistant
@@ -1883,9 +1887,22 @@ renders at every density of the
 rail; the densest rung (`tight`) drops the segments' running pulses and
 closes up their spacing so the row holds at a phone width.
 
-- **Rows.** One row per request the thread made through the thread tools
-  and is still owed: every spawn, and a send or ask with notify armed or a
-  call parked on it. Reminders are wakes, not rows. A row shows the
+- **Rows.** One row per worker of the thread's requests through the thread
+  tools: every spawn, a send to a thread the caller spawned, and any other
+  send or ask with notify armed or a call parked on it. Reminders are
+  wakes, not rows. A row is a run: a stretch of the worker's work from
+  when it left rest for one of the caller's requests until it is at rest
+  again. Several of the caller's requests to one thread are one row
+  (`mergeAgentRuns`): of those listed, the oldest still open, which is the
+  run's first request, else the newest, in the place of the first, with
+  the worker's own rows nested under it. A send made while the caller's
+  run on that thread is open joins the run; a send to a thread the caller
+  spawned after it rested starts a new run, and the earlier run's row
+  stays in Past with its figures. A spawn's run is never reopened: once
+  its thread rested, work anything else starts there (the person, another
+  thread's send, its own wake) is no row, no count and no Stop of the
+  spawner's, and does not move the spawn out of Past. A worker that never
+  came to rest stays in its spawn's run. A row shows the
   target's provider (a paired computer's from its acknowledgement), the
   kind, its title, its computer when it is not this
   one (an ask on this computer shows the thread asked, its title and
@@ -1904,10 +1921,12 @@ closes up their spacing so the row holds at a phone width.
   the holder its prompt went to though that computer names the spawner
   the link came from (`blockedRoutedToThread`), and the spawner collects the
   prompt through its own spawn. A
-  spawn's row says what its thread did as a subagent's row says what its
-  agent did, from the one formatter both use (`AgentMetrics.svelte`),
-  read with the thread's name (`store.ThreadTally`, one probe per
-  thread):
+  row that counts a run, a spawn's or a send's to a thread its caller
+  spawned, says what its worker did in that run as a subagent's row says
+  what its agent did, from the one formatter both use
+  (`AgentMetrics.svelte`), read with the thread's name
+  (`store.ThreadTally`, one probe per thread) less what the worker had
+  done when the run began:
   - Tool calls: each top-level tool call the thread executed, once. A
     fork's copy of its source's history, an import and a restore count
     none of theirs again.
@@ -1934,8 +1953,17 @@ closes up their spacing so the row holds at a phone width.
     of the next turn, or one after the turn has ended, shows the server's
     figure as it is. A Past row's settled age is a separate fact, its
     runtime the tooltip.
-  The counts are live while it works and kept, final, once it rests and
-  under Past. A copy of the thread to another computer starts at zero; a
+  A run's start is recorded with its request (`thread_requests.run_base_*`,
+  the worker's figures then; a spawn's is zero), and its totals when the
+  worker rests after the request settled (`run_tool_calls`, `run_tokens`,
+  `run_turn_ms`), in the write that settles a request on its worker's
+  rest, by the rest pass for one that settled first, or, for a paired
+  computer's worker, from that computer's answer that the thread is at
+  rest (`ThreadAgentRows.Open`). The counts are live while the run is
+  open and kept, final, once it ended and under Past; a later run never
+  moves them. A request written before runs were kept, or to a computer
+  that never reports rest, has no start and counts the worker's whole
+  life, as rows did before. A copy of the thread to another computer starts at zero; a
   move takes the counts with it, and a thread that moves back brings the
   work it did there. Its row is framed again, at most every 2 s, for each new
   tool call, one whose line reads as the last one did included, and for
@@ -1946,7 +1974,8 @@ closes up their spacing so the row holds at a phone width.
   blocked one's what blocks it. A paired computer reports its spawn's
   counts and line with its `agent_rows` answer
   (`ThreadAgentRows.ToolCalls`, `Tokens`, `RuntimeMs`, `TurnOpen`,
-  `TurnStartedAt`, `Activity`), refreshed as that answer is, its open row and its Past
+  `TurnStartedAt`, `Activity`), less the figures it last reported when
+  the run began, refreshed as that answer is, its open row and its Past
   row projected alike; a Past row reads the last answer and asks again,
   a page's worth at most, and one whose computer did not answer or is
   no longer paired says why (`NestedUnavailable`). One that predates
@@ -1961,11 +1990,15 @@ closes up their spacing so the row holds at a phone width.
 - **Nesting.** A spawned thread's own rows nest under its row, as provider
   subagents nest under theirs, four levels deep; a row at the bound whose
   thread has agents of its own says so. A settled spawn stays listed while
-  its worker or anything nested under it at any depth is open, here or, by the last
-  `agent_rows` answer, on a paired computer. The listing holds at most 128
-  rows and says when it left some out.
-- **Lifetime.** An open row stays: its request is open, or its spawn's
-  worker is not at rest ([Owned workers](#owned-workers)). Any other row
+  its run is open and its worker or anything nested under it at any depth is open, here or, by the last
+  `agent_rows` answer, on a paired computer. A spawn whose run ended
+  nests only the rows its run left, each done (settled, nothing open at
+  or below it), never an open one, which is work someone else started
+  since; a send of its caller's with a run open on the same thread nests
+  the worker's rows under its row as an open spawn does. The listing holds at
+  most 128 rows and says when it left some out.
+- **Lifetime.** An open row stays: its request is open, or its run is
+  ([Owned workers](#owned-workers)). Any other row
   stays for 8 s
   (`AGENT_ROW_SETTLED_LINGER_MS`) from when the pane first saw it settled,
   then leaves the open rows; it is in Past from when it settled, and
@@ -1996,7 +2029,8 @@ closes up their spacing so the row holds at a phone width.
   read opens nothing and says the copy could not be opened. A row whose
   thread is on a computer this window is not attached to opens nothing
   and says `<title> is on <computer> this window is not connected to.`
-  A spawn row whose thread is owned and not archived has Show in Sidebar
+  A spawn row, or a send row that counts a run, whose thread is owned and
+  not archived has Show in Sidebar
   (`panel-left-open`) when the window is attached to the computer that
   holds the thread, this one or a paired one, nested rows included
   (`agentThreadBackend`); an assistant's helper, outside every project,
@@ -2038,15 +2072,17 @@ closes up their spacing so the row holds at a phone width.
   that made it was stopped too, and a wake would start it again.
   A Stop of a row on this computer works from the ledger, without reading
   the listing. A send to a thread the caller does not own cancels only the
-  request. A settled row reports it had already finished, unless it is a
-  spawn whose worker, here or on a paired computer, was not at rest or
+  request; one to a thread the caller spawned whose run is open brings
+  the worker to rest, as a spawn's does. A row whose run ended does not
+  reach its worker: what the worker does since is someone else's run. A
+  settled row reports it had already finished, unless its run is open and
+  its worker, here or on a paired computer, was not at rest or
   whose rest stopped anything of it or below it (a turn, background work,
   an agent of its own): that Stop reports the worker stopped, and the
   spawner is told, by an app-written message attributed to the worker
   (send id `worker-stopped:<token>:<n>`), since no settlement tells it:
-  once for each time a Stop stopped the worker, so a worker continued and
-  stopped again is told of again, and Stops racing on one stopping of it
-  make one message. The message says the user stopped it, not the
+  once for each time a Stop stopped the worker, and Stops racing on one
+  stopping of it make one message. The message says the user stopped it, not the
   spawner, and that it is at rest, or names each part the Stop reported it
   could not stop, and that a later message starts it again. The settled
   request and its answer stay as they were; a Stop that finds the worker
@@ -2056,7 +2092,8 @@ closes up their spacing so the row holds at a phone width.
   leaves the rest to run. `Stop All`
   (`StopThreadAgentRows`) does the same for every row the ledger held
   when it was pressed, past the listing's 128 rows too, less a send or
-  ask already settled, and withdraws the incoming messages listed then;
+  ask already settled whose run is not open, and a spawn whose run
+  ended, and withdraws the incoming messages listed then;
   a rest reads every request a spawned thread made, every spawn of it
   settled or not, once its session has ended. A request made after that
   read is not stopped. The Stops of rows
@@ -2114,10 +2151,12 @@ closes up their spacing so the row holds at a phone width.
   tree's size: the tree's shape with each row's depth in one recursive
   read, the listed rows in one, the targets' titles and providers in one,
   their last messages in one. Each thread's rows are read by caller in
-  five arms, open, settled inside the window, local spawns kept for
+  six arms, open, settled inside the window, local spawns kept for
   stored open work, local spawns kept only for a parked call or a worker
   not at rest at or below their targets,
-  and remote spawns with open work, each through its own index and
+  remote spawns with open work, and settled sends whose run is open
+  (`idx_thread_requests_run_open`, which holds only open runs), each
+  kept only while its run is open, each through its own index and
   each taking at most the row limit, and the recursion stops at the limit,
   so the cost follows the listed rows and the depth, not the threads'
   settled history, their open spawns or the open work of threads outside
@@ -2147,7 +2186,8 @@ closes up their spacing so the row holds at a phone width.
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the
   echo confirms the wake), not by a send-id lookup. A tool row's state
   read (`GetThreadRequestStates`) is one statement for all its tokens.
-  A spawn row carries its thread's `placement`, empty for a thread that
+  A spawn row, and a send row that counts a run, carries its thread's
+  `placement`, empty for a thread that
   takes none (outside every project, or a standing agent's own), and
   whether it is `archived`, as the computer that holds the thread
   reported it: this computer's store, or a paired computer's
@@ -2155,8 +2195,8 @@ closes up their spacing so the row holds at a phone width.
   carries neither, nor does a spawn on a computer that does not report
   them.
 - **Past.** Below the open and incoming rows, one Past row with the
-  count of the thread's settled rows beside its label, less spawns whose
-  workers are not at rest; expanding it lists them newest
+  count of the thread's settled rows beside its label, less those whose
+  run is open; expanding it lists them newest
   first, 8 and then 20 more per "Show N more…" ("Show 20 more of M…"
   when more than 20 are left), and once more than 8 show, Show less
   drops every row after the first 8; each row has the open
@@ -2165,8 +2205,8 @@ closes up their spacing so the row holds at a phone width.
   of one row when the thread opens; it reads again after a reconnect or
   a lost frame, on a frame naming the thread and no row the list holds,
   when a row of the thread's own the list shows settles or opens again,
-  so a row that settles or whose worker rests is counted and first in
-  Past without a reload, and one whose worker is continued leaves it, and
+  so a row that settles or whose run ends is counted and first in
+  Past without a reload, and
   on a frame about a settled row the list holds that the open list's next
   read does not supply. A row of the thread's own that an open-list read
   supplies is taken into Past from that read when settled (a late reply
@@ -2189,18 +2229,20 @@ closes up their spacing so the row holds at a phone width.
   stands.
   `ListThreadPastAgentRows` pages the rows,
   flat and newest settled first, ties by token: every spawn and ask it
-  made and its sends with notify armed, with the total. Each row is
-  derived as an open one is. A page is at most 50 rows, read from a
+  made, its sends with notify armed and its sends that counted a run,
+  with the total, one row per request: each run's row with that run's
+  figures. Each row is derived as an open one is. A page is at most 50
+  rows, read from a
   cursor (settled time and token) through
   `idx_thread_requests_caller_settled` in index order, never offset or
   sorted; the total counts the caller's settled rows, which the
-  retention floor bounds, less the spawns whose threads are not at rest,
-  by the listing's own answer. A spawn past the floor is listed as its lineage
+  retention floor bounds, less the rows whose run is open, by the
+  listing's own answer. A spawn past the floor is listed as its lineage
   row, with no answer.
 - **Worker summaries.** `GetThreadWorkerSummary` counts the workers the
   open rows of the thread's listing go to, nested ones included, read as
-  a pane reads it, each thread once however many of its requests are
-  open, and those whose blocked fields say they wait on the user: the
+  a pane reads it, each thread once, and those whose blocked fields say
+  they wait on the user: the
   row's own open and needs-you rule (`ThreadAgentRow.open`, `needsYou`). The
   count reads each row's state and what it is blocked on, and none of
   the text a row shows: no answer head, target names or last messages.

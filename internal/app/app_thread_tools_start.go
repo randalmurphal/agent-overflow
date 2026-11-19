@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -240,6 +241,14 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	// its acceptance are one write: the source row, already accepted, and
 	// the receipt. A paired computer's send is accepted by acceptSend.
 	token := newThreadRequestToken()
+	// A send to a worker at rest starts a run of its own: a run of the
+	// caller's the rest pass has not ended yet ends first, so the send does
+	// not join it.
+	if open, err := t.app.store.CallerRunOpen(caller.ThreadID, "", target.ID); err != nil {
+		log.Printf("thread tools: read the runs of %s on %s: %v", caller.ThreadID, target.ID, err)
+	} else if open {
+		t.app.endRunsAtRest(target.ID)
+	}
 	if _, err := t.app.store.AcceptLocalThreadRequest(store.ThreadRequest{
 		Token:          token,
 		CallerThreadID: caller.ThreadID,

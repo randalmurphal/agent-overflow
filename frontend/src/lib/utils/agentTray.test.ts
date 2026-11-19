@@ -90,9 +90,12 @@ describe('an open row', () => {
 });
 
 describe('agentRowCallers', () => {
-  it('names the thread and the local threads its spawns made, not a paired computer\'s', () => {
-    const rows = [row('local', 0), row('remote', 0, 'running', { computerId: 'peer', threadId: 'far' }), row('send', 0, 'running', { kind: 'send', threadId: 'other' })];
-    expect([...agentRowCallers('me', rows)].sort()).toEqual(['c', 'me', 't-local']);
+  it('names the thread and the local threads its spawn and send rows stand for, not a paired computer\'s or an ask\'s copy', () => {
+    const rows = [
+      row('local', 0), row('remote', 0, 'running', { computerId: 'peer', threadId: 'far' }),
+      row('send', 0, 'running', { kind: 'send', threadId: 'other' }), row('ask', 0, 'running', { kind: 'ask', threadId: 'copy' }),
+    ];
+    expect([...agentRowCallers('me', rows)].sort()).toEqual(['c', 'me', 'other', 't-local']);
   });
 });
 
@@ -140,6 +143,10 @@ describe('agentRowRuntimeMs', () => {
 
   it('is unknown for a row that does not report it', () => {
     expect(agentRowRuntimeMs(row('a', 0, 'running'), 10_000, 0)).toBeNull();
-    expect(agentRowRuntimeMs(row('a', 0, 'running', { kind: 'send', runtimeMs: 4_000 }), 10_000, 0)).toBeNull();
+    expect(agentRowRuntimeMs(row('a', 0, 'running', { kind: 'send' }), 10_000, 0)).toBeNull();
+  });
+
+  it("is a send's run as its row reports it", () => {
+    expect(agentRowRuntimeMs(row('a', 0, 'running', { kind: 'send', runtimeMs: 4_000, turnOpen: true }), 11_000, 10_000)).toBe(5_000);
   });
 });

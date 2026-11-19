@@ -247,6 +247,11 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 			if _, writeErr := a.store.SetThreadRequestNestedOpen(spawn.Token, err == nil && peerListingOpen(listing)); writeErr != nil {
 				return writeErr
 			}
+			if err == nil {
+				if writeErr := a.endRemoteRunsAtRest(spawn, listing); writeErr != nil {
+					return writeErr
+				}
+			}
 			prompts = a.noteRemotePrompts(read.delivery(), origin, spawn, listing, err)
 		}
 		c.mu.Lock()

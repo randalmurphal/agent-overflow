@@ -54,7 +54,11 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 		return ThreadRequestReceipt{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := insertThreadRequestTx(tx, request); err != nil {
+	if request.Kind == ThreadRequestSpawn && request.RunBase == nil {
+		// The spawn's run is its thread's first: it starts from nothing.
+		request.RunBase = &RunFigures{}
+	}
+	if err := insertThreadRequestTx(tx, request, request.Kind == ThreadRequestSend); err != nil {
 		return ThreadRequestReceipt{}, err
 	}
 	stored, err := scanThreadReceipt(tx.QueryRow(insertThreadReceiptSQL+` RETURNING `+threadReceiptColumns, receipt.insertArgs()...))

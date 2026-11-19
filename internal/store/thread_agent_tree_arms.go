@@ -57,10 +57,13 @@ func agentRowArms(alias, caller string) []agentArm {
 	return []agentArm{
 		{"idx_thread_requests_open_created", false, by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL`},
 		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ` + agentWindowSQL},
-		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
+		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL +
+			` AND ` + spawnActiveSQL(alias)},
 		{"sqlite_autoindex_thread_requests_1", false, a + `token IN (SELECT token FROM held WHERE thread = ` + caller + `) AND +` + a + `caller_thread_id = ` + caller +
-			` AND NOT ` + agentOpenBelowSQL(alias) + ` AND +` + a + `settled_at < ` + agentWindowSQL},
-		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
+			` AND NOT ` + agentOpenBelowSQL(alias) + ` AND +` + a + `settled_at < ` + agentWindowSQL + ` AND ` + spawnActiveSQL(alias)},
+		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL + ` AND ` + spawnActiveSQL(alias)},
+		{"idx_thread_requests_run_open", true, by + runOpenSQL(alias) + ` AND ` + a + `kind = 'send' AND ` + a + `lineage_only = 0 AND +` + a + `settled_at < ` + agentWindowSQL +
+			` AND ` + sendTargetOpenSQL(alias)},
 	}
 }
 
@@ -103,17 +106,33 @@ var agentHeldSQL = `held(token, thread) AS (
       FROM held CROSS JOIN thread_requests ps
      WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + `)`
 
-// agentTargetOpenSQL is whether request alias is a spawn whose thread is
-// not at rest as the ledger and the held work know it: a local spawn's link
-// with open work below its target, counted by its marks or held
-// (agentHeldSQL), its own thread's liveness included, or a remote spawn
-// whose computer last reported open work or its thread live. The tree
-// reads keep a settled spawn for it, its row shows its worker for it, and
+// agentTargetOpenSQL is whether request alias has a run open (or tracks
+// none, request_runs.go) on a thread not at rest as the ledger and the held
+// work know it: a local spawn's link with open work below its target,
+// counted by its marks or held (agentHeldSQL), its own thread's liveness
+// included, a remote spawn whose computer last reported open work or its
+// thread live, or a send whose run is open on such a thread. The tree
+// reads keep a settled row for it, its row shows its worker for it, and
 // Past leaves it out for it.
 func agentTargetOpenSQL(alias string) string {
 	a := alias + "."
-	return `((` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held)))
-         OR (` + nestedRemoteSpawnSQL(alias) + `))`
+	return `((` + agentSpawnLinkSQL(alias) + ` AND ` + ownRunOpenSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held)))
+         OR (` + nestedRemoteSpawnSQL(alias) + ` AND ` + ownRunOpenSQL(alias) + `)
+         OR (` + a + `kind = 'send' AND ` + runOpenSQL(alias) + ` AND ` + sendTargetOpenSQL(alias) + `))`
+}
+
+// sendTargetOpenSQL is whether the thread send alias went to is not at rest
+// as agentTargetOpenSQL reads it for that thread's own spawn: its local
+// link counts open work below it or is held, or its remote spawn's
+// computer last reported open work.
+func sendTargetOpenSQL(alias string) string {
+	a := alias + "."
+	return `((` + a + `target_computer_id = '' AND EXISTS (SELECT 1 FROM thread_requests sl
+	           WHERE ` + agentSpawnLinkSQL("sl") + ` AND sl.target_thread_id = ` + a + `target_thread_id
+	             AND (` + agentOpenBelowSQL("sl") + ` OR sl.token IN (SELECT token FROM held))))
+         OR (` + a + `target_computer_id <> '' AND EXISTS (SELECT 1 FROM thread_requests sl
+	           WHERE ` + nestedRemoteSpawnSQL("sl") + ` AND sl.target_computer_id = ` + a + `target_computer_id
+	             AND sl.target_thread_id = ` + a + `target_thread_id)))`
 }
 
 // agentHeldParam encodes the tree reads' ?2, the open work the app holds in
@@ -229,7 +248,8 @@ func agentOpenBelowThreadSQL(thread string) string {
 func agentRowKindSQL(alias string) string {
 	a := alias + "."
 	return a + `kind IN ('spawn','send','ask')
-       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `token IN (SELECT value FROM json_each(?2, '$.waiting')))`
+       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `run_base_tool_calls IS NOT NULL
+            OR ` + a + `token IN (SELECT value FROM json_each(?2, '$.waiting')))`
 }
 
 // agentRowListedSQL is agentRowArms as one predicate, for a row already
@@ -237,6 +257,7 @@ func agentRowKindSQL(alias string) string {
 func agentRowListedSQL(alias string) string {
 	a := alias + "."
 	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `))
-         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)
-         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held))))`
+         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1 AND ` + spawnActiveSQL(alias) + `)
+         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held)) AND ` + spawnActiveSQL(alias) + `)
+         OR (` + a + `kind = 'send' AND ` + a + `lineage_only = 0 AND ` + runOpenSQL(alias) + ` AND ` + sendTargetOpenSQL(alias) + `))`
 }

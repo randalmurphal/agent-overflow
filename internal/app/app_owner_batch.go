@@ -85,6 +85,11 @@ func (a *App) applyOwnerLink(read ownerRead, origin attachedbackends.PeerRead, s
 	if _, err := a.store.SetThreadRequestNestedOpen(state.Token, peerListingOpen(listing)); err != nil {
 		return nil, err
 	}
+	if state.State != nil {
+		if err := a.endRemoteRunsAtRest(spawn, listing); err != nil {
+			return nil, err
+		}
+	}
 	done := a.noteRemotePrompts(read.delivery(), origin, spawn, listing, nil)
 	c := &a.threadAgentPeers
 	c.mu.Lock()

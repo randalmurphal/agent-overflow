@@ -103,9 +103,9 @@ func continueWorker(t *testing.T, a *App, threadID string) {
 // A person's Stop of a worker that answered its spawn and kept working
 // reports the worker stopped and tells its spawner once; the settled spawn
 // and its answer stay as they were, and a repeated Stop finds the worker at
-// rest and tells nothing more. Once the worker is continued, a Stop that
-// stops it again tells the spawner again. A spawn reduced to its lineage is
-// the same.
+// rest and tells nothing more. Once the worker is continued by a person, the
+// work is not the spawn's run: its Stop leaves it and tells nobody. A spawn
+// reduced to its lineage is the same.
 func TestAStopOfAWorkerThatOutlivedItsSpawnTellsTheSpawnerOnce(t *testing.T) {
 	t.Parallel()
 	for name, lineage := range map[string]bool{"settled": false, "lineage": true} {
@@ -146,13 +146,20 @@ func TestAStopOfAWorkerThatOutlivedItsSpawnTellsTheSpawnerOnce(t *testing.T) {
 				return
 			}
 
+			// The Stop brought the worker to rest, which ended the spawn's
+			// run: a person continuing it starts a run of the person's, which
+			// the spawn's Stop leaves running and tells nobody of.
+			f.awaitRunEnded(t, ack.Token)
 			continueWorker(t, f.app, ack.ThreadID)
 			third, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
-			if err != nil || third.Outcome != threadAgentStopped {
-				t.Fatalf("Stop of the continued worker = %+v, %v; want it stopped", third, err)
+			if err != nil || third.Outcome != threadAgentEnded {
+				t.Fatalf("Stop of the continued worker = %+v, %v; want its spawn's run ended", third, err)
 			}
-			if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 2 {
-				t.Fatalf("after stopping the continued worker the spawner was told %d times, want twice", got)
+			if rest, err := f.app.workerUnrest(ack.ThreadID); err != nil || rest.unrest != workerRunning {
+				t.Fatalf("the continued worker reads %+v, %v; want the person's run going on", rest, err)
+			}
+			if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 1 {
+				t.Fatalf("after a Stop of the continued worker the spawner was told %d times, want once", got)
 			}
 		})
 	}

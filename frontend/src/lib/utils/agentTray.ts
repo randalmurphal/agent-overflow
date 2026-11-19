@@ -10,23 +10,24 @@ const SETTLED_STATES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * A spawn's runtime as its row shows it (docs/specs/standing-agents.md,
- * "Agents segment"): the time its thread's turns ran, each ended turn's
- * start to end and the open one's so far, never the time between turns.
- * `runtimeMs` is as the computer holding the thread read it, the open
- * turn's time up to that read included; while a turn is open the row adds
- * its own clock's time since it took the read (`readAt`), so a paired
+ * A worker's runtime as its row shows it (docs/specs/standing-agents.md,
+ * "Agents segment"): the time its turns ran in the row's run, each ended
+ * turn's start to end and the open one's so far, never the time between
+ * turns. `runtimeMs` is as the computer holding the thread read it, the
+ * open turn's time up to that read included; while a turn is open the row
+ * adds its own clock's time since it took the read (`readAt`), so a paired
  * computer's clock is never compared with this one's. Null for a row that
- * does not report it: not a spawn, a spawn whose thread has not run a
- * turn, or one from a computer that predates it, which show the time since
- * the request instead.
+ * does not report it: one that counts no run (an ask, a send to a thread
+ * its caller did not spawn), a run whose thread has not run a turn yet, or
+ * one from a computer that predates it, which show the time since the
+ * request instead.
  */
 export function agentRowRuntimeMs(
-  row: Pick<ThreadAgentRow, 'kind' | 'runtimeMs' | 'turnOpen'>,
+  row: Pick<ThreadAgentRow, 'runtimeMs' | 'turnOpen'>,
   now: number,
   readAt: number,
 ): number | null {
-  if (row.kind !== 'spawn' || (!row.runtimeMs && !row.turnOpen)) return null;
+  if (!row.runtimeMs && !row.turnOpen) return null;
   return (row.runtimeMs ?? 0) + (row.turnOpen ? Math.max(0, now - readAt) : 0);
 }
 
@@ -119,14 +120,15 @@ export function visibleAgentRows(
 
 /**
  * The threads whose requests a listing shows: the listed thread and every
- * thread one of its spawn rows made on this computer. A frame naming any of
- * them can change the listing.
+ * thread on this computer one of its spawn or send rows stands for, whose
+ * own rows nest under it. A frame naming any of them can change the
+ * listing.
  */
 export function agentRowCallers(threadId: string, rows: readonly ThreadAgentRow[]): Set<string> {
   const out = new Set<string>([threadId]);
   for (const row of rows) {
     out.add(row.callerThreadId);
-    if (row.kind === 'spawn' && !row.computerId && row.threadId) out.add(row.threadId);
+    if ((row.kind === 'spawn' || row.kind === 'send') && !row.computerId && row.threadId) out.add(row.threadId);
   }
   return out;
 }

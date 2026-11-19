@@ -37,15 +37,15 @@ type PastAgentRequests struct {
 // A lineage row the retention sweep kept is one of them, with what the
 // sweep cleared gone.
 var pastAgentRowSQL = `r.caller_thread_id = ?1 AND r.settled_at IS NOT NULL
-	   AND (r.kind IN ('spawn','ask') OR (r.kind = 'send' AND r.notify = 1))
+	   AND (r.kind IN ('spawn','ask') OR (r.kind = 'send' AND (r.notify = 1 OR r.run_base_tool_calls IS NOT NULL)))
 	   AND NOT ` + agentTargetOpenSQL("r")
 
 // ListThreadPastAgentRequests lists one page of the requests callerThreadID
 // made that its Agents segment lists as past: settled, newest settled
 // first, ties by token descending, from after the cursor, at most limit (1
 // to MaxPastAgentRowsPage), with the first answerHead bytes of each answer
-// and the count of them all. A settled spawn whose thread is not at rest
-// is still open, and left out: waiting and live are the held work, as
+// and the count of them all. A settled row whose run is open on a thread
+// not at rest is still open, and left out: waiting and live are the held work, as
 // ThreadAgentTreeRead's. The page and the count are one read, through
 // idx_thread_requests_caller_settled, so the page's cost follows its rows;
 // the count's follows the caller's settled history, which the retention

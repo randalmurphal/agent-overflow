@@ -201,12 +201,21 @@ func (s *Store) SettleLocalThreadRequestAtRest(token string, from []string, sett
 			out.AnsweredBySpawned = answeredBySpawned != 0 && receipt.TargetThreadID != ""
 		}
 	}
+	var runs []endedRun
+	if rest != nil && receipt.TargetThreadID != "" {
+		// The thread is at rest: every run on it ends, this request's
+		// among them (request_runs.go).
+		if runs, err = endThreadRunsTx(tx, receipt.TargetThreadID); err != nil {
+			return LocalSettlement{}, fmt.Errorf("%s: end the runs on %s: %w", action, receipt.TargetThreadID, err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return LocalSettlement{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	if out.Collected || receipt.OwnerDeviceID != localReceiptOwner {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
+	s.noteRunsEnded(runs)
 	return out, nil
 }
 

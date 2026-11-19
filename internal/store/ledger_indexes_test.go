@@ -62,12 +62,14 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		"SEARCH a USING INDEX idx_thread_requests_open_below (caller_thread_id=?)",
 		"SEARCH a USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
 		"SEARCH a USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
+		"SEARCH a USING INDEX idx_thread_requests_run_open (caller_thread_id=?)",
 	}
 	under := []string{
 		"SEARCH c USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
 		"SEARCH c USING INDEX idx_thread_requests_open_below (caller_thread_id=?)",
 		"SEARCH c USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
 		"SEARCH c USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
+		"SEARCH c USING INDEX idx_thread_requests_run_open (caller_thread_id=?)",
 		"SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 	}
 	named := []string{
@@ -89,7 +91,8 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		} {
 			name := fmt.Sprintf("%s (analyzed %v)", read.name, analyzed)
 			arm := []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
-				"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"}
+				"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller",
+				"idx_thread_requests_run_open"}
 			assertPlanSearches(t, s, name, "r", []string{"sqlite_autoindex_thread_requests_1"}, read.query, read.args...)
 			assertPlanSearches(t, s, name, "c", arm, read.query, read.args...)
 			// The held work's spawns, a parked request's and a live
@@ -118,7 +121,8 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		assertPlanSearches(t, s, name, "o", []string{"idx_thread_requests_open_created", "idx_thread_requests_nested_caller",
 			"idx_thread_requests_open_below"}, threadAgentStateSQL, stateArgs...)
 		assertPlanSearches(t, s, name, "c", []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
-			"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"},
+			"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller",
+			"idx_thread_requests_run_open"},
 			threadAgentStateSQL, stateArgs...)
 		assertPlanSearches(t, s, name, "ps", []string{"idx_thread_requests_spawn_link"}, threadAgentStateSQL, stateArgs...)
 		if text := planText(explainPlan(t, s, threadAgentStateSQL, stateArgs...)); strings.Contains(text, "settled_at<?") {
@@ -128,7 +132,8 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 	// A Stop All's page reads each arm through its index from its cursor,
 	// with the same parameters, once the planner has statistics.
 	stopArms := []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
-		"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"}
+		"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller",
+		"idx_thread_requests_run_open"}
 	stopRows := threadAgentStopRowsSQL(128)
 	stopArgs := []any{chief, "[]", since, nil, 0, int64(100), "recent-000050"}
 	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "a", stopArms, stopRows, stopArgs...)

@@ -254,11 +254,11 @@ func TestAWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	}
 }
 
-// After a worker's spawn finished, a person continues it from its own
-// composer. Its spawner's row opens again with a frame, the summary and
-// the sidebar's bulk read count it, its approval shows on the row, and
-// once its turn ends the row is back in Past.
-func TestAWorkerContinuedFromItsPaneReopensForItsSpawner(t *testing.T) {
+// After a worker's spawn finished and the worker rested, a person
+// continues it from its own composer. That run is the person's: its
+// spawner lists no row for it, neither the summary nor the sidebar's bulk
+// read counts it, Stop All leaves it running, and the spawn stays in Past.
+func TestAWorkerContinuedFromItsPaneStaysInItsSpawnersPast(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.app.triage.SetPromptRouter(f.app.routeWorkerPrompt)
@@ -273,59 +273,40 @@ func TestAWorkerContinuedFromItsPaneReopensForItsSpawner(t *testing.T) {
 	if worker, err := f.app.store.GetThread(ack.ThreadID); err != nil || worker.Placement != store.PlacementOwned {
 		t.Fatalf("worker %+v, %v; this test assumes an owned worker with no sidebar row", worker, err)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		return !threadToolsLiveState(f.app.triage.LiveStateSnapshotForThread(ack.ThreadID)).ActiveTurn
-	})
-	f.awaitWorker(t, f.caller.ID, ack.Token, "")
-	frames := f.callerAgentFrames(t, f.caller.ID)
+	f.awaitRunEnded(t, ack.Token)
 
 	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	row := f.awaitWorker(t, f.caller.ID, ack.Token, workerRunning)
-	if row.State != threadtools.RequestFinished || !row.open() {
-		t.Fatalf("row = %+v; want the finished spawn open while its worker runs", row)
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(f.app.triage.LiveStateSnapshotForThread(ack.ThreadID)).ActiveTurn
+	})
+	f.app.threadRequestsWG.Wait()
+	if open := f.openRows(t, f.caller.ID); len(open) != 0 {
+		t.Fatalf("open rows %+v; want none for the person's run", open)
 	}
-	f.awaitCallerFrame(t, f.caller.ID, frames)
-	if got := f.workerSummary(t, f.caller.ID); got.Open != 1 {
-		t.Fatalf("summary %+v; want the running worker counted", got)
+	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 0 {
+		t.Fatalf("after the window: %+v; want no row", after.Rows)
 	}
-	if all := allWorkerSummaries(t, f.app); !slices.ContainsFunc(all, func(s ThreadWorkerSummary) bool { return s.ThreadID == f.caller.ID && s.Open == 1 }) {
-		t.Fatalf("summaries %+v; want the spawner in the sidebar's read", all)
-	}
-	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 1 {
-		t.Fatalf("after the window: %+v; want the running worker kept", after.Rows)
-	}
-	approvalOn(t, f.app, ack.ThreadID, "follow-up-approval")
-	row = f.awaitWorker(t, f.caller.ID, ack.Token, workerBlocked)
-	if row.BlockedOn != "approval" || row.BlockedRoutedTo == "" {
-		t.Fatalf("row = %+v; want blocked on the approval routed to the spawner", row)
-	}
-	if !f.app.triage.RejectPrompt(f.caller.ID, openPromptRef(t, f.app.triage, ack.ThreadID, "follow-up-approval")) {
-		t.Fatal("the prompt did not go back to the user")
-	}
-	waitUntil(t, 10*time.Second, func() bool { return f.workerSummary(t, f.caller.ID).NeedYou == 1 })
-	resolveApprovalOn(t, f.app, ack.ThreadID, "follow-up-approval")
-	f.awaitWorker(t, f.caller.ID, ack.Token, workerRunning)
-
-	// Stop All reaches the open row and ends the worker's turn: back to Past.
-	if stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID); err != nil || len(stops) != 1 || stops[0].Token != ack.Token || !stops[0].Interrupted {
-		t.Fatalf("Stop All = %+v, %v; want the worker's row stopped and the worker interrupted", stops, err)
-	}
-	f.awaitWorker(t, f.caller.ID, ack.Token, "")
 	if got := f.workerSummary(t, f.caller.ID); got.Open != 0 || got.NeedYou != 0 {
-		t.Fatalf("summary %+v; want nothing open", got)
+		t.Fatalf("summary %+v; want nothing counted", got)
 	}
 	if all := allWorkerSummaries(t, f.app); slices.ContainsFunc(all, func(s ThreadWorkerSummary) bool { return s.ThreadID == f.caller.ID }) {
-		t.Fatalf("summaries %+v; want the spawner gone from the sidebar's read", all)
+		t.Fatalf("summaries %+v; want the spawner out of the sidebar's read", all)
 	}
 	if past := f.pastTokens(t, f.caller.ID); !slices.Equal(past, []string{ack.Token}) {
-		t.Fatalf("past = %v; want the spawn back", past)
+		t.Fatalf("past = %v; want the spawn kept there", past)
+	}
+	if stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID); err != nil || len(stops) != 0 {
+		t.Fatalf("Stop All = %+v, %v; want nothing of the spawner's to stop", stops, err)
+	}
+	if !threadToolsLiveState(f.app.triage.LiveStateSnapshotForThread(ack.ThreadID)).ActiveTurn {
+		t.Fatal("Stop All interrupted the person's turn")
 	}
 }
 
 // Open requests to one worker, its spawn and two sends with notify, are
-// three rows and one worker.
+// one row and one worker: the spawn's, the run's first request.
 func TestRequestsToOneWorkerCountOnce(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -337,11 +318,11 @@ func TestRequestsToOneWorkerCountOnce(t *testing.T) {
 	f.seedAgentRow(t, "other-send", f.caller.ID, store.ThreadRequestSend, other.ID, true)
 
 	rows := f.agentRows(t, f.caller.ID).Rows
-	if got, want := agentRowTokens(rows), []string{"one-spawn", "one-send-a", "one-send-b", "other-send"}; !slices.Equal(got, want) {
-		t.Fatalf("rows %v; want %v, one per request", got, want)
+	if got, want := agentRowTokens(rows), []string{"one-spawn", "other-send"}; !slices.Equal(got, want) {
+		t.Fatalf("rows %v; want %v, one per worker", got, want)
 	}
 	if got := f.workerSummary(t, f.caller.ID); got.Open != 2 {
-		t.Fatalf("summary %+v; want two workers, the one sent to three times counted once", got)
+		t.Fatalf("summary %+v; want two workers", got)
 	}
 }
 

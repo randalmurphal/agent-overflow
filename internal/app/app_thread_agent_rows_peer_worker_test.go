@@ -295,3 +295,33 @@ func TestARemoteSpawnAtTheBoundSaysItsAgentsNestDeeper(t *testing.T) {
 		}
 	}
 }
+
+// A remote spawn whose run ended nests only the done rows its thread there
+// lists, none open nor under an open one, and takes no state from it: what
+// that thread does now is someone else's run. A send of its caller's with a
+// run open on the same thread carries the thread's rows again.
+func TestARemoteSpawnWhoseRunEndedNestsOnlyDoneRows(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	ended := store.ThreadRequest{Token: "done", CallerThreadID: "lead", Kind: store.ThreadRequestSpawn, TargetComputerID: "elsewhere", TargetThreadID: "there",
+		RunBase: &store.RunFigures{}, RunTotal: &store.RunFigures{ToolCalls: 1}}
+	if !remoteSpawnEnded(ended, nil) {
+		t.Fatal("a spawn whose run ended still carries its worker")
+	}
+	send := store.ThreadAgentRequest{ThreadRequest: store.ThreadRequest{Token: "again", CallerThreadID: "lead", Kind: store.ThreadRequestSend,
+		TargetComputerID: "elsewhere", TargetThreadID: "there", RunBase: &store.RunFigures{ToolCalls: 1}}}
+	if remoteSpawnEnded(ended, []store.ThreadAgentRequest{send}) {
+		t.Fatal("a spawn whose caller has a run open on its thread carries nothing")
+	}
+	listed := []ThreadAgentRow{
+		{Token: "below", Kind: store.ThreadRequestSpawn, State: threadtools.RequestRunning},
+		{Token: "under", Kind: store.ThreadRequestSpawn, State: threadtools.RequestFinished, Depth: 1},
+		{Token: "left", Kind: store.ThreadRequestSpawn, State: threadtools.RequestFinished},
+	}
+	parent := ThreadAgentRow{Token: "done", State: threadtools.RequestFinished}
+	rows, entries := f.app.nestPeerAgentRows(&parent, threadAgentRemoteSlot{depth: 1, spawn: ended, ended: true},
+		threadAgentPeerAnswer{listing: ThreadAgentRows{Rows: listed, Worker: workerRunning}}, threadAgentRowDepth)
+	if len(rows) != 1 || rows[0].Token != "left" || rows[0].Depth != 1 || len(entries) != 1 || parent.Worker != "" || parent.open() {
+		t.Fatalf("nested %v, parent %+v; want the done row alone nested and the row closed", rows, parent)
+	}
+}

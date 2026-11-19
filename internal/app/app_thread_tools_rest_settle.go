@@ -46,6 +46,11 @@ type restPasses struct {
 	// failed are the threads whose held requests' last read of rest failed,
 	// read again by the sweep's next pass (retryFailedRestReads).
 	failed map[string]bool
+	// runsOpen says a request's run may be open on this computer, so a
+	// pass reads them (endRestedRuns); runsSeq counts the changes that set
+	// it, so a pass that found none clears it only if none came meanwhile.
+	runsOpen bool
+	runsSeq  uint64
 }
 
 // restRecovery is what the boot's recovery of rest has still to do: the
@@ -346,7 +351,7 @@ func (a *App) noteRestWaitsMayChange() {
 		r.mu.Unlock()
 		return
 	}
-	if !a.anyReceiptHeldLocked() {
+	if !a.anyReceiptHeldLocked() && !r.rest.runsOpen {
 		r.mu.Unlock()
 		return
 	}
@@ -374,6 +379,7 @@ func (a *App) runRestPasses() {
 	r := &a.threadRequests
 	for {
 		a.settleRestedReceipts()
+		a.endRestedRuns()
 		r.mu.Lock()
 		if !r.rest.again || a.lifeCtx().Err() != nil {
 			r.rest.checking, r.rest.again = false, false
@@ -557,6 +563,8 @@ func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.Threa
 func (a *App) barRestAtBoot() {
 	a.threadRequests.mu.Lock()
 	a.threadRequests.rest.barred = true
+	// A run the last process left open is read once rest is recovered.
+	a.threadRequests.rest.runsOpen = true
 	a.threadRequests.mu.Unlock()
 }
 

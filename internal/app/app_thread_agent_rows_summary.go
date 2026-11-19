@@ -115,7 +115,7 @@ func (row ThreadAgentRow) worker() string {
 }
 
 // open reports whether the row is open: its request has not settled, or
-// the thread its spawn made is not at rest.
+// its run is open on a thread not at rest.
 func (row ThreadAgentRow) open() bool {
 	if row.Worker != "" {
 		return true

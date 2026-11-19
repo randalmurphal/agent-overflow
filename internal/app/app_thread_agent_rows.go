@@ -86,8 +86,10 @@ type ThreadAgentRow struct {
 	// Placement and Archived are the placement and archive state of the
 	// thread a spawn made, as the computer that holds the thread reported
 	// it: this one's store for a local spawn, the agent_rows answer of a
-	// paired computer for one there, nested rows included. Empty and false
-	// for every other row and from a computer that does not report them.
+	// paired computer for one there, nested rows included. A send to a
+	// thread its caller spawned, which counts a run of that worker, carries
+	// them too. Empty and false for every other row and from a computer that
+	// does not report them.
 	// Placement is empty too for a thread that takes none (an assistant's
 	// helper, outside every project), so no sidebar row is offered for it.
 	Placement string `json:"placement,omitempty"`
@@ -100,11 +102,12 @@ type ThreadAgentRow struct {
 	// replied, finished, errored, cancelled, interrupted, expired, refused,
 	// and the accepted and unconfirmed states before the work starts.
 	State string `json:"state"`
-	// Worker is why the thread a spawn made is not at rest, whatever State
-	// says: blocked, running, queued, or waiting on what it started
-	// (background work, a loop, watch or reminder, a provider timer) or on
-	// its own workers, open work at any depth below it; empty while it is
-	// at rest, and for every other kind. A spawn whose worker is not at
+	// Worker is why the thread a spawn made, or a send's run is on, is not
+	// at rest while the row's run is open, whatever State says: blocked,
+	// running, queued, or waiting on what it started (background work, a
+	// loop, watch or reminder, a provider timer) or on its own workers,
+	// open work at any depth below it; empty while it is at rest, once the
+	// run ended, and for every other row. A row whose worker is not at
 	// rest is open: one that replied and keeps working shows its reply and
 	// this.
 	Worker string `json:"worker,omitempty"`
@@ -397,7 +400,7 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		// A remote spawn at the last level still reads its thread's state;
 		// it nests none of its rows.
 		if request.RemoteListingReach() {
-			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request})
+			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request, ended: remoteSpawnEnded(*request, requests)})
 		}
 	}
 	answers := a.remoteAgentAnswers(ctx, remote, maxDepth, peers)
@@ -411,10 +414,28 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		// row says (NestedHidden).
 		out.Hidden = out.Hidden || (remote[i].depth < maxDepth && answers[i].listing.Hidden)
 	}
+	out.Rows, entries = mergeAgentRuns(out.Rows, entries)
 	if len(out.Rows) > threadAgentRowLimit {
 		out.Rows, entries, out.Hidden = out.Rows[:threadAgentRowLimit], entries[:threadAgentRowLimit], true
 	}
 	return out, entries, nil
+}
+
+// remoteSpawnEnded reports whether a paired computer's spawn no longer
+// carries its worker into the listing, as the store reads a local spawn's
+// link (spawnActiveSQL): its own run ended, and none of its caller's sends
+// there listed beside it has a run open on the same thread.
+func remoteSpawnEnded(spawn store.ThreadRequest, requests []store.ThreadAgentRequest) bool {
+	if !spawn.RunEnded() {
+		return false
+	}
+	for _, request := range requests {
+		if request.Kind == store.ThreadRequestSend && request.RunOpen() && request.CallerThreadID == spawn.CallerThreadID &&
+			request.TargetComputerID == spawn.TargetComputerID && request.TargetThreadID == spawn.TargetThreadID {
+			return false
+		}
+	}
+	return true
 }
 
 // withholdApprovalDetail clears what an approval asks from the listing's
