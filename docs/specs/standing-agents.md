@@ -1983,11 +1983,16 @@ closes up their spacing so the row holds at a phone width.
   computer's worker, from that computer's answer that the thread is at
   rest (`ThreadAgentRows.Open`). The counts are live while the run is
   open and kept, final, once it ended and under Past; a later run never
-  moves them. A request written before runs were kept, or to a computer
-  that never reports rest, has no start and counts the worker's whole
-  life, as rows did before. A copy of the thread to another computer starts at zero; a
-  move takes the counts with it, and a thread that moves back brings the
-  work it did there. Its row is framed again, at most every 2 s, for each new
+  moves them. A run on a computer that never reports rest counts the
+  worker's whole life. A spawn written before runs were kept, here or on
+  its receipt on a paired computer, has no run: it is open until it
+  settles, counting the worker's whole life as rows did before, and once
+  settled it is closed for good, whatever its worker does later. It then
+  holds no thread from rest, routes no prompt to its spawner, is no row,
+  count or Stop, and its Past row shows no figures, which it never
+  recorded. The upgrade rewrites no row for it. A copy of the thread to
+  another computer starts at zero; a move takes the counts with it, and a
+  thread that moves back brings the work it did there. Its row is framed again, at most every 2 s, for each new
   tool call, one whose line reads as the last one did included, and for
   its usage's progress. A running target's
   latest top-level tool call is its activity, beside the counts on a

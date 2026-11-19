@@ -346,10 +346,12 @@ func TestAStopOfASettledSpawnStopsItsWorkerBelowAndTellsTheSpawner(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
+		row := store.ThreadRequest{
 			Token: "top-spawned-the-caller", CallerThreadID: top.ID, Kind: store.ThreadRequestSpawn,
 			TargetThreadID: pair.caller.ID, State: store.ThreadRequestAccepted,
-		}); err != nil {
+		}
+		seedSpawnRun(pair.source, &row)
+		if err := pair.source.store.InsertThreadRequest(row); err != nil {
 			t.Fatal(err)
 		}
 		settleSpawnByHand(t, pair.source.store, "top-spawned-the-caller")

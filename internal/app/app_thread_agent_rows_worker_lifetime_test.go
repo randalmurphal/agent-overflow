@@ -484,8 +484,9 @@ func TestALiveThreadOnlySentToIsNoRow(t *testing.T) {
 	})
 }
 
-// A worker leaves rest and comes back to it, again: each move is framed
-// and read. Its session dying mid-turn rests it.
+// A worker in its spawn's run leaves rest and comes back to it, again:
+// each move is framed and read. Its session dying mid-turn rests it. Once
+// the rest ends the run, its next work is no row of its spawner's.
 func TestAWorkerMovesBetweenRestAndWork(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -514,6 +515,20 @@ func TestAWorkerMovesBetweenRestAndWork(t *testing.T) {
 	f.awaitWorker(t, f.caller.ID, "moving-spawn", "")
 	if rows := f.agentRows(t, f.caller.ID).Rows; len(rows) != 0 {
 		t.Fatalf("after the session died rows %+v; want none", rows)
+	}
+
+	// The rest ends the run.
+	f.app.runEndsHeldForTest.Delete(worker.ID)
+	f.app.noteRestWaitsMayChange()
+	f.awaitRunEnded(t, "moving-spawn")
+	approvalOn(t, f.app, worker.ID, "after-the-run")
+	waitUntil(t, 10*time.Second, func() bool { return len(f.app.triage.PendingInteractiveRequests(worker.ID).Approvals) == 1 })
+	f.app.threadRequestsWG.Wait()
+	if open := f.openRows(t, f.caller.ID); len(open) != 0 {
+		t.Fatalf("after the run ended, open rows %+v; want none", open)
+	}
+	if got := f.workerSummary(t, f.caller.ID); got.Open != 0 {
+		t.Fatalf("after the run ended, summary %+v; want nothing counted", got)
 	}
 }
 

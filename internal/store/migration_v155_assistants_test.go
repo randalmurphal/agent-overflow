@@ -629,9 +629,14 @@ func TestUpgradeSupersededSpawnOwnsNothing(t *testing.T) {
 	owners := func(when, want string) {
 		t.Helper()
 		for _, id := range []string{"w", "tie"} {
-			spawner, _, found, err := localSpawnerOf(s, id)
-			if err != nil || spawner != want || found != (want != "") {
-				t.Errorf("%s: SpawnOwnerOf(%s) = %q, %v, %v; want %q", when, id, spawner, found, err, want)
+			linked, err := queryIDs(s.db, `SELECT link.caller_thread_id FROM thread_requests AS link
+				 WHERE `+agentSpawnLinkSQL("link")+` AND link.target_thread_id = ?`, id)
+			if err != nil || !slices.Equal(linked, []string{want}) && !(want == "" && len(linked) == 0) {
+				t.Errorf("%s: %s's link names %q, %v; want %q", when, id, linked, err, want)
+			}
+			// Spawns that settled before runs were kept route no prompt.
+			if spawner, _, found, err := localSpawnerOf(s, id); err != nil || found {
+				t.Errorf("%s: SpawnOwnerOf(%s) = %q, %v, %v; want nobody", when, id, spawner, found, err)
 			}
 			row, err := s.GetThread(id)
 			if err != nil || row.SpawnedByThreadID != want {

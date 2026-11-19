@@ -80,7 +80,7 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	settleAgentRequest(t, s, "l-c", 200)
 	seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 150)
 	if err := s.InsertThreadRequest(ThreadRequest{Token: "remote", CallerThreadID: "lead", Kind: ThreadRequestSpawn,
-		TargetComputerID: "desk", TargetThreadID: "far", State: ThreadRequestRunning, CreatedAt: 101, UpdatedAt: 101}); err != nil {
+		TargetComputerID: "desk", TargetThreadID: "far", State: ThreadRequestRunning, CreatedAt: 101, UpdatedAt: 101, RunBase: &RunFigures{}}); err != nil {
 		t.Fatal(err)
 	}
 	settleAgentRequest(t, s, "remote", 200)
@@ -461,7 +461,7 @@ func TestRetentionKeepsSpawnReceiptsWithOpenWorkUnderThem(t *testing.T) {
 	settleAgentRequest(t, s, "nests-spawn", 200)
 	seedAgentRequest(t, s, "deep-open", "nests-child", ThreadRequestAsk, "x", true, 110)
 	if err := s.InsertThreadRequest(ThreadRequest{Token: "far-remote", CallerThreadID: "far", Kind: ThreadRequestSpawn,
-		TargetComputerID: "other", TargetThreadID: "there", State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100}); err != nil {
+		TargetComputerID: "other", TargetThreadID: "there", State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100, RunBase: &RunFigures{}}); err != nil {
 		t.Fatal(err)
 	}
 	settleAgentRequest(t, s, "far-remote", 200)

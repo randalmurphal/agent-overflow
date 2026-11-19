@@ -216,3 +216,45 @@ func TestAPairedComputersRunIsKeptOnItsReceipts(t *testing.T) {
 		t.Fatalf("OpenRunThreads = %v %v, %v; want no run open", threads, any, err)
 	}
 }
+
+// A spawn that tracks no run, written before v159, here or as a paired
+// computer's link receipt, is open until it settles and closed once it
+// has: RunOpen, RunEnded, ownRunOpenSQL and linkRunOpenSQL read it alike,
+// and so does SpawnOwnerOf, which routes the worker's prompts by them.
+func TestASpawnThatTracksNoRunIsOpenUntilItSettles(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "w", "far"} {
+		mustCreateThread(t, s, id)
+	}
+	insertRun(t, s, "old", ThreadRequestSpawn, "", "w", nil, 10)
+	acceptLink(t, s, "old-link", "dev", "far", 10)
+	mustExec(t, s.db, `UPDATE thread_request_receipts SET run_open = NULL WHERE token = 'old-link'`)
+	read := func(when string, open bool) {
+		t.Helper()
+		row := rawThreadRequest(t, s, "old")
+		if row.RunBase != nil || row.RunOpen() != open || row.RunEnded() == open {
+			t.Fatalf("%s: RunOpen %v RunEnded %v (base %v); want open %v", when, row.RunOpen(), row.RunEnded(), row.RunBase, open)
+		}
+		var sqlOpen bool
+		if err := s.db.QueryRow(`SELECT ` + ownRunOpenSQL("r") + ` FROM thread_requests r WHERE token = 'old'`).Scan(&sqlOpen); err != nil || sqlOpen != open {
+			t.Fatalf("%s: ownRunOpenSQL = %v, %v; want %v", when, sqlOpen, err, open)
+		}
+		if err := s.db.QueryRow(`SELECT ` + linkRunOpenSQL("l") + ` FROM thread_request_receipts l WHERE token = 'old-link'`).Scan(&sqlOpen); err != nil || sqlOpen != open {
+			t.Fatalf("%s: linkRunOpenSQL = %v, %v; want %v", when, sqlOpen, err, open)
+		}
+		for _, thread := range []string{"w", "far"} {
+			if _, found, err := s.SpawnOwnerOf(thread); err != nil || found != open {
+				t.Fatalf("%s: SpawnOwnerOf(%s) found %v, %v; want %v", when, thread, found, err, open)
+			}
+		}
+	}
+	read("unsettled", true)
+	settleAgentRequest(t, s, "old", 20)
+	if _, err := s.SettleLocalThreadRequest("old-link", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptReplied, Answer: []byte("done"), AnswerKind: ThreadAnswerReply,
+	}, ThreadRequestReplied); err != nil {
+		t.Fatal(err)
+	}
+	read("settled", false)
+}

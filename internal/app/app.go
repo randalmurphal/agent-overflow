@@ -845,6 +845,11 @@ type App struct {
 	// and before the decision is written (readRest), so a test can admit
 	// work there.
 	restReadForTest func(roots []string)
+	// runEndsHeldForTest names threads whose runs no rest ends
+	// (endRunsAtRest), keyed by thread id: a test that settles a spawn while
+	// its worker is at rest and then gives the worker work in that run holds
+	// the state the rest pass leaves only at the worker's next rest.
+	runEndsHeldForTest sync.Map
 	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
 	// sleeps until the channel it returns for the delay asked sends
 	// (sweepSleep).

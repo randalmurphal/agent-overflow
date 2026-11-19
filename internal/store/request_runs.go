@@ -28,8 +28,12 @@ import (
 //     (EndRemoteThreadRequestRuns). Its totals are the tally then less the
 //     base, and never change afterward.
 //
-// A row with no base tracks no run: one written before v159, or one whose
-// base could not be read. It reads as rows did before.
+// A row with no base tracks no run: one written before v159, or a request
+// that waits for no worker's rest. A spawn that tracks none, written before
+// v159, is open until it settles and closed for good once it has, whatever
+// its worker does later; no other request without a base has a run. The
+// rule is RunOpen and RunEnded in Go and ownRunOpenSQL in SQL; the upgrade
+// rewrites no row for it.
 
 // RunFigures is what a worker did: top-level tool calls, its own tokens and
 // the time its turns ran.
@@ -40,11 +44,23 @@ type RunFigures struct {
 }
 
 // RunEnded reports whether the request's run ended: its worker came to rest
-// after it, and its totals are kept.
-func (r ThreadRequest) RunEnded() bool { return r.RunBase != nil && r.RunTotal != nil }
+// after it, and its totals are kept, or it is a spawn that tracks no run
+// and has settled, which keeps no totals.
+func (r ThreadRequest) RunEnded() bool {
+	if r.RunBase == nil {
+		return r.Kind == ThreadRequestSpawn && r.SettledAt != 0
+	}
+	return r.RunTotal != nil
+}
 
-// RunOpen reports whether the request tracks a run that has not ended.
-func (r ThreadRequest) RunOpen() bool { return r.RunBase != nil && r.RunTotal == nil }
+// RunOpen reports whether the request's run is open: it tracks one that has
+// not ended, or it is a spawn that tracks none and has not settled.
+func (r ThreadRequest) RunOpen() bool {
+	if r.RunBase == nil {
+		return r.Kind == ThreadRequestSpawn && r.SettledAt == 0
+	}
+	return r.RunTotal == nil
+}
 
 // requestRunColumns is the run's six columns in scan order.
 const requestRunColumns = `run_base_tool_calls, run_base_tokens, run_base_turn_ms, run_tool_calls, run_tokens, run_turn_ms`
@@ -64,12 +80,14 @@ func runOpenSQL(alias string) string {
 	return alias + `.run_base_tool_calls IS NOT NULL AND ` + alias + `.run_tool_calls IS NULL`
 }
 
-// ownRunOpenSQL matches a request whose own run is open or that tracks
-// none, which reads as before: a spawn of it is open while its worker is
-// not at rest. A spawn whose run ended is closed, whatever its worker does
-// later.
+// ownRunOpenSQL matches a spawn alias whose own run is open, as RunOpen
+// reads it: its run has not ended, or it tracks none and has not settled.
+// A spawn whose run ended, or that tracks none and settled, is closed,
+// whatever its worker does later.
 func ownRunOpenSQL(alias string) string {
-	return `(` + alias + `.run_base_tool_calls IS NULL OR ` + alias + `.run_tool_calls IS NULL)`
+	a := alias + "."
+	return `((` + a + `run_base_tool_calls IS NULL AND ` + a + `settled_at IS NULL) OR (` +
+		a + `run_base_tool_calls IS NOT NULL AND ` + a + `run_tool_calls IS NULL))`
 }
 
 // callerRunOpenSQL matches a spawn whose caller has a later run open on its
@@ -84,7 +102,7 @@ func callerRunOpenSQL(alias string) string {
 }
 
 // spawnActiveSQL matches a spawn whose link carries its worker into its
-// caller's listing: its own run is open (or untracked), or its caller has a
+// caller's listing: its own run is open (ownRunOpenSQL), or its caller has a
 // later run open on the worker. A spawn whose run ended, its worker since
 // continued by someone else, is not kept for that work and nests only done
 // rows (doneRowSQL).

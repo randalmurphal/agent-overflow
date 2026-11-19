@@ -6,7 +6,7 @@ package store
 // `run_base_tokens`, `run_base_turn_ms`, from thread_tallies), and what the
 // run did once the worker came to rest after it (`run_tool_calls`,
 // `run_tokens`, `run_turn_ms`). A base with no total is a run still open; a
-// row with no base is untracked and reads as rows did before (request_runs.go).
+// row with no base tracks no run (request_runs.go says how such a spawn reads).
 // idx_thread_requests_run_open holds only the open runs, which the Agents
 // listing, a new request's base and the rest pass read by caller.
 //

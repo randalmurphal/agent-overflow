@@ -33,8 +33,9 @@ type threadAgentFigures struct {
 
 // runFigures sets what request's run did from live, the worker's figures
 // over its life: the kept totals once the run ended, live less the run's
-// start while it is open, and live as it is for a request that tracks no
-// run, as rows did before runs were kept.
+// start while it is open, live as it is for a spawn that tracks no run
+// while it is open, as rows did before runs were kept, and none once such a
+// spawn settled: it recorded no figures.
 func (row *ThreadAgentRow) runFigures(request store.ThreadRequest, live threadAgentFigures) {
 	row.TurnOpen, row.TurnStartedAt = false, 0
 	switch {
@@ -47,8 +48,11 @@ func (row *ThreadAgentRow) runFigures(request store.ThreadRequest, live threadAg
 		row.ToolCalls = max(0, live.toolCalls-base.ToolCalls)
 		row.Tokens = max(0, live.tokens-base.Tokens)
 		row.RuntimeMs = max(0, live.runtimeMs-base.TurnMs)
-	default:
+	case request.RunOpen():
 		row.ToolCalls, row.Tokens, row.RuntimeMs = live.toolCalls, live.tokens, live.runtimeMs
+	default:
+		row.ToolCalls, row.Tokens, row.RuntimeMs = 0, 0, 0
+		return
 	}
 	if live.turnOpen {
 		row.TurnOpen, row.TurnStartedAt = true, live.turnStartedAt
@@ -288,6 +292,9 @@ func (a *App) endRunsAtRest(threadID string) {
 	barred := a.threadRequests.rest.barred
 	a.threadRequests.mu.Unlock()
 	if barred || a.resting.holds(threadID) {
+		return
+	}
+	if _, held := a.runEndsHeldForTest.Load(threadID); held {
 		return
 	}
 	read, err := a.readRest([]string{threadID})

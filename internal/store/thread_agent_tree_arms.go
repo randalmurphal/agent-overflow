@@ -108,8 +108,8 @@ var agentHeldSQL = `held(token, thread) AS (
       FROM held CROSS JOIN thread_requests ps
      WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `)`
 
-// agentTargetOpenSQL is whether request alias has a run open (or tracks
-// none, request_runs.go) on a thread not at rest as the ledger and the held
+// agentTargetOpenSQL is whether request alias has a run open
+// (ownRunOpenSQL, runOpenSQL) on a thread not at rest as the ledger and the held
 // work know it: a local spawn's link with open work below its target,
 // counted by its marks or held (agentHeldSQL), its own thread's liveness
 // included, a remote spawn whose computer last reported open work or its

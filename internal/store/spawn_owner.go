@@ -23,8 +23,8 @@ type SpawnOwner struct {
 // thread whose spawn made it, while a run that thread started on it is open
 // (docs/specs/standing-agents.md, "Owned workers"). A run is its spawn's,
 // or a later send's of the same thread, from when it was made until the
-// worker is at rest after it; one that tracks none, made before runs were
-// kept, reads open. In any other run, the person's or one another thread's
+// worker is at rest after it; a spawn that tracks none, made before runs
+// were kept, reads open until it settles (ownRunOpenSQL). In any other run, the person's or one another thread's
 // send started, the prompt is the person's, as for a thread nobody
 // spawned. An open prompt keeps the worker from rest, so the run it was
 // asked in stays open until it is answered.

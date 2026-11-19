@@ -284,26 +284,6 @@ func TestAWorkerThatNeverRestedKeepsItsSpawnsRow(t *testing.T) {
 	}
 }
 
-// A request written before runs were kept has no start: its row reads as
-// rows did, a spawn reopened by its worker's later work with its life's
-// figures.
-func TestARequestWithNoRunReadsAsBefore(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	f.watchAgentRows()
-	worker := f.settledSpawn(t, "old-spawn", f.caller.ID)
-	if row := f.request(t, "old-spawn"); row.RunBase != nil {
-		t.Fatalf("seeded row %+v; this test needs one with no run", row)
-	}
-	workerTurn(t, f.app, worker.ID, "t0", 2, 60)
-	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: worker.ID + ":t1"}, nil)
-	workerToolCall(t, f.app, worker.ID, "t1-a", "make test")
-	row := f.awaitWorker(t, f.caller.ID, "old-spawn", workerRunning)
-	if row.ToolCalls != 3 || row.Tokens != 60 {
-		t.Fatalf("row %+v; want the worker's life, three calls and 60 tokens", row)
-	}
-}
-
 // A send to a rested worker that lands before the rest pass ended its
 // spawn's run ends that run itself, so the send starts its own run at the
 // worker's figures instead of joining the spawn's.
