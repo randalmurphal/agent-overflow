@@ -28,15 +28,11 @@ import (
 // is applied only to the download its page owns, and one naming an id
 // another page owns is refused.
 
-// hostedDownloadID is a launcher download id, converted once as a report
-// enters (acceptSnapshot).
-type hostedDownloadID string
-
 // hostedDownloadKey is a hosted download's identity: the page that
 // reported it and the launcher's id for it.
 type hostedDownloadKey struct {
 	page ids.PageHandle
-	id   hostedDownloadID
+	id   downloadID
 }
 
 // hostedPageState is where a hosted page stands in the launcher's reports.
@@ -143,8 +139,8 @@ type hostedPageRecord struct {
 	profile profileHandle
 	// downloads are the page's running downloads, admitted or with their
 	// admission in flight; ended its ended or refused ids, oldest first.
-	downloads map[hostedDownloadID]*hostedDownload
-	ended     []hostedDownloadID
+	downloads map[downloadID]*hostedDownload
+	ended     []downloadID
 	// retired is closed once the page's lane retired it, or at Stop.
 	retired chan struct{}
 }
@@ -166,7 +162,7 @@ type hostedPages struct {
 	records map[ids.PageHandle]*hostedPageRecord
 	// owners is the page of each download id a record holds, running or
 	// ended, so a report naming another page's id is refused.
-	owners map[hostedDownloadID]ids.PageHandle
+	owners map[downloadID]ids.PageHandle
 	lanes  *reportLanes
 	// process runs one accepted report on its lane; watch starts the
 	// status loop, which runs until stop closes or no download runs.
@@ -179,7 +175,7 @@ type hostedPages struct {
 func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{})) *hostedPages {
 	return &hostedPages{
 		records: make(map[ids.PageHandle]*hostedPageRecord),
-		owners:  make(map[hostedDownloadID]ids.PageHandle),
+		owners:  make(map[downloadID]ids.PageHandle),
 		lanes:   newReportLanes(),
 		process: process,
 		watch:   watch,
@@ -187,7 +183,7 @@ func newHostedPages(process func(context.Context, *acceptedWork), watch func(sto
 }
 
 func newPageRecord(state hostedPageState, opener ids.PageHandle, profile profileHandle) *hostedPageRecord {
-	return &hostedPageRecord{state: state, opener: opener, profile: profile, downloads: make(map[hostedDownloadID]*hostedDownload), retired: make(chan struct{})}
+	return &hostedPageRecord{state: state, opener: opener, profile: profile, downloads: make(map[downloadID]*hostedDownload), retired: make(chan struct{})}
 }
 
 // addOpen records page, which the engine created and bound, as open. A
@@ -255,7 +251,7 @@ const (
 // it checks the download's owner, starts a download its page admits, and
 // queues the snapshot on the page's lane.
 func (p *hostedPages) acceptSnapshot(page ids.PageHandle, report webview2host.DownloadReport) snapshotReceipt {
-	id := hostedDownloadID(report.ID)
+	id := downloadID(report.ID)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
@@ -327,7 +323,7 @@ func (p *hostedPages) acceptEnd(page ids.PageHandle, kind acceptedKind, crash st
 // before its close or discard: it answers the downloads the Manager
 // admitted that still run, and finish, which the caller calls once it has
 // settled them, to wake whoever waits for the page to go.
-func (p *hostedPages) retire(page ids.PageHandle) (running []hostedDownloadID, finish func()) {
+func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
@@ -347,13 +343,13 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []hostedDownloadID, f
 	return running, func() { close(r.retired) }
 }
 
-func (p *hostedPages) dropOwnerLocked(id hostedDownloadID, page ids.PageHandle) {
+func (p *hostedPages) dropOwnerLocked(id downloadID, page ids.PageHandle) {
 	if p.owners[id] == page {
 		delete(p.owners, id)
 	}
 }
 
-func (r *hostedPageRecord) endedHas(id hostedDownloadID) bool {
+func (r *hostedPageRecord) endedHas(id downloadID) bool {
 	for _, ended := range r.ended {
 		if ended == id {
 			return true
@@ -379,6 +375,6 @@ func (p *hostedPages) stopAll() func() {
 		close(r.retired)
 	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)
-	p.owners = make(map[hostedDownloadID]ids.PageHandle)
+	p.owners = make(map[downloadID]ids.PageHandle)
 	return p.stopLanesLocked()
 }

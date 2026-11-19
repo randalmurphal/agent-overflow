@@ -4,6 +4,7 @@ package browser
 
 import (
 	"errors"
+	"fmt"
 
 	"agent-overflow/internal/browser/destination"
 )
@@ -21,7 +22,7 @@ var (
 
 // stageFor names download id's staged file (stagedFile) and answers it
 // with its claim, which release gives up (profileOptions.ReleaseStaged).
-func stageFor(stage func(string) (string, error), release func(string), id string) destination.Staged {
+func stageFor(stage func(downloadID) (string, error), release func(downloadID), id downloadID) destination.Staged {
 	path, err := stagedFile(stage, id)
 	if err != nil {
 		return destination.Staged{Err: err}
@@ -36,11 +37,17 @@ func stageFor(stage func(string) (string, error), release func(string), id strin
 // stagedFile names the staged file download id is written to
 // (profileOptions.StageDownload). It does file system work, so it runs off
 // the UI thread.
-func stagedFile(stage func(string) (string, error), id string) (string, error) {
+func stagedFile(stage func(downloadID) (string, error), id downloadID) (string, error) {
 	if stage == nil {
 		return "", errDownloadsNotStaged
 	}
 	return stage(id)
+}
+
+// downloadHandle is the engine id of the native download numbered n,
+// which its start and every report of it name.
+func downloadHandle(n uint64) downloadID {
+	return downloadID(fmt.Sprintf("dl-%d", n))
 }
 
 // nativeCancel is how a native download's cancel on the UI thread ended.

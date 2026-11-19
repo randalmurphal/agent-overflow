@@ -64,7 +64,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 	var enter, release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(unblock) }) })
 	stage := profile.stage
-	profile.stage = func(id string) (string, error) {
+	profile.stage = func(id downloadID) (string, error) {
 		enter.Do(func() { close(entered) })
 		<-unblock
 		return stage(id)
@@ -140,18 +140,18 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 		t.Fatalf("look the page up: %v", err)
 	}
 	profile := p.driver.(*webkitPage).profile
-	entered, unblock := make(chan string, 1), make(chan struct{})
+	entered, unblock := make(chan downloadID, 1), make(chan struct{})
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(unblock) }) })
 	stage, releaseStaged := profile.stage, profile.releaseStaged
-	profile.stage = func(id string) (string, error) {
+	profile.stage = func(id downloadID) (string, error) {
 		entered <- id
 		<-unblock
 		return stage(id)
 	}
 	var mu sync.Mutex
-	var released []string
-	profile.releaseStaged = func(id string) {
+	var released []downloadID
+	profile.releaseStaged = func(id downloadID) {
 		mu.Lock()
 		released = append(released, id)
 		mu.Unlock()
@@ -161,7 +161,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
-	var id string
+	var id downloadID
 	select {
 	case id = <-entered:
 	case <-ctx.Done():
@@ -179,7 +179,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 	release.Do(func() { close(unblock) })
 	for deadline := time.Now().Add(30 * time.Second); ; {
 		mu.Lock()
-		got := append([]string(nil), released...)
+		got := append([]downloadID(nil), released...)
 		mu.Unlock()
 		if len(got) > 0 {
 			if len(got) != 1 || got[0] != id {

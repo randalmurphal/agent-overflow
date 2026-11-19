@@ -192,7 +192,7 @@ type engineProfile interface {
 	// already let the download go and its terminal report is on the way.
 	// Any other error means the engine refused or could not be asked, and
 	// the download may still be running.
-	CancelDownload(id string) error
+	CancelDownload(id downloadID) error
 	// Dispose destroys the profile and every page still in it.
 	Dispose(ctx context.Context) error
 }
@@ -214,12 +214,12 @@ type profileOptions struct {
 	// other engines. It does file system work, so a native engine calls it
 	// off its UI thread and completes the download's destination there
 	// afterwards (webkit_downloads.go).
-	StageDownload func(id string) (string, error)
+	StageDownload func(id downloadID) (string, error)
 	// ReleaseStaged gives up the staged file StageDownload named for
 	// download id when no download start took it: the engine's decision
 	// for the download ended without one (destination.Settle). Nil when
 	// StageDownload is.
-	ReleaseStaged func(id string)
+	ReleaseStaged func(id downloadID)
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
@@ -500,7 +500,7 @@ type enginePopup struct {
 // downloadStart is an engine download beginning in one page's frame.
 type downloadStart struct {
 	Frame         frameID
-	ID            string
+	ID            downloadID
 	URL           string
 	SuggestedName string
 	// Popup, set when the frame is a popup's the engine reported
@@ -544,7 +544,7 @@ var errDownloadEnded = errors.New("browser: the download already ended")
 // of the download, its end's cause included; Error is the engine's text
 // for it, display only.
 type downloadProgress struct {
-	ID       string
+	ID       downloadID
 	Received float64
 	Total    float64
 	State    downloadState

@@ -70,7 +70,7 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/slow.bin"), nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
-	var id string
+	var id downloadID
 	for id == "" {
 		profile.mu.Lock()
 		for handle := range profile.downloads {

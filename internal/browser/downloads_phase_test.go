@@ -62,10 +62,10 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 type cancelCountingProfile struct {
 	engineProfile
 	mu      sync.Mutex
-	cancels []string
+	cancels []downloadID
 }
 
-func (p *cancelCountingProfile) CancelDownload(id string) error {
+func (p *cancelCountingProfile) CancelDownload(id downloadID) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cancels = append(p.cancels, id)

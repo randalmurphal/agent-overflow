@@ -37,10 +37,10 @@ import (
 // removes its file at once (connectionEnded).
 type downloadTracker struct {
 	events engineEvents
-	cancel func(id string)
+	cancel func(id downloadID)
 	// remove removes the file Chromium writes download id to; nil when
 	// there is none to remove.
-	remove func(id string)
+	remove func(id downloadID)
 	// popup answers, for a download's frame, the popup the frame is the
 	// main frame of, as downloadStart's Popup, Openers and Profile, or an
 	// empty start. Nil names none.
@@ -52,7 +52,7 @@ type downloadTracker struct {
 	ownerWait time.Duration
 
 	mu        sync.Mutex
-	downloads map[string]*trackedDownload
+	downloads map[downloadID]*trackedDownload
 	stopped   bool
 }
 
@@ -104,14 +104,14 @@ func (d *trackedDownload) to(next trackedState) {
 	d.state = next
 }
 
-func newDownloadTracker(events engineEvents, cancel, remove func(id string)) *downloadTracker {
-	return &downloadTracker{events: events, cancel: cancel, remove: remove, downloads: make(map[string]*trackedDownload)}
+func newDownloadTracker(events engineEvents, cancel, remove func(id downloadID)) *downloadTracker {
+	return &downloadTracker{events: events, cancel: cancel, remove: remove, downloads: make(map[downloadID]*trackedDownload)}
 }
 
 // refusedDownloadCanceler is the tracker's cancel for a download the Manager
 // refused: no caller waits on it, so a failure is logged.
-func refusedDownloadCanceler(cancel func(id string) error, logf func(string, ...any)) func(id string) {
-	return func(id string) {
+func refusedDownloadCanceler(cancel func(id downloadID) error, logf func(string, ...any)) func(id downloadID) {
+	return func(id downloadID) {
 		if err := cancel(id); err != nil {
 			logf("browser: cancel refused download %s: %v", id, err)
 		}
@@ -121,7 +121,7 @@ func refusedDownloadCanceler(cancel func(id string) error, logf func(string, ...
 func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	guid := event.GUID
+	guid := downloadID(event.GUID)
 	if t.stopped || t.downloads[guid] != nil {
 		return
 	}
@@ -144,7 +144,7 @@ func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
 }
 
 // claim is the claim on the file Chromium writes download id to.
-func (t *downloadTracker) claim(id string) *destination.Claim {
+func (t *downloadTracker) claim(id downloadID) *destination.Claim {
 	if t.remove == nil {
 		return destination.NewClaim(nil)
 	}
@@ -157,13 +157,13 @@ func (t *downloadTracker) startLocked(event cdpbrowser.EventDownloadWillBegin) d
 	if t.popup != nil {
 		start = t.popup(frameID(event.FrameID))
 	}
-	start.Frame, start.ID, start.URL, start.SuggestedName = frameID(event.FrameID), event.GUID, event.URL, event.SuggestedFilename
+	start.Frame, start.ID, start.URL, start.SuggestedName = frameID(event.FrameID), downloadID(event.GUID), event.URL, event.SuggestedFilename
 	return start
 }
 
 // admitLocked makes d the Manager's: its file is the Manager's now, and
 // the progress held for it goes to the Manager. The caller holds t.mu.
-func (t *downloadTracker) admitLocked(guid string, d *trackedDownload) {
+func (t *downloadTracker) admitLocked(guid downloadID, d *trackedDownload) {
 	d.to(trackedAdmitted)
 	d.claim.HandOff()
 	held := d.held
@@ -179,7 +179,7 @@ func (t *downloadTracker) admitLocked(guid string, d *trackedDownload) {
 
 // refuseLocked cancels d, which keeps the claim on its file until its end,
 // at once if its end was already held. The caller holds t.mu.
-func (t *downloadTracker) refuseLocked(guid string, d *trackedDownload) {
+func (t *downloadTracker) refuseLocked(guid downloadID, d *trackedDownload) {
 	d.to(trackedRefused)
 	go t.cancel(guid)
 	if held := d.held; held != nil && !held.State.running() {
@@ -189,7 +189,7 @@ func (t *downloadTracker) refuseLocked(guid string, d *trackedDownload) {
 
 // settleLocked forgets a download that will report nothing more and
 // releases the claim on its file. The caller holds t.mu.
-func (t *downloadTracker) settleLocked(guid string, d *trackedDownload) {
+func (t *downloadTracker) settleLocked(guid downloadID, d *trackedDownload) {
 	delete(t.downloads, guid)
 	d.claim.Release()
 }
@@ -213,7 +213,7 @@ func (t *downloadTracker) awaitOwner(event cdpbrowser.EventDownloadWillBegin) {
 		case <-deadline.C:
 			expired = true
 		case <-t.lifetime.Done():
-			t.connectionEnded(event.GUID)
+			t.connectionEnded(downloadID(event.GUID))
 			return
 		}
 		if t.offerAgain(event, expired) {
@@ -226,7 +226,7 @@ func (t *downloadTracker) awaitOwner(event cdpbrowser.EventDownloadWillBegin) {
 // has ended and removes its file at once: no page will own it, and with
 // the connection gone there is no cancel to send. A writer still running
 // writes to an unlinked file.
-func (t *downloadTracker) connectionEnded(guid string) {
+func (t *downloadTracker) connectionEnded(guid downloadID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	d := t.downloads[guid]
@@ -243,19 +243,20 @@ func (t *downloadTracker) connectionEnded(guid string) {
 func (t *downloadTracker) offerAgain(event cdpbrowser.EventDownloadWillBegin, expired bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	d := t.downloads[event.GUID]
+	guid := downloadID(event.GUID)
+	d := t.downloads[guid]
 	if d == nil || d.state != trackedAwaiting {
 		return true
 	}
 	if expired {
-		t.refuseLocked(event.GUID, d)
+		t.refuseLocked(guid, d)
 		return true
 	}
 	switch admission := t.events.DownloadStarted(t.startLocked(event)); admission {
 	case downloadAdmitted:
-		t.admitLocked(event.GUID, d)
+		t.admitLocked(guid, d)
 	case downloadRefused:
-		t.refuseLocked(event.GUID, d)
+		t.refuseLocked(guid, d)
 	case downloadUnowned:
 		return false
 	default:
@@ -267,7 +268,8 @@ func (t *downloadTracker) offerAgain(event cdpbrowser.EventDownloadWillBegin, ex
 func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	d := t.downloads[event.GUID]
+	guid := downloadID(event.GUID)
+	d := t.downloads[guid]
 	if d == nil {
 		return
 	}
@@ -278,11 +280,11 @@ func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 	case trackedAdmitted, trackedCanceling:
 		t.events.DownloadProgress(progress)
 		if !progress.State.running() {
-			delete(t.downloads, event.GUID)
+			delete(t.downloads, guid)
 		}
 	case trackedRefused:
 		if !progress.State.running() {
-			t.settleLocked(event.GUID, d)
+			t.settleLocked(guid, d)
 		}
 	default:
 		panic(fmt.Sprintf("browser: a download in unknown state %d", d.state))
@@ -293,7 +295,7 @@ func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 // its CDP cancel is sent, and answers the undo for a cancel Chromium
 // refused, which withdraws only the mark this call made. A tracker of no
 // connection (nil) marks nothing.
-func (t *downloadTracker) canceling(guid string) (undo func()) {
+func (t *downloadTracker) canceling(guid downloadID) (undo func()) {
 	if t == nil {
 		return func() {}
 	}
@@ -339,7 +341,7 @@ func (t *downloadTracker) retained() int {
 // with it as the reason, so a row never stays running on a report nothing
 // here understands.
 func cdpDownloadProgress(event cdpbrowser.EventDownloadProgress, canceled bool) downloadProgress {
-	progress := downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, Total: event.TotalBytes, FilePath: event.FilePath}
+	progress := downloadProgress{ID: downloadID(event.GUID), Received: event.ReceivedBytes, Total: event.TotalBytes, FilePath: event.FilePath}
 	switch event.State {
 	case cdpbrowser.DownloadProgressStateInProgress:
 		progress.State = downloadInProgress

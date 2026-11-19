@@ -104,7 +104,7 @@ func testDownloadsFolder(t *testing.T) string {
 }
 
 // heldFile is the file the fake engine is writing a held download into.
-func heldFile(t *testing.T, manager *Manager, engineID string) string {
+func heldFile(t *testing.T, manager *Manager, engineID downloadID) string {
 	t.Helper()
 	profile := fakeProfileOf(t, manager)
 	profile.mu.Lock()
@@ -338,7 +338,7 @@ func TestACancelRacingTheFinishKeepsTheFinishedFile(t *testing.T) {
 	}
 	log.take()
 	engine := manager.engine.(*fakeEngine)
-	engine.downloadReleased = func(string) {
+	engine.downloadReleased = func(downloadID) {
 		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
 			t.Errorf("a cancel that lost to the finish answers %v", err)
 		}
@@ -383,7 +383,7 @@ type cancelRefusingProfile struct {
 	refuse error
 }
 
-func (p *cancelRefusingProfile) CancelDownload(string) error { return p.refuse }
+func (p *cancelRefusingProfile) CancelDownload(downloadID) error { return p.refuse }
 
 // An engine that refuses the cancel answers the user with its refusal, and
 // the download stays running: the engine's later report of its end is a
@@ -438,7 +438,7 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 	}
 	frame := paneHandle(manager, access, page.ID)
 	const refusal = "the browser refused to cancel the download: Unspecified error"
-	refuse := func(engineID string) {
+	refuse := func(engineID downloadID) {
 		t.Helper()
 		row := func() ThreadDownload {
 			for _, d := range threadDownloads(manager, access) {
@@ -607,13 +607,13 @@ func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
 func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	frame := paneHandle(manager, access, page.ID)
-	start := func(id string) {
-		if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
+	start := func(id downloadID) {
+		if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: string(id) + ".bin"}) != downloadAdmitted {
 			t.Fatalf("%s was refused", id)
 		}
 	}
 	for i := 1; i <= maxThreadDownloads; i++ {
-		start(fmt.Sprintf("dl-%d", i))
+		start(downloadID(fmt.Sprintf("dl-%d", i)))
 	}
 	start("newest")
 	log.take()
@@ -635,7 +635,7 @@ func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	}
 
 	for i := 1; i <= maxThreadDownloads; i++ {
-		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadFailed, Error: "stopped"})
+		manager.downloadProgress(downloadProgress{ID: downloadID(fmt.Sprintf("dl-%d", i)), State: downloadFailed, Error: "stopped"})
 	}
 	listed := threadDownloads(manager, access)
 	if len(listed) != maxThreadDownloads {
@@ -655,14 +655,14 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	frame := paneHandle(manager, access, page.ID)
 	total := maxPageDownloads + 10
 	for i := range total {
-		id := fmt.Sprintf("dl-%d", i)
-		if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: id + ".bin"}) != downloadAdmitted {
+		id := downloadID(fmt.Sprintf("dl-%d", i))
+		if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: string(id) + ".bin"}) != downloadAdmitted {
 			t.Fatalf("%s was refused", id)
 		}
 	}
 	// The first to start settles last.
 	for i := total - 1; i >= 0; i-- {
-		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadFailed, Error: "stopped"})
+		manager.downloadProgress(downloadProgress{ID: downloadID(fmt.Sprintf("dl-%d", i)), State: downloadFailed, Error: "stopped"})
 	}
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
@@ -671,7 +671,7 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	if logged := p.downloads.list(); len(logged) != maxPageDownloads {
 		t.Fatalf("the page logs %d downloads, want %d", len(logged), maxPageDownloads)
 	}
-	if !p.downloads.has("dl-0") || p.downloads.has(fmt.Sprintf("dl-%d", total-1)) {
+	if !p.downloads.has("dl-0") || p.downloads.has(downloadID(fmt.Sprintf("dl-%d", total-1))) {
 		t.Fatal("the log dropped a download that settled last, or kept one that settled first")
 	}
 }
@@ -683,8 +683,8 @@ func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
 	frame := paneHandle(manager, access, page.ID)
 	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "running", SuggestedName: "r.bin"})
 	for i := 0; i < maxPageDownloads; i++ {
-		id := fmt.Sprintf("done-%d", i)
-		manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: id})
+		id := downloadID(fmt.Sprintf("done-%d", i))
+		manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: id, SuggestedName: string(id)})
 		manager.downloadProgress(downloadProgress{ID: id, State: downloadCanceled})
 	}
 	manager.downloadProgress(downloadProgress{ID: "running", Received: 5, State: downloadInProgress})
@@ -943,7 +943,7 @@ func TestASecondCancelKeepsTheFirstCancel(t *testing.T) {
 		t.Fatalf("no partial file: %v", err)
 	}
 	log.take()
-	manager.engine.(*fakeEngine).downloadReleased = func(string) {
+	manager.engine.(*fakeEngine).downloadReleased = func(downloadID) {
 		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
 			t.Errorf("the second cancel answers %v", err)
 		}

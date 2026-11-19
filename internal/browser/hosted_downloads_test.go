@@ -364,7 +364,7 @@ func TestHostedEngineCancelOfAnEndedOrUnknownDownload(t *testing.T) {
 	engine, sink, recorder := newDownloadHostedEngine(t)
 	bindTestPage(t, engine, "page1", "TARGET-1")
 	reportDownload(t, engine, "page1", snapshot("dl-a-1", webview2host.DownloadCompleted, 100))
-	for _, id := range []string{"dl-a-1", "dl-unknown"} {
+	for _, id := range []downloadID{"dl-a-1", "dl-unknown"} {
 		if err := engine.cancelDownload(id); !errors.Is(err, errDownloadEnded) {
 			t.Fatalf("a cancel of %s answers %v, want errDownloadEnded", id, err)
 		}
@@ -702,7 +702,7 @@ func TestHostedEngineRowsFollowTheLaunchersIDs(t *testing.T) {
 	starts, progress := recorder.take()
 	var ids []string
 	for _, start := range starts {
-		ids = append(ids, start.ID+"="+start.SuggestedName)
+		ids = append(ids, string(start.ID)+"="+start.SuggestedName)
 	}
 	if got := strings.Join(ids, " "); got != "dl-a-1=report (1).pdf dl-a-2=report (2).pdf dl-a-3=report (1).pdf" {
 		t.Fatalf("rows %s", got)
@@ -920,7 +920,7 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 			}
 			settleReports(t, engine, "")
 			starts, progress := recorder.take()
-			ended := map[string]bool{}
+			ended := map[downloadID]bool{}
 			for _, p := range progress {
 				if p.State != downloadInProgress {
 					ended[p.ID] = true

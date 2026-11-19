@@ -123,7 +123,7 @@ func (p *headlessProfile) bindPage(browserCtx context.Context, handle ids.PageHa
 
 // CancelDownload cancels download id, marked on its connection's tracker
 // first so the cancel Chromium reports is read as AO's (canceling).
-func (p *headlessProfile) CancelDownload(id string) error {
+func (p *headlessProfile) CancelDownload(id downloadID) error {
 	p.mu.Lock()
 	current := p.current
 	p.mu.Unlock()
@@ -131,7 +131,7 @@ func (p *headlessProfile) CancelDownload(id string) error {
 		return fmt.Errorf("browser: profile %s has no running browser", p.handle)
 	}
 	undo := current.downloads.canceling(id)
-	if err := callBounded(current.ctx, p.engine.closeTimeout, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
+	if err := callBounded(current.ctx, p.engine.closeTimeout, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: string(id)}); err != nil {
 		undo()
 		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
 	}
@@ -143,11 +143,11 @@ func (p *headlessProfile) CancelDownload(id string) error {
 // (downloadTracker), once nothing writes it: a download that finished
 // before its cancel took effect left its whole file there. No caller
 // waits on it, so a failure is logged.
-func (p *headlessProfile) removeDownloadFile(id string) {
+func (p *headlessProfile) removeDownloadFile(id downloadID) {
 	if p.downloadDir == "" {
 		return
 	}
-	if err := os.Remove(filepath.Join(p.downloadDir, filepath.Base(id))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := os.Remove(filepath.Join(p.downloadDir, filepath.Base(string(id)))); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		p.engine.logf("browser: profile %s: remove the file of download %s no page took: %v", p.handle, id, err)
 	}
 }

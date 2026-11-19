@@ -41,14 +41,14 @@ func (m *Manager) downloadsStagedHere() bool {
 // stageDownload is profileOptions.StageDownload: the staged file the
 // engine writes download id into (stageDownload in download_staging.go),
 // kept until the download settles (releaseStagedDownload).
-func (m *Manager) stageDownload(id string) (string, error) {
+func (m *Manager) stageDownload(id downloadID) (string, error) {
 	path, err := stageDownload()
 	if err != nil {
 		return "", err
 	}
 	m.stagedMu.Lock()
 	if m.staged == nil {
-		m.staged = make(map[string]string)
+		m.staged = make(map[downloadID]string)
 	}
 	if previous := m.staged[id]; previous != "" {
 		// An engine id is not reused while its download runs; one that is
@@ -61,7 +61,7 @@ func (m *Manager) stageDownload(id string) (string, error) {
 }
 
 // stagedPath answers the staged file of download id, "" for none.
-func (m *Manager) stagedPath(id string) string {
+func (m *Manager) stagedPath(id downloadID) string {
 	m.stagedMu.Lock()
 	defer m.stagedMu.Unlock()
 	return m.staged[id]
@@ -70,7 +70,7 @@ func (m *Manager) stagedPath(id string) string {
 // releaseStagedDownload ends download id's staged file: it goes if it is
 // still there, and the staging directory with it once empty
 // (releaseStaged).
-func (m *Manager) releaseStagedDownload(id string) {
+func (m *Manager) releaseStagedDownload(id downloadID) {
 	m.stagedMu.Lock()
 	path := m.staged[id]
 	delete(m.staged, id)
@@ -100,7 +100,7 @@ func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
 	return nil, nil
 }
 
-func (m *Manager) pageForDownload(id string) (*managedPage, *jarScope) {
+func (m *Manager) pageForDownload(id downloadID) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {

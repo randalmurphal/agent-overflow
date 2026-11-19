@@ -69,9 +69,9 @@ func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error
 	if events.DownloadStarted == nil || events.DownloadProgress == nil {
 		return errors.New("browser: this fake engine was built without engine events and cannot download")
 	}
-	id := fmt.Sprintf("fake-dl-%d", p.engine.seq.Add(1))
+	id := downloadID(fmt.Sprintf("fake-dl-%d", p.engine.seq.Add(1)))
 	selfSaved := p.engine.saving == downloadsSavedByEngine
-	file, name, destinationErr := filepath.Join(p.downloadDir, id), request.name, error(nil)
+	file, name, destinationErr := filepath.Join(p.downloadDir, string(id)), request.name, error(nil)
 	if p.engine.saving == downloadsStaged {
 		if p.stage == nil {
 			return errors.New("browser: this fake profile stages downloads and was given nowhere to stage them")
@@ -115,7 +115,7 @@ func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error
 	// download goes no further.
 	p.mu.Lock()
 	if p.held == nil {
-		p.held = make(map[string]fakeDownload)
+		p.held = make(map[downloadID]fakeDownload)
 	}
 	p.held[id] = fakeDownload{total: request.bytes, file: file}
 	p.mu.Unlock()
@@ -168,7 +168,7 @@ func fakeSaveInDownloads(suggested string) (string, error) {
 
 // reportFinish reports a finished download whose file is complete, after
 // the beforeFinishReport seam.
-func (p *fakeProfile) reportFinish(id string, total int64, file string) {
+func (p *fakeProfile) reportFinish(id downloadID, total int64, file string) {
 	if hook := p.engine.beforeFinishReport; hook != nil {
 		hook(file)
 	}
@@ -180,7 +180,7 @@ func (p *fakeProfile) reportFinish(id string, total int64, file string) {
 // native engines do. In the Downloads folder it first removes the partial
 // file, as WebView2 does there. Any other id has already been let go, and
 // its terminal report is out or on the way.
-func (p *fakeProfile) CancelDownload(id string) error {
+func (p *fakeProfile) CancelDownload(id downloadID) error {
 	held, ok := p.takeHeld(id)
 	if !ok {
 		return errDownloadEnded
@@ -202,7 +202,7 @@ func (p *fakeProfile) CancelDownload(id string) error {
 // finishHeld finishes a held download the way the native engines do: the
 // file is complete, the engine's record of it is released, and only then is
 // the finish reported.
-func (p *fakeProfile) finishHeld(id string) error {
+func (p *fakeProfile) finishHeld(id downloadID) error {
 	held, ok := p.takeHeld(id)
 	if !ok {
 		return fmt.Errorf("browser: %s is not a held fake download", id)
@@ -220,7 +220,7 @@ func (p *fakeProfile) finishHeld(id string) error {
 // takeHeld takes the running download id, once: whoever takes it (its
 // cancel, its finish, or the download's own run past its first report)
 // reports its end.
-func (p *fakeProfile) takeHeld(id string) (fakeDownload, bool) {
+func (p *fakeProfile) takeHeld(id downloadID) (fakeDownload, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	held, ok := p.held[id]

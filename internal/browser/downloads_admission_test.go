@@ -60,12 +60,12 @@ func TestAWorkspaceKeepsOnePoolWhileItsDownloadsHoldIt(t *testing.T) {
 // startPopupDownload starts download id in popup, opened by openers,
 // nearest first, in the engine's profile, and answers the Manager's
 // admission.
-func startPopupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id string, openers ...ids.PageHandle) downloadAdmission {
+func startPopupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id downloadID, openers ...ids.PageHandle) downloadAdmission {
 	e.mu.Lock()
 	profile := e.profile
 	e.mu.Unlock()
 	return m.downloadStarted(downloadStart{
-		Frame: frameID(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
+		Frame: frameID(popup), ID: id, URL: "https://example.test/" + string(id), SuggestedName: string(id),
 		Popup: popup, Openers: openers, Profile: profile,
 	})
 }
@@ -94,8 +94,8 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 		manager.mu.Lock()
 		p, _ := manager.livePageLocked(page.ID)
 		manager.mu.Unlock()
-		start := func(id string) downloadAdmission {
-			return manager.downloadStarted(downloadStart{Frame: frameID(p.driver.Handle()), ID: id, URL: "https://example.test/" + id, SuggestedName: id})
+		start := func(id downloadID) downloadAdmission {
+			return manager.downloadStarted(downloadStart{Frame: frameID(p.driver.Handle()), ID: id, URL: "https://example.test/" + string(id), SuggestedName: string(id)})
 		}
 		wantAdmission(t, "a download within the quotas", start("a"), downloadAdmitted)
 		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
@@ -135,7 +135,7 @@ func TestRefusedPopupDownloadsTakeNoParkingSlot(t *testing.T) {
 	authority := authorityOf(t, manager, access)
 	authority.downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	for i := range maxParkedPopups + 1 {
-		got := startPopupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("popup-%d", i)), fmt.Sprintf("dl-%d", i), opener)
+		got := startPopupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("popup-%d", i)), downloadID(fmt.Sprintf("dl-%d", i)), opener)
 		wantAdmission(t, fmt.Sprintf("start %d past the quota", i), got, downloadRefused)
 	}
 	if popups, downloads := parkedState(manager); popups != 0 || downloads != 0 {
@@ -143,7 +143,7 @@ func TestRefusedPopupDownloadsTakeNoParkingSlot(t *testing.T) {
 	}
 	authority.downloadBytes.SetUsed(0)
 	for i := range maxParkedPopups + 1 {
-		got := startPopupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("orphan-%d", i)), fmt.Sprintf("o-%d", i), "not-yet")
+		got := startPopupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("orphan-%d", i)), downloadID(fmt.Sprintf("o-%d", i)), "not-yet")
 		wantAdmission(t, fmt.Sprintf("start %d with no owner", i), got, downloadUnowned)
 	}
 	if popups, downloads := parkedState(manager); popups != 0 || downloads != 0 {
@@ -201,8 +201,8 @@ func awaitGone(t *testing.T, path, what string) {
 func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testing.T) {
 	t.Run("the wait passes", func(t *testing.T) {
 		d, file, offers := headlessUnownedRig(t, 100*time.Millisecond, t.Context())
-		canceled := make(chan string, 1)
-		d.cancel = func(id string) { canceled <- id }
+		canceled := make(chan downloadID, 1)
+		d.cancel = func(id downloadID) { canceled <- id }
 		d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "G1", FrameID: "F-unknown"})
 		select {
 		case id := <-canceled:

@@ -385,7 +385,7 @@ func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
 		engineDir = scope.downloadDir
 	}
 	manager.mu.Unlock()
-	awaitRemoved(t, filepath.Join(engineDir, filepath.Base(item.engineID)))
+	awaitRemoved(t, filepath.Join(engineDir, filepath.Base(string(item.engineID))))
 	if got := authority.downloadBytes.Used(); got != workspaceBefore {
 		t.Fatalf("the workspace holds %d download bytes, want %d", got, workspaceBefore)
 	}

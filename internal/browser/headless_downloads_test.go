@@ -15,16 +15,16 @@ type trackerRig struct {
 	*downloadTracker
 	recorder *downloadRecorder
 	mu       sync.Mutex
-	removed  map[string]int
-	canceled chan string
+	removed  map[downloadID]int
+	canceled chan downloadID
 }
 
 func newTrackerRig(allow bool) *trackerRig {
-	r := &trackerRig{recorder: newDownloadRecorder(allow), removed: map[string]int{}, canceled: make(chan string, 1024)}
-	r.downloadTracker = newDownloadTracker(r.recorder.events(), func(id string) {
+	r := &trackerRig{recorder: newDownloadRecorder(allow), removed: map[downloadID]int{}, canceled: make(chan downloadID, 1024)}
+	r.downloadTracker = newDownloadTracker(r.recorder.events(), func(id downloadID) {
 		r.recorder.cancel(id)
 		r.canceled <- id
-	}, func(id string) {
+	}, func(id downloadID) {
 		r.mu.Lock()
 		r.removed[id]++
 		r.mu.Unlock()
@@ -32,7 +32,7 @@ func newTrackerRig(allow bool) *trackerRig {
 	return r
 }
 
-func (r *trackerRig) removals(id string) int {
+func (r *trackerRig) removals(id downloadID) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.removed[id]
@@ -46,7 +46,7 @@ func (r *trackerRig) report(guid string, state cdpbrowser.DownloadProgressState,
 	r.progress(cdpbrowser.EventDownloadProgress{GUID: guid, ReceivedBytes: received, State: state})
 }
 
-func (r *trackerRig) awaitCancel(t *testing.T, guid string) {
+func (r *trackerRig) awaitCancel(t *testing.T, guid downloadID) {
 	t.Helper()
 	select {
 	case got := <-r.canceled:
@@ -142,7 +142,7 @@ func TestDownloadTrackerKeepsAnAdmittedDownloadToItsEnd(t *testing.T) {
 	}
 	p.engine.events = events
 	d := p.downloadTracker(t.Context(), newHeadlessTargets(p))
-	d.cancel = func(string) {}
+	d.cancel = func(downloadID) {}
 	d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "kept", FrameID: "F1"})
 	for i := range 2*orderSlack + 1 {
 		d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: fmt.Sprintf("refused-%d", i), FrameID: "F1"})
@@ -162,7 +162,7 @@ func TestDownloadTrackerRemovesWhatNoPageTook(t *testing.T) {
 	r := newTrackerRig(false)
 	stalled := make(chan struct{})
 	defer close(stalled)
-	r.cancel = func(string) { <-stalled }
+	r.cancel = func(downloadID) { <-stalled }
 	r.begin("ended")
 	r.begin("running")
 	if r.removals("ended") != 0 {
@@ -186,7 +186,7 @@ func TestDownloadTrackerRemovesWhatNoPageTook(t *testing.T) {
 	}
 	r.begin("waiting")
 	r.stop()
-	for id, want := range map[string]int{"ended": 1, "running": 1, "waiting": 1, "admitted": 0} {
+	for id, want := range map[downloadID]int{"ended": 1, "running": 1, "waiting": 1, "admitted": 0} {
 		if got := r.removals(id); got != want {
 			t.Errorf("download %s's file was removed %d times after the browser stopped, want %d", id, got, want)
 		}

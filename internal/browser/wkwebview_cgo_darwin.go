@@ -360,9 +360,9 @@ func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t,
 		C.ao_wkv_download_release(download)
 		return
 	}
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	handle := downloadHandle(uint64(downloadID))
 	if name == "" {
-		name = handle
+		name = string(handle)
 	}
 	pending := wkPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
 	if !profile.destinations.Hold(handle, pending) {
@@ -403,9 +403,10 @@ func wkCancelDestinations(p *wkProfile) {
 // wkPendingDownload is a download whose destination is being decided, with
 // what its start report names.
 type wkPendingDownload struct {
-	ptr               unsafe.Pointer
-	page, popup       uint64
-	handle, url, name string
+	ptr         unsafe.Pointer
+	page, popup uint64
+	handle      downloadID
+	url, name   string
 }
 
 // decideDownload completes download's destination decision on the main
@@ -456,7 +457,7 @@ func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stag
 //export aoWKVDownloadFinished
 func aoWKVDownloadFinished(downloadID C.uint64_t, received C.double, state C.int, path, failure *C.char) {
 	filePath, reason := wkTakeString(path), wkTakeString(failure)
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	handle := downloadHandle(uint64(downloadID))
 	// The profile that started the download owns the whole of its progress, so a
 	// report arriving after that profile is disposed is a lookup miss rather
 	// than an event routed at a torn-down workspace.
@@ -893,7 +894,7 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 // (withDownloadOnUI), where a released download is let go after it leaves
 // p.downloads (releaseDownload), so the one it finds is still held through
 // the cancel.
-func wkCancelDownload(p *wkProfile, id string) nativeCancel {
+func wkCancelDownload(p *wkProfile, id downloadID) nativeCancel {
 	found := false
 	if uiThread.Run(func() {
 		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wkv_download_cancel(download) })
@@ -908,7 +909,7 @@ func wkCancelDownload(p *wkProfile, id string) nativeCancel {
 
 // withDownloadOnUI runs fn with p's download id on the main thread, where
 // the caller runs it, unless it was released, and answers whether fn ran.
-func withDownloadOnUI(p *wkProfile, id string, fn func(download unsafe.Pointer)) bool {
+func withDownloadOnUI(p *wkProfile, id downloadID, fn func(download unsafe.Pointer)) bool {
 	p.mu.Lock()
 	entry := p.downloads[id]
 	p.mu.Unlock()

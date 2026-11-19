@@ -83,7 +83,7 @@ func (e *hostedEngine) acceptDownload(page ids.PageHandle, detail string) {
 // lane. A finished download's path conversion ends with ctx (Stop).
 func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.DownloadReport, d *hostedDownload) {
 	// The page is the frame its downloads name (hostedPage.OwnsFrame).
-	frame, id := frameID(d.key.page), string(d.key.id)
+	frame, id := frameID(d.key.page), d.key.id
 	live, admission, cancels := e.pages.live(d, report.Cancel.Attempt())
 	if !live {
 		// Ended, refused, or its page retired, before this snapshot's turn.
@@ -187,8 +187,8 @@ func hostedDownloadEnd(end webview2host.DownloadEnd) downloadState {
 // report is out. The Manager lists a download's row before its admission
 // answers, so a cancel can come while it is in flight: it is kept, and sent
 // as the admission ends (applySnapshot).
-func (e *hostedEngine) cancelDownload(id string) error {
-	d, admitted, ok := e.pages.cancel(hostedDownloadID(id))
+func (e *hostedEngine) cancelDownload(id downloadID) error {
+	d, admitted, ok := e.pages.cancel(id)
 	if !ok {
 		return errDownloadEnded
 	}
@@ -256,7 +256,7 @@ func (e *hostedEngine) retirePage(page ids.PageHandle, why string, closed bool) 
 	e.mu.Unlock()
 	cancelAttach()
 	for _, id := range running {
-		e.events.DownloadProgress(downloadProgress{ID: string(id), State: downloadPageGone, Error: why})
+		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadPageGone, Error: why})
 	}
 	if closed {
 		e.events.PageClosed(pageID)

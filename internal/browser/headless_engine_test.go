@@ -960,7 +960,7 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	var mu sync.Mutex
-	var started []string
+	var started []downloadID
 	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1017,7 +1017,7 @@ func TestHeadlessProfileTellsItsCancelFromAFailure(t *testing.T) {
 	ends := make(chan downloadProgress, 4)
 	// Sent while the tracker holds the start, which it admits
 	// before it lets a cancel in.
-	started := make(chan string, 4)
+	started := make(chan downloadID, 4)
 	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
 		started <- start.ID
 		return downloadAdmitted
@@ -1044,14 +1044,14 @@ func TestHeadlessProfileTellsItsCancelFromAFailure(t *testing.T) {
 			t.Fatalf("%s never started", tc.guid)
 		}
 		if tc.cancel {
-			if err := profile.CancelDownload(tc.guid); err != nil {
+			if err := profile.CancelDownload(downloadID(tc.guid)); err != nil {
 				t.Fatal(err)
 			}
 		}
 		browser.send(stopped(tc.guid))
 		select {
 		case got := <-ends:
-			if got.ID != tc.guid || got.State != tc.want {
+			if got.ID != downloadID(tc.guid) || got.State != tc.want {
 				t.Fatalf("Chromium's cancel of %s reached the Manager as %+v, want %v", tc.guid, got, tc.want)
 			}
 		case <-time.After(headlessTestDeadline):

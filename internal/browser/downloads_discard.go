@@ -24,7 +24,7 @@ type downloadFile struct {
 	// id is a staged download's engine id, by which the staging record
 	// holds its file (stageDownload): the engine names the file after the
 	// download starts.
-	id string
+	id downloadID
 	// path is an artifact's file in its jar's download directory.
 	path string
 }
@@ -44,7 +44,7 @@ const (
 
 // downloadFileOf names the file the engine writes download id into, in the
 // jar scope it is written in. The one place a download's file is derived.
-func (m *Manager) downloadFileOf(scope *jarScope, id string) downloadFile {
+func (m *Manager) downloadFileOf(scope *jarScope, id downloadID) downloadFile {
 	switch m.engine.DownloadSaving() {
 	case downloadsStaged:
 		return downloadFile{kind: stagedDownloadFile, id: id}
@@ -52,7 +52,7 @@ func (m *Manager) downloadFileOf(scope *jarScope, id string) downloadFile {
 		if scope == nil || scope.downloadDir == "" {
 			return downloadFile{}
 		}
-		return downloadFile{kind: artifactDownloadFile, path: filepath.Join(scope.downloadDir, filepath.Base(id))}
+		return downloadFile{kind: artifactDownloadFile, path: filepath.Join(scope.downloadDir, filepath.Base(string(id)))}
 	case downloadsSavedByEngine:
 		return downloadFile{}
 	}
@@ -62,7 +62,7 @@ func (m *Manager) downloadFileOf(scope *jarScope, id string) downloadFile {
 // downloadDiscard is a download's end that keeps no file, owning both its
 // file and its reservation from the hold that settled it until finishDiscard.
 type downloadDiscard struct {
-	id          string
+	id          downloadID
 	file        downloadFile
 	reservation *quota.Reservation
 }
@@ -72,7 +72,7 @@ type downloadDiscard struct {
 func (e *DownloadInfo) discard() downloadDiscard {
 	file := e.source
 	e.source = downloadFile{}
-	return downloadDiscard{id: e.ID, file: file, reservation: quota.Take(&e.reservation)}
+	return downloadDiscard{id: downloadID(e.ID), file: file, reservation: quota.Take(&e.reservation)}
 }
 
 // discard takes the parked download's file and reservation for its end

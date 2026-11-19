@@ -64,7 +64,7 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 		return downloadRefused
 	}
 	entry := DownloadInfo{
-		ID: event.ID, URL: event.URL,
+		ID: string(event.ID), URL: event.URL,
 		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
 		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		key: fmt.Sprintf("d%d", m.downloadKeys.Add(1)),

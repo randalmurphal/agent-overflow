@@ -323,8 +323,8 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}
 	}
-	var stage func(string) (string, error)
-	var releaseStaged func(string)
+	var stage func(downloadID) (string, error)
+	var releaseStaged func(downloadID)
 	if m.downloadsStagedHere() {
 		stage, releaseStaged = m.stageDownload, m.releaseStagedDownload
 	}

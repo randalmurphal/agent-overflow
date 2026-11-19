@@ -21,3 +21,9 @@ type jarKey string
 // derives it from its jar's key or numbers it; the hosted engine's is the
 // WebView2 profile name the launcher's directives carry.
 type profileHandle string
+
+// downloadID is an engine's id for one download, unique among the engine's
+// running downloads: a headless Chromium download GUID, a WebKit engine's
+// download number, or the launcher's download id on the hosted engine. A
+// download log entry carries it as DownloadInfo.ID.
+type downloadID string

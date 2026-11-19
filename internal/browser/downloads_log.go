@@ -105,10 +105,10 @@ func (h *downloadLogHold) add(entry DownloadInfo) *DownloadInfo {
 }
 
 // entry answers the log's entry for an engine download id, nil for none.
-func (h *downloadLogHold) entry(id string) *DownloadInfo {
+func (h *downloadLogHold) entry(id downloadID) *DownloadInfo {
 	l := h.log
 	for i := len(l.entries) - 1; i >= 0; i-- {
-		if l.entries[i].ID == id {
+		if downloadID(l.entries[i].ID) == id {
 			return &l.entries[i]
 		}
 	}
@@ -141,7 +141,7 @@ func (l *pageDownloadLog) lastSequence() uint64 {
 }
 
 // has is whether the log has an entry for an engine download id.
-func (l *pageDownloadLog) has(id string) bool {
+func (l *pageDownloadLog) has(id downloadID) bool {
 	h := l.hold()
 	defer h.release()
 	return h.entry(id) != nil

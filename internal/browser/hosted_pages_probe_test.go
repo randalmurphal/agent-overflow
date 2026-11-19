@@ -62,7 +62,7 @@ func (p *hostedPages) state(page ids.PageHandle) (hostedPageState, bool) {
 }
 
 // cancelsOf answers the last cancel attempt sent for download id of page.
-func (p *hostedPages) cancelsOf(page ids.PageHandle, id hostedDownloadID) int {
+func (p *hostedPages) cancelsOf(page ids.PageHandle, id downloadID) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if r := p.records[page]; r != nil && r.downloads[id] != nil {
@@ -72,7 +72,7 @@ func (p *hostedPages) cancelsOf(page ids.PageHandle, id hostedDownloadID) int {
 }
 
 // endedOf counts page's kept ended ids, and runs whether id runs there.
-func (p *hostedPages) endedOf(page ids.PageHandle, id hostedDownloadID) (ended int, runs bool) {
+func (p *hostedPages) endedOf(page ids.PageHandle, id downloadID) (ended int, runs bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]

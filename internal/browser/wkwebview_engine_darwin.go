@@ -264,8 +264,8 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	profile := &wkProfile{
 		engine: e, id: id, handle: profileHandle(fmt.Sprintf("profile-%d", id)), store: store,
 		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
-		destinations: destination.NewDecisions[string, wkPendingDownload](),
-		pages:        make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		destinations: destination.NewDecisions[downloadID, wkPendingDownload](),
+		pages:        make(map[*wkPage]struct{}), downloads: make(map[downloadID]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -292,23 +292,23 @@ type wkProfile struct {
 	// stage names the staged file each download is written to
 	// (profileOptions.StageDownload), and releaseStaged gives up one no
 	// download start took.
-	stage         func(id string) (string, error)
-	releaseStaged func(id string)
+	stage         func(id downloadID) (string, error)
+	releaseStaged func(id downloadID)
 	// destinations are the downloads whose destination decision is open:
 	// held on the main thread as WebKit hands it over, taken there once by
 	// its completion or by Dispose.
-	destinations *destination.Decisions[string, wkPendingDownload]
+	destinations *destination.Decisions[downloadID, wkPendingDownload]
 
 	mu        sync.Mutex
 	disposed  bool
 	pages     map[*wkPage]struct{}
-	downloads map[string]*wkDownload
+	downloads map[downloadID]*wkDownload
 }
 
 // wkDownload is one live download: the retained WKDownload and the sampler that
 // reports its progress until it settles.
 type wkDownload struct {
-	handle string
+	handle downloadID
 	ptr    unsafe.Pointer
 	stop   chan struct{}
 }
@@ -441,7 +441,7 @@ func (p *wkProfile) parkNew(page *wkPage) error {
 // unless the profile was disposed, and reports whether it did. Both
 // registrations are made in one hold of p.mu, so a Dispose that takes the
 // entry also finds, and deletes, its owner (releaseDownload).
-func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) bool {
+func (p *wkProfile) registerDownload(handle downloadID, ptr unsafe.Pointer) bool {
 	entry := &wkDownload{handle: handle, ptr: ptr, stop: make(chan struct{})}
 	p.mu.Lock()
 	if p.disposed {
@@ -508,7 +508,7 @@ func (p *wkProfile) sampleDownload(entry *wkDownload) {
 	}
 }
 
-func (p *wkProfile) releaseDownload(handle string) {
+func (p *wkProfile) releaseDownload(handle downloadID) {
 	p.mu.Lock()
 	entry := p.downloads[handle]
 	delete(p.downloads, handle)
@@ -529,7 +529,7 @@ func (p *wkProfile) releaseDownload(handle string) {
 // A download released first has finished, failed or been canceled, and
 // its report is on its way (aoWKVDownloadFinished releases before it
 // reports).
-func (p *wkProfile) CancelDownload(id string) error {
+func (p *wkProfile) CancelDownload(id downloadID) error {
 	return wkCancelDownload(p, id).err(errWKUnavailable)
 }
 
@@ -545,7 +545,7 @@ func (p *wkProfile) Dispose(context.Context) error {
 		pages = append(pages, page)
 	}
 	p.pages = make(map[*wkPage]struct{})
-	handles := make([]string, 0, len(p.downloads))
+	handles := make([]downloadID, 0, len(p.downloads))
 	for handle := range p.downloads {
 		handles = append(handles, handle)
 	}
@@ -573,7 +573,7 @@ func (p *wkProfile) Dispose(context.Context) error {
 // own. A report for a disposed profile is a miss, not a routed event.
 var wkDownloadOwners sync.Map
 
-func wkDownloadOwner(handle string) *wkProfile {
+func wkDownloadOwner(handle downloadID) *wkProfile {
 	if value, ok := wkDownloadOwners.Load(handle); ok {
 		return value.(*wkProfile)
 	}

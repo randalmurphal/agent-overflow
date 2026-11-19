@@ -45,7 +45,7 @@ type fakeEngine struct {
 	// downloadReleased is a test seam run between a held download's
 	// release and its terminal report (finishHeld, CancelDownload), where a
 	// native engine releases its record. Nil outside tests.
-	downloadReleased func(id string)
+	downloadReleased func(id downloadID)
 	// saving is the engine this fake stands in for: downloadsStaged, the
 	// zero value, writes into the profile's directory for the Manager to
 	// publish, as WebKitGTK does; downloadsAsArtifacts as headless Chromium
@@ -107,13 +107,13 @@ type fakeProfile struct {
 	ephemeral   bool
 	allow       func(owners []frameID, rawURL string) (allowed, resolved bool)
 	downloadDir string
-	stage       func(id string) (string, error)
+	stage       func(id downloadID) (string, error)
 
 	mu       sync.Mutex
 	disposed bool
 	pages    map[*fakePage]struct{}
 	// held are the downloads left running (fake_downloads.go), by id.
-	held map[string]fakeDownload
+	held map[downloadID]fakeDownload
 }
 
 func (p *fakeProfile) Handle() profileHandle { return p.handle }

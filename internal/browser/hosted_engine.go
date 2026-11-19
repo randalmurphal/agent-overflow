@@ -502,7 +502,7 @@ func (p *hostedProfile) AttachPage(_ context.Context, handle ids.PageHandle, hoo
 	return p.engine.attachPopup(p, handle, hooks)
 }
 
-func (p *hostedProfile) CancelDownload(id string) error { return p.engine.cancelDownload(id) }
+func (p *hostedProfile) CancelDownload(id downloadID) error { return p.engine.cancelDownload(id) }
 
 func (p *hostedProfile) Dispose(context.Context) error {
 	p.engine.mu.Lock()

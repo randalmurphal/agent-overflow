@@ -342,9 +342,9 @@ func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64
 		C.ao_wk_download_unref(download)
 		return
 	}
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	handle := downloadHandle(uint64(downloadID))
 	if name == "" {
-		name = handle
+		name = string(handle)
 	}
 	pending := webkitPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
 	if !profile.destinations.Hold(handle, pending) {
@@ -385,9 +385,10 @@ func webkitCancelDestinations(p *webkitProfile) {
 // webkitPendingDownload is a download whose destination is being decided,
 // with what its start report names.
 type webkitPendingDownload struct {
-	ptr               unsafe.Pointer
-	page, popup       uint64
-	handle, url, name string
+	ptr         unsafe.Pointer
+	page, popup uint64
+	handle      downloadID
+	url, name   string
 }
 
 // decideDownload completes download's destination decision on the GTK
@@ -439,7 +440,7 @@ func (p *webkitProfile) decideDownload(download webkitPendingDownload, path stri
 //export aoWebKitDownloadProgress
 func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, state C.int, path, failure *C.char) {
 	filePath, reason := webkitTakeString(path), webkitTakeString(failure)
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	handle := downloadHandle(uint64(downloadID))
 	// The profile that started the download owns the whole of its progress, so
 	// a report arriving after that profile is disposed is a lookup miss rather
 	// than an event routed at a torn-down workspace.
@@ -980,7 +981,7 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 // (withDownloadOnUI), where a released download's reference is dropped
 // after it leaves p.downloads (releaseDownload), so the one it finds is
 // still held through the cancel.
-func webkitCancelDownload(p *webkitProfile, id string) nativeCancel {
+func webkitCancelDownload(p *webkitProfile, id downloadID) nativeCancel {
 	found := false
 	if uiThread.Run(func() {
 		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wk_download_cancel(download) })
@@ -995,7 +996,7 @@ func webkitCancelDownload(p *webkitProfile, id string) nativeCancel {
 
 // withDownloadOnUI runs fn with p's download id on the GTK thread, where
 // the caller runs it, unless it was released, and answers whether fn ran.
-func withDownloadOnUI(p *webkitProfile, id string, fn func(download unsafe.Pointer)) bool {
+func withDownloadOnUI(p *webkitProfile, id downloadID, fn func(download unsafe.Pointer)) bool {
 	download := p.heldDownload(id)
 	if download == nil {
 		return false

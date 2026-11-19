@@ -296,7 +296,7 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 func (m *Manager) parkPopupLocked(handle ids.PageHandle) *parkedPopup {
 	if m.parked == nil {
 		m.parked = make(map[ids.PageHandle]*parkedPopup)
-		m.parkedIDs = make(map[string]ids.PageHandle)
+		m.parkedIDs = make(map[downloadID]ids.PageHandle)
 	}
 	timeout := popupParkTimeout
 	if m.parkTimeout > 0 {

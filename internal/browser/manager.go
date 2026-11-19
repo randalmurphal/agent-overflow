@@ -172,7 +172,7 @@ type Manager struct {
 	// (stageDownload in downloads.go). Guarded by stagedMu, which is taken
 	// alone.
 	stagedMu sync.Mutex
-	staged   map[string]string
+	staged   map[downloadID]string
 	// publishing counts the finished downloads being moved into the
 	// Downloads folder; publishIdle, when set, closes as it reaches zero.
 	// Close waits for them (waitPublishes). Guarded by publishMu, taken
@@ -212,7 +212,7 @@ type Manager struct {
 	// before mu.
 	parkMu     sync.Mutex
 	parked     map[ids.PageHandle]*parkedPopup
-	parkedIDs  map[string]ids.PageHandle
+	parkedIDs  map[downloadID]ids.PageHandle
 	popupFates *boundedMap[ids.PageHandle, popupFate]
 	// parkTimeout overrides popupParkTimeout when set (tests).
 	parkTimeout time.Duration

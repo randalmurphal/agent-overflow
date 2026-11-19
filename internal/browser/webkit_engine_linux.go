@@ -211,8 +211,8 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	profile := &webkitProfile{
 		engine: e, id: id, handle: profileHandle(fmt.Sprintf("profile-%d", id)), session: session,
 		stage: opts.StageDownload, releaseStaged: opts.ReleaseStaged,
-		destinations: destination.NewDecisions[string, webkitPendingDownload](),
-		pages:        make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
+		destinations: destination.NewDecisions[downloadID, webkitPendingDownload](),
+		pages:        make(map[*webkitPage]struct{}), downloads: make(map[downloadID]unsafe.Pointer),
 	}
 	webkitProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -236,17 +236,17 @@ type webkitProfile struct {
 	// stage names the staged file each download is written to
 	// (profileOptions.StageDownload), and releaseStaged gives up one no
 	// download start took.
-	stage         func(id string) (string, error)
-	releaseStaged func(id string)
+	stage         func(id downloadID) (string, error)
+	releaseStaged func(id downloadID)
 	// destinations are the downloads whose destination decision is open:
 	// held on the GTK thread as WebKit hands it over, taken there once by
 	// its completion or by Dispose.
-	destinations *destination.Decisions[string, webkitPendingDownload]
+	destinations *destination.Decisions[downloadID, webkitPendingDownload]
 
 	mu        sync.Mutex
 	disposed  bool
 	pages     map[*webkitPage]struct{}
-	downloads map[string]unsafe.Pointer
+	downloads map[downloadID]unsafe.Pointer
 
 	// beforeView, when set, runs between a new page's shell and its view's
 	// construction: a test seam.
@@ -378,7 +378,7 @@ func (p *webkitProfile) parkNew(page *webkitPage) error {
 // registerDownload keeps download under handle, unless the profile was
 // disposed, and reports whether it did. The profile's entry and the owner
 // index change in one hold of p.mu, here and in releaseDownload.
-func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) bool {
+func (p *webkitProfile) registerDownload(handle downloadID, download unsafe.Pointer) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.disposed {
@@ -395,7 +395,7 @@ func (p *webkitProfile) isDisposed() bool {
 	return p.disposed
 }
 
-func (p *webkitProfile) releaseDownload(handle string) {
+func (p *webkitProfile) releaseDownload(handle downloadID) {
 	p.mu.Lock()
 	download := p.downloads[handle]
 	delete(p.downloads, handle)
@@ -408,7 +408,7 @@ func (p *webkitProfile) releaseDownload(handle string) {
 
 // heldDownload answers the download registered under id, nil once it is
 // released.
-func (p *webkitProfile) heldDownload(id string) unsafe.Pointer {
+func (p *webkitProfile) heldDownload(id downloadID) unsafe.Pointer {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.downloads[id]
@@ -420,7 +420,7 @@ func (p *webkitProfile) heldDownload(id string) unsafe.Pointer {
 //
 // A download released first has finished or failed, and its report is on
 // its way (aoWebKitDownloadProgress releases before it reports).
-func (p *webkitProfile) CancelDownload(id string) error {
+func (p *webkitProfile) CancelDownload(id downloadID) error {
 	return webkitCancelDownload(p, id).err(errGTKUnavailable)
 }
 
@@ -436,7 +436,7 @@ func (p *webkitProfile) Dispose(context.Context) error {
 		pages = append(pages, page)
 	}
 	p.pages = make(map[*webkitPage]struct{})
-	handles := make([]string, 0, len(p.downloads))
+	handles := make([]downloadID, 0, len(p.downloads))
 	for handle := range p.downloads {
 		handles = append(handles, handle)
 	}
@@ -464,7 +464,7 @@ func (p *webkitProfile) Dispose(context.Context) error {
 // own. A report for a disposed profile is a miss, not a routed event.
 var webkitDownloadOwners sync.Map
 
-func webkitDownloadOwner(handle string) *webkitProfile {
+func webkitDownloadOwner(handle downloadID) *webkitProfile {
 	if value, ok := webkitDownloadOwners.Load(handle); ok {
 		return value.(*webkitProfile)
 	}

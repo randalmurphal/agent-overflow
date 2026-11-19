@@ -38,10 +38,10 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 				startDownload(t, manager, access, page, fmt.Sprintf("f%d.txt", i), 10, "hold")
 			}
 			profile := fakeProfileOf(t, manager)
-			ids := func() []string {
+			ids := func() []downloadID {
 				profile.mu.Lock()
 				defer profile.mu.Unlock()
-				var out []string
+				var out []downloadID
 				for id := range profile.held {
 					out = append(out, id)
 				}

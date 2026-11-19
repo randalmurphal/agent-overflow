@@ -137,13 +137,13 @@ func end(tr *networkTracker, id network.RequestID, now time.Time) eventStep {
 type downloadRecorder struct {
 	mu       sync.Mutex
 	allow    bool
-	state    map[string]string
-	bytes    map[string]float64
-	canceled map[string]int
+	state    map[downloadID]string
+	bytes    map[downloadID]float64
+	canceled map[downloadID]int
 }
 
 func newDownloadRecorder(allow bool) *downloadRecorder {
-	return &downloadRecorder{allow: allow, state: map[string]string{}, bytes: map[string]float64{}, canceled: map[string]int{}}
+	return &downloadRecorder{allow: allow, state: map[downloadID]string{}, bytes: map[downloadID]float64{}, canceled: map[downloadID]int{}}
 }
 
 func (r *downloadRecorder) events() engineEvents {
@@ -170,13 +170,13 @@ func (r *downloadRecorder) events() engineEvents {
 	}
 }
 
-func (r *downloadRecorder) cancel(id string) {
+func (r *downloadRecorder) cancel(id downloadID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.canceled[id]++
 }
 
-func (r *downloadRecorder) outcome(id string) (string, float64) {
+func (r *downloadRecorder) outcome(id downloadID) (string, float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state[id], r.bytes[id]
@@ -188,12 +188,12 @@ func (r *downloadRecorder) outcome(id string) (string, float64) {
 func TestDownloadTrackerTellsTheCancelItSentFromAFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		cancel  func(tr *downloadTracker, guid string)
+		cancel  func(tr *downloadTracker, guid downloadID)
 		wantEnd downloadState
 	}{
-		{"no cancel", func(*downloadTracker, string) {}, downloadFailed},
-		{"a cancel sent", func(tr *downloadTracker, guid string) { tr.canceling(guid) }, downloadCanceled},
-		{"a cancel refused", func(tr *downloadTracker, guid string) { tr.canceling(guid)() }, downloadFailed},
+		{"no cancel", func(*downloadTracker, downloadID) {}, downloadFailed},
+		{"a cancel sent", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid) }, downloadCanceled},
+		{"a cancel refused", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid)() }, downloadFailed},
 	} {
 		recorder := newDownloadRecorder(true)
 		tr := newDownloadTracker(recorder.events(), nil, nil)
@@ -462,7 +462,7 @@ func TestHeadlessDownloadWaitsForItsFramesPage(t *testing.T) {
 	})
 	p.engine.ownerWait = 5 * time.Second
 	d := p.downloadTracker(t.Context(), newHeadlessTargets(p))
-	d.cancel = func(string) {
+	d.cancel = func(downloadID) {
 		mu.Lock()
 		canceled++
 		mu.Unlock()
@@ -521,7 +521,7 @@ func TestHeadlessPopupDownloadSettlesInAnyOrder(t *testing.T) {
 		p.engine.ownerWait = wait
 		h := newHeadlessTargets(p)
 		downloads := p.downloadTracker(t.Context(), h)
-		downloads.cancel = func(string) {
+		downloads.cancel = func(downloadID) {
 			mu.Lock()
 			got.canceled++
 			mu.Unlock()

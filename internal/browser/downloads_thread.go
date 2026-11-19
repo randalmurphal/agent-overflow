@@ -67,7 +67,7 @@ type threadDownload struct {
 	// workspace of the page it began in, whose pages may open its file
 	// (listedDownloadFile); path the finished file and file what it was
 	// when the download finished, nil for a file AO does not open.
-	engineID  string
+	engineID  downloadID
 	workspace string
 	path      string
 	file      os.FileInfo
@@ -222,7 +222,7 @@ func (m *Manager) noteDownloadStartLocked(p *managedPage, entry *DownloadInfo, s
 	defer m.downloadsMu.Unlock()
 	m.threadListLocked(p.owner).start(&threadDownload{
 		ThreadDownload: ThreadDownload{ID: entry.key, Source: source, State: downloadStateRunning},
-		engineID:       entry.ID, workspace: p.access.Workspace,
+		engineID:       downloadID(entry.ID), workspace: p.access.Workspace,
 	})
 	return m.noteChangeLocked(p, entry, true)
 }

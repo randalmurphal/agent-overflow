@@ -28,7 +28,7 @@ type adoptionEngine struct {
 	// histories is each popup's history as its attach finds it, newest last.
 	histories map[ids.PageHandle][]string
 	discarded []ids.PageHandle
-	canceled  []string
+	canceled  []downloadID
 	profile   profileHandle
 	// stallDiscard makes a discard wait for its deadline, as an engine
 	// whose browser stopped answering does.
@@ -113,7 +113,7 @@ func (e *adoptionEngine) discards() []ids.PageHandle {
 	return slices.Clone(e.discarded)
 }
 
-func (e *adoptionEngine) cancels() []string {
+func (e *adoptionEngine) cancels() []downloadID {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return slices.Clone(e.canceled)
@@ -160,7 +160,7 @@ func (p *adoptionProfile) AttachPage(ctx context.Context, handle ids.PageHandle,
 	return page, nil
 }
 
-func (p *adoptionProfile) CancelDownload(id string) error {
+func (p *adoptionProfile) CancelDownload(id downloadID) error {
 	p.engine.mu.Lock()
 	p.engine.canceled = append(p.engine.canceled, id)
 	p.engine.mu.Unlock()
@@ -178,17 +178,17 @@ func (p *handledPage) OwnsFrame(frame frameID) bool { return frame == frameID(p.
 
 // popupDownload starts download id in popup, opened by openers, nearest
 // first, and answers whether the Manager took it.
-func popupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id string, openers ...ids.PageHandle) bool {
+func popupDownload(m *Manager, e *adoptionEngine, popup ids.PageHandle, id downloadID, openers ...ids.PageHandle) bool {
 	e.mu.Lock()
 	profile := e.profile
 	e.mu.Unlock()
 	return m.downloadStarted(downloadStart{
-		Frame: frameID(popup), ID: id, URL: "https://example.test/" + id, SuggestedName: id,
+		Frame: frameID(popup), ID: id, URL: "https://example.test/" + string(id), SuggestedName: string(id),
 		Popup: popup, Openers: openers, Profile: profile,
 	}) == downloadAdmitted
 }
 
-func progressOf(id string, state downloadState, received float64) downloadProgress {
+func progressOf(id downloadID, state downloadState, received float64) downloadProgress {
 	progress := downloadProgress{ID: id, Received: received, Total: 100, State: state}
 	if state == downloadCompleted {
 		// Saved where the engine could not name it: completed with no file.
@@ -573,7 +573,7 @@ func TestAParkedDownloadIsBoundedBeforeItsFate(t *testing.T) {
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadInProgress, maxDownloadBytes+1))
 	awaitRemoved(t, file)
-	if got := engine.cancels(); !slices.Equal(got, []string{"dl-1"}) {
+	if got := engine.cancels(); !slices.Equal(got, []downloadID{"dl-1"}) {
 		t.Fatalf("the engine canceled %q before the popup's fate, want dl-1", got)
 	}
 	manager.adoptPopup(engine.popup(opener, "popup"))
@@ -784,7 +784,7 @@ func TestParkedDownloadsGoToTheOpenerAfterTheTimeout(t *testing.T) {
 func TestParkedDownloadsAreBounded(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
 	for i := range maxParkedDownloads {
-		if !popupDownload(manager, engine, "popup", fmt.Sprintf("dl-%d", i), opener) {
+		if !popupDownload(manager, engine, "popup", downloadID(fmt.Sprintf("dl-%d", i)), opener) {
 			t.Fatalf("download %d was refused", i)
 		}
 	}
@@ -792,7 +792,7 @@ func TestParkedDownloadsAreBounded(t *testing.T) {
 		t.Fatal("a download past the popup's bound was taken")
 	}
 	for i := 1; i < maxParkedPopups; i++ {
-		if !popupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("popup-%d", i)), fmt.Sprintf("p-%d", i), opener) {
+		if !popupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("popup-%d", i)), downloadID(fmt.Sprintf("p-%d", i)), opener) {
 			t.Fatalf("popup %d's download was refused", i)
 		}
 	}
@@ -827,7 +827,7 @@ func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if got := engine.cancels(); !slices.Equal(got, []string{"dl-running"}) {
+	if got := engine.cancels(); !slices.Equal(got, []downloadID{"dl-running"}) {
 		t.Fatalf("canceled %v", got)
 	}
 	if popupDownload(manager, engine, "popup", "dl-late", opener) {

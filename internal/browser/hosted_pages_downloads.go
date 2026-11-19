@@ -84,7 +84,7 @@ func (p *hostedPages) end(d *hostedDownload) {
 		for _, id := range r.ended[:over] {
 			p.dropOwnerLocked(id, d.key.page)
 		}
-		r.ended = append([]hostedDownloadID(nil), r.ended[over:]...)
+		r.ended = append([]downloadID(nil), r.ended[over:]...)
 	}
 }
 
@@ -92,7 +92,7 @@ func (p *hostedPages) end(d *hostedDownload) {
 // in flight keeps it, and is answered not admitted; ok is false for a
 // download that no longer runs, or whose page's close or discard was
 // received, which ends it.
-func (p *hostedPages) cancel(id hostedDownloadID) (d *hostedDownload, admitted, ok bool) {
+func (p *hostedPages) cancel(id downloadID) (d *hostedDownload, admitted, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	page, known := p.owners[id]
