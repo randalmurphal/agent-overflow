@@ -290,32 +290,8 @@ CREATE TEMP TABLE v155_undelivered_wakes (
     send_id   TEXT NOT NULL,
     PRIMARY KEY (thread_id, send_id)
 ) WITHOUT ROWID;
-WITH residue(thread_id, send_id, joined) AS (
-  SELECT u.thread_id,
-         CASE WHEN json_valid(u.meta) THEN json_extract(u.meta, '$.sendId') END,
-         COALESCE(CASE WHEN json_valid(u.meta) THEN
-           CASE WHEN json_type(u.meta, '$.joinedSendIds') = 'array' THEN json_extract(u.meta, '$.joinedSendIds') END END, '[]')
-    FROM items u
-   WHERE u.kind = 'user_text' AND u.parent_id = ''
-     AND (CASE WHEN json_valid(u.meta) THEN json_extract(u.meta, '$.pendingFlush') END) = 1
-     AND u.created_at >= (SELECT t.created_at FROM threads t WHERE t.id = u.thread_id)
-     AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index)
-     AND NOT EXISTS (SELECT 1 FROM items later
-                      WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index AND later.parent_id = ''))
-INSERT OR IGNORE INTO v155_undelivered_wakes (thread_id, send_id)
-SELECT thread_id, send_id FROM residue WHERE send_id GLOB 'thread-wake*'
-UNION
-SELECT r.thread_id, j.value FROM residue r JOIN json_each(r.joined) j WHERE j.type = 'text' AND j.value GLOB 'thread-wake*';
-INSERT OR IGNORE INTO v155_undelivered_wakes (thread_id, send_id)
-SELECT q.thread_id, q.send_id
-  FROM flush_queue_items q
- WHERE q.send_id GLOB 'thread-wake*'
-   AND NOT EXISTS (SELECT 1 FROM items d
-        WHERE d.thread_id = q.thread_id AND d.kind = 'user_text' AND d.parent_id = ''
-          AND (CASE WHEN json_valid(d.meta) THEN COALESCE(json_extract(d.meta, '$.provider_item_id'), '') END) <> ''
-          AND (CASE WHEN json_valid(d.meta) THEN COALESCE(json_extract(d.meta, '$.wire_only'), 0) END) != 1
-          AND ((CASE WHEN json_valid(d.meta) THEN json_extract(d.meta, '$.sendId') END) = q.send_id
-            OR q.send_id IN (SELECT j.value FROM json_each(CASE WHEN json_valid(d.meta) THEN d.meta ELSE '{}' END, '$.joinedSendIds') j)));
+` + v155ResidueWakesSQL + `
+` + v155QueuedWakesSQL + `
 
 UPDATE thread_requests SET confirmed_at = delivered_at
  WHERE delivered_at IS NOT NULL
@@ -612,6 +588,61 @@ BEGIN
    WHERE thread_id = NEW.thread_id AND item_id = NEW.item_id AND question_index = NEW.question_index;
 END;
 `
+
+// v155ResidueWakesSQL lists the wakes the residue rule reads undelivered:
+// a top-level user row of the caller marked pendingFlush, no older than its
+// thread, after which the thread has no turn and no top-level row. A row
+// carries a wake only through its send id or its joinedSendIds array, so each
+// arm reads only the rows of the sparse index on one of them, stating that
+// index's predicate. The send-id arm tests the wake prefix on the index
+// entry, so only rows whose send id is a wake are read from the table.
+const v155ResidueWakesSQL = `INSERT OR IGNORE INTO v155_undelivered_wakes (thread_id, send_id)
+SELECT u.thread_id, json_extract(u.meta, '$.sendId') FROM items u
+ WHERE u.kind = 'user_text' AND u.parent_id = '' AND json_valid(u.meta) AND json_extract(u.meta, '$.sendId') IS NOT NULL
+   AND json_extract(u.meta, '$.sendId') GLOB 'thread-wake*'
+   AND ` + v155ResidueRowSQL + `
+UNION
+SELECT u.thread_id, j.value FROM items u CROSS JOIN json_each(u.meta, '$.joinedSendIds') j
+ WHERE u.kind = 'user_text' AND u.parent_id = '' AND json_valid(u.meta) AND json_extract(u.meta, '$.joinedSendIds') IS NOT NULL
+   AND json_type(u.meta, '$.joinedSendIds') = 'array'
+   AND ` + v155ResidueRowSQL + `
+   AND j.type = 'text' AND j.value GLOB 'thread-wake*';`
+
+// v155ResidueRowSQL is whether the user row u is residue: marked
+// pendingFlush, no older than its thread, and its thread's last turn and
+// top-level row.
+const v155ResidueRowSQL = `json_extract(u.meta, '$.pendingFlush') = 1
+   AND u.created_at >= (SELECT t.created_at FROM threads t WHERE t.id = u.thread_id)
+   AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index)
+   AND NOT EXISTS (SELECT 1 FROM items later
+                    WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index AND later.parent_id = '')`
+
+// v155QueuedWakesSQL lists the queued wakes no delivered row of their thread
+// answers for: a top-level user row the provider echoed, not wire-only,
+// carrying the wake's send id or a joinedSendIds member equal to it. Each
+// queued wake probes its thread's entries in the two sparse send-id indexes,
+// one per way a row carries it. The send id is compared without the queue
+// column's text affinity, which the index's expression lacks: with it the
+// probe stops at the thread and reads each of its send-id rows. Every send
+// id compared is a wake's text, so the affinity changes no result.
+const v155QueuedWakesSQL = `INSERT OR IGNORE INTO v155_undelivered_wakes (thread_id, send_id)
+SELECT q.thread_id, q.send_id
+  FROM flush_queue_items q
+ WHERE q.send_id GLOB 'thread-wake*'
+   AND NOT EXISTS (SELECT 1 FROM items d
+        WHERE d.thread_id = q.thread_id AND d.kind = 'user_text' AND d.parent_id = '' AND json_valid(d.meta)
+          AND json_extract(d.meta, '$.sendId') IS NOT NULL AND json_extract(d.meta, '$.sendId') = +q.send_id
+          AND ` + v155DeliveredRowSQL + `)
+   AND NOT EXISTS (SELECT 1 FROM items d
+        WHERE d.thread_id = q.thread_id AND d.kind = 'user_text' AND d.parent_id = '' AND json_valid(d.meta)
+          AND json_extract(d.meta, '$.joinedSendIds') IS NOT NULL
+          AND ` + v155DeliveredRowSQL + `
+          AND q.send_id IN (SELECT j.value FROM json_each(d.meta, '$.joinedSendIds') j));`
+
+// v155DeliveredRowSQL is whether the user row d is one the provider echoed
+// and not a wire-only row.
+const v155DeliveredRowSQL = `COALESCE(json_extract(d.meta, '$.provider_item_id'), '') <> ''
+          AND COALESCE(json_extract(d.meta, '$.wire_only'), 0) != 1`
 
 // fillAssistantLedger records the wake rows of the confirmed deliveries,
 // then counts the agent tree marks the triggers keep from here on.
