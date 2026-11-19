@@ -931,9 +931,11 @@ export class BrowserCompanionAction {
      * "step", and the "new", "reopen", "duplicate" and "download-open" that
      * select the tab they open) and a keyboard command on the active tab
      * ("close-active", "reload-active"), consecutive from 1 in each mount in
-     * the order the user acted. The Manager admits a mount's selections in
-     * that order (internal/browser/selection.go). Zero, from an older
-     * client, applies in arrival order.
+     * the order the user acted. The Manager admits a mount's commands in
+     * that order (internal/browser/selection.go). A keyboard command on the
+     * active tab requires Mount and Select; a selection carries both or
+     * neither, and with neither applies in arrival order. Validated by
+     * parseCompanionAction.
      */
     "select"?: number;
 

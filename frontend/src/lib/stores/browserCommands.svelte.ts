@@ -6,7 +6,7 @@
 // replayBrowserAccelerator). Closing a tab is `pane.close`.
 
 import { registerCommand } from './commandRegistry.svelte';
-import { browserCompanionAct, focusedBrowser, openBrowserTab } from './browserActions';
+import { actOnActiveTab, browserAction, browserCompanionAct, focusedBrowser, openBrowserTab } from './browserActions';
 import { focusBrowserAddressBar } from './browserAddressFocus.svelte';
 
 export function isBrowserPaneFocused(): boolean {
@@ -20,7 +20,7 @@ export function isBrowserPaneFocused(): boolean {
  */
 function stepTab(step: 1 | -1): void {
   const focused = focusedBrowser();
-  if (focused) void browserCompanionAct(focused.threadId, { kind: 'step', index: step });
+  if (focused) void browserCompanionAct(focused.threadId, browserAction.step(step));
 }
 
 const WHEN = 'browserPaneFocused && !overlayOpen';
@@ -61,7 +61,7 @@ export function registerBrowserCommands(): void {
     // in the user's order, after a tab switch still on its way.
     run: () => {
       const focused = focusedBrowser();
-      if (focused) void browserCompanionAct(focused.threadId, { kind: 'reload-active' });
+      if (focused) actOnActiveTab(focused.threadId, 'reload');
     },
   });
 
@@ -92,7 +92,7 @@ export function registerBrowserCommands(): void {
     editableReachable: true,
     run: () => {
       const focused = focusedBrowser();
-      if (focused) void browserCompanionAct(focused.threadId, { kind: 'reopen' });
+      if (focused) void browserCompanionAct(focused.threadId, browserAction.reopen());
     },
   });
 }

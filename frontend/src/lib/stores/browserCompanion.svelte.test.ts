@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserCompanionAct } from './browserActions';
+import { browserAction, browserCompanionAct, toPageId } from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
@@ -290,14 +290,14 @@ describe('browser companion state routing', () => {
         applyBrowserCompanionState(closed(3));
         return open(2);
       });
-      await browserCompanionAct('thread-browser', { kind: 'reload', pageId: 'page-1' });
+      await browserCompanionAct('thread-browser', browserAction.onTab('reload', toPageId('page-1')));
       expect(companionForSource('main', 'browser')).toBeNull();
     });
 
     it('applies an action reply, then a newer frame after it', async () => {
       applyBrowserCompanionState(open(1));
       setBindingMock('BrowserCompanionDo', async () => open(2));
-      await browserCompanionAct('thread-browser', { kind: 'reload', pageId: 'page-1' });
+      await browserCompanionAct('thread-browser', browserAction.onTab('reload', toPageId('page-1')));
       expect(companionForSource('main', 'browser')).not.toBeNull();
       applyBrowserCompanionState(closed(3));
       expect(companionForSource('main', 'browser')).toBeNull();

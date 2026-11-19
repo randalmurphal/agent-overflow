@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { clearCommandRegistry, type CommandContext } from '../stores/commandRegistry.svelte';
 import { registerBrowserCommands } from '../stores/browserCommands.svelte';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest, setBrowserPaneMountForTest } from '../stores/browserCompanion.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../stores/companionPanes.svelte';
 import { createPane, focusPane, resetPanesForTest } from '../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../stores/paneLayout.svelte';
@@ -127,6 +127,7 @@ describe('shell chords', () => {
   });
 
   it('replays the routed chord through the keybinding dispatcher: the default reloads the page', () => {
+    setBrowserPaneMountForTest(THREAD, 'mount-1');
     install();
     advertise();
     focusPane('browser-main');

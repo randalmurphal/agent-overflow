@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserCompanionAct, closeFocusedBrowserTab, openBrowserTab, toggleBrowserFromHeader } from './browserActions';
+import {
+  browserAction,
+  browserCompanionAct,
+  chromeAction,
+  closeFocusedBrowserTab,
+  openBrowserTab,
+  toDownloadId,
+  toPageId,
+  toggleBrowserFromHeader,
+} from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
@@ -90,6 +99,7 @@ describe('pane.close on a browser companion', () => {
       calls.push([threadId, action.kind, action.pageId]);
       return { kind: 'state', threadId, activePageId: '', visible: true, pages: [] };
     });
+    setBrowserPaneMountForTest('thread-browser', 'mount-1');
     focusPane('browser-main');
 
     expect(closeFocusedBrowserTab()).toBe(true);
@@ -128,9 +138,9 @@ describe('pane.close on a browser companion', () => {
     });
 
     it('sends the close at once, numbered after the selection the user made first', () => {
-      void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'b' });
+      void browserCompanionAct('thread-browser', browserAction.select(toPageId('b')));
       expect(closeFocusedBrowserTab()).toBe(true);
-      void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'c' });
+      void browserCompanionAct('thread-browser', browserAction.select(toPageId('c')));
       expect(sent).toEqual([
         { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
         { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
@@ -148,13 +158,35 @@ describe('pane.close on a browser companion', () => {
     });
 
     it('leaves a close from the tab menu on the tab it names, unnumbered', () => {
-      void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'b' });
-      void browserCompanionAct('thread-browser', { kind: 'close', pageId: 'c' });
+      void browserCompanionAct('thread-browser', browserAction.select(toPageId('b')));
+      void browserCompanionAct('thread-browser', browserAction.onTab('close', toPageId('c')));
       expect(sent).toEqual([
         { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
         { kind: 'close', pageId: 'c', mount: undefined, select: undefined },
       ]);
     });
+  });
+
+  // A pane not attached yet has no mount, and its close is not one the
+  // backend can order: it is taken and nothing is sent.
+  it('sends nothing while the pane has no mount', () => {
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-browser', pages: [] })));
+    focusPane('browser-main');
+    expect(closeFocusedBrowserTab()).toBe(true);
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  // The chrome names its actions by kind string; only those it may send
+  // become actions, and a tab command needs its tab.
+  it('turns a chrome kind into an action only with what that kind needs', () => {
+    expect(chromeAction('close', { pageId: 'a' })).toEqual({ kind: 'close', pageId: 'a' });
+    expect(chromeAction('close', {})).toBeNull();
+    expect(chromeAction('reload', { pageId: '' })).toBeNull();
+    expect(chromeAction('close-active', {})).toBeNull();
+    expect(chromeAction('reload-active', { pageId: 'a' })).toBeNull();
+    expect(chromeAction('jar', {})).toBeNull();
+    expect(chromeAction('download-cancel', {})).toBeNull();
+    expect(chromeAction('hide', {})).toEqual({ kind: 'hide' });
   });
 
   it('falls through when the focused pane is not a browser companion', () => {
@@ -167,7 +199,7 @@ describe('pane.close on a browser companion', () => {
     setBindingMock('BrowserCompanionDo', async () => {
       throw failure;
     });
-    expect(await browserCompanionAct('thread-browser', { kind: 'close', pageId: 'page-1' }))
+    expect(await browserCompanionAct('thread-browser', browserAction.onTab('close', toPageId('page-1'))))
       .toEqual({ error: 'page is gone', cause: failure });
   });
 });
@@ -317,14 +349,14 @@ describe('numbering the user\'s tab selections', () => {
   it('numbers selections consecutively per mount when the user acts, from 1 again after a reconnect', async () => {
     let pane = attachBrowserCompanion(THREAD);
     await vi.waitFor(() => expect(pane.current).not.toBeNull());
-    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
-    void browserCompanionAct(THREAD, { kind: 'step', index: 1 });
-    void browserCompanionAct(THREAD, { kind: 'close', pageId: 'a' });
+    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
+    void browserCompanionAct(THREAD, browserAction.step(1));
+    void browserCompanionAct(THREAD, browserAction.onTab('close', toPageId('a')));
     void openBrowserTab(THREAD);
-    void browserCompanionAct(THREAD, { kind: 'reopen' });
-    void browserCompanionAct(THREAD, { kind: 'duplicate', pageId: 'a' });
-    void browserCompanionAct(THREAD, { kind: 'download-open', downloadId: 'd' });
-    void browserCompanionAct(THREAD, { kind: 'restore', pageId: 'a' });
+    void browserCompanionAct(THREAD, browserAction.reopen());
+    void browserCompanionAct(THREAD, browserAction.duplicate(toPageId('a')));
+    void browserCompanionAct(THREAD, browserAction.download('download-open', toDownloadId('d')));
+    void browserCompanionAct(THREAD, browserAction.onTab('restore', toPageId('a')));
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-1', select: 1 },
       { kind: 'step', mount: 'mount-1', select: 2 },
@@ -342,8 +374,8 @@ describe('numbering the user\'s tab selections', () => {
     pane = attachBrowserCompanion(THREAD);
     await vi.waitFor(() => expect(pane.current).not.toBeNull());
     sent = [];
-    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
-    void browserCompanionAct(THREAD, { kind: 'step', index: -1 });
+    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
+    void browserCompanionAct(THREAD, browserAction.step(-1));
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-2', select: 1 },
       { kind: 'step', mount: 'mount-2', select: 2 },
@@ -357,11 +389,11 @@ describe('numbering the user\'s tab selections', () => {
     mounts = ['mount-1', 'mount-1'];
     let pane = attachBrowserCompanion(THREAD);
     await vi.waitFor(() => expect(pane.current).not.toBeNull());
-    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
+    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
     pane.release();
     pane = attachBrowserCompanion(THREAD);
     await vi.waitFor(() => expect(pane.current).not.toBeNull());
-    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
+    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-1', select: 1 },
       { kind: 'activate', mount: 'mount-1', select: 1 },
@@ -370,7 +402,7 @@ describe('numbering the user\'s tab selections', () => {
   });
 
   it('sends a selection made with no pane mounted unnumbered', () => {
-    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
+    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
     expect(sent.map(order)).toEqual([{ kind: 'activate', mount: '', select: 0 }]);
   });
 });

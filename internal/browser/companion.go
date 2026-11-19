@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
 // MoveCompanionPage places one of the thread's tabs, in any state, at
@@ -67,11 +69,11 @@ func (m *Manager) placeTabLocked(threadID, pageID string, index int) (savedMoved
 // it was created or shows why it could not be, or when ctx's numbered
 // selection was passed (selection.go) and nothing opened.
 func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address string) (PageInfo, error) {
-	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
-	if err != nil || turn.passed {
+	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	if err != nil || turn.Standing() == turnorder.Passed {
 		return PageInfo{}, err
 	}
-	defer m.releaseSelectionTurn(turn)
+	defer turn.Release()
 	info, err := m.openUserTab(ctx, access, turn, address, "", -1)
 	if errors.Is(err, errSelectionPassed) {
 		return PageInfo{}, nil
@@ -79,11 +81,11 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 	return info, err
 }
 
-// openUserTab is NewCompanionPage, in turn (awaitSelectionTurn), with the
+// openUserTab is NewCompanionPage, in turn (selectionTurn), with the
 // tab placed at index in tab order (negative appends it) and given label.
 // It answers errSelectionPassed, opening nothing, when the turn's pane
 // detached before the tab was added.
-func (m *Manager) openUserTab(ctx context.Context, access Access, turn *selectionTurn, address, label string, index int) (PageInfo, error) {
+func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorder.Turn, address, label string, index int) (PageInfo, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return PageInfo{}, fmt.Errorf("browser: invalid caller scope")
 	}
@@ -120,7 +122,11 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, turn *selectio
 // ctx's numbered selection takes its turn in the user's order first
 // (selection.go); a passed one changes and restores nothing.
 func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
-	selected, err := m.selectTab(ctx, access, selectionOf(ctx), strings.TrimSpace(pageID))
+	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	if err != nil {
+		return err
+	}
+	selected, err := m.selectTab(access, turn, strings.TrimSpace(pageID))
 	if err != nil || selected == "" {
 		return err
 	}
@@ -149,7 +155,11 @@ func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access,
 // the first tab and a backward one the last. Then it is ActivateCompanionPage,
 // in the user's order with the mount's other selections (selection.go).
 func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
-	selected, err := m.selectTabWhere(ctx, access, selectionOf(ctx), func(tabs []threadTab, active string) int {
+	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	if err != nil {
+		return err
+	}
+	selected, err := m.selectTabWhere(access, turn, func(tabs []threadTab, active string) int {
 		n := len(tabs)
 		if n == 0 || step == 0 {
 			return -1

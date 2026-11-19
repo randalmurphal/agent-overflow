@@ -1,5 +1,5 @@
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
-import { browserCompanionAct, type BrowserActionFailure } from './browserActions';
+import { browserCompanionAct, chromeAction, type BrowserActionFailure } from './browserActions';
 import { browserCompanionState, browserPaneOpen, canUseNativeBrowser } from './browserCompanion.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { formatBytes } from '../utils/formatBytes';
@@ -77,7 +77,9 @@ export function downloadSourceHost(download: BrowserDownload): string {
  * toast when the thread has no pane open here (an action from a toast).
  */
 async function act(threadId: string, kind: string, downloadId?: string): Promise<BrowserActionFailure | null> {
-  const failure = await browserCompanionAct(threadId, { kind, downloadId });
+  const action = chromeAction(kind, { downloadId });
+  if (!action) return null;
+  const failure = await browserCompanionAct(threadId, action);
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
   return failure;
 }

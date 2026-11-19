@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/turnorder"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -234,13 +235,13 @@ type Manager struct {
 	// and its putting the closed tab back (ReopenClosedTab). Production
 	// leaves it nil.
 	reopenRefused func()
-	// selectionGapTimer starts one wait of a selection for its predecessors
-	// (awaitSelectionTurn) and answers its expiry and stop. A test seam;
-	// production uses newSelectionGapTimer.
-	selectionGapTimer func() (<-chan time.Time, func() bool)
-	// selectionAdmitted is a test seam run between a selection's admission
-	// and its commit (awaitSelectionTurn). Production leaves it nil.
-	selectionAdmitted func(sel Selection)
+	// selectionGapTimer starts one wait of a numbered command for its
+	// predecessors (turnorder). A test seam; production uses
+	// turnorder.NewGapTimer.
+	selectionGapTimer turnorder.GapTimer
+	// selectionAdmitted is a test seam run between a numbered command's
+	// admission and its commit (awaitTurn). Production leaves it nil.
+	selectionAdmitted func(sel Numbered)
 	// reopenPopped is a test seam run between a reopen's pop of its closed
 	// tab and the tab's add (ReopenClosedTab). Production leaves it nil.
 	reopenPopped func()
@@ -446,7 +447,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		agentLinger:   agentActivityLinger,
 		recentLaunch:  uuid.NewString(),
 	}
-	m.selectionGapTimer = newSelectionGapTimer
+	m.selectionGapTimer = turnorder.NewGapTimer
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
 		PopupOpened:       m.adoptPopup,

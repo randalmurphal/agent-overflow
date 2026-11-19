@@ -7,7 +7,7 @@
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
-  import { browserCompanionAct, openBrowserTab } from '../../stores/browserActions';
+  import { browserCompanionAct, chromeAction, openBrowserTab } from '../../stores/browserActions';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
@@ -116,7 +116,8 @@
   async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId) return;
-    await browserCompanionAct(threadId, { kind, pageId, address: nextAddress, index });
+    const action = chromeAction(kind, { pageId, address: nextAddress, index });
+    if (action) await browserCompanionAct(threadId, action);
   }
 
   // A suspended page (its session went idle, or the app restarted) has no

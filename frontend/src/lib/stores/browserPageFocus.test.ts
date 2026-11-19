@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserCompanionAct } from './browserActions';
+import { browserAction, browserCompanionAct, toPageId } from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
@@ -206,7 +206,7 @@ describe('handing the keyboard to the browser page', () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => {
       throw new Error('navigation refused');
     }));
-    await browserCompanionAct(THREAD, { kind: 'navigate', pageId: 'a', address: 'https://example.test/x' });
+    await browserCompanionAct(THREAD, browserAction.navigate(toPageId('a'), 'https://example.test/x'));
     applyBrowserCompanionState(refusal(3));
     expect(pane.current?.actionError).toBe('navigation refused');
     answerFocus();
@@ -216,7 +216,7 @@ describe('handing the keyboard to the browser page', () => {
     deferFocusAnswers();
     const fourth = focusBrowserPage(THREAD, 'a', area);
     setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
-    await browserCompanionAct(THREAD, { kind: 'navigate', pageId: 'a', address: 'https://example.test/y' });
+    await browserCompanionAct(THREAD, browserAction.navigate(toPageId('a'), 'https://example.test/y'));
     applyBrowserCompanionState(refusal(4));
     expect(pane.current?.actionError).toBe('refused 4');
     answerFocus();

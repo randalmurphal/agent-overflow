@@ -155,6 +155,7 @@ describe('browser commands', () => {
   });
 
   it('dispatch the chords only for the focused browser pane', () => {
+    setBrowserPaneMountForTest(THREAD, 'mount-1');
     focusPane('main');
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true }), ctx(), { isMac: false })).toBe(false);
     expect(dispatchKey(key({ key: 't', ctrlKey: true }), ctx(), { isMac: false })).toBe(false);

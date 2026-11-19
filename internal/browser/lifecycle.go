@@ -7,6 +7,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
 // Page lifecycle. A tab appears in the thread's state the moment a page is
@@ -141,7 +143,7 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 // hold that adds the tab and commits the turn, and a failure stays on the
 // tab. A turn whose pane detached meanwhile opens nothing and answers
 // errSelectionPassed. An agent's tab has no turn.
-func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int) (*managedPage, error) {
+func (m *Manager) createPageAt(ctx context.Context, access Access, turn *turnorder.Turn, index int) (*managedPage, error) {
 	user := turn != nil
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
@@ -152,7 +154,7 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	owner := access.ThreadID
 
 	m.mu.Lock()
-	if user && !m.commitSelectionLocked(turn) {
+	if user && turn.Commit() == turnorder.Passed {
 		m.mu.Unlock()
 		return nil, errSelectionPassed
 	}

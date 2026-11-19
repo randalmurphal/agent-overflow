@@ -150,6 +150,120 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 	}
 }
 
+// The decoder accepts an action only with the fields its kind requires: a
+// named command names its tab, a keyboard command on the active tab names
+// none and carries its mount and number, a selection carries both of those
+// or neither, and nothing else is numbered.
+func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		action BrowserCompanionAction
+		ok     bool
+	}{
+		{BrowserCompanionAction{Kind: "close", PageID: "p"}, true},
+		{BrowserCompanionAction{Kind: "close"}, false},
+		{BrowserCompanionAction{Kind: "reload"}, false},
+		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1}, true},
+		{BrowserCompanionAction{Kind: "reload-active", Mount: "m", Select: 4}, true},
+		{BrowserCompanionAction{Kind: "close-active"}, false},
+		{BrowserCompanionAction{Kind: "close-active", Mount: "m"}, false},
+		{BrowserCompanionAction{Kind: "close-active", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "close-active", PageID: "p", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "reload-active", PageID: "p", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "activate", PageID: "p"}, true},
+		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m", Select: 2}, true},
+		{BrowserCompanionAction{Kind: "activate", PageID: "p", Select: 2}, false},
+		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m"}, false},
+		{BrowserCompanionAction{Kind: "new"}, true},
+		{BrowserCompanionAction{Kind: "new", PageID: "p"}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "show"}, true},
+		{BrowserCompanionAction{Kind: "show", PageID: "p"}, true},
+		{BrowserCompanionAction{Kind: "download-open", DownloadID: "d", Mount: "m", Select: 1}, true},
+		{BrowserCompanionAction{Kind: "download-cancel"}, false},
+		{BrowserCompanionAction{Kind: "jar"}, false},
+		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m", Intent: 1}, true},
+		{BrowserCompanionAction{Kind: "focus-page-withdraw", Mount: "m", Intent: 1}, true},
+		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m"}, false},
+		{BrowserCompanionAction{Kind: "Close-Active", Mount: "m", Select: 1}, true},
+		{BrowserCompanionAction{Kind: "shut"}, false},
+	} {
+		_, err := parseCompanionAction(tc.action)
+		if (err == nil) != tc.ok {
+			t.Errorf("%+v: accepted %v, want %v (%v)", tc.action, err == nil, tc.ok, err)
+		}
+	}
+}
+
+// Every spec'd kind has a handler: none reaches BrowserCompanionDo's
+// default.
+func TestEveryCompanionKindHasAHandler(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-kinds")
+	for name, spec := range companionSpecs {
+		action := BrowserCompanionAction{Kind: name}
+		if spec.target == targetNamed || spec.target == targetOptional {
+			action.PageID = "none"
+		}
+		if spec.target == targetActive {
+			action.Mount, action.Select = "none", 1
+		}
+		if spec.focus {
+			action.Mount, action.Intent = "none", 1
+		}
+		if spec.download {
+			action.DownloadID = "none"
+		}
+		if spec.kind == kindJar {
+			action.Jar = "none"
+		}
+		if _, err := parseCompanionAction(action); err != nil {
+			t.Fatalf("%s: the probe does not parse: %v", name, err)
+		}
+		_, err := app.BrowserCompanionDo(t.Context(), thread.ID, action)
+		if errors.Is(err, errNoCompanionHandler) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+// A keyboard command on the active tab carries its mount and number to the
+// Manager, which closes the tab active at its turn.
+func TestBrowserCompanionCloseActiveClosesTheActiveTab(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-targets")
+	ctx := t.Context()
+	first, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"}); err != nil {
+		t.Fatal(err)
+	}
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", PageID: first.PageID, Mount: mount.ID, Select: 1}); err == nil {
+		t.Fatal("a keyboard close naming a tab was accepted")
+	}
+	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", Mount: mount.ID, Select: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Pages) != 1 || state.Pages[0].ID != first.PageID {
+		t.Fatalf("after the keyboard close: %+v, want a alone", state.Pages)
+	}
+}
+
 // Every kind that selects a tab or acts on the active one carries its mount
 // and number to the Manager, which admits each number once: a number
 // already admitted does nothing.

@@ -32,9 +32,11 @@ type BrowserCompanionAction struct {
 	// "step", and the "new", "reopen", "duplicate" and "download-open" that
 	// select the tab they open) and a keyboard command on the active tab
 	// ("close-active", "reload-active"), consecutive from 1 in each mount in
-	// the order the user acted. The Manager admits a mount's selections in
-	// that order (internal/browser/selection.go). Zero, from an older
-	// client, applies in arrival order.
+	// the order the user acted. The Manager admits a mount's commands in
+	// that order (internal/browser/selection.go). A keyboard command on the
+	// active tab requires Mount and Select; a selection carries both or
+	// neither, and with neither applies in arrival order. Validated by
+	// parseCompanionAction.
 	Select uint64 `json:"select,omitempty"`
 	// DownloadID names one of the thread's downloads (ThreadDownload.ID)
 	// for "download-cancel", "download-reveal" and "download-open".
@@ -179,6 +181,10 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
 	}
+	cmd, err := parseCompanionAction(action)
+	if err != nil {
+		return appbrowser.CompanionEvent{}, err
+	}
 	flight := a.beginCompanionAction(threadID)
 	access, err := a.browserAccess(threadID)
 	if err != nil {
@@ -187,87 +193,96 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	// newPage is the page a "new" opened, named in the answer so the client
 	// that asked can tell its own tab from one an agent opened meanwhile.
 	newPage := ""
-	ctx = appbrowser.WithSelection(ctx, appbrowser.Selection{Mount: strings.TrimSpace(action.Mount), Seq: action.Select})
-	switch strings.ToLower(strings.TrimSpace(action.Kind)) {
-	case "navigate":
-		_, err = a.browser.manager.NavigateCompanion(ctx, access, action.PageID, action.Address)
-	case "back", "forward":
-		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
-	case "reload":
+	if cmd.numbered && cmd.kind != kindCloseActive && cmd.kind != kindReloadActive {
+		ctx = appbrowser.WithSelection(ctx, cmd.place)
+	}
+	m := a.browser.manager
+	switch cmd.kind {
+	case kindNavigate:
+		_, err = m.NavigateCompanion(ctx, access, cmd.page, cmd.address)
+	case kindBack:
+		_, err = m.History(ctx, access, cmd.page, "back")
+	case kindForward:
+		_, err = m.History(ctx, access, cmd.page, "forward")
+	case kindReload:
 		// A suspended or crashed tab is restored at its address.
-		err = a.browser.manager.ReloadCompanionPage(ctx, access, action.PageID)
-	case "reload-active":
+		err = m.ReloadCompanionPage(ctx, access, cmd.page)
+	case kindReloadActive:
 		// The keyboard's reload: the tab active at its turn in the user's
 		// order, which the Manager resolves.
-		err = a.browser.manager.ReloadActiveCompanionPage(ctx, access)
-	case "stop":
-		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
-	case "activate":
-		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
-	case "restore":
+		var outcome appbrowser.ActiveOutcome
+		outcome, err = m.ReloadActiveCompanionPage(ctx, access, cmd.place)
+		err = errors.Join(err, activeOutcomeError(outcome))
+	case kindStop:
+		err = m.StopCompanionLoad(ctx, access, cmd.page)
+	case kindActivate:
+		err = m.ActivateCompanionPage(ctx, access, cmd.page)
+	case kindRestore:
 		// The pane's own request for the suspended tab it shows.
-		err = a.browser.manager.RestoreActiveCompanionPage(ctx, access, action.PageID)
-	case "step":
-		err = a.browser.manager.StepCompanionPage(ctx, access, action.Index)
-	case "move":
-		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
-	case "show":
+		err = m.RestoreActiveCompanionPage(ctx, access, cmd.page)
+	case kindStep:
+		err = m.StepCompanionPage(ctx, access, cmd.index)
+	case kindMove:
+		err = m.MoveCompanionPage(access, cmd.page, cmd.index)
+	case kindShow:
 		visible := true
-		_, err = a.browser.manager.Visibility(ctx, access, &visible, action.PageID)
-	case "hide":
+		_, err = m.Visibility(ctx, access, &visible, cmd.page)
+	case kindHide:
 		visible := false
-		_, err = a.browser.manager.Visibility(ctx, access, &visible, "")
-	case "new":
+		_, err = m.Visibility(ctx, access, &visible, "")
+	case kindNew:
 		// Address, when set, is navigated in the new tab (a mod-clicked link).
 		var page appbrowser.PageInfo
-		page, err = a.browser.manager.NewCompanionPage(ctx, access, action.Address)
+		page, err = m.NewCompanionPage(ctx, access, cmd.address)
 		newPage = page.ID
-	case "close":
+	case kindClose:
 		// Answers once the tab is gone; a teardown failure after it is a
 		// "teardown" event.
-		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
-	case "close-active":
+		err = m.CloseCompanionPage(ctx, access, cmd.page)
+	case kindCloseActive:
 		// The keyboard's close: the tab active at its turn in the user's
 		// order, which the Manager resolves.
-		err = a.browser.manager.CloseActiveCompanionPage(ctx, access)
-	case "close-others":
-		err = a.browser.manager.CloseCompanionTabs(ctx, access, action.PageID, appbrowser.CloseOtherTabs)
-	case "close-right":
-		err = a.browser.manager.CloseCompanionTabs(ctx, access, action.PageID, appbrowser.CloseTabsRight)
-	case "reopen":
+		var outcome appbrowser.ActiveOutcome
+		outcome, err = m.CloseActiveCompanionPage(ctx, access, cmd.place)
+		err = errors.Join(err, activeOutcomeError(outcome))
+	case kindCloseOthers:
+		err = m.CloseCompanionTabs(ctx, access, cmd.page, appbrowser.CloseOtherTabs)
+	case kindCloseRight:
+		err = m.CloseCompanionTabs(ctx, access, cmd.page, appbrowser.CloseTabsRight)
+	case kindReopen:
 		// The most recently closed tab, at its place; nothing with none.
-		err = a.browser.manager.ReopenClosedTab(ctx, access)
-	case "duplicate":
-		err = a.browser.manager.DuplicateCompanionPage(ctx, access, action.PageID)
-	case "devtools":
-		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
-	case "jar":
+		err = m.ReopenClosedTab(ctx, access)
+	case kindDuplicate:
+		err = m.DuplicateCompanionPage(ctx, access, cmd.page)
+	case kindDevtools:
+		err = m.OpenPaneDevTools(ctx, access, cmd.page)
+	case kindJar:
 		// Closes the live tabs and reopens their addresses in the new jar.
-		err = a.browser.manager.SetJar(access, action.Jar)
-	case "download-cancel":
-		err = a.browser.manager.CancelThreadDownload(access, action.DownloadID)
-	case "download-reveal":
-		err = a.browser.manager.RevealThreadDownload(ctx, access, action.DownloadID)
-	case "download-open":
+		err = m.SetJar(access, cmd.jar)
+	case kindDownloadCancel:
+		err = m.CancelThreadDownload(access, cmd.download)
+	case kindDownloadReveal:
+		err = m.RevealThreadDownload(ctx, access, cmd.download)
+	case kindDownloadOpen:
 		// A new tab showing the finished file.
 		var page appbrowser.PageInfo
-		page, err = a.browser.manager.OpenThreadDownload(ctx, access, action.DownloadID)
+		page, err = m.OpenThreadDownload(ctx, access, cmd.download)
 		newPage = page.ID
-	case "downloads-clear":
-		a.browser.manager.ClearThreadDownloads(access)
-	case "focus-page", "focus-page-withdraw":
+	case kindDownloadsClear:
+		m.ClearThreadDownloads(access)
+	case kindFocusPage, kindFocusPageWithdraw:
 		// Keyboard focus moves within the window the native view lives in,
 		// so only that window may ask for it or take the request back.
 		switch {
 		case !transport.ConnStateFromContext(ctx).HostWindow():
 			err = errBrowserPaneNotHostWindow
-		case action.Kind == "focus-page":
-			err = a.browser.manager.FocusCompanionPage(access, action.Mount, action.PageID, action.Intent)
+		case cmd.kind == kindFocusPage:
+			err = m.FocusCompanionPage(access, cmd.mount, cmd.page, cmd.intent)
 		default:
-			err = a.browser.manager.WithdrawCompanionPageFocus(access, action.Mount, action.Intent)
+			err = m.WithdrawCompanionPageFocus(access, cmd.mount, cmd.intent)
 		}
 	default:
-		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
+		err = fmt.Errorf("%w: kind %d", errNoCompanionHandler, cmd.kind)
 	}
 	// An action on a thread with no page opens one, and a failed action can
 	// still have opened it.

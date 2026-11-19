@@ -42,13 +42,13 @@ mode. Product behavior and authority are defined in
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab
   stack and the tab menu's actions are `companion_tabs.go`. A pane's tab
-  selections, and the keyboard's commands on the active tab, are admitted
-  per mount in the user's order (`selection.go`): each takes its turn before
-  the lock hold that sets the active tab, adds the tab or resolves the
-  active one, and that hold ends it through `commitSelectionLocked`, which
-  answers whether the turn's pane is still there to act for. Page work
-  never delays the next turn, and the one function that selects answers
-  the tab its caller may restore.
+  selections, and the keyboard's commands on the active tab
+  (`active_commands.go`), are admitted per mount in the user's order
+  (`selection.go` over `turnorder`, which owns the numbering): each takes
+  its turn before the lock hold that sets the active tab, adds the tab or
+  resolves the active one, and that hold ends it with `Turn.Commit`, whose
+  standing says whether to act. Page work never delays the next turn, and
+  the one function that selects answers the tab its caller may restore.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. A presentation pass decides its show in one `Manager.mu` hold after
   its hides and any layout wait (`decidePresentation`), against the
