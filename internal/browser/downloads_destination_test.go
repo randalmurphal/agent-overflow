@@ -360,6 +360,39 @@ func TestAnEarlierReleasesDownloadFileIsNotOpenable(t *testing.T) {
 	}
 }
 
+// A finished artifact download its workspace's directory cannot take fails
+// with nothing kept: the engine's file goes and neither quota holds its
+// bytes, so repeated failures use up no allowance.
+func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	authority := authorityOf(t, manager, access)
+	if err := os.RemoveAll(authority.downloadDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authority.downloadDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceBefore, artifactsBefore := authority.downloadBytes.Load(), manager.artifactBytes.Load()
+	startDownload(t, manager, access, page, "report.pdf", 5)
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if item.State != downloadStateFailed {
+		t.Fatalf("the download lists as %+v, want failed", item.ThreadDownload)
+	}
+	manager.mu.Lock()
+	var engineDir string
+	for _, scope := range manager.scopes {
+		engineDir = scope.downloadDir
+	}
+	manager.mu.Unlock()
+	awaitRemoved(t, filepath.Join(engineDir, filepath.Base(item.engineID)))
+	if got := authority.downloadBytes.Load(); got != workspaceBefore {
+		t.Fatalf("the workspace holds %d download bytes, want %d", got, workspaceBefore)
+	}
+	if got := manager.artifactBytes.Load(); got != artifactsBefore {
+		t.Fatalf("the artifact root holds %d bytes, want %d", got, artifactsBefore)
+	}
+}
+
 // With neither hard links nor a no-replace rename, or a staging directory
 // on another filesystem, the download fails on its row with the reason:
 // nothing is copied, nothing appears in Downloads, and the staged file goes.

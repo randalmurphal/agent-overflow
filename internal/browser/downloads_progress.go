@@ -89,11 +89,6 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	switch event.State {
 	case downloadCompleted:
 		entry.State = downloadStateCompleted
-		if p.authority != nil && entry.reservedBytes > 0 {
-			p.authority.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
-			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
-			entry.reservedBytes = 0
-		}
 		if saving == downloadsSavedByEngine {
 			// The engine saved it in the user's Downloads folder, where it
 			// stays. Only the regular file the engine reported, as it is
@@ -121,14 +116,21 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			}
 			if !pathInside(scope.downloadDir, source) {
 				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
-				break
-			}
-			destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName)
-			if moveErr != nil {
+			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
 				entry.State, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
 			}
+		}
+		if entry.State == downloadStateCompleted && p.authority != nil && entry.reservedBytes > 0 {
+			// The kept file holds its size of the quotas from here.
+			p.authority.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
+			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
+			entry.reservedBytes = 0
+		} else if entry.State != downloadStateCompleted {
+			// Nothing is kept: the engine's file goes with its reservation.
+			m.releaseDownloadLocked(p, entry)
+			removePartial = true
 		}
 	case downloadCanceled:
 		// An engine reports the cancel AO asked for and its own failures (a
