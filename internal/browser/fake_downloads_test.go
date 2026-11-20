@@ -2,7 +2,11 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -10,7 +14,7 @@ import (
 // A download is cancellable from its start: a cancel made while the start
 // is admitted (an immediate cancel of the row the admission lists) is
 // taken, the download reports that cancel as its one end after its start,
-// and it neither stays running nor finishes.
+// with no bytes, and it neither writes, stays running nor finishes.
 func TestAFakeDownloadCanceledDuringItsAdmissionEnds(t *testing.T) {
 	for _, flags := range [][]string{{"hold"}, nil} {
 		t.Run(fmt.Sprintf("flags %v", flags), func(t *testing.T) {
@@ -18,13 +22,19 @@ func TestAFakeDownloadCanceledDuringItsAdmissionEnds(t *testing.T) {
 			engine.saving = downloadsAsArtifacts
 			var profile *fakeProfile
 			var states []downloadState
+			var received []float64
 			var cancelErr error
+			var id downloadID
 			engine.events = engineEvents{
 				DownloadStarted: func(start downloadStart) downloadAdmission {
+					id = start.ID
 					cancelErr = profile.CancelDownload(start.ID)
 					return downloadAdmitted
 				},
-				DownloadProgress: func(progress downloadProgress) { states = append(states, progress.State) },
+				DownloadProgress: func(progress downloadProgress) {
+					states = append(states, progress.State)
+					received = append(received, progress.Received)
+				},
 			}
 			if err := engine.Start(t.Context()); err != nil {
 				t.Fatal(err)
@@ -42,8 +52,11 @@ func TestAFakeDownloadCanceledDuringItsAdmissionEnds(t *testing.T) {
 			if cancelErr != nil {
 				t.Fatalf("the cancel made during the admission answered %v", cancelErr)
 			}
-			if len(states) != 1 || states[0] != downloadCanceled {
-				t.Fatalf("the download reported %q, want its cancel alone", states)
+			if len(states) != 1 || states[0] != downloadCanceled || received[0] != 0 {
+				t.Fatalf("the download reported %q with %v bytes, want its cancel alone with none", states, received)
+			}
+			if _, err := os.Lstat(filepath.Join(profile.downloadDir, string(id))); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the download canceled at its start wrote its file: %v", err)
 			}
 			profile.mu.Lock()
 			running := len(profile.held)
