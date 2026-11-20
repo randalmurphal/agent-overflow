@@ -597,11 +597,13 @@ with the user's own and run beside them:
   with no source, then the contexts joined by newlines (2.1.261 to
   2.1.283, read from the bundle). The transcript keeps every earlier
   run's block, so a request after a resume carries the start's block too.
-- A print-mode process runs its start's hooks before it reads any input
-  (2.1.88 awaits them inside its resume load); its first `system/init`
+- A print-mode process runs its start's hooks before it answers any
+  control request (2.1.88 awaits them inside its resume load; on 2.1.325
+  a 5 s hook delays the first answer by 5 s); its first `system/init`
   comes with its first input
-  ([§Start outcome](#start-outcome-before-the-first-input)). A print-mode resume adds its hooks' messages to the loaded
-  conversation in memory, not to the transcript (read from the bundle).
+  ([§Start outcome](#start-outcome-before-the-first-input)). A print-mode
+  resume adds its hooks' messages to the loaded conversation in memory,
+  not to the transcript (read from the bundle).
 - Each run also writes `attachment` rows to the session JSONL: a
   `hook_success` per hook (`hookName` `SessionStart:<source>`) and one
   `hook_additional_context` holding the contexts. They stay in the
@@ -5375,53 +5377,60 @@ resume) is therefore not a hazard.
 
 ## Start outcome before the first input
 
-Read from the 2.1.88 source and the 2.1.325 bundle; not spike-verified.
+Spike-verified on 2.1.325 (2026-11-19, throwaway home, no credentials, no
+prompt sent) unless a line says it is read from the 2.1.88 source or the
+2.1.325 bundle.
 
-- A print-mode `--resume` writes no `system/init` until it takes its
-  first input. 2.1.88 yields init only inside `submitMessage`
-  (`QueryEngine.ts:540`), once per input. The 2.1.325 bundle has two
-  init yields, both in its per-input submit; one runs before input
-  processing, but only for an orphaned permission or a handed-off turn.
-- The resume load finishes before the message loop starts, and the
-  message loop is what answers control requests. 2.1.88 awaits
-  `loadInitialMessages` (`cli/print.ts:686`) before `runHeadlessStreaming`
-  (`:864`) starts the structured-input loop (`:2816`). 2.1.325 starts its
-  loop from the loaded messages and logs `cli_message_loop_started`
-  there. So a process's first `control_response`, success or error,
-  proves the load returned, and a load that fails writes its error
-  `result` before any answer. This ordering is version-sensitive: a CLI
-  that answered control requests while it loaded would answer before a
-  not-found error.
-- A load that fails writes `result{subtype:"error_during_execution",
-  num_turns:0, errors:[...]}`. 2.1.88 then exits
-  (`gracefulShutdownSync(1)`, `cli/print.ts:5100`); 2.1.170 and later
-  keep the process alive.
+- A print-mode `--resume` writes no `system/init` before its first
+  input. Source: 2.1.88 yields init only inside `submitMessage`
+  (`QueryEngine.ts:540`), once per input; the 2.1.325 bundle yields it
+  before input processing only for an orphaned permission or a
+  handed-off turn.
+- The CLI answers control requests only once its resume load returned.
+  An `mcp_status` written at start is answered 0.75 to 5.2 s after
+  start, and 5.2 to 12.2 s with a 200 MB transcript, whose reads always
+  ended before the answer. A SessionStart hook that sleeps 5 s delays the
+  answer by its whole run; a slow MCP server does not (the answer arrives
+  with that server pending). Source: 2.1.88 awaits `loadInitialMessages`
+  (`cli/print.ts:686`) before `runHeadlessStreaming` (`:864`) starts the
+  structured-input loop (`:2816`).
+- A load that finds no conversation writes a stderr line and
+  `result{subtype:"error_during_execution", is_error:true, num_turns:0,
+  errors:["No conversation found with session ID: <id>"]}`, then closes
+  stdout and stderr and exits 1 about 0.17 s later, with no input. An
+  `mcp_status` written at start is never answered. 2.1.88 exits the same
+  way (source: `gracefulShutdownSync(1)`, `cli/print.ts:5100`).
+- `get_context_usage` is answered before any input, about 0.7 s after it
+  is written, without an API call. Its `messageBreakdown` counts the
+  loaded conversation by kind; the table gives the counts. A chain that
+  ends on a user-side row counts 12 assistant tokens, probably a
+  synthetic reply the CLI appends (not verified). `messageBreakdown` is
+  optional in the 2.1.88 schema, and a CLI that lacks a subtype answers
+  an error, `Unsupported control request subtype: <subtype>` (source:
+  `cli/print.ts:4022`).
 
-What each "nothing to resume" shape does:
-
-| Transcript | CLI behavior | AO outcome |
-|---|---|---|
-| No file, an empty file, or furniture rows only | The load returns nothing: `No conversation found with session ID: <id>` (2.1.88 `cli/print.ts:5084-5100`, which treats an empty load like a missing one; 2.1.325 returns nothing for a zero-size file) | Not found |
-| An id that is no session id | `--resume requires a valid session ID or session title ...` | Not found |
-| System or attachment rows only, such as a lone compact boundary | No user or assistant leaf, so the load returns nothing and the CLI reports no conversation. A 2.1.325 cleared-to-empty session, and its fallback when no leaf is found, may load instead; unverified | Not found, unless the CLI loads it |
-| A crash tail whose user prompt survives the filters | Resumes with that history | Reusable |
-| A chain the resume filters drop entirely (only dangling `tool_use`, thinking-only or whitespace-only assistant rows, or a broken chain), or a session cleared to empty | 2.1.325 proceeds on a local id with an empty context and answers as loaded; 2.1.88 errors unless a resume hook adds messages | Reusable on 2.1.325: open |
-
-The last row is open: AO cannot yet tell an empty-context load from a
-real one before the first send. A spike would have to show that
-`get_context_usage` before any input reports zero user, assistant,
-tool-call and tool-result tokens in `messageBreakdown` for such a resume
-and nonzero for a real one, makes no API call, and holds across the
-versions AO supports.
+| Transcript | CLI behavior | `messageBreakdown` | AO outcome |
+|---|---|---|---|
+| No file, an empty file, or furniture rows only (`custom-title`, `mode`, `last-prompt`, `queue-operation`) | `No conversation found`, then exit 1 | none | Unavailable |
+| An id that is no session id | `--resume requires a valid session ID or session title ...` (source, not spiked) | none | Unavailable |
+| `system` and `attachment` rows only | Loads and answers | attachment 61, assistant 12, user 0 | Unavailable |
+| One whitespace-only assistant row, no user row | Loads and answers | all 0 | Unavailable |
+| Crash tail: a user prompt, then an assistant row with a dangling `tool_use` | Loads; the `tool_use` is kept | user 4, tool call 23, tool result 68, assistant 12 | Reusable |
+| A compact boundary and its summary row | Loads | user 29, assistant 12 | Reusable |
+| The deferred `api_error` fixture shape | Loads | user 13, tool call 21, tool result 18, assistant 12 (assistant count medium confidence) | Reusable |
 
 AO enforcement: `Session.AwaitStart` resolves from the read loop. A
 `system/init` on the session `--resume` named, or the CLI's answer to an
-`mcp_status` control request it sends, proves the load; a pre-init error
-`result` is a startup failure, and only the two "not found" messages
-above are `ErrSessionNotFound`. The read loop marks that `result`
-`FailureReasonStartup`, which the App reads to reap the session. The wait
-is bounded only by its caller's context; the workflow runner's start
-deadline bounds it there.
+`mcp_status` control request it sends, proves the load. A pre-init error
+`result` is a startup failure, which the read loop marks
+`FailureReasonStartup` for the App to reap the session; only the two "not
+found" messages are `ErrSessionNotFound`. The frame decides, not the exit
+after it: the read loop drains stdout to EOF before it ends. A resume that
+loaded is then read once with `get_context_usage`, and zero
+`userMessageTokens` is `ErrConversationEmpty`. An error answer, an answer
+without the count and a malformed one keep the load, since none says the
+conversation is empty. Every wait is bounded only by its caller's context;
+the workflow runner's start deadline bounds it there.
 
 ---
 

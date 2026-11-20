@@ -60,6 +60,10 @@ control channel aligned with verified provider behavior.
   or `isSidechain`) and status/result envelopes. AO verifies
   a user message against that leaf, so a turn that wrote tool rows must not
   chain the next echo past them.
+- Claude answers `get_context_usage` with a `messageBreakdown` whose
+  `userMessageTokens` counts the conversation's user rows: its transcript under
+  `AO_HARNESS_TRANSCRIPT_HOME`, or this process's own without one. A workflow
+  resume refuses a conversation that counts none.
 - Codex reports a parseable app-server version. Queue mutation methods must return explicit errors: Agent Overflow owns
   mid-turn dispatch through `turn/steer`.
 - Persist Codex thread history mode under `AO_HARNESS_TRANSCRIPT_HOME` so a new

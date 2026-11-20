@@ -29,8 +29,8 @@ the engine. The engine decides what runs next.
   provider context still exists and belongs to the phase thread. A cold
   resume is proven by the provider's own start
   (`SessionHost.StartSessionProvingResume`), never by reading its transcript;
-  only the provider's report that the conversation is gone makes the context
-  unavailable.
+  only the provider's report that the conversation is gone or holds no user
+  message makes the context unavailable.
 - Human takeover detaches automation without discarding the reliability
   deadline and restores the correct schema when control returns.
 

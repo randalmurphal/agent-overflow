@@ -11,7 +11,7 @@ import (
 
 // The proof does not wait on the App's handling of the CLI's frames: with
 // the thread's provider event worker stuck on the init it is handling, the
-// start still proves the session.
+// start still proves the session and reads its content.
 func TestStartSessionProvingResumeIgnoresAStalledEventWorker(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -21,7 +21,13 @@ func TestStartSessionProvingResumeIgnoresAStalledEventWorker(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nprintf '%s\\n' '" + initLine(workflowResumeSession) + "'\nwhile read -r _; do :; done\n"
+	script := "#!/bin/sh\nprintf '%s\\n' '" + initLine(workflowResumeSession) + "'\n" +
+		"while IFS= read -r line; do\n" +
+		"  case \"$line\" in *'\"subtype\":\"get_context_usage\"'*)\n" +
+		"    reqid=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n" +
+		"    printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"%s\",\"response\":%s}}\\n' \"$reqid\" '" + resumeContextUsage + "' ;;\n" +
+		"  esac\n" +
+		"done\n"
 	binary := mockexec.Write(t, filepath.Join(t.TempDir(), "claude-init.sh"), script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)

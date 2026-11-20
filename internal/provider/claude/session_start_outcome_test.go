@@ -19,13 +19,19 @@ func outcomeInit(sessionID string) []byte {
 }
 
 // echoCLI echoes every line it reads, so the test writes the CLI's frames
-// itself and decides when they arrive. It holds each control request it
-// reads and answers it only after a line `answer:<frame>`, writing <frame>
-// first when it is not empty, whichever of the two arrives first.
-const echoCLI = `#!/bin/sh
+// itself and decides when they arrive. It holds each other control request
+// it reads and answers it only after a line `answer:<frame>`, writing <frame>
+// first when it is not empty, whichever of the two arrives first. It answers
+// get_context_usage at once with contextUsage, a control_response whose %s
+// is the request id, or never when contextUsage is empty.
+func echoCLI(contextUsage string) string {
+	return `#!/bin/sh
+usage='` + contextUsage + `'
 pending=""; answer=0; before=""
 while IFS= read -r line; do
 	case "$line" in
+	*'"subtype":"get_context_usage"'*)
+		[ -n "$usage" ] && printf "$usage\n" "$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')" ;;
 	*'"type":"control_request"'*) pending=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p') ;;
 	answer:*) answer=1; before="${line#answer:}" ;;
 	*) printf '%s\n' "$line" ;;
@@ -37,13 +43,26 @@ while IFS= read -r line; do
 	fi
 done
 `
+}
 
-// startEchoSession starts a session on echoCLI.
+// contextUsageAnswer is a get_context_usage answer counting userTokens
+// user-message tokens.
+func contextUsageAnswer(userTokens string) string {
+	return `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"totalTokens":100,"maxTokens":200000,"messageBreakdown":{"toolCallTokens":0,"toolResultTokens":0,"attachmentTokens":61,"assistantMessageTokens":12,"userMessageTokens":` + userTokens + `}}}}`
+}
+
+// startEchoSession starts a session on an echoCLI whose conversation holds a
+// user message.
 func startEchoSession(t *testing.T, cfg Config, onEvent func(provider.ProviderEvent)) *Session {
+	t.Helper()
+	return startEchoSessionAnswering(t, cfg, onEvent, contextUsageAnswer("8"))
+}
+
+func startEchoSessionAnswering(t *testing.T, cfg Config, onEvent func(provider.ProviderEvent), contextUsage string) *Session {
 	t.Helper()
 	cfg.Reaper = procutiltest.Reaper()
 	cfg.Retention = UserHomeRetention(0)
-	cfg.Binary = mockexec.Write(t, t.TempDir()+"/mock-claude", echoCLI)
+	cfg.Binary = mockexec.Write(t, t.TempDir()+"/mock-claude", echoCLI(contextUsage))
 	s, err := NewSession(context.Background(), testThread, cfg, onEvent)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -116,12 +135,12 @@ func TestAwaitStartKeepsAFailureWrittenBeforeTheAnswer(t *testing.T) {
 	}
 }
 
-// The outcome is decided before the frame reaches onEvent, so a host that
-// cannot handle frames (its event worker waits on a lock the waiter holds)
-// does not hold the waiter.
+// The load is decided before the frame reaches onEvent, so a host whose
+// onEvent stalls does not hold it. A fresh start, so no content check
+// follows: that answer is read by the same read loop.
 func TestAwaitStartDoesNotWaitOnTheHostsEventHandling(t *testing.T) {
 	release := make(chan struct{})
-	s := startEchoSession(t, Config{Resume: outcomeSession}, func(evt provider.ProviderEvent) {
+	s := startEchoSession(t, Config{}, func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventInit {
 			<-release
 		}
@@ -261,5 +280,85 @@ func TestAwaitStartEndsWithItsContext(t *testing.T) {
 	cancel()
 	if err := s.AwaitStart(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("AwaitStart = %v, want the context's cancellation", err)
+	}
+}
+
+// A loaded resume is unavailable only when get_context_usage counts zero
+// user-message tokens. An answer that cannot say so keeps the load.
+func TestAwaitStartChecksTheResumedConversationHoldsAUserMessage(t *testing.T) {
+	cases := map[string]struct {
+		answer string
+		empty  bool
+	}{
+		"no user message":   {answer: contextUsageAnswer("0"), empty: true},
+		"a user message":    {answer: contextUsageAnswer("4")},
+		"no breakdown":      {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"totalTokens":100}}}`},
+		"breakdown no user": {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"assistantMessageTokens":12}}}}`},
+		"malformed":         {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"userMessageTokens":"zero"}}}}`},
+		"refused":           {answer: `{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"Unsupported control request subtype: get_context_usage"}}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := startEchoSessionAnswering(t, Config{Resume: outcomeSession}, func(provider.ProviderEvent) {}, tc.answer)
+			if err := s.proc.WriteLine([]byte("answer:")); err != nil {
+				t.Fatal(err)
+			}
+			err := awaitStartWithin(t, s)
+			if tc.empty != errors.Is(err, ErrConversationEmpty) || tc.empty != IsConversationUnavailable(err) || (!tc.empty && err != nil) {
+				t.Fatalf("AwaitStart = %v, want empty %v", err, tc.empty)
+			}
+		})
+	}
+}
+
+// The content check waits on ctx alone, and a fresh start or a fork is not
+// checked at all: neither has a conversation to continue.
+func TestAwaitStartContentCheckEndsWithItsContextAndSkipsAFreshStart(t *testing.T) {
+	s := startEchoSessionAnswering(t, Config{Resume: outcomeSession}, func(provider.ProviderEvent) {}, "")
+	if err := s.proc.WriteLine([]byte("answer:")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := s.AwaitStart(ctx); !errors.Is(err, context.DeadlineExceeded) || IsConversationUnavailable(err) {
+		t.Fatalf("AwaitStart = %v, want its context's end", err)
+	}
+
+	for name, cfg := range map[string]Config{"fresh": {}, "fork": {Resume: outcomeSession, ForkSession: true}} {
+		t.Run(name, func(t *testing.T) {
+			s := startEchoSessionAnswering(t, cfg, func(provider.ProviderEvent) {}, "")
+			if err := s.proc.WriteLine([]byte("answer:")); err != nil {
+				t.Fatal(err)
+			}
+			if err := awaitStartWithin(t, s); err != nil {
+				t.Fatalf("AwaitStart = %v, want no content check", err)
+			}
+		})
+	}
+}
+
+// The not-found frame decides, not the exit that follows it at once: stdout
+// is drained to EOF before the read loop ends, a last line without a newline
+// included.
+func TestAwaitStartReadsTheNotFoundFrameOfACLIThatExitsAfterIt(t *testing.T) {
+	frame := `{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["No conversation found with session ID: ` + outcomeSession + `"]}`
+	for name, format := range map[string]string{"newline": `%s\n`, "no newline": `%s`} {
+		t.Run(name, func(t *testing.T) {
+			for range 10 {
+				binary := mockexec.Write(t, t.TempDir()+"/mock-claude",
+					"#!/bin/sh\necho 'No conversation found' >&2\nprintf '"+format+"' '"+frame+"'\nexit 1\n")
+				s, err := NewSession(context.Background(), testThread, Config{
+					Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: binary, Resume: outcomeSession,
+				}, func(provider.ProviderEvent) {})
+				if err != nil {
+					t.Fatalf("NewSession: %v", err)
+				}
+				err = awaitStartWithin(t, s)
+				_ = s.Close()
+				if !errors.Is(err, ErrSessionNotFound) {
+					t.Fatalf("AwaitStart = %v, want the frame's not-found", err)
+				}
+			}
+		})
 	}
 }

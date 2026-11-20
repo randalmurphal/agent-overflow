@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -15,6 +16,19 @@ import (
 // conversation under that session id. It is the only start failure that
 // proves the conversation is gone; every other failure says nothing about it.
 var ErrSessionNotFound = errors.New("claude: the conversation to resume does not exist")
+
+// ErrConversationEmpty means the CLI loaded the conversation `--resume` named
+// and it holds no user message: a transcript of system or attachment rows
+// only, or a chain the CLI's resume filters emptied. A turn sent to it runs on
+// no history.
+var ErrConversationEmpty = errors.New("claude: the resumed conversation holds no user message")
+
+// IsConversationUnavailable reports whether a start's outcome proves there is
+// no conversation to continue: the CLI holds none under the id, or the one it
+// loaded holds no user message.
+func IsConversationUnavailable(err error) bool {
+	return errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrConversationEmpty)
+}
 
 // ErrResumedOtherSession means the CLI initialized on a session other than
 // the one `--resume` named, so the process does not hold the requested
@@ -157,7 +171,8 @@ func (o *startOutcome) exited(proc *provider.Process, closing bool) {
 // conversation does not exist, ErrResumedOtherSession for an init on another
 // session, and an error naming the cause when the process failed to start,
 // exited or was closed first. An outcome reached before the call is returned
-// at once.
+// at once. A resume that loaded is then checked for content once per call
+// (resumedContent), which can return ErrConversationEmpty.
 //
 // A print-mode CLI writes its first init only for its first input, so the
 // proof before any send is a `mcp_status` control request: the CLI answers
@@ -173,6 +188,13 @@ func (s *Session) AwaitStart(ctx context.Context) error {
 	if s == nil || s.start == nil {
 		return errors.New("claude: the session was not started by NewSession")
 	}
+	if err := s.awaitLoad(ctx); err != nil || s.start.resume == "" {
+		return err
+	}
+	return s.resumedContent(ctx)
+}
+
+func (s *Session) awaitLoad(ctx context.Context) error {
 	select {
 	case <-s.start.done:
 		return s.start.err
@@ -190,4 +212,58 @@ func (s *Session) AwaitStart(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("claude: wait for the session to load: %w", ctx.Err())
 	}
+}
+
+// resumedContent reads get_context_usage once and refuses a loaded resume
+// whose messageBreakdown counts zero user-message tokens (claude-wire.md
+// §Start outcome before the first input). Only that count refuses. An error
+// answer (a CLI without the subtype answers "Unsupported control request
+// subtype"), an answer without the count (messageBreakdown is optional in
+// the 2.1.88 schema) and a malformed one keep the proven load, since none of
+// them says the conversation is empty. Like the load, the wait has no budget
+// of its own: ctx bounds it.
+func (s *Session) resumedContent(ctx context.Context) error {
+	requestID, answer, err := s.writeControlRequest("get_context_usage", map[string]any{"subtype": "get_context_usage"})
+	if err != nil {
+		return fmt.Errorf("claude: read the resumed conversation's content: %w", err)
+	}
+	defer s.releaseControlRequest(requestID)
+	select {
+	case res := <-answer:
+		if res == nil {
+			return errors.New("claude: the session closed before it reported the resumed conversation's content")
+		}
+		if !res.ok {
+			log.Printf("claude: thread %s: get_context_usage refused (%s); keeping the loaded resume", s.threadID, res.errMsg)
+			return nil
+		}
+		tokens, err := userMessageTokens(res.payload)
+		if err != nil {
+			log.Printf("claude: thread %s: %v; keeping the loaded resume", s.threadID, err)
+			return nil
+		}
+		if tokens != nil && *tokens == 0 {
+			return fmt.Errorf("%w: get_context_usage counts 0 user-message tokens", ErrConversationEmpty)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("claude: wait for the resumed conversation's content: %w", ctx.Err())
+	}
+}
+
+// userMessageTokens reads messageBreakdown.userMessageTokens from a
+// get_context_usage payload; nil when the answer does not carry it.
+func userMessageTokens(payload json.RawMessage) (*int, error) {
+	var decoded struct {
+		MessageBreakdown *struct {
+			UserMessageTokens *int `json:"userMessageTokens"`
+		} `json:"messageBreakdown"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return nil, fmt.Errorf("get_context_usage answer unreadable: %w", err)
+	}
+	if decoded.MessageBreakdown == nil {
+		return nil, nil
+	}
+	return decoded.MessageBreakdown.UserMessageTokens, nil
 }

@@ -95,28 +95,52 @@ func (f *workflowResumeFixture) key() engine.RunKey {
 	return engine.RunKey{ItemID: f.itemID, PhaseID: f.phase.ID, Attempt: 1}
 }
 
-// useCLI installs a mock Claude CLI that records its pid and prints startup
-// before it reads any input. Then it exits 1 at once, or records every stdin
-// line until stdin closes. A loaded CLI answers every control request, as
-// the CLI's message loop does once its resume load returns; a CLI still
-// loading answers none.
-func (f *workflowResumeFixture) useCLI(startup []string, exitAtOnce, loaded bool) {
+// resumeCLI is how the mock Claude CLI of a workflow resume behaves.
+type resumeCLI struct {
+	// startup is printed before the CLI reads any input.
+	startup []string
+	// exitAtOnce exits 1 after startup; otherwise every stdin line is
+	// recorded until stdin closes.
+	exitAtOnce bool
+	// loaded answers control requests, as the CLI's message loop does once
+	// its resume load returns; a CLI still loading answers none.
+	loaded bool
+	// contextUsage is the get_context_usage answer's payload: a conversation
+	// holding a user message when empty, and never answered when "hold".
+	contextUsage string
+}
+
+const resumeContextUsage = `{"totalTokens":100,"maxTokens":200000,"messageBreakdown":{"toolCallTokens":23,"toolResultTokens":68,"attachmentTokens":0,"assistantMessageTokens":12,"userMessageTokens":4}}`
+
+// useCLI installs a mock Claude CLI that records its pid and behaves as cli
+// says.
+func (f *workflowResumeFixture) useCLI(cli resumeCLI) {
 	f.t.Helper()
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("echo $$ > " + stringsx.ShellQuote(f.pidFile) + "\n")
-	for _, line := range startup {
+	for _, line := range cli.startup {
 		b.WriteString("printf '%s\\n' " + stringsx.ShellQuote(line) + "\n")
 	}
-	if exitAtOnce {
+	if cli.exitAtOnce {
 		b.WriteString("echo 'startup failed' >&2\nexit 1\n")
 	} else {
+		usage := cli.contextUsage
+		if usage == "" {
+			usage = resumeContextUsage
+		}
+		answer := `printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":%s}}\n' "$reqid" `
 		b.WriteString("while IFS= read -r line; do\n")
 		b.WriteString("  printf '%s\\n' \"$line\" >> " + stringsx.ShellQuote(f.stdinLog) + "\n")
-		if loaded {
-			b.WriteString("  case \"$line\" in *'\"type\":\"control_request\"'*)\n")
-			b.WriteString("    reqid=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n")
-			b.WriteString("    printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"%s\",\"response\":{}}}\\n' \"$reqid\" ;;\n")
+		if cli.loaded {
+			b.WriteString("  reqid=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n")
+			b.WriteString("  case \"$line\" in\n")
+			if usage != "hold" {
+				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) " + answer + stringsx.ShellQuote(usage) + " ;;\n")
+			} else {
+				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) ;;\n")
+			}
+			b.WriteString("  *'\"type\":\"control_request\"'*) " + answer + "'{}' ;;\n")
 			b.WriteString("  esac\n")
 		}
 		b.WriteString("done\n")
@@ -199,7 +223,7 @@ func TestWorkflowContinuationOfAClaudeThreadNeverReadsItsTranscript(t *testing.T
 				strings.Repeat("\n", 500_000))
 			prepare(t, path)
 			// No init before input, as the CLI: the answer is the proof.
-			f.useCLI(nil, false, true)
+			f.useCLI(resumeCLI{loaded: true})
 
 			if err := f.start(t.Context()); err != nil {
 				t.Fatalf("continuation start = %v, want it started on the resumed session", err)
@@ -216,18 +240,19 @@ func TestWorkflowContinuationOfAClaudeThreadNeverReadsItsTranscript(t *testing.T
 }
 
 // The CLI's report that the conversation is gone makes the provider context
-// unavailable, whether the process then lingers (current CLIs) or exits
-// (2.1.88), and the failed start leaves nothing behind. A transcript is on
-// disk, so nothing but the CLI's own answer can say the conversation is gone.
+// unavailable, whether the process then exits right after the frame (2.1.88
+// and 2.1.325) or stays alive, and the failed start leaves nothing behind. A
+// transcript is on disk, so nothing but the CLI's own answer can say the
+// conversation is gone.
 func TestWorkflowContinuationMapsClaudeSessionNotFoundToUnavailable(t *testing.T) {
 	t.Parallel()
 	notFound := `{"type":"result","subtype":"error_during_execution","duration_ms":0,"is_error":true,"num_turns":0,"errors":["No conversation found with session ID: ` + workflowResumeSession + `"]}`
-	for name, exitAtOnce := range map[string]bool{"lingers": false, "exits": true} {
+	for name, exitAtOnce := range map[string]bool{"stays alive": false, "exits": true} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newWorkflowResumeFixture(t)
 			f.writeTranscript(`{"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"do the work"}}` + "\n")
-			f.useCLI([]string{notFound}, exitAtOnce, true)
+			f.useCLI(resumeCLI{startup: []string{notFound}, exitAtOnce: exitAtOnce, loaded: true})
 
 			err := f.start(t.Context())
 			if !errors.Is(err, engine.ErrProviderContextUnavailable) {
@@ -261,7 +286,7 @@ func TestWorkflowContinuationKeepsOtherClaudeStartFailuresVisible(t *testing.T) 
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newWorkflowResumeFixture(t)
-			f.useCLI(tc.startup, tc.exitAtOnce, true)
+			f.useCLI(resumeCLI{startup: tc.startup, exitAtOnce: tc.exitAtOnce, loaded: true})
 
 			err := f.start(t.Context())
 			if err == nil || errors.Is(err, engine.ErrProviderContextUnavailable) {
@@ -275,29 +300,84 @@ func TestWorkflowContinuationKeepsOtherClaudeStartFailuresVisible(t *testing.T) 
 	}
 }
 
-// A start cancelled while the CLI is still loading is a cancelled start, not
-// a missing conversation, and it stops the process it launched.
+// A start cancelled while the CLI is still loading, or before it reports the
+// loaded conversation's content, is a cancelled start, not a missing
+// conversation, and it stops the process it launched.
 func TestWorkflowContinuationCancelledWhileClaudeLoads(t *testing.T) {
 	t.Parallel()
-	f := newWorkflowResumeFixture(t)
-	f.useCLI(nil, false, false)
+	cases := map[string]struct {
+		cli     resumeCLI
+		waiting string
+	}{
+		"still loading":        {cli: resumeCLI{}, waiting: `"subtype":"mcp_status"`},
+		"content not answered": {cli: resumeCLI{loaded: true, contextUsage: "hold"}, waiting: `"subtype":"get_context_usage"`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkflowResumeFixture(t)
+			f.useCLI(tc.cli)
 
-	ctx, cancel := context.WithCancel(t.Context())
-	errs := make(chan error, 1)
-	go func() { errs <- f.start(ctx) }()
-	waitFor(t, "the CLI to launch", func() bool {
-		_, err := os.Stat(f.pidFile)
-		return err == nil
-	})
-	select {
-	case err := <-errs:
-		t.Fatalf("start returned %v before the CLI initialized", err)
-	case <-time.After(100 * time.Millisecond):
+			ctx, cancel := context.WithCancel(t.Context())
+			errs := make(chan error, 1)
+			go func() { errs <- f.start(ctx) }()
+			waitFor(t, "the request the start waits on", func() bool {
+				data, _ := os.ReadFile(f.stdinLog)
+				return strings.Contains(string(data), tc.waiting)
+			})
+			select {
+			case err := <-errs:
+				t.Fatalf("start returned %v while its request was unanswered", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			cancel()
+			err := <-errs
+			if err == nil || errors.Is(err, engine.ErrProviderContextUnavailable) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled start = %v, want the cancellation", err)
+			}
+			f.requireNothingLeft()
+		})
 	}
-	cancel()
-	err := <-errs
-	if err == nil || errors.Is(err, engine.ErrProviderContextUnavailable) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled start = %v, want the cancellation", err)
+}
+
+// A resume that loads a conversation with no user message (system and
+// attachment rows only, or a chain the CLI's filters emptied) is unavailable
+// and leaves nothing behind, so the workflow rebuilds the round. Any user
+// content, or an answer that cannot say, keeps the resumed session.
+func TestWorkflowContinuationRefusesAClaudeConversationWithNoUserMessage(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		usage       string
+		unavailable bool
+	}{
+		"no user message": {
+			usage:       `{"totalTokens":73,"maxTokens":200000,"messageBreakdown":{"toolCallTokens":0,"toolResultTokens":0,"attachmentTokens":61,"assistantMessageTokens":12,"userMessageTokens":0}}`,
+			unavailable: true,
+		},
+		"a user message": {usage: resumeContextUsage},
+		"malformed":      {usage: `{"messageBreakdown":{"userMessageTokens":"none"}}`},
 	}
-	f.requireNothingLeft()
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkflowResumeFixture(t)
+			f.useCLI(resumeCLI{loaded: true, contextUsage: tc.usage})
+
+			err := f.start(t.Context())
+			if tc.unavailable {
+				if !errors.Is(err, engine.ErrProviderContextUnavailable) {
+					t.Fatalf("continuation start = %v, want the provider context unavailable", err)
+				}
+				f.requireNothingLeft()
+				return
+			}
+			if err != nil {
+				t.Fatalf("continuation start = %v, want the resumed session kept", err)
+			}
+			waitFor(t, "the continuation prompt to reach the CLI", func() bool {
+				data, _ := os.ReadFile(f.stdinLog)
+				return strings.Contains(string(data), `"type":"user"`)
+			})
+		})
+	}
 }

@@ -48,8 +48,9 @@ import (
 //
 // `StartSessionProvingResume` is `StartSessionTakingLock` followed by the
 // provider's own report of how that start ended: a Claude process that
-// loaded the session it resumed, or the failure that stopped it first
-// (`claude.ErrSessionNotFound` when the conversation is gone). A failed proof
+// loaded the session it resumed with a user message in it, or the failure
+// that stopped it first (`claude.IsConversationUnavailable` when the
+// conversation is gone or empty). A failed proof
 // stops the session that start registered. Codex proves the same thing inside
 // the start, with its synchronous `thread/resume`.
 type SessionHost interface {

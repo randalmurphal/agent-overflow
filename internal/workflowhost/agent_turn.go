@@ -123,8 +123,9 @@ func (r *Runner) createPreparedWorkflowThread(spec ThreadSpec) (preparedWorkflow
 // not an inference from a non-empty database cursor. A live process is proof
 // on its own. A cold resume is proven by the provider's own start: Codex's
 // synchronous thread/resume handshake, or a Claude process reporting that it
-// loaded the session it resumed. Only a provider's report that the conversation does not
-// exist makes the context unavailable; every other failure is the start's.
+// loaded the session it resumed. Only a provider's report that the
+// conversation does not exist, or holds no user message, makes the context
+// unavailable; every other failure is the start's.
 // A failed proof leaves no temporary schema behind, and the host stops the
 // session its start registered.
 func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
@@ -147,7 +148,7 @@ func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store
 	}
 	r.removeTemporarySchema(thread.ID)
 	switch {
-	case errors.Is(err, claude.ErrSessionNotFound) || codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows):
+	case claude.IsConversationUnavailable(err) || codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows):
 		return false, errors.Join(engine.ErrProviderContextUnavailable, err)
 	case ctx.Err() != nil:
 		return false, fmt.Errorf("workflow runner: startup cancelled: %w", err)

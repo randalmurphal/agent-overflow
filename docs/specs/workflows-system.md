@@ -551,7 +551,7 @@ targets):
   `continue` on the fix edge, where losing "what I just tried" is the
   measured ping-pong cost. If the prior thread is gone (crash, deletion),
   the round runs cold with a recorded note. If the cursor exists but the provider's
-  start reports that conversation gone, the unsent warm attempt is superseded and the same new
+  start reports that conversation gone or empty, the unsent warm attempt is superseded and the same new
   round is reconstructed cold, preserving its complete prompt, route override,
   guidance, and degradation note. A degraded reuse is never a park.
   Which mode actually ran is visible in provenance: two

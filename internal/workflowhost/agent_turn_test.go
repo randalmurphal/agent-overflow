@@ -35,6 +35,12 @@ func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 			},
 		},
 		{
+			name: "claude conversation holds no user message", provider: string(provider.Claude), unavailable: true,
+			start: func(context.Context, string) error {
+				return fmt.Errorf("%w: get_context_usage counts 0 user-message tokens", claude.ErrConversationEmpty)
+			},
+		},
+		{
 			name: "codex rejects cursor", provider: string(provider.Codex), unavailable: true,
 			start: func(context.Context, string) error {
 				return fmt.Errorf("spawn Codex: %w", &codex.RPCError{
