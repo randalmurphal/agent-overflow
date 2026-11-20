@@ -100,9 +100,13 @@ func TestUpdateCommandsLogTheirPhasesThroughMain(t *testing.T) {
 	if result := run.result(t); result.Outcome != supervise.UpdateOutcomeRolledBack {
 		t.Fatalf("trial run = %+v\n%s", result, run.stderr)
 	}
-	// A trial that reports its failure is stopped, then restored.
-	wantPhasesOnce(t, run.stderr, "command", "trial.start", "trial.boot", "trial.stop", "shutdown",
+	// A trial that reports its failure is stopped, then restored. It also
+	// exits on its own, and one whose exit is read first needs no stop.
+	wantPhasesOnce(t, run.stderr, "command", "trial.start", "trial.boot", "shutdown",
 		"restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear")
+	if timed, _ := phaseCounts(t, run.stderr); timed["trial.stop"] > 1 {
+		t.Fatalf("trial.stop logged %d times, want at most once\n%s", timed["trial.stop"], run.stderr)
+	}
 	if _, failed := phaseCounts(t, run.stderr); failed["trial.boot"] != 1 || failed["command"] != 1 || len(failed) != 2 {
 		t.Fatalf("failed %v; want the boot and the command\n%s", failed, run.stderr)
 	}
