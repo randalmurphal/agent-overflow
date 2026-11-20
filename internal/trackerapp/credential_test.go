@@ -12,6 +12,41 @@ import (
 	"agent-overflow/internal/tracker/jira/jiratest"
 )
 
+// A key file holding something too short to be a token (the transport
+// refuses a secret no longer than secret.Redacted) shows as refused in
+// the list, and Verify gives a setup problem saying what to do; nothing
+// is sent.
+func TestATokenTooShortIsASetupProblem(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	f.writeToken(conn, "abc123")
+	want := "the Jira API token file holds too little to be a token; paste the whole token into it"
+	got := f.verify(conn.ID)
+	if got.Problem == nil || *got.Problem != (Failure{Kind: FailureSetup, Message: want}) {
+		t.Fatalf("Verify of a token too short = %+v", got.Problem)
+	}
+	list, err := f.svc.Connections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := f.svc.Rename(conn.ID, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, c := range map[string]Connection{"the list": list[0], "a rename": renamed} {
+		if c.KeyFile != (keyfile.Status{State: keyfile.StateRefused, Problem: want}) {
+			t.Fatalf("%s shows the key file %+v", what, c.KeyFile)
+		}
+	}
+	if _, err := f.provider(conn.ID).Identity(t.Context()); err == nil {
+		t.Fatal("a call with a token too short succeeded")
+	}
+	if got := f.jira.Requests(); len(got) != 0 {
+		t.Fatalf("a token too short reached Jira: %v", got)
+	}
+}
+
 // reads is how many times connection id's client read its key file.
 func (f *fixture) reads(id string) int64 {
 	f.t.Helper()
@@ -104,13 +139,13 @@ func TestAReplacedTokenIsUsedAfterTheNextLook(t *testing.T) {
 		jiratest.Reply(http.StatusOK, myselfJSON)(w, r, nil)
 	})
 	p := f.provider(conn.ID)
-	f.writeToken(conn, "token-a")
+	f.writeToken(conn, token("a"))
 	if _, err := p.Identity(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	f.writeToken(conn, "token-b")
+	f.writeToken(conn, token("b"))
 	f.verify(conn.ID)
-	f.writeToken(conn, "token-c")
+	f.writeToken(conn, token("c"))
 	if _, err := f.svc.Connections(); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +160,7 @@ func TestAReplacedTokenIsUsedAfterTheNextLook(t *testing.T) {
 			}
 		},
 	} {
-		f.writeToken(conn, "token-d")
+		f.writeToken(conn, token("d"))
 		f.verify(conn.ID)
 		empty()
 		list, err := f.svc.Connections()
@@ -141,7 +176,7 @@ func TestAReplacedTokenIsUsedAfterTheNextLook(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{basic("token-a"), basic("token-b"), basic("token-c"), basic("token-d"), basic("token-d")}
+	want := []string{basic(token("a")), basic(token("b")), basic(token("c")), basic(token("d")), basic(token("d"))}
 	if len(sent) != len(want) {
 		t.Fatalf("the requests carried %d credentials, want %d", len(sent), len(want))
 	}
@@ -162,7 +197,7 @@ func TestAVerifyAnsweredAfterTheTokenChangedIsTransient(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	conn := f.addJira()
-	f.writeToken(conn, "token-a")
+	f.writeToken(conn, token("a"))
 	arrived := make(chan struct{})
 	release := make(chan struct{})
 	var n atomic.Int32
@@ -175,7 +210,7 @@ func TestAVerifyAnsweredAfterTheTokenChangedIsTransient(t *testing.T) {
 			<-release
 			jiratest.Reply(http.StatusOK, myselfJSON)(w, r, nil)
 		default:
-			myself(t, "token-b")(w, r, nil)
+			myself(t, token("b"))(w, r, nil)
 		}
 	})
 	if got := f.verify(conn.ID); got.Problem == nil || got.Problem.Kind != FailureForbidden {
@@ -190,7 +225,7 @@ func TestAVerifyAnsweredAfterTheTokenChangedIsTransient(t *testing.T) {
 		done <- got
 	}()
 	<-arrived
-	f.writeToken(conn, "token-b")
+	f.writeToken(conn, token("b"))
 	if _, err := f.svc.Connections(); err != nil {
 		t.Fatal(err)
 	}

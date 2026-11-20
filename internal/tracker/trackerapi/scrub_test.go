@@ -74,7 +74,7 @@ func TestErrorsNeverRepeatTheCredential(t *testing.T) {
 // that quotes the body, do not repeat the credential either.
 func TestQuotingErrorsNeverRepeatTheCredential(t *testing.T) {
 	t.Parallel()
-	const raw = "4242424242"
+	const raw = "424242424242"
 	tr := newTracker(t, route{
 		"GET /line": func(w http.ResponseWriter, r *http.Request) {
 			hijackClose(t, w, r.Header.Get("Authorization")+"\r\n\r\n")

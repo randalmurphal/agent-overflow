@@ -106,22 +106,22 @@ func TestAReplacedTokenIsReadAfterTheStatusIsAsked(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f.writeToken(conn, "token-a")
+	f.writeToken(conn, token("a"))
 	identity()
-	f.writeToken(conn, "token-b")
+	f.writeToken(conn, token("b"))
 	identity()
 	if _, err := f.svc.Connections(); err != nil {
 		t.Fatal(err)
 	}
 	identity()
-	f.writeToken(conn, "token-c")
+	f.writeToken(conn, token("c"))
 	if _, err := f.svc.PrepareKeyFile(conn.ID); err != nil {
 		t.Fatal(err)
 	}
 	identity()
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{basic("token-a"), basic("token-a"), basic("token-b"), basic("token-c")}
+	want := []string{basic(token("a")), basic(token("a")), basic(token("b")), basic(token("c"))}
 	if fmt.Sprint(sent) != fmt.Sprint(want) {
 		t.Fatalf("the requests carried %q, want %q", sent, want)
 	}

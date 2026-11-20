@@ -146,10 +146,10 @@ func TestCleanBodyIsKeptAsRead(t *testing.T) {
 // is replaced as bytes, and the body no longer decodes.
 func TestCredentialOutsideStrings(t *testing.T) {
 	t.Parallel()
-	s := &scrubber{forms: [][]byte{[]byte("4242424242")}}
-	for _, body := range []string{`{"a":"x","n":4242424242}`, `[1,4242424242]`} {
+	s := &scrubber{forms: [][]byte{[]byte("424242424242")}}
+	for _, body := range []string{`{"a":"x","n":424242424242}`, `[1,424242424242]`, `{"a":"x 424242424242","n":424242424242}`} {
 		out, err := s.body([]byte(body))
-		if err != nil || bytes.Contains(out, []byte("4242424242")) || json.Valid(out) {
+		if err != nil || bytes.Contains(out, []byte("424242424242")) || json.Valid(out) {
 			t.Errorf("%s: got %s %v, want the number replaced", body, out, err)
 		}
 	}
@@ -175,20 +175,18 @@ func TestCredentialThatJSONEscapes(t *testing.T) {
 	}
 }
 
-// Once the credential is dropped, a body with any string cannot be
-// checked and is refused; one without a string cannot hold it and is kept.
+// Once the credential is dropped, no body but an empty one can be shown
+// free of it, whatever its shape, and each is refused.
 func TestBodyAfterTheCredentialIsGone(t *testing.T) {
 	t.Parallel()
 	lost := &scrubber{lost: true}
-	for _, body := range []string{`{"a":1}`, `["x"]`, `<html>x</html>`, `"x"`} {
+	for _, body := range []string{`{"a":1}`, `["x"]`, `<html>x</html>`, `"x"`, `{}`, `[424242424242]`, `true`, `3`} {
 		if out, err := lost.body([]byte(body)); !errors.Is(err, ErrCredentialChanged) || out != nil {
 			t.Errorf("%s: %q %v, want ErrCredentialChanged", body, out, err)
 		}
 	}
-	for _, body := range []string{`{}`, `[1,2,true,null]`, `3`, ``} {
-		if out, err := lost.body([]byte(body)); err != nil || string(out) != body {
-			t.Errorf("%s: %q %v, want it kept", body, out, err)
-		}
+	if out, err := lost.body(nil); err != nil || out != nil {
+		t.Errorf("an empty body: %q %v, want it kept", out, err)
 	}
 
 	var c *Client

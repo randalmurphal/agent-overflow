@@ -41,6 +41,11 @@ const (
 	settings   = "/4/globalconfiguration"
 )
 
+// token is test token n (a, b, c...) for a test that replaces the token
+// in a key file: long enough for the transport, which refuses a secret no
+// longer than secret.Redacted.
+func token(n string) string { return "token-" + n + "-0000000001" }
+
 // fixture is a Service over a cloned store, with loopback Jira, Tempo and
 // Linear fakes as the origins of every connection.
 type fixture struct {

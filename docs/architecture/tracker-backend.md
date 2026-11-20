@@ -181,11 +181,13 @@ to the computer and are rows in `tracker_connections`.
   compare it with that digest and call `ForgetCredential` only when the
   token changed or the file stopped giving one, so a replaced token is
   picked up without a restart and a list never disturbs a call in flight.
+  A key file whose token is shorter than `trackerapi.MinSecretLen` is
+  refused as a setup problem and nothing is sent.
 - A connection's problem is the outcome of the latest call whose outcome
   was applied: every call is stamped when it begins, and one function
   applies an outcome unless a call begun later on the same client already
   applied its own. A failure that arrives late cannot replace a newer
-  success.
+  success, and nothing is applied once the service stopped.
 - Adding a connection creates the row and the empty key file, opens the
   tracker's token page and the key file on that computer, then verifies:
   one identity call to the tracker. The row records who the token belongs

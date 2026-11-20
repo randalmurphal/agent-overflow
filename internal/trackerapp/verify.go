@@ -52,7 +52,11 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 			return Connection{}, err
 		}
 		// No client means no call: the connection's problem is why.
-		if moved, _ := s.settle(id, row.Kind, stamp{}, err, nil); moved {
+		moved, err := s.settle(id, row.Kind, stamp{}, err, nil)
+		if err != nil {
+			return Connection{}, err
+		}
+		if moved {
 			s.changed()
 		}
 		return s.view(row), nil
@@ -135,8 +139,6 @@ func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file
 		return Connection{}, false, err
 	case moved:
 		return s.viewWith(row, file), true, nil
-	case s.isStopped():
-		return Connection{}, false, ErrStopped
 	}
 	current, err := s.get(row.ID)
 	if err != nil {

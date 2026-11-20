@@ -28,29 +28,25 @@ var ErrCredentialChanged = errors.New("trackerapi: the credential changed while 
 //
 // The common answer holds no form and is returned as the same slice,
 // with no copy: the walk runs only when the bytes hold a form, or an
-// escape that could spell part of one (mayHold). A body with no string
-// cannot hold the credential and is kept even once it was dropped; any
-// other body then fails with ErrCredentialChanged.
+// escape that could spell part of one (mayHold). Once the credential was
+// dropped its bytes are zeroed and no body can be shown free of it, so
+// every body but an empty one fails with ErrCredentialChanged.
 func (s *scrubber) body(body []byte) ([]byte, error) {
-	if len(body) == 0 || !s.lost && (len(s.forms) == 0 || !s.mayHold(body)) {
+	switch {
+	case len(body) == 0:
+		return body, nil
+	case s.lost:
+		return nil, ErrCredentialChanged
+	case len(s.forms) == 0 || !s.mayHold(body):
 		return body, nil
 	}
 	values, ok := jsonValues(body)
 	if !ok {
-		if s.lost {
-			return nil, ErrCredentialChanged
-		}
 		return s.bytes(body), nil
 	}
 	var texts []string
 	for _, v := range values {
 		collectStrings(v, &texts)
-	}
-	if len(texts) == 0 {
-		return s.bytes(body), nil
-	}
-	if s.lost {
-		return nil, ErrCredentialChanged
 	}
 	// Each string is a part of the joined text, so none holds a form when
 	// the joined text holds none.

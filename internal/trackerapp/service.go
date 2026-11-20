@@ -94,6 +94,10 @@ type Service struct {
 	problems map[string]Failure
 	stopped  bool
 	inflight sync.WaitGroup
+
+	// beforePublish, set only by tests, runs in settle between its record
+	// and the publication, where Stop may overtake a settlement.
+	beforePublish func()
 }
 
 // New makes the service. It refuses a missing dependency.
@@ -120,16 +124,22 @@ func New(deps Deps) (*Service, error) {
 // waits for the service's calls in flight to return. Every later call
 // fails with ErrStopped. Stop may be called more than once.
 func (s *Service) Stop() {
+	for _, c := range s.halt() {
+		c.close()
+	}
+	s.inflight.Wait()
+}
+
+// halt marks the service stopped, forgets every problem and takes every
+// client out of use, returning them for the caller to close.
+func (s *Service) halt() map[string]*clients {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.stopped = true
 	open := s.clients
 	s.clients = map[string]*clients{}
 	clear(s.problems)
-	s.mu.Unlock()
-	for _, c := range open {
-		c.close()
-	}
-	s.inflight.Wait()
+	return open
 }
 
 // enter admits one call, or refuses it after Stop; leave ends it.
@@ -196,12 +206,6 @@ func (s *Service) stopUsing(id string) bool {
 	return had
 }
 
-func (s *Service) isStopped() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.stopped
-}
-
 // get reads connection id, refusing a missing one with ErrNotFound.
 func (s *Service) get(id string) (store.TrackerConnection, error) {
 	row, err := s.store.GetTrackerConnection(id)
@@ -228,7 +232,9 @@ type Connection struct {
 
 // view is row as Connection, its key file inspected now.
 func (s *Service) view(row store.TrackerConnection) Connection {
-	return s.viewWith(row, s.keyFile(row).Inspect())
+	token, err := readToken(s.keyFile(row), row.Kind)
+	token.Zero()
+	return s.viewWith(row, keyfile.StatusOf(err))
 }
 
 // viewWith is row as Connection with its key file in state file.
@@ -246,7 +252,7 @@ func (s *Service) viewWith(row store.TrackerConnection, file keyfile.Status) Con
 // tells the connection's client, when it is in use, whether the token in
 // the file is still the one it was handed (clients.syncCredential).
 func (s *Service) look(row store.TrackerConnection) Connection {
-	token, err := s.keyFile(row).Read()
+	token, err := readToken(s.keyFile(row), row.Kind)
 	s.mu.Lock()
 	c := s.clients[row.ID]
 	s.mu.Unlock()
@@ -305,24 +311,33 @@ func (s *Service) begin(c *clients) stamp {
 // begun later on the same client was already applied. Otherwise settle
 // changes nothing and reports false, so an older outcome never replaces a
 // newer one, while calls that overlap still each apply theirs in turn.
-// A zero at applies only while the connection has no client. The caller
+// A zero at applies only while the connection has no client. A
+// settlement Stop overtook changes nothing and fails with ErrStopped. The
+// caller
 // holds opMu, which serializes settlements and keeps the connection in
 // use during record.
 func (s *Service) settle(id, kind string, at stamp, callErr error, record func() error) (bool, error) {
 	s.mu.Lock()
-	// Stop empties clients, so a call Stop overtook finds no client.
-	current := s.clients[id] == at.c && (at.c == nil || at.gen > at.c.settled)
+	applies, err := s.appliesLocked(id, at)
 	s.mu.Unlock()
-	if !current {
-		return false, nil
+	if !applies {
+		return false, err
 	}
 	if callErr == nil && record != nil {
 		if err := record(); err != nil {
 			return false, err
 		}
 	}
+	if s.beforePublish != nil {
+		s.beforePublish()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Checked again where it publishes: Stop takes no opMu and may have
+	// run since. A verification row record wrote stays; it is true.
+	if applies, err := s.appliesLocked(id, at); !applies {
+		return false, err
+	}
 	if at.c != nil {
 		at.c.settled = at.gen
 	}
@@ -332,6 +347,19 @@ func (s *Service) settle(id, kind string, at stamp, callErr error, record func()
 		delete(s.problems, id)
 	}
 	return true, nil
+}
+
+// appliesLocked reports whether the outcome of the call begun at at on
+// connection id may be published, and ErrStopped when Stop overtook it.
+// The caller holds mu.
+func (s *Service) appliesLocked(id string, at stamp) (bool, error) {
+	switch {
+	case s.stopped:
+		return false, ErrStopped
+	case s.clients[id] != at.c:
+		return false, nil
+	}
+	return at.c == nil || at.gen > at.c.settled, nil
 }
 
 // Provider is the tracker of connection id, for a Jira or Linear

@@ -69,6 +69,14 @@ func (Credential) MarshalJSON() ([]byte, error) { return []byte(`"` + secret.Red
 func (Credential) MarshalText() ([]byte, error) { return []byte(secret.Redacted), nil }
 func (Credential) LogValue() slog.Value         { return slog.StringValue(secret.Redacted) }
 
+// MinSecretLen is the shortest secret a request may carry: one byte more
+// than secret.Redacted. A shorter one cannot be told from ordinary answer
+// text, so scrubbing it mangles answers, and one that is part of the
+// marker would survive inside it. No tracker issues tokens that short. A
+// caller that reads a token from a person checks it against this to
+// refuse it in the person's terms.
+const MinSecretLen = len(secret.Redacted) + 1
+
 // check reports a credential no request can carry. The reason never
 // quotes the secret.
 func (cr *Credential) check() error {
@@ -77,6 +85,8 @@ func (cr *Credential) check() error {
 		return errors.New("no credential")
 	case cr.secret.Len() == 0:
 		return errors.New("an empty secret")
+	case cr.secret.Len() < MinSecretLen:
+		return errors.New("a secret too short to be a token")
 	}
 	switch cr.scheme {
 	case schemeBasic:
@@ -190,7 +200,8 @@ type credentialRead struct {
 // a 401 answered the credential of generation sentGen, and the source is
 // read again unless a read completed since. One read runs at a time, on
 // the client's lifetime, shared by every caller waiting for it; a caller
-// whose ctx ends stops waiting without ending the read.
+// whose ctx ends stops waiting without ending the read. A refresh that
+// fails drops the refused credential (see runRead).
 func (c *Client) loadCredential(ctx context.Context, refresh bool, sentGen uint64) error {
 	for {
 		c.readMu.Lock()
@@ -215,7 +226,7 @@ func (c *Client) loadCredential(ctx context.Context, refresh bool, sentGen uint6
 			return nil
 		}
 		f := &credentialRead{done: make(chan struct{})}
-		if !c.startRead(func() { c.runRead(f, epoch) }) {
+		if !c.startRead(func() { c.runRead(f, epoch, refresh) }) {
 			c.readMu.Unlock()
 			return errClosed
 		}
@@ -235,10 +246,21 @@ func (c *Client) loadCredential(ctx context.Context, refresh bool, sentGen uint6
 	}
 }
 
-func (c *Client) runRead(f *credentialRead, epoch uint64) {
+// runRead is one shared read. A refresh that fails drops the credential
+// held, as ForgetCredential does: it is the one the 401 refused, since
+// reads run one at a time and none completed since the refusal (or a
+// forget already dropped it). The tracker refused it and the source no
+// longer returns it, so nothing may be sent with it, and the next call
+// reads the source again. A call still in flight with it then gets
+// ErrCredentialChanged for a 2xx answer, since its body can no longer be
+// checked for the zeroed bytes.
+func (c *Client) runRead(f *credentialRead, epoch uint64, refresh bool) {
 	ctx, cancel := context.WithTimeout(c.life, credentialReadTimeout)
 	defer cancel()
 	f.err = c.storeCredential(ctx, epoch)
+	if f.err != nil && refresh {
+		c.ForgetCredential()
+	}
 	c.readMu.Lock()
 	c.reading = nil
 	c.readMu.Unlock()

@@ -69,11 +69,16 @@ func TestTrackerMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	}
 }
 
+// trackerTestToken is the token these tests put in key files: long enough
+// for the transport, which refuses a secret no longer than
+// secret.Redacted, and recognizable wherever it might leak.
+const trackerTestToken = "jira-SECRET-token-0001"
+
 // Every bound method reaches the service, and every change reaches an
 // event bus subscriber on tracker:connections_updated.
 func TestTrackerMethodsReachTheService(t *testing.T) {
 	t.Parallel()
-	const token = "jira-SECRET-token-0001"
+	const token = trackerTestToken
 	fake := jiratest.NewServer(t)
 	fake.On("GET", "/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("user1@example.com:"+token))
@@ -180,7 +185,7 @@ func TestATestAppCannotReachARealTracker(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(conn.KeyFilePath, []byte("jira-token"), 0o600); err != nil {
+			if err := os.WriteFile(conn.KeyFilePath, []byte(trackerTestToken), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			got, err := a.VerifyTrackerConnection(context.Background(), conn.ID)

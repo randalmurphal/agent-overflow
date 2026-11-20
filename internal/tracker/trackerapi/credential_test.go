@@ -132,6 +132,39 @@ func TestUnusableCredentialIsNotSent(t *testing.T) {
 	}
 }
 
+// A secret no longer than the redaction marker, from any scheme, fails
+// the call unsent with the reason, and no request reaches the tracker;
+// one byte longer is sent.
+func TestShortSecretIsNotSent(t *testing.T) {
+	t.Parallel()
+	tr := newTracker(t, route{"GET /me": reply(http.StatusOK)})
+	short := []string{"7", "true", strings.Repeat("4", len(secret.Redacted)), secret.Redacted}
+	for _, value := range short {
+		for name, build := range map[string]func([]byte) *Credential{
+			"basic":  func(b []byte) *Credential { return Basic("user-1", secret.New(b)) },
+			"bearer": func(b []byte) *Credential { return Bearer(secret.New(b)) },
+			"key":    func(b []byte) *Credential { return Key(secret.New(b)) },
+		} {
+			opts := testOptions(tr.url())
+			opts.Credentials = sourceFunc(func(context.Context) (*Credential, error) { return build([]byte(value)), nil })
+			c, _ := loopbackClient(t, opts)
+			_, err := c.Do(t.Context(), Request{Path: "me"})
+			if _, ok := errors.AsType[*NotSentError](err); !ok || !strings.Contains(err.Error(), "a secret too short to be a token") {
+				t.Errorf("%s %q: Do = %v, want a *NotSentError naming the short secret", name, value, err)
+			}
+		}
+	}
+	if n := tr.count("GET /me"); n != 0 {
+		t.Fatalf("%d requests reached the tracker with a short secret", n)
+	}
+	opts := testOptions(tr.url())
+	opts.Credentials = StaticCredentials(Bearer(secret.New([]byte(strings.Repeat("4", len(secret.Redacted)+1)))))
+	c, _ := loopbackClient(t, opts)
+	if _, err := c.Do(t.Context(), Request{Path: "me"}); err != nil || tr.count("GET /me") != 1 {
+		t.Fatalf("a secret one byte longer than the marker: %v", err)
+	}
+}
+
 type sourceFunc func(context.Context) (*Credential, error)
 
 func (f sourceFunc) Credential(ctx context.Context) (*Credential, error) { return f(ctx) }

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"agent-overflow/internal/keyfile"
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/jiraprovider"
@@ -89,6 +90,22 @@ func (s *Service) keyFile(row store.TrackerConnection) keyfile.File {
 	return keyfile.New(s.keyFilePath(row.ID), keyFileLabel(row.Kind))
 }
 
+// readToken reads the token in a connection of kind's key file. A token
+// shorter than trackerapi.MinSecretLen, which the transport refuses, is
+// refused here, worded for the person who pasted it.
+func readToken(file keyfile.File, kind string) (*secret.Bytes, error) {
+	token, err := file.Read()
+	if err != nil {
+		return nil, err
+	}
+	if token.Len() < trackerapi.MinSecretLen {
+		token.Zero()
+		l := keyFileLabel(kind)
+		return nil, fmt.Errorf("the %s API %s file holds too little to be a %s; paste the whole %s into it", l.Service, l.Kind, l.Kind, l.Kind)
+	}
+	return token, nil
+}
+
 // keyFileSource is the trackerapi.CredentialSource of one connection: its
 // key file, read each time the client asks and presented as its tracker
 // takes it.
@@ -101,9 +118,14 @@ type keyFileSource struct {
 	key []byte
 
 	mu sync.Mutex
-	// handed is the keyed digest of the token last handed to the client,
-	// nil before the first and after the client was made to drop it. Never
-	// the token, and never logged.
+	// handed is the keyed digest of the token the source last read for the
+	// client, and the client holds that token or holds nothing. It is nil
+	// before the first read and after the client was made to drop it. A
+	// read that found no token leaves it, and the client then holds
+	// nothing: the transport drops the held token when a refresh fails. A
+	// token the client refuses (Linear's workspace check) or discards (a
+	// read ForgetCredential overtook) also leaves it holding nothing.
+	// Never the token, and never logged.
 	handed []byte
 	// reads counts the file reads the client asked for, for tests.
 	reads atomic.Int64
@@ -121,7 +143,7 @@ func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential,
 		return nil, err
 	}
 	k.reads.Add(1)
-	token, err := k.file.Read()
+	token, err := readToken(k.file, k.kind)
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}
