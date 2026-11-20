@@ -63,7 +63,10 @@ func validateProjectTrackerBoards(boards []ProjectTrackerBoard) error {
 // ReplaceProjectTrackerBoards makes boards, in order, the whole list of
 // boards projectID lists, and reports whether the list changed. A missing
 // project fails with sql.ErrNoRows and an invalid list with
-// ErrInvalidTrackerBoards; either leaves the stored list as it was.
+// ErrInvalidTrackerBoards; either leaves the stored list as it was. Only
+// the listings it removes are deleted, so a board whose last listing goes
+// is retired in its mirror (trg_project_tracker_boards_retire) and one
+// still listed is not.
 func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTrackerBoard) (changed bool, err error) {
 	if err := validateProjectTrackerBoards(boards); err != nil {
 		return false, err
@@ -107,13 +110,24 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	if slices.Equal(current, boards) {
 		return false, nil
 	}
-	if _, err := tx.Exec(`DELETE FROM project_tracker_boards WHERE project_id = ?`, projectID); err != nil {
-		return false, fmt.Errorf("%s: clear: %w", action, err)
-	}
-	if _, err := tx.Exec(`INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position, opens_first)
-		SELECT ?, json_extract(value, '$.c'), json_extract(value, '$.b'), key, json_extract(value, '$.f')
-		  FROM json_each(?)`, projectID, string(encodedRows)); err != nil {
-		return false, fmt.Errorf("%s: insert: %w", action, err)
+	// Kept listings move past every new position first, so the upsert
+	// never meets a position or an opens-first another row still holds.
+	for _, step := range []struct {
+		what, query string
+		args        []any
+	}{
+		{"remove", `DELETE FROM project_tracker_boards WHERE project_id = ?1 AND (connection_id, board_id) NOT IN (
+			SELECT value ->> 'c', value ->> 'b' FROM json_each(?2))`, []any{projectID, string(encodedRows)}},
+		{"move aside", `UPDATE project_tracker_boards SET position = position + ?2, opens_first = 0 WHERE project_id = ?1`,
+			[]any{projectID, len(current) + len(boards)}},
+		{"place", `INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position, opens_first)
+			SELECT ?1, value ->> 'c', value ->> 'b', key, value ->> 'f' FROM json_each(?2) WHERE true
+			ON CONFLICT(project_id, connection_id, board_id) DO UPDATE SET position = excluded.position, opens_first = excluded.opens_first`,
+			[]any{projectID, string(encodedRows)}},
+	} {
+		if _, err := tx.Exec(step.query, step.args...); err != nil {
+			return false, fmt.Errorf("%s: %s: %w", action, step.what, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("%s: commit: %w", action, err)

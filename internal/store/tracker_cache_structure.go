@@ -2,7 +2,7 @@ package store
 
 import (
 	"database/sql"
-	"errors"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -26,18 +26,15 @@ const (
 	MirrorEstimateTime   = 2
 )
 
-// Bounds of one board's structure, which bound the reads of it.
+// Bounds of one board's structure and of one catalog. A structure's rows
+// together stay within clearMirrorChunk, so a replace that removes all of
+// them deletes at most a chunk.
 const (
-	mirrorMaxColumns        = 100
-	mirrorMaxColumnStatuses = 1000
-	mirrorMaxSprints        = 500
+	mirrorMaxColumns        = 50
+	mirrorMaxColumnStatuses = 200
+	mirrorMaxSprints        = 250
+	mirrorMaxCatalog        = 500
 )
-
-// MirrorProject is a tracker project; Data is the rest of it.
-type MirrorProject struct {
-	ID, Key, Name string
-	Data          []byte
-}
 
 // MirrorUser is a tracker user; Data is the rest of it.
 type MirrorUser struct {
@@ -52,11 +49,11 @@ type MirrorStatus struct {
 	Group    int
 }
 
-// MirrorCatalog is the projects, users and statuses a read names. They
-// belong to the root, not to a board: a write upserts them and never
-// removes one.
+// MirrorCatalog is the users and statuses a read names. They belong to the
+// root, not to a board: a write upserts them and never removes one. Each
+// is replaced only by a read that began no earlier than the one that
+// stored it; an earlier one is skipped without a report.
 type MirrorCatalog struct {
-	Projects []MirrorProject
 	Users    []MirrorUser
 	Statuses []MirrorStatus
 }
@@ -87,21 +84,19 @@ type MirrorSprint struct {
 	StartAt, EndAt, CompletedAt   int64
 }
 
-// MirrorStructure is one read of a board's structure.
+// MirrorStructure is one read of a board's structure. ReadAt is when the
+// read began; GetMirrorBoard leaves it and the catalog empty.
 type MirrorStructure struct {
 	Board   MirrorBoard
 	Columns []MirrorColumn
 	Sprints []MirrorSprint
 	Catalog MirrorCatalog
+	ReadAt  int64
 }
 
 func (c MirrorCatalog) check() error {
-	projects := make(map[string]bool, len(c.Projects))
-	for _, p := range c.Projects {
-		if p.ID == "" || projects[p.ID] {
-			return fmt.Errorf("%w: project %q is empty or repeated", ErrInvalidTrackerCache, p.ID)
-		}
-		projects[p.ID] = true
+	if len(c.Users) > mirrorMaxCatalog || len(c.Statuses) > mirrorMaxCatalog {
+		return fmt.Errorf("%w: a catalog names %d users and %d statuses, over %d", ErrInvalidTrackerCache, len(c.Users), len(c.Statuses), mirrorMaxCatalog)
 	}
 	users := make(map[string]bool, len(c.Users))
 	for _, u := range c.Users {
@@ -123,8 +118,8 @@ func (c MirrorCatalog) check() error {
 func (st MirrorStructure) check() error {
 	b := st.Board
 	switch {
-	case b.ID == "":
-		return fmt.Errorf("%w: a board needs its ID", ErrInvalidTrackerCache)
+	case b.ID == "" || st.ReadAt <= 0:
+		return fmt.Errorf("%w: a board needs its ID and the time its read began", ErrInvalidTrackerCache)
 	case b.EstimateUnit < MirrorEstimateNone || b.EstimateUnit > MirrorEstimateTime:
 		return fmt.Errorf("%w: board %s has estimate unit %d", ErrInvalidTrackerCache, b.ID, b.EstimateUnit)
 	case len(st.Columns) > mirrorMaxColumns || len(st.Sprints) > mirrorMaxSprints:
@@ -156,187 +151,196 @@ func (st MirrorStructure) check() error {
 
 // ReplaceMirrorStructure stores one read of a board's structure under
 // rootID: the board, its columns with their statuses, its sprints (those
-// not in st.Sprints are removed from the board) and the catalog. It
-// reports whether anything changed.
-func (s *Store) ReplaceMirrorStructure(rootID string, st MirrorStructure) (changed bool, err error) {
+// not in st.Sprints are removed from the board) and the catalog. The board
+// must be listed (ErrTrackerCacheUnlisted). A read that began before the
+// one that stored the board's structure is superseded and stores nothing.
+func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result MirrorWrite, err error) {
 	if err := st.check(); err != nil {
-		return false, err
+		return MirrorWrite{}, err
 	}
-	action := fmt.Sprintf("store: replace tracker mirror %s board %s structure", rootID, st.Board.ID)
-	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+	action := fmt.Sprintf("store: replace tracker mirror %d board %s structure", rootID, st.Board.ID)
+	err = s.mirrorBoardWrite(rootID, st.Board.ID, action, false, func(tx *sql.Tx, board mirrorBoard) error {
+		if board.stored && st.ReadAt < board.readAt {
+			result.Superseded = true
+			return nil
+		}
 		var err error
-		changed, err = replaceMirrorStructureTx(tx, rootID, st)
+		result.Changed, err = replaceMirrorStructureTx(tx, rootID, st)
 		return err
 	})
-	return changed, err
+	if err != nil {
+		return MirrorWrite{}, err
+	}
+	return result, nil
 }
 
-func replaceMirrorStructureTx(tx *sql.Tx, rootID string, st MirrorStructure) (bool, error) {
-	b := st.Board
-	changed, err := upsertMirrorCatalogTx(tx, rootID, st.Catalog)
-	if err != nil {
-		return false, err
-	}
-	mark := func(rowChanged bool, err error) error {
-		changed = changed || rowChanged
-		return err
-	}
-	if err := mark(execChangedTx(tx, `INSERT INTO tracker_cache_boards(root_id, board_id, project_id, name, plans_sprints, estimate_unit, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(root_id, board_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name,
-		    plans_sprints = excluded.plans_sprints, estimate_unit = excluded.estimate_unit, data = excluded.data
-		WHERE project_id IS NOT excluded.project_id OR name IS NOT excluded.name OR plans_sprints IS NOT excluded.plans_sprints
-		   OR estimate_unit IS NOT excluded.estimate_unit OR data IS NOT excluded.data
-		RETURNING board_id`, rootID, b.ID, b.ProjectID, b.Name, boolToInt(b.PlansSprints), b.EstimateUnit, mirrorData(b.Data))); err != nil {
-		return false, fmt.Errorf("upsert board: %w", err)
-	}
-	var placed []string
-	for position, column := range st.Columns {
-		if err := mark(execChangedTx(tx, `INSERT INTO tracker_cache_board_columns(root_id, board_id, position, name) VALUES (?, ?, ?, ?)
-			ON CONFLICT(root_id, board_id, position) DO UPDATE SET name = excluded.name WHERE name IS NOT excluded.name
-			RETURNING position`, rootID, b.ID, position, column.Name)); err != nil {
-			return false, fmt.Errorf("upsert column %d: %w", position, err)
-		}
-		for rank, status := range column.Statuses {
-			placed = append(placed, status)
-			if err := mark(execChangedTx(tx, `INSERT INTO tracker_cache_board_column_statuses(root_id, board_id, position, status_id, rank)
-				VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT(root_id, board_id, status_id) DO UPDATE SET position = excluded.position, rank = excluded.rank
-				WHERE position IS NOT excluded.position OR rank IS NOT excluded.rank
-				RETURNING status_id`, rootID, b.ID, position, status, rank)); err != nil {
-				return false, fmt.Errorf("upsert column %d status %s: %w", position, status, err)
-			}
-		}
-	}
-	placedJSON, err := encodeMirrorIDs(placed)
-	if err != nil {
-		return false, err
-	}
-	if err := mark(execChangedTx(tx, `DELETE FROM tracker_cache_board_column_statuses
-		WHERE root_id = ? AND board_id = ? AND status_id NOT IN (SELECT value FROM json_each(?))
-		RETURNING status_id`, rootID, b.ID, placedJSON)); err != nil {
-		return false, fmt.Errorf("remove column statuses: %w", err)
-	}
-	if err := mark(execChangedTx(tx, `DELETE FROM tracker_cache_board_columns WHERE root_id = ? AND board_id = ? AND position >= ?
-		RETURNING position`, rootID, b.ID, len(st.Columns))); err != nil {
-		return false, fmt.Errorf("remove columns: %w", err)
-	}
-	sprintChanged, err := replaceMirrorSprintsTx(tx, rootID, b.ID, st.Sprints)
-	return changed || sprintChanged, err
+type mirrorStatusPlace struct {
+	Status   string `json:"s"`
+	Position int    `json:"p"`
+	Rank     int    `json:"r"`
 }
 
-func replaceMirrorSprintsTx(tx *sql.Tx, rootID, boardID string, sprints []MirrorSprint) (bool, error) {
-	changed := false
-	kept := make([]string, 0, len(sprints))
-	for position, sp := range sprints {
-		kept = append(kept, sp.ID)
-		rowChanged, err := execChangedTx(tx, `INSERT INTO tracker_cache_sprints(root_id, board_id, sprint_id, position, origin_board_id,
+type mirrorSprintRow struct {
+	ID          string `json:"i"`
+	Origin      string `json:"o"`
+	Name        string `json:"n"`
+	Goal        string `json:"g"`
+	State       int    `json:"t"`
+	StartAt     int64  `json:"s"`
+	EndAt       int64  `json:"e"`
+	CompletedAt int64  `json:"c"`
+}
+
+// The structure's set statements: ?1 root, ?2 board, ?3 the JSON list.
+const (
+	mirrorColumnsUpsertSQL = `INSERT INTO tracker_cache_board_columns(root_id, board_id, position, name)
+		SELECT ?1, ?2, c.key, c.value FROM json_each(?3) c WHERE true
+		ON CONFLICT(root_id, board_id, position) DO UPDATE SET name = excluded.name WHERE name IS NOT excluded.name
+		RETURNING position`
+	mirrorColumnStatusesUpsertSQL = `INSERT INTO tracker_cache_board_column_statuses(root_id, board_id, position, status_id, rank)
+		SELECT ?1, ?2, c.value ->> 'p', c.value ->> 's', c.value ->> 'r' FROM json_each(?3) c WHERE true
+		ON CONFLICT(root_id, board_id, status_id) DO UPDATE SET position = excluded.position, rank = excluded.rank
+		WHERE position IS NOT excluded.position OR rank IS NOT excluded.rank
+		RETURNING status_id`
+	mirrorColumnStatusesRemoveSQL = `DELETE FROM tracker_cache_board_column_statuses
+		WHERE root_id = ?1 AND board_id = ?2 AND status_id NOT IN (SELECT c.value ->> 's' FROM json_each(?3) c)
+		RETURNING status_id`
+	mirrorSprintsUpsertSQL = `INSERT INTO tracker_cache_sprints(root_id, board_id, sprint_id, position, origin_board_id,
 		        name, goal, state, start_at, end_at, completed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(root_id, board_id, sprint_id) DO UPDATE SET position = excluded.position,
-			    origin_board_id = excluded.origin_board_id, name = excluded.name, goal = excluded.goal, state = excluded.state,
-			    start_at = excluded.start_at, end_at = excluded.end_at, completed_at = excluded.completed_at
-			WHERE position IS NOT excluded.position OR origin_board_id IS NOT excluded.origin_board_id
-			   OR name IS NOT excluded.name OR goal IS NOT excluded.goal OR state IS NOT excluded.state
-			   OR start_at IS NOT excluded.start_at OR end_at IS NOT excluded.end_at OR completed_at IS NOT excluded.completed_at
-			RETURNING sprint_id`, rootID, boardID, sp.ID, position, sp.OriginBoardID, sp.Name, sp.Goal, sp.State,
-			sp.StartAt, sp.EndAt, sp.CompletedAt)
-		if err != nil {
-			return false, fmt.Errorf("upsert sprint %s: %w", sp.ID, err)
-		}
-		changed = changed || rowChanged
-	}
-	keptJSON, err := encodeMirrorIDs(kept)
+		SELECT ?1, ?2, c.value ->> 'i', c.key, c.value ->> 'o', c.value ->> 'n', c.value ->> 'g', c.value ->> 't',
+		       c.value ->> 's', c.value ->> 'e', c.value ->> 'c' FROM json_each(?3) c WHERE true
+		ON CONFLICT(root_id, board_id, sprint_id) DO UPDATE SET position = excluded.position,
+		    origin_board_id = excluded.origin_board_id, name = excluded.name, goal = excluded.goal, state = excluded.state,
+		    start_at = excluded.start_at, end_at = excluded.end_at, completed_at = excluded.completed_at
+		WHERE position IS NOT excluded.position OR origin_board_id IS NOT excluded.origin_board_id
+		   OR name IS NOT excluded.name OR goal IS NOT excluded.goal OR state IS NOT excluded.state
+		   OR start_at IS NOT excluded.start_at OR end_at IS NOT excluded.end_at OR completed_at IS NOT excluded.completed_at
+		RETURNING sprint_id`
+	mirrorSprintsRemoveSQL = `DELETE FROM tracker_cache_sprints
+		WHERE root_id = ?1 AND board_id = ?2 AND sprint_id NOT IN (SELECT c.value ->> 'i' FROM json_each(?3) c)
+		RETURNING sprint_id`
+)
+
+func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure) (bool, error) {
+	b := st.Board
+	changed, err := upsertMirrorCatalogTx(tx, rootID, st.Catalog, st.ReadAt)
 	if err != nil {
 		return false, err
 	}
-	removed, err := execChangedTx(tx, `DELETE FROM tracker_cache_sprints
-		WHERE root_id = ? AND board_id = ? AND sprint_id NOT IN (SELECT value FROM json_each(?))
-		RETURNING sprint_id`, rootID, boardID, keptJSON)
-	if err != nil {
-		return false, fmt.Errorf("remove sprints: %w", err)
-	}
-	return changed || removed, nil
-}
-
-// upsertMirrorCatalogTx upserts what a read names and reports whether any
-// row changed.
-func upsertMirrorCatalogTx(tx *sql.Tx, rootID string, c MirrorCatalog) (bool, error) {
-	changed := false
-	for _, p := range c.Projects {
-		rowChanged, err := execChangedTx(tx, `INSERT INTO tracker_cache_projects(root_id, project_id, project_key, name, data)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(root_id, project_id) DO UPDATE SET project_key = excluded.project_key, name = excluded.name, data = excluded.data
-			WHERE project_key IS NOT excluded.project_key OR name IS NOT excluded.name OR data IS NOT excluded.data
-			RETURNING project_id`, rootID, p.ID, p.Key, p.Name, mirrorData(p.Data))
-		if err != nil {
-			return false, fmt.Errorf("upsert project %s: %w", p.ID, err)
+	names := make([]string, len(st.Columns))
+	places := []mirrorStatusPlace{}
+	for position, column := range st.Columns {
+		names[position] = column.Name
+		for rank, status := range column.Statuses {
+			places = append(places, mirrorStatusPlace{Status: status, Position: position, Rank: rank})
 		}
-		changed = changed || rowChanged
 	}
-	for _, u := range c.Users {
-		rowChanged, err := execChangedTx(tx, `INSERT INTO tracker_cache_users(root_id, user_id, name, data) VALUES (?, ?, ?, ?)
-			ON CONFLICT(root_id, user_id) DO UPDATE SET name = excluded.name, data = excluded.data
-			WHERE name IS NOT excluded.name OR data IS NOT excluded.data
-			RETURNING user_id`, rootID, u.ID, u.Name, mirrorData(u.Data))
-		if err != nil {
-			return false, fmt.Errorf("upsert user %s: %w", u.ID, err)
-		}
-		changed = changed || rowChanged
+	sprints := make([]mirrorSprintRow, len(st.Sprints))
+	for i, sp := range st.Sprints {
+		sprints[i] = mirrorSprintRow{ID: sp.ID, Origin: sp.OriginBoardID, Name: sp.Name, Goal: sp.Goal, State: sp.State,
+			StartAt: sp.StartAt, EndAt: sp.EndAt, CompletedAt: sp.CompletedAt}
 	}
-	for _, st := range c.Statuses {
-		rowChanged, err := execChangedTx(tx, `INSERT INTO tracker_cache_statuses(root_id, status_id, name, status_group) VALUES (?, ?, ?, ?)
-			ON CONFLICT(root_id, status_id) DO UPDATE SET name = excluded.name, status_group = excluded.status_group
-			WHERE name IS NOT excluded.name OR status_group IS NOT excluded.status_group
-			RETURNING status_id`, rootID, st.ID, st.Name, st.Group)
-		if err != nil {
-			return false, fmt.Errorf("upsert status %s: %w", st.ID, err)
+	lists := make([]string, 3)
+	for i, v := range []any{names, places, sprints} {
+		if lists[i], err = encodeMirrorJSON(v); err != nil {
+			return false, err
 		}
-		changed = changed || rowChanged
+	}
+	steps := []struct {
+		what, query string
+		args        []any
+	}{
+		{"upsert board", `INSERT INTO tracker_cache_boards(root_id, board_id, project_id, name, plans_sprints, estimate_unit, data, read_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(root_id, board_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name,
+			    plans_sprints = excluded.plans_sprints, estimate_unit = excluded.estimate_unit, data = excluded.data
+			WHERE project_id IS NOT excluded.project_id OR name IS NOT excluded.name OR plans_sprints IS NOT excluded.plans_sprints
+			   OR estimate_unit IS NOT excluded.estimate_unit OR data IS NOT excluded.data
+			RETURNING board_id`, []any{rootID, b.ID, b.ProjectID, b.Name, boolToInt(b.PlansSprints), b.EstimateUnit, mirrorData(b.Data), st.ReadAt}},
+		{"upsert columns", mirrorColumnsUpsertSQL, []any{rootID, b.ID, lists[0]}},
+		{"upsert column statuses", mirrorColumnStatusesUpsertSQL, []any{rootID, b.ID, lists[1]}},
+		{"remove column statuses", mirrorColumnStatusesRemoveSQL, []any{rootID, b.ID, lists[1]}},
+		{"remove columns", `DELETE FROM tracker_cache_board_columns WHERE root_id = ? AND board_id = ? AND position >= ?
+			RETURNING position`, []any{rootID, b.ID, len(st.Columns)}},
+		{"upsert sprints", mirrorSprintsUpsertSQL, []any{rootID, b.ID, lists[2]}},
+		{"remove sprints", mirrorSprintsRemoveSQL, []any{rootID, b.ID, lists[2]}},
+	}
+	for _, step := range steps {
+		stepChanged, err := execChangedTx(tx, step.query, step.args...)
+		if err != nil {
+			return false, fmt.Errorf("%s: %w", step.what, err)
+		}
+		changed = changed || stepChanged
+	}
+	if changed {
+		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3 WHERE root_id = ?1 AND board_id = ?2 AND read_at < ?3`,
+			rootID, b.ID, st.ReadAt); err != nil {
+			return false, fmt.Errorf("record the structure's read: %w", err)
+		}
 	}
 	return changed, nil
 }
 
-// MirrorBoardRemoval is what DeleteMirrorBoard removed: whether the board
-// was there, and the issues that left the mirror with it.
-type MirrorBoardRemoval struct {
-	Board  bool
-	Issues []string
+type mirrorUserRow struct {
+	ID   string `json:"i"`
+	Name string `json:"n"`
+	Data string `json:"d"`
 }
 
-// DeleteMirrorBoard removes a board no project lists any more from rootID's
-// mirror: its structure, sprints, rows and sync state, and every issue
-// that leaves the mirror with it (pruneMirrorIssuesTx).
-func (s *Store) DeleteMirrorBoard(rootID, boardID string) (removal MirrorBoardRemoval, err error) {
-	action := fmt.Sprintf("store: delete tracker mirror %s board %s", rootID, boardID)
-	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-		issues, err := queryIDs(tx, `SELECT issue_id FROM tracker_cache_board_issues WHERE root_id = ? AND board_id = ?`, rootID, boardID)
-		if err != nil {
-			return fmt.Errorf("list rows: %w", err)
-		}
-		if _, err := tx.Exec(`DELETE FROM tracker_cache_sync WHERE root_id = ? AND board_id = ?`, rootID, boardID); err != nil {
-			return fmt.Errorf("delete sync state: %w", err)
-		}
-		removal.Board, err = execChangedTx(tx, `DELETE FROM tracker_cache_boards WHERE root_id = ? AND board_id = ? RETURNING board_id`, rootID, boardID)
-		if err != nil {
-			return fmt.Errorf("delete board: %w", err)
-		}
-		removal.Issues, err = pruneMirrorIssuesTx(tx, rootID, issues)
-		return err
-	})
-	return removal, err
+type mirrorStatusRow struct {
+	ID    string `json:"i"`
+	Name  string `json:"n"`
+	Group int    `json:"g"`
 }
 
-// execChangedTx runs a write whose RETURNING yields a row for each row it
-// changed, and reports whether it yielded any.
-func execChangedTx(tx *sql.Tx, query string, args ...any) (bool, error) {
-	rows, err := tx.Query(query, args...)
-	if err != nil {
-		return false, err
-	}
+// The catalog's set statements: ?1 root, ?2 the JSON list, ?3 when the
+// read began. A row changes only for other content from a read that began
+// no earlier, so its read_at moves with its content.
+const (
+	mirrorUsersUpsertSQL = `INSERT INTO tracker_cache_users(root_id, user_id, name, data, read_at)
+		SELECT ?1, u.value ->> 'i', u.value ->> 'n', unhex(u.value ->> 'd'), ?3 FROM json_each(?2) u WHERE true
+		ON CONFLICT(root_id, user_id) DO UPDATE SET name = excluded.name, data = excluded.data, read_at = excluded.read_at
+		WHERE excluded.read_at >= read_at AND (name IS NOT excluded.name OR data IS NOT excluded.data)
+		RETURNING user_id`
+	mirrorStatusesUpsertSQL = `INSERT INTO tracker_cache_statuses(root_id, status_id, name, status_group, read_at)
+		SELECT ?1, st.value ->> 'i', st.value ->> 'n', st.value ->> 'g', ?3 FROM json_each(?2) st WHERE true
+		ON CONFLICT(root_id, status_id) DO UPDATE SET name = excluded.name, status_group = excluded.status_group,
+		    read_at = excluded.read_at
+		WHERE excluded.read_at >= read_at AND (name IS NOT excluded.name OR status_group IS NOT excluded.status_group)
+		RETURNING status_id`
+)
+
+// upsertMirrorCatalogTx upserts what a read that began at readAt names and
+// reports whether any row changed: one statement per kind it names.
+func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int64) (bool, error) {
 	changed := false
-	for rows.Next() {
-		changed = true
+	if len(c.Users) > 0 {
+		users := make([]mirrorUserRow, len(c.Users))
+		for i, u := range c.Users {
+			users[i] = mirrorUserRow{ID: u.ID, Name: u.Name, Data: hex.EncodeToString(u.Data)}
+		}
+		encoded, err := encodeMirrorJSON(users)
+		if err != nil {
+			return false, err
+		}
+		if changed, err = execChangedTx(tx, mirrorUsersUpsertSQL, rootID, encoded, readAt); err != nil {
+			return false, fmt.Errorf("upsert users: %w", err)
+		}
 	}
-	return changed, errors.Join(rows.Err(), rows.Close())
+	if len(c.Statuses) > 0 {
+		statuses := make([]mirrorStatusRow, len(c.Statuses))
+		for i, st := range c.Statuses {
+			statuses[i] = mirrorStatusRow(st)
+		}
+		encoded, err := encodeMirrorJSON(statuses)
+		if err != nil {
+			return false, err
+		}
+		statusChanged, err := execChangedTx(tx, mirrorStatusesUpsertSQL, rootID, encoded, readAt)
+		if err != nil {
+			return false, fmt.Errorf("upsert statuses: %w", err)
+		}
+		changed = changed || statusChanged
+	}
+	return changed, nil
 }

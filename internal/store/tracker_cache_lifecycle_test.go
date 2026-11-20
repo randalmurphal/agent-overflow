@@ -4,110 +4,247 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
-// Removing a connection detaches its mirror in the removal's own
-// transaction and then drains it, never more than a batch per
-// transaction; its Tempo connection goes with it.
-func TestDeleteTrackerConnectionDrainsItsMirrorInBatches(t *testing.T) {
+// mirrorRows are n rows of board, IDs from first, read at 1.
+func mirrorRows(first, n int, order string) []MirrorRow {
+	rows := make([]MirrorRow, 0, n)
+	for i := range n {
+		rows = append(rows, webRow(fmt.Sprint(first+i), 5, fmt.Sprintf("%s%05d", order, i)))
+	}
+	return rows
+}
+
+// writeMirrorBoard stores board's structure and rows in pages.
+func writeMirrorBoard(t *testing.T, s *Store, root int64, board string, rows []MirrorRow) {
+	t.Helper()
+	st := webStructure()
+	st.Board.ID = board
+	if _, err := s.ReplaceMirrorStructure(root, st); err != nil {
+		t.Fatal(err)
+	}
+	for page := range slices.Chunk(rows, mirrorMaxPageRows) {
+		mustWriteRowPage(t, s, root, webPage(board, page...), nil)
+	}
+}
+
+// statusHistory is n status changes of issue, final through n+1.
+func statusHistory(issue string, n int) MirrorHistory {
+	h := MirrorHistory{IssueID: issue, CompleteTo: int64(n + 1)}
+	for i := range n {
+		h.Changes = append(h.Changes, MirrorChange{Kind: MirrorChangeStatus, At: int64(i + 1), To: "3"})
+	}
+	return h
+}
+
+// Removing a connection deletes no mirror row: the schema detaches its
+// root, so writes fail at once; the cleanup drains it later. The Tempo
+// connection goes with its Jira one.
+func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
 	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 11})
 	seedFullMirror(t, s, root)
-	rows := make([]MirrorRow, 0, 2*clearMirrorChunk+10)
-	for i := range 2*clearMirrorChunk + 10 {
-		rows = append(rows, webRow(fmt.Sprintf("2%04d", i), 5, fmt.Sprintf("b%04d", i)))
-	}
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows}, nil)
-
-	before := mirrorRowTotal(countMirrorRows(t, s.db))
-	last, pauses := before, 0
-	deleted, err := s.deleteTrackerConnection(jira.ID, func() {
-		pauses++
-		now := mirrorRowTotal(countMirrorRows(t, s.db))
-		if pauses == 1 {
-			if now != before {
-				t.Errorf("the removal's transaction deleted %d mirror rows; it only detaches the root", before-now)
-			}
-			if _, err := s.GetTrackerConnection(jira.ID); !errors.Is(err, sql.ErrNoRows) {
-				t.Errorf("connection during the drain: %v", err)
-			}
-			if _, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: "10"}, nil); !errors.Is(err, ErrTrackerCacheGone) {
-				t.Errorf("write during the drain: %v", err)
-			}
-		}
-		if last-now > clearMirrorChunk {
-			t.Errorf("one transaction deleted %d rows; the bound is %d", last-now, clearMirrorChunk)
-		}
-		last = now
-	})
+	before := countMirrorRows(t, s.db)
+	deleted, err := s.DeleteTrackerConnection(jira.ID)
 	if err != nil || !slices.Equal(deleted, []string{jira.ID, tempo.ID}) {
 		t.Fatalf("delete = %v, %v; want %s and its Tempo connection %s", deleted, err, jira.ID, tempo.ID)
 	}
-	if pauses < 6 {
-		t.Fatalf("%d pauses for %d rows", pauses, before)
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_connections`, "0")
+	for _, table := range []string{"tracker_cache_issues", "tracker_cache_board_issues", "tracker_cache_changes", "tracker_cache_users"} {
+		if after := countMirrorRows(t, s.db); after[table] != before[table] {
+			t.Fatalf("the removal deleted %s rows: %v, was %v", table, after, before)
+		}
+	}
+	if _, err := s.RecordMirrorSyncAttempt(root, "", MirrorSyncAttempt{At: 1}); !errors.Is(err, ErrTrackerCacheGone) {
+		t.Fatalf("write after the removal: %v", err)
+	}
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
 	}
 	if counts := countMirrorRows(t, s.db); mirrorRowTotal(counts) != 0 {
-		t.Fatalf("after the removal: %v", counts)
+		t.Fatalf("after the cleanup: %v", counts)
 	}
-	if _, err := s.GetTrackerConnection(tempo.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("Tempo connection after the removal: %v", err)
+	if deleted, err := s.DeleteTrackerConnection(jira.ID); err != nil || deleted != nil {
+		t.Fatalf("second delete = %v, %v", deleted, err)
 	}
 }
 
-// The exported removal drains too, and a connection with no mirror has
-// nothing to drain.
-func TestDeleteTrackerConnectionLeavesNoMirror(t *testing.T) {
+// A cleanup a failure stops leaves its item pending, carries on with the
+// others, and the next call finishes it. The lock is held through every
+// pause, so calls never interleave.
+func TestFinishMirrorCleanupResumesAfterAFailure(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
 	seedFullMirror(t, s, root)
 	linear := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindLinear, Site: "workspace-a", CreatedAt: 12})
-	for _, c := range []TrackerConnection{jira, linear} {
-		if deleted, err := s.DeleteTrackerConnection(c.ID); err != nil || !slices.Equal(deleted, []string{c.ID}) {
-			t.Fatalf("delete %s = %v, %v", c.Kind, deleted, err)
+	other, _, err := s.GetOrCreateMirrorRoot(linear.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listMirrorBoards(t, s, mustCreateTrackerProject(t, s, "p2"), linear.ID, "10")
+	mustReplaceStructure(t, s, other, webStructure(), true)
+	for _, id := range []string{jira.ID, linear.ID} {
+		if _, err := s.DetachMirror(id); err != nil {
+			t.Fatal(err)
 		}
 	}
+	mustExec(t, s.db, fmt.Sprintf(`CREATE TRIGGER test_refuse_drain BEFORE DELETE ON tracker_cache_users WHEN OLD.root_id = %d
+		BEGIN SELECT RAISE(ABORT, 'drain refused'); END`, root))
+	pause := func() {
+		if s.mirrorCleanup.TryLock() {
+			s.mirrorCleanup.Unlock()
+			t.Error("the cleanup lock is free during a pause")
+		}
+	}
+	if err := s.FinishMirrorCleanup(pause); err == nil || !strings.Contains(err.Error(), "drain refused") {
+		t.Fatalf("cleanup with a drain refused: %v", err)
+	}
+	assertRows(t, s.db, `SELECT id FROM tracker_cache_roots`, fmt.Sprint(root))
+	mustExec(t, s.db, `DROP TRIGGER test_refuse_drain`)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Go(func() { errs[i] = s.FinishMirrorCleanup(pause) })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
 	if counts := countMirrorRows(t, s.db); mirrorRowTotal(counts) != 0 {
-		t.Fatalf("after the removals: %v", counts)
+		t.Fatalf("after the second cleanup: %v", counts)
 	}
 }
 
-// A drain that fails after the removal committed keeps the removal and
-// leaves a detached root, which the next start's ResumeMirrorClears
-// finishes.
-func TestDeleteTrackerConnectionDrainFailureIsResumed(t *testing.T) {
+// The delete of a board's last listing retires the board in one statement
+// that deletes only its sync state: the board and its rows are absent to
+// every read and write at once, and the cleanup drains them in batches.
+// A board another project still lists stays.
+func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
-	seedFullMirror(t, s, root)
-	mustExec(t, s.db, `CREATE TRIGGER test_refuse_drain BEFORE DELETE ON tracker_cache_users BEGIN SELECT RAISE(ABORT, 'drain refused'); END`)
-	deleted, err := s.DeleteTrackerConnection(jira.ID)
-	if !errors.Is(err, ErrTrackerCacheDrain) || !slices.Equal(deleted, []string{jira.ID}) {
-		t.Fatalf("delete with the drain refused = %v, %v; want the deleted ID and ErrTrackerCacheDrain", deleted, err)
+	writeMirrorBoard(t, s, root, "10", mirrorRows(20000, 2*mirrorMaxPageRows+1, "a"))
+	writeMirrorBoard(t, s, root, "11", mirrorRows(20000, 1, "a"))
+	listMirrorBoards(t, s, mustCreateTrackerProject(t, s, "p2"), jira.ID, "11")
+	for _, board := range []string{"10", "11"} {
+		if _, err := s.RecordMirrorSyncAttempt(root, board, MirrorSyncAttempt{At: 5}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := s.GetTrackerConnection(jira.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("connection after the failed drain: %v", err)
+	// A new order that keeps a board keeps its listing, so nothing retires.
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "12", "11", "10")
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "10:0,11:0")
+	assertRows(t, s.db, `SELECT board_id FROM tracker_cache_sync ORDER BY 1`, "10,11")
+	before := countMirrorRows(t, s.db)
+	recorder := recordMirrorWrites(t, s)
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "12")
+	if writes := recorder.rowWrites(); writes["tracker_cache_board_issues"] != 0 || writes["tracker_cache_sync"] != 1 ||
+		writes["tracker_cache_boards"] != 1 {
+		t.Fatalf("unlisting wrote %v; want the board's flag and its sync state only", writes)
 	}
-	assertRows(t, s.db, `SELECT id || ':' || coalesce(connection_id, '-') FROM tracker_cache_roots`, root+":-")
-	if _, err := s.SetMirrorSyncRead(root, "10", 1); !errors.Is(err, ErrTrackerCacheGone) {
-		t.Fatalf("write to the detached root: %v", err)
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "10:1,11:0")
+	if after := countMirrorRows(t, s.db); after["tracker_cache_board_issues"] != before["tracker_cache_board_issues"] {
+		t.Fatalf("unlisting deleted rows: %v", after)
 	}
-	mustExec(t, s.db, `DROP TRIGGER test_refuse_drain`)
-	if resumed, err := s.ResumeMirrorClears(nil); err != nil || !slices.Equal(resumed, []string{root}) {
-		t.Fatalf("resume = %v, %v", resumed, err)
+
+	if _, ok, err := s.GetMirrorBoard(root, "10"); err != nil || ok {
+		t.Errorf("retired board reads: %v, %v", ok, err)
 	}
-	if counts := countMirrorRows(t, s.db); mirrorRowTotal(counts) != 0 {
-		t.Fatalf("after the resume: %v", counts)
+	if page, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{}); err != nil || len(page.Rows) != 0 {
+		t.Errorf("retired board's backlog = %d rows, %v", len(page.Rows), err)
 	}
+	if counts, err := s.CountMirrorSections(root, "10"); err != nil || counts.All.Rows != 0 {
+		t.Errorf("retired board's counts = %+v, %v", counts, err)
+	}
+	if _, ok, err := s.GetMirrorSync(root, "10"); err != nil || ok {
+		t.Errorf("retired board's sync state: %v, %v", ok, err)
+	}
+	if cards, err := s.ListMirrorCards(root, []string{"20000", "20001"}); err != nil || len(cards) != 1 || cards[0].IssueID != "20000" {
+		t.Errorf("cards = %+v, %v; want only 20000, which board 11 keeps", cards, err)
+	}
+	if rows, _, err := s.ListMirrorIssueRows(root, "20000", ""); err != nil || len(rows) != 1 || rows[0].BoardID != "11" {
+		t.Errorf("rows of 20000 = %+v, %v; want board 11's", rows, err)
+	}
+	for name, write := range map[string]func() error{
+		"structure": func() error { _, err := s.ReplaceMirrorStructure(root, webStructure()); return err },
+		"rows":      func() error { _, err := s.WriteMirrorRows(root, webPage("10", webRow("20001", 9, "b"))); return err },
+		"reconcile": func() error { _, err := s.ReconcileMirrorBoard(root, "10", nil, true, 9); return err },
+		"sync":      func() error { _, err := s.RecordMirrorSyncAttempt(root, "10", MirrorSyncAttempt{At: 9}); return err },
+	} {
+		if err := write(); !errors.Is(err, ErrTrackerCacheUnlisted) {
+			t.Errorf("%s of a retired board: %v", name, err)
+		}
+	}
+
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
+	}
+	if most, _ := recorder.mostDeletedInATransaction(); most > clearMirrorChunk {
+		t.Fatalf("a drain transaction deleted %d rows", most)
+	}
+	assertRows(t, s.db, `SELECT board_id FROM tracker_cache_boards`, "11")
+	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "20000")
+	assertRows(t, s.db, `SELECT DISTINCT board_id FROM tracker_cache_sprints`, "11")
+
+	// A project's delete unlists its boards the same way.
+	mustExec(t, s.db, `DELETE FROM projects WHERE id = 'p2'`)
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards`, "11:1")
+}
+
+// A structure read captured before its board was unlisted cannot bring the
+// board back, before or after the cleanup removed it; once the board is
+// listed again it is the same board, synced afresh.
+func TestLateStructureCannotRestoreAnUnlistedBoard(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	captured := webStructure()
+	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 1, "a"))
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
+	for _, stage := range []string{"retired", "drained"} {
+		if _, err := s.ReplaceMirrorStructure(root, captured); !errors.Is(err, ErrTrackerCacheUnlisted) {
+			t.Fatalf("late structure, board %s: %v", stage, err)
+		}
+		if _, err := s.WriteMirrorRows(root, webPage("10", webRow("10001", 5, "a"))); !errors.Is(err, ErrTrackerCacheUnlisted) {
+			t.Fatalf("late rows, board %s: %v", stage, err)
+		}
+		if err := s.FinishMirrorCleanup(nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_boards WHERE board_id = '10'`, "0")
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issues`, "0")
+
+	// Listed again while its drain is pending, the board stays refused
+	// until the cleanup has removed it.
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
+	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 1, "a"))
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
+	if _, err := s.ReplaceMirrorStructure(root, captured); !errors.Is(err, ErrTrackerCacheUnlisted) {
+		t.Fatalf("structure of a board listed again before its drain: %v", err)
+	}
+	if _, ok, err := s.GetMirrorBoard(root, "10"); err != nil || ok {
+		t.Fatalf("board listed again before its drain reads: %v, %v", ok, err)
+	}
+	if cards, err := s.ListMirrorCards(root, []string{"10001"}); err != nil || len(cards) != 0 {
+		t.Fatalf("cards of a board listed again before its drain = %+v, %v", cards, err)
+	}
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
+	}
+	mustReplaceStructure(t, s, root, captured, true)
 }
 
 // Each way a thread's link goes (an unlink, the thread's delete, its
-// retire to a holder, a move to another computer) leaves its issue's card
-// until the sweep, which removes it; an issue a link still keeps, and one
-// a board row keeps, stay.
-func TestPruneUnkeptMirrorIssuesSweepsLostLinks(t *testing.T) {
+// retire to a holder, a move to another computer) makes its issue unkept:
+// absent to reads at once, removed by the cleanup. An issue a link still
+// keeps, and one a board row keeps, stay.
+func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
@@ -119,10 +256,13 @@ func TestPruneUnkeptMirrorIssuesSweepsLostLinks(t *testing.T) {
 	mustPointerFork(t, s, "retired", "retired-fork", ForkCut{})
 	linkIssue(t, s, "moved", "10004")
 	linkIssue(t, s, "kept", "10005")
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10006", 5, "a")}}, nil)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10006", 5, "a")), nil)
 	cards := []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5), webCard("10004", 5), webCard("10005", 5)}
-	if changes, err := s.UpsertMirrorCards(root, cards, MirrorCatalog{}); err != nil || len(changes.Cards) != len(cards) {
+	if changes, err := s.UpsertMirrorCards(root, cards, MirrorCatalog{}, 1); err != nil || len(changes.Cards) != len(cards) {
 		t.Fatalf("linked cards = %+v, %v", changes, err)
+	}
+	if linked, more, err := s.ListMirrorLinkedIssues(root, ""); err != nil || more || strings.Join(linked, ",") != "10001,10002,10003,10004,10005" {
+		t.Fatalf("linked issues = %v, %v, %v", linked, more, err)
 	}
 
 	if _, err := s.ClearThreadTicket("unlinked"); err != nil {
@@ -136,69 +276,177 @@ func TestPruneUnkeptMirrorIssuesSweepsLostLinks(t *testing.T) {
 	}
 	assertRows(t, s.db, `SELECT mode FROM threads WHERE id = 'retired'`, "holder")
 	seedTransfer(t, s, "moved", "outgoing", "move", "complete", 0)
+	if got := mustMirrorCards(t, s, root, "10001", "10002", "10003", "10004", "10005", "10006"); len(got) != 2 {
+		t.Fatalf("cards after the links went = %d; want 10005 and 10006", len(got))
+	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, "10001,10002,10003,10004,10005,10006")
-
-	pruned, next, more, err := s.PruneUnkeptMirrorIssues(root, "")
-	if err != nil || !slices.Equal(pruned, []string{"10001", "10002", "10003", "10004"}) || next != "10005" || more {
-		t.Fatalf("sweep = %v, next %q, more %v, %v", pruned, next, more, err)
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, "10005,10006")
-	if pruned, next, more, err := s.PruneUnkeptMirrorIssues(root, ""); err != nil || pruned != nil || next != "10005" || more {
-		t.Fatalf("second sweep = %v, next %q, more %v, %v", pruned, next, more, err)
-	}
 }
 
-// A sweep reads a page at a time by ID, never an issue a board row keeps,
-// and continues after the last issue it read: a kept issue ending a page
-// is not read again. Its pages together remove every unkept issue.
-func TestPruneUnkeptMirrorIssuesPages(t *testing.T) {
+// The sweep deletes leaf first in transactions of at most a chunk: an
+// issue whose changes do not fit has a batch of them deleted with its
+// history times reset, so an issue kept again midway has its history read
+// again; it is never deleted.
+func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	// Every 50th issue has a board row: 2*page issues have none.
-	n := 2*mirrorPruneSweepPage + 9
+	for _, id := range []string{"10001", "10002", "10003"} {
+		linkIssue(t, s, "link-"+id, id)
+	}
+	if _, err := s.UpsertMirrorCards(root, []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5)}, MirrorCatalog{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	for id, n := range map[string]int{"10001": mirrorMaxChanges, "10002": 400, "10003": 10} {
+		if _, err := replaceHistory(s, root, statusHistory(id, n)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClearThreadTicket("link-" + id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := recordMirrorWrites(t, s)
+	pauses := 0
+	err := s.FinishMirrorCleanup(func() {
+		if pauses++; pauses != 2 {
+			return
+		}
+		assertRows(t, s.db, `SELECT count(*) || ':' || (SELECT history_to FROM tracker_cache_issues WHERE issue_id = '10001')
+			FROM tracker_cache_changes WHERE issue_id = '10001'`, "0:0")
+		linkIssue(t, s, "relinked", "10001")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if most, total := recorder.mostDeletedInATransaction(); most > clearMirrorChunk || total != mirrorMaxChanges+400+10+2 {
+		t.Fatalf("sweep deleted %d rows, at most %d in one transaction", total, most)
+	}
+	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "10001")
+	if due, _, err := s.ListMirrorHistoryDue(root, ""); err != nil || !reflect.DeepEqual(due, []MirrorHistoryDue{{IssueID: "10001"}}) {
+		t.Fatalf("history due = %v, %v; want the issue kept again", due, err)
+	}
+}
+
+// A sweep reads a page of unkept issues at a time and its pages together
+// remove every one; a kept issue between them stays.
+func TestCleanupSweepPages(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	n := 2*mirrorSweepPage + 9
 	mustExec(t, s.db, `WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?)
 		INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, updated_at)
 		SELECT ?, printf('1%04d', n), printf('WEB-%d', n), 5 FROM i`, n, root)
-	var kept []string
-	var rows []MirrorRow
-	for i := 1; i <= n; i += 50 {
-		kept = append(kept, fmt.Sprintf("1%04d", i))
-		rows = append(rows, webRow(fmt.Sprintf("1%04d", i), 5, "a"))
-	}
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows}, nil)
-	boardless, err := queryIDs(s.db, `SELECT issue_id FROM tracker_cache_issues WHERE board_rows = 0 ORDER BY issue_id`)
-	if err != nil || len(boardless) != 2*mirrorPruneSweepPage {
-		t.Fatalf("%d issues with no board row, %v; want %d", len(boardless), err, 2*mirrorPruneSweepPage)
-	}
-	// The issue that ends the first page is linked, so it stays.
-	linked := boardless[mirrorPruneSweepPage-1]
+	linked := fmt.Sprintf("1%04d", mirrorSweepPage)
 	linkIssue(t, s, "linked", linked)
-	kept = append(kept, linked)
-	slices.Sort(kept)
+	pauses := 0
+	if err := s.FinishMirrorCleanup(func() { pauses++ }); err != nil {
+		t.Fatal(err)
+	}
+	if pauses != 3 {
+		t.Fatalf("%d sweep transactions; want 3 pages", pauses)
+	}
+	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, linked)
+}
 
-	var all []string
-	after, calls := "", 0
-	for {
-		pruned, next, more, err := s.PruneUnkeptMirrorIssues(root, after)
-		if err != nil {
+// No mirror transaction deletes more than a chunk, through cascades
+// included, over the largest writes the bounds allow: a reconcile and a
+// retire of a board of over two chunks, a history and a structure replaced
+// by empty ones, a page of missing rows, a range of worklogs emptied, the
+// sweep of issues with full histories, and a detached root's drain.
+func TestEveryMirrorDeleteIsBounded(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	recorder := recordMirrorWrites(t, s)
+	check := func(what string) {
+		t.Helper()
+		if most, _ := recorder.mostDeletedInATransaction(); most > clearMirrorChunk {
+			t.Fatalf("%s: a transaction deleted %d mirror rows; the bound is %d", what, most, clearMirrorChunk)
+		}
+		recorder.reset()
+	}
+	large := mirrorRows(30000, 2*mirrorMaxPageRows+100, "a")
+	writeMirrorBoard(t, s, root, "10", large)
+	writeMirrorBoard(t, s, root, "11", large)
+	for _, row := range large[:3] {
+		if _, err := replaceHistory(s, root, statusHistory(row.Card.IssueID, mirrorMaxChanges)); err != nil {
 			t.Fatal(err)
 		}
-		calls++
-		all = append(all, pruned...)
-		if calls == 1 && next != linked {
-			t.Fatalf("first page ends at %s; want %s", next, linked)
+	}
+	if _, err := s.ReconcileMirrorBoard(root, "10", []string{large[0].Card.IssueID}, true, 2); err != nil {
+		t.Fatal(err)
+	}
+	check("reconcile")
+	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: large[0].Card.IssueID, CompleteTo: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	check("history replace")
+	full := webStructure()
+	full.Board.ID, full.Columns, full.Sprints, full.ReadAt = "12", nil, nil, 1
+	for i := range mirrorMaxColumns {
+		full.Columns = append(full.Columns, MirrorColumn{Name: fmt.Sprint(i)})
+	}
+	for i := range mirrorMaxColumnStatuses {
+		full.Columns[i%mirrorMaxColumns].Statuses = append(full.Columns[i%mirrorMaxColumns].Statuses, fmt.Sprintf("s%d", i))
+	}
+	for i := range mirrorMaxSprints {
+		full.Sprints = append(full.Sprints, MirrorSprint{ID: fmt.Sprintf("p%d", i), State: MirrorSprintClosed})
+	}
+	if _, err := s.ReplaceMirrorStructure(root, full); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReplaceMirrorStructure(root, MirrorStructure{Board: MirrorBoard{ID: "12"}, ReadAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	check("structure replace")
+	missing := make([]string, 0, mirrorMaxPageRows)
+	for _, row := range large[len(large)-mirrorMaxPageRows:] {
+		missing = append(missing, row.Card.IssueID)
+	}
+	if _, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "11", Missing: missing, ReadAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	check("missing rows")
+	logs := make([]MirrorWorklog, 0, clearMirrorChunk)
+	for i := range clearMirrorChunk {
+		logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%d", i), IssueID: "1", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 60})
+	}
+	for i, l := range [][]MirrorWorklog{logs, nil} {
+		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", int64(i+1), l); err != nil {
+			t.Fatal(err)
 		}
-		if !more {
-			break
-		}
-		after = next
 	}
-	if calls != 2 {
-		t.Fatalf("%d calls; want 2 pages of %d", calls, mirrorPruneSweepPage)
+	check("worklog replace")
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID)
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
 	}
-	if len(all) != len(boardless)-1 || !slices.IsSorted(all) {
-		t.Fatalf("swept %d issues; want %d, in order", len(all), len(boardless)-1)
+	check("board drains and sweep")
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10")
+	writeMirrorBoard(t, s, root, "10", large)
+	if _, err := s.DetachMirror(jira.ID); err != nil {
+		t.Fatal(err)
 	}
-	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, strings.Join(kept, ","))
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
+	}
+	check("root drain")
+	if counts := countMirrorRows(t, s.db); mirrorRowTotal(counts) != 0 {
+		t.Fatalf("left %v", counts)
+	}
+}
+
+func TestDeleteTrackerConnectionOfNoMirror(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	linear := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindLinear, Site: "workspace-a", CreatedAt: 12})
+	if deleted, err := s.DeleteTrackerConnection(linear.ID); err != nil || !slices.Equal(deleted, []string{linear.ID}) {
+		t.Fatalf("delete = %v, %v", deleted, err)
+	}
+	if _, err := s.GetTrackerConnection(linear.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("connection after the delete: %v", err)
+	}
 }

@@ -116,9 +116,17 @@ this is its shape.
 **A sync cursor is the provider's own bytes.** `trackerapp` stores what a
 page returns and hands it back; it never builds or adjusts one. A page's
 cursor is the place to resume after that page, including inside a run of
-issues that share an update time. The overlap a walk's last cursor carries,
-for a tracker whose search can list a change some time after it is made, is
-the provider's business.
+issues that share an update time. A tracker can list a change some time
+after it is made, so a walk's last cursor carries an overlap, decided by
+one rule both providers call (`tracker.DeltaResume`): every update made
+more than `tracker.DeltaOverlap` before the walk's first page was read,
+by the tracker's own clock on that answer, was visible to the whole walk.
+When the newest row delivered is older than that, the next walk resumes
+exactly after it, so a board nobody changed delivers no row; otherwise the
+next walk starts at that time and delivers the rows since again. This
+computer's clock has no part in it. A stored cursor of an older encoding
+is refused as invalid input, and `trackerapp` starts that board's walk
+again.
 
 **A write returns an outcome for each thing it touched, not one error.** One
 operation can be several requests: a create followed by an image upload, a
@@ -160,7 +168,9 @@ an issue's changes with the time from which they are complete, and a value
 before that time is unknown, never inferred from the absence of a change.
 A tracker can also list a change some seconds after it is made, so a
 provider returns the time through which the changes are final, taken
-behind the start of its read. `trackerapp` reads an issue's history again
+behind the tracker's own clock on the answer that carried them (this
+computer's clock only when the answer names none). `trackerapp` reads an
+issue's history again
 while the issue's update time is later than that.
 
 ## Connections and key files
@@ -221,10 +231,12 @@ to the computer and are rows in `tracker_connections`.
 - Work in flight cannot write into a mirror that was cleared. A mirror is
   one `tracker_cache_roots` row with its own ID, and every mirror row
   references that ID. Each read or write captures the root ID when it
-  starts and every row it stores names it. Clearing deletes the root, and
-  turning the connection on again makes a new one, so a result that
-  arrives late names a root that no longer exists and the schema refuses
-  it. No caller checks a flag.
+  starts and every row it stores names it. Clearing detaches the root
+  (`DetachMirror`): every write naming it fails with
+  `ErrTrackerCacheGone`, every read is empty, and `FinishMirrorCleanup`
+  deletes its rows in transactions of at most 500. Turning the connection
+  on again makes a new root with a new ID, so a result that arrives late
+  names the detached root and is refused. No caller checks a flag.
 
 ## Tables
 
@@ -269,8 +281,8 @@ classification:
 | Table | Holds |
 |---|---|
 | `tracker_cache_roots` | One row per mirror, with its own ID and its connection. |
-| `tracker_cache_projects`, `_users`, `_statuses` | Structure shared by a connection's boards. |
-| `tracker_cache_boards` | A board's name, kind, estimate and columns. |
+| `tracker_cache_users`, `_statuses` | The users and statuses a mirror's reads name. |
+| `tracker_cache_boards`, `_board_columns`, `_board_column_statuses` | A board's name, kind and estimate, its columns and the statuses in each. |
 | `tracker_cache_sprints` | Sprints as each board shows them, with the board each was made on (a Jira sprint can show on several boards): state and dates. |
 | `tracker_cache_issues` | Cards, one per issue per mirror. |
 | `tracker_cache_board_issues` | Which issues are on which board, each with that board's order key and estimate. |
@@ -278,6 +290,7 @@ classification:
 | `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. The issue row holds the time from which they are complete. |
 | `tracker_cache_issue_details` | The detail of recently opened issues, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
+| `tracker_cache_worklog_days` | The read that last changed an author's day; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 
 Metric queries will read versioned views over these tables, never the
@@ -304,11 +317,19 @@ listed board is read from the tracker when asked for and is not kept unless
 a thread links it.
 
 An issue stays while it is on a listed board or a thread this computer owns
-links it on that connection's site. It leaves at once when its last board
-row goes. When a link goes (an unlink, the thread's delete, its retire to a
-holder, a move to another computer) the linked-issues sync removes the
-issue on its next tick, by a sweep of the issues with no board row; no
-caller prunes. Its changes, sprints and detail go with it.
+links it on that connection's site. It is absent to every read at once
+when its last row on a shown board goes and no link keeps it;
+`FinishMirrorCleanup` deletes it, its changes first, in bounded
+transactions. No caller prunes.
+
+A board whose last listing goes is retired: absent to reads and writes,
+its sync state deleted, its rows drained by `FinishMirrorCleanup`. Listed
+again before the drain, it stays refused until drained.
+
+Each row's `read_at` is when the read that stored it began: a write from a
+read that began earlier is superseded, and an identical write writes
+nothing. A section page carries the board's revision; continuing it at
+another revision fails with `ErrTrackerCacheStale`.
 
 A board's backlog is its rows in no future or active sprint of that board
 whose status is not in the done or canceled group, by the group the mirror
@@ -347,7 +368,10 @@ and writes share:
   and whenever a delta names a status, sprint or user the mirror lacks.
 - **History** is read whole for an issue new to the mirror and again for
   an issue whose update time is later than the time its stored history is
-  final through, limited to the four change kinds.
+  final through, limited to the four change kinds. It is written in
+  batches of up to 50 issues (`ReplaceMirrorHistories`), and a scope's
+  read, reconcile and failure are recorded by `RecordMirrorSyncAttempt` in
+  one statement.
 - **Cadence.** A board polls every 45 seconds while a client shows it and
   not at all otherwise. A failed read retries on the doubling delay the
   pull request pumps use; a rate limit waits for its release. Linked issues

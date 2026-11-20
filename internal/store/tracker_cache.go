@@ -5,21 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-
-	"agent-overflow/internal/entityid"
 )
 
 // The tracker mirror (migration v159, tracker_cache_*) is a cache of what
 // a tracker connection's boards hold. A mirror is one tracker_cache_roots
 // row; every accessor takes the root ID its caller captured when its work
 // started, and every write fails with ErrTrackerCacheGone once that root
-// is cleared, so a result that arrives late cannot fill a cleared mirror.
-// The store does not read the data columns: the caller encodes them.
-// Times are Unix milliseconds, zero for none.
+// is detached, so a result that arrives late cannot fill a cleared mirror.
+// Inside a live root each record carries its own order: a write of a read
+// that began before the read which stored the record's content is
+// superseded and changes nothing (see MirrorWrite), and a write identical
+// to what is stored changes no row and fires no trigger. The store does
+// not read the data columns: the caller encodes them. Times are Unix
+// milliseconds, zero for none.
 
 // ErrTrackerCacheGone is returned by every mirror write whose root was
-// cleared or never existed, and by GetOrCreateMirrorRoot for a connection
+// detached or never existed, and by GetOrCreateMirrorRoot for a connection
 // that is turned off.
 var ErrTrackerCacheGone = errors.New("store: tracker mirror was cleared")
 
@@ -29,191 +30,107 @@ var ErrTrackerCacheGone = errors.New("store: tracker mirror was cleared")
 // it was.
 var ErrInvalidTrackerCache = errors.New("store: invalid tracker mirror write")
 
-// ErrTrackerCacheDrain is wrapped by the error of a connection removal
-// that committed but could not drain the mirror it detached; the next
-// ResumeMirrorClears finishes it.
-var ErrTrackerCacheDrain = errors.New("store: tracker mirror detached but not drained")
-
 // ErrTrackerCacheNoBoard is returned by a write of a board's rows or a
 // reconcile of a board whose structure the mirror does not hold: the
 // caller stores the structure first.
 var ErrTrackerCacheNoBoard = errors.New("store: tracker mirror has no such board")
 
-// clearMirrorChunk is how many rows one transaction of a clear deletes.
-const clearMirrorChunk = 500
+// ErrTrackerCacheUnlisted is returned by a write naming a board no project
+// lists through the root's connection, or one whose last listing went and
+// whose rows FinishMirrorCleanup has yet to remove. The caller stops
+// syncing the board; a board listed again is synced again once the
+// cleanup has removed it.
+var ErrTrackerCacheUnlisted = errors.New("store: no project lists the tracker board")
 
-// clearMirrorTables are the mirror's tables in the order a clear drains
-// them: every table before the tables it references, so no batch
-// cascades into rows of another table. TestClearMirrorDrainsEveryTable
-// holds it to the schema.
-var clearMirrorTables = []string{
-	"tracker_cache_issue_details",
-	"tracker_cache_changes",
-	"tracker_cache_issue_sprints",
-	"tracker_cache_board_issues",
-	"tracker_cache_board_column_statuses",
-	"tracker_cache_board_columns",
-	"tracker_cache_sprints",
-	"tracker_cache_issues",
-	"tracker_cache_boards",
-	"tracker_cache_worklogs",
-	"tracker_cache_sync",
-	"tracker_cache_users",
-	"tracker_cache_statuses",
-	"tracker_cache_projects",
+// ErrTrackerCacheStale is returned by ListMirrorSection for a continuation
+// read at another revision of the board than the page it continues: the
+// caller reads the section again from its start.
+var ErrTrackerCacheStale = errors.New("store: tracker board changed since the page was read; read it again from the start")
+
+// MirrorWrite is what a replace did: Changed reports a stored change;
+// Superseded reports a write refused whole because the stored record came
+// from a read that began later.
+type MirrorWrite struct {
+	Changed, Superseded bool
 }
-
-// clearMirrorChunkSQL deletes one batch of a detached root's rows from
-// each table, one fixed statement per table.
-var clearMirrorChunkSQL = func() map[string]string {
-	out := make(map[string]string, len(clearMirrorTables))
-	for _, table := range clearMirrorTables {
-		out[table] = `DELETE FROM ` + table + ` WHERE rowid IN (SELECT rowid FROM ` + table +
-			` WHERE root_id = ? LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)`
-	}
-	return out
-}()
 
 // GetOrCreateMirrorRoot returns connectionID's mirror root, making one
 // when it has none. A missing connection is sql.ErrNoRows, a Tempo
 // connection (whose worklogs live under its Jira connection's root)
 // ErrInvalidTrackerConnection, and a connection turned off
 // ErrTrackerCacheGone.
-func (s *Store) GetOrCreateMirrorRoot(connectionID string) (rootID string, created bool, err error) {
+func (s *Store) GetOrCreateMirrorRoot(connectionID string) (rootID int64, created bool, err error) {
 	action := fmt.Sprintf("store: get or create tracker mirror of connection %s", connectionID)
 	tx, err := s.db.Begin()
 	if err != nil {
-		return "", false, fmt.Errorf("%s: begin: %w", action, err)
+		return 0, false, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
 	var kind string
 	var enabled bool
-	if err := tx.QueryRow(`SELECT kind, enabled FROM tracker_connections WHERE id = ?`, connectionID).Scan(&kind, &enabled); err != nil {
-		return "", false, fmt.Errorf("%s: read connection: %w", action, err)
+	var existing sql.NullInt64
+	if err := tx.QueryRow(`SELECT c.kind, c.enabled, r.id FROM tracker_connections c
+		LEFT JOIN tracker_cache_roots r ON r.connection_id = c.id WHERE c.id = ?`, connectionID).Scan(&kind, &enabled, &existing); err != nil {
+		return 0, false, fmt.Errorf("%s: read connection: %w", action, err)
 	}
 	switch {
 	case kind == TrackerKindTempo:
-		return "", false, fmt.Errorf("%w: a Tempo connection has no mirror of its own", ErrInvalidTrackerConnection)
+		return 0, false, fmt.Errorf("%w: a Tempo connection has no mirror of its own", ErrInvalidTrackerConnection)
 	case !enabled:
-		return "", false, fmt.Errorf("%s: the connection is turned off: %w", action, ErrTrackerCacheGone)
+		return 0, false, fmt.Errorf("%s: the connection is turned off: %w", action, ErrTrackerCacheGone)
+	case existing.Valid:
+		return existing.Int64, false, nil
 	}
-	err = tx.QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, connectionID).Scan(&rootID)
-	if err == nil {
-		return rootID, false, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", false, fmt.Errorf("%s: read root: %w", action, err)
-	}
-	rootID = entityid.New()
-	if _, err := tx.Exec(`INSERT INTO tracker_cache_roots(id, connection_id, created_at) VALUES (?, ?, ?)`, rootID, connectionID, nowMillis()); err != nil {
-		return "", false, fmt.Errorf("%s: insert root: %w", action, err)
+	if err := tx.QueryRow(`INSERT INTO tracker_cache_roots(connection_id, created_at) VALUES (?, ?) RETURNING id`,
+		connectionID, nowMillis()).Scan(&rootID); err != nil {
+		return 0, false, fmt.Errorf("%s: insert root: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", false, fmt.Errorf("%s: commit: %w", action, err)
+		return 0, false, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return rootID, true, nil
 }
 
 // GetMirrorRoot returns connectionID's mirror root, if it has one.
-func (s *Store) GetMirrorRoot(connectionID string) (rootID string, ok bool, err error) {
+func (s *Store) GetMirrorRoot(connectionID string) (rootID int64, ok bool, err error) {
 	err = s.reader().QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, connectionID).Scan(&rootID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("store: read tracker mirror of connection %s: %w", connectionID, err)
+		return 0, false, fmt.Errorf("store: read tracker mirror of connection %s: %w", connectionID, err)
 	}
 	return rootID, true, nil
 }
 
-// ClearMirror clears connectionID's mirror and reports whether it had one.
-// Its first transaction detaches the root from the connection: from then
-// on every write naming the root fails with ErrTrackerCacheGone, and
-// GetOrCreateMirrorRoot makes a new root. It then deletes the root's rows
-// clearMirrorChunk at a time, each batch its own transaction with pause
-// between them, and the root last. A clear that stops part way leaves a
-// detached root that ResumeMirrorClears finishes.
-func (s *Store) ClearMirror(connectionID string, pause ChunkPause) (cleared bool, err error) {
-	var rootID string
-	err = s.db.QueryRow(`UPDATE tracker_cache_roots SET connection_id = NULL WHERE connection_id = ? RETURNING id`, connectionID).Scan(&rootID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
+// DetachMirror detaches connectionID's mirror root in one statement and
+// reports whether it had one: from then on every write naming the root
+// fails with ErrTrackerCacheGone, every read of it is empty, and
+// GetOrCreateMirrorRoot makes a new root. FinishMirrorCleanup deletes the
+// detached root's rows. A connection's removal detaches its root the same
+// way, through the schema.
+func (s *Store) DetachMirror(connectionID string) (detached bool, err error) {
+	detached, err = execChangedTx(s.db, `UPDATE tracker_cache_roots SET connection_id = NULL WHERE connection_id = ? RETURNING id`, connectionID)
 	if err != nil {
 		return false, fmt.Errorf("store: detach tracker mirror of connection %s: %w", connectionID, err)
 	}
-	return true, s.drainMirrorRoot(rootID, pause)
-}
-
-// ResumeMirrorClears finishes every drain that stopped part way, of a
-// clear or of a connection's removal, and returns the roots it deleted.
-// The app runs it once at start, before it syncs anything.
-func (s *Store) ResumeMirrorClears(pause ChunkPause) ([]string, error) {
-	roots, err := queryIDs(s.db, `SELECT id FROM tracker_cache_roots WHERE connection_id IS NULL ORDER BY id`)
-	if err != nil {
-		return nil, fmt.Errorf("store: list detached tracker mirrors: %w", err)
-	}
-	for i, rootID := range roots {
-		if err := s.drainMirrorRoot(rootID, pause); err != nil {
-			return roots[:i], err
-		}
-	}
-	return roots, nil
-}
-
-// mirrorRootsOfConnectionTx lists the mirror root of connectionID, at most
-// one, which its removal detaches. The Tempo connection a removal takes
-// with it has none (GetOrCreateMirrorRoot).
-func mirrorRootsOfConnectionTx(tx *sql.Tx, connectionID string) ([]string, error) {
-	return queryIDs(tx, `SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, connectionID)
-}
-
-// drainMirrorRoot deletes a detached root's rows in batches, then the
-// root. pause runs before each of its transactions, so it also separates
-// them from the transaction that detached the root.
-func (s *Store) drainMirrorRoot(rootID string, pause ChunkPause) error {
-	between := func() {
-		if pause != nil {
-			pause()
-		}
-	}
-	for _, table := range clearMirrorTables {
-		for {
-			between()
-			result, err := s.db.Exec(clearMirrorChunkSQL[table], rootID)
-			if err != nil {
-				return fmt.Errorf("store: clear tracker mirror %s: %s: %w", rootID, table, err)
-			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("store: clear tracker mirror %s: %s: %w", rootID, table, err)
-			}
-			if n < clearMirrorChunk {
-				break
-			}
-		}
-	}
-	between()
-	if _, err := s.db.Exec(`DELETE FROM tracker_cache_roots WHERE id = ? AND connection_id IS NULL`, rootID); err != nil {
-		return fmt.Errorf("store: delete tracker mirror root %s: %w", rootID, err)
-	}
-	return nil
+	return detached, nil
 }
 
 // mirrorWrite runs fn in one write transaction after checking that rootID
-// is a live root, so every mirror writer refuses a cleared root with
+// is a live root, so every mirror writer refuses a detached root with
 // ErrTrackerCacheGone the same way. A root cannot be detached while the
 // transaction holds the writer.
-func (s *Store) mirrorWrite(rootID, action string, fn func(tx *sql.Tx) error) (err error) {
+func (s *Store) mirrorWrite(rootID int64, action string, fn func(tx *sql.Tx) error) (err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
-	var live int
-	err = tx.QueryRow(`SELECT 1 FROM tracker_cache_roots WHERE id = ? AND connection_id IS NOT NULL`, rootID).Scan(&live)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%s: root %s: %w", action, rootID, ErrTrackerCacheGone)
+	var live bool
+	err = tx.QueryRow(`SELECT connection_id IS NOT NULL FROM tracker_cache_roots WHERE id = ?`, rootID).Scan(&live)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && !live {
+		return fmt.Errorf("%s: root %d: %w", action, rootID, ErrTrackerCacheGone)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: read root: %w", action, err)
@@ -227,18 +144,91 @@ func (s *Store) mirrorWrite(rootID, action string, fn func(tx *sql.Tx) error) (e
 	return nil
 }
 
-// requireMirrorBoardTx fails with ErrTrackerCacheNoBoard when the mirror
-// does not hold boardID's structure.
-func requireMirrorBoardTx(tx *sql.Tx, rootID, boardID string) error {
-	var found int
-	err := tx.QueryRow(`SELECT 1 FROM tracker_cache_boards WHERE root_id = ? AND board_id = ?`, rootID, boardID).Scan(&found)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("board %s: %w", boardID, ErrTrackerCacheNoBoard)
-	}
+// mirrorBoard is a board's state as a write of it reads it.
+type mirrorBoard struct {
+	// stored reports that the mirror holds the board's structure.
+	stored bool
+	// readAt is when the read of the stored structure began.
+	readAt int64
+	// rowsRemovedAt is when the latest read that removed rows began.
+	rowsRemovedAt int64
+}
+
+// mirrorBoardWriteSQL reads, in one statement, whether a root is live,
+// whether some project lists the board through its connection, and the
+// board's stored state.
+const mirrorBoardWriteSQL = `SELECT r.connection_id IS NOT NULL,
+	  EXISTS (SELECT 1 FROM project_tracker_boards p WHERE p.connection_id = r.connection_id AND p.board_id = ?2),
+	  coalesce(b.retired, 0), b.root_id IS NOT NULL, coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0)
+	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2
+	WHERE r.id = ?1`
+
+// mirrorBoardWrite runs fn in one write transaction for a write naming
+// boardID: the root must be live (ErrTrackerCacheGone), and some project
+// must list the board through the root's connection, the board not being
+// retired (ErrTrackerCacheUnlisted). With needStructure, the mirror must
+// hold the board's structure (ErrTrackerCacheNoBoard).
+func (s *Store) mirrorBoardWrite(rootID int64, boardID, action string, needStructure bool, fn func(tx *sql.Tx, board mirrorBoard) error) (err error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("read board %s: %w", boardID, err)
+		return fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	var live, listed, retired bool
+	var board mirrorBoard
+	err = tx.QueryRow(mirrorBoardWriteSQL, rootID, boardID).Scan(&live, &listed, &retired, &board.stored, &board.readAt, &board.rowsRemovedAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows) || err == nil && !live:
+		return fmt.Errorf("%s: root %d: %w", action, rootID, ErrTrackerCacheGone)
+	case err != nil:
+		return fmt.Errorf("%s: read root and board: %w", action, err)
+	case !listed || retired:
+		return fmt.Errorf("%s: %w", action, ErrTrackerCacheUnlisted)
+	case needStructure && !board.stored:
+		return fmt.Errorf("%s: %w", action, ErrTrackerCacheNoBoard)
+	}
+	if err := fn(tx, board); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return nil
+}
+
+// mirrorBoardShown is the rule for which boards of a root the mirror
+// shows, in one place: a board whose structure is stored, not retired,
+// that some project lists through the root's live connection. root and
+// board are SQL expressions naming it.
+func mirrorBoardShown(root, board string) string {
+	return `EXISTS (SELECT 1 FROM tracker_cache_boards shown_board
+	  JOIN tracker_cache_roots shown_root ON shown_root.id = shown_board.root_id
+	  JOIN project_tracker_boards shown_listing ON shown_listing.connection_id = shown_root.connection_id
+	   AND shown_listing.board_id = shown_board.board_id
+	 WHERE shown_board.root_id = ` + root + ` AND shown_board.board_id = ` + board + ` AND shown_board.retired = 0)`
+}
+
+// mirrorLinksSQL is the FROM and WHERE of the links that keep issues in a
+// root's mirror: a thread this computer owns whose ticket names the root's
+// live connection's kind and site. link_ticket.issue_id is the issue.
+func mirrorLinksSQL(root string) string {
+	return `tracker_cache_roots link_root
+	  JOIN tracker_connections link_conn ON link_conn.id = link_root.connection_id
+	  JOIN thread_tickets link_ticket ON link_ticket.kind = link_conn.kind AND link_ticket.site = link_conn.site
+	  JOIN owned_threads link_thread ON link_thread.id = link_ticket.thread_id
+	 WHERE link_root.id = ` + root
+}
+
+// mirrorIssueKept is the rule for which issues a mirror keeps, in one
+// place: an issue with a row on a board the mirror shows
+// (mirrorBoardShown), or one a link names (mirrorLinksSQL). An issue the
+// rule does not keep is absent to every read and write and the cleanup
+// sweep removes it. root and issue are SQL expressions naming it.
+func mirrorIssueKept(root, issue string) string {
+	return `(EXISTS (SELECT 1 FROM tracker_cache_board_issues kept_row
+	          WHERE kept_row.root_id = ` + root + ` AND kept_row.issue_id = ` + issue + `
+	            AND ` + mirrorBoardShown("kept_row.root_id", "kept_row.board_id") + `)
+	  OR EXISTS (SELECT 1 FROM ` + mirrorLinksSQL(root) + ` AND link_ticket.issue_id = ` + issue + `))`
 }
 
 // mirrorData is a data column's value: never NULL.
@@ -249,15 +239,34 @@ func mirrorData(data []byte) []byte {
 	return data
 }
 
+// encodeMirrorJSON encodes v as the JSON a json_each statement reads.
+func encodeMirrorJSON(v any) (string, error) {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("encode for json_each: %w", err)
+	}
+	return string(encoded), nil
+}
+
 // encodeMirrorIDs encodes ids as the JSON array a json_each statement
 // reads.
 func encodeMirrorIDs(ids []string) (string, error) {
 	if ids == nil {
 		ids = []string{}
 	}
-	encoded, err := json.Marshal(ids)
+	return encodeMirrorJSON(ids)
+}
+
+// execChangedTx runs a write whose RETURNING yields a row for each row it
+// changed, and reports whether it yielded any.
+func execChangedTx(q sqlQueryer, query string, args ...any) (bool, error) {
+	rows, err := q.Query(query, args...)
 	if err != nil {
-		return "", fmt.Errorf("encode IDs: %w", err)
+		return false, err
 	}
-	return string(encoded), nil
+	changed := false
+	for rows.Next() {
+		changed = true
+	}
+	return changed, errors.Join(rows.Err(), rows.Close())
 }
