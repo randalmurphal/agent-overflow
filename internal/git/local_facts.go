@@ -25,15 +25,17 @@ import (
 // unavailable. One call's misses cost one `git cat-file --batch-check`
 // for every key's object, one `git cat-file --batch` for the commits'
 // subjects and the lines ranges' blobs (streamed: no blob is held whole),
-// one header read per image blob the blob image cache lacks, one `git
-// config` when such a blob is a Git LFS pointer (local_lfs.go), and, only
-// for a path its commit's tree may lack, one `git ls-tree` per batch of
-// paths of a commit. An answer keyed by full object ids is content
-// addressed (a full commit id and a path name one blob forever), so its
-// found and absent facts are held without expiry. An abbreviated commit
-// id that is found, and an answer read through an LFS pointer, can change
-// (a fetch makes the prefix ambiguous, a `git lfs pull` brings the
-// object): they are held for changingFactTTL, the forge facts' freshness.
+// one header read per image blob the blob image cache lacks, one lstat per
+// Git LFS pointer blob (local_lfs.go) and one `git config` when the
+// workspace's LFS store directory is not held, and, only for a path its
+// commit's tree may lack, one `git ls-tree` per batch of paths of a
+// commit. An answer keyed by full object ids is content addressed (a full
+// commit id and a path name one blob forever), so its found and absent
+// facts are held without expiry. A found abbreviated commit id can change
+// (a fetch makes the prefix ambiguous): it is held for changingFactTTL,
+// the forge facts' freshness. An image answer read through an LFS pointer
+// changes with the local store (a `git lfs pull` or prune) and is never
+// held: each call reaches the pointer's lstat.
 
 const (
 	// localFactsTimeout bounds each git read of a call, within the
@@ -62,8 +64,9 @@ const (
 	// 64 KiB), least recently used evicted first.
 	localFactCacheEntries = 2048
 	localFactCacheBytes   = 8 << 20
-	// The blob image cache: one entry per blob, at most
-	// blobImageCacheEntries of them, least recently used evicted first.
+	// The blob image cache: one entry per blob, LFS object and LFS store
+	// (local_lfs.go), at most blobImageCacheEntries of them, least recently
+	// used evicted first.
 	blobImageCacheEntries = 4096
 	blobImageCacheBytes   = 2 << 20
 	// changingFactTTL is how long a local answer that can change is held:
@@ -85,9 +88,11 @@ type BlobImage struct {
 	Width  int
 	Height int
 	LFS    bool
-	// expires is when an answer read through an LFS pointer stops
-	// answering; zero for a blob's own answer, which never changes.
-	expires time.Time
+	// pointer is set only on the blob image cache's record of a pointer
+	// blob whose object can be shown (a parsed pointer within
+	// attachment.DisplayImageMaxBytes); such a record is no answer:
+	// lfsBlobImage answers it.
+	pointer gitdiff.LFSPointer
 	// lfsPath and lfsOID are a local LFS object's file and sha256.
 	lfsPath, lfsOID string
 }
@@ -101,7 +106,7 @@ func (b BlobImage) Displayable() bool { return b.MIME != "" }
 func (b BlobImage) LFSObject() string { return b.lfsOID }
 
 func blobImageBytes(key string, b BlobImage) int64 {
-	return int64(128 + 2*len(key) + len(b.OID) + len(b.MIME) + len(b.lfsPath) + len(b.lfsOID))
+	return int64(128 + 2*len(key) + len(b.OID) + len(b.MIME) + len(b.pointer.OID) + len(b.lfsPath) + len(b.lfsOID))
 }
 
 // newLocalFactCaches makes a Core's local fact caches.
@@ -216,19 +221,20 @@ func (c *Core) resolveLocalFacts(ctx context.Context, cwd string, rev PRRevision
 		return out
 	}
 	prefix := cwd + "\x00"
-	var expires map[string]time.Time
+	var holds map[string]localHold
 	facts := resolveCached(ctx, c.localFacts, c.nowFn, parsed,
 		func(k localFactKey) string { return prefix + k.cacheKey },
 		func(k localFactKey) string { return k.key },
 		func(owned []localFactKey) []ForgeFact {
 			var facts []ForgeFact
-			facts, expires = c.readLocalFacts(ctx, cwd, owned)
+			facts, holds = c.readLocalFacts(ctx, cwd, owned)
 			return facts
 		},
 		func(fact ForgeFact, _ time.Time) (bool, time.Time) {
 			// A commit id prefix that is missing or ambiguous now may
 			// resolve after a fetch; it is unavailable, never held.
-			return fact.Status == FactFound || fact.Status == FactAbsent, expires[fact.Key]
+			hold := holds[fact.Key]
+			return !hold.never && (fact.Status == FactFound || fact.Status == FactAbsent), hold.expires
 		})
 	// A cached fact is another key's spelling of the same answer (head
 	// and its sha); it answers under this key.
@@ -245,14 +251,22 @@ type objectInfo struct {
 	missing   bool
 }
 
+// localHold is how long a local fact may be held: never, until expires,
+// or (both zero) without expiry.
+type localHold struct {
+	expires time.Time
+	never   bool
+}
+
 // readLocalFacts reads keys from cwd's repository: one fact per key, and
-// when each fact that can change stops answering, by key (absent: never).
-func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactKey) ([]ForgeFact, map[string]time.Time) {
+// how long each fact that can change may be held, by key (absent: without
+// expiry).
+func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactKey) ([]ForgeFact, map[string]localHold) {
 	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
 	defer cancel()
 	now := c.nowFn()
 	facts := make([]ForgeFact, len(keys))
-	expires := map[string]time.Time{}
+	holds := map[string]localHold{}
 	lfs := c.lfsStore(ctx, cwd)
 	var queries []string
 	seen := map[string]bool{}
@@ -276,7 +290,7 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 		for i, k := range keys {
 			facts[i] = unavailableFact(k.key)
 		}
-		return facts, nil
+		return facts, holds
 	}
 	var (
 		commits = map[string]*commitSink{}
@@ -294,7 +308,7 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 				facts[i] = ForgeFact{Key: k.key, Status: FactFound, OID: obj.oid}
 				if len(k.hex) < len(obj.oid) {
 					// A later fetch can make an abbreviation ambiguous.
-					expires[k.key] = now.Add(changingFactTTL)
+					holds[k.key] = localHold{expires: now.Add(changingFactTTL)}
 				}
 				if commits[obj.oid] == nil {
 					commits[obj.oid] = &commitSink{}
@@ -322,11 +336,9 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			case obj.size == 0:
 				facts[i] = absentFact(k.key)
 			default:
-				if held, ok := c.heldBlobImage(cwd, obj.oid, now); ok {
+				// A held pointer record is resolved by the reads below.
+				if held, ok := c.blobImages.get(obj.oid, now); ok && held.pointer.OID == "" {
 					facts[i] = imageFact(k.key, held)
-					if !held.expires.IsZero() {
-						expires[k.key] = held.expires
-					}
 					continue
 				}
 				images[obj.oid] = append(images[obj.oid], i)
@@ -400,18 +412,17 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 				reads.Go(func() {
 					slots <- struct{}{}
 					defer func() { <-slots }()
-					image, err := c.readBlobImage(ctx, cwd, oid, imageAt[oid], lfs)
+					image, throughPointer, err := c.blobImage(ctx, cwd, oid, imageAt[oid], lfs)
 					mu.Lock()
 					defer mu.Unlock()
 					if err != nil {
 						log.Printf("local facts: image header %s: %v", oid, err)
 						return
 					}
-					c.holdBlobImage(cwd, image)
 					for _, i := range at {
 						facts[i] = imageFact(keys[i].key, image)
-						if !image.expires.IsZero() {
-							expires[keys[i].key] = image.expires
+						if throughPointer {
+							holds[keys[i].key] = localHold{never: true}
 						}
 					}
 				})
@@ -442,7 +453,7 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 		})
 	}
 	wg.Wait()
-	return facts, expires
+	return facts, holds
 }
 
 func imageFact(key string, image BlobImage) ForgeFact {
@@ -542,35 +553,50 @@ func (c *Core) treePaths(ctx context.Context, cwd, commit string, paths []string
 // errFactHeaderRead stops a header read's git once the header is read.
 var errFactHeaderRead = errors.New("the image header is read")
 
-// heldBlobImage answers blob oid's held classification: a blob's own,
-// shared by every workspace, or one read through an LFS pointer, held
-// under cwd because the LFS store is the repository's.
-func (c *Core) heldBlobImage(cwd, oid string, now time.Time) (BlobImage, bool) {
-	if held, ok := c.blobImages.get(oid, now); ok {
-		return held, true
+// blobImage answers blob oid of size bytes as an image, and whether the
+// answer was read through a Git LFS pointer (it changes with lfs, cwd's
+// local LFS store). What the blob is, its classification or its parsed
+// pointer, is held in the blob image cache by blob id without expiry
+// (content addressed) or else read (readBlobImage); a pointer is resolved
+// against lfs on every call (lfsBlobImage).
+func (c *Core) blobImage(ctx context.Context, cwd, oid string, size int64, lfs *lfsStore) (BlobImage, bool, error) {
+	record, ok := c.blobImages.get(oid, c.nowFn())
+	if !ok {
+		var err error
+		if record, err = c.readBlobImage(ctx, cwd, oid, size); err != nil {
+			return BlobImage{}, false, err
+		}
+		c.blobImages.put(oid, record, time.Time{})
 	}
-	return c.blobImages.get(cwd+"\x00"+oid, now)
+	return resolveBlobImage(record, lfs)
 }
 
-// holdBlobImage holds image under the key heldBlobImage reads it by, until
-// its expiry.
-func (c *Core) holdBlobImage(cwd string, image BlobImage) {
-	key := image.OID
-	if !image.expires.IsZero() {
-		key = cwd + "\x00" + key
+// resolveBlobImage answers record, a blob image cache record, as an
+// image: itself, or for a pointer its object in lfs as it is now.
+func resolveBlobImage(record BlobImage, lfs *lfsStore) (BlobImage, bool, error) {
+	if record.pointer.OID == "" {
+		return record, false, nil
 	}
-	c.blobImages.put(key, image, image.expires)
+	image, err := lfs.lfsBlobImage(record)
+	if err != nil {
+		return BlobImage{}, false, err
+	}
+	return image, true, nil
 }
 
 // readBlobImage classifies blob oid of size bytes as an image from its
-// header (readBlobImageCounted), and a Git LFS pointer as its object in
-// lfs, cwd's local LFS store (lfsBlobImage).
-func (c *Core) readBlobImage(ctx context.Context, cwd, oid string, size int64, lfs *lfsStore) (BlobImage, error) {
-	image, pointer, _, err := c.readBlobImageCounted(ctx, cwd, oid, size)
+// header (readBlobImageCounted). A Git LFS pointer is LFS, with its parsed
+// pointer set when its object can be shown: it parses and its size is
+// within attachment.DisplayImageMaxBytes.
+func (c *Core) readBlobImage(ctx context.Context, cwd, oid string, size int64) (BlobImage, error) {
+	image, head, _, err := c.readBlobImageCounted(ctx, cwd, oid, size)
 	if err != nil || !image.LFS {
 		return image, err
 	}
-	return lfs.lfsBlobImage(image, pointer, c.nowFn())
+	if pointer, ok := gitdiff.ParseLFSPointer(head); ok && pointer.Size <= attachment.DisplayImageMaxBytes {
+		image.pointer = pointer
+	}
+	return image, nil
 }
 
 // readBlobImageCounted classifies blob oid of size bytes as an image from
@@ -856,21 +882,24 @@ func (s *linesSink) text(r *lineRange) (string, bool) {
 	return text, true
 }
 
-// BlobImage answers blob oid of cwd's repository as an image, from the
-// blob image cache or else its size and type (one `git cat-file
-// --batch-check`) and its header (readBlobImage; for a Git LFS pointer,
-// its object's in the local LFS store), without the network. An oid that
-// is no full object id, no local blob, or one over
+// BlobImage answers blob oid of cwd's repository as an image, without the
+// network: what the blob is from the blob image cache, or else its size
+// and type (one `git cat-file --batch-check`) and its header
+// (readBlobImage). A Git LFS pointer answers as its object in the local
+// LFS store as that store is now (lfsBlobImage: one lstat). An oid that is
+// no full object id, no local blob, or one over
 // attachment.DisplayImageMaxBytes is an error naming none of its content.
 func (c *Core) BlobImage(ctx context.Context, cwd, oid string) (BlobImage, error) {
 	if !gitdiff.IsFullOID(oid) {
 		return BlobImage{}, errors.New("not a full object ID")
 	}
-	if held, ok := c.heldBlobImage(cwd, oid, c.nowFn()); ok {
-		return held, nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
 	defer cancel()
+	lfs := c.lfsStore(ctx, cwd)
+	if record, ok := c.blobImages.get(oid, c.nowFn()); ok {
+		image, _, err := resolveBlobImage(record, lfs)
+		return image, err
+	}
 	objects, err := c.batchCheck(ctx, cwd, []string{oid})
 	if err != nil {
 		return BlobImage{}, err
@@ -884,12 +913,8 @@ func (c *Core) BlobImage(ctx context.Context, cwd, oid string) (BlobImage, error
 	case obj.size == 0:
 		return BlobImage{OID: oid}, nil
 	}
-	image, err := c.readBlobImage(ctx, cwd, oid, obj.size, c.lfsStore(ctx, cwd))
-	if err != nil {
-		return BlobImage{}, err
-	}
-	c.holdBlobImage(cwd, image)
-	return image, nil
+	image, _, err := c.blobImage(ctx, cwd, oid, obj.size, lfs)
+	return image, err
 }
 
 var (
@@ -911,7 +936,7 @@ func (c *Core) ReadImage(ctx context.Context, cwd string, image BlobImage, buf [
 		return fmt.Errorf("a %d byte buffer for a %d byte image", len(buf), image.Size)
 	}
 	if image.lfsOID != "" {
-		return readLFSObject(ctx, image, buf)
+		return c.readLFSObject(ctx, image, buf)
 	}
 	return c.readBlob(ctx, cwd, image.OID, buf)
 }

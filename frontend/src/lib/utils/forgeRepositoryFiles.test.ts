@@ -312,6 +312,8 @@ const SCANNED = [
 // reference definitions in every container, pictures, images in links,
 // code spans in labels, CRLF, and malformed tags, quotes and parentheses.
 const ADVERSARIAL = [
+  '![x][r]\r\r[r]: docs/cr.png',
+  'Text\r![x](docs/cr2.png)\r\r<img\rsrc="docs/cr3.png">',
   '![a](docs/sp\\ x.png) ![a](docs/esc\\)x.png) ![a](docs/esc\\)y.png',
   "<img title=\"1 > 0\" src=\"docs/q1.png\">",
   "Text <img title=\"1 > 0\" src=\"docs/q2.png\"> text",

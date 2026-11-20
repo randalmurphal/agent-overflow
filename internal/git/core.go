@@ -238,13 +238,21 @@ type Core struct {
 
 	// localFacts holds the commit:, image: and lines: facts by workspace
 	// and resolved key, and blobImages each image blob's classification
-	// by blob id (local_facts.go). Both are content addressed, so neither
-	// expires; each is bounded and evicts the least recently used.
+	// or parsed LFS pointer by blob id, each local LFS object's
+	// classification by its sha256, size and file time, and each workspace's LFS
+	// store directory (local_facts.go, local_lfs.go). Each is bounded and
+	// evicts the least recently used.
 	localFacts *factCache[ForgeFact]
 	blobImages *factCache[BlobImage]
 	// beforeFactGit runs before each git command of the facts reads with
-	// its arguments. Nil in production; tests count the commands.
-	beforeFactGit func(args []string)
+	// its arguments, and beforeLFSObjectRead before a lookup opens a local
+	// LFS object to read its header, with its path. lfsObjectClosed
+	// answers the outcome of closing an LFS object a read opened, given
+	// the close's. Nil in production; tests count the first two and fail
+	// closes with the third.
+	beforeFactGit       func(args []string)
+	beforeLFSObjectRead func(path string)
+	lfsObjectClosed     func(err error) error
 }
 
 type prCacheEntry struct {

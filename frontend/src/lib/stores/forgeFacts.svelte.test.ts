@@ -6,6 +6,7 @@ import {
   FACT_RETRY_MS,
   MAX_FACT_TEXT_PER_PR,
   MAX_FACTS_PER_PR,
+  MAX_READ_FACTS_PER_PR,
   __forgeFactsHeldForTest,
   __forgeFactsKeysForTest,
   __resetForgeFactsForTest,
@@ -234,9 +235,42 @@ describe('answers', () => {
     calls[0].reject(new Error('gone'));
     await settle();
     expect(forgeFactReader(KEY)!.get(key)).toBe('pending');
+    // Nothing was lost: the newer request is out for the key.
+    expect(report).not.toHaveBeenCalled();
     calls[1].answer([found(key)]);
     await settle();
     expect(forgeFactReader(KEY)!.get(key)).toMatchObject({ status: 'found' });
+    report.mockRestore();
+  });
+
+  it('asks again after a minute for an image whose Git LFS object is not local, keeping the answer in use', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const calls = heldResolver();
+    const key = 'ref:group/widget#1';
+    observePRFacts(KEY, REF, snapshot('#1 #2'));
+    calls[0].answer([{ key, status: 'found', lfs: true }, found('ref:group/widget#2')]);
+    await settle();
+    vi.setSystemTime(Date.now() + FACT_RETRY_MS - 1);
+    observePRFacts(KEY, REF, snapshot('#1 #2'));
+    expect(calls).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 2);
+    observePRFacts(KEY, REF, snapshot('#1 #2'));
+    expect(calls.map((call) => call.keys)).toEqual([[key, 'ref:group/widget#2'], [key]]);
+    expect(forgeFactReader(KEY)!.get(key)).toMatchObject({ status: 'found', lfs: true });
+    calls[1].answer([{ key, status: 'found', oid: 'a'.repeat(40), width: 3, height: 2 }]);
+    await settle();
+    expect(forgeFactReader(KEY)!.get(key)).toMatchObject({ status: 'found', width: 3 });
+    expect(forgeFactReader(KEY)!.get(key)).not.toHaveProperty('lfs');
+  });
+
+  it('reports a failed request by the kinds of the keys it was still out for', async () => {
+    const report = vi.spyOn(diagnostics, 'reportFrontendDiagnostic').mockImplementation(() => {});
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('#1 and ~bug'));
+    calls[0].reject(new Error('gone'));
+    await settle();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report.mock.calls[0][1]).toBe('ref 1, label 1; Error');
     report.mockRestore();
   });
 
@@ -401,7 +435,8 @@ describe('a key a reader is asked for that no body named', () => {
     observePRFacts(KEY, REF, snapshot('plain'));
     const reader = forgeFactReader(KEY)!;
     const version = __forgeFactsHeldForTest(KEY)!.version;
-    for (const key of [seven, seven, eight, seven]) expect(reader.get(key)).toBeUndefined();
+    // Asked from the first read on: a body's first paint has the asked shape.
+    for (const key of [seven, seven, eight, seven]) expect(reader.get(key)).toBe('pending');
     expect(calls).toHaveLength(0);
     await settle();
     expect(calls.map((call) => call.keys)).toEqual([[seven, eight]]);
@@ -455,6 +490,53 @@ describe('a key a reader is asked for that no body named', () => {
     await settle();
     expect(calls).toHaveLength(asked);
     expect(__forgeFactsHeldForTest(KEY)!.facts).toBe(MAX_FACTS_PER_PR);
+  });
+
+  it('holds at most MAX_READ_FACTS_PER_PR keys for readers: one past it renders by shape and is not asked for', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('plain'));
+    const reader = forgeFactReader(KEY)!;
+    for (let i = 1; i <= MAX_READ_FACTS_PER_PR; i++) expect(reader.get(`ref:group/widget#${i}`)).toBe('pending');
+    expect(reader.get('ref:group/widget#5000')).toBeUndefined();
+    await settle();
+    expect(calls.reduce((sum, call) => sum + call.keys.length, 0)).toBe(MAX_READ_FACTS_PER_PR);
+    expect(__forgeFactsHeldForTest(KEY)!.facts).toBe(MAX_READ_FACTS_PER_PR);
+  });
+
+  it('gives way to the keys of bodies when the PR is full, oldest first', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('plain'));
+    const reader = forgeFactReader(KEY)!;
+    // 1,000 keys typed into drafts and gone, none of which a body names.
+    for (let i = 1; i <= 1000; i++) reader.get(`ref:group/widget#${90000 + i}`);
+    await settle();
+    // Then bodies that fill the PR: 4,000 keys, 904 more than the room left.
+    const comments = Array.from({ length: 20 }, (_, c) => comment(`c${c}`, Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ')));
+    observePRFacts(KEY, REF, snapshot('', comments));
+    const after = forgeFactReader(KEY)!;
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: MAX_FACTS_PER_PR, bodyKeys: 4000 });
+    expect(after.signature('ref:group/widget#4000')).toBe('p');
+    // The 904 oldest reader keys went, the newest 96 stayed.
+    expect(after.signature('ref:group/widget#90904')).toBe('');
+    expect(after.signature('ref:group/widget#90905')).toBe('p');
+    expect(calls.reduce((sum, call) => sum + call.keys.length, 0)).toBe(5000);
+    // A late answer for a dropped key changes nothing.
+    calls[0].answer(calls[0].keys.map((key) => found(key)));
+    await settle();
+    expect(forgeFactReader(KEY)!.signature('ref:group/widget#90001')).toBe('');
+    expect(__forgeFactsHeldForTest(KEY)!.facts).toBe(MAX_FACTS_PER_PR);
+  });
+
+  it('belongs to a body that comes to name it, and goes with that body', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('plain'));
+    forgeFactReader(KEY)!.get(seven);
+    observePRFacts(KEY, REF, snapshot('plain', [comment('c1', '#7')]));
+    await settle();
+    // Asked once: the reader took it, the body found it held.
+    expect(calls.map((call) => call.keys)).toEqual([[seven]]);
+    observePRFacts(KEY, REF, snapshot('plain'));
+    expect(__forgeFactsHeldForTest(KEY)!.facts).toBe(0);
   });
 
   it('asks nothing for a PR dropped before the microtask', async () => {
@@ -538,7 +620,7 @@ describe('scans that read the head commit', () => {
       expect(forgeFactsCounters.scans).toBe(4);
       expect(calls.map((call) => call.keys)).toEqual([['ref:group/widget#2', 'image:h1:a.png', 'ref:group/widget#1'], ['image:h2:a.png']]);
       // The old head's key went with the scan that named it.
-      expect(forgeFactReader(KEY)!.get('image:h1:a.png')).toBeUndefined();
+      expect(forgeFactReader(KEY)!.signature('image:h1:a.png')).toBe('');
       expect(forgeFactReader(KEY)!.get('image:h2:a.png')).toBe('pending');
     } finally {
       remove();

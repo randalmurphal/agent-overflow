@@ -168,6 +168,38 @@ describe.each(PATHS)('a forge attachment image\'s title, on %s', (_path, streami
   });
 });
 
+describe.each(PATHS)('a forge attachment\'s title whatever its bytes turn out to be, on %s', (_path, streaming) => {
+  const forgeUrl = browserUrlForForgeAttachment('github', ASSET, GITHUB.webBase, GITHUB.pr);
+  const CASES: [string, Outcome, string, string][] = [
+    ['a video', 'video', `See ![clip](${ASSET} "Demo clip") here.`, 'video'],
+    ['audio', 'audio', `See ![clip](${ASSET} "Demo clip") here.`, 'audio'],
+    ['a file', 'file', `See ![clip](${ASSET} "Demo clip") here.`, '[data-forge-attachment-file]'],
+    ['a video inside a link', 'video', `[![clip](${ASSET} "Demo clip")](${DESTINATION})`, '[data-forge-attachment-linked]'],
+    ['a <video> tag', 'video', `<video src="${ASSET}" title="Demo clip"></video>`, 'video'],
+  ];
+  it.each(CASES)('is the authored one for %s', async (_name, outcome, source, selector) => {
+    stage(outcome);
+    render(ForgeAttachmentChatHarness, { target: host, props: { source, forgeSource: GITHUB, streaming } });
+    const shown = await waitFor(() => {
+      const found = host.querySelector<HTMLElement>(selector);
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    expect(shown.title).toBe('Demo clip');
+  });
+
+  it('is the forge URL without one', async () => {
+    stage('file');
+    render(ForgeAttachmentChatHarness, { target: host, props: { source: `See ![clip](${ASSET}) here.`, forgeSource: GITHUB, streaming } });
+    const shown = await waitFor(() => {
+      const found = host.querySelector<HTMLElement>('[data-forge-attachment-file]');
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    expect(shown.title).toBe(forgeUrl);
+  });
+});
+
 describe('a local image inside an author link, in agent chat', () => {
   it('leaves the link the one control', async () => {
     mockLocalImage(() => ({ blob: new Blob([svg(80, 20)], { type: 'image/svg+xml' }), width: 80, height: 20 }));

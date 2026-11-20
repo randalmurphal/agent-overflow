@@ -1070,7 +1070,7 @@ the local kinds run concurrently.
 | `mr:<project>!<n>`, `label:<project>~<title>`, `milestone:<project>%<title>`, `snippet:<project>$<id>`, `epic:<group>&<n>` | GitLab only (`unavailable` on GitHub): `mergeRequest`, `labels(title:, includeAncestorGroups: true)`, `milestones(title:, includeAncestors: true)`, `snippets(ids:)`, `group { workItem(iid:) }` |
 | `user:<name>` | GitHub `repositoryOwner` (kind `user` or `org`); GitLab `user`, else `group` (kind `group`) |
 | `commit:<hex>` | local: 7 to 64 lowercase hex naming exactly one local commit; missing or ambiguous is `unavailable` and not held |
-| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and header dimensions (an svg's root `width` and `height` when both are plain numbers or `px` within the pixel budget, else 0; 0 for ico, avif); a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`; a blob over 25 MiB is `unavailable` |
+| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and header dimensions (an svg's root `width` and `height` when both are plain numbers or `px` within the pixel budget, else 0; 0 for ico, avif); a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`, decided on every call; a blob over 25 MiB is `unavailable` |
 | `lines:<sha>:<path>:<start>-<end>` | local: at most 200 lines and 64 KiB of text from a blob of at most 2 MiB; binary or past the end is `absent` |
 
 A key that does not parse is `unavailable`; a project path or login the
@@ -1093,7 +1093,7 @@ logged once with its operation and no titles.
 |---|---|---|
 | Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys |
 | Every forge key held | none | none |
-| Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob not held (stopped after at most 1 MiB, 4 at a time), 1 `git config` for `lfs.storage` when one is an LFS pointer, 1 `git ls-tree` per 200 paths or 64 KiB of paths of a commit whose path the batch-check called missing | same |
+| Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob the blob image cache does not hold (stopped after at most 1 MiB, 4 at a time), 1 lstat per LFS pointer blob (an `image:` key through a pointer is never held) and a header read of its object when it is present and its header is not held, 1 `git config` for `lfs.storage` per workspace per 10 minutes when a key reaches a pointer, 1 `git ls-tree` per 200 paths or 64 KiB of paths of a commit whose path the batch-check called missing | same |
 | Every local key held | no git | no git |
 
 Every git read sets `GIT_NO_LAZY_FETCH=1`: in a partial clone a path
@@ -1105,7 +1105,9 @@ git-lfs or the network (`local_lfs.go`): the store is `lfs.storage`
 `objects/<oid[0:2]>/<oid[2:4]>/<oid>` there, and it is present only as a
 regular file, not a symlink, of the pointer's size within 25 MiB. Its
 header is classified as a blob's; its bytes are hashed while they are
-read and refused when they do not match the pointer's sha256.
+read and refused when they do not match the pointer's sha256. Whether
+it is present is decided by one lstat on every lookup, so a `git lfs
+pull` or prune shows on the next one.
 
 The caches (`factCache`, `forge_facts_cache.go`) are LRU, bounded by
 entries and estimated bytes (an entry over 1/64 of the bytes is never
@@ -1115,8 +1117,8 @@ or overlapping ones:
 | Cache | Key | Bound | Held |
 |---|---|---|---|
 | Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's is not held; `ResetForgeCaches` clears it |
-| Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed), except a found abbreviated `commit:` (a fetch can make it ambiguous) and an `image:` read through an LFS pointer (a pull or prune changes it), 10 minutes |
-| Blob images, one per `Core` | blob id; workspace and blob id for an answer read through an LFS pointer | 4096 entries, 2 MiB | the header's answer without expiry; through a pointer, 10 minutes |
+| Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed), except a found abbreviated `commit:` (a fetch can make it ambiguous), 10 minutes; an `image:` read through an LFS pointer (a pull or prune changes it) is never held |
+| Blob images, one per `Core` | blob id; an LFS object's sha256, size and file modification time; workspace path for its LFS store | 4096 entries, 2 MiB | a blob's header answer, or a pointer blob's parsed pointer, and a present LFS object's header answer, without expiry (content addressed); a workspace's LFS store directory, 10 minutes |
 
 `GetGitBlobImage(ws, oid, maxWidth)` serves a blob as `GetLocalImage`
 serves a file: `Core.BlobImage` (1 `git cat-file --batch-check` and a

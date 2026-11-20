@@ -12,7 +12,8 @@
 // call (chunks of 256). A frame also asks again for a key its bodies still
 // hold that answered `unavailable`, or whose answer is older than ten
 // minutes (the old answer stays in use meanwhile), once per frame, and an
-// unavailable one no sooner than a minute after its answer. Local
+// unavailable one, or an image whose Git LFS object is not local, no
+// sooner than a minute after its answer. Local
 // kinds (commits) need the pane's workspace and loaded revision, which
 // arrive after the first frame: `noteForgeFactsRevision` asks for those
 // once when the revision becomes known or its head moves. Nothing here
@@ -20,10 +21,12 @@
 //
 // The scan is a prefetch, not the authority on what is read. A reader
 // asked for a key the PR holds no fact for (a draft or an editor preview,
-// which no snapshot carries, or a key the scan did not name) notes it, and
-// the next microtask marks those keys `pending` and asks for them in one
-// call. They are held for the readers until the PR goes, within the same
-// bound; a key is asked this way once.
+// which no snapshot carries, or a key the scan did not name) is answered
+// `pending` at once, and the next microtask asks for the keys taken that
+// way in one call. Nothing says when such a reader is gone, so those keys
+// are held until the PR goes, at most `MAX_READ_FACTS_PER_PR` of them
+// (past it a new one renders by shape), and they give way to a body's
+// keys, oldest first, when the PR is full.
 //
 // Readers get an immutable snapshot of a PR's facts per version
 // (`forgeFactReader`): a document scope compares the snapshot it lexed
@@ -88,9 +91,11 @@ export const MAX_FACTS_PER_PR = 4096;
 export const FACTS_PER_CALL = 256;
 /** The characters of answered file lines (`lines:` facts) one PR holds at most. */
 export const MAX_FACT_TEXT_PER_PR = 2 * 1024 * 1024;
+/** The facts of one PR held for readers alone at most (within `MAX_FACTS_PER_PR`). */
+export const MAX_READ_FACTS_PER_PR = 1024;
 /** An answer older than this is asked for again by the next frame holding it. */
 export const FACT_FRESH_MS = 10 * 60 * 1000;
-/** An unavailable answer is asked for again no sooner than this after it. */
+/** An unavailable answer, or an image whose Git LFS object is not local, is asked for again no sooner than this after it. */
 export const FACT_RETRY_MS = 60 * 1000;
 
 export type ResolveForgeFactsCall = (
@@ -183,10 +188,10 @@ interface PRFacts {
   reader: ForgeFactReader | null;
   version: number;
   bodies: Map<string, Body>;
-  /** Keys held for readers that no body's scan named. */
+  /** Keys held for readers that no body's scan named, oldest first. */
   read: Set<string> | null;
-  /** Keys readers missed in this task, asked for by its next microtask. */
-  missed: Set<string> | null;
+  /** Keys readers took in this task, asked for by its next microtask. */
+  missed: string[] | null;
   frame: number;
   /** The requests sent: the id of the last. */
   requests: number;
@@ -313,10 +318,13 @@ export function observePRFacts(
     let past = false;
     for (const factKey of keys) {
       if (pr.entries.has(factKey)) {
+        // The body holds it now, whoever read it first.
+        pr.read?.delete(factKey);
         (kept ??= []).push(factKey);
         continue;
       }
-      if (pr.entries.size >= MAX_FACTS_PER_PR) {
+      // A body's key comes before one held for readers alone.
+      if (pr.entries.size >= MAX_FACTS_PER_PR && !evictRead(pr)) {
         past = true;
         continue;
       }
@@ -414,7 +422,10 @@ function textChars(state: ForgeFact | 'pending'): number {
 /** When `entry`'s answer is due to be asked for again; Infinity for one the text bound turned away. */
 function dueAgain(entry: Entry & { state: ForgeFact }): number {
   if (entry.over) return Infinity;
-  return entry.at + (entry.state.status === 'unavailable' ? FACT_RETRY_MS : FACT_FRESH_MS);
+  // A Git LFS pointer whose object is not local changes with a pull, which
+  // the backend sees on its next look.
+  const soon = entry.state.status === 'unavailable' || entry.state.lfs === true;
+  return entry.at + (soon ? FACT_RETRY_MS : FACT_FRESH_MS);
 }
 
 /** Adds to `ask` the held keys due again, and sets when the next one is. */
@@ -565,8 +576,12 @@ function nextDue(pr: PRFacts): number {
 
 function fail(pr: PRFacts, request: number, keys: readonly string[], err: unknown): void {
   if (prs.get(pr.key) !== pr) return;
+  // A key a later request asked for, or one dropped since, lost nothing.
   const kinds = new Map<string, number>();
-  for (const key of keys) kinds.set(factKind(key), (kinds.get(factKind(key)) ?? 0) + 1);
+  for (const key of keys) {
+    if (pr.entries.get(key)?.request === request) kinds.set(factKind(key), (kinds.get(factKind(key)) ?? 0) + 1);
+  }
+  if (kinds.size === 0) return;
   // Kinds and counts only: a key names projects, people and labels.
   reportFrontendDiagnostic(
     'forge facts: a request failed',
@@ -591,41 +606,63 @@ export function forgeFactReader(key: string | null): ForgeFactReader | null {
   const revision: ForgeFact = { key: REVISION_FACT_KEY, status: 'found', revision: pr.frameRevision };
   const revisionSig = pr.head;
   pr.reader = {
-    get: (factKey) => (factKey === REVISION_FACT_KEY ? revision : (entries.get(factKey)?.state ?? noteMiss(pr, factKey))),
+    get: (factKey) => (factKey === REVISION_FACT_KEY ? revision : (entries.get(factKey)?.state ?? readMissed(pr, factKey))),
     signature: (factKey) => (factKey === REVISION_FACT_KEY ? revisionSig : (entries.get(factKey)?.sig ?? '')),
   };
   return pr.reader;
 }
 
-/** A reader was asked for `key`, which its snapshot holds no fact for:
- * the next microtask asks for it, unless the PR holds it by then, is full,
- * or its computer cannot answer. Runs inside a lex: it writes no reactive
- * state. */
-function noteMiss(pr: PRFacts, key: string): undefined {
-  if (pr.entries.has(key) || pr.entries.size >= MAX_FACTS_PER_PR || lacking.has(pr.backend) || prs.get(pr.key) !== pr) return undefined;
+/**
+ * A reader was asked for `key`, which its snapshot holds no fact for. The
+ * PR takes the key in the same call, so the read answers `pending` (the
+ * body's first paint has the asked shape) and the next microtask asks for
+ * it; a key the PR came to hold after the snapshot reads `pending` too,
+ * and the reader's next snapshot has its answer. Undefined when the PR or
+ * its readers' share is full, the PR is gone or its computer cannot
+ * answer: the body renders by shape. Runs inside a lex: it writes no
+ * reactive state.
+ */
+function readMissed(pr: PRFacts, key: string): 'pending' | undefined {
+  if (prs.get(pr.key) !== pr || lacking.has(pr.backend)) return undefined;
+  if (pr.entries.has(key)) return 'pending';
+  if (pr.entries.size >= MAX_FACTS_PER_PR || (pr.read?.size ?? 0) >= MAX_READ_FACTS_PER_PR) return undefined;
+  writable(pr).set(key, pendingEntry(headOf(pr)));
+  (pr.read ??= new Set()).add(key);
   if (pr.missed === null) {
-    pr.missed = new Set();
+    pr.missed = [];
     queueMicrotask(() => askMissed(pr));
   }
-  if (pr.missed.size < MAX_FACTS_PER_PR) pr.missed.add(key);
-  return undefined;
+  pr.missed.push(key);
+  return 'pending';
 }
 
 function askMissed(pr: PRFacts): void {
   const missed = pr.missed;
   pr.missed = null;
-  if (missed === null || prs.get(pr.key) !== pr || lacking.has(pr.backend)) return;
-  let ask: string[] | null = null;
-  for (const key of missed) {
-    if (pr.entries.has(key)) continue;
-    if (pr.entries.size >= MAX_FACTS_PER_PR) break;
-    writable(pr).set(key, pendingEntry(headOf(pr)));
-    (pr.read ??= new Set()).add(key);
-    (ask ??= newRequest()).push(key);
-  }
-  if (ask === null) return;
+  if (missed === null || prs.get(pr.key) !== pr) return;
+  // Not one a frame dropped to make room for a body's key since.
+  const ask = missed.filter((key) => {
+    const entry = pr.entries.get(key);
+    return entry !== undefined && entry.state === 'pending' && entry.request === 0;
+  });
+  if (ask.length === 0) return;
   bump(pr);
   send(pr, ask);
+}
+
+/** Makes room for a body's key by dropping the fact held longest for
+ * readers alone; false when there is none. */
+function evictRead(pr: PRFacts): boolean {
+  if (!pr.read || pr.read.size === 0) return false;
+  for (const key of pr.read) {
+    pr.read.delete(key);
+    const entry = pr.entries.get(key);
+    if (!entry) continue;
+    pr.textChars -= textChars(entry.state);
+    writable(pr).delete(key);
+    return true;
+  }
+  return false;
 }
 
 /** The checkout the PR `key` was attached from: where its facts are

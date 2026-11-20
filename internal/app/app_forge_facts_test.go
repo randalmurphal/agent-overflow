@@ -321,6 +321,8 @@ func TestGitBlobImageServesALocalLFSObject(t *testing.T) {
 	t.Parallel()
 	app, base := reviewDiffFilesApp(t)
 	app.downloadsIsolated = true
+	// One Core across calls, as a running app has, so its caches carry.
+	app.git = gitops.NewCore()
 	repo := testutil.InitGitRepo(t)
 	object := sizedPNG(t, 30, 20)
 	sum := sha256.Sum256(object)
@@ -381,6 +383,26 @@ func TestGitBlobImageServesALocalLFSObject(t *testing.T) {
 	}
 	if after, _ := os.ReadDir(filepath.Dir(saved)); len(after) != len(entries) {
 		t.Fatal("a refused object was written")
+	}
+
+	// An object pulled after a refusal is served by the next call.
+	late := sizedPNG(t, 12, 9)
+	lateSum := sha256.Sum256(late)
+	lateOID := hex.EncodeToString(lateSum[:])
+	writeRepoBytes(t, repo, "late.png", pointer(lateOID, len(late)))
+	testutil.RunGit(t, repo, "add", "late.png")
+	testutil.RunGit(t, repo, "commit", "-qm", "late")
+	lateBlob := revParseIn(t, repo, "HEAD:late.png")
+	if _, err := app.GetGitBlobImage(context.Background(), ref, lateBlob, 0); !errors.Is(err, gitops.ErrLFSPointer) {
+		t.Fatalf("an object not pulled: %v, want ErrLFSPointer", err)
+	}
+	writeRepoBytes(t, repo, filepath.Join(".git", "lfs", "objects", lateOID[:2], lateOID[2:4], lateOID), late)
+	pulled, err := app.GetGitBlobImage(context.Background(), ref, lateBlob, 0)
+	if err != nil || pulled.Width != 12 || pulled.OriginalBytes != int64(len(late)) {
+		t.Fatalf("after the pull = %+v, %v", pulled, err)
+	}
+	if resp, body := getBytes(t, base, pulled.URL); resp.StatusCode != http.StatusOK || !bytes.Equal(body, late) {
+		t.Fatalf("GET after the pull = %d with %d bytes, want the object", resp.StatusCode, len(body))
 	}
 }
 

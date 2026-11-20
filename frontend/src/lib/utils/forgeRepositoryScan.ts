@@ -399,10 +399,12 @@ function htmlImages(body: string, from: number, add: (href: string) => boolean):
  * one another's destinations or unquoted values cost the sum of their
  * lengths.
  */
-export function scanRepositoryImages(body: string, shapes: ForgeShapes, revision: FactRevision, add: FactKeySink): void {
+export function scanRepositoryImages(written: string, shapes: ForgeShapes, revision: FactRevision, add: FactKeySink): void {
+  if (written.indexOf('![') === -1 && written.indexOf('<') === -1) return;
+  // The parse reads `\r\n` and `\r` as `\n` (documentContext.ts).
+  const body = written.includes('\r') ? written.replace(/\r\n?/g, '\n') : written;
   const image = body.indexOf('![');
   const tag = body.indexOf('<');
-  if (image === -1 && tag === -1) return;
   const frame = () => revision;
   const addHref = (href: string): boolean => {
     const file = repositoryImageOf(href, shapes, frame);

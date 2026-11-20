@@ -208,53 +208,199 @@ func TestLocalFactsLFSStorageAndWorktrees(t *testing.T) {
 	}
 }
 
-// A pointer whose object is not local is held no longer than the forge
-// facts' freshness, in the facts cache and the blob image cache, so an
-// object a `git lfs pull` brings is shown.
-func TestLocalFactsLFSAnswerIsReadAgainAfterTheWindow(t *testing.T) {
+// lfsLookups counts a Core's facts git runs and the LFS objects its
+// lookups open to classify, with the clock stopped.
+type lfsLookups struct {
+	calls  *factGitCalls
+	reads  atomic.Int64
+	offset atomic.Int64
+}
+
+func countLFSLookups(core *Core) *lfsLookups {
+	l := &lfsLookups{calls: countFactGit(core)}
+	start := time.Now()
+	core.nowFn = func() time.Time { return start.Add(time.Duration(l.offset.Load())) }
+	core.beforeLFSObjectRead = func(string) { l.reads.Add(1) }
+	return l
+}
+
+// expect fails unless the lookups since the last call ran exactly runs
+// (sorted) and opened reads objects.
+func (l *lfsLookups) expect(t *testing.T, step string, reads int64, runs ...string) {
+	t.Helper()
+	if got := l.calls.take(); !slices.Equal(got, runs) {
+		t.Errorf("%s ran %q, want %q", step, got, runs)
+	}
+	if got := l.reads.Swap(0); got != reads {
+		t.Errorf("%s opened %d LFS objects, want %d", step, got, reads)
+	}
+}
+
+const batchCheckRun = "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)"
+
+// Whether a pointer's object is local is decided on every lookup, so a
+// pull or a prune shows on the next one with the clock stopped. What the
+// pointer is, the store's directory, and a present object's header are
+// held: a repeat lookup runs no `git cat-file blob` and no `git config`
+// and reads no object bytes. A fact read through a pointer is never held,
+// so each call costs one batch-check to find the key's blob.
+func TestLocalFactsLFSObjectIsLookedUpEveryTime(t *testing.T) {
 	t.Parallel()
 	r := newLFSRepo(t)
 	core := NewCore()
-	var offset atomic.Int64
-	start := time.Now()
-	core.nowFn = func() time.Time { return start.Add(time.Duration(offset.Load())) }
-	calls := countFactGit(core)
-	key := "image:head:absent.png"
-	rev := PRRevision{HeadSHA: r.head}
-	if got := resolveLocal(t, core, r.dir, rev, key)[key]; !got.LFS {
-		t.Fatalf("absent = %+v", got)
-	}
-	calls.take()
-	// The object arrives: a hand-written pull of a new pointer's object.
+	l := countLFSLookups(core)
 	pulled := pngOf(t, 8, 3)
-	writeFactFile(t, r.dir, "absent.png", []byte(lfsPointerText(sha256Hex(pulled), int64(len(pulled)))))
-	testutil.RunGit(t, r.dir, "commit", "-qam", "repoint")
+	writeFactFile(t, r.dir, "pulled.png", []byte(lfsPointerText(sha256Hex(pulled), int64(len(pulled)))))
+	testutil.RunGit(t, r.dir, "add", "pulled.png")
+	testutil.RunGit(t, r.dir, "commit", "-qm", "pulled")
 	r.head = strings.TrimSpace(runGitStdout(t, r.dir, "rev-parse", "HEAD"))
-	rev = PRRevision{HeadSHA: r.head}
-	if got := resolveLocal(t, core, r.dir, rev, key)[key]; !got.LFS {
-		t.Fatalf("a pointer to an object not pulled = %+v", got)
+	rev := PRRevision{HeadSHA: r.head}
+	key, blob := "image:head:pulled.png", r.blob(t, "pulled.png")
+	notLocal := ForgeFact{Key: key, Status: FactFound, OID: blob, LFS: true}
+	found := ForgeFact{Key: key, Status: FactFound, OID: blob, Size: int64(len(pulled)), Width: 8, Height: 3, MIME: "image/png"}
+	lookup := func(step string, want ForgeFact) {
+		t.Helper()
+		if got := resolveLocal(t, core, r.dir, rev, key)[key]; got != want {
+			t.Fatalf("%s: fact = %+v\nwant %+v", step, got, want)
+		}
+		image, err := core.BlobImage(t.Context(), r.dir, blob)
+		switch {
+		case err != nil:
+			t.Fatalf("%s: BlobImage: %v", step, err)
+		case image.LFS != want.LFS || (!want.LFS && image.Size != want.Size) || image.Width != want.Width || image.Height != want.Height || image.MIME != want.MIME:
+			t.Fatalf("%s: BlobImage = %+v, want the fact %+v", step, image, want)
+		case !want.LFS && image.LFSObject() != sha256Hex(pulled):
+			t.Fatalf("%s: BlobImage reads object %q", step, image.LFSObject())
+		}
 	}
-	writeLFSObject(t, r.store, sha256Hex(pulled), pulled)
-	calls.take()
 
-	offset.Store(int64(changingFactTTL - time.Second))
-	if got := resolveLocal(t, core, r.dir, rev, key)[key]; !got.LFS {
-		t.Fatalf("within the window = %+v, want the held answer", got)
+	lookup("not pulled", notLocal)
+	l.expect(t, "the first lookup", 0, batchCheckRun, "cat-file blob", "config -z")
+	lookup("not pulled, again", notLocal)
+	l.expect(t, "a repeat lookup of a pointer not local", 0, batchCheckRun)
+
+	path := writeLFSObject(t, r.store, sha256Hex(pulled), pulled)
+	lookup("pulled", found)
+	l.expect(t, "the lookup after the pull", 1, batchCheckRun)
+	lookup("pulled, again", found)
+	l.expect(t, "a repeat lookup of a present object", 0, batchCheckRun)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
-	if runs := calls.take(); len(runs) != 0 {
-		t.Fatalf("within the window ran %q", runs)
+	lookup("pruned", notLocal)
+	l.expect(t, "the lookup after the prune", 0, batchCheckRun)
+	// Pulled again: another file, so its header is read again.
+	path = writeLFSObject(t, r.store, sha256Hex(pulled), pulled)
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
 	}
-	offset.Store(int64(2*changingFactTTL + time.Second))
-	if got := resolveLocal(t, core, r.dir, rev, key)[key]; got.LFS || got.Width != 8 || got.Height != 3 {
-		t.Fatalf("after the window = %+v, want the pulled object", got)
+	lookup("pulled again", found)
+	l.expect(t, "the lookup after a second pull", 1, batchCheckRun)
+}
+
+// A file of the pointer's size that is not its object is classified by
+// what it holds; the object that replaces it is classified again, not
+// answered from what the first file was.
+func TestLocalLFSObjectReplacedIsClassifiedAgain(t *testing.T) {
+	t.Parallel()
+	r := newLFSRepo(t)
+	core := NewCore()
+	object := pngOf(t, 8, 3)
+	writeFactFile(t, r.dir, "fixed.png", []byte(lfsPointerText(sha256Hex(object), int64(len(object)))))
+	testutil.RunGit(t, r.dir, "add", "fixed.png")
+	testutil.RunGit(t, r.dir, "commit", "-qm", "fixed")
+	r.head = strings.TrimSpace(runGitStdout(t, r.dir, "rev-parse", "HEAD"))
+	blob := r.blob(t, "fixed.png")
+	path := writeLFSObject(t, r.store, sha256Hex(object), bytes.Repeat([]byte("x"), len(object)))
+	first := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, first, first); err != nil {
+		t.Fatal(err)
 	}
-	runs := calls.take()
-	if !slices.Contains(runs, "config -z") || !slices.Contains(runs, "cat-file blob") {
-		t.Fatalf("after the window ran %q, want the pointer and the store read again", runs)
+	if image, err := core.BlobImage(t.Context(), r.dir, blob); err != nil || image.Displayable() {
+		t.Fatalf("a corrupt object = %+v, %v; want no image", image, err)
 	}
-	// BlobImage answers from the same refreshed cache.
-	image, err := core.BlobImage(t.Context(), r.dir, r.blob(t, "absent.png"))
-	if err != nil || image.LFS || image.Width != 8 {
+	if err := os.WriteFile(path, object, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, second, second); err != nil {
+		t.Fatal(err)
+	}
+	image, err := core.BlobImage(t.Context(), r.dir, blob)
+	if err != nil || image.MIME != "image/png" || image.Width != 8 || image.Height != 3 {
+		t.Fatalf("the object that replaced it = %+v, %v; want an 8x3 png", image, err)
+	}
+}
+
+// A failed close of an LFS object fails the read that opened it, and a
+// classification whose close failed is not held.
+func TestLocalLFSCloseFailureFailsTheRead(t *testing.T) {
+	t.Parallel()
+	r := newLFSRepo(t)
+	core := NewCore()
+	l := countLFSLookups(core)
+	errClose := errors.New("close failed")
+	var fail atomic.Bool
+	core.lfsObjectClosed = func(err error) error {
+		if fail.Load() {
+			return errors.Join(err, errClose)
+		}
+		return err
+	}
+	blob := r.blob(t, "present.png")
+	fail.Store(true)
+	if image, err := core.BlobImage(t.Context(), r.dir, blob); !errors.Is(err, errClose) {
+		t.Fatalf("BlobImage with a failed close = %+v, %v", image, err)
+	}
+	fail.Store(false)
+	image, err := core.BlobImage(t.Context(), r.dir, blob)
+	if err != nil || image.Width != 6 {
 		t.Fatalf("BlobImage = %+v, %v", image, err)
 	}
+	l.expect(t, "the classifications", 2, batchCheckRun, "cat-file blob", "config -z")
+	fail.Store(true)
+	if err := core.ReadImage(t.Context(), r.dir, image, make([]byte, image.Size)); !errors.Is(err, errClose) {
+		t.Fatalf("ReadImage with a failed close = %v", err)
+	}
+	fail.Store(false)
+	if err := core.ReadImage(t.Context(), r.dir, image, make([]byte, image.Size)); err != nil {
+		t.Fatalf("ReadImage = %v", err)
+	}
+}
+
+// The store's directory is held per workspace for changingFactTTL: within
+// it a changed lfs.storage costs no `git config`, after it the change is
+// honored.
+func TestLocalFactsLFSStoreDirectoryIsHeldForTheWindow(t *testing.T) {
+	t.Parallel()
+	r := newLFSRepo(t)
+	core := NewCore()
+	l := countLFSLookups(core)
+	key, blob := "image:head:present.png", r.blob(t, "present.png")
+	rev := PRRevision{HeadSHA: r.head}
+	if got := resolveLocal(t, core, r.dir, rev, key)[key]; got.LFS || got.Width != 6 {
+		t.Fatalf("present = %+v", got)
+	}
+	l.expect(t, "the first lookup", 1, batchCheckRun, "cat-file blob", "config -z")
+
+	testutil.RunGit(t, r.dir, "config", "lfs.storage", "elsewhere")
+	l.offset.Store(int64(changingFactTTL - time.Second))
+	if got := resolveLocal(t, core, r.dir, rev, key)[key]; got.LFS || got.Width != 6 {
+		t.Fatalf("within the window = %+v, want the held store's object", got)
+	}
+	if image, err := core.BlobImage(t.Context(), r.dir, blob); err != nil || image.LFS {
+		t.Fatalf("BlobImage within the window = %+v, %v", image, err)
+	}
+	l.expect(t, "within the window", 0, batchCheckRun)
+
+	l.offset.Store(int64(changingFactTTL))
+	if got := resolveLocal(t, core, r.dir, rev, key)[key]; !got.LFS {
+		t.Fatalf("after the window = %+v, want lfs.storage's empty store", got)
+	}
+	if image, err := core.BlobImage(t.Context(), r.dir, blob); err != nil || !image.LFS {
+		t.Fatalf("BlobImage after the window = %+v, %v", image, err)
+	}
+	l.expect(t, "after the window", 0, batchCheckRun, "config -z")
 }

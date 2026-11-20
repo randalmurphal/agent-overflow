@@ -198,7 +198,7 @@ export function buildForgeAttachmentExtension(opts: ForgeAttachmentSource & { em
     const video = readVideo(src);
     if (!video) return undefined;
     for (const href of video.srcs) {
-      const decided = lexer.tokenizer.destination({ type: 'image', raw: video.raw, href, title: null, text: video.title ?? '', tokens: [] });
+      const decided = lexer.tokenizer.destination({ type: 'image', raw: video.raw, href, title: video.title ?? null, text: video.title ?? '', tokens: [] });
       if (decided.href.startsWith(FORGE_ATTACHMENT_HREF_PREFIX)) return decided;
     }
     return undefined;

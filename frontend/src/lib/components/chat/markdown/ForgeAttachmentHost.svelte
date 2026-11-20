@@ -83,6 +83,9 @@
       ? browserUrlForForgeAttachment(parsed.pr.forge, parsed.href, parsed.webBase, parsed.pr)
       : null,
   );
+  // The hover text of every outcome: the authored title, else where the
+  // attachment lives on the forge.
+  const title = $derived(token.title || browserUrl || undefined);
   const cacheKey = $derived(parsed ? forgeAttachmentCacheKey(parsed.backend, parsed.pr, parsed.href) : '');
   const imageSource = $derived(parsed ? forgeMarkdownImageSource(parsed, forgeImageMenuTag(href)) : null);
 
@@ -220,7 +223,7 @@
     <MarkdownImage
       source={imageSource}
       {alt}
-      title={token.title || browserUrl || undefined}
+      {title}
       markdownImageSrc={parsed?.href}
       {size}
       {linked}
@@ -231,7 +234,7 @@
     <span
       data-forge-attachment-linked={resolved.kind}
       class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs"
-      title={browserUrl ?? undefined}
+      {title}
     >
       <Icon icon={resolved.kind === 'video' ? Film : resolved.kind === 'audio' ? Music : Paperclip} size={12} />
       <span class="truncate">{resolved.filename || name}</span>
@@ -253,7 +256,7 @@
         style:height={size.height}
         style:aspect-ratio={size.aspectRatio}
         src={resolved.url}
-        title={browserUrl ?? undefined}
+        {title}
         controls
         playsinline
         preload="metadata"
@@ -265,7 +268,7 @@
       <audio
         class="max-w-full"
         src={resolved.url}
-        title={browserUrl ?? undefined}
+        {title}
         controls
         preload="metadata"
         onerror={handleDecodeError}
@@ -276,7 +279,7 @@
       type="button"
       data-forge-attachment-file
       class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs hover:bg-surface-2"
-      title={browserUrl ?? undefined}
+      {title}
       onclick={activate}
     >
       <Icon icon={Paperclip} size={12} />
