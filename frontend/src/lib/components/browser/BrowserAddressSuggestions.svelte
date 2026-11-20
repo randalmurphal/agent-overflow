@@ -4,10 +4,10 @@
   import Server from '@lucide/svelte/icons/server';
   import { untrack } from 'svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
-  import { BrowserCompanionRecentAddresses, type BrowserRecentAddress } from '../../stores/bindings';
-  import { browserCompanionState } from '../../stores/browserCompanion.svelte';
+  import type { BrowserRecentAddress } from '../../stores/bindings';
+  import { readRecentAddresses } from '../../stores/browserActionWire';
+  import { browserCompanionState, browserPaneAttachment, type BrowserPaneAttachment } from '../../stores/browserCompanion.svelte';
   import { loadDevServers, machineDevServers } from '../../stores/devServers.svelte';
-  import { errString } from '../../utils/errors';
   import { isLocalEnter } from '../../utils/localEnter';
   import { randomId } from '../../utils/randomId';
   import Icon from '../primitives/Icon.svelte';
@@ -36,6 +36,10 @@
 
   const thread = browserPaneThread();
   let threadId = $derived(thread());
+  // The pane attachment the list reads from: null while the pane has none
+  // or this window may not host the thread's browser, and then no recent
+  // address is read or shown.
+  let pane = $derived(threadId ? browserPaneAttachment(threadId) : null);
   let browser = $derived(threadId ? browserCompanionState(threadId) : null);
   let activePageId = $derived(browser?.activePageId ?? '');
   let machine = $derived(threadId ? machineDevServers(threadMachine(threadId, null)) : null);
@@ -49,23 +53,37 @@
 
   // The recent addresses are read when the field takes focus, not carried by
   // every state push: only a focused field reads them. They belong to the
-  // owner below and are never shown for another.
+  // owner below and are never shown for another, and are read only from
+  // the pane's attachment (readRecentAddresses checks it again at the
+  // answer).
   let recent = $state.raw<readonly BrowserRecentAddress[]>([]);
   let recentError = $state('');
   let readSeq = 0;
 
-  async function readRecent(id: string): Promise<void> {
+  async function readRecent(from: BrowserPaneAttachment): Promise<void> {
     const seq = ++readSeq;
-    try {
-      const list = await BrowserCompanionRecentAddresses(id);
-      if (seq !== readSeq) return;
-      recent = list ?? [];
-      recentError = '';
-    } catch (err) {
-      if (seq !== readSeq) return;
-      recent = [];
-      recentError = `Recent addresses could not be read: ${errString(err)}`;
+    const answer = await readRecentAddresses(from);
+    if (seq !== readSeq) return;
+    switch (answer.kind) {
+      case 'answered':
+        recent = answer.value;
+        recentError = '';
+        return;
+      case 'refused':
+        recent = [];
+        recentError = `Recent addresses could not be read: ${answer.error}`;
+        return;
+      case 'pane-gone':
+        recent = [];
+        recentError = '';
+        return;
+      default:
+        return unhandledRecent(answer);
     }
+  }
+
+  function unhandledRecent(answer: never): never {
+    throw new Error(`Unhandled recent address answer: ${JSON.stringify(answer)}`);
   }
 
   let items = $derived(
@@ -74,7 +92,7 @@
           tabs: browser?.pages ?? [],
           activePageId,
           devServers: threadDevServers(threadId, machine?.list?.servers ?? []),
-          recent,
+          recent: pane ? recent : [],
         })
       : [],
   );
@@ -82,16 +100,17 @@
   let errors = $derived([recentError, machine?.loadError ?? ''].filter((text) => text !== ''));
   let shown = $derived(open && (items.length > 0 || errors.length > 0));
 
-  // What the field and the list are for: the thread, its tab, and the
-  // Manager's forget generation of recent addresses (internal/browser/
-  // recent.go), which every forget advances, so a round trip of jar names
-  // cannot hide one. Another tab or thread replaces the field's text, so the
+  // What the field and the list are for: the thread, its pane attachment,
+  // its tab, and the Manager's forget generation of recent addresses
+  // (internal/browser/recent.go), which every forget advances, so a round
+  // trip of jar names cannot hide one. An attachment lost to an owner that
+  // moved or became contested drops the list. Another tab or thread replaces the field's text, so the
   // list described what was typed for the one that left; and a forgotten
   // list is not the Manager's any more. Any change drops it and any read in
   // flight, and reads again while the field has focus. The generation is
   // Manager-wide: a forget on another thread costs one re-read here at the
   // next push.
-  let owner = $derived(`${threadId ?? ''}\n${activePageId}\n${browser?.recentGen ?? ''}`);
+  let owner = $derived(`${threadId ?? ''}\n${pane?.mount ?? ''}\n${activePageId}\n${browser?.recentGen ?? ''}`);
   let ownedBy = '';
   $effect(() => {
     const key = owner;
@@ -102,7 +121,7 @@
       recent = [];
       recentError = '';
       readSeq++;
-      if (threadId && fieldFocused()) void readRecent(threadId);
+      if (pane && fieldFocused()) void readRecent(pane);
     });
   });
 
@@ -119,7 +138,7 @@
     close();
     const id = threadId;
     if (!id) return;
-    void readRecent(id);
+    if (pane) void readRecent(pane);
     // A dev server the thread started since the last read appears only on a
     // new scan; a passive load, so a session without the scope asks nothing.
     void loadDevServers(threadMachine(id, null));

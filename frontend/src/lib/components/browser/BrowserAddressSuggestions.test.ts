@@ -7,6 +7,10 @@ import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../
 import { resetDevServersForTest } from '../../stores/devServers.svelte';
 import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
+import { attachBrowserPaneForTest } from '../../../test/helpers/browserPane';
+import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const THREAD = 'thread-1';
 
@@ -63,7 +67,7 @@ function rowText(): string[] {
 
 describe('<BrowserAddressSuggestions>', () => {
   let recent: ReturnType<typeof vi.fn>;
-  beforeEach(() => {
+  beforeEach(async () => {
     resetBrowserCompanionForTest();
     resetDevServersForTest();
     resetAirspaceForTest();
@@ -76,6 +80,8 @@ describe('<BrowserAddressSuggestions>', () => {
       servers: [{ port: 8080, threadId: THREAD, process: 'node', listening: true, allowed: false, source: 'seen', scheme: 'http' }],
     }));
     seed();
+    // The list reads from the pane's attachment, as a mounted pane has one.
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
   });
   afterEach(() => {
     resetBrowserCompanionForTest();
@@ -277,6 +283,7 @@ describe('<BrowserAddressSuggestions>', () => {
     recent.mockImplementation(async (thread: string) =>
       thread === THREAD ? [{ url: 'https://github.test/org/repo', title: 'Repo' }] : [{ url: 'https://two.test/', title: 'Two' }]);
     applyBrowserCompanionState({ kind: 'state', threadId: 'thread-2', activePageId: 'c', visible: true, jar: 'worktree', pages: [page('c', 'https://c.test/')] } as never);
+    await attachBrowserPaneForTest('thread-2', 'mount-2');
     const { view, input } = mount();
     input.focus();
     await waitFor(() => expect(recent).toHaveBeenCalledWith(THREAD));
@@ -378,5 +385,44 @@ describe('<BrowserAddressSuggestions>', () => {
     await type(input, '.test');
     await waitFor(() => expect(rowText()).toContain('recent https://new.test/'));
     expect(rowText()).not.toContain('recent https://old.test/');
+  });
+
+  // Two computers claim the thread at one ownership epoch: this window may
+  // not host its browser, so its pane attachment is no longer one to read
+  // from. A focused field then reads nothing, and an answer that was on its
+  // way shows nothing.
+  describe('once two computers claim the thread', () => {
+    afterEach(() => {
+      forgetThread(THREAD);
+      forgetBackendEntities('remote');
+      resetStagedBackends();
+    });
+
+    it('reads no recent address and shows none', async () => {
+      stageBackend({ id: 'remote', backendId: 'remote' });
+      noteThread(THREAD, HOME_BACKEND, 4);
+      noteThread(THREAD, 'remote', 4);
+      const { input } = mount();
+      input.focus();
+      await type(input, 'repo');
+      await tick();
+      expect(recent).not.toHaveBeenCalled();
+      expect(rowText()).toEqual([]);
+    });
+
+    it('drops an answer that arrives after the claim', async () => {
+      stageBackend({ id: 'remote', backendId: 'remote' });
+      noteThread(THREAD, HOME_BACKEND, 4);
+      let answer: (list: { url: string; title: string }[]) => void = () => {};
+      recent.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+      const { input } = mount();
+      input.focus();
+      await waitFor(() => expect(recent).toHaveBeenCalledTimes(1));
+      noteThread(THREAD, 'remote', 4);
+      answer([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+      await type(input, 'repo');
+      await tick();
+      expect(rowText()).toEqual([]);
+    });
   });
 });

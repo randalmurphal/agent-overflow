@@ -92,6 +92,8 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneDetach: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
   BrowserCompanionPaneRect: owned('lib/stores/browserPaneRectReports.ts', 'reportBrowserPaneRect()'),
   BrowserCompanionDo: owned('lib/stores/browserActionWire.ts', 'sendFromPane() / sendForThread()'),
+  BrowserCompanionRecentAddresses: owned('lib/stores/browserActionWire.ts', 'readRecentAddresses()'),
+  BrowserCompanionRevealPageFile: owned('lib/stores/browserActionWire.ts', 'revealPageFile()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
   BrowserCompanionFind: owned(BROWSER_FIND_STORE, 'createBrowserFind()'),
   // The read marker is the one thread-row field where the newest value is
@@ -216,6 +218,24 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),
+};
+
+// Every home-routed browser binding the window can call, and how a call of
+// it is checked against this page hosting the thread's browser
+// (nativeBrowserRefusal) and the pane's attachment. A new one is added here
+// with its check, and is routed through its owner above when it acts from a
+// pane; the test below fails until it is.
+const BROWSER_BINDING_CHECKS: Record<string, string> = {
+  BrowserCompanionDo: 'sendFromPane / sendForThread: the host check and the pane attachment at the send',
+  BrowserCompanionRecentAddresses: 'readRecentAddresses: the host check and the pane attachment at the send and at the answer',
+  BrowserCompanionRevealPageFile: 'revealPageFile: the host check and the pane attachment at the send and at the answer',
+  BrowserCompanionPaneAttach: 'the entity source refuses with nativeBrowserRefusal before it attaches',
+  BrowserCompanionThreadState: 'a read, made only where canUseNativeBrowser, whose answer is admitted per observation',
+  BrowserCompanionPaneDetach: 'the release of the mount its attach made: never refused, so no mount is left behind',
+  BrowserCompanionPaneRect: 'sent for browserPaneMountId alone, which is null without a valid attachment',
+  BrowserCompanionFind: 'a start names browserPaneMountId, null without a valid attachment; a stop is cleanup that must reach the backend',
+  ClearBrowserSiteData: "a settings action on the home computer's browser, for no thread or pane: its scope is the check",
+  VerifyBrowserUnlock: "the connected browser's own unlock, not the thread's browser",
 };
 
 // `stores/bindings.ts` is the typed wrapper the whole rule is phrased in terms
@@ -538,6 +558,19 @@ describe('architecture', () => {
       'New violations.',
       'Read the entity through its store instead of re-fetching it; see frontend/CLAUDE.md → State Boundaries.',
     );
+  });
+
+  it('names the check of every browser binding the window can call', () => {
+    const routes = readFileSync(join(SRC_ROOT, 'lib', 'transport', 'methodRoutes.ts'), 'utf8');
+    const methods = new Set([...routes.matchAll(/\/\/ (\w+)$/gm)].map((match) => match[1]));
+    const wrapper = readFileSync(join(SRC_ROOT, BINDINGS_WRAPPER), 'utf8');
+    const exported = [...wrapper.matchAll(/^\s+(\w*Browser\w*),?$/gm)].map((match) => match[1]);
+    const browserBindings = exported.filter((name) => methods.has(name)).sort();
+    expect(browserBindings).toEqual(Object.keys(BROWSER_BINDING_CHECKS).sort());
+    // The pane's calls on the thread's browser go through the one send path.
+    for (const name of ['BrowserCompanionDo', 'BrowserCompanionRecentAddresses', 'BrowserCompanionRevealPageFile']) {
+      expect(ENTITY_OWNED_BINDINGS[name]?.owner, name).toBe('lib/stores/browserActionWire.ts');
+    }
   });
 
   it('keeps OpenInEditor behind its view-only gate', () => {

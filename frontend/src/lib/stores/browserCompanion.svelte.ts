@@ -309,14 +309,24 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
-/** The thread's attached pane mount, null while it has none. Reactive. */
+/**
+ * The thread's attached pane mount, null while it has none or while this
+ * page may not host the thread's browser (nativeBrowserRefusal): an owner
+ * that moved or became contested since the attach leaves the mount nothing
+ * this window may send from or show. Reactive.
+ */
 export function browserPaneAttachment(threadId: string): BrowserPaneAttachment | null {
-  return store.peek(threadId)?.pane ?? null;
+  const pane = store.peek(threadId)?.pane ?? null;
+  return pane && canUseNativeBrowser(threadId) ? pane : null;
 }
 
-/** Whether `pane` is still the thread's attached mount. Not reactive: asked as something is sent or shown. */
+/**
+ * Whether `pane` is still the thread's attached mount and this page may
+ * still host the thread's browser. Not reactive: asked as something is
+ * sent or an answer is shown.
+ */
 export function isCurrentBrowserPane(pane: BrowserPaneAttachment): boolean {
-  return store.snapshot(pane.threadId)?.pane === pane;
+  return store.snapshot(pane.threadId)?.pane === pane && canUseNativeBrowser(pane.threadId);
 }
 
 /** The backend's id of the thread's mounted pane, null while it has none. Reactive. */

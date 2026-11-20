@@ -11,11 +11,9 @@
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
   import { actInPane, openBrowserTabInPane } from '../../stores/browserActions';
-  import { browserAction, pageIdOf, type BrowserAction } from '../../stores/browserActionWire';
+  import { browserAction, pageIdOf, revealPageFile as revealBrowserPageFile, type BrowserAction } from '../../stores/browserActionWire';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
-  import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
-  import { errString } from '../../utils/errors';
   import { tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
@@ -220,13 +218,11 @@
 
   async function revealPageFile(): Promise<void> {
     const from = pane;
-    if (!from || !activePageId) return;
+    const pageId = pageIdOf(activePageId);
+    if (!from || !pageId) return;
     noteBrowserPaneError(from, '');
-    try {
-      await BrowserCompanionRevealPageFile(from.threadId, activePageId);
-    } catch (err) {
-      noteBrowserPaneError(from, errString(err));
-    }
+    const answer = await revealBrowserPageFile(from, pageId);
+    if (answer.kind === 'refused') noteBrowserPaneError(from, answer.error);
   }
 </script>
 

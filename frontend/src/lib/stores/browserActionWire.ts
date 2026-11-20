@@ -1,4 +1,11 @@
-import { BrowserCompanionAction, BrowserCompanionDo, type BrowserCompanionEvent } from './bindings';
+import {
+  BrowserCompanionAction,
+  BrowserCompanionDo,
+  BrowserCompanionRecentAddresses,
+  BrowserCompanionRevealPageFile,
+  type BrowserCompanionEvent,
+  type BrowserRecentAddress,
+} from './bindings';
 import {
   admitBrowserState,
   browserStateGeneration,
@@ -12,7 +19,9 @@ import { errString } from '../utils/errors';
 
 // The user's actions on a thread's browser as values, and the one function
 // that sends them (sendFromPane, sendForThread). Every BrowserCompanionDo
-// call is made here, and each is checked as it is sent, whatever its kind:
+// call is made here, and so are the pane's other calls on the thread's
+// browser (readRecentAddresses, revealPageFile), and each is checked as it
+// is sent, whatever its kind:
 // the thread's owner (nativeBrowserRefusal, which the owner moving or
 // becoming contested since the gesture turns into a refusal), the pane it
 // came from (still the thread's attached mount, else nothing is sent), and
@@ -284,6 +293,47 @@ async function send(origin: ActionOrigin, action: BrowserAction | PageFocusReque
   } finally {
     taken?.answered();
   }
+}
+
+/** What one of the pane's calls on the thread's browser came to. */
+export type PaneCallAnswer<T> =
+  | { readonly kind: 'answered'; readonly value: T }
+  /** Refused here (this page cannot host the thread's browser) or by the backend. */
+  | { readonly kind: 'refused'; readonly error: string; readonly cause: unknown }
+  /** Its pane detached, or this page stopped hosting the thread's browser, before it was sent or answered. */
+  | { readonly kind: 'pane-gone' };
+
+/**
+ * Makes `call` from `pane`, checked as send does: this page hosts the
+ * thread's browser and `pane` is its attached mount, before the call and
+ * again at its answer, so an answer that arrives after the owner moved or
+ * the pane detached shows nothing.
+ */
+async function callFromPane<T>(pane: BrowserPaneAttachment, call: () => Promise<T>): Promise<PaneCallAnswer<T>> {
+  const before = paneGate(pane);
+  if (before) return before;
+  try {
+    const value = await call();
+    return paneGate(pane) ?? { kind: 'answered', value };
+  } catch (err) {
+    return paneGate(pane) ?? { kind: 'refused', error: errString(err), cause: err };
+  }
+}
+
+function paneGate(pane: BrowserPaneAttachment): Exclude<PaneCallAnswer<never>, { kind: 'answered' }> | null {
+  const refusal = nativeBrowserRefusal(pane.threadId);
+  if (refusal) return { kind: 'refused', error: refusal.message, cause: refusal };
+  return isCurrentBrowserPane(pane) ? null : { kind: 'pane-gone' };
+}
+
+/** The addresses the thread's pages recently opened, for `pane`'s address suggestions. */
+export function readRecentAddresses(pane: BrowserPaneAttachment): Promise<PaneCallAnswer<readonly BrowserRecentAddress[]>> {
+  return callFromPane(pane, async () => (await BrowserCompanionRecentAddresses(pane.threadId)) ?? []);
+}
+
+/** Opens the file manager at the local file `pageId` shows, from `pane`. */
+export function revealPageFile(pane: BrowserPaneAttachment, pageId: PageId): Promise<PaneCallAnswer<void>> {
+  return callFromPane(pane, () => BrowserCompanionRevealPageFile(pane.threadId, pageId));
 }
 
 observeBrowserCompanion({
