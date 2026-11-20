@@ -1,82 +1,129 @@
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 // The browser pane's address bar focus, per thread: the focus a user asked
-// for with a new tab (openBrowserTab and the chat header's show arm it, its
-// own answer settles it, the pane takes it once the tab is ready) and the
-// mounted pane's address bar
-// for the focus-address command. A leaf: it knows nothing of the companion
-// store.
+// for with a new tab (openBrowserTab and the chat header's show arm it, the
+// answers of the presses that armed it settle it, the pane takes it once
+// the tab is ready) and the mounted pane's address bar for the
+// focus-address command. A leaf: it knows nothing of the companion store.
 
-// Address-bar focus the user asked for with a new tab, per thread: null for
-// none, PENDING_TAB until the answer names the tab it opened, then its page
-// id.
-// Any pointer press or key in the window before the pane takes it withdraws
-// every intent (the user moved on), as does the pane finding another tab
-// active. Each request is numbered (armedAddressFocus), so only its own
-// answer settles it.
-const PENDING_TAB = '';
-const addressFocusIntents = createKeyedSignalRegistry<string | null>(null);
-const armedAddressFocus = new Map<string, number>();
-let addressFocusRequests = 0;
+/**
+ * One thread's request for address bar focus. Presses made while an answer
+ * of an earlier one is due join it: the Manager converges overlapping shows
+ * on one tab and names it only in the answer of the show that opened it,
+ * so the request belongs to the tabs the presses opened, whichever answer
+ * names them. `wanted` ends when the user moves on (any pointer press or
+ * key in the window before the pane takes it), the pane takes it, or every
+ * answer came back naming no tab; the request is kept while answers are
+ * due, so a press the user makes meanwhile joins them.
+ */
+interface FocusRequest {
+  /** Answers still due: one per press that armed or joined it. */
+  due: number;
+  /** The tabs its answers opened. */
+  readonly opened: string[];
+  wanted: boolean;
+}
 
-/** Arms a focus request for the thread, replacing any, and answers its number. */
-export function armAddressFocus(threadId: string): number {
-  if (armedAddressFocus.size === 0 && typeof window !== 'undefined') {
-    window.addEventListener('pointerdown', dropAllAddressFocus, true);
-    window.addEventListener('keydown', dropAllAddressFocus, true);
+/** A press's place in its thread's request; settleAddressFocus takes it back. */
+export interface AddressFocusTicket {
+  readonly threadId: string;
+  readonly request: FocusRequest;
+}
+
+const requests = new Map<string, FocusRequest>();
+// What each thread's wanted request shows the pane: the tabs it opened
+// (empty while none is named yet), or null with none wanted.
+const addressFocusIntents = createKeyedSignalRegistry<readonly string[] | null>(null);
+
+/** Arms a focus request for the thread, or joins the one whose answers are due, for one press. */
+export function armAddressFocus(threadId: string): AddressFocusTicket {
+  let request = requests.get(threadId);
+  if (!request) {
+    request = { due: 0, opened: [], wanted: false };
+    requests.set(threadId, request);
   }
-  const request = ++addressFocusRequests;
-  armedAddressFocus.set(threadId, request);
-  addressFocusIntents.set(threadId, PENDING_TAB);
-  return request;
+  request.due += 1;
+  request.wanted = true;
+  publish(threadId, request);
+  listenForMovingOn();
+  return { threadId, request };
 }
 
 /**
- * Settles request number `request` with the tab its answer opened, '' when
- * it named none. Only this request's own answer settles it: a newer new tab
- * replaced it, and this answer must neither resolve nor withdraw that one.
+ * Settles one press's ticket with the tab its answer opened, '' when it
+ * named none. A request every answer of which named no tab is withdrawn.
  */
-export function settleAddressFocus(threadId: string, request: number, pageId: string): void {
-  if (armedAddressFocus.get(threadId) !== request || addressFocusIntents.get(threadId) !== PENDING_TAB) return;
-  if (pageId) addressFocusIntents.set(threadId, pageId);
-  else dropAddressFocus(threadId);
+export function settleAddressFocus(ticket: AddressFocusTicket, pageId: string): void {
+  const { threadId, request } = ticket;
+  if (requests.get(threadId) !== request) return;
+  request.due -= 1;
+  if (pageId && !request.opened.includes(pageId)) request.opened.push(pageId);
+  if (request.wanted && request.due === 0 && request.opened.length === 0) request.wanted = false;
+  publish(threadId, request);
 }
 
-function dropAddressFocus(threadId: string): void {
-  if (!armedAddressFocus.delete(threadId)) return;
-  addressFocusIntents.set(threadId, null);
-  if (armedAddressFocus.size === 0 && typeof window !== 'undefined') {
-    window.removeEventListener('pointerdown', dropAllAddressFocus, true);
-    window.removeEventListener('keydown', dropAllAddressFocus, true);
-  }
+/** Shows the pane `request` as it stands, and forgets it once it is neither wanted nor due an answer. */
+function publish(threadId: string, request: FocusRequest): void {
+  addressFocusIntents.set(threadId, request.wanted ? [...request.opened] : null);
+  if (!request.wanted && request.due === 0) requests.delete(threadId);
+  if (![...requests.values()].some((held) => held.wanted)) stopListeningForMovingOn();
 }
 
-function dropAllAddressFocus(): void {
-  for (const threadId of armedAddressFocus.keys()) dropAddressFocus(threadId);
+function withdraw(threadId: string): void {
+  const request = requests.get(threadId);
+  if (!request?.wanted) return;
+  request.wanted = false;
+  publish(threadId, request);
+}
+
+function withdrawAll(): void {
+  for (const threadId of [...requests.keys()]) withdraw(threadId);
+}
+
+let listening = false;
+
+function listenForMovingOn(): void {
+  if (listening || typeof window === 'undefined') return;
+  listening = true;
+  window.addEventListener('pointerdown', withdrawAll, true);
+  window.addEventListener('keydown', withdrawAll, true);
+}
+
+function stopListeningForMovingOn(): void {
+  if (!listening || typeof window === 'undefined') return;
+  listening = false;
+  window.removeEventListener('pointerdown', withdrawAll, true);
+  window.removeEventListener('keydown', withdrawAll, true);
 }
 
 /**
- * The tab whose address bar should take focus once it is ready: its page id,
- * PENDING_TAB ('') while the request is unanswered, null for none. Reactive.
+ * The tabs a wanted request's answers opened, whose address bar should take
+ * focus once ready: empty while none is named yet, null with no request
+ * wanted. Reactive.
  */
-export function addressFocusIntent(threadId: string): string | null {
+export function addressFocusIntent(threadId: string): readonly string[] | null {
   return addressFocusIntents.get(threadId);
 }
 
 /**
- * The pane's answer to an intent for the tab it shows: true, once, when the
- * intended tab is the active one and ready to take an address. Another
- * active tab, or the intended tab failing, withdraws the intent.
+ * The pane's answer to a request for the tab it shows: true, once, when the
+ * shown tab is one the request's presses opened and is ready to take an
+ * address. The tab failing withdraws the request, and so does another tab
+ * shown once no answer is due.
  */
 export function takeAddressFocus(threadId: string, active: { id: string; creating?: boolean; error?: string } | null): boolean {
-  const intent = addressFocusIntents.get(threadId);
-  if (intent === null || intent === PENDING_TAB || !active) return false;
-  if (active.id !== intent || active.error) {
-    dropAddressFocus(threadId);
+  const request = requests.get(threadId);
+  if (!request?.wanted || !active) return false;
+  if (!request.opened.includes(active.id)) {
+    if (request.due === 0) withdraw(threadId);
+    return false;
+  }
+  if (active.error) {
+    withdraw(threadId);
     return false;
   }
   if (active.creating) return false;
-  dropAddressFocus(threadId);
+  withdraw(threadId);
   return true;
 }
 
@@ -100,9 +147,10 @@ export function focusBrowserAddressBar(threadId: string): boolean {
   return true;
 }
 
-/** Drops every intent and registration; part of resetBrowserCompanionForTest. */
+/** Drops every request and registration; part of resetBrowserCompanionForTest. */
 export function resetBrowserAddressFocusForTest(): void {
-  dropAllAddressFocus();
+  requests.clear();
+  stopListeningForMovingOn();
   addressFocusIntents.reset();
   addressBars.clear();
 }

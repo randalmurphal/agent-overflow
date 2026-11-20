@@ -148,7 +148,7 @@ describe('browser commands', () => {
     focusPane('browser-main');
     runCommand('browser.newTab', ctx());
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new', mount: 'mount-1', select: 1 }));
-    expect(addressFocusIntent(THREAD)).toBe('');
+    expect(addressFocusIntent(THREAD)).toEqual([]);
   });
 
   // Before its attach answers a pane has no place in its mount's order:
