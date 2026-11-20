@@ -28,6 +28,10 @@
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { intendFocus, type FocusIntent } from '../../utils/focusIntent';
   import { onDestroy, untrack } from 'svelte';
+  import { addressOwner } from './browserAddressOwner';
+  import { browserPaneThread } from './browserPaneThread';
+  import { browserPaneMountId } from '../../stores/browserCompanion.svelte';
+  import { browserSelectionsSent } from '../../stores/browserActionWire';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
   // address, and the pane's own controls. The address behaves as a
@@ -94,20 +98,38 @@
     return activePage?.url === 'about:blank' ? '' : (activePage?.url ?? '');
   }
 
-  // A draft belongs to a tab: the field's tab when the user edited it,
-  // which is the active tab, or the tab a suggestion switch the user chose
-  // is on its way to (`switchingTo`), since that gesture targeted it. The
-  // field shows its tab's draft while there is one, and the active tab's
-  // address otherwise. A page push never replaces a draft (its page's
-  // address changing, the chosen switch answered); the field's tab becoming
-  // another drops it, as a tab switch replaces an edit with the new tab's
-  // address. Enter submits a draft to its own tab, and committing it (Enter,
-  // a suggestion) or abandoning it (Escape, leaving the field) gives the
-  // field back to the page. This effect is the one place the field takes
-  // the page's address.
+  // A draft belongs to the tab that owns what the user types
+  // (addressOwner: the tab a suggestion switch the user chose is on its way
+  // to, until it is shown or another selection supersedes it; otherwise the
+  // tab shown). The field shows its tab's draft while there is one, and the
+  // active tab's address otherwise. A page push never replaces a draft (its
+  // page's address changing, the chosen switch shown); the owner becoming
+  // another tab drops it, as a tab switch replaces an edit with the new
+  // tab's address. Enter submits a draft to its own tab, and committing it
+  // (Enter, a suggestion) or abandoning it (Escape, leaving the field)
+  // gives the field back to the page. This effect is the one place the
+  // field takes the page's address.
   let draft: { pageId: string; text: string } | null = $state(null);
-  let switchingTo: string | null = $state(null);
-  let fieldPageId = $derived(switchingTo ?? activePage?.id ?? null);
+  const thread = browserPaneThread();
+  let mount = $derived.by(() => {
+    const threadId = thread();
+    return threadId ? browserPaneMountId(threadId) : null;
+  });
+  // The suggestion switch on its way: its tab, whether the state has shown
+  // that tab since, and the mount's selection count once it was sent, past
+  // which a later selection supersedes it.
+  let switching = $state<{ pageId: string; observed: boolean; sentAt: number } | null>(null);
+  $effect(() => {
+    if (switching && !switching.observed && activePage?.id === switching.pageId) switching.observed = true;
+  });
+  let fieldPageId = $derived(addressOwner(
+    activePage?.id ?? null,
+    switching && {
+      pageId: switching.pageId,
+      observed: switching.observed,
+      superseded: mount !== null && browserSelectionsSent(mount) > switching.sentAt,
+    },
+  ));
   $effect(() => {
     const url = pageAddress();
     const pageId = fieldPageId;
@@ -204,11 +226,15 @@
       const field = input;
       const intent = intendFocus({ holdsFocus: (node) => field.contains(node), holdsPress: () => false });
       leaveAfterSwitch = intent;
-      switchingTo = suggested;
-      void onAct(browserAction.select(suggested)).then(() => {
-        // Answered: the pane has applied the switch, or shows why it did
-        // not, and the field's tab is the active one again.
-        if (switchingTo === suggested) switchingTo = null;
+      const sending = onAct(browserAction.select(suggested));
+      // The selection was counted as it was sent, in that call.
+      switching = { pageId: suggested, observed: false, sentAt: mount ? browserSelectionsSent(mount) : 0 };
+      // The state's own proxy, which later reads of `switching` return.
+      const pending = switching;
+      void sending.then(() => {
+        // Answered: the switch was shown or superseded, or did not happen
+        // and the pane shows why; either way the tab shown owns the field.
+        if (switching === pending) switching = null;
         intent.land(() => {
           if (document.activeElement === field) onLeave();
         });

@@ -7,8 +7,10 @@
 // the recent addresses. A dev server started in the thread's terminal after
 // the pane opened is found by the scan the field's focus runs. A draft
 // belongs to its tab: a tab switch shows the new tab's address and Enter
-// then navigates that tab to it, while text typed after choosing a tab
-// suggestion, before the switch is answered, is that tab's draft.
+// then navigates that tab to it. Text typed after choosing a tab suggestion
+// is that tab's draft until the state shows the switch or the user selects
+// another tab; then it is the shown tab's, though the switch's answer is
+// still on its way.
 import { connect } from 'node:net';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
@@ -161,14 +163,22 @@ const BROWSER_COMPANION_DO = 197228034;
 interface Navigation { pageId: string; address: string }
 
 /**
- * The pane's navigations as they leave for the backend, and, once `hold`
- * names a kind, the first frame of that kind held until `release`.
+ * The pane's navigations as they leave for the backend. Once `hold` names a
+ * kind, the first call of that kind is held on its way to the backend until
+ * `release`; once `holdReply` names one, the first call of that kind reaches
+ * the backend, whose events pass, and only its answer is held until
+ * `releaseReply`.
  */
 async function watchWire(page: Page) {
-  const wire: { navigations: Navigation[]; hold?: string; held?: string; send?: (message: string) => void } = { navigations: [] };
+  const wire: {
+    navigations: Navigation[];
+    hold?: string; held?: string; send?: (message: string) => void;
+    holdReply?: string; replyId?: string; heldReply?: string; answer?: (message: string) => void;
+  } = { navigations: [] };
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     wire.send = (message) => server.send(message);
+    wire.answer = (message) => socket.send(message);
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       const action = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1] : null;
@@ -177,15 +187,28 @@ async function watchWire(page: Page) {
         wire.held = String(message);
         return;
       }
+      if (action && wire.holdReply === action.kind && wire.replyId === undefined) wire.replyId = String(frame.id);
       server.send(message);
     });
-    server.onMessage((message) => socket.send(message));
+    server.onMessage((message) => {
+      if (wire.replyId !== undefined && wire.heldReply === undefined) {
+        const frame = JSON.parse(String(message));
+        if (frame.type === 'rpc' && String(frame.id) === wire.replyId) {
+          wire.heldReply = String(message);
+          return;
+        }
+      }
+      socket.send(message);
+    });
   });
   return {
     navigations: () => wire.navigations,
     hold: (kind: string) => { wire.hold = kind; },
     held: () => wire.held !== undefined,
     release: () => wire.send?.(wire.held ?? ''),
+    holdReply: (kind: string) => { wire.holdReply = kind; },
+    replyHeld: () => wire.heldReply !== undefined,
+    releaseReply: () => wire.answer?.(wire.heldReply ?? ''),
   };
 }
 
@@ -258,4 +281,38 @@ test("text typed after choosing a tab suggestion is that tab's draft", async ({ 
   await expect(address).toBeFocused();
   await address.press('Enter');
   await expect.poll(() => wire.navigations()).toEqual([{ pageId: ids[0], address: 'https://next.test/' }]);
+});
+
+test('text typed after a chosen tab switch was shown and the user moved on is the shown tab\'s', async ({ harness, page }) => {
+  const wire = await watchWire(page);
+  const urls = ['https://example.test/one', 'https://example.test/two'];
+  const { threadId, ids } = await seedTabs(harness, 'Browser draft moved on', urls);
+  await harness.open(page);
+  await page.getByText('Browser draft moved on').click();
+  const pane = page.getByTestId('browser-pane');
+  const address = pane.getByRole('textbox', { name: 'Address' });
+  await expect(address).toHaveValue(urls[1]);
+
+  // The switch to one reaches the backend and its state is shown; only its
+  // answer is held.
+  wire.holdReply('activate');
+  await address.click();
+  await address.pressSequentially('one');
+  const rows = page.getByTestId('browser-address-suggestions').getByRole('option');
+  await expect(rows).toHaveCount(1);
+  await address.press('ArrowDown');
+  await address.press('Enter');
+  await expect.poll(() => wire.replyHeld()).toBe(true);
+  await expect(pane.getByTestId('browser-tab').nth(0)).toHaveAttribute('aria-selected', 'true');
+
+  // The user goes back to two and types an address there.
+  await address.focus();
+  await page.keyboard.press('Control+Tab');
+  await expect.poll(async () => (await tabState(harness, threadId)).active).toBe(urls[1]);
+  await expect(pane.getByTestId('browser-tab').nth(1)).toHaveAttribute('aria-selected', 'true');
+  await address.fill('https://typed-on-two.test/');
+  await address.press('Enter');
+  await expect.poll(() => wire.navigations()).toEqual([{ pageId: ids[1], address: 'https://typed-on-two.test/' }]);
+  wire.releaseReply();
+  await expect.poll(async () => (await tabState(harness, threadId)).urls).toEqual([urls[0], 'https://typed-on-two.test/']);
 });
