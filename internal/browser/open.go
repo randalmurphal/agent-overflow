@@ -13,7 +13,7 @@ import (
 )
 
 func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts OpenOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
@@ -30,7 +30,7 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 }
 
 func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, err := m.pageForOpen(ctx, access, "", false)
@@ -51,7 +51,7 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 }
 
 func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts OpenOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	return m.openFile(ctx, access, path, nil, opts)
@@ -176,7 +176,10 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested Page
 // workspace and process caps, and creates p's engine page in the jar its
 // thread's setting names, laid out at its thread's viewport. It stamps p with
 // the setting's generation and its workspace's authority, and returns with the scope reserved for p
-// (scope.creating): the caller registers p or abandons it (abandonPage). The
+// (scope.creating) once p is attached, with the error of a later step when
+// one failed: the caller decides p (unlistedOutcomeLocked) and registers
+// or abandons it (abandonPage). A failure before the attach returns no
+// scope. The
 // thread's cap is the caller's: a new page is admitted when its tab appears
 // (createPage), and a restore's record already holds its thread's slot. A
 // profile of the jar still being disposed is waited for, so two profiles
@@ -296,6 +299,12 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 	}
 
 	if err := m.newPage(ctx, scope, p); err != nil {
+		if p.driver != nil {
+			// A step after the attach failed: the page stays reserved for its
+			// caller's decision, which reads the end its engine recorded
+			// (unlistedOutcomeLocked) and releases it.
+			return scope, err
+		}
 		m.mu.Lock()
 		delete(scope.creating, p)
 		release := m.releaseScopeLocked(scope)
@@ -309,7 +318,8 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 }
 
 // newPage creates p's engine page in scope, laid out at its thread's
-// viewport.
+// viewport. A failure after the attach leaves p attached, its engine page
+// open, for its caller's decision.
 func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) error {
 	// What the engine reports ending before it answers is kept for the
 	// attach (creationWatch); the caller's startMu makes this the one
@@ -334,7 +344,6 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	m.mu.Unlock()
 	m.applyHeldInfo(p, held, hasHeld)
 	if err := m.applyViewport(p); err != nil {
-		driver.Close()
 		return err
 	}
 	m.pageAttached(p)

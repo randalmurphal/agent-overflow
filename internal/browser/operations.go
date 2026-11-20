@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
-	"time"
 )
 
 func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (Snapshot, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return Snapshot{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
@@ -41,7 +41,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (S
 }
 
 func (m *Manager) Screenshot(ctx context.Context, access Access, opts ScreenshotOptions) ([]byte, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -83,7 +83,7 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 }
 
 func (m *Manager) Click(ctx context.Context, access Access, pageID PageID, selector string) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	selector = strings.TrimSpace(selector)
@@ -107,7 +107,7 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID PageID, selec
 }
 
 func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	if len(opts.Text) > maxBrowserInputBytes {
@@ -134,7 +134,7 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 }
 
 func (m *Manager) Press(ctx context.Context, access Access, pageID PageID, key string) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	if len(key) > maxBrowserInputBytes {
@@ -226,7 +226,7 @@ func (p *managedPage) setClipboardText(text string) {
 }
 
 func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, selector string, x, y float64) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	if err := validateScrollDelta(x, y); err != nil {
@@ -248,47 +248,8 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, sele
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) Wait(ctx context.Context, access Access, pageID PageID, selector string, milliseconds int) (PageInfo, error) {
-	if err := access.bound(); err != nil {
-		return PageInfo{}, err
-	}
-	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
-	if err != nil {
-		return PageInfo{}, err
-	}
-	if err := m.lockPageForOperation(ctx, p); err != nil {
-		return PageInfo{}, err
-	}
-	defer p.mu.Unlock()
-	if milliseconds < 0 || milliseconds > 30_000 {
-		return PageInfo{}, fmt.Errorf("browser: wait duration must be between 0 and 30000 ms")
-	}
-	timeout := operationTimeout
-	if milliseconds > 0 {
-		timeout = time.Duration(milliseconds+1000) * time.Millisecond
-	}
-	opCtx, cancel := operationContext(ctx, p.ctx, timeout)
-	defer cancel()
-	if strings.TrimSpace(selector) != "" {
-		if err := p.driver.WaitVisible(opCtx, selector); err != nil {
-			return PageInfo{}, fmt.Errorf("browser: wait for %q: %w", selector, err)
-		}
-	} else if milliseconds > 0 {
-		timer := time.NewTimer(time.Duration(milliseconds) * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-opCtx.Done():
-			return PageInfo{}, opCtx.Err()
-		}
-	} else {
-		return PageInfo{}, fmt.Errorf("browser: selector or duration is required")
-	}
-	return m.finishPageOperation(opCtx, p)
-}
-
 func (m *Manager) History(ctx context.Context, access Access, pageID PageID, action string) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
@@ -322,7 +283,7 @@ func (m *Manager) History(ctx context.Context, access Access, pageID PageID, act
 // optional JSON argument for code that is one function. It returns the result
 // and a note the tool result carries, or "".
 func (m *Manager) Evaluate(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, "", err
 	}
 	return m.evaluate(ctx, access, pageID, code, argument, false)
@@ -335,7 +296,7 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID PageID, co
 // returns none, and one that can only be best-effort says so in the tool
 // result rather than looking identical.
 func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, "", err
 	}
 	return m.evaluate(ctx, access, pageID, code, argument, true)
@@ -395,9 +356,11 @@ func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (Page
 
 // refreshPageAfterOperation is finishPageOperation with no answer.
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
-	// A failed read leaves the tab as it was; the operation's own result
-	// reports its outcome.
-	_, _, _ = m.readInfo(ctx, p, pageListing{})
+	// A failed read leaves the tab as it was and is logged; the operation's
+	// own result reports its outcome.
+	if _, _, err := m.readInfo(ctx, p, pageListing{}); err != nil && p.ctx.Err() == nil {
+		log.Printf("browser: refresh page %s after an operation: %v", p.id, err)
+	}
 	m.pageUsed(p)
 }
 

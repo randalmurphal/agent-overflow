@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
-// Suspended pages. A page is suspended in two cases only: the session reaper
-// ended its thread's idle provider session (SuspendThread), or the app shut
-// down with it open (saveOpenPages, then a restart loads it). Suspending
+// Suspended pages. A page is suspended when the session reaper ended its
+// thread's idle provider session (SuspendThread) or the app shut down with
+// it open (saveOpenPages, then a restart loads it); a jar switch suspends
+// the thread's live pages (jar_switch.go), and a crashed page becomes a
+// record carrying its failure (crash.go). Suspending
 // unloads the engine page; the page stays in its thread's tab set as a record
 // with its id, address, title, label and tab position, and holds no engine
 // resource. Nothing about a page or pane being hidden suspends it.
@@ -128,7 +130,7 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	}
 	// A page a mounted pane came to show meanwhile stays live, as it would
 	// have had it been shown from the start (SuspendThread).
-	if scope == nil || m.closed || m.forgettingLocked() || p.owner.detached.Load() || m.presentedPageLocked(p.owner) == p.id {
+	if scope == nil || !m.recordsAdmittedLocked(p.owner) || m.presentedPageLocked(p.owner) == p.id {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return false, nil

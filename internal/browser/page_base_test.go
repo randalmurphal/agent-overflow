@@ -262,15 +262,6 @@ func holdBase(t *testing.T, m *Manager, log *baseLog, match func(handle, color s
 	return entered, release
 }
 
-func receiveWithin(t *testing.T, ch chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
 // assertBaseBeforeShow waits for handle to be shown and fails when it was
 // shown before the base want was recorded for it.
 func assertBaseBeforeShow(t *testing.T, log *baseLog, handle, want string) {
@@ -302,7 +293,7 @@ func TestAShowWaitsForTheBaseUnderWay(t *testing.T) {
 	p := ownedPage(t, manager, access, secondID)
 	entered, release := holdBase(t, manager, log, func(h, color string) bool { return h == handle && color == documentBase })
 	go manager.pageInfoReport(p, "https://example.test/doc", "example.test/doc", 1000)
-	receiveWithin(t, entered, "the white base to be applied")
+	receive(t, entered, "the white base to be applied")
 	activated := make(chan error, 1)
 	go func() { activated <- manager.ActivateCompanionPage(t.Context(), access, PageID(secondID)) }()
 	time.Sleep(200 * time.Millisecond)
@@ -332,7 +323,7 @@ func TestANewTabIsNotShownBeforeItsFirstBase(t *testing.T) {
 		}
 		created <- info
 	}()
-	receiveWithin(t, entered, "the new tab's first base to be applied")
+	receive(t, entered, "the new tab's first base to be applied")
 	reported := make(chan error, 1)
 	go func() { reported <- manager.SetPaneRect(MountID(mountID), baseRect(basePane)) }()
 	time.Sleep(200 * time.Millisecond)

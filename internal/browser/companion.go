@@ -17,7 +17,7 @@ import (
 // (close to the right) acts on the order the user saw when they asked for
 // it; a passed turn moves nothing.
 func (m *Manager) MoveCompanionPage(ctx context.Context, access Access, pageID PageID, index int) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
@@ -91,7 +91,7 @@ func (m *Manager) placeTabLocked(tb *threadBrowser, pageID PageID, index int) (s
 // it was created or shows why it could not be, or when ctx's numbered
 // selection was passed (selection.go) and nothing opened.
 func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address string) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	turn, err := m.selectionTurn(ctx, access)
@@ -156,7 +156,7 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorde
 // ctx's numbered selection takes its turn in the user's order first
 // (selection.go); a passed one changes and restores nothing.
 func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	turn, err := m.selectionTurn(ctx, access)
@@ -175,7 +175,7 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 // cannot undo a selection the user made since the pane saw that tab; a tab
 // that is no longer active is left as it is.
 func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
@@ -198,7 +198,7 @@ func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access,
 // the first tab and a backward one the last. Then it is ActivateCompanionPage,
 // in the user's order with the mount's other selections (selection.go).
 func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	turn, err := m.selectionTurn(ctx, access)

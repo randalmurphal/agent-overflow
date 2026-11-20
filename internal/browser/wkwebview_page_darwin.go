@@ -28,7 +28,7 @@ import (
 // operation is carried out.
 
 const (
-	// wkPollInterval is how often a load or visibility wait re-samples. Each
+	// wkPollInterval is how often a load wait re-samples. Each
 	// sample is one main-thread dispatch, so this is a real cost and not a free
 	// spin.
 	wkPollInterval = 50 * time.Millisecond

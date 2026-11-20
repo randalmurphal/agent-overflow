@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"log"
 
 	"agent-overflow/internal/browser/ids"
 )
@@ -247,7 +248,8 @@ func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64
 	// An engine reports the same address and title again (a target info
 	// change that touched neither); that alone pushes nothing.
 	m.publishPages(p.owner.id)
-	go m.refreshHistoryState(p, stamp)
+	// Lifecycle work, which Close joins; a Manager closing reads nothing.
+	m.goLife(func() { m.refreshHistoryState(p, stamp) })
 }
 
 // pageDocumentTitle is pageHooks.DocumentTitle. Like an engine report it is
@@ -274,6 +276,11 @@ func (m *Manager) refreshHistoryState(p *managedPage, stamp uint64) {
 	defer cancel()
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
+		// A page that closed meanwhile has nothing to show; any other
+		// failure leaves Back and Forward as the last read had them.
+		if p.ctx.Err() == nil {
+			log.Printf("browser: read the history of page %s: %v", p.id, err)
+		}
 		return
 	}
 	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, stamp)

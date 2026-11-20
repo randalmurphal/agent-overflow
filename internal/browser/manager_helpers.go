@@ -51,14 +51,12 @@ func (m *Manager) lookupOwnedPage(access Access, pageID PageID) (*managedPage, *
 	return nil, nil, errPageNotFound
 }
 
-// pageByHandleLocked resolves an engine handle to the page it drives. Caller
-// holds m.mu.
+// pageByHandleLocked answers the listed page whose driver has handle, or
+// nil. The caller holds m.mu.
 func (m *Manager) pageByHandleLocked(handle ids.PageHandle) *managedPage {
 	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.driver.Handle() == handle {
-				return p
-			}
+		if p := pageWithHandle(scope, handle); p != nil {
+			return p
 		}
 	}
 	return nil

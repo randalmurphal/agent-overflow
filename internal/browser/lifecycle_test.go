@@ -26,12 +26,14 @@ type lifecycleEngine struct {
 	navGate, infoGate, evalGate              chan struct{}
 	creating, closing, disposing, navigating chan struct{}
 	reading, evaluating                      chan struct{}
-	newPageErr, disposeErr                   error
+	newPageErr, disposeErr, infoErr          error
 	favicon                                  string
 	onNewPage                                func(pageHooks)
 	onNewFakePage                            func(*fakePage)
-	disposed, closed                         atomic.Int64
-	disposingNow, profileDuringDispose       atomic.Bool
+	// wrapDriver, when set, wraps the next page's driver.
+	wrapDriver                         func(pageDriver) pageDriver
+	disposed, closed                   atomic.Int64
+	disposingNow, profileDuringDispose atomic.Bool
 }
 
 func newLifecycleManager(t *testing.T) (*Manager, *lifecycleEngine) {
@@ -119,8 +121,8 @@ func (p *lifecycleProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDr
 		return nil, err
 	}
 	e.mu.Lock()
-	hook, fakeHook := e.onNewPage, e.onNewFakePage
-	e.onNewPage, e.onNewFakePage = nil, nil
+	hook, fakeHook, wrap := e.onNewPage, e.onNewFakePage, e.wrapDriver
+	e.onNewPage, e.onNewFakePage, e.wrapDriver = nil, nil, nil
 	e.mu.Unlock()
 	if hook != nil {
 		hook(hooks)
@@ -128,7 +130,11 @@ func (p *lifecycleProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDr
 	if fakeHook != nil {
 		fakeHook(driver.(*fakePage))
 	}
-	return &lifecycleDriver{pageDriver: driver, engine: e}, nil
+	var wrapped pageDriver = &lifecycleDriver{pageDriver: driver, engine: e}
+	if wrap != nil {
+		wrapped = wrap(wrapped)
+	}
+	return wrapped, nil
 }
 
 func (p *lifecycleProfile) Dispose(ctx context.Context) error {
@@ -164,6 +170,12 @@ func (d *lifecycleDriver) Navigate(ctx context.Context, rawURL string) error {
 func (d *lifecycleDriver) Info(ctx context.Context) (string, string, error) {
 	if err := d.engine.pass(ctx, &d.engine.infoGate, d.engine.reading); err != nil {
 		return "", "", err
+	}
+	d.engine.mu.Lock()
+	failure := d.engine.infoErr
+	d.engine.mu.Unlock()
+	if failure != nil {
+		return "", "", failure
 	}
 	return d.pageDriver.Info(ctx)
 }

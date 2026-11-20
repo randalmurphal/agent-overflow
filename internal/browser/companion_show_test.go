@@ -183,7 +183,7 @@ func TestAShowWhosePaneDetachesDuringASwitchDoesNothing(t *testing.T) {
 		manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 		proj := newProject(t, "P")
 		access := proj.access(manager, "a", proj.one)
-		page := openPage(t, manager, access, addr("a"))
+		page := mustOpen(t, manager, access, addr("a"))
 		mount, err := manager.AttachPane(access.Caller())
 		if err != nil {
 			t.Fatal(err)

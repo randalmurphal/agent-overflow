@@ -61,7 +61,11 @@ mode. Product behavior and authority are defined in
   profile, where `Dispose` finds it, only once its view is in place. A
   created or restored page whose engine reports its close or crash before
   its listing, even before NewPage returns, is never listed live
-  (`creation_end.go`): a close fails it, a crash lists the crashed tab.
+  (`creation_end.go`): a close fails it, a crash lists the crashed tab,
+  also when a setup step then fails. Every return of a created, restored
+  or adopted page's setup reaches one decision in the hold that lists it
+  (`unlistedOutcomeLocked`), which reads that end, the lifetime's state,
+  the forget fence and the jar generation.
   A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended

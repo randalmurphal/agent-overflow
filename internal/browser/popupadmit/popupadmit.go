@@ -9,11 +9,12 @@
 // or crash meanwhile, and the engine reports that by its handle (Observe)
 // whatever the Manager is doing with it. The Manager acts on a close or
 // crash only for a listed tab, so the observation waits on the popup's
-// admission until the listing's commit (Commit, or CommitFailed when a
-// step of its setup failed) reads it: a popup that closed is never listed,
-// one that only crashed is listed as the crashed tab it is. Every popup's
-// admission ends once, listed or ended (Commit, CommitFailed, Discard),
-// and a listed one ends when its tab leaves (Leave).
+// admission until the listing's commit (Commit, told whether a step of its
+// setup failed) reads it: a popup that closed is never listed, one that
+// only crashed is listed as the crashed tab it is. Every popup's admission
+// ends once, listed or ended (Commit, Discard), and a listed one ends when
+// its tab leaves (Leave). That decision is Ending.Verdict, which the
+// Manager also makes for a page it creates or restores.
 //
 // A handle is an engine's page handle, unique for the engine's life: a
 // headless or hosted target or page id, or a WebKit engine's page number.
@@ -82,19 +83,42 @@ func Crashed(reason string) Observation {
 	return Observation{crash: reason}
 }
 
-// ending is what a popup's observations add up to: a close ends it
-// whatever crashed before or after.
-type ending struct {
+// Ending is what the observations of a page not listed yet add up to: a
+// close ends it whatever crashed before or after. An admission keeps one
+// for its popup; the Manager keeps one for a page it creates or restores,
+// and both decide the page by its Verdict.
+type Ending struct {
 	closed bool
 	crash  string
 }
 
-func (e ending) with(o Observation) ending {
+// With is e and then o.
+func (e Ending) With(o Observation) Ending {
 	e.closed = e.closed || o.closed
 	if e.crash == "" {
 		e.crash = o.crash
 	}
 	return e
+}
+
+// Ended reports whether anything ended the page.
+func (e Ending) Ended() bool { return e.closed || e.crash != "" }
+
+// Verdict is the one decision on a page not listed yet whose setup ended,
+// a step of it failed when setupFailed, with e observed: a close refuses
+// it; a crash alone lists it crashed, never live, whether its setup
+// succeeded or failed; a setup that failed with no crash refuses it; any
+// other is listed live.
+func (e Ending) Verdict(setupFailed bool) Verdict {
+	switch {
+	case e.closed:
+		return Verdict{kind: Refuse, closed: true}
+	case e.crash != "":
+		return Verdict{kind: ListCrashed, crash: e.crash}
+	case setupFailed:
+		return Verdict{kind: Refuse}
+	}
+	return Verdict{kind: List}
 }
 
 // Observed is what Observe did with an observation.
@@ -124,8 +148,9 @@ const (
 
 // Verdict is a commit's decision.
 type Verdict struct {
-	kind  VerdictKind
-	crash string
+	kind   VerdictKind
+	crash  string
+	closed bool
 }
 
 // Kind is the decision.
@@ -133,6 +158,9 @@ func (v Verdict) Kind() VerdictKind { return v.kind }
 
 // CrashReason is the reason its process ended, for ListCrashed.
 func (v Verdict) CrashReason() string { return v.crash }
+
+// Closed reports whether the page's close refused it.
+func (v Verdict) Closed() bool { return v.closed }
 
 // Ancestry is what the registry knows of a popup's openers.
 type Ancestry struct {
@@ -151,7 +179,7 @@ func (a Ancestry) Chain() []ids.PageHandle { return a.chain }
 type admission struct {
 	opener      ids.PageHandle
 	disposition Disposition
-	ending      ending
+	ending      Ending
 }
 
 // to moves a to next and answers whether that is a transition an
@@ -216,51 +244,32 @@ func (r *Registry) Observe(h ids.PageHandle, o Observation) Observed {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if a := r.live[h]; a != nil && a.disposition == Pending {
-		a.ending = a.ending.with(o)
+		a.ending = a.ending.With(o)
 		return Held
 	}
 	return Unheld
 }
 
-// Commit ends the admission of h at its listing, its page attached, and
-// answers whether to list it: a popup that closed is refused, one that
-// crashed is listed crashed. The caller holds the lock under which it
-// lists pages, so no listing of h races this.
-func (r *Registry) Commit(h ids.PageHandle) Verdict {
+// Commit ends the admission of h at its listing, whose setup (its attach
+// and every step after it) failed when setupFailed, and answers its
+// Ending's Verdict: a popup that closed is refused, one that crashed is
+// listed crashed, one whose setup failed with no crash is refused. An
+// admission already ended is refused. The caller holds the lock under
+// which it lists pages, so no listing of h races this.
+func (r *Registry) Commit(h ids.PageHandle, setupFailed bool) Verdict {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.live[h]
 	if a == nil || a.disposition != Pending {
 		return Verdict{kind: Refuse}
 	}
-	switch {
-	case a.ending.closed:
+	verdict := a.ending.Verdict(setupFailed)
+	if verdict.Kind() == List {
+		r.settleLocked(h, a, Listed)
+	} else {
 		r.settleLocked(h, a, Ended)
-		return Verdict{kind: Refuse}
-	case a.ending.crash != "":
-		r.settleLocked(h, a, Ended)
-		return Verdict{kind: ListCrashed, crash: a.ending.crash}
 	}
-	r.settleLocked(h, a, Listed)
-	return Verdict{kind: List}
-}
-
-// CommitFailed ends the admission of h whose setup failed (its attach, or
-// any step after it): a popup whose process ended first is still listed
-// crashed, as its crash would list it set up, unless it also closed; any
-// other is refused.
-func (r *Registry) CommitFailed(h ids.PageHandle) Verdict {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a := r.live[h]
-	if a == nil || a.disposition != Pending {
-		return Verdict{kind: Refuse}
-	}
-	r.settleLocked(h, a, Ended)
-	if a.ending.crash != "" && !a.ending.closed {
-		return Verdict{kind: ListCrashed, crash: a.ending.crash}
-	}
-	return Verdict{kind: Refuse}
+	return verdict
 }
 
 // Discard ends the pending admission of h without a listing; it does
@@ -423,12 +432,4 @@ func (h *history) put(k ids.PageHandle, a *admission) {
 		}
 		h.order = kept
 	}
-}
-
-// retained answers how many admissions are live and how many the history
-// keeps.
-func (r *Registry) retained() (live, kept int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.live), len(r.history.entries)
 }

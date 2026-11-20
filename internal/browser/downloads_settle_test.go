@@ -99,7 +99,7 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 func TestAParkedDownloadStoppedAndThenRefusedIsCanceledOnce(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 	// Another tab keeps the jar open, so a cancel can reach the engine.
-	openPage(t, manager, access, "https://example.test/other")
+	mustOpen(t, manager, access, "https://example.test/other")
 	file := engineArtifact(t, manager, "dl-1")
 	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
 		t.Fatal("the popup's download was refused")

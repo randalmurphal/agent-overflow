@@ -80,7 +80,7 @@ func reopenable(rawURL string) bool {
 // after it arrives as a "teardown" event. A tab still opening or restoring
 // closes at once. The tab can be reopened (ReopenClosedTab).
 func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
@@ -160,7 +160,7 @@ func (s *closedTabs) push(tab closedTab) {
 // with ctx's numbered selection passed or its pane detached (selection.go),
 // or a tab refused, it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	turn, err := m.selectionTurn(ctx, access)
@@ -198,7 +198,7 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 // no address to load. With ctx's numbered selection passed or its pane
 // detached (selection.go) it does nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
@@ -242,7 +242,7 @@ const (
 // its turn as CloseCompanionPage does and closes the tabs it finds then, in
 // that turn's hold; with pageID gone by then it closes nothing.
 func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID PageID, which string) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
@@ -269,7 +269,7 @@ func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID 
 // live page reloads. A tab gone before the reload ran (Mod+R, then Mod+W)
 // is reloaded by nothing, and no other tab is.
 func (m *Manager) ReloadCompanionPage(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()

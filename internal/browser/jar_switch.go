@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // SetJar sets the cookie jar the thread's pages open in (jar.go) and saves
@@ -63,7 +62,7 @@ import (
 // (jarCurrentLocked), and a popup needs a live opener, which the switch has
 // closed.
 func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consent JarConsent) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	if err := consent.valid(); err != nil {
@@ -278,7 +277,6 @@ func (sw *jarSwitch) commitLocked(m *Manager) []switchClose {
 	tb := sw.tb
 	info := &tb.session
 	info.Jar, info.jarGen, info.privateJar = sw.kind, info.jarGen+1, ""
-	info.UpdatedAt = time.Now()
 	// The recent addresses and closed tabs were the old jar's browsing; an
 	// open still running in it records nothing (recordRecentAddress). The
 	// switch's push carries both.

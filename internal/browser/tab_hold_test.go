@@ -4,11 +4,39 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// awaitStructureWaiters waits until n goroutines wait out a jar switch at
+// the structural gate (lockStructure).
+func awaitStructureWaiters(t *testing.T, n int) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		size := runtime.Stack(buf, true)
+		if size == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		waiting := 0
+		for _, stack := range strings.Split(string(buf[:size]), "\n\n") {
+			header, _, _ := strings.Cut(stack, "\n")
+			if strings.Contains(header, "[select") && strings.Contains(stack, "browser.(*Manager).lockStructure(") {
+				waiting++
+			}
+		}
+		if waiting >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%d goroutines never reached the structural gate", n)
+}
 
 // livePagesAt counts the live pages, in every jar, whose address is url.
 func livePagesAt(m *Manager, url string) int {
@@ -112,8 +140,8 @@ func TestALabelDuringASwitchLandsOnTheTab(t *testing.T) {
 			info, err := m.LabelPage(context.Background(), access, PageID(ids[0]), "Docs")
 			done <- labeled{info, err}
 		}()
-		// Time for the label to resolve the live page and reach the gate.
-		time.Sleep(50 * time.Millisecond)
+		// The label resolved the live page and waits at the gate.
+		awaitStructureWaiters(t, 1)
 	}
 	if err := m.SetJar(t.Context(), access, JarThread, JarSwitchConfirmed); err != nil {
 		t.Fatal(err)
@@ -144,8 +172,7 @@ func TestAShowNeverSelectsATabClosedDuringASwitch(t *testing.T) {
 				shown <- err
 			}()
 			go func() { closed <- m.ClosePage(context.Background(), access, PageID(ids[1])) }()
-			// Time for both to reach the gate.
-			time.Sleep(30 * time.Millisecond)
+			awaitStructureWaiters(t, 2)
 		}
 		if err := m.SetJar(t.Context(), access, JarThread, JarSwitchConfirmed); err != nil {
 			t.Fatal(err)

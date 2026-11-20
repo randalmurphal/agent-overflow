@@ -23,7 +23,7 @@ import (
 // operation is carried out.
 
 const (
-	// webkitPollInterval is how often a load or visibility wait re-samples.
+	// webkitPollInterval is how often a load wait re-samples.
 	// Each sample is one GTK main-thread dispatch, so this is a real cost and
 	// not a free spin.
 	webkitPollInterval = 50 * time.Millisecond

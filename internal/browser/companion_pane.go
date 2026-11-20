@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"agent-overflow/internal/browser/turnorder"
 	"agent-overflow/internal/paneplace"
@@ -248,7 +247,6 @@ func (m *Manager) notePaneSizeLocked(tb *threadBrowser, rect PaneRect) bool {
 	}
 	info.PaneW, info.PaneH = w, h
 	info.resolveViewport()
-	info.UpdatedAt = time.Now()
 	return !info.ViewportSet
 }
 
@@ -358,7 +356,7 @@ func (m *Manager) presentedPageLocked(tb *threadBrowser) PageID {
 // WKWebView (Safari's Develop menu is the inspector) and the fake engine
 // answer with an explained refusal rather than a silent no-op.
 func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	host, ok := m.engine.(paneDevTools)

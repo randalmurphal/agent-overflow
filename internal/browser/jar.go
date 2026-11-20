@@ -67,10 +67,7 @@ type jarIdentity struct {
 	// identity (profileOptions.Jar). A worktree jar's key is the canonical
 	// workspace; every other kind has a prefix no absolute path starts with.
 	key       jarKey
-	kind      string
 	ephemeral bool
-	// thread is the owner of a thread or private jar, "" otherwise.
-	thread ThreadID
 	// private is a private jar's instance token, and owner the thread
 	// lifetime that holds it; "" and nil otherwise.
 	private string
@@ -101,7 +98,7 @@ type jarScope struct {
 // tb's thread's, whatever access names. access.Workspace is canonical. A private jar without a live instance takes a new token here.
 // The caller holds m.mu.
 func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (jarIdentity, error) {
-	jar := jarIdentity{kind: kind, ephemeral: !m.config.PersistSiteData}
+	jar := jarIdentity{ephemeral: !m.config.PersistSiteData}
 	switch kind {
 	case JarWorktree:
 		jar.key = jarKey(access.Workspace)
@@ -111,13 +108,13 @@ func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (j
 		}
 		jar.key = jarKey("project:" + access.ProjectID)
 	case JarThread:
-		jar.key, jar.thread = jarKey("thread:"+string(tb.id)), tb.id
+		jar.key = jarKey("thread:" + string(tb.id))
 	case JarPrivate:
 		if tb.session.privateJar == "" {
 			tb.session.privateJar = uuid.NewString()
 		}
 		jar.key = jarKey("private:" + string(tb.id) + ":" + tb.session.privateJar)
-		jar.thread, jar.private, jar.owner, jar.ephemeral = tb.id, tb.session.privateJar, tb, true
+		jar.private, jar.owner, jar.ephemeral = tb.session.privateJar, tb, true
 	default:
 		return jarIdentity{}, fmt.Errorf("browser: unknown cookie jar %q", kind)
 	}
@@ -200,7 +197,7 @@ type workspaceAuthority struct {
 	downloadDir   string
 	downloadBytes *quota.Pool
 	// pool is the authority's hold on downloadBytes, released as it goes
-	// (forgetAuthorityLocked).
+	// (pruneAuthoritiesLocked, forgetAuthoritiesLocked).
 	pool *quota.PoolHold
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -39,7 +40,7 @@ func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOption
 }
 
 func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	if len(opts.Text) > maxBrowserInputBytes {
@@ -113,7 +114,7 @@ func (m *Manager) scrollNodeReference(ctx context.Context, p *managedPage, ref n
 }
 
 func (m *Manager) Clipboard(ctx context.Context, access Access, opts ClipboardOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -181,7 +182,7 @@ func cloneClipboard(items []ClipboardItem) []ClipboardItem {
 }
 
 func (m *Manager) WaitAdvanced(ctx context.Context, access Access, opts WaitOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -263,20 +264,27 @@ func (m *Manager) waitForPage(ctx context.Context, p *managedPage, urlPattern, l
 func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before navigationMark, urlPattern, loadState string) error {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	// readErr is the last read's failure. A page in the middle of a
+	// navigation can fail one; it is no evidence either way, so the wait
+	// reads again, and a wait that ends on one says so.
+	var readErr error
 	for {
-		// A mark the engine cannot read is empty, not an error: an unreadable
-		// location differs from the one recorded before the action, which is
-		// itself evidence the page moved.
-		current, _ := p.driver.NavigationMark(ctx)
-		changed := current.URL != before.URL
-		if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
-			changed = true
-		}
-		if changed {
-			return m.waitForPage(ctx, p, urlPattern, loadState)
+		current, err := p.driver.NavigationMark(ctx)
+		readErr = err
+		if err == nil {
+			changed := current.URL != before.URL
+			if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
+				changed = true
+			}
+			if changed {
+				return m.waitForPage(ctx, p, urlPattern, loadState)
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if readErr != nil {
+				return errors.Join(ctx.Err(), fmt.Errorf("read the page's navigation: %w", readErr))
+			}
 			return ctx.Err()
 		case <-ticker.C:
 		}

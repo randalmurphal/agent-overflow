@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"agent-overflow/internal/keybindings"
 )
@@ -62,8 +61,9 @@ type CompanionEvent struct {
 	// Find rides a Kind "find" event: a page's search ended without its
 	// owner asking (navigation, a tab switch, a hidden pane, the page
 	// closing, another owner's start), so a find bar showing it closes.
-	// A Kind "escape" event names only ThreadID and PageID: a bare Escape
-	// was pressed in that page while a pane showed it, and the page kept it.
+	// A Kind "escape" event names only ThreadID, PageID and Mount, the pane
+	// mount showing the page: a bare Escape was pressed in that page while
+	// a pane showed it, and the page kept it.
 	// A Kind "teardown" event names ThreadID, PageID and Error: a page that
 	// already left the tab set failed to close or to release its profile.
 	Find *FindState `json:"find,omitempty"`
@@ -112,9 +112,10 @@ type FindState struct {
 	Seq uint64 `json:"seq"`
 	// Document is the epoch of the document the search started on.
 	Document uint64 `json:"document"`
-	// Session is the generation: it increases with every find action and
-	// end across the Manager, so an answer older than an end is
-	// recognizably stale.
+	// Session is the generation, from one counter across the Manager: a
+	// start, a stop and every end take a new one, and a step that succeeds
+	// keeps its search's, so an answer older than an end is recognizably
+	// stale.
 	Session uint64 `json:"session"`
 	// Foreign marks an answer for an action that changed nothing because
 	// the search it named is gone or another owner's; Mount and Seq then
@@ -169,6 +170,9 @@ type PageInfo struct {
 	// thread's idle session was reaped or the app restarted. The next tool
 	// call on it, or presenting it, reloads its URL.
 	Suspended bool `json:"suspended,omitempty"`
+	// ReadError rides only a page listing (Pages): reading a live page
+	// failed, and its URL and title are the last the Manager knew.
+	ReadError string `json:"readError,omitempty"`
 	// The fields below ride only the companion state (threadState); a tool
 	// result never carries them.
 	//
@@ -206,8 +210,7 @@ type SessionInfo struct {
 	PaneH int `json:"paneHeight,omitempty"`
 	// Jar is the cookie jar the thread's pages open in (jar.go): worktree,
 	// project, thread or private.
-	Jar       string    `json:"jar"`
-	UpdatedAt time.Time `json:"-"`
+	Jar string `json:"jar"`
 	// jarGen advances with every change of Jar; a page opened under an
 	// older generation is not admitted (jarCurrentLocked).
 	jarGen uint64
@@ -252,7 +255,6 @@ type Controller interface {
 	Type(context.Context, Access, TypeOptions) (PageInfo, error)
 	Press(context.Context, Access, PageID, string) (PageInfo, error)
 	Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error)
-	Wait(context.Context, Access, PageID, string, int) (PageInfo, error)
 	History(context.Context, Access, PageID, string) (PageInfo, error)
 	Evaluate(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)
 	EvaluateReadOnly(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)

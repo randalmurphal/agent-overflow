@@ -62,7 +62,6 @@ const (
 
 // pageFocusIntent is one mount's current intent.
 type pageFocusIntent struct {
-	thread    ThreadID
 	mount     MountID
 	pageID    PageID
 	id        uint64
@@ -101,7 +100,7 @@ func (m *Manager) mountFocusLocked(tb *threadBrowser, mount MountID) *mountFocus
 // native views does nothing. The outcome of a focus attempt arrives as a
 // Kind "focus" event (emitPageFocus).
 func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID, intent uint64) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	mount, pageID = mount.trim(), pageID.trim()
@@ -125,7 +124,7 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 	if focus.intent != nil {
 		focus.intent.withdrawn.Store(true)
 	}
-	focus.intent = &pageFocusIntent{thread: access.ThreadID(), mount: mount, pageID: pageID, id: intent, armed: time.Now()}
+	focus.intent = &pageFocusIntent{mount: mount, pageID: pageID, id: intent, armed: time.Now()}
 	m.mu.Unlock()
 	m.applyFocusIntent(access.ThreadID())
 	return nil
@@ -135,7 +134,7 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 // up to intent: the user made another focus choice. A mount that is gone has
 // nothing to withdraw.
 func (m *Manager) WithdrawCompanionPageFocus(access Access, mount MountID, intent uint64) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	mount = mount.trim()

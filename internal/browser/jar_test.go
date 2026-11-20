@@ -7,368 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
-
-	"agent-overflow/internal/browser/ids"
 )
-
-// jarEngine is the fake engine recording every profile it creates with the
-// options it was created with, and counting its own site-data clears. A
-// navigation to an address in navErr fails with that error; navGate, when
-// set, holds every navigation, signalling navigating first. newPageGate
-// holds every page creation the same way, signalling creating.
-type jarEngine struct {
-	*fakeEngine
-	mu          sync.Mutex
-	profiles    []*jarProfile
-	navErr      map[string]error
-	navGate     chan struct{}
-	navigating  chan string
-	newPageGate chan struct{}
-	creating    chan struct{}
-	onAttach    func()
-	closeGate   chan struct{}
-	closeStep   chan struct{}
-	profileGate chan struct{}
-	profiling   chan struct{}
-	// frames maps a subframe to the handle of the page that reports it.
-	frames map[string]string
-	// closeHolds holds the close of one page, by handle (holdCloseOf).
-	closeHolds  map[string]chan struct{}
-	disposeGate chan struct{}
-	// lastPage is the handle of the page NewPage created last.
-	lastPage ids.PageHandle
-	cleared  atomic.Int64
-	// clearGate, when set, holds the engine's site-data clear, signalling
-	// clearing first; profileInClear records a profile created during it.
-	clearGate      chan struct{}
-	clearing       chan struct{}
-	inClear        atomic.Bool
-	profileInClear atomic.Bool
-}
-
-type jarProfile struct {
-	*fakeProfile
-	engine   *jarEngine
-	disposed atomic.Bool
-}
-
-type jarPage struct {
-	pageDriver
-	engine *jarEngine
-}
-
-func newJarManager(t *testing.T, dir string, config Config) (*Manager, *jarEngine) {
-	t.Helper()
-	manager := NewManager(dir, config, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { _ = manager.Close() })
-	// Downloads AO keeps, whose directories and quotas are per workspace.
-	fake := newFakeEngine()
-	fake.saving = downloadsAsArtifacts
-	engine := &jarEngine{
-		fakeEngine: fake, navErr: make(map[string]error),
-		navigating: make(chan string, 16), creating: make(chan struct{}, 16), profiling: make(chan struct{}, 16),
-	}
-	manager.engine = engine
-	return manager, engine
-}
-
-func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error) {
-	e.mu.Lock()
-	gate := e.profileGate
-	e.mu.Unlock()
-	if gate != nil {
-		e.profiling <- struct{}{}
-		<-gate
-	}
-	if e.inClear.Load() {
-		e.profileInClear.Store(true)
-	}
-	profile, err := e.fakeEngine.NewProfile(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	p := &jarProfile{fakeProfile: profile.(*fakeProfile), engine: e}
-	e.mu.Lock()
-	e.profiles = append(e.profiles, p)
-	e.mu.Unlock()
-	return p, nil
-}
-
-func (e *jarEngine) ClearSiteData(context.Context) error {
-	e.inClear.Store(true)
-	defer e.inClear.Store(false)
-	e.mu.Lock()
-	gate := e.clearGate
-	e.mu.Unlock()
-	if gate != nil {
-		e.clearing <- struct{}{}
-		<-gate
-	}
-	e.cleared.Add(1)
-	return nil
-}
-
-// created answers the jar identities of the profiles created so far, in order.
-func (e *jarEngine) created() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, 0, len(e.profiles))
-	for _, p := range e.profiles {
-		out = append(out, string(p.jar))
-	}
-	return out
-}
-
-func (e *jarEngine) profile(jar string) *jarProfile {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for i := len(e.profiles) - 1; i >= 0; i-- {
-		if e.profiles[i].jar == jarKey(jar) {
-			return e.profiles[i]
-		}
-	}
-	return nil
-}
-
-func (e *jarEngine) holdNav() (release func()) {
-	gate := make(chan struct{})
-	e.mu.Lock()
-	e.navGate = gate
-	e.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			e.mu.Lock()
-			e.navGate = nil
-			e.mu.Unlock()
-			close(gate)
-		})
-	}
-}
-
-func (e *jarEngine) holdNewPage() (release func()) {
-	gate := make(chan struct{})
-	e.mu.Lock()
-	e.newPageGate = gate
-	e.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			e.mu.Lock()
-			e.newPageGate = nil
-			e.mu.Unlock()
-			close(gate)
-		})
-	}
-}
-
-func (p *jarProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
-	p.engine.mu.Lock()
-	gate := p.engine.newPageGate
-	p.engine.mu.Unlock()
-	if gate != nil {
-		p.engine.creating <- struct{}{}
-		<-gate
-	}
-	driver, err := p.fakeProfile.NewPage(ctx, hooks)
-	if err != nil {
-		return nil, err
-	}
-	p.engine.mu.Lock()
-	p.engine.lastPage = driver.Handle()
-	p.engine.mu.Unlock()
-	return &jarPage{pageDriver: driver, engine: p.engine}, nil
-}
-
-func (p *jarProfile) AttachPage(ctx context.Context, _ ids.PageHandle, hooks pageHooks) (pageDriver, error) {
-	p.engine.mu.Lock()
-	hook := p.engine.onAttach
-	p.engine.mu.Unlock()
-	if hook != nil {
-		hook()
-	}
-	driver, err := p.fakeProfile.NewPage(ctx, hooks)
-	if err != nil {
-		return nil, err
-	}
-	return &jarPage{pageDriver: driver, engine: p.engine}, nil
-}
-
-func (p *jarProfile) Dispose(ctx context.Context) error {
-	p.engine.mu.Lock()
-	gate := p.engine.disposeGate
-	p.engine.mu.Unlock()
-	if gate != nil {
-		<-gate
-	}
-	p.disposed.Store(true)
-	return p.fakeProfile.Dispose(ctx)
-}
-
-// holdDispose holds every profile disposal until release.
-func (e *jarEngine) holdDispose(t *testing.T) (release func()) {
-	gate := make(chan struct{})
-	e.mu.Lock()
-	e.disposeGate = gate
-	e.mu.Unlock()
-	var once sync.Once
-	release = func() { once.Do(func() { close(gate) }) }
-	t.Cleanup(release)
-	return release
-}
-
-func (p *jarPage) OwnsFrame(frame frameID) bool {
-	p.engine.mu.Lock()
-	owner, ok := p.engine.frames[string(frame)]
-	p.engine.mu.Unlock()
-	return (ok && ids.PageHandle(owner) == p.Handle()) || p.pageDriver.OwnsFrame(frame)
-}
-
-func (p *jarPage) Close() {
-	p.engine.mu.Lock()
-	gate, step, own := p.engine.closeGate, p.engine.closeStep, p.engine.closeHolds[string(p.Handle())]
-	p.engine.mu.Unlock()
-	switch {
-	case gate != nil:
-		<-gate
-	case step != nil:
-		<-step
-	case own != nil:
-		<-own
-	}
-	p.pageDriver.Close()
-}
-
-// holdCloseOf holds the close of the page with handle alone until release.
-func (e *jarEngine) holdCloseOf(t *testing.T, handle string) (release func()) {
-	gate := make(chan struct{})
-	e.mu.Lock()
-	if e.closeHolds == nil {
-		e.closeHolds = make(map[string]chan struct{})
-	}
-	e.closeHolds[handle] = gate
-	e.mu.Unlock()
-	var once sync.Once
-	release = func() { once.Do(func() { close(gate) }) }
-	t.Cleanup(release)
-	return release
-}
-
-// stepCloses holds every page close until step lets one through; at the
-// test's end every close passes.
-func (e *jarEngine) stepCloses(t *testing.T) (step func()) {
-	ch := make(chan struct{})
-	e.mu.Lock()
-	e.closeStep = ch
-	e.mu.Unlock()
-	t.Cleanup(func() {
-		e.mu.Lock()
-		e.closeStep = nil
-		e.mu.Unlock()
-		// Lets every close still waiting for a step through.
-		close(ch)
-	})
-	return func() { ch <- struct{}{} }
-}
-
-func (e *jarEngine) holdClose() (release func()) {
-	gate := make(chan struct{})
-	e.mu.Lock()
-	e.closeGate = gate
-	e.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			e.mu.Lock()
-			e.closeGate = nil
-			e.mu.Unlock()
-			close(gate)
-		})
-	}
-}
-
-func (p *jarPage) Navigate(ctx context.Context, rawURL string) error {
-	p.engine.mu.Lock()
-	gate, failure := p.engine.navGate, p.engine.navErr[rawURL]
-	p.engine.mu.Unlock()
-	if gate != nil {
-		p.engine.navigating <- rawURL
-		select {
-		case <-gate:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	if failure != nil {
-		return failure
-	}
-	return p.pageDriver.Navigate(ctx, rawURL)
-}
-
-// pageJar answers the jar identity of the scope holding a live page.
-func pageJar(t *testing.T, m *Manager, pageID string) string {
-	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, scope := m.livePageLocked(PageID(pageID))
-	if scope == nil {
-		t.Fatalf("page %s is not live", pageID)
-	}
-	return string(scope.jar.key)
-}
-
-// project is a project root with two linked worktrees beside it, and a
-// thread access maker for any of them.
-type project struct {
-	root, one, two string
-	id             string
-}
-
-func newProject(t *testing.T, id string) project {
-	t.Helper()
-	base := t.TempDir()
-	p := project{root: filepath.Join(base, "root"), one: filepath.Join(base, "one"), two: filepath.Join(base, "two"), id: id}
-	for _, dir := range []string{p.root, p.one, p.two} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return p
-}
-
-func (p project) access(m *Manager, thread, workspace string) Access {
-	return m.Bind(Caller{ThreadID: ThreadID(thread), Workspace: workspace, ProjectRoot: p.root, ProjectID: p.id})
-}
-
-func canonical(t *testing.T, path string) string {
-	t.Helper()
-	resolved, err := canonicalRoot(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resolved
-}
-
-func openPage(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
-	t.Helper()
-	info, err := m.Open(t.Context(), access, rawURL, OpenOptions{})
-	if err != nil {
-		t.Fatalf("open %s for %s: %v", rawURL, access.ThreadID(), err)
-	}
-	return info
-}
-
-func setJar(t *testing.T, m *Manager, access Access, kind string) {
-	t.Helper()
-	if err := m.SetJar(context.Background(), access, kind, JarSwitchConfirmed); err != nil {
-		t.Fatalf("set jar %s for %s: %v", kind, access.ThreadID(), err)
-	}
-}
 
 // The default jar is exactly what every earlier build used: the engine is
 // handed the canonical workspace path as its identity, persistent, so each
@@ -379,7 +21,7 @@ func TestWorktreeJarIsTodaysWorkspaceProfile(t *testing.T) {
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "thread", proj.one)
-	openPage(t, manager, access, "https://example.test/")
+	mustOpen(t, manager, access, "https://example.test/")
 	workspace := canonical(t, proj.one)
 
 	if got := engine.created(); len(got) != 1 || got[0] != workspace {
@@ -411,8 +53,8 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	proj := newProject(t, "P")
 	a, b, c := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two), proj.access(manager, "c", proj.two)
 
-	pageA := openPage(t, manager, a, "https://example.test/a")
-	pageB := openPage(t, manager, b, "https://example.test/b")
+	pageA := mustOpen(t, manager, a, "https://example.test/a")
+	pageB := mustOpen(t, manager, b, "https://example.test/b")
 	if pageJar(t, manager, pageA.ID) == pageJar(t, manager, pageB.ID) {
 		t.Fatal("two worktrees share a jar with the default setting")
 	}
@@ -420,7 +62,7 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	setJar(t, manager, b, JarProject)
 	restoreTabs(t, manager, a)
 	restoreTabs(t, manager, b)
-	pageC := openPage(t, manager, c, "https://example.test/c")
+	pageC := mustOpen(t, manager, c, "https://example.test/c")
 
 	jarA, jarB := pageJar(t, manager, tabIDs(manager, a)[0]), pageJar(t, manager, tabIDs(manager, b)[0])
 	if jarA != "project:P" || jarB != jarA {
@@ -441,7 +83,7 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	other := newProject(t, "Q")
 	d := other.access(manager, "d", other.one)
 	setJar(t, manager, d, JarProject)
-	if got := pageJar(t, manager, openPage(t, manager, d, "https://example.test/d").ID); got != "project:Q" {
+	if got := pageJar(t, manager, mustOpen(t, manager, d, "https://example.test/d").ID); got != "project:Q" {
 		t.Fatalf("another project's thread opened in %q, want its own project jar", got)
 	}
 }
@@ -454,9 +96,9 @@ func TestThreadJarIsolatesThreadsOnOneWorktree(t *testing.T) {
 	a, b, c := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.one), proj.access(manager, "c", proj.one)
 	setJar(t, manager, a, JarThread)
 	setJar(t, manager, b, JarThread)
-	jarA := pageJar(t, manager, openPage(t, manager, a, "https://example.test/").ID)
-	jarB := pageJar(t, manager, openPage(t, manager, b, "https://example.test/").ID)
-	jarC := pageJar(t, manager, openPage(t, manager, c, "https://example.test/").ID)
+	jarA := pageJar(t, manager, mustOpen(t, manager, a, "https://example.test/").ID)
+	jarB := pageJar(t, manager, mustOpen(t, manager, b, "https://example.test/").ID)
+	jarC := pageJar(t, manager, mustOpen(t, manager, c, "https://example.test/").ID)
 	if jarA != "thread:a" || jarB != "thread:b" || jarC != canonical(t, proj.one) {
 		t.Fatalf("jars = %q, %q, %q; want each thread's own and the worktree's", jarA, jarB, jarC)
 	}
@@ -473,8 +115,8 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarPrivate)
-	first := openPage(t, manager, access, "https://example.test/1")
-	second := openPage(t, manager, access, "https://example.test/2")
+	first := mustOpen(t, manager, access, "https://example.test/1")
+	second := mustOpen(t, manager, access, "https://example.test/2")
 	jar := pageJar(t, manager, first.ID)
 	if !strings.HasPrefix(jar, "private:a:") || pageJar(t, manager, second.ID) != jar {
 		t.Fatalf("private pages opened in %q and %q, want one private jar", jar, pageJar(t, manager, second.ID))
@@ -490,7 +132,7 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 	if !engine.profile(jar).disposed.Load() {
 		t.Fatal("the private jar outlived its last page")
 	}
-	reopened := pageJar(t, manager, openPage(t, manager, access, "https://example.test/3").ID)
+	reopened := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/3").ID)
 	if reopened == jar || !strings.HasPrefix(reopened, "private:a:") {
 		t.Fatalf("a private page after the last one closed opened in %q, want a new private jar", reopened)
 	}
@@ -521,8 +163,8 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two)
 	setJar(t, manager, a, JarProject)
 	setJar(t, manager, b, JarProject)
-	pageA := openPage(t, manager, a, "https://example.test/a")
-	pageB := openPage(t, manager, b, "https://example.test/b")
+	pageA := mustOpen(t, manager, a, "https://example.test/a")
+	pageB := mustOpen(t, manager, b, "https://example.test/b")
 	if pageJar(t, manager, pageA.ID) != pageJar(t, manager, pageB.ID) {
 		t.Fatal("the two worktrees do not share the project jar")
 	}
@@ -584,250 +226,6 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	}
 }
 
-// The caps bound engine resources as before: a profile is a jar, so the
-// context cap counts jars; the workspace cap counts a workspace's pages in
-// every jar; and a jar holds no more pages than one workspace may.
-func TestCapsBoundJarsWorkspacesAndSharedJars(t *testing.T) {
-	t.Run("profiles", func(t *testing.T) {
-		manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-		proj := newProject(t, "P")
-		for i := range maxWorkspaceContexts {
-			access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
-			setJar(t, manager, access, JarThread)
-			openPage(t, manager, access, "https://example.test/")
-		}
-		access := proj.access(manager, "last", proj.one)
-		setJar(t, manager, access, JarThread)
-		if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "browser profile limit reached") {
-			t.Fatalf("a thirteenth jar answered %v, want the profile limit", err)
-		}
-	})
-	t.Run("workspace", func(t *testing.T) {
-		manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-		proj := newProject(t, "P")
-		for i := range maxPagesPerWorkspace / maxPagesPerThread {
-			access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
-			setJar(t, manager, access, JarThread)
-			for range maxPagesPerThread {
-				openPage(t, manager, access, "https://example.test/")
-			}
-		}
-		access := proj.access(manager, "last", proj.one)
-		setJar(t, manager, access, JarThread)
-		if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "page limit reached for workspace") {
-			t.Fatalf("a page past the workspace's cap in another jar answered %v, want the workspace limit", err)
-		}
-	})
-	t.Run("shared jar", func(t *testing.T) {
-		manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-		proj := newProject(t, "P")
-		threads := []Access{proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.one), proj.access(manager, "c", proj.two)}
-		for _, access := range threads {
-			setJar(t, manager, access, JarProject)
-			for range maxPagesPerThread {
-				openPage(t, manager, access, "https://example.test/")
-			}
-		}
-		access := proj.access(manager, "d", proj.two)
-		setJar(t, manager, access, JarProject)
-		if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "page limit reached for the cookie jar") {
-			t.Fatalf("a page past the shared jar's cap answered %v, want the jar limit", err)
-		}
-	})
-}
-
-// Clear site data closes every page in every kind of jar, disposes every
-// profile, deletes the profile tree and has the engine clear its own store.
-// The threads keep their jar settings.
-func TestClearSiteDataClearsEveryJarKind(t *testing.T) {
-	dir := t.TempDir()
-	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	kinds := []string{JarWorktree, JarProject, JarThread, JarPrivate}
-	for i, kind := range kinds {
-		access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
-		setJar(t, manager, access, kind)
-		openPage(t, manager, access, "https://example.test/")
-	}
-	if err := os.MkdirAll(filepath.Join(dir, browserProfileDir, "leftover"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.ClearSiteData(t.Context()); err != nil {
-		t.Fatalf("clear site data: %v", err)
-	}
-	engine.mu.Lock()
-	for _, profile := range engine.profiles {
-		if !profile.disposed.Load() {
-			t.Errorf("the %s jar's profile survived the clear", profile.jar)
-		}
-	}
-	engine.mu.Unlock()
-	if _, err := os.Stat(filepath.Join(dir, browserProfileDir)); !os.IsNotExist(err) {
-		t.Fatalf("the profile tree survived the clear: %v", err)
-	}
-	if engine.cleared.Load() != 1 {
-		t.Fatalf("the engine cleared its own store %d times, want once", engine.cleared.Load())
-	}
-	for i, kind := range kinds {
-		access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
-		state := manager.CompanionState(access.Caller())
-		if len(state.Pages) != 0 || state.Jar != kind {
-			t.Fatalf("thread %d after the clear: %d pages, jar %q; want none and %q", i, len(state.Pages), state.Jar, kind)
-		}
-	}
-	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	if got := restarted.CompanionState(proj.access(restarted, "t2", proj.one).Caller()).Jar; got != JarThread {
-		t.Fatalf("a restart after the clear reads jar %q, want the thread's own", got)
-	}
-}
-
-// With site data off every jar is in memory only, and a jar setting changes
-// nothing about that.
-func TestPersistOffKeepsEveryJarEphemeral(t *testing.T) {
-	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: false})
-	proj := newProject(t, "P")
-	for i, kind := range []string{JarWorktree, JarProject, JarThread, JarPrivate} {
-		access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
-		setJar(t, manager, access, kind)
-		openPage(t, manager, access, "https://example.test/")
-	}
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
-	if len(engine.profiles) != 4 {
-		t.Fatalf("%d profiles, want 4", len(engine.profiles))
-	}
-	for _, profile := range engine.profiles {
-		if !profile.ephemeral {
-			t.Errorf("the %s jar is persistent with site data off", profile.jar)
-		}
-	}
-}
-
-// Turning the browser off forgets every thread's jar setting with its saved
-// pages; changing the site-data setting keeps them.
-func TestTurningTheBrowserOffForgetsJarSettings(t *testing.T) {
-	dir := t.TempDir()
-	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	access := proj.access(manager, "a", proj.one)
-	setJar(t, manager, access, JarThread)
-	if err := manager.Reconfigure(Config{Enabled: true, PersistSiteData: false}); err != nil {
-		t.Fatal(err)
-	}
-	if got := manager.CompanionState(access.Caller()).Jar; got != JarThread {
-		t.Fatalf("after the site-data change the jar is %q, want thread", got)
-	}
-	if _, err := os.Stat(manager.recordPath("a")); err != nil {
-		t.Fatalf("the jar setting's saved copy went with the site-data change: %v", err)
-	}
-	if err := manager.Reconfigure(Config{Enabled: false}); err != nil {
-		t.Fatal(err)
-	}
-	if got := manager.CompanionState(access.Caller()).Jar; got != JarWorktree {
-		t.Fatalf("after the browser was turned off the jar is %q, want worktree", got)
-	}
-	if _, err := os.Stat(manager.recordPath("a")); !os.IsNotExist(err) {
-		t.Fatalf("the jar setting's saved copy survived the browser being turned off: %v", err)
-	}
-}
-
-// The jar setting is saved per thread whether or not it has a tab, survives a
-// restart, and a thread back on the default jar with no tab keeps no file.
-// A thread's saved pages restore into the jar saved with them.
-func TestJarSettingSurvivesARestart(t *testing.T) {
-	t.Run("without tabs", func(t *testing.T) {
-		dir := t.TempDir()
-		manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-		proj := newProject(t, "P")
-		access := proj.access(manager, "a", proj.one)
-		setJar(t, manager, access, JarThread)
-		if err := manager.Close(); err != nil {
-			t.Fatal(err)
-		}
-		restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-		access = restarted.Bind(access.Caller())
-		if got := restarted.CompanionState(access.Caller()).Jar; got != JarThread {
-			t.Fatalf("after a restart the jar is %q, want thread", got)
-		}
-		if got := pageJar(t, restarted, openPage(t, restarted, access, "https://example.test/").ID); got != "thread:a" {
-			t.Fatalf("a page after the restart opened in %q, want the thread's jar", got)
-		}
-		page := tabIDs(restarted, access)[0]
-		if err := restarted.ClosePage(t.Context(), access, PageID(page)); err != nil {
-			t.Fatal(err)
-		}
-		setJar(t, restarted, access, JarWorktree)
-		if _, err := os.Stat(restarted.recordPath("a")); !os.IsNotExist(err) {
-			t.Fatalf("a thread with no page on the default jar keeps a saved file: %v", err)
-		}
-	})
-	t.Run("with tabs", func(t *testing.T) {
-		dir := t.TempDir()
-		manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-		proj := newProject(t, "P")
-		access := proj.access(manager, "a", proj.one)
-		setJar(t, manager, access, JarProject)
-		openPage(t, manager, access, "https://example.test/one")
-		openPage(t, manager, access, "https://example.test/two")
-		if err := manager.Close(); err != nil {
-			t.Fatal(err)
-		}
-		saved, err := os.ReadFile(manager.recordPath("a"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := regexp.MustCompile(`"jar":\s*"project"`).FindAllIndex(saved, -1); len(got) != 1 {
-			t.Fatalf("the saved file does not carry the thread's jar: %s", saved)
-		}
-		restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-		access = restarted.Bind(access.Caller())
-		state := restarted.CompanionState(access.Caller())
-		if state.Jar != JarProject || len(state.Pages) != 2 || !state.Pages[0].Suspended {
-			t.Fatalf("after a restart: jar %q, pages %+v", state.Jar, state.Pages)
-		}
-		if err := restarted.ActivateCompanionPage(t.Context(), access, PageID(state.Pages[0].ID)); err != nil {
-			t.Fatal(err)
-		}
-		if got := pageJar(t, restarted, state.Pages[0].ID); got != "project:P" {
-			t.Fatalf("a saved page restored into %q, want its recorded project jar", got)
-		}
-	})
-	t.Run("an earlier build's file", func(t *testing.T) {
-		dir := t.TempDir()
-		manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-		proj := newProject(t, "P")
-		access := proj.access(manager, "a", proj.one)
-		openPage(t, manager, access, "https://example.test/")
-		if err := manager.Close(); err != nil {
-			t.Fatal(err)
-		}
-		saved, err := os.ReadFile(manager.recordPath("a"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(saved), `"jar"`) {
-			t.Fatalf("a default-jar thread's file differs from an earlier build's: %s", saved)
-		}
-		restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-		if got := restarted.CompanionState(access.Caller()).Jar; got != JarWorktree {
-			t.Fatalf("an earlier build's file reads as jar %q, want worktree", got)
-		}
-	})
-}
-
-// restoreTabs restores every suspended tab of the thread, as using each
-// would, so the tabs a jar switch suspended are live in the new jar.
-func restoreTabs(t *testing.T, m *Manager, access Access) {
-	t.Helper()
-	for _, page := range m.CompanionState(access.Caller()).Pages {
-		if page.Suspended {
-			if err := m.ActivateCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {
-				t.Fatalf("restore %s: %v", page.ID, err)
-			}
-		}
-	}
-}
-
 // Every engine derives its profile from the jar identity alone. For a
 // worktree jar that is the derivation earlier builds used, byte for byte;
 // every other kind derives a distinct, valid identity.
@@ -871,24 +269,6 @@ func TestEnginesDeriveTodaysIdentityForAWorktreeJar(t *testing.T) {
 	}
 }
 
-// Deleting or archiving a thread forgets its jar setting with its pages.
-func TestClosingAThreadForgetsItsJar(t *testing.T) {
-	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	access := proj.access(manager, "a", proj.one)
-	setJar(t, manager, access, JarThread)
-	openPage(t, manager, access, "https://example.test/")
-	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(manager.recordPath("a")); !os.IsNotExist(err) {
-		t.Fatalf("a closed thread's jar setting is still saved: %v", err)
-	}
-	if got := manager.CompanionState(access.Caller()).Jar; got != JarWorktree {
-		t.Fatalf("a closed thread's jar is %q, want the default", got)
-	}
-}
-
 // A private jar closed with the browser is gone: the next private page opens
 // a new one.
 func TestAPrivateJarEndsWithTheBrowser(t *testing.T) {
@@ -896,11 +276,11 @@ func TestAPrivateJarEndsWithTheBrowser(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarPrivate)
-	before := pageJar(t, manager, openPage(t, manager, access, "https://example.test/").ID)
+	before := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/").ID)
 	if err := manager.ClearSiteData(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	after := pageJar(t, manager, openPage(t, manager, access, "https://example.test/").ID)
+	after := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/").ID)
 	if after == before {
 		t.Fatalf("a private page after the clear reopened the cleared jar %q", before)
 	}
@@ -914,7 +294,7 @@ func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarPrivate)
-	first := openPage(t, manager, access, "https://example.test/1")
+	first := mustOpen(t, manager, access, "https://example.test/1")
 	old := pageJar(t, manager, first.ID)
 	release := engine.holdClose()
 	defer release()
@@ -922,7 +302,7 @@ func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
 	go func() { closed <- manager.ClosePage(context.Background(), access, PageID(first.ID)) }()
 	eventually(t, "the closed tab leaves the tab set", func() bool { return len(manager.CompanionState(access.Caller()).Pages) == 0 })
 
-	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/2").ID)
+	next := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/2").ID)
 	if next == old || !strings.HasPrefix(next, "private:a:") {
 		t.Fatalf("a private tab opened during the last one's teardown is in %q, want a new private jar", next)
 	}
@@ -941,27 +321,6 @@ func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
 	}
 }
 
-// A saved file naming a jar this build does not know is dropped whole, with
-// a log line, as any other invalid saved file is.
-func TestASavedFileWithAnUnknownJarIsDropped(t *testing.T) {
-	dir := t.TempDir()
-	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	path := manager.recordPath("a")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(`{"version":1,"threadId":"a","jar":"shared","pages":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
-	if got := restarted.CompanionState(Caller{ThreadID: "a"}).Jar; got != JarWorktree {
-		t.Fatalf("an unknown saved jar reads as %q", got)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("the invalid file was kept: %v", err)
-	}
-}
-
 // A page creating its jar's profile takes its workspace's authority with its
 // reservation, so a close elsewhere that prunes authorities meanwhile cannot
 // leave it holding a counter its workspace no longer uses: the workspace keeps
@@ -970,7 +329,7 @@ func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.one)
-	first := openPage(t, manager, a, "https://example.test/a")
+	first := mustOpen(t, manager, a, "https://example.test/a")
 	setJar(t, manager, b, JarThread)
 	gate := make(chan struct{})
 	engine.mu.Lock()
@@ -1009,7 +368,7 @@ func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
 	case err := <-failed:
 		t.Fatalf("create in the new jar: %v", err)
 	}
-	second := openPage(t, manager, a, "https://example.test/again")
+	second := mustOpen(t, manager, a, "https://example.test/again")
 	pb, _, err := manager.lookupOwnedPage(b, PageID(info.ID))
 	if err != nil {
 		t.Fatal(err)

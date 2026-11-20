@@ -18,7 +18,7 @@ import (
 // host, or a search. A navigation the user stopped (StopCompanionLoad) while
 // it ran answers its own abort without an error; any other failure stands.
 func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID PageID, address string) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	return m.navigateUserAddress(ctx, access, OpenOptions{PageID: pageID}, address)
@@ -196,7 +196,7 @@ func (m *Manager) backendPathForWindows(ctx context.Context, windowsPath string)
 // abort without an error (NavigateCompanion). A tab with no live page (being
 // created, suspended) has nothing loading.
 func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()

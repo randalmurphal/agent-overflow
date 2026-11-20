@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/browser/turnorder"
 )
@@ -33,7 +32,7 @@ const (
 // show never names a page the user did not see. It answers the tab it
 // showed or opened.
 func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome, PageID, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return ShowPassed, "", err
 	}
 	if strings.TrimSpace(access.Workspace()) == "" {
@@ -68,7 +67,6 @@ func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome
 			return ShowPassed, "", nil
 		}
 		tb.session.ActivePageID, tb.session.Visible = string(pageID), true
-		tb.session.UpdatedAt = time.Now()
 		m.mu.Unlock()
 		m.emitThreadState(access.ThreadID())
 		m.syncPanePresentation(access.ThreadID())

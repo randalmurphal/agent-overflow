@@ -354,8 +354,6 @@ type pageDriver interface {
 	Pointer(ctx context.Context, opts PointerOptions) error
 	// Scroll scrolls a selector, or the window when it is empty.
 	Scroll(ctx context.Context, selector string, x, y float64) error
-	// WaitVisible blocks until a selector is visible or the context ends.
-	WaitVisible(ctx context.Context, selector string) error
 
 	// SetViewport lays the page out at width x height CSS pixels: what it
 	// lays out and captures at, presented or not. The Manager sets it from
