@@ -59,10 +59,17 @@ func newLoggingFixture(t *testing.T, logf func(string, ...any)) *fixture {
 	endpoint.openTimeout = 500 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Each tunnel connection's handler logs to the test as it returns, and
+	// the server's close does not wait for a hijacked connection's: the
+	// test ends once the cancel has ended them all.
+	var handlers sync.WaitGroup
+	t.Cleanup(handlers.Wait)
 	t.Cleanup(cancel)
 
 	served := make(chan struct{}, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
