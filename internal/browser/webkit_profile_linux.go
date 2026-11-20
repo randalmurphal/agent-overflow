@@ -77,12 +77,6 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 		pages:        make(map[*webkitPage]struct{}), downloads: make(map[downloadID]unsafe.Pointer),
 	}
 	webkitProfileByID.Store(id, profile)
-	e.mu.Lock()
-	if e.profiles == nil {
-		e.profiles = make(map[uint64]*webkitProfile)
-	}
-	e.profiles[id] = profile
-	e.mu.Unlock()
 	return profile, nil
 }
 
@@ -314,9 +308,6 @@ func (p *webkitProfile) Dispose(context.Context) error {
 	// completion would have taken it.
 	webkitCancelDestinations(p)
 	webkitProfileByID.Delete(p.id)
-	p.engine.mu.Lock()
-	delete(p.engine.profiles, p.id)
-	p.engine.mu.Unlock()
 	webkitFreeSession(p.session)
 	return nil
 }

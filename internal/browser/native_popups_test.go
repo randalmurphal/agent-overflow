@@ -109,3 +109,87 @@ func TestANativeDiscardAnswersWithinItsDeadlineAndARetryJoinsIt(t *testing.T) {
 		t.Fatalf("the popup's view was closed %d times, want once", got)
 	}
 }
+
+// An engine's stop closes its held popups through the receipts their
+// discards settle: a discard made while the stop's close is queued on a
+// stalled UI thread answers that the close is pending, never that the
+// popup is gone, and the stop returns once the close ran, with its
+// outcome. A close a discard began before the stop is waited for too.
+func TestAStopsPopupCloseIsTheOneADiscardJoins(t *testing.T) {
+	loop := &queuedLoop{}
+	thread := uicall.NewThread(loop.post, func() bool { return true }, time.Hour)
+	var closes atomic.Int32
+	closed := errors.New("the close's own answer")
+	release := func(unsafe.Pointer) error {
+		thread.Settle(func() { closes.Add(1) })
+		return closed
+	}
+	popups := newHeldPopups()
+	popups.hold("discarded", heldPopupView{view: unsafe.Pointer(new(byte)), n: 1})
+	popups.hold("held", heldPopupView{view: unsafe.Pointer(new(byte)), n: 2})
+	early, cancel := context.WithTimeout(t.Context(), time.Millisecond)
+	if err := popups.discard(early, "discarded", release); !errors.Is(err, errNativeReleasePending) {
+		t.Fatalf("a discard on a stalled UI thread answered %v, want the close pending", err)
+	}
+	cancel()
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- popups.closeAll(t.Context(), release, false) }()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		popups.mu.Lock()
+		closing := popups.releasing["held"] != nil
+		popups.mu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stop never began the held popup's close")
+		}
+	}
+	during, cancel := context.WithTimeout(t.Context(), time.Millisecond)
+	defer cancel()
+	if err := popups.discard(during, "held", release); !errors.Is(err, errNativeReleasePending) {
+		t.Fatalf("a discard during the stop's queued close answered %v, want the close pending", err)
+	}
+	select {
+	case err := <-stopped:
+		t.Fatalf("the stop returned %v before the closes ran", err)
+	default:
+	}
+	for deadline := time.Now().Add(5 * time.Second); closes.Load() < 2; time.Sleep(time.Millisecond) {
+		loop.drain()
+		if time.Now().After(deadline) {
+			t.Fatal("the closes never ran")
+		}
+	}
+	if err := <-stopped; !errors.Is(err, closed) {
+		t.Fatalf("the stop answered %v, want the closes' outcome", err)
+	}
+	if got := closes.Load(); got != 2 {
+		t.Fatalf("the views were closed %d times, want once each", got)
+	}
+	if err := popups.discard(t.Context(), "held", release); err != nil {
+		t.Fatalf("a discard after the stop's close ran answered %v", err)
+	}
+}
+
+// On the UI thread the stop's closes run in the caller, inline, so a stop
+// there never waits on the thread it is blocking.
+func TestAStopOnTheUIThreadClosesItsPopupsInline(t *testing.T) {
+	var closes int
+	release := func(unsafe.Pointer) error {
+		closes++
+		return nil
+	}
+	popups := newHeldPopups()
+	popups.hold("held", heldPopupView{view: unsafe.Pointer(new(byte)), n: 1})
+	if err := popups.closeAll(t.Context(), release, true); err != nil {
+		t.Fatalf("the stop answered %v", err)
+	}
+	if closes != 1 {
+		t.Fatalf("the stop closed %d views in its caller, want 1", closes)
+	}
+	if held := popups.take("held"); held.view != nil {
+		t.Fatal("the stop left the popup held")
+	}
+}

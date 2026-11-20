@@ -66,12 +66,6 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 		pages:        make(map[*wkPage]struct{}), downloads: make(map[downloadID]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
-	e.mu.Lock()
-	if e.profiles == nil {
-		e.profiles = make(map[uint64]*wkProfile)
-	}
-	e.profiles[id] = profile
-	e.mu.Unlock()
 	return profile, nil
 }
 
@@ -359,9 +353,6 @@ func (p *wkProfile) Dispose(context.Context) error {
 	// have taken it.
 	wkCancelDestinations(p)
 	wkProfileByID.Delete(p.id)
-	p.engine.mu.Lock()
-	delete(p.engine.profiles, p.id)
-	p.engine.mu.Unlock()
 	wkFreeStore(p.store)
 	return nil
 }
