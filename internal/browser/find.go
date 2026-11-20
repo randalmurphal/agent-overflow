@@ -187,10 +187,9 @@ func (m *Manager) findTransition(actionCtx context.Context, p *managedPage, kind
 // the named page. A page that is gone answers as one with no search.
 func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID PageID, owner findOwner) (FindState, error) {
 	answer := FindState{PageID: string(pageID), Current: -1, Foreign: true}
-	named, _, err := m.lookupOwnedPage(access, pageID)
-	if err != nil && !errors.Is(err, errPageNotFound) {
-		return FindState{}, err
-	}
+	// Its one error is errPageNotFound: a page that is gone answers as one
+	// with no search.
+	named, _, _ := m.lookupOwnedPage(access, pageID)
 	if named != nil {
 		if _, mode := pageFinder(named); mode == "" {
 			return FindState{}, errFindUnavailable

@@ -249,10 +249,7 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 	}
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(access.tb)
-	var activePageID PageID
-	if access.tb != nil {
-		activePageID = access.tb.session.activePage()
-	}
+	activePageID := access.tb.session.activePage()
 	m.mu.Unlock()
 	out := make([]PageInfo, 0, len(tabs))
 	for _, tab := range tabs {
@@ -270,10 +267,13 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		info, _, err := m.readInfo(opCtx, p, listing)
 		cancel()
 		p.mu.Unlock()
-		if err == nil {
-			info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
-			out = append(out, info)
+		if err != nil {
+			// The page is still a tab: listed as last known, with the failure.
+			info = p.cachedInfo()
+			info.ReadError = err.Error()
 		}
+		info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
+		out = append(out, info)
 	}
 	// What the reads found, the tabs show.
 	m.publishPages(access.ThreadID())

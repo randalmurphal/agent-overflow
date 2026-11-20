@@ -170,6 +170,9 @@ type PageInfo struct {
 	// thread's idle session was reaped or the app restarted. The next tool
 	// call on it, or presenting it, reloads its URL.
 	Suspended bool `json:"suspended,omitempty"`
+	// ReadError rides only a page listing (Pages): reading a live page
+	// failed, and its URL and title are the last the Manager knew.
+	ReadError string `json:"readError,omitempty"`
 	// The fields below ride only the companion state (threadState); a tool
 	// result never carries them.
 	//
