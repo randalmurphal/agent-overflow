@@ -312,12 +312,10 @@ func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {
 func heldLinkingHere(t *testing.T) bool {
 	t.Helper()
 	dir := t.TempDir()
-	writeFiles(t, filepath.Join(dir, "source"))
-	held, err := os.OpenRoot(dir)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "source"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer held.Close()
+	held := openRootForTest(t, dir)
 	info, err := held.Lstat("source")
 	if err != nil {
 		t.Fatal(err)
@@ -326,11 +324,7 @@ func heldLinkingHere(t *testing.T) bool {
 	if err := os.Mkdir(into, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	intoRoot, err := os.OpenRoot(into)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer intoRoot.Close()
+	intoRoot := openRootForTest(t, into)
 	_, _, err = placeHeld(placeSource{path: filepath.Join(dir, "source"), info: info, dir: held}, placeDir{path: into, root: intoRoot}, "the probe", func(int) string { return "placed" })
 	if errors.Is(err, errNoHeldLink) {
 		return false
@@ -339,6 +333,21 @@ func heldLinkingHere(t *testing.T) bool {
 		t.Fatalf("probe the held link: %v", err)
 	}
 	return true
+}
+
+// openRootForTest opens dir held, closed with t.
+func openRootForTest(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return root
 }
 
 // placeBy readies t for a placement by held link (held) or by name: a held
