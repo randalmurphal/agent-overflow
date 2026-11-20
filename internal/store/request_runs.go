@@ -463,8 +463,10 @@ func (s *Store) EndRemoteThreadRequestRuns(computerID, threadID string, figures 
 // there. A nudge already recorded only has its run ended, once nudge.End
 // says it ended, with those figures less its base, as a run ends at the
 // worker's rest. Nothing is recorded for an archived caller, or for a nudge
-// that began before the retention floor, which the sweep would remove
-// again. It reports whether it wrote. Most answers repeat a nudge already
+// first reported ended that began before the retention floor, which the
+// sweep would remove again; an open one is recorded however long ago its
+// start reads, on that computer's clock, and kept while it is open. It
+// reports whether it wrote. Most answers repeat a nudge already
 // recorded: one read by key spares them the write.
 func (s *Store) RecordRemoteNudgeRun(spawnToken string, nudge NudgeRun) (_ bool, err error) {
 	action := "store: record the nudge run " + nudge.Token + " of spawn " + spawnToken
@@ -481,7 +483,7 @@ func (s *Store) RecordRemoteNudgeRun(spawnToken string, nudge NudgeRun) (_ bool,
 		return false, nil
 	}
 	now := nowMillis()
-	if !found && nudge.StartedAt < now-int64(ThreadRequestRetentionDays)*24*60*60*1000 {
+	if !found && nudge.End != nil && nudge.StartedAt < now-int64(ThreadRequestRetentionDays)*24*60*60*1000 {
 		return false, nil
 	}
 	tx, err := s.db.Begin()
