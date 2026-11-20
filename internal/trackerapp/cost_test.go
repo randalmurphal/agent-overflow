@@ -281,16 +281,18 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			must[BoardView](t)(m.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
 		}, costOf{
 			map[string]int{},
-			// The structure, totals and pages in one snapshot (6+3 statements
-			// in the store), the names of the columns and cards in one
-			// catalog read, the parents in one card read.
-			map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardView": 1, "GetMirrorSync": 1, "GetMirrorCatalog": 1, "ListMirrorCards": 1},
+			// The structure, totals, pages, the names of the columns and
+			// cards and their parents in one snapshot (6+3+2 statements in
+			// the store).
+			map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardView": 1, "GetMirrorSync": 1},
 		}},
 		{"section page", func(t *testing.T) {
 			must[SectionPage](t)(m.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil))
 		}, costOf{
 			map[string]int{},
-			map[string]int{"GetMirrorRoot": 1, "ListMirrorSection": 1, "GetMirrorCatalog": 1, "ListMirrorCards": 1},
+			// The page with its names and parents in one snapshot (4
+			// statements in the store).
+			map[string]int{"GetMirrorRoot": 1, "ListMirrorSection": 1},
 		}},
 	})
 }

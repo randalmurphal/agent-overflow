@@ -20,10 +20,15 @@ const (
 )
 
 // delta is the delta unit of board (SyncBoard), from the cursor of the
-// sync state the tick read at its start. A page with no rows still stores
-// the cursor it returned, which moves the next walk's start; a page with
-// no rows that returned the cursor it started from is not written: the
-// read the tick records admits that cursor.
+// sync state the tick read at its start, or from the start of the window
+// when a structure the run stored changed the board's estimate
+// definition. A page with no rows still stores the cursor it returned,
+// which moves the next walk's start; a page with no rows that returned the
+// cursor it started from is not written: the read the tick records admits
+// that cursor. Each page names the estimate definition the walk began
+// under; a page whose cursor the store refuses, because the definition
+// changed since, ends the unit with More, and the next tick walks from the
+// store's state.
 func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 	var out UnitResult
 	ch, err := r.boardHeld(board)
@@ -63,7 +68,7 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 		if err != nil {
 			return out, err
 		}
-		m.Lifetime = lifetime
+		m.Lifetime, m.EstimateResetAt = lifetime, r.state.EstimateResetAt
 		if len(m.Rows) > 0 || cursor == nil || !bytes.Equal(page.Next, cursor) {
 			stored, err := r.s.store.WriteMirrorRowPage(r.root, m, page.Next)
 			if err != nil {
@@ -71,6 +76,10 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 			}
 			r.markStructureDue(stored)
 			out.Changes.add(changesOf(stored))
+			if stored.CursorRefused {
+				out.More = true
+				break
+			}
 		}
 		cursor = page.Next
 		if !page.More {

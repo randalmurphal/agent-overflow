@@ -218,8 +218,8 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 // A detail shows when its status began only when the mirror's time
 // describes that status and stay: a detail read before the delta and
 // history caught up shows it unknown, read through and from the mirror,
-// and so does a detail of another status read before a newer card was
-// stored (never current, so read through each time).
+// and so does a detail read before a newer card was stored, whatever its
+// status (never current, so read through each time).
 func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -230,6 +230,9 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 		"another status":                  {updated: 1_799_000_100_000, status: "s2", reads: 1},
 		"the same status entered again":   {updated: 1_799_000_100_000, status: "s1", reads: 1},
 		"an older card of another status": {updated: 1_798_900_000_000, status: "s2", reads: 2},
+		// The issue may have left the status and come back between the two
+		// versions, so the mirror's time is a later stay's.
+		"an older card of the same status": {updated: 1_798_900_000_000, status: "s1", reads: 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

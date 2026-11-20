@@ -40,7 +40,7 @@ type MirrorStore interface {
 	WriteMirrorRows(rootID int64, page store.MirrorRowPage) (store.MirrorChanges, error)
 	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, readAt int64) (store.MirrorChanges, error)
 	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt int64) (store.MirrorReconcile, error)
-	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorWrite, error)
+	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory) ([]store.MirrorHistoryResult, error)
 	ListMirrorHistoryDue(rootID int64, after string) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt, readAt int64, data []byte) (store.MirrorDetailWrite, error)

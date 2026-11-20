@@ -145,11 +145,21 @@ type BoardView struct {
 // maxViewSections bounds the sections one board view reads pages of.
 const maxViewSections = 20
 
+// The wire names of the model's enums, indexed by value: arrays, which
+// cost nothing to link, read through nameOf.
 var (
-	groupNames  = map[tracker.StatusGroup]string{tracker.GroupBacklog: "backlog", tracker.GroupToDo: "todo", tracker.GroupInProgress: "in_progress", tracker.GroupDone: "done", tracker.GroupCanceled: "canceled"}
-	unitNames   = map[tracker.EstimateUnit]string{tracker.UnitNone: "none", tracker.UnitPoints: "points", tracker.UnitTime: "time"}
-	sprintNames = map[tracker.SprintState]string{tracker.SprintFuture: "future", tracker.SprintActive: "active", tracker.SprintClosed: "closed"}
+	groupNames  = [...]string{tracker.GroupBacklog: "backlog", tracker.GroupToDo: "todo", tracker.GroupInProgress: "in_progress", tracker.GroupDone: "done", tracker.GroupCanceled: "canceled"}
+	unitNames   = [...]string{tracker.UnitNone: "none", tracker.UnitPoints: "points", tracker.UnitTime: "time"}
+	sprintNames = [...]string{tracker.SprintFuture: "future", tracker.SprintActive: "active", tracker.SprintClosed: "closed"}
 )
+
+// nameOf is names[v], empty for a value names does not hold.
+func nameOf[T ~uint8](names []string, v T) string {
+	if int(v) < len(names) {
+		return names[v]
+	}
+	return ""
+}
 
 // Board is the view of scope's board with the first page of each of
 // sections, at most maxViewSections. The structure, the totals and the
@@ -189,16 +199,9 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 	for i, page := range snap.Pages {
 		pages[i], cards[i] = sectionOf(sections[i], page)
 	}
-	var statusIDs []string
-	for _, col := range snap.Structure.Columns {
-		statusIDs = append(statusIDs, col.Statuses...)
-	}
-	// The columns' statuses and the cards of every page are named together:
-	// one catalog read and one read of their parents for the view.
-	views, names, err := s.cardViews(root, slices.Concat(cards...), statusIDs)
-	if err != nil {
-		return BoardView{}, err
-	}
+	// The columns' statuses and the cards of every page are named from the
+	// snapshot their rows came from.
+	views, names := namedCardViews(slices.Concat(cards...), snap.Names)
 	for i := range pages {
 		for j := range pages[i].Rows {
 			pages[i].Rows[j].Card, views = views[0], views[1:]
@@ -223,7 +226,7 @@ func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, name
 	st := structureOf(m, tracker.Catalog{})
 	v := BoardView{
 		ID: string(st.Board.ID), Name: st.Board.Name, Project: string(st.Board.Project), PlansSprints: st.Board.Sprints,
-		Estimate: EstimateView{Unit: unitNames[st.Estimate.Unit]}, All: totalOf(counts.All), Backlog: totalOf(counts.Backlog),
+		Estimate: EstimateView{Unit: nameOf(unitNames[:], st.Estimate.Unit)}, All: totalOf(counts.All), Backlog: totalOf(counts.Backlog),
 		Columns: []ColumnView{}, Sprints: []SprintView{}, Sections: []SectionPage{},
 	}
 	for _, ch := range st.Estimate.Choices {
@@ -238,7 +241,7 @@ func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, name
 	}
 	for _, sp := range st.Sprints {
 		v.Sprints = append(v.Sprints, SprintView{
-			ID: string(sp.ID), Name: sp.Name, Goal: sp.Goal, State: sprintNames[sp.State],
+			ID: string(sp.ID), Name: sp.Name, Goal: sp.Goal, State: nameOf(sprintNames[:], sp.State),
 			Start: millis(sp.Start), End: millis(sp.End), Completed: millis(sp.Completed), Total: totalOf(counts.Sprints[string(sp.ID)]),
 		})
 	}
@@ -280,10 +283,7 @@ func (s *Service) sectionPage(root int64, board tracker.BoardID, section Section
 		return SectionPage{}, fmt.Errorf("trackerapp: read a section of board %s: %w", board, err)
 	}
 	out, cards := sectionOf(section, page)
-	views, _, err := s.cardViews(root, cards, nil)
-	if err != nil {
-		return SectionPage{}, err
-	}
+	views, _ := namedCardViews(cards, page.Names)
 	for i := range out.Rows {
 		out.Rows[i].Card = views[i]
 	}

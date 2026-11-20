@@ -63,7 +63,7 @@ func (e *KeyFileError) Unwrap() error { return e.Err }
 // key, so no other text Linear sent reaches the message.
 func wrongWorkspace(want, got string) string {
 	got = strings.ToLower(got)
-	if !linearURLKey.MatchString(got) {
+	if !isLinearURLKey(got) {
 		return fmt.Sprintf("this Linear API key belongs to another workspace than %s; make a key in %s", want, want)
 	}
 	return fmt.Sprintf("this Linear API key belongs to the workspace %s, not %s; make a key in %s", got, want, want)

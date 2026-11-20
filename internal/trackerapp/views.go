@@ -197,6 +197,23 @@ func (s *Service) cardViews(root int64, cards []shownCard, also []string) ([]Car
 			parentOf[m.IssueID] = c
 		}
 	}
+	return cardViewsOf(cards, names, parentOf), names, nil
+}
+
+// namedCardViews is cards as views named by names, read with them, and
+// the names as catalogNames.
+func namedCardViews(cards []shownCard, names store.MirrorNames) ([]CardView, catalogNames) {
+	catalog := catalogNamesOf(names.Catalog)
+	parentOf := make(map[string]tracker.Card, len(names.Parents))
+	for _, m := range names.Parents {
+		c, _ := cardOf(m)
+		parentOf[m.IssueID] = c
+	}
+	return cardViewsOf(cards, catalog, parentOf), catalog
+}
+
+// cardViewsOf is cards as views, named by names and parentOf.
+func cardViewsOf(cards []shownCard, names catalogNames, parentOf map[string]tracker.Card) []CardView {
 	out := make([]CardView, len(cards))
 	for i, sc := range cards {
 		c := sc.card
@@ -208,7 +225,7 @@ func (s *Service) cardViews(root int64, cards []shownCard, also []string) ([]Car
 		}
 		out[i] = v
 	}
-	return out, names, nil
+	return out
 }
 
 func cardView(c tracker.Card, names catalogNames) CardView {
@@ -267,7 +284,7 @@ func (n catalogNames) status(id string) StatusView {
 	if !ok {
 		return StatusView{ID: id}
 	}
-	return StatusView{ID: id, Name: st.Name, Group: groupNames[st.Group]}
+	return StatusView{ID: id, Name: st.Name, Group: nameOf(groupNames[:], st.Group)}
 }
 
 // names reads users and statuses from the mirror's catalog, a store
@@ -281,13 +298,25 @@ func (s *Service) names(root int64, users, statuses []string) (catalogNames, err
 		if err != nil {
 			return catalogNames{}, fmt.Errorf("trackerapp: read names from the mirror: %w", err)
 		}
-		c := catalogOf(m)
-		for _, user := range c.Users {
-			out.users[string(user.ID)] = user
-		}
-		for _, status := range c.Statuses {
-			out.statuses[string(status.ID)] = status
-		}
+		out.add(m)
 	}
 	return out, nil
+}
+
+// catalogNamesOf is a store catalog as catalogNames.
+func catalogNamesOf(m store.MirrorCatalog) catalogNames {
+	out := catalogNames{users: map[string]tracker.User{}, statuses: map[string]tracker.Status{}}
+	out.add(m)
+	return out
+}
+
+// add adds the users and statuses of m.
+func (n catalogNames) add(m store.MirrorCatalog) {
+	c := catalogOf(m)
+	for _, user := range c.Users {
+		n.users[string(user.ID)] = user
+	}
+	for _, status := range c.Statuses {
+		n.statuses[string(status.ID)] = status
+	}
 }

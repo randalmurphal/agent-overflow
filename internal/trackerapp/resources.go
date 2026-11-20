@@ -160,7 +160,10 @@ func (r *run) detail(issue tracker.IssueID) (tracker.Detail, Changes, error) {
 	return d, out, nil
 }
 
-// structure reads board's structure and stores it.
+// structure reads board's structure and stores it. A structure that
+// changed the board's estimate definition, this one or a later one the
+// store holds, makes the run's walk start over: the store refuses the
+// cursor of a walk begun under an earlier definition.
 func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
@@ -187,6 +190,9 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	}
 	if board == r.scope.Board {
 		r.stored, r.structureDue = true, false
+		if stored.EstimateResetAt != r.state.EstimateResetAt {
+			r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
+		}
 	}
 	return Changes{Structure: stored.Changed}, nil
 }

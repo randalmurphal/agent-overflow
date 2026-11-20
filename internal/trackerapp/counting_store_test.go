@@ -95,7 +95,7 @@ func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime 
 	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt)
 }
 
-func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStructure) (store.MirrorWrite, error) {
+func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStructure) (store.MirrorStructureWrite, error) {
 	c.count("ReplaceMirrorStructure")
 	return c.Store.ReplaceMirrorStructure(root, st)
 }

@@ -323,11 +323,11 @@ func (s *Service) detailCard(root int64, d tracker.Detail, held *store.MirrorCar
 }
 
 // statusSinceOf is when c's status began, from m, the mirror's card of
-// the same issue, when m describes the version c shows: the same status
-// and not older. Otherwise it is unknown (0): the mirror's time belongs to
-// another status, or to an earlier stay in this one.
+// the same issue, when m is the version c shows: the same update time and
+// status. Otherwise it is unknown (0): the mirror's time belongs to
+// another status, or to an earlier or a later stay in this one.
 func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
-	if m.StatusID != string(c.Status) || m.UpdatedAt < millis(c.Updated) {
+	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
 		return 0
 	}
 	return m.StatusSince

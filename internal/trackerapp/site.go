@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/mail"
 	"net/url"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -35,8 +34,21 @@ type NewConnection struct {
 // maxLabelRunes bounds a connection's label.
 const maxLabelRunes = 100
 
-// linearURLKey is the shape of a Linear workspace URL key.
-var linearURLKey = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+// isLinearURLKey reports the shape of a Linear workspace URL key: 1 to 64
+// lower-case letters, digits and hyphens, not starting with a hyphen.
+// Written out because a compiled expression costs every process that
+// links the package its compilation at start.
+func isLinearURLKey(s string) bool {
+	if len(s) < 1 || len(s) > 64 || s[0] == '-' {
+		return false
+	}
+	for i := range len(s) {
+		if c := s[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
 
 // tempoSites are the base URLs a Tempo connection's site may be: the
 // tempo client's, one per region.
@@ -157,7 +169,7 @@ func linearSite(site string) (string, error) {
 	if rest, ok := strings.CutPrefix(key, "linear.app/"); ok {
 		key, _, _ = strings.Cut(rest, "/")
 	}
-	if !linearURLKey.MatchString(key) {
+	if !isLinearURLKey(key) {
 		return "", fmt.Errorf("%w: the Linear workspace must be its URL key, such as example, or an address such as https://linear.app/example", ErrInvalid)
 	}
 	return key, nil
