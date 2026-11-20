@@ -119,6 +119,19 @@ type RankInput struct {
 	Next   *Neighbor
 }
 
+// Anchor is the neighbor a tracker that ranks relative to one issue
+// ranks against, for an input Check passed: Prev, with after set, or Next
+// when there is no Prev.
+func (in RankInput) Anchor() (n Neighbor, after bool) {
+	switch {
+	case in.Prev != nil:
+		return *in.Prev, true
+	case in.Next != nil:
+		return *in.Next, false
+	}
+	return Neighbor{}, false
+}
+
 // Check refuses a rank that names no board or issue, an issue twice, no
 // neighbor, a neighbor with no issue or key, or a neighbor among the
 // issues ranked.

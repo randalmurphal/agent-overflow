@@ -62,75 +62,112 @@ a field that is empty for the other.
   estimate counts issues.
 - **An issue as a card** carries what a board or backlog row draws and
   does not depend on the board: type, key, title, status, assignee,
-  priority, labels, parent, the sprints it is or was in, created, updated
-  and resolved times and when it entered its status. A board row is a card
-  with that board's order key and estimate. **An issue's detail** adds the
-  description as Markdown, every other field with its metadata, comments,
-  links, attachments, history, the moves its workflow allows and worklogs.
-  Detail is read when a ticket is opened.
+  priority, labels, parent, the sprints its read names and its created,
+  updated and resolved times. When it entered its status comes from its
+  status changes, not the card. A board row is a card with that board's
+  order key and estimate. **An issue's detail** adds the description as
+  Markdown, every other field with its metadata, the first page of
+  comments, links, attachments, history and the moves its workflow allows.
+  Detail is read when a ticket is opened. Logged time is not part of it:
+  worklogs are read by author and day through the connection's time
+  tracker.
 - **A field value is typed**: text, rich text as Markdown, number, date,
   date-time, user, option, a list of one of these, or a value the app can
   show and not edit. An edit names an option or user by ID when it was
   picked from a list and by text when a person or an agent typed it; the
   provider resolves text and reports a value it cannot match.
-- **Capabilities** say what a connection supports: issue types, custom
-  fields, moves that require fields, sprint create and complete, relative
-  ranking, time tracking, attachment upload, estimate voting.
+- **Capabilities** say what a connection supports beyond what every
+  tracker does: issue types, custom fields, moves that take fields, sprint
+  writes and attachments. Time tracking is the presence of a time tracker,
+  not a flag.
 
 ### Provider
 
 A `Provider` is one connection's tracker. Its calls take neutral inputs and
 return neutral values. A read fails with the transport's typed errors
-unchanged.
+unchanged. The interface in `internal/tracker/provider.go` is the contract;
+this is its shape.
 
 - Identity: who the credential belongs to.
-- Structure: projects, boards, one board's columns, statuses, estimate and
-  sprints.
+- Structure: projects, a project's issue types and boards, one board's
+  columns, statuses, estimate and sprints, and the site's link types.
 - Sync: a page of a board's changed rows from a cursor; the complete set
   of IDs on a board, or a statement that the set is incomplete; a board's
   rows for a set of IDs; cards for a set of IDs with no board; status,
   sprint, estimate and assignee changes for a set of issues.
-- Detail: one issue's detail; pages of its comments.
+- Detail: one issue's detail; pages of its comments; the moves its
+  workflow allows now; a download of one of its attachments.
+- Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
-  requires), rank before or after a neighbor, move to a sprint or the
-  backlog, sprint create, start, complete and edit, comment add, edit and
-  delete, link, attach, and worklog add, edit and delete.
-- People and values: users who can be assigned, and the allowed values of a
-  field.
+  takes), set an estimate on a board, rank between neighbors, move to a
+  sprint or the backlog, sprint create, start, complete and edit, comment
+  add, edit and delete, link and unlink, attach.
+- People and values: the fields a create takes, users who can be assigned,
+  and the allowed values of a field, each narrowed by typed text. A pick
+  list is bounded and says when the tracker may hold matches it leaves
+  out, so a missing value is never read as one that does not exist, within
+  what the tracker can show: Jira's assignable search examines at most its
+  first 1000 matching users, and its user search answers a credential that
+  may not browse users with no users.
+- Time: a time tracker with worklogs by author and day and worklog add,
+  edit and delete, or none for a tracker with no time tracking. A Jira
+  connection's is Tempo when it has a Tempo connection and Jira's own
+  worklogs otherwise.
 
 **A sync cursor is the provider's own bytes.** `trackerapp` stores what a
 page returns and hands it back; it never builds or adjusts one. A page's
 cursor is the place to resume after that page, including inside a run of
-issues that share an update time, and overlap for a tracker's time
-resolution is the provider's business at the end of a walk.
+issues that share an update time. The overlap a walk's last cursor carries,
+for a tracker whose search can list a change some time after it is made, is
+the provider's business.
 
 **A write returns an outcome for each thing it touched, not one error.** One
 operation can be several requests: a create followed by an image upload, a
 rank of 120 issues in three groups. Each issue or step is applied, refused,
 unknown or not sent. `trackerapi.WriteNotApplied` judges one request inside
-a provider; it never judges an operation.
+a provider; it never judges an operation. What an earlier request stored
+is reported from what the client says it stored, never from the error of a
+later one: an image already attached is an applied upload whatever became
+of the next.
+
+**A write checks what ties the things it names.** Tracker IDs are
+site-wide, so a request does not always tie a comment, a link, a sprint or
+a neighbor to the issue or board the input names. Before its first request
+a provider reads that tie where the request does not carry it (a comment's
+issue, a link's two issues, a sprint's board and state, the issues a board
+lists now) and refuses what does not hold; in a rank or a sprint move the
+other issues proceed. Neither tracker takes a precondition, so this
+narrows the window and does not close it.
 
 The result also names what the operation may have changed, by resource: an
 issue's card, an issue's row on a named board, an issue's detail, a board's
 structure. A write does not return any of them: an answer that carries an
-issue carries only the fields the tracker chose to send.
+issue carries only the fields the tracker chose to send. Which kinds of
+resource each step leaves stale is one table in `internal/tracker`, and a
+result that names fewer is refused, so a provider cannot leave a board or
+an open ticket showing the old value.
 
 A create whose answer was lost has an outcome of its own: the tracker may
 hold a new issue and nobody knows its ID. The result says so and names no
 issue. Nothing retries it.
 
-**History says how far back it is complete.** Jira records every change
-from creation. Linear folds the changes of an issue's first minutes into
-its creation and records none of them. A provider returns an issue's
-changes with the time from which they are complete, and a value before that
-time is unknown, never inferred from the absence of a change.
+**History says where it is complete, at both ends.** Jira records every
+change from creation. Linear folds the changes of an issue's first minutes
+into its creation and records none of them
+([measured](../references/tracker-api-measurements.md)). A provider returns
+an issue's changes with the time from which they are complete, and a value
+before that time is unknown, never inferred from the absence of a change.
+A tracker can also list a change some seconds after it is made, so a
+provider returns the time through which the changes are final, taken
+behind the start of its read. `trackerapp` reads an issue's history again
+while the issue's update time is later than that.
 
 ## Connections and key files
 
 A connection is one credential for one site: a Jira site with the account's
-email, a Tempo region tied to a Jira connection, or a Linear workspace. Two
-sites of one tracker coexist. Connections belong to the computer and are
-rows in `tracker_connections`.
+email, a Tempo region tied to a Jira connection, or a Linear workspace
+named by its URL key. Two sites of one tracker coexist. Connections belong
+to the computer and are rows in `tracker_connections`.
 
 - The token is the only secret. It lives alone in
   `<configDir>/credentials/tracker-<connection id>`, an owner-only file
@@ -144,14 +181,24 @@ rows in `tracker_connections`.
 - Adding a connection creates the row and the empty key file, opens the
   tracker's token page and the key file on that computer, then verifies:
   one identity call to the tracker. The row records who the token belongs
-  to, when it was verified and when the token expires if the tracker says.
-  A status call returns the file's state and the last verification, never
-  the token.
+  to and when it was verified. A Linear key is refused when its workspace
+  is not the connection's. No tracker reports when a token expires, so the
+  expiry is the date the user enters from the token page, and it is the
+  only source of the warning before a token lapses. A status call returns
+  the file's state, the last verification and the last failure, never the
+  token.
+- Where a client connects is one function from a connection's kind and
+  site to an API origin. Its production value is the site, or Linear's
+  fixed origin. Tests and the harness supply one that answers a loopback
+  fake, through the app's isolation configuration, so a test App has no
+  path to a real tracker.
 - Editing the key file and opening the token page need the `host` scope and
   have no remote form. Every other call works from a connected browser or
   another computer and acts on the computer the call is routed to.
-- Removing a connection deletes its row, its key file and, through the
-  schema, its mirror. Turning a connection off keeps the row and the key
+- Removing a connection deletes its key file, then its row and, through
+  the schema, its mirror, with the Tempo connection that belongs to it. A
+  failure part way leaves a row with no key file, never a key file with no
+  row. Turning a connection off keeps the row and the key
   file, stops its pumps, closes its clients and clears its mirror.
 - Work in flight cannot write into a mirror that was cleared. A mirror is
   one `tracker_cache_roots` row with its own ID, and every mirror row
@@ -171,7 +218,7 @@ Durable records, restored and kept like other application records:
 
 | Table | Holds |
 |---|---|
-| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, verification and expiry times. |
+| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project and connection; both cascade. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
@@ -264,7 +311,8 @@ and writes share:
 - **Structure** is read when a board is subscribed, on a slower cadence,
   and whenever a delta names a status, sprint or user the mirror lacks.
 - **History** is read whole for an issue new to the mirror and again for
-  an issue whose update time moved, limited to the four change kinds.
+  an issue whose update time is later than the time its stored history is
+  final through, limited to the four change kinds.
 - **Cadence.** A board polls every 45 seconds while a client shows it and
   not at all otherwise. A failed read retries on the doubling delay the
   pull request pumps use; a rate limit waits for its release. Linked issues

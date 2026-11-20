@@ -44,6 +44,9 @@ following the same contract, not code.
   sprint) reports how far it got when it fails.
 - Tracker text is data. Ticket text, comments and field values are never
   formatted into a request path or query without escaping.
+- A call refused for what its caller passed, before any request, fails
+  with an error that matches `trackerapi.ErrInvalidInput`, in every
+  client, so a caller tells its own mistake from the tracker's answer.
 - No site's names: no field or status aliases, no custom field IDs, no
   project keys, no host names. Test data uses `example.atlassian.net`,
   `example.com`, keys such as `WEB-1` and people named `User 1`.
@@ -238,7 +241,11 @@ problem on that record, which stays usable.
   that refuses a path or symlink leading outside it, and checked when the
   write is planned. Before the first request of the write they are read
   again, refused if changed, and uploaded only after every check that can
-  fail first has passed.
+  fail first has passed. Each image is one attach request, then a read of
+  its media ID. A failure names its step: `StepUpload` for an attach
+  request, `StepMediaID` for the read, which leaves the write that follows
+  not sent. Every result reports in `Uploaded` the attachments Jira
+  stored, on failure too.
 - **Plans.** Create and edit are planned, then applied. A plan is opaque:
   it shows a preview and is applied once, by the client that made it, to
   the issue it was checked for. Apply reads the rich text the plan was
@@ -282,7 +289,7 @@ problem on that record, which stays usable.
   first, moves the issues outside the board's done column to the sprint or
   backlog the caller names, lists the sprint again, and closes it only
   when every move succeeded and no unfinished issue is left; one added
-  meanwhile is reported and the sprint stays open. An issue someone else
+  meanwhile is reported, by ID and key, and the sprint stays open. An issue someone else
   moved between the listing and the move is still moved. A sprint is named for a field value
   among the active and future sprints of the project's scrum boards.
 - **History.** An issue's changelog as typed entries, and the bulk fetch
@@ -292,7 +299,10 @@ problem on that record, which stays usable.
 - **Search.** `search/jql` with token paging, the approximate count, and
   the bulk fetch of issues by key or ID. Reading a search to its end
   returns its warnings and whether it is complete; a bulk fetch and a
-  project listing say the same.
+  project listing say the same. `QuoteJQLText` is the one way text a
+  person or a tracker wrote enters a JQL string.
+- **Statuses.** Every status of the site with its category, for a board
+  whose columns name statuses no listed issue is in.
 - **Worklogs.** Jira's own worklogs: list, read by ID, add, change (based
   on the worklog as read, or explicitly unchecked, with the loss check;
   an estimate adjustment alone is a change), delete, with the
@@ -346,6 +356,20 @@ mutation is refused only by a 4xx, by user errors with no payload, or by a
 payload whose `success` is false; a missing `success` is an unknown
 outcome. Not found is matched only at the root field the call asked for.
 
+Issues are listed by a filter (team, state, cycle, update time, IDs or
+identifiers), found by text with `SearchIssues`, and read one at a time in
+full, every relation each way read to its end. `ListIssuePositions` lists
+only each issue's ID and manual order. A comment, relation, cycle or team
+is read by its ID, and users, labels, projects, cycles and teams by a set
+of IDs, so a caller reads the names a result references, never a catalog.
+Label names come nested with each issue; the read by ID covers only the
+labels that list leaves out.
+`IssueHistories` reads the status, cycle, estimate and assignee
+changes of many issues in one request. Linear records none of the changes
+made in an issue's first minutes and can list a change seconds after it is
+made ([measured](../references/tracker-api-measurements.md)); the client
+returns what Linear lists and the provider states where it is complete.
+
 Reads page with Relay cursors. Issues are polled oldest update first from
 a stored `PollCursor` that carries Linear's cursor with the time, so a run
 of issues sharing one timestamp larger than a page drains across
@@ -355,9 +379,10 @@ time, inclusive. Polling cannot see a hard delete. Manual order is one
 page reports its request's cost and the remaining budgets, and
 `Client.Usage` holds the latest answer's, failed answers included.
 
-`live_test.go`, behind the `linearlive` build tag, is a manual check
-against a blank workspace with a key read from the file a variable names.
-No test run includes it.
+The `live_*_test.go` files, behind the `linearlive` build tag, are manual
+checks and measurements against a blank workspace with a key read from the
+file a variable names. No test run includes them. What they measured is in
+[tracker API measurements](../references/tracker-api-measurements.md).
 
 ## Left in atl
 
@@ -374,3 +399,9 @@ Each package is tested against an `httptest` server on loopback, inside the
 reaches a tracker. A test server asserts the method, path, query and body
 it expects and fails the test on a request it does not know, so a client
 cannot pass by sending something else.
+
+Each client's test server is its own package (`jiratest`, `tempotest`,
+`lineartest`), used by the client's tests and by the tests of everything
+built on the client, so a provider is tested against the same server its
+client is. `lineartest` holds Linear's schema and checks every request's
+document and variables against it.

@@ -441,6 +441,8 @@ func TestMove(t *testing.T) {
 
 func TestSetEstimate(t *testing.T) {
 	f, p := newSite(t)
+	listsIssues(t, f, board3Issues, "10001")
+	listsIssues(t, f, board4Issues, "10001")
 	var bodies []string
 	f.On("PUT", "/rest/agile/1.0/issue/10001/estimation", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		bodies = append(bodies, r.URL.Query().Get("boardId")+" "+string(b))
@@ -461,7 +463,7 @@ func TestSetEstimate(t *testing.T) {
 		if states(res) != "estimate:applied" {
 			t.Fatalf("%+v: %s %v", in, states(res), res.Parts[0].Outcome.Err())
 		}
-		if want := []tracker.Resource{tracker.RowOf(in.Board, "10001"), tracker.DetailOf("10001")}; !slices.Equal(res.Parts[0].Changed, want) {
+		if want := []tracker.Resource{tracker.RowOf(in.Board, "10001"), tracker.CardOf("10001"), tracker.DetailOf("10001")}; !slices.Equal(res.Parts[0].Changed, want) {
 			t.Errorf("changed %+v", res.Parts[0].Changed)
 		}
 	}
@@ -479,7 +481,7 @@ func TestSetEstimate(t *testing.T) {
 	}
 	// Seconds past a Duration's range are refused before any conversion,
 	// whose result Go leaves to the implementation.
-	res := p.SetEstimate(t.Context(), tracker.EstimateInput{Board: "4", Issue: "10001", Value: ptr(1e300)})
+	res := checked(t, p.SetEstimate(t.Context(), tracker.EstimateInput{Board: "4", Issue: "10001", Value: ptr(1e300)}))
 	if !errors.Is(res.Parts[0].Outcome.Err(), tracker.ErrInvalidInput) {
 		t.Errorf("too long: %v", res.Parts[0].Outcome.Err())
 	}
@@ -497,6 +499,7 @@ func rankEntry(id string, status int) string {
 // move keeps the outcome Jira gave it, in a mixed answer.
 func TestRankKeepsEachIssuesOutcome(t *testing.T) {
 	f, p := newSite(t)
+	listsIssues(t, f, board3Issues, "10001", "10002", "10009", "10010")
 	f.On("PUT", "/rest/agile/1.0/issue/rank", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantJSON(t, b, `{"issues":["10001","10002"],"rankAfterIssue":"10009","rankCustomFieldId":10019}`)
 		jiratest.Reply(207, `{"entries":[`+rankEntry("10001", 204)+`,`+rankEntry("10002", 400)+`]}`)(w, r, b)
@@ -528,6 +531,8 @@ func TestRankKeepsEachIssuesOutcome(t *testing.T) {
 
 func TestMoveToSprint(t *testing.T) {
 	f, p := newSite(t)
+	sprintsOfBoard3(f)
+	listsIssues(t, f, board3Issues, "10001", "10002")
 	f.On("GET", "/rest/agile/1.0/sprint/7", jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
 	f.On("POST", "/rest/agile/1.0/sprint/7/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantJSON(t, b, `{"issues":["10001","10002"]}`)

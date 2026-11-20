@@ -73,9 +73,9 @@ func (t *tempoTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) tra
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
 	days := editDays(in)
-	read, err := t.tempo.Worklog(ctx, id)
-	if err == nil {
-		err = staleWorklog(read, in.From)
+	read, cur, err := t.readWorklog(ctx, id, in.From)
+	if err == nil && !sameWorklog(cur, in.From) {
+		err = stale(string(in.From.Issue), "worklog "+string(in.From.ID))
 	}
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), days...)
@@ -88,7 +88,9 @@ func (t *tempoTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) tra
 	return worklogResult(in.From.Issue, in.From.Author, outcome(err), days...)
 }
 
-// DeleteWorklog deletes a Tempo worklog.
+// DeleteWorklog deletes a Tempo worklog of the issue From names. The
+// worklog is read first, so the result names its author's worklogs of its
+// day as Tempo holds them.
 func (t *tempoTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -97,21 +99,41 @@ func (t *tempoTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete)
 	if err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
+	_, cur, err := t.readWorklog(ctx, id, in.From)
+	if err != nil {
+		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), in.From.Day)
+	}
 	err = t.tempo.Delete(ctx, id)
-	return worklogResult(in.From.Issue, in.From.Author, outcome(err), in.From.Day)
+	return worklogResult(in.From.Issue, cur.Author, outcome(err), deleteDays(cur, in.From)...)
 }
 
-// staleWorklog refuses an edit whose worklog no longer holds what from
-// says.
-func staleWorklog(read tempo.Worklog, from tracker.Worklog) error {
-	cur, err := tempoWorklog(read)
+// readWorklog reads Tempo worklog id, as Tempo holds it and as a neutral
+// worklog, refusing one whose issue is not from's: a Tempo worklog ID is
+// the site's, and nothing in its write names the issue.
+func (t *tempoTime) readWorklog(ctx context.Context, id int64, from tracker.Worklog) (tempo.Worklog, tracker.Worklog, error) {
+	read, err := t.tempo.Worklog(ctx, id)
 	if err != nil {
-		return err
+		return tempo.Worklog{}, tracker.Worklog{}, fmt.Errorf("jiraprovider: read Tempo worklog %d: %w", id, err)
 	}
-	if !sameWorklog(cur, from) {
-		return stale(string(from.Issue), "worklog "+string(from.ID))
+	cur, err := tempoWorklog(read)
+	if err == nil {
+		err = checkWorklogIssue(cur, from)
 	}
-	return nil
+	if err != nil {
+		return tempo.Worklog{}, tracker.Worklog{}, err
+	}
+	return read, cur, nil
+}
+
+// deleteDays are the days a delete of the worklog read as cur may change
+// its author's worklogs on: its day, and the day the caller read it on
+// when that differs.
+func deleteDays(cur, from tracker.Worklog) []tracker.Date {
+	days := []tracker.Date{cur.Day}
+	if !from.Day.IsZero() && from.Day != cur.Day {
+		days = append(days, from.Day)
+	}
+	return days
 }
 
 // sameWorklog reports two reads of a worklog that hold the same issue,

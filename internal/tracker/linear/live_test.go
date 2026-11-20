@@ -192,18 +192,19 @@ func (l *live) cleanup(issue *Issue) {
 // liveTitle starts the title of every issue the check creates.
 const liveTitle = "agent-overflow live check "
 
-// sweep trashes the issues an earlier run of the check left behind.
+// sweep trashes the issues an earlier run of the check left behind,
+// including one a failed cleanup archived and did not trash.
 func (l *live) sweep(team Team) {
 	var left []Issue
 	l.step("ListIssues leftovers", func(ctx context.Context) error {
 		after := ""
 		for {
-			p, err := l.c.ListIssues(ctx, IssueQuery{Filter: IssueFilter{Teams: []string{team.ID}}}, after)
+			p, err := l.c.ListIssues(ctx, IssueQuery{Filter: IssueFilter{Teams: []string{team.ID}}, IncludeArchived: true}, after)
 			if err != nil {
 				return err
 			}
 			for _, issue := range p.Items {
-				if strings.HasPrefix(issue.Title, liveTitle) {
+				if strings.HasPrefix(issue.Title, liveTitle) && !issue.Trashed {
 					left = append(left, issue)
 				}
 			}
@@ -214,7 +215,11 @@ func (l *live) sweep(team Team) {
 		}
 	})
 	for i := range left {
-		l.cleanup(&left[i])
+		if left[i].ArchivedAt == nil {
+			l.cleanup(&left[i])
+			continue
+		}
+		l.step("sweep DeleteIssue "+left[i].Identifier, func(ctx context.Context) error { return l.c.DeleteIssue(ctx, left[i].ID, false) })
 	}
 }
 

@@ -111,15 +111,20 @@ func TestApplyCreateImageFailures(t *testing.T) {
 func TestApplyEditImageFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
-		upload    int // status of the second upload
+		upload    int    // status of the second upload
+		answer    string // the second upload's answer when it is a 200; empty names one attachment
+		media     int    // status of the second media ID read; zero redirects
 		put       int
-		step      Step
+		step      Step // empty when the edit succeeds
 		uploaded  int
 		unknown   bool
 		wantPuts  int
 		changeImg bool
 	}{
 		{name: "second upload fails before the write", upload: 500, put: 204, step: StepUpload, uploaded: 1, unknown: true},
+		{name: "second media ID read fails", upload: 200, media: 500, put: 204, step: StepMediaID, uploaded: 2},
+		{name: "second upload stores two attachments", upload: 200, answer: `[{"id":"502"},{"id":"503"}]`, put: 204, step: StepEdit, uploaded: 3},
+		{name: "second upload names its attachment and does not decode", upload: 200, answer: `[{"id":"502","size":"big"}]`, put: 204, uploaded: 2, wantPuts: 1},
 		{name: "write refused after the uploads", upload: 200, put: 400, step: StepEdit, uploaded: 2, wantPuts: 1},
 		{name: "write outcome unknown", upload: 200, put: 502, step: StepEdit, uploaded: 2, unknown: true, wantPuts: 1},
 		{name: "second image changed since the plan", changeImg: true, step: StepCheck},
@@ -144,18 +149,36 @@ func TestApplyEditImageFailures(t *testing.T) {
 			var uploads atomic.Int32
 			f.On("POST", "/rest/api/3/issue/10001/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
 				n := uploads.Add(1)
-				if n == 2 && tc.upload != 200 {
+				switch {
+				case n == 2 && tc.upload != 200:
 					jiratest.Reply(tc.upload, `{}`)(w, r, b)
-					return
+				case n == 2 && tc.answer != "":
+					jiratest.Reply(200, tc.answer)(w, r, b)
+				default:
+					jiratest.Reply(200, `[{"id":"50`+string('0'+rune(n))+`","filename":"x.png"}]`)(w, r, b)
 				}
-				jiratest.Reply(200, `[{"id":"50`+string('0'+rune(n))+`","filename":"x.png"}]`)(w, r, b)
 			})
 			mediaRoutes(f)
+			if tc.media != 0 {
+				f.On("GET", "/rest/api/3/attachment/content/502", jiratest.Reply(tc.media, `{}`))
+			}
 			f.On("PUT", "/rest/api/3/issue/10001", jiratest.Reply(tc.put, `{"errorMessages":["x"]}`))
 			res, err := c.ApplyEdit(t.Context(), plan)
+			if len(res.Uploaded) != tc.uploaded {
+				t.Errorf("uploaded %+v, want %d", res.Uploaded, tc.uploaded)
+			}
+			if tc.step == "" {
+				if err != nil {
+					t.Fatalf("got %v", err)
+				}
+				return
+			}
 			se, ok := errors.AsType[*StepError](err)
-			if !ok || se.Step != tc.step || se.OutcomeUnknown() != tc.unknown || len(res.Uploaded) != tc.uploaded {
+			if !ok || se.Step != tc.step || se.OutcomeUnknown() != tc.unknown {
 				t.Fatalf("got %+v, %v (unknown %v)", res, err, ok && se.OutcomeUnknown())
+			}
+			if tc.step == StepMediaID && (!trackerapi.WriteNotApplied(err) || errors.Is(err, trackerapi.ErrInvalidInput)) {
+				t.Errorf("a failed media ID read must leave the edit not sent, not refused: %v", err)
 			}
 			if tc.changeImg {
 				if _, stale := errors.AsType[*StaleError](err); !stale || uploads.Load() != 0 || !trackerapi.WriteNotApplied(err) {

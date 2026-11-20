@@ -91,6 +91,34 @@ func labelsX(team string, labels ...lineartest.Label) lineartest.Exchange {
 		Vars: `{"first":100,"filter":{"or":[{"team":{"id":{"eq":"` + team + `"}}},{"team":{"null":true}}]}}`}
 }
 
+// idsVars are the variables of a read by the IDs ids.
+func idsVars(ids ...string) string { return js(map[string]any{"ids": ids, "first": len(ids)}) }
+
+// byIDX expects a read by ids of op and answers nodes.
+func byIDX(op string, ids []string, nodes ...string) lineartest.Exchange {
+	return lineartest.Exchange{Op: op, Vars: idsVars(ids...), Body: page(nodes...)}
+}
+
+// labelsByIDX expects the read of the labels ids names.
+func labelsByIDX(ids []string, labels ...lineartest.Label) lineartest.Exchange {
+	var nodes []string
+	for _, l := range labels {
+		nodes = append(nodes, l.JSON())
+	}
+	return byIDX("LabelsByID", ids, nodes...)
+}
+
+// teamX expects the read of one team.
+func teamX(t lineartest.Team) lineartest.Exchange {
+	return lineartest.Exchange{Op: "Team", Vars: `{"id":"` + t.ID + `"}`, Body: `{"data":{"team":` + t.JSON() + `}}`}
+}
+
+// onBoardX expects the read of ids within team web, answered with
+// issues.
+func onBoardX(ids []string, issues ...lineartest.Issue) lineartest.Exchange {
+	return issuesX(byIDVars(ids, []string{web}, false), issues...)
+}
+
 func membersX(team string, users ...lineartest.User) lineartest.Exchange {
 	var nodes []string
 	for _, u := range users {
@@ -99,15 +127,16 @@ func membersX(team string, users ...lineartest.User) lineartest.Exchange {
 	return lineartest.Exchange{Op: "TeamMembers", Vars: `{"teamId":"` + team + `","first":100}`, Body: nodePage(nodes...)}
 }
 
-func cyclesX(team string, archived bool, cycles ...lineartest.Cycle) lineartest.Exchange {
+// keptCyclesX expects the read of the cycles of team that window keeps.
+func keptCyclesX(team string, window string, cycles ...lineartest.Cycle) lineartest.Exchange {
 	var nodes []string
 	for _, c := range cycles {
 		nodes = append(nodes, c.JSON())
 	}
-	vars := `{"first":50,"filter":{"team":{"id":{"eq":"` + team + `"}}}}`
-	if archived {
-		vars = `{"first":50,"filter":{"team":{"id":{"eq":"` + team + `"}}},"includeArchived":true}`
-	}
+	since := map[string]string{"gte": window}
+	vars := js(map[string]any{"first": 20, "filter": map[string]any{"team": map[string]any{"id": map[string]string{"eq": team}},
+		"or": []any{map[string]any{"isActive": map[string]bool{"eq": true}}, map[string]any{"isFuture": map[string]bool{"eq": true}},
+			map[string]any{"endsAt": since}, map[string]any{"completedAt": since}}}})
 	return lineartest.Exchange{Op: "Cycles", Vars: vars, Body: page(nodes...)}
 }
 

@@ -210,22 +210,43 @@ type Issue struct {
 	PrioritySortOrder float64
 	SubIssueSortOrder *float64
 	TeamID            string
+	// TeamEstimateScale is the team's estimate scale as of the read, so
+	// a list can tell an estimate the team counts without reading the
+	// team.
+	TeamEstimateScale EstimateScale
 	StateID           string
 	AssigneeID        string
 	CreatorID         string
 	CycleID           string
 	ProjectID         string
 	ParentID          string
-	LabelIDs          []string
-	DueDate           Date
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	StartedAt         *time.Time
-	CompletedAt       *time.Time
-	CanceledAt        *time.Time
-	ArchivedAt        *time.Time
+	// LabelIDs are every label the issue carries. Labels names those
+	// Linear listed with the issue, at most 250 and archived ones left
+	// out; LabelsByID names the rest.
+	LabelIDs    []string
+	Labels      []LabelRef
+	DueDate     Date
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+	CanceledAt  *time.Time
+	ArchivedAt  *time.Time
 	// Trashed marks an archived issue awaiting permanent deletion.
 	Trashed bool
+}
+
+// LabelRef is a label as an issue names it.
+type LabelRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// IssuePosition is an issue's place in the manual order, as the lean
+// list ListIssuePositions reads it.
+type IssuePosition struct {
+	ID        string
+	SortOrder float64
 }
 
 // IssueRef names a related issue.
@@ -236,22 +257,25 @@ type IssueRef struct {
 	StateID    string
 }
 
-// IssueDetail is one issue with what its view shows. Each nested list
-// holds its first page; its More flag reports that there are more.
-// Further comments come from IssueComments and further children from
-// ListIssues with a Parent filter.
+// IssueDetail is one issue with what its view shows. Comments, children
+// and attachments hold their first page, and a More flag or HasNextPage
+// reports that there are more: further comments come from IssueComments
+// and further children from ListIssues with a Parent filter. Relations
+// are complete.
 type IssueDetail struct {
 	Issue
+	// ProjectName is the name of the issue's project; empty for none.
+	ProjectName     string
 	Parent          *IssueRef
 	Children        []IssueRef
 	MoreChildren    bool
 	Comments        Page[Comment]
 	Attachments     []Attachment
 	MoreAttachments bool
-	// Relations holds the issue's relations in both directions: Issue is
-	// the side the relation was created from.
-	Relations     []Relation
-	MoreRelations bool
+	// Relations holds every relation of the issue in both directions,
+	// each read to its end: Issue is the side the relation was created
+	// from.
+	Relations []Relation
 }
 
 // Comment is a comment on an issue. ParentID names the comment it

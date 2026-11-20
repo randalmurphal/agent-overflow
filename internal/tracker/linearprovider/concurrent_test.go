@@ -58,6 +58,8 @@ func TestCancelInFlight(t *testing.T) {
 	arrived := make(chan struct{}, 2)
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Teams", Vars: `{"first":100}`, Wait: true, Arrived: arrived},
+		summaryX(issueID(1), issue(1, 1)),
+		statesX(web, lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}),
 		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"` + issueID(1) + `","input":{"stateId":"s-done"}}`, Wait: true, Arrived: arrived},
 	)
 	run := func(call func(ctx context.Context)) {

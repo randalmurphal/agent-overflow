@@ -92,39 +92,48 @@ func TestHistoryFailure(t *testing.T) {
 	}
 }
 
-// Detail maps the issue, its comments, links, fields, moves and a
-// history whose IDs are named from the catalogs its entries need.
+// Detail maps the issue, its comments, every link past the first page,
+// fields, moves and a history whose IDs are named by reads of exactly
+// the IDs the issue and its entries name; the issue's own project name
+// comes with the issue.
 func TestDetail(t *testing.T) {
 	t.Parallel()
 	is := issue(1, 1)
 	is.LabelIDs, is.Project, is.DueDate, is.State, is.Description = []string{"label-bug"}, "project-1", "2026-12-01", "s-todo", "Steps"
 	self := lineartest.IssueRef{ID: issueID(1), Identifier: "WEB-1", Title: "T", State: "s-todo"}
 	other := lineartest.IssueRef{ID: issueID(2), Identifier: "WEB-2", Title: "Other", State: "s-done"}
+	third := lineartest.IssueRef{ID: issueID(3), Identifier: "WEB-3", Title: "Third", State: "s-todo"}
 	detail := lineartest.DetailJSON(is, lineartest.Detail{
-		Comments: []string{lineartest.NewComment().JSON()}, MoreComments: true, CommentCursor: "cc1",
+		ProjectName: "Launch",
+		Comments:    []string{lineartest.NewComment().JSON()}, MoreComments: true, CommentCursor: "cc1",
 		Relations:        []string{lineartest.RelationJSON("rel-1", "blocks", self, other)},
+		RelationCursor:   "r1",
 		InverseRelations: []string{lineartest.RelationJSON("rel-2", "similar", other, self)},
 	})
 	archived := true
 	history := []string{
-		lineartest.HistoryEntry{ID: "h3", CreatedAt: "2026-11-04T09:00:00.000Z", Archived: &archived, FromPriority: f64(0), ToPriority: f64(2)}.JSON(),
+		lineartest.HistoryEntry{ID: "h3", CreatedAt: "2026-11-04T09:00:00.000Z", Archived: &archived, FromPriority: f64(0), ToPriority: f64(2),
+			FromTeam: app, ToTeam: web}.JSON(),
 		lineartest.HistoryEntry{ID: "h2", CreatedAt: "2026-11-03T09:00:00.000Z", Actor: "user-1", FromParent: issueID(2), AddedLabelIDs: []string{"label-bug"},
-			RemovedLabelIDs: []string{"label-gone"}, FromTitle: "Old", ToTitle: "New"}.JSON(),
+			RemovedLabelIDs: []string{"label-gone"}, FromTitle: "Old", ToTitle: "New", FromProject: "project-0", ToProject: "project-1"}.JSON(),
 		lineartest.HistoryEntry{ID: "h1", CreatedAt: "2026-11-02T09:00:00.000Z", Actor: "user-1", FromState: "s-done", ToState: "s-todo",
 			ToAssignee: "user-1", ToCycle: "c1", FromProject: "", ToProject: "project-1", ToEstimate: f64(3)}.JSON(),
 	}
 	parent := issue(2, 2)
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + detail + `}}`},
+		lineartest.Exchange{Op: "IssueRelations", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"r1"}`,
+			Body: nodePage(lineartest.RelationJSON("rel-3", "related", self, third))},
 		statesX(web, lineartest.State{ID: "s-todo", Name: "Todo", Type: "unstarted", Team: web},
 			lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}),
 		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":100}`,
 			Body: `{"data":{` + lineartest.NodePageJSON(history[:2], true, "h-c1") + `}}`},
 		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"h-c1"}`, Body: nodePage(history[2])},
-		labelsX(web, lineartest.Label{ID: "label-bug", Name: "Bug"}),
-		lineartest.Exchange{Op: "Users", Vars: `{"first":100,"includeDisabled":true}`, Body: page(lineartest.User{ID: "user-1", Name: "User 1"}.JSON())},
-		cyclesX(web, true, lineartest.Cycle{ID: "c1", Number: 7, Team: web, StartsAt: at, EndsAt: at, Active: true}),
-		lineartest.Exchange{Op: "Projects", Vars: `{"first":100,"includeArchived":true}`, Body: page(lineartest.Project{ID: "project-1", Name: "Launch"}.JSON())},
+		labelsByIDX([]string{"label-gone"}),
+		byIDX("UsersByID", []string{"user-1"}, lineartest.User{ID: "user-1", Name: "User 1"}.JSON()),
+		byIDX("CyclesByID", []string{"c1"}, lineartest.Cycle{ID: "c1", Number: 7, Team: web, StartsAt: at, EndsAt: at, Active: true}.JSON()),
+		byIDX("ProjectsByID", []string{"project-0"}, lineartest.Project{ID: "project-0", Name: "Old"}.JSON()),
+		byIDX("TeamsByID", []string{app, web}, lineartest.NewTeam("APP").JSON(), lineartest.NewTeam("WEB").JSON()),
 		issuesX(byIDVars([]string{issueID(2)}, nil, true), parent),
 	)
 	d, err := p.Detail(context.Background(), tracker.IssueID(issueID(1)))
@@ -138,8 +147,8 @@ func TestDetail(t *testing.T) {
 	if len(d.Comments.Comments) != 1 || d.Comments.Next != "cc1" || d.Comments.Comments[0].Author != "user-1" {
 		t.Errorf("comments %+v", d.Comments)
 	}
-	if len(d.Links) != 2 || !d.Links[0].Outward || d.Links[0].Issue.Key != "WEB-2" || d.Links[0].Type.Inward != "is blocked by" ||
-		d.Links[1].Outward || d.Links[1].Issue.ID != tracker.IssueID(issueID(2)) || d.Links[1].Type.Outward != "similar to" {
+	if len(d.Links) != 3 || d.Links[1].Issue.Key != "WEB-3" || d.Links[1].Type.ID != "related" || !d.Links[0].Outward || d.Links[0].Issue.Key != "WEB-2" || d.Links[0].Type.Inward != "is blocked by" ||
+		d.Links[2].Outward || d.Links[2].Issue.ID != tracker.IssueID(issueID(2)) || d.Links[2].Type.Outward != "similar to" {
 		t.Errorf("links %+v", d.Links)
 	}
 	if len(d.Fields) != 2 || d.Fields[0].ID != FieldDueDate || d.Fields[0].Value.Dates()[0].String() != "2026-12-01" ||
@@ -154,7 +163,8 @@ func TestDetail(t *testing.T) {
 		events = append(events, e.Field+":"+e.From+">"+e.To)
 	}
 	want := "Status:Done>Todo Assignee:>User 1 Cycle:>Cycle 7 Project:>Launch Estimate:>3 " +
-		"Parent:WEB-2> Title:Old>New Labels:label-gone>Bug Priority:No priority>High Archived:>archived"
+		"Project:Old>Launch Parent:WEB-2> Title:Old>New Labels:label-gone>Bug " +
+		"Team:APP Web>WEB Web Priority:No priority>High Archived:>archived"
 	if strings.Join(events, " ") != want {
 		t.Errorf("events\n got %s\nwant %s", strings.Join(events, " "), want)
 	}

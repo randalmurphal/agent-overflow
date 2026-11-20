@@ -107,7 +107,7 @@ func TestResultCreatedAndCreateUnknown(t *testing.T) {
 
 func TestResultCheck(t *testing.T) {
 	good := Result{Parts: []Part{
-		part("10001", StepCreate, Applied(), CardOf("10001")),
+		part("10001", StepCreate, Applied(), CardOf("10001"), DetailOf("10001")),
 		part("10001", StepUpload, NotSent(nil)),
 		part("", StepSprint, Refused(Refusal{Reason: ReasonUnsupported})),
 	}}
@@ -120,21 +120,99 @@ func TestResultCheck(t *testing.T) {
 		"refused with no reason":  {Parts: []Part{part("1", StepEdit, Refused(Refusal{}))}},
 		"applied changed nothing": {Parts: []Part{part("1", StepEdit, Applied())}},
 		"unknown changed nothing": {Parts: []Part{part("1", StepEdit, Unknown(nil))}},
-		"create applied no issue": {Parts: []Part{part("", StepCreate, Applied(), StructureOf("b"))}},
+		"create applied no issue": {Parts: []Part{part("", StepCreate, Applied(), CardOf("1"), DetailOf("1"))}},
 		"create refused issue":    {Parts: []Part{part("1", StepCreate, Refused(Refusal{Reason: ReasonInvalid}))}},
 		"create lost issue":       {Parts: []Part{part("1", StepCreate, Unknown(nil), CardOf("1"))}},
 		"two creates": {Parts: []Part{
-			part("1", StepCreate, Applied(), CardOf("1")), part("2", StepCreate, Applied(), CardOf("2")),
+			part("1", StepCreate, Applied(), CardOf("1"), DetailOf("1")), part("2", StepCreate, Applied(), CardOf("2"), DetailOf("2")),
 		}},
-		"zero resource":        {Parts: []Part{part("1", StepEdit, Applied(), Resource{})}},
-		"row without board":    {Parts: []Part{part("1", StepRank, Applied(), RowOf("", "1"))}},
-		"card without issue":   {Parts: []Part{part("1", StepEdit, Applied(), CardOf(""))}},
+		"zero resource":        {Parts: []Part{part("1", StepEdit, Applied(), CardOf("1"), DetailOf("1"), Resource{})}},
+		"row without board":    {Parts: []Part{part("1", StepRank, Applied(), RowOf("", "1"), CardOf("1"))}},
+		"card without issue":   {Parts: []Part{part("1", StepEdit, Applied(), CardOf("1"), DetailOf("1"), CardOf(""))}},
 		"structure no board":   {Parts: []Part{part("", StepSprint, Applied(), StructureOf(""))}},
 		"worklogs without day": {Parts: []Part{part("1", StepWorklog, Applied(), WorklogsOf("acc-user1", Date{}))}},
 	}
 	for name, r := range bad {
 		if err := r.Check(); err == nil {
 			t.Errorf("%s: Check passed", name)
+		}
+	}
+	// Each of these fails for the one reason its name gives: the same part
+	// with the reason removed passes.
+	for name, r := range map[string]Result{
+		"two creates":        {Parts: bad["two creates"].Parts[:1]},
+		"zero resource":      {Parts: []Part{part("1", StepEdit, Applied(), CardOf("1"), DetailOf("1"))}},
+		"row without board":  {Parts: []Part{part("1", StepRank, Applied(), RowOf("b", "1"), CardOf("1"))}},
+		"structure no board": {Parts: []Part{part("", StepSprint, Applied(), StructureOf("b"))}},
+	} {
+		if err := r.Check(); err != nil {
+			t.Errorf("%s without its defect: %v", name, err)
+		}
+	}
+}
+
+// TestResultCheckNamesWhatAStepChanges walks every step: a part that is
+// applied or unknown passes with every kind of resource its step may
+// change, and fails with any one left out or named for another issue.
+func TestResultCheckNamesWhatAStepChanges(t *testing.T) {
+	day := mustDate(t, "2026-11-16")
+	of := func(kind ResourceKind, issue IssueID) Resource {
+		switch kind {
+		case ResourceCard:
+			return CardOf(issue)
+		case ResourceRow:
+			return RowOf("b", issue)
+		case ResourceDetail:
+			return DetailOf(issue)
+		case ResourceStructure:
+			return StructureOf("b")
+		}
+		return WorklogsOf("acc-user1", day)
+	}
+	for step := StepCreate; step <= StepWorklog; step++ {
+		kinds := stepChanges[step]
+		if len(kinds) == 0 {
+			t.Errorf("%s: no kinds of resource named", step)
+			continue
+		}
+		issue := IssueID("1")
+		if step == StepSprint {
+			issue = ""
+		}
+		full := make([]Resource, len(kinds))
+		for i, k := range kinds {
+			full[i] = of(k, issue)
+		}
+		for _, o := range []Outcome{Applied(), Unknown(nil)} {
+			if step == StepCreate && o.State() == StateUnknown {
+				continue // a lost create names no issue and nothing changed
+			}
+			if err := (Result{Parts: []Part{part(issue, step, o, full...)}}).Check(); err != nil {
+				t.Errorf("%s %s with every kind: %v", step, o.State(), err)
+			}
+			for i, k := range kinds {
+				less := append(append([]Resource{}, full[:i]...), full[i+1:]...)
+				if err := (Result{Parts: []Part{part(issue, step, o, less...)}}).Check(); err == nil || !strings.Contains(err.Error(), k.String()) {
+					t.Errorf("%s %s without its %s: Check = %v", step, o.State(), k, err)
+				}
+				if k == ResourceStructure || k == ResourceWorklogs {
+					continue
+				}
+				other := append([]Resource{}, full...)
+				other[i] = of(k, "2")
+				if err := (Result{Parts: []Part{part(issue, step, o, other...)}}).Check(); err == nil {
+					t.Errorf("%s %s with another issue's %s: Check passed", step, o.State(), k)
+				}
+			}
+		}
+		for _, o := range []Outcome{NotSent(nil), Refused(Refusal{Reason: ReasonTracker})} {
+			p := part(issue, step, o)
+			if step == StepCreate {
+				p.Issue = ""
+			}
+			if err := (Result{Parts: []Part{p}}).Check(); err != nil {
+				t.Errorf("%s %s naming nothing: %v", step, o.State(), err)
+			}
 		}
 	}
 }

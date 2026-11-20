@@ -6,16 +6,20 @@ import (
 	"strings"
 )
 
-// Page sizes of the issue reads. A page of issues costs about 1,100
-// points (issueFields); its answer carries the descriptions, so its body
-// may run to issueBodyBytes. The single-issue read costs about 750: 50
-// comments at 4, 50 children at 2.4, and 25 attachments and 25 relations
-// each way.
+// Page sizes of the issue reads. Linear charges a page of issues by the
+// issues it returns, about 4.5 points each with their labels (measured),
+// not by the page size; its answer carries the descriptions, so its body
+// may run to issueBodyBytes. The single-issue
+// read costs about 900 by the documented rule, which Linear applies to
+// nested connections: 50 comments at 4, 50 children at 2.4, 25
+// attachments at 4 and 25 relations each way at 6. A relation page costs
+// about 600.
 const (
 	issuePage      = 100
 	issueBodyBytes = 32 << 20
 	commentPage    = 100
 	historyPage    = 100
+	relationPage   = 100
 )
 
 // IssueOrder orders a list of issues.
@@ -34,8 +38,9 @@ const (
 	orderUpdatedOldest
 )
 
-// maxIssuePage is the largest page Linear serves
-// (https://linear.app/developers/pagination).
+// maxIssuePage is the largest page the package asks for. Linear's schema
+// and pagination guide state no maximum; it served issues at 250
+// (measured).
 const maxIssuePage = 250
 
 // IssueQuery selects and orders issues.
@@ -130,6 +135,24 @@ func pageSize(limit int) (int, error) {
 	return limit, nil
 }
 
+var opIssuePositions = newQuery("IssuePositions", "page", `query IssuePositions($filter: IssueFilter, $sort: [IssueSortInput!], $includeArchived: Boolean, $first: Int!, $after: String) {
+  page: issues(filter: $filter, sort: $sort, includeArchived: $includeArchived, first: $first, after: $after) {
+    nodes { ...PositionFields } pageInfo { hasNextPage endCursor }
+  }
+}
+`+positionFields)
+
+// ListIssuePositions is ListIssues for a caller that needs only each
+// issue's ID and manual order: about 1.2 points an issue against
+// ListIssues's 10, and no descriptions in the answer.
+func (c *Client) ListIssuePositions(ctx context.Context, q IssueQuery, after string) (Page[IssuePosition], error) {
+	vars, err := issueVars(q, after)
+	if err != nil {
+		return Page[IssuePosition]{}, invalid(opIssuePositions.name, "%w", err)
+	}
+	return fetchPage(ctx, c, opIssuePositions, vars, wirePosition.typed)
+}
+
 var opIssueSummary = newQuery("IssueSummary", "issue", `query IssueSummary($id: String!) {
   issue(id: $id) { ...IssueFields }
 }
@@ -198,18 +221,27 @@ func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) 
 var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
   issue(id: $id) {
     ...IssueFields
+    project { id name }
     parent { ...IssueRefFields }
     children(first: 50) { nodes { ...IssueRefFields } pageInfo { hasNextPage } }
     comments(first: 50) { nodes { ...CommentFields } pageInfo { hasNextPage endCursor } }
     attachments(first: 25) { nodes { ...AttachmentFields } pageInfo { hasNextPage } }
-    relations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage } }
-    inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage } }
+    relations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
+    inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
   }
 }
 `+issueFields+issueRefFields+commentFields+attachmentFields+relationFields)
 
+// namedRef is a related entity selected as { id name }.
+type namedRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type wireIssueDetail struct {
 	wireIssue
+	// Project shadows the fragment's project { id } with its name.
+	Project          *namedRef                  `json:"project"`
 	Parent           *wireIssueRef              `json:"parent"`
 	Children         connection[wireIssueRef]   `json:"children"`
 	Comments         connection[wireComment]    `json:"comments"`
@@ -223,8 +255,9 @@ type idVars struct {
 }
 
 // Issue returns one issue by its ID or its identifier, such as WEB-1,
-// archived or not. A missing or invisible issue matches
-// trackerapi.ErrNotFound.
+// archived or not, with its relations read to their end: one request,
+// and one more for each further page of relations either way. A missing
+// or invisible issue matches trackerapi.ErrNotFound.
 func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail, error) {
 	if idOrIdentifier == "" {
 		return nil, invalid("Issue", "an issue ID or identifier is required")
@@ -239,14 +272,33 @@ func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail
 	if data.Issue == nil {
 		return nil, fmt.Errorf("linear %s: the answer holds no issue", opIssue.name)
 	}
-	return data.Issue.detail(r.Usage)
+	d, err := data.Issue.detail(r.Usage)
+	if err != nil {
+		return nil, err
+	}
+	for _, rel := range []struct {
+		op   operation
+		conn connection[wireRelation]
+	}{{opIssueRelations, data.Issue.Relations}, {opIssueInverseRelations, data.Issue.InverseRelations}} {
+		rels, err := c.relations(ctx, rel.op, d.ID, rel.conn)
+		if err != nil {
+			return nil, err
+		}
+		d.Relations = append(d.Relations, rels...)
+	}
+	return d, nil
 }
 
+// detail types the answer of the single-issue read, its relations aside.
 func (w *wireIssueDetail) detail(usage Usage) (*IssueDetail, error) {
 	d := &IssueDetail{Issue: w.typed(), Parent: w.Parent.typedPtr()}
-	// The detail's parent selection shadows the fragment's parent { id }.
+	// The detail's parent and project selections shadow the fragment's
+	// { id } ones.
 	if d.Parent != nil {
 		d.ParentID = d.Parent.ID
+	}
+	if w.Project != nil {
+		d.ProjectID, d.ProjectName = w.Project.ID, w.Project.Name
 	}
 	var err error
 	if d.Children, d.MoreChildren, err = firstPage(opIssue, w.Children, wireIssueRef.typed); err != nil {
@@ -258,15 +310,42 @@ func (w *wireIssueDetail) detail(usage Usage) (*IssueDetail, error) {
 	if d.Attachments, d.MoreAttachments, err = firstPage(opIssue, w.Attachments, wireAttachment.typed); err != nil {
 		return nil, err
 	}
-	for _, conn := range []connection[wireRelation]{w.Relations, w.InverseRelations} {
-		rels, more, err := firstPage(opIssue, conn, wireRelation.typed)
-		if err != nil {
-			return nil, err
-		}
-		d.Relations = append(d.Relations, rels...)
-		d.MoreRelations = d.MoreRelations || more
-	}
 	return d, nil
+}
+
+var opIssueRelations = newQuery("IssueRelations", "node", `query IssueRelations($id: String!, $first: Int!, $after: String) {
+  node: issue(id: $id) {
+    page: relations(first: $first, after: $after) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
+  }
+}
+`+relationFields+issueRefFields)
+
+var opIssueInverseRelations = newQuery("IssueInverseRelations", "node", `query IssueInverseRelations($id: String!, $first: Int!, $after: String) {
+  node: issue(id: $id) {
+    page: inverseRelations(first: $first, after: $after) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
+  }
+}
+`+relationFields+issueRefFields)
+
+// relations are the relations of first, the page the single-issue read
+// held, and of every page after it, which op reads for the issue id.
+func (c *Client) relations(ctx context.Context, op operation, id string, first connection[wireRelation]) ([]Relation, error) {
+	p, err := page(opIssue, first, Usage{}, wireRelation.typed)
+	if err != nil {
+		return nil, err
+	}
+	out := p.Items
+	for p.HasNextPage {
+		after := p.EndCursor
+		if p, err = fetchPage(ctx, c, op, issuePageVars{pageVars{relationPage, after}, id}, wireRelation.typed); err != nil {
+			return nil, fmt.Errorf("%w (%d relations were read before it)", err, len(out))
+		}
+		out = append(out, p.Items...)
+		if p.HasNextPage && p.EndCursor == after {
+			return nil, fmt.Errorf("linear %s: the page cursor did not advance", op.name)
+		}
+	}
+	return out, nil
 }
 
 type issuePageVars struct {

@@ -155,6 +155,25 @@ func TestInputChecks(t *testing.T) {
 	}
 }
 
+func TestRankAnchor(t *testing.T) {
+	prev, next := &Neighbor{Issue: "p", Order: "a"}, &Neighbor{Issue: "n", Order: "c"}
+	for _, tc := range []struct {
+		name  string
+		in    RankInput
+		want  Neighbor
+		after bool
+	}{
+		{"both", RankInput{Prev: prev, Next: next}, *prev, true},
+		{"previous only", RankInput{Prev: prev}, *prev, true},
+		{"next only", RankInput{Next: next}, *next, false},
+		{"neither", RankInput{}, Neighbor{}, false},
+	} {
+		if got, after := tc.in.Anchor(); got != tc.want || after != tc.after {
+			t.Errorf("%s: Anchor = %+v, %v; want %+v, %v", tc.name, got, after, tc.want, tc.after)
+		}
+	}
+}
+
 func TestFieldScope(t *testing.T) {
 	if id, ok := OnIssue("i").Issue(); !ok || id != "i" {
 		t.Fatal("OnIssue does not name its issue")

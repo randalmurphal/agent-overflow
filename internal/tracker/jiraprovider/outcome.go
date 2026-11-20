@@ -125,6 +125,12 @@ func refusal(err error) tracker.Refusal {
 		r.Message = e.Error()
 		return r
 	}
+	if e, ok := errors.AsType[*notOnIssueError](err); ok {
+		// Before the status: the not found it carries is the reason, not
+		// the tracker's refusal of a write.
+		r.Message = e.Error()
+		return r
+	}
 	if e, ok := errors.AsType[*trackerapi.AuthError](err); ok {
 		r.Reason, r.Message = tracker.ReasonTracker, fmt.Sprintf("the tracker refused the credential (HTTP %d)", e.Status)
 		return r

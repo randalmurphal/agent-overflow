@@ -103,6 +103,23 @@ type SearchPage struct {
 	Catalog
 }
 
+// ChoiceList is the values a pick list offers for typed text. More
+// reports that the tracker may hold matches the list leaves out, so the
+// absence of a value from Choices is not proof that it does not exist: a
+// picker says so and the person types more. A provider sets More whenever
+// it cannot show that the list is whole.
+type ChoiceList struct {
+	Choices []Choice
+	More    bool
+}
+
+// UserList is the users a pick list offers for typed text, with More as
+// ChoiceList has it.
+type UserList struct {
+	Users []User
+	More  bool
+}
+
 // DownloadInput streams one attachment of one issue to To, at most Limit
 // bytes. To is written as the content arrives: after a failure it may
 // hold part of the file, which the caller discards.

@@ -77,7 +77,7 @@ func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []t
 	var out tracker.Rows
 	found := map[tracker.IssueID]bool{}
 	for chunk := range slices.Chunk(distinct(issues), idChunk) {
-		list, err := p.listByID(ctx, b, s, chunk)
+		list, err := p.listByID(ctx, b, chunk, b.rowFields(s))
 		if err != nil {
 			return tracker.Rows{}, fmt.Errorf("jiraprovider: rows of board %s: %w", id, err)
 		}
@@ -97,9 +97,10 @@ func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []t
 	return out, nil
 }
 
-// listByID lists the issues of ids that b lists, in full or not at all.
-func (p *Provider) listByID(ctx context.Context, b board, s site, ids []tracker.IssueID) ([]*jira.Issue, error) {
-	list, err := p.listIDs(ctx, b, s, ids)
+// listByID lists the issues of ids that b lists, with fields, in full or
+// not at all.
+func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID, fields []string) ([]*jira.Issue, error) {
+	list, err := p.listIDs(ctx, b, ids, fields)
 	if err == nil {
 		return list, nil
 	}
@@ -130,22 +131,22 @@ func (p *Provider) listByID(ctx context.Context, b board, s site, ids []tracker.
 		// Every issue exists, so the failure is not about a missing one.
 		return nil, err
 	}
-	return p.listIDs(ctx, b, s, exist)
+	return p.listIDs(ctx, b, exist, fields)
 }
 
 // errIncomplete is a listing Jira attached a warning to.
 var errIncomplete = errors.New("jiraprovider: Jira warned that the listing may be incomplete")
 
-// listIDs lists the issues of ids that b lists, failing with
+// listIDs lists the issues of ids that b lists, with fields, failing with
 // errIncomplete when Jira warns.
-func (p *Provider) listIDs(ctx context.Context, b board, s site, ids []tracker.IssueID) ([]*jira.Issue, error) {
+func (p *Provider) listIDs(ctx context.Context, b board, ids []tracker.IssueID, fields []string) ([]*jira.Issue, error) {
 	refs := make([]string, len(ids))
 	for i, id := range ids {
 		refs[i] = string(id) // checked decimal
 	}
 	res, err := p.jira.ListAllIssues(ctx, jira.ListQuery{
 		List: jira.BoardIssues(b.cfg.BoardID), JQL: "id in (" + strings.Join(refs, ", ") + ")",
-		Fields: b.rowFields(s), MaxResults: idChunk,
+		Fields: fields, MaxResults: idChunk,
 	}, 0)
 	if err != nil {
 		return nil, err

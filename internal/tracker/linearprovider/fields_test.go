@@ -3,6 +3,7 @@ package linearprovider
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,10 +56,14 @@ func TestChoices(t *testing.T) {
 	)
 	ctx := context.Background()
 	onIssue, onCreate := tracker.OnIssue(tracker.IssueID(issueID(1))), tracker.OnCreate(web, "")
-	names := func(cs []tracker.Choice) string {
+	// The lists are read whole, so none says it leaves matches out.
+	names := func(cs tracker.ChoiceList) string {
 		var out []string
-		for _, c := range cs {
+		for _, c := range cs.Choices {
 			out = append(out, c.ID+"="+c.Name)
+		}
+		if cs.More {
+			out = append(out, "more")
 		}
 		return strings.Join(out, " ")
 	}
@@ -66,7 +71,7 @@ func TestChoices(t *testing.T) {
 		t.Errorf("priorities %v %v", cs, err)
 	}
 	users, err := p.AssignableUsers(ctx, onIssue, "USER")
-	if err != nil || len(users) != 2 || users[0].ID != "user-1" || users[1].ID != "user-3" {
+	if err != nil || len(users.Users) != 2 || users.Users[0].ID != "user-1" || users.Users[1].ID != "user-3" || users.More {
 		t.Errorf("assignable %+v %v", users, err)
 	}
 	if cs, err := p.Choices(ctx, onCreate, tracker.FieldAssignee, "ONE"); err != nil || names(cs) != "user-1=User 1" {
@@ -79,7 +84,7 @@ func TestChoices(t *testing.T) {
 		t.Errorf("projects %v %v", cs, err)
 	}
 	for _, f := range []tracker.FieldID{tracker.FieldTitle, tracker.FieldParent, FieldDueDate} {
-		if cs, err := p.Choices(ctx, onCreate, f, ""); err != nil || cs != nil {
+		if cs, err := p.Choices(ctx, onCreate, f, ""); err != nil || cs.Choices != nil || cs.More {
 			t.Errorf("%s choices %v %v", f, cs, err)
 		}
 	}
@@ -88,5 +93,49 @@ func TestChoices(t *testing.T) {
 	}
 	if _, err := p.AssignableUsers(ctx, tracker.OnCreate(web, "type-1"), ""); !errors.Is(err, tracker.ErrInvalidInput) {
 		t.Errorf("an issue type scope: %v", err)
+	}
+}
+
+// A pick list returns at most pickLimit rows: a longer match list is cut
+// to that many with More set, and one of exactly pickLimit is whole.
+func TestPickListLimit(t *testing.T) {
+	t.Parallel()
+	users := func(n int) []lineartest.User {
+		var out []lineartest.User
+		for i := range n {
+			out = append(out, lineartest.User{ID: "user-" + strconv.Itoa(i), Name: "User " + strconv.Itoa(i), Active: true})
+		}
+		return out
+	}
+	labels := func(n int) []lineartest.Label {
+		var out []lineartest.Label
+		for i := range n {
+			out = append(out, lineartest.Label{ID: "label-" + strconv.Itoa(i), Name: "Label " + strconv.Itoa(i)})
+		}
+		return out
+	}
+	p, _ := newProvider(t,
+		membersX(web, users(pickLimit)...),
+		membersX(web, users(pickLimit+1)...),
+		membersX(web, users(pickLimit+1)...),
+		labelsX(web, labels(pickLimit)...),
+		labelsX(web, labels(pickLimit+1)...),
+	)
+	ctx, onCreate := context.Background(), tracker.OnCreate(web, "")
+	if got, err := p.AssignableUsers(ctx, onCreate, ""); err != nil || len(got.Users) != pickLimit || got.More {
+		t.Errorf("exactly the limit: %d users, more %t, %v", len(got.Users), got.More, err)
+	}
+	got, err := p.AssignableUsers(ctx, onCreate, "")
+	if err != nil || len(got.Users) != pickLimit || !got.More || got.Users[pickLimit-1].ID != tracker.UserID("user-"+strconv.Itoa(pickLimit-1)) {
+		t.Errorf("one over the limit: %d users, more %t, %v", len(got.Users), got.More, err)
+	}
+	if cs, err := p.Choices(ctx, onCreate, tracker.FieldAssignee, ""); err != nil || len(cs.Choices) != pickLimit || !cs.More {
+		t.Errorf("assignee choices over the limit: %d, more %t, %v", len(cs.Choices), cs.More, err)
+	}
+	if cs, err := p.Choices(ctx, onCreate, tracker.FieldLabels, ""); err != nil || len(cs.Choices) != pickLimit || cs.More {
+		t.Errorf("labels at the limit: %d, more %t, %v", len(cs.Choices), cs.More, err)
+	}
+	if cs, err := p.Choices(ctx, onCreate, tracker.FieldLabels, ""); err != nil || len(cs.Choices) != pickLimit || !cs.More {
+		t.Errorf("labels over the limit: %d, more %t, %v", len(cs.Choices), cs.More, err)
 	}
 }

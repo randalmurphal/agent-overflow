@@ -19,7 +19,8 @@ import (
 
 // boardIndex is a fake of board 3's issue list as the delta queries it.
 // It reads the two JQL shapes the delta sends with the measured meaning
-// of their time literal, milliseconds since the epoch, and answers the
+// of their time literal, milliseconds since the epoch, and the ID list a
+// write's board check sends, and answers the
 // matching issues by update time then ID, two to a page, with a page
 // token while more match.
 type boardIndex struct {
@@ -40,6 +41,7 @@ type indexed struct {
 var (
 	startJQL  = regexp.MustCompile(`^updated >= (\d+) ORDER BY updated ASC, id ASC$`)
 	resumeJQL = regexp.MustCompile(`^\(updated > (\d+) OR \(updated >= (\d+) AND id > (\d+)\)\) ORDER BY updated ASC, id ASC$`)
+	idsJQL    = regexp.MustCompile(`^id in \((\d+(?:, \d+)*)\)$`)
 )
 
 func (x *boardIndex) set(id int64, updated time.Time) {
@@ -65,6 +67,13 @@ func (x *boardIndex) match(jql string) (func(indexed) bool, bool) {
 	if m := startJQL.FindStringSubmatch(jql); m != nil {
 		ms := num(m[1])
 		return func(is indexed) bool { return is.updated.UnixMilli() >= ms }, true
+	}
+	if m := idsJQL.FindStringSubmatch(jql); m != nil {
+		var listed []int64
+		for s := range strings.SplitSeq(m[1], ", ") {
+			listed = append(listed, num(s))
+		}
+		return func(is indexed) bool { return slices.Contains(listed, is.id) }, true
 	}
 	if m := resumeJQL.FindStringSubmatch(jql); m != nil && m[1] == m[2] {
 		ms, id := num(m[1]), num(m[3])
@@ -212,24 +221,64 @@ func TestChangedRowsDeliversUpdatesDuringWalk(t *testing.T) {
 	}
 }
 
-// TestChangedRowsEmpty proves a walk with nothing to deliver keeps its
-// cursor and reports no more, even when Jira names a next page.
-func TestChangedRowsEmpty(t *testing.T) {
+// TestChangedRowsIdleCursorStays proves a cursor at the start of a walk
+// that finds nothing keeps its position across several reads and reports
+// no more, even when Jira names a next page.
+func TestChangedRowsIdleCursorStays(t *testing.T) {
 	f, x := deltaSite(t)
 	x.token = true
 	start := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
-	page, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", Start: start})
-	if err != nil || len(page.Rows) != 0 || page.More {
-		t.Fatalf("got %+v %v", page, err)
+	want := cursor{V: cursorVersion, Board: "3", AfterMS: start.UnixMilli()}.bytes()
+	q := tracker.DeltaQuery{Board: "3", Start: start}
+	for i := range 3 {
+		page, err := newProvider(t, f, nil).ChangedRows(t.Context(), q)
+		if err != nil || len(page.Rows) != 0 || page.More || string(page.Next) != string(want) {
+			t.Fatalf("read %d: %+v %v", i, page, err)
+		}
+		q = tracker.DeltaQuery{Board: "3", From: page.Next}
+	}
+}
+
+// TestChangedRowsEmptyPageEndsWalk proves a walk whose last page is
+// empty, after a page that named a next one, steps back by walkOverlap
+// like any other walk's end, so a row the index took late, updated just
+// before the walk's newest row, is delivered by the next walk.
+func TestChangedRowsEmptyPageEndsWalk(t *testing.T) {
+	f, x := deltaSite(t)
+	x.token = true
+	at := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
+	x.set(10001, at)
+	x.set(10002, at)
+	first, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", Start: at})
+	if err != nil || ids(first) != "10001 10002" || !first.More {
+		t.Fatalf("page 1: %s more %v %v", ids(first), first.More, err)
+	}
+	rest, last := walk(t, f, first)
+	if len(rest) != 1 || rest[0] != "" {
+		t.Fatalf("the rest of the walk delivered %q", rest)
 	}
 	var c cursor
-	if err := jsonUnmarshal(page.Next, &c); err != nil || c.AfterMS != start.UnixMilli() || c.Board != "3" {
-		t.Errorf("cursor %+v %v", c, err)
+	if err := jsonUnmarshal(last.Next, &c); err != nil || c.AfterMS != at.Add(-walkOverlap).UnixMilli() || c.AfterID != 0 {
+		t.Fatalf("end cursor %+v %v", c, err)
 	}
-	mid := cursor{V: cursorVersion, Board: "3", AfterMS: start.UnixMilli(), AfterID: 10004}
-	page, err = newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", From: mid.bytes()})
-	if err != nil || page.More || string(page.Next) != string(mid.bytes()) {
-		t.Errorf("an empty page mid walk: %+v %v", page, err)
+	x.set(10003, at.Add(-30*time.Second))
+	page, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", From: last.Next})
+	if err != nil || ids(page) != "10003 10001" {
+		t.Errorf("the next walk: %s %v", ids(page), err)
+	}
+}
+
+// TestChangedRowsStepBackFloor proves a walk's end never steps the cursor
+// back before the epoch's first millisecond, which a cursor needs.
+func TestChangedRowsStepBackFloor(t *testing.T) {
+	f, _ := deltaSite(t)
+	mid := cursor{V: cursorVersion, Board: "3", AfterMS: 1000, AfterID: 10004}
+	page, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", From: mid.bytes()})
+	if err != nil || page.More {
+		t.Fatalf("got %+v %v", page, err)
+	}
+	if want := (cursor{V: cursorVersion, Board: "3", AfterMS: 1}).bytes(); string(page.Next) != string(want) {
+		t.Errorf("cursor %s, want %s", page.Next, want)
 	}
 }
 

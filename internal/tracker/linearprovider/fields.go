@@ -97,17 +97,31 @@ func (p *Provider) scopeTeam(ctx context.Context, scope tracker.FieldScope) (str
 	return "", fmt.Errorf("linearprovider: %w: the scope names no issue and no project without an issue type", tracker.ErrInvalidInput)
 }
 
+// pickLimit is the most rows a pick list returns. The pick lists read
+// the team's members, labels and projects to the end and filter them
+// here, so a list is whole and More false unless more than pickLimit
+// rows match; then the first pickLimit are returned with More set.
+const pickLimit = 50
+
+// capped cuts rows to pickLimit and reports whether it cut any.
+func capped[T any](rows []T) ([]T, bool) {
+	if len(rows) > pickLimit {
+		return rows[:pickLimit:pickLimit], true
+	}
+	return rows, false
+}
+
 // AssignableUsers are the active members of the scope's team, apps left
 // out, whose name, display name or email starts with text, case
-// ignored; every one for empty text.
-func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) ([]tracker.User, error) {
+// ignored; every one for empty text, up to pickLimit.
+func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) (tracker.UserList, error) {
 	team, err := p.scopeTeam(ctx, scope)
 	if err != nil {
-		return nil, err
+		return tracker.UserList{}, err
 	}
 	members, err := p.assignable(ctx, team)
 	if err != nil {
-		return nil, err
+		return tracker.UserList{}, err
 	}
 	var out []tracker.User
 	for _, u := range members {
@@ -115,7 +129,8 @@ func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope
 			out = append(out, user(u))
 		}
 	}
-	return out, nil
+	users, more := capped(out)
+	return tracker.UserList{Users: users, More: more}, nil
 }
 
 // assignable are a team's active members that are people.
@@ -128,11 +143,11 @@ func (p *Provider) assignable(ctx context.Context, team string) ([]linear.User, 
 }
 
 // Choices are the values field takes in scope whose name starts with
-// text: the fixed priorities, the team's labels that can be applied
-// (not groups), the team's projects, or the assignable users. Title,
-// description, parent (typed as an identifier) and due date offer none;
-// any other field is unsupported.
-func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field tracker.FieldID, text string) ([]tracker.Choice, error) {
+// text, up to pickLimit: the fixed priorities, the team's labels that
+// can be applied (not groups), the team's projects, or the assignable
+// users. Title, description, parent (typed as an identifier) and due
+// date offer none; any other field is unsupported.
+func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field tracker.FieldID, text string) (tracker.ChoiceList, error) {
 	var out []tracker.Choice
 	keep := func(id, name string) {
 		if hasPrefixFold(name, text) {
@@ -144,37 +159,50 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 		for v, name := range priorityNames {
 			keep(strconv.Itoa(v), name)
 		}
-		return out, nil
 	case tracker.FieldTitle, tracker.FieldDescription, tracker.FieldParent, FieldDueDate:
-		return nil, nil
-	case tracker.FieldAssignee, tracker.FieldLabels, FieldProject:
-	default:
-		return nil, fmt.Errorf("linearprovider: choices of %s: %w", field, tracker.ErrUnsupported)
-	}
-	team, err := p.scopeTeam(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	switch field {
+		return tracker.ChoiceList{}, nil
 	case tracker.FieldAssignee:
+		team, err := p.scopeTeam(ctx, scope)
+		if err != nil {
+			return tracker.ChoiceList{}, err
+		}
 		users, err := p.AssignableUsers(ctx, tracker.OnCreate(tracker.ProjectID(team), ""), text)
-		for _, u := range users {
+		if err != nil {
+			return tracker.ChoiceList{}, err
+		}
+		for _, u := range users.Users {
 			out = append(out, tracker.Choice{ID: string(u.ID), Name: u.Name})
 		}
-		return out, err
+		return tracker.ChoiceList{Choices: out, More: users.More}, nil
 	case tracker.FieldLabels:
+		team, err := p.scopeTeam(ctx, scope)
+		if err != nil {
+			return tracker.ChoiceList{}, err
+		}
 		labels, err := p.applicableLabels(ctx, team)
+		if err != nil {
+			return tracker.ChoiceList{}, err
+		}
 		for _, l := range labels {
 			keep(l.ID, l.Name)
 		}
-		return out, err
-	default:
+	case FieldProject:
+		team, err := p.scopeTeam(ctx, scope)
+		if err != nil {
+			return tracker.ChoiceList{}, err
+		}
 		projects, err := p.teamProjects(ctx, team)
+		if err != nil {
+			return tracker.ChoiceList{}, err
+		}
 		for _, pr := range projects {
 			keep(pr.ID, pr.Name)
 		}
-		return out, err
+	default:
+		return tracker.ChoiceList{}, fmt.Errorf("linearprovider: choices of %s: %w", field, tracker.ErrUnsupported)
 	}
+	choices, more := capped(out)
+	return tracker.ChoiceList{Choices: choices, More: more}, nil
 }
 
 // applicableLabels are the labels team's issues can carry: the team's and

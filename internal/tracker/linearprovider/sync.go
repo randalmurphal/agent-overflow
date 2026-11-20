@@ -97,9 +97,10 @@ var errTooLong = errors.New("linearprovider: the list is longer than its bound")
 
 // BoardIssues lists the team's issues that are open (triage, backlog,
 // unstarted or started), updated at or after window (a superset of
-// those completed or canceled since), or in a cycle Structure keeps.
-// Archived and trashed issues are not listed. A walk past its bound
-// makes the listing incomplete.
+// those completed or canceled since), or in a cycle Structure keeps,
+// reading only their IDs and orders. Archived and trashed issues are not
+// listed. A walk past its bound makes the listing incomplete; a walk
+// ends on the first page that says no more follow, empty or not.
 func (p *Provider) BoardIssues(ctx context.Context, b tracker.BoardID, window time.Time) (tracker.Listing, error) {
 	if b == "" {
 		return tracker.Listing{}, fmt.Errorf("linearprovider: board issues: %w: no board named", tracker.ErrInvalidInput)
@@ -123,7 +124,10 @@ func (p *Provider) BoardIssues(ctx context.Context, b tracker.BoardID, window ti
 	out := tracker.Listing{Complete: true}
 	seen := map[string]bool{}
 	for _, f := range filters {
-		issues, err := p.listAll(ctx, linear.IssueQuery{Filter: f, Limit: listingPage}, listingPages)
+		q := linear.IssueQuery{Filter: f, Limit: listingPage}
+		issues, err := walk(ctx, func(ctx context.Context, after string) (linear.Page[linear.IssuePosition], error) {
+			return p.c.ListIssuePositions(ctx, q, after)
+		}, listingPages)
 		if errors.Is(err, errTooLong) {
 			out.Complete = false
 		} else if err != nil {

@@ -43,18 +43,24 @@ type Issue struct {
 	PrioritySortOrder  float64
 	SubIssueSortOrder  *float64
 	Team, State        string
-	Assignee, Creator  string
-	Cycle, Project     string
-	Parent             string
-	LabelIDs           []string
-	DueDate            string
-	CreatedAt          string
-	UpdatedAt          string
-	StartedAt          string
-	CompletedAt        string
-	CanceledAt         string
-	ArchivedAt         string
-	Trashed            bool
+	// TeamScale is the team's estimate scale the issue carries; empty is
+	// fibonacci, NewTeam's.
+	TeamScale         string
+	Assignee, Creator string
+	Cycle, Project    string
+	Parent            string
+	LabelIDs          []string
+	// LabelNames names the labels the issue lists nested; an ID of
+	// LabelIDs without a name here is left out of that list.
+	LabelNames  map[string]string
+	DueDate     string
+	CreatedAt   string
+	UpdatedAt   string
+	StartedAt   string
+	CompletedAt string
+	CanceledAt  string
+	ArchivedAt  string
+	Trashed     bool
 }
 
 // NewIssue is an issue of team team-web in state state-todo with every
@@ -65,7 +71,7 @@ func NewIssue(id, identifier, updatedAt string, sortOrder float64) Issue {
 		ID: id, Identifier: identifier, Number: 1, Title: "Fix the login page", Description: "Steps:\n1. open",
 		Priority: 2, Estimate: &three, SortOrder: sortOrder, PrioritySortOrder: -10.5,
 		Team: "team-web", State: "state-todo", Assignee: "user-1", Creator: "user-1", Project: "project-1",
-		LabelIDs: []string{"label-bug"}, DueDate: "2026-12-01", CreatedAt: "2026-11-01T09:00:00.000Z", UpdatedAt: updatedAt,
+		LabelIDs: []string{"label-bug"}, LabelNames: map[string]string{"label-bug": "Bug"}, DueDate: "2026-12-01", CreatedAt: "2026-11-01T09:00:00.000Z", UpdatedAt: updatedAt,
 	}
 }
 
@@ -96,14 +102,28 @@ func (i Issue) JSON() string {
 	if i.Trashed {
 		trashed = true
 	}
+	nested := []map[string]string{}
+	for _, id := range labels {
+		if name, ok := i.LabelNames[id]; ok {
+			nested = append(nested, map[string]string{"id": id, "name": name})
+		}
+	}
+	var team any
+	if i.Team != "" {
+		scale := i.TeamScale
+		if scale == "" {
+			scale = "fibonacci"
+		}
+		team = map[string]string{"id": i.Team, "issueEstimationType": scale}
+	}
 	b, err := json.Marshal(map[string]any{
 		"id": i.ID, "identifier": i.Identifier, "number": i.Number, "title": i.Title, "description": null(i.Description),
 		"url": "https://linear.app/example/issue/" + i.Identifier, "branchName": "user1/" + i.Identifier,
 		"priority": i.Priority, "estimate": i.Estimate, "sortOrder": i.SortOrder, "prioritySortOrder": i.PrioritySortOrder,
-		"subIssueSortOrder": i.SubIssueSortOrder, "team": ref(i.Team), "state": ref(i.State),
+		"subIssueSortOrder": i.SubIssueSortOrder, "team": team, "state": ref(i.State),
 		"assignee": ref(i.Assignee), "creator": ref(i.Creator),
 		"cycle": ref(i.Cycle), "project": ref(i.Project), "parent": ref(i.Parent),
-		"labelIds": labels, "dueDate": null(i.DueDate), "createdAt": i.CreatedAt, "updatedAt": i.UpdatedAt,
+		"labelIds": labels, "labels": map[string]any{"nodes": nested}, "dueDate": null(i.DueDate), "createdAt": i.CreatedAt, "updatedAt": i.UpdatedAt,
 		"startedAt": null(i.StartedAt), "completedAt": null(i.CompletedAt), "canceledAt": null(i.CanceledAt),
 		"archivedAt": null(i.ArchivedAt), "trashed": trashed,
 	})

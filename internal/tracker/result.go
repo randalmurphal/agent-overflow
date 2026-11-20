@@ -292,13 +292,36 @@ func (r Result) CreateUnknown() bool {
 	return false
 }
 
+// stepChanges are the kinds of resource a part of each step may change.
+// A part that is applied or unknown names each of them: for its own issue
+// when the kind is an issue's, and for the board or the author and day the
+// write named otherwise. It is the one statement of what a write of each
+// kind leaves stale, so a provider cannot name less.
+//
+// A rank and an estimate change the issue on every board that shares the
+// board's rank or estimate field, which is what the card names: a card is
+// read through every board the mirror has the issue on.
+var stepChanges = map[Step][]ResourceKind{
+	StepCreate:     {ResourceCard, ResourceDetail},
+	StepUpload:     {ResourceDetail},
+	StepEdit:       {ResourceCard, ResourceDetail},
+	StepMove:       {ResourceCard, ResourceDetail},
+	StepEstimate:   {ResourceRow, ResourceCard, ResourceDetail},
+	StepRank:       {ResourceRow, ResourceCard},
+	StepSprintMove: {ResourceRow, ResourceCard, ResourceDetail},
+	StepSprint:     {ResourceStructure},
+	StepComment:    {ResourceDetail},
+	StepLink:       {ResourceDetail},
+	StepWorklog:    {ResourceWorklogs},
+}
+
 // Check reports a result no provider may return: no parts; a part with
 // no step, or with a resource no constructor made; a refusal with no
-// reason; a part that is applied or unknown and names nothing it may have
-// changed, other than a create of unknown outcome; a create part that
-// names an issue and is not applied, or is applied and names none; more
-// than one create part. A provider's tests run it on every result; the
-// caller runs it before acting on one.
+// reason; a part that is applied or unknown and does not name every kind
+// of resource its step may change (stepChanges), other than a create of
+// unknown outcome; a create part that names an issue and is not applied,
+// or is applied and names none; more than one create part. A provider's
+// tests run it on every result; the caller runs it before acting on one.
 func (r Result) Check() error {
 	if len(r.Parts) == 0 {
 		return errors.New("tracker: result has no parts")
@@ -335,10 +358,34 @@ func (p Part) check() error {
 		return fmt.Errorf("a create that is %s names issue %q", state, p.Issue)
 	}
 	lostCreate := p.Step == StepCreate && state == StateUnknown
-	if (state == StateApplied || state == StateUnknown) && len(p.Changed) == 0 && !lostCreate {
-		return fmt.Errorf("%s and names nothing it may have changed", state)
+	if (state != StateApplied && state != StateUnknown) || lostCreate {
+		return nil
+	}
+	for _, kind := range stepChanges[p.Step] {
+		if !p.names(kind) {
+			return fmt.Errorf("%s and does not name the %s it may have changed", state, kind)
+		}
 	}
 	return nil
+}
+
+// names reports whether p.Changed holds a resource of kind: p's own
+// issue's for a card, row or detail, any for a structure or worklogs.
+func (p Part) names(kind ResourceKind) bool {
+	for _, res := range p.Changed {
+		if res.kind != kind {
+			continue
+		}
+		switch kind {
+		case ResourceCard, ResourceRow, ResourceDetail:
+			if res.issue == p.Issue {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // ResourceKind is a kind of mirrored resource, each with one read that
@@ -358,6 +405,22 @@ const (
 	// ResourceWorklogs is one author's worklogs of one day.
 	ResourceWorklogs
 )
+
+func (k ResourceKind) String() string {
+	switch k {
+	case ResourceCard:
+		return "card"
+	case ResourceRow:
+		return "board row"
+	case ResourceDetail:
+		return "detail"
+	case ResourceStructure:
+		return "board structure"
+	case ResourceWorklogs:
+		return "worklogs"
+	}
+	return fmt.Sprintf("ResourceKind(%d)", uint8(k))
+}
 
 // Resource names something a write may have changed. Its constructors are
 // the only way to make one, so each names what its kind needs. Resources

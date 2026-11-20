@@ -122,7 +122,10 @@ func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) trac
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
 	days := editDays(in)
-	read, loc, err := t.readWorklog(ctx, in.From)
+	read, cur, loc, err := t.readWorklog(ctx, in.From)
+	if err == nil && !sameWorklog(cur, in.From) {
+		err = stale(string(in.From.Issue), "worklog "+string(in.From.ID))
+	}
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), days...)
 	}
@@ -138,8 +141,9 @@ func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) trac
 	return worklogResult(in.From.Issue, in.From.Author, outcome(err), days...)
 }
 
-// DeleteWorklog deletes a Jira worklog, giving its time back to the
-// issue's remaining estimate.
+// DeleteWorklog deletes a Jira worklog of the issue From names, giving its
+// time back to the issue's remaining estimate. The worklog is read first,
+// so the result names its author's worklogs of its day as Jira holds them.
 func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -147,8 +151,12 @@ func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) 
 	if err := checkWorklog(in.From); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
-	err := t.jira.DeleteWorklog(ctx, string(in.From.Issue), string(in.From.ID), jira.AdjustAuto())
-	return worklogResult(in.From.Issue, in.From.Author, outcome(err), in.From.Day)
+	_, cur, _, err := t.readWorklog(ctx, in.From)
+	if err != nil {
+		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), in.From.Day)
+	}
+	err = t.jira.DeleteWorklog(ctx, string(in.From.Issue), string(in.From.ID), jira.AdjustAuto())
+	return worklogResult(in.From.Issue, cur.Author, outcome(err), deleteDays(cur, in.From)...)
 }
 
 func checkWorklog(w tracker.Worklog) error {
@@ -159,32 +167,33 @@ func checkWorklog(w tracker.Worklog) error {
 	return err
 }
 
-// readWorklog reads the worklog from names and its author's zone, and
-// refuses one that no longer holds what from says.
-func (t *jiraTime) readWorklog(ctx context.Context, from tracker.Worklog) (jira.Worklog, *time.Location, error) {
+// readWorklog reads the worklog from names, as Jira holds it, and as a
+// neutral worklog in its author's zone, which it returns too. A worklog
+// whose own issue is not from's is refused.
+func (t *jiraTime) readWorklog(ctx context.Context, from tracker.Worklog) (jira.Worklog, tracker.Worklog, *time.Location, error) {
 	read, err := t.jira.Worklog(ctx, string(from.Issue), string(from.ID))
 	if err != nil {
-		return jira.Worklog{}, nil, fmt.Errorf("jiraprovider: read worklog %s: %w", from.ID, err)
+		return jira.Worklog{}, tracker.Worklog{}, nil, fmt.Errorf("jiraprovider: read worklog %s: %w", from.ID, err)
 	}
-	if read.Author == nil {
-		return jira.Worklog{}, nil, fmt.Errorf("jiraprovider: worklog %s names no author", from.ID)
+	if read.Author == nil || read.IssueID == "" {
+		return jira.Worklog{}, tracker.Worklog{}, nil, fmt.Errorf("jiraprovider: worklog %s names no author or issue", from.ID)
 	}
 	author, err := t.jira.User(ctx, read.Author.AccountID)
 	if err != nil {
-		return jira.Worklog{}, nil, fmt.Errorf("jiraprovider: the author of worklog %s: %w", from.ID, err)
+		return jira.Worklog{}, tracker.Worklog{}, nil, fmt.Errorf("jiraprovider: the author of worklog %s: %w", from.ID, err)
 	}
 	loc, err := zone(author)
 	if err != nil {
-		return jira.Worklog{}, nil, err
+		return jira.Worklog{}, tracker.Worklog{}, nil, err
 	}
-	cur, err := nativeWorklog(read, string(from.Issue), loc)
+	cur, err := nativeWorklog(read, read.IssueID, loc)
+	if err == nil {
+		err = checkWorklogIssue(cur, from)
+	}
 	if err != nil {
-		return jira.Worklog{}, nil, err
+		return jira.Worklog{}, tracker.Worklog{}, nil, err
 	}
-	if !sameWorklog(cur, from) {
-		return jira.Worklog{}, nil, stale(string(from.Issue), "worklog "+string(from.ID))
-	}
-	return read, loc, nil
+	return read, cur, loc, nil
 }
 
 // nativeWorklog is w, a worklog of issue, as a neutral worklog whose day

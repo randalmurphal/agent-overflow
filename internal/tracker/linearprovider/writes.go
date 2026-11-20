@@ -22,6 +22,25 @@ func (ch changes) update() linear.UpdateIssueInput {
 	}
 }
 
+// create is the create in team with title of ch. A clear is sent as a
+// clear wherever Linear fills an omitted member: a sub-issue takes its
+// parent's priority and project, and its assignee in some cases
+// (https://linear.app/docs/parent-and-sub-issues), so those go as
+// PriorityNone and null, and a due date as null, which Linear stores as
+// none (measured). A clear of a member Linear leaves empty when omitted
+// is omitted: the description, the labels ("Labels are not inherited",
+// the same page) and the parent.
+func (ch changes) create(team tracker.ProjectID, title string) linear.CreateIssueInput {
+	in := linear.CreateIssueInput{
+		TeamID: string(team), Title: title, Description: ch.description.Value(), AssigneeID: ch.assignee,
+		Priority: ch.priority, LabelIDs: ch.labels.Value(), ProjectID: ch.project, DueDate: ch.dueDate,
+	}
+	if !ch.parent.IsNull() {
+		in.ParentID = ch.parent
+	}
+	return in
+}
+
 // editRefusal is the result of a resolution that failed: refused when
 // the edit was, else not sent because a read failed.
 func editRefusal(step tracker.Step, err error, issues ...tracker.IssueID) tracker.Result {
@@ -50,11 +69,7 @@ func (p *Provider) Create(ctx context.Context, in tracker.CreateInput) tracker.R
 	if err != nil {
 		return editRefusal(tracker.StepCreate, err)
 	}
-	input := linear.CreateIssueInput{
-		TeamID: string(in.Project), Title: in.Title, Description: ch.description.Value(), AssigneeID: ch.assignee,
-		Priority: ch.priority, LabelIDs: ch.labels.Value(), ParentID: ch.parent, ProjectID: ch.project, DueDate: ch.dueDate,
-	}
-	is, err := p.c.CreateIssue(ctx, input)
+	is, err := p.c.CreateIssue(ctx, ch.create(in.Project, in.Title))
 	if err != nil {
 		return one("", tracker.StepCreate, err)
 	}
@@ -94,7 +109,8 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 }
 
 // Move sets an issue's workflow state, the move's ID. Linear's moves take
-// no fields.
+// no fields. It reads the issue and its team's states first and refuses
+// a state of another team.
 func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepMove, err, in.Issue)
@@ -102,25 +118,31 @@ func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Resul
 	if len(in.Fields) > 0 || in.ImageDir != "" {
 		return unsupported(tracker.StepMove, "fields on a move", in.Issue)
 	}
+	if err := p.teamState(ctx, in.Issue, in.Move); err != nil {
+		return editRefusal(tracker.StepMove, err, in.Issue)
+	}
 	_, err := p.c.UpdateIssue(ctx, string(in.Issue), linear.UpdateIssueInput{StateID: linear.Set(string(in.Move))})
 	return one(in.Issue, tracker.StepMove, err, tracker.CardOf(in.Issue), tracker.DetailOf(in.Issue))
 }
 
 // SetEstimate sets the estimate of an issue of the team in.Board: a
-// value on the team's scale, or none. It reads the issue and the team
-// first, and refuses an issue of another team, a team without estimates
-// and a value off its scale.
+// value on the team's scale, or none. It reads the issue within the
+// board and the team first, and refuses an issue not on the board, a
+// team without estimates and a value off its scale.
 func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tracker.Result {
 	step := tracker.StepEstimate
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(step, err, in.Issue)
 	}
-	is, err := p.summary(ctx, in.Issue)
+	if !linear.IsIssueID(string(in.Issue)) {
+		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", in.Issue)}, in.Issue)
+	}
+	on, err := p.onBoard(ctx, in.Board, []string{string(in.Issue)})
 	if err != nil {
 		return beforeWrite(step, err, in.Issue)
 	}
-	if is.TeamID != string(in.Board) {
-		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("issue %s is not on board %s", in.Issue, in.Board)}, in.Issue)
+	if !on[string(in.Issue)] {
+		return tracker.Refuse(step, notOnBoard(in.Issue, in.Board), in.Issue)
 	}
 	t, err := p.team(ctx, string(in.Board))
 	if err != nil {
@@ -135,7 +157,7 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 		value = linear.Set(v)
 	}
 	_, err = p.c.UpdateIssue(ctx, string(in.Issue), linear.UpdateIssueInput{Estimate: value})
-	return one(in.Issue, step, err, tracker.RowOf(in.Board, in.Issue), tracker.DetailOf(in.Issue))
+	return one(in.Issue, step, err, tracker.RowOf(in.Board, in.Issue), tracker.CardOf(in.Issue), tracker.DetailOf(in.Issue))
 }
 
 // onScale is v as Linear's whole-number estimate when the board takes
@@ -152,24 +174,45 @@ func onScale(e tracker.Estimate, v float64) (int, bool) {
 }
 
 // MoveToSprint moves issues into the cycle in.Sprint, or out of any cycle
-// when it is empty, one update each in order. It stops at the first
-// update not applied; the issues after it are not sent.
+// when it is empty, one update each in order. It reads the cycle and the
+// issues within the board first: a cycle that is not the board's or is
+// closed refuses the move, and an issue not on the board is refused while
+// the others proceed. It stops at the first update not applied; the
+// issues after it are not sent.
 func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput) tracker.Result {
 	step := tracker.StepSprintMove
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
+	ids, bad := issueIDs(in.Issues)
+	if len(bad) > 0 {
+		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", bad[0])}, in.Issues...)
+	}
 	cycle := linear.Null[string]()
 	if in.Sprint != "" {
+		if err := p.openCycle(ctx, in.Board, in.Sprint); err != nil {
+			return editRefusal(step, err, in.Issues...)
+		}
 		cycle = linear.Set(string(in.Sprint))
 	}
+	on, err := p.onBoard(ctx, in.Board, ids)
+	if err != nil {
+		return beforeWrite(step, err, in.Issues...)
+	}
 	var out tracker.Result
-	for i, id := range in.Issues {
-		_, err := p.c.UpdateIssue(ctx, string(id), linear.UpdateIssueInput{CycleID: cycle})
-		out.Parts = append(out.Parts, part(id, step, err, tracker.RowOf(in.Board, id), tracker.CardOf(id)))
-		if err != nil {
-			out.Parts = append(out.Parts, notSentAfter(step, id, in.Issues[i+1:])...)
-			break
+	var failed tracker.IssueID
+	for _, id := range in.Issues {
+		switch {
+		case !on[string(id)]:
+			out.Parts = append(out.Parts, tracker.Part{Issue: id, Step: step, Outcome: tracker.Refused(notOnBoard(id, in.Board))})
+		case failed != "":
+			out.Parts = append(out.Parts, notSentAfter(step, failed, []tracker.IssueID{id})...)
+		default:
+			_, err := p.c.UpdateIssue(ctx, string(id), linear.UpdateIssueInput{CycleID: cycle})
+			out.Parts = append(out.Parts, part(id, step, err, tracker.RowOf(in.Board, id), tracker.CardOf(id), tracker.DetailOf(id)))
+			if err != nil {
+				failed = id
+			}
 		}
 	}
 	return out
@@ -235,13 +278,9 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 	return one(in.Issue, step, err, tracker.DetailOf(in.Issue))
 }
 
-// commentPages bounds the pages EditComment reads to find a comment: 1,000
-// comments.
-const commentPages = 10
-
-// EditComment replaces a comment's body. It reads the issue's comments to
-// find it first, and refuses as stale a comment that is gone or whose
-// body is no longer in.From; the check is not atomic with the update.
+// EditComment replaces a comment's body. It reads the comment first and
+// refuses one on another issue, and as stale one that is gone or whose
+// body is no longer in.From.
 func (p *Provider) EditComment(ctx context.Context, in tracker.CommentEdit) tracker.Result {
 	step := tracker.StepComment
 	if err := in.Check(); err != nil {
@@ -250,49 +289,29 @@ func (p *Provider) EditComment(ctx context.Context, in tracker.CommentEdit) trac
 	if in.ImageDir != "" {
 		return unsupported(step, "local images in Markdown", in.Issue)
 	}
-	body, found, err := p.commentBody(ctx, in.Issue, in.Comment)
-	switch {
-	case err != nil:
-		return beforeWrite(step, err, in.Issue)
-	case !found:
-		return refuse(step, tracker.Refusal{Reason: tracker.ReasonStale, Message: "the comment is no longer on the issue"}, in.Issue)
-	case body != in.From:
+	c, err := p.issueComment(ctx, in.Issue, in.Comment)
+	if err != nil {
+		return editRefusal(step, err, in.Issue)
+	}
+	if c.Body != in.From {
 		return refuse(step, tracker.Refusal{Reason: tracker.ReasonStale, Message: "the comment changed since the edit was written"}, in.Issue)
 	}
 	_, err = p.c.UpdateComment(ctx, string(in.Comment), in.Markdown)
 	return one(in.Issue, step, err, tracker.DetailOf(in.Issue))
 }
 
-// commentBody is the body of one of an issue's comments, searched newest
-// first through at most commentPages pages; a comment past them is an
-// error.
-func (p *Provider) commentBody(ctx context.Context, issue tracker.IssueID, id tracker.CommentID) (string, bool, error) {
-	after := ""
-	for range commentPages {
-		page, err := p.c.IssueComments(ctx, string(issue), after)
-		if err != nil {
-			return "", false, fmt.Errorf("linearprovider: comments of %s: %w", issue, err)
-		}
-		for _, c := range page.Items {
-			if c.ID == string(id) {
-				return c.Body, true, nil
-			}
-		}
-		if !page.HasNextPage {
-			return "", false, nil
-		}
-		after = page.EndCursor
-	}
-	return "", false, fmt.Errorf("linearprovider: comment %s is not among the newest %d pages of comments", id, commentPages)
-}
-
-// DeleteComment deletes a comment.
+// DeleteComment deletes a comment. It reads the comment first and refuses
+// one on another issue, and as stale one that is gone.
 func (p *Provider) DeleteComment(ctx context.Context, in tracker.CommentDelete) tracker.Result {
+	step := tracker.StepComment
 	if err := in.Check(); err != nil {
-		return tracker.Invalid(tracker.StepComment, err, in.Issue)
+		return tracker.Invalid(step, err, in.Issue)
+	}
+	if _, err := p.issueComment(ctx, in.Issue, in.Comment); err != nil {
+		return editRefusal(step, err, in.Issue)
 	}
 	err := p.c.DeleteComment(ctx, string(in.Comment))
-	return one(in.Issue, tracker.StepComment, err, tracker.DetailOf(in.Issue))
+	return one(in.Issue, step, err, tracker.DetailOf(in.Issue))
 }
 
 // Link relates two issues by one of the relations LinkTypes lists.
@@ -309,10 +328,15 @@ func (p *Provider) Link(ctx context.Context, in tracker.LinkInput) tracker.Resul
 	return one(in.Outward, tracker.StepLink, err, tracker.DetailOf(in.Outward), tracker.DetailOf(in.Inward))
 }
 
-// Unlink deletes one relation.
+// Unlink deletes one relation. It reads the relation first and refuses
+// one that is not between in.Issue and in.Other, and as stale one that is
+// gone.
 func (p *Provider) Unlink(ctx context.Context, in tracker.UnlinkInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepLink, err, in.Issue)
+	}
+	if err := p.linkBetween(ctx, in); err != nil {
+		return editRefusal(tracker.StepLink, err, in.Issue)
 	}
 	err := p.c.DeleteRelation(ctx, string(in.Link))
 	return one(in.Issue, tracker.StepLink, err, tracker.DetailOf(in.Issue), tracker.DetailOf(in.Other))

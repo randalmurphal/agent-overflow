@@ -23,8 +23,9 @@ func TestIdentityProjectsBoards(t *testing.T) {
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Viewer", Body: viewer},
 		teamsX(lineartest.NewTeam("WEB"), noCycles),
-		teamsX(lineartest.NewTeam("WEB"), noCycles),
-		teamsX(lineartest.NewTeam("WEB"), noCycles),
+		teamX(noCycles),
+		lineartest.Exchange{Op: "Team", Vars: `{"id":"team-gone"}`,
+			Body: `{"data":null,"errors":[{"message":"Entity not found: Team","path":["team"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`},
 	)
 	ctx := context.Background()
 	me, err := p.Identity(ctx)
@@ -57,8 +58,8 @@ func TestIdentityProjectsBoards(t *testing.T) {
 }
 
 // Columns are the states in board order (type, then position), one
-// status each; each type counts in its group; cycles are kept when open
-// or closed at or after the window; users are the workspace's.
+// status each; each type counts in its group; the cycles are those
+// Linear says the window keeps; users are the workspace's.
 func TestStructure(t *testing.T) {
 	t.Parallel()
 	window := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
@@ -73,7 +74,6 @@ func TestStructure(t *testing.T) {
 		{ID: "s-triage", Name: "Triage", Type: "triage", Position: 0, Team: web},
 	}
 	cycles := []lineartest.Cycle{
-		{ID: "c-old", Number: 1, Team: web, StartsAt: "2026-09-01T00:00:00.000Z", EndsAt: "2026-09-15T00:00:00.000Z", CompletedAt: "2026-09-15T00:00:00.000Z", Past: true},
 		{ID: "c-ended-in", Number: 2, Team: web, StartsAt: "2026-09-20T00:00:00.000Z", EndsAt: "2026-10-04T00:00:00.000Z", CompletedAt: "2026-10-04T00:00:00.000Z", Past: true},
 		{ID: "c-now", Number: 3, Name: "Sprint 3", Team: web, StartsAt: "2026-11-16T00:00:00.000Z", EndsAt: "2026-11-30T00:00:00.000Z", Active: true},
 		{ID: "c-next", Number: 4, Team: web, StartsAt: "2026-11-30T00:00:00.000Z", EndsAt: "2026-12-14T00:00:00.000Z", Future: true},
@@ -85,9 +85,9 @@ func TestStructure(t *testing.T) {
 	tshirt := lineartest.NewTeam("WEB")
 	tshirt.Scale, tshirt.Extended, tshirt.AllowZero = "tShirt", true, false
 	p, _ := newProvider(t,
-		teamsX(tshirt),
+		teamX(tshirt),
 		statesX(web, states...),
-		lineartest.Exchange{Op: "Cycles", Vars: `{"first":50,"filter":{"team":{"id":{"eq":"` + web + `"}}}}`, Body: page(cycleNodes...)},
+		lineartest.Exchange{Op: "Cycles", Vars: keptCyclesX(web, "2026-10-01T00:00:00.000Z").Vars, Body: page(cycleNodes...)},
 		lineartest.Exchange{Op: "Users", Vars: `{"first":100,"includeDisabled":true}`, Body: page(
 			lineartest.User{ID: "user-1", Name: "User 1", Active: true}.JSON(), lineartest.User{ID: "user-2", Name: "User 2"}.JSON())},
 	)
@@ -146,9 +146,10 @@ func TestStructure(t *testing.T) {
 func TestStructureRefusesUnknownState(t *testing.T) {
 	t.Parallel()
 	p, _ := newProvider(t,
-		teamsX(lineartest.NewTeam("WEB")),
+		teamX(lineartest.NewTeam("WEB")),
 		statesX(web, lineartest.State{ID: "s-x", Name: "X", Type: "paused", Team: web}),
-		teamsX(lineartest.NewTeam("WEB")),
+		lineartest.Exchange{Op: "Team", Vars: `{"id":"team-gone"}`,
+			Body: `{"data":null,"errors":[{"message":"Entity not found: Team","path":["team"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`},
 	)
 	if _, err := p.Structure(context.Background(), web, time.Time{}); err == nil || !strings.Contains(err.Error(), "unknown type") {
 		t.Errorf("unknown state type: %v", err)

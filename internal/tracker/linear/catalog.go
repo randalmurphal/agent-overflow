@@ -2,14 +2,21 @@ package linear
 
 import (
 	"context"
+	"time"
 )
 
 // Page sizes of the catalog reads, each well under Linear's 10,000-point
 // cap per query: a team costs about 6 points, a state 2, a user 2, a
 // label 3, a project 4 and a cycle 4 (its histories are scalar lists).
+// Linear charges a catalog connection by its page size, not by what it
+// returns: a cycles read at 50 that returned nothing cost 441 points
+// (measured). A KeptSince read selects the active cycle, the upcoming
+// ones and those inside the window, so it takes a smaller page; a longer
+// list pages on.
 const (
-	catalogPage = 100
-	cyclePage   = 50
+	catalogPage   = 100
+	cyclePage     = 50
+	keptCyclePage = 20
 )
 
 var opViewer = newQuery("Viewer", "viewer", `query Viewer {
@@ -77,6 +84,10 @@ type CycleQuery struct {
 	TeamID          string // required
 	When            CycleWhen
 	IncludeArchived bool
+	// KeptSince, when set, selects only the cycles that are active or
+	// future or that ended or completed at or after it, so a read of the
+	// cycles a window keeps does not grow with the team's age.
+	KeptSince time.Time
 }
 
 var opCycles = newQuery("Cycles", "page", `query Cycles($filter: CycleFilter!, $includeArchived: Boolean, $first: Int!, $after: String) {
@@ -87,10 +98,13 @@ var opCycles = newQuery("Cycles", "page", `query Cycles($filter: CycleFilter!, $
 `+cycleFields)
 
 type cycleFilter struct {
-	Team     *entityFilter `json:"team"`
-	IsActive *boolEq       `json:"isActive,omitempty"`
-	IsFuture *boolEq       `json:"isFuture,omitempty"`
-	IsPast   *boolEq       `json:"isPast,omitempty"`
+	Team        *entityFilter   `json:"team,omitempty"`
+	IsActive    *boolEq         `json:"isActive,omitempty"`
+	IsFuture    *boolEq         `json:"isFuture,omitempty"`
+	IsPast      *boolEq         `json:"isPast,omitempty"`
+	EndsAt      *dateComparator `json:"endsAt,omitempty"`
+	CompletedAt *dateComparator `json:"completedAt,omitempty"`
+	Or          []cycleFilter   `json:"or,omitempty"`
 }
 
 type boolEq struct {
@@ -122,8 +136,14 @@ func (c *Client) Cycles(ctx context.Context, q CycleQuery) ([]Cycle, error) {
 	default:
 		return nil, invalid("Cycles", "unknown CycleWhen")
 	}
+	size := cyclePage
+	if !q.KeptSince.IsZero() {
+		since := &dateComparator{Gte: formatTime(q.KeptSince)}
+		filter.Or = []cycleFilter{{IsActive: &boolEq{true}}, {IsFuture: &boolEq{true}}, {EndsAt: since}, {CompletedAt: since}}
+		size = keptCyclePage
+	}
 	return collect(ctx, c, opCycles, func(after string) any {
-		return cycleVars{pageVars{First: cyclePage, After: after}, filter, q.IncludeArchived}
+		return cycleVars{pageVars{First: size, After: after}, filter, q.IncludeArchived}
 	}, wireCycle.typed)
 }
 

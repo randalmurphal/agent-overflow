@@ -282,18 +282,19 @@ func (c *Client) writeComment(ctx context.Context, path, id string, body any) (*
 }
 
 // uploadInto attaches imgs, whose content held has, to issue and returns
-// a copy of doc naming them by media ID; doc itself without images.
+// a copy of doc naming them by media ID; doc itself without images. Its
+// failures are uploadImages', with the comment as the write not sent.
 func (c *Client) uploadInto(ctx context.Context, issue string, doc *adf.Node, imgs []*Image, held map[*Image][]byte, done *[]Attachment) (*adf.Node, error) {
 	if len(imgs) == 0 {
 		return doc, nil
 	}
-	ids, err := c.uploadImages(ctx, issue, imgs, held, done)
+	ids, err := c.uploadImages(ctx, issue, imgs, held, done, StepComment)
 	if err != nil {
-		return nil, &StepError{Step: StepUpload, Err: err}
+		return nil, err
 	}
 	out, err := copyDoc(doc)
 	if err != nil {
-		return nil, &StepError{Step: StepUpload, Err: notSentErr(err)}
+		return nil, unsent(StepComment, err)
 	}
 	adf.ReplaceMediaIDs(out, ids)
 	return out, nil

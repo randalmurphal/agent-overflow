@@ -119,9 +119,14 @@ type Step string
 const (
 	// StepCheck reads the issue again to see that a plan still applies.
 	StepCheck Step = "check"
-	// StepUpload attaches a file: a local image the Markdown embeds, or
-	// the files of Attach.
+	// StepUpload is one attach request: of a local image the Markdown
+	// embeds, or of the files of Attach.
 	StepUpload Step = "upload"
+	// StepMediaID reads the media ID of an image just attached, which the
+	// document embedding it names it by. It writes nothing: its failure is
+	// a *trackerapi.NotSentError, and the write that would have followed
+	// was not sent.
+	StepMediaID Step = "media ID"
 	// StepCreate creates the issue.
 	StepCreate Step = "create"
 	// StepEdit writes the issue's fields.
@@ -156,6 +161,13 @@ const (
 type StepError struct {
 	Step Step
 	Err  error
+}
+
+// unsent is the failure of step, a write never sent because what it needed
+// from the requests before it could not be read or built (an uploaded
+// image's media ID, the document that embeds it).
+func unsent(step Step, err error) *StepError {
+	return &StepError{Step: step, Err: &trackerapi.NotSentError{Err: err}}
 }
 
 func (e *StepError) Error() string { return fmt.Sprintf("jira: %s step: %v", e.Step, e.Err) }

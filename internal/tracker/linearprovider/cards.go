@@ -10,9 +10,11 @@ import (
 	"agent-overflow/internal/tracker/linear"
 )
 
-// idChunk is the most IDs one read by ID names: one page of the client's
-// default size, about 1,000 points by Linear's documented rule.
-const idChunk = 100
+// idChunk is the most IDs one read by ID names: one page of Linear's
+// largest size. Linear charges a page of issues by the issues it returns
+// (measured), about 10 points each by its documented rule, so a full
+// chunk costs about 2,500, under the 10,000-point cap of one query.
+const idChunk = 250
 
 // priorityNames are Linear's fixed priorities by value.
 var priorityNames = []string{"No priority", "Urgent", "High", "Medium", "Low"}
@@ -26,37 +28,51 @@ func priorityChoice(p linear.Priority) tracker.Choice {
 	return tracker.Choice{ID: strconv.Itoa(int(p)), Name: priorityNames[p]}
 }
 
-// labelNames maps the label IDs issues carry to their names, reading
-// each team's labels (its own and the workspace's) for the teams whose
-// issues carry any; none when no issue carries a label. An ID it cannot
-// name (an archived label) is left out.
+// labelNames maps the label IDs issues carry to their names: those each
+// issue's read listed with it, and for any other ID (an issue with more
+// labels than the nested list holds, an archived label) a read of
+// exactly the IDs left. An ID Linear does not answer is left out.
 func (p *Provider) labelNames(ctx context.Context, issues []linear.Issue) (map[string]string, error) {
-	var teams []string
-	for _, is := range issues {
-		if len(is.LabelIDs) > 0 && !slices.Contains(teams, is.TeamID) {
-			teams = append(teams, is.TeamID)
-		}
-	}
 	names := map[string]string{}
-	for _, team := range teams {
-		if err := p.addLabelNames(ctx, team, names); err != nil {
-			return nil, err
+	var ids []string
+	for _, is := range issues {
+		for _, l := range is.Labels {
+			names[l.ID] = l.Name
 		}
+		ids = append(ids, is.LabelIDs...)
 	}
-	return names, nil
+	return labelsByID(ctx, p, names, ids)
 }
 
-// addLabelNames adds the names of the labels team's issues can carry to
-// names.
-func (p *Provider) addLabelNames(ctx context.Context, team string, names map[string]string) error {
-	labels, err := p.c.Labels(ctx, team)
+// labelsByID adds to names the names of the labels among ids it lacks,
+// read by exactly those IDs, and returns it.
+func labelsByID(ctx context.Context, p *Provider, names map[string]string, ids []string) (map[string]string, error) {
+	return namesOf(ctx, "labels", names, ids, p.c.LabelsByID, func(l linear.Label) (string, string) { return l.ID, l.Name })
+}
+
+// namesOf adds to known the names read gives the distinct non-empty IDs
+// among ids that known lacks, and returns it; no request when it lacks
+// none.
+func namesOf[T any](ctx context.Context, what string, known map[string]string, ids []string, read func(context.Context, []string) ([]T, error), name func(T) (id, name string)) (map[string]string, error) {
+	var asked []string
+	for _, id := range ids {
+		if _, ok := known[id]; !ok && id != "" && !slices.Contains(asked, id) {
+			asked = append(asked, id)
+		}
+	}
+	out := known
+	if len(asked) == 0 {
+		return out, nil
+	}
+	found, err := read(ctx, asked)
 	if err != nil {
-		return fmt.Errorf("linearprovider: labels of team %s: %w", team, err)
+		return nil, fmt.Errorf("linearprovider: %s by ID: %w", what, err)
 	}
-	for _, l := range labels {
-		names[l.ID] = l.Name
+	for _, v := range found {
+		id, n := name(v)
+		out[id] = n
 	}
-	return nil
+	return out, nil
 }
 
 // card is an issue as a board row draws it. A label labelNames could not
@@ -96,21 +112,13 @@ func (p *Provider) cards(ctx context.Context, issues []linear.Issue) ([]tracker.
 }
 
 // rows are the issues of board among issues as its rows: the card, the
-// order key of sortOrder, and the estimate when the team uses estimates.
-// The team's settings are read only when an issue carries an estimate.
+// order key of sortOrder, and the estimate when the team uses estimates,
+// which each issue's read says with its team's scale.
 func (p *Provider) rows(ctx context.Context, b tracker.BoardID, issues []linear.Issue) ([]tracker.Row, error) {
 	issues = slices.DeleteFunc(slices.Clone(issues), func(is linear.Issue) bool { return is.TeamID != string(b) })
 	cards, err := p.cards(ctx, issues)
 	if err != nil {
 		return nil, err
-	}
-	estimates := false
-	if slices.ContainsFunc(issues, func(is linear.Issue) bool { return is.Estimate != nil }) {
-		t, err := p.team(ctx, string(b))
-		if err != nil {
-			return nil, err
-		}
-		estimates = estimate(t.Estimation).Unit != tracker.UnitNone
 	}
 	out := make([]tracker.Row, 0, len(issues))
 	for i, is := range issues {
@@ -119,7 +127,8 @@ func (p *Provider) rows(ctx context.Context, b tracker.BoardID, issues []linear.
 			return nil, fmt.Errorf("linearprovider: issue %s: %w", is.ID, err)
 		}
 		r := tracker.Row{Card: cards[i], Order: key}
-		if estimates && is.Estimate != nil {
+		counted := estimate(linear.Estimation{Scale: is.TeamEstimateScale}).Unit != tracker.UnitNone
+		if counted && is.Estimate != nil {
 			v := *is.Estimate
 			r.Estimate = &v
 		}
@@ -166,10 +175,20 @@ func (p *Provider) issuesByID(ctx context.Context, ids []string, filter linear.I
 // listAll reads every page of q; maxPages bounds the walk (zero is no
 // bound) and a walk it cuts short fails with errTooLong.
 func (p *Provider) listAll(ctx context.Context, q linear.IssueQuery, maxPages int) ([]linear.Issue, error) {
-	var out []linear.Issue
+	return walk(ctx, func(ctx context.Context, after string) (linear.Page[linear.Issue], error) {
+		return p.c.ListIssues(ctx, q, after)
+	}, maxPages)
+}
+
+// walk reads every page read returns, from the first, until one says no
+// more follow, however short or empty; maxPages bounds the walk (zero is
+// no bound) and a walk it cuts short returns what it read with
+// errTooLong. A failed page fails the walk.
+func walk[T any](ctx context.Context, read func(context.Context, string) (linear.Page[T], error), maxPages int) ([]T, error) {
+	var out []T
 	after := ""
 	for pages := 1; ; pages++ {
-		page, err := p.c.ListIssues(ctx, q, after)
+		page, err := read(ctx, after)
 		if err != nil {
 			return nil, fmt.Errorf("linearprovider: list issues: %w", err)
 		}
@@ -201,7 +220,7 @@ func missing(asked []tracker.IssueID, found map[tracker.IssueID]bool) []tracker.
 }
 
 // BoardRows are the rows of the issues the team holds now, read in
-// requests of 100 IDs. Archived and trashed issues, issues of another
+// requests of 250 IDs. Archived and trashed issues, issues of another
 // team and IDs that are not issue IDs are Missing.
 func (p *Provider) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID) (tracker.Rows, error) {
 	if b == "" {
@@ -224,7 +243,7 @@ func (p *Provider) BoardRows(ctx context.Context, b tracker.BoardID, ids []track
 }
 
 // Cards are the cards of the issues that exist, archived ones included,
-// read in requests of 100 IDs. Trashed issues and IDs that are not
+// read in requests of 250 IDs. Trashed issues and IDs that are not
 // issue IDs are Missing.
 func (p *Provider) Cards(ctx context.Context, ids []tracker.IssueID) (tracker.Cards, error) {
 	valid, _ := issueIDs(ids)

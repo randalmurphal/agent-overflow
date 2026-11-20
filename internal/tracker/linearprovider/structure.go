@@ -103,18 +103,16 @@ func (p *Provider) Structure(ctx context.Context, b tracker.BoardID, window time
 }
 
 // keptCycles are a team's cycles that are active or future, or ended or
-// completed at or after window, oldest first.
+// completed at or after window, oldest first. Linear selects them, so
+// the read does not grow with the team's past cycles.
 func (p *Provider) keptCycles(ctx context.Context, team string, window time.Time) ([]tracker.Sprint, error) {
-	cycles, err := p.c.Cycles(ctx, linear.CycleQuery{TeamID: team})
+	cycles, err := p.c.Cycles(ctx, linear.CycleQuery{TeamID: team, KeptSince: window})
 	if err != nil {
 		return nil, fmt.Errorf("linearprovider: cycles of team %s: %w", team, err)
 	}
-	var out []tracker.Sprint
+	out := make([]tracker.Sprint, 0, len(cycles))
 	for _, c := range cycles {
-		s := sprint(c)
-		if s.State != tracker.SprintClosed || !s.End.Before(window) || !s.Completed.Before(window) {
-			out = append(out, s)
-		}
+		out = append(out, sprint(c))
 	}
 	slices.SortStableFunc(out, func(a, b tracker.Sprint) int { return a.Start.Compare(b.Start) })
 	return out, nil

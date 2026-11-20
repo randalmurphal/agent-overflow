@@ -20,39 +20,52 @@ func (p *Provider) CreateSprint(ctx context.Context, in tracker.SprintInput) tra
 		return tracker.Invalid(tracker.StepSprint, err)
 	}
 	_, err = p.jira.CreateSprint(ctx, jira.SprintInput{Board: board, Name: in.Name, Goal: in.Goal, Start: in.Start, End: in.End})
-	return sprintPart(in.Board, err)
+	return sprintPart(in.Board, outcome(err))
 }
 
-// StartSprint starts a future sprint with its dates.
+// StartSprint starts a future sprint of the board with its dates.
 func (p *Provider) StartSprint(ctx context.Context, in tracker.SprintStart) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepSprint, err)
 	}
-	sprint, err := sprintNumber(in.Sprint)
-	if err == nil {
-		_, err = boardNumber(in.Board)
-	}
-	if err != nil {
+	if err := checkSprintIDs(in.Board, in.Sprint); err != nil {
 		return tracker.Invalid(tracker.StepSprint, err)
 	}
+	sprint, err := p.boardSprint(ctx, in.Board, in.Sprint, jira.SprintFuture)
+	if err != nil {
+		return sprintPart(in.Board, beforeSend(err))
+	}
 	_, err = p.jira.StartSprint(ctx, jira.SprintStart{ID: sprint, Start: in.Start, End: in.End})
-	return sprintPart(in.Board, err)
+	return sprintPart(in.Board, outcome(err))
 }
 
-// EditSprint changes a sprint's name, goal or dates.
+// EditSprint changes the name, goal or dates of a sprint of the board.
 func (p *Provider) EditSprint(ctx context.Context, in tracker.SprintEdit) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepSprint, err)
 	}
-	sprint, err := sprintNumber(in.Sprint)
-	if err == nil {
-		_, err = boardNumber(in.Board)
-	}
-	if err != nil {
+	if err := checkSprintIDs(in.Board, in.Sprint); err != nil {
 		return tracker.Invalid(tracker.StepSprint, err)
 	}
+	sprint, err := p.boardSprint(ctx, in.Board, in.Sprint)
+	if err != nil {
+		return sprintPart(in.Board, beforeSend(err))
+	}
 	_, err = p.jira.UpdateSprint(ctx, jira.SprintUpdate{ID: sprint, Name: in.Name, Goal: in.Goal, Start: in.Start, End: in.End})
-	return sprintPart(in.Board, err)
+	return sprintPart(in.Board, outcome(err))
+}
+
+// checkSprintIDs refuses a board or sprints that are not Jira IDs.
+func checkSprintIDs(board tracker.BoardID, sprints ...tracker.SprintID) error {
+	if _, err := boardNumber(board); err != nil {
+		return err
+	}
+	for _, s := range sprints {
+		if _, err := sprintNumber(s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CompleteSprint closes an active sprint through the jira client's
@@ -68,24 +81,24 @@ func (p *Provider) EditSprint(ctx context.Context, in tracker.SprintEdit) tracke
 //     caller runs the completion again;
 //   - otherwise the outcome of the close's answer, unknown included.
 //
-// A completion refused before any write is the close part alone.
+// A completion refused before any write is the close part alone; so is one
+// whose sprint is not an active sprint of the board, or whose MoveTo is
+// not an open one.
 func (p *Provider) CompleteSprint(ctx context.Context, in tracker.SprintCompletion) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepSprint, err)
 	}
-	board, err := boardNumber(in.Board)
-	if err != nil {
-		return tracker.Invalid(tracker.StepSprint, err)
-	}
-	sprint, err := sprintNumber(in.Sprint)
-	if err != nil {
-		return tracker.Invalid(tracker.StepSprint, err)
-	}
-	var moveTo int64
+	ids := []tracker.SprintID{in.Sprint}
 	if in.MoveTo != "" {
-		if moveTo, err = sprintNumber(in.MoveTo); err != nil {
-			return tracker.Invalid(tracker.StepSprint, err)
-		}
+		ids = append(ids, in.MoveTo)
+	}
+	if err := checkSprintIDs(in.Board, ids...); err != nil {
+		return tracker.Invalid(tracker.StepSprint, err)
+	}
+	board, _ := boardNumber(in.Board)
+	sprint, moveTo, err := p.completionSprints(ctx, in)
+	if err != nil {
+		return sprintPart(in.Board, beforeSend(err))
 	}
 	res, err := p.jira.CompleteSprint(ctx, jira.SprintCompletion{Sprint: sprint, MoveTo: moveTo, Board: board})
 	moveErr, moveFailed := errors.AsType[*jira.BatchError](err)
@@ -114,9 +127,31 @@ func (p *Provider) CompleteSprint(ctx context.Context, in tracker.SprintCompleti
 	return tracker.Result{Parts: append(parts, closing)}
 }
 
+// completionSprints are in's sprint and the sprint it moves issues to
+// (zero for the backlog) by number, read from one listing of the board's
+// open sprints: the sprint must be an active one of the board, MoveTo an
+// active or future one.
+func (p *Provider) completionSprints(ctx context.Context, in tracker.SprintCompletion) (sprint, moveTo int64, err error) {
+	open, err := p.boardSprints(ctx, in.Board, jira.SprintActive, jira.SprintFuture)
+	if err != nil {
+		return 0, 0, err
+	}
+	sprint, _ = sprintNumber(in.Sprint)
+	if open[sprint] != jira.SprintActive {
+		return 0, 0, notBoardSprint(in.Board, in.Sprint, []jira.SprintState{jira.SprintActive})
+	}
+	if in.MoveTo != "" {
+		moveTo, _ = sprintNumber(in.MoveTo)
+		if _, ok := open[moveTo]; !ok {
+			return 0, 0, notBoardSprint(in.Board, in.MoveTo, []jira.SprintState{jira.SprintActive, jira.SprintFuture})
+		}
+	}
+	return sprint, moveTo, nil
+}
+
 // sprintPart is a sprint write's one part, about no issue.
-func sprintPart(board tracker.BoardID, err error) tracker.Result {
-	return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepSprint, Outcome: outcome(err), Changed: []tracker.Resource{tracker.StructureOf(board)}}}}
+func sprintPart(board tracker.BoardID, o tracker.Outcome) tracker.Result {
+	return tracker.Result{Parts: []tracker.Part{{Step: tracker.StepSprint, Outcome: o, Changed: []tracker.Resource{tracker.StructureOf(board)}}}}
 }
 
 // AddComment adds a comment, uploading the local images its Markdown
@@ -132,7 +167,7 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 		tracker.AudienceUnset: jira.AudienceUnset, tracker.AudiencePublic: jira.AudiencePublic, tracker.AudienceInternal: jira.AudienceInternal,
 	}[in.Audience]
 	res, err := p.jira.AddComment(ctx, jira.CommentInput{Issue: string(in.Issue), Markdown: in.Markdown, Audience: aud, ImageDir: in.ImageDir})
-	return commentParts(in.Issue, len(res.Uploaded) > 0, err)
+	return commentParts(in.Issue, res.Uploaded, err)
 }
 
 // EditComment replaces a comment's body when it still renders to the
@@ -148,21 +183,23 @@ func (p *Provider) EditComment(ctx context.Context, in tracker.CommentEdit) trac
 	if _, err := numericID("comment", string(in.Comment)); err != nil {
 		return tracker.Invalid(tracker.StepComment, err, in.Issue)
 	}
-	read, err := p.jira.Comment(ctx, string(in.Issue), string(in.Comment))
+	read, err := p.readComment(ctx, in.Issue, in.Comment)
 	if err == nil && adf.ToMarkdown(read.Body) != in.From {
 		err = stale(string(in.Issue), "comment "+string(in.Comment))
 	}
 	if err != nil {
-		return commentParts(in.Issue, false, fmt.Errorf("jiraprovider: read comment %s: %w", in.Comment, err))
+		return commentParts(in.Issue, nil, err)
 	}
 	res, err := p.jira.EditComment(ctx, jira.CommentEdit{
 		Issue: string(in.Issue), ID: string(in.Comment), Markdown: in.Markdown, From: &read,
 		AcceptLoss: in.AcceptLoss, ImageDir: in.ImageDir,
 	})
-	return commentParts(in.Issue, len(res.Uploaded) > 0, err)
+	return commentParts(in.Issue, res.Uploaded, err)
 }
 
-// DeleteComment deletes a comment.
+// DeleteComment deletes a comment of the issue, read first through the
+// issue's path so a comment of another issue is refused before the
+// delete.
 func (p *Provider) DeleteComment(ctx context.Context, in tracker.CommentDelete) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepComment, err, in.Issue)
@@ -170,14 +207,22 @@ func (p *Provider) DeleteComment(ctx context.Context, in tracker.CommentDelete) 
 	if err := checkIssue(in.Issue); err != nil {
 		return tracker.Invalid(tracker.StepComment, err, in.Issue)
 	}
-	err := p.jira.DeleteComment(ctx, string(in.Issue), string(in.Comment))
-	return tracker.Result{Parts: []tracker.Part{{Issue: in.Issue, Step: tracker.StepComment, Outcome: outcome(err), Changed: []tracker.Resource{tracker.DetailOf(in.Issue)}}}}
+	if _, err := numericID("comment", string(in.Comment)); err != nil {
+		return tracker.Invalid(tracker.StepComment, err, in.Issue)
+	}
+	var o tracker.Outcome
+	if _, err := p.readComment(ctx, in.Issue, in.Comment); err != nil {
+		o = beforeSend(err)
+	} else {
+		o = outcome(p.jira.DeleteComment(ctx, string(in.Issue), string(in.Comment)))
+	}
+	return tracker.Result{Parts: []tracker.Part{{Issue: in.Issue, Step: tracker.StepComment, Outcome: o, Changed: []tracker.Resource{tracker.DetailOf(in.Issue)}}}}
 }
 
 // commentParts are a comment write's parts: its images' upload when it
 // made one, then the comment. Either changes the issue's detail.
-func commentParts(issue tracker.IssueID, uploaded bool, err error) tracker.Result {
-	res := stepParts(issue, tracker.StepComment, uploaded, err)
+func commentParts(issue tracker.IssueID, stored []jira.Attachment, err error) tracker.Result {
+	res := stepParts(issue, tracker.StepComment, stored, err)
 	for i := range res.Parts {
 		res.Parts[i].Changed = []tracker.Resource{tracker.DetailOf(issue)}
 	}
@@ -196,7 +241,7 @@ func (p *Provider) Link(ctx context.Context, in tracker.LinkInput) tracker.Resul
 		return tracker.Invalid(tracker.StepLink, err, in.Outward)
 	}
 	err := p.jira.LinkIssues(ctx, jira.LinkInput{Type: string(in.Type), Outward: string(in.Outward), Inward: string(in.Inward)})
-	return linkPart(in.Outward, in.Inward, err)
+	return linkPart(in.Outward, in.Inward, outcome(err))
 }
 
 // Unlink removes one link.
@@ -207,15 +252,20 @@ func (p *Provider) Unlink(ctx context.Context, in tracker.UnlinkInput) tracker.R
 	if err := checkIssues([]tracker.IssueID{in.Issue, in.Other}); err != nil {
 		return tracker.Invalid(tracker.StepLink, err, in.Issue)
 	}
-	err := p.jira.UnlinkIssues(ctx, string(in.Link))
-	return linkPart(in.Issue, in.Other, err)
+	if _, err := numericID("issue link", string(in.Link)); err != nil {
+		return tracker.Invalid(tracker.StepLink, err, in.Issue)
+	}
+	if err := p.checkLink(ctx, in.Issue, in.Other, in.Link); err != nil {
+		return linkPart(in.Issue, in.Other, beforeSend(err))
+	}
+	return linkPart(in.Issue, in.Other, outcome(p.jira.UnlinkIssues(ctx, string(in.Link))))
 }
 
 // linkPart is a link write's part, about issue, which may change both
 // issues' detail.
-func linkPart(issue, other tracker.IssueID, err error) tracker.Result {
+func linkPart(issue, other tracker.IssueID, o tracker.Outcome) tracker.Result {
 	return tracker.Result{Parts: []tracker.Part{{
-		Issue: issue, Step: tracker.StepLink, Outcome: outcome(err),
+		Issue: issue, Step: tracker.StepLink, Outcome: o,
 		Changed: []tracker.Resource{tracker.DetailOf(issue), tracker.DetailOf(other)},
 	}}}
 }

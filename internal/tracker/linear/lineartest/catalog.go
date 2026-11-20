@@ -202,8 +202,10 @@ func RelationJSON(id, kind string, issue, related IssueRef) string {
 }
 
 // Detail is what the single-issue read adds to an issue; each list is
-// its first page.
+// its first page. A relation cursor, when set, says that page has more.
 type Detail struct {
+	// ProjectName is the name of the issue's project, when it has one.
+	ProjectName                 string
 	Parent                      *IssueRef
 	Children                    []string
 	MoreChildren                bool
@@ -213,6 +215,8 @@ type Detail struct {
 	Attachments                 []string
 	MoreAttachments             bool
 	Relations, InverseRelations []string
+	RelationCursor              string
+	InverseRelationCursor       string
 }
 
 // DetailJSON is i with d, as the single-issue read answers it.
@@ -222,12 +226,16 @@ func DetailJSON(i Issue, d Detail) string {
 	if d.Parent != nil {
 		parent = d.Parent.JSON()
 	}
-	return base[:len(base)-1] + `,"parent":` + parent +
+	project := "null"
+	if i.Project != "" {
+		project = encode(map[string]any{"id": i.Project, "name": d.ProjectName})
+	}
+	return base[:len(base)-1] + `,"project":` + project + `,"parent":` + parent +
 		`,"children":` + ConnectionJSON(d.Children, d.MoreChildren, "") +
 		`,"comments":` + ConnectionJSON(d.Comments, d.MoreComments, d.CommentCursor) +
 		`,"attachments":` + ConnectionJSON(d.Attachments, d.MoreAttachments, "") +
-		`,"relations":` + ConnectionJSON(d.Relations, false, "") +
-		`,"inverseRelations":` + ConnectionJSON(d.InverseRelations, false, "") + `}`
+		`,"relations":` + ConnectionJSON(d.Relations, d.RelationCursor != "", d.RelationCursor) +
+		`,"inverseRelations":` + ConnectionJSON(d.InverseRelations, d.InverseRelationCursor != "", d.InverseRelationCursor) + `}`
 }
 
 // IssueChangesJSON is one node of the batched history read: an issue's

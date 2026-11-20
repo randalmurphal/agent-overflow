@@ -107,21 +107,17 @@ func board(t linear.Team) tracker.Board {
 	return tracker.Board{ID: tracker.BoardID(t.ID), Project: tracker.ProjectID(t.ID), Name: t.Name, Sprints: t.CyclesEnabled}
 }
 
-// team is one team the key can see, read with every other; one it cannot
-// see matches trackerapi.ErrNotFound.
+// team is one team the key can see, read by its ID; one it cannot see
+// matches trackerapi.ErrNotFound.
 func (p *Provider) team(ctx context.Context, id string) (linear.Team, error) {
 	if id == "" {
 		return linear.Team{}, fmt.Errorf("linearprovider: %w: no team named", tracker.ErrInvalidInput)
 	}
-	teams, err := p.c.Teams(ctx)
+	t, err := p.c.Team(ctx, id)
 	if err != nil {
 		return linear.Team{}, fmt.Errorf("linearprovider: read team %s: %w", id, err)
 	}
-	i := slices.IndexFunc(teams, func(t linear.Team) bool { return t.ID == id })
-	if i < 0 {
-		return linear.Team{}, fmt.Errorf("linearprovider: team %s: %w", id, trackerapi.ErrNotFound)
-	}
-	return teams[i], nil
+	return *t, nil
 }
 
 // The link types Linear can create, by its relation type. A relation read

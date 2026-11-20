@@ -11,8 +11,9 @@ import (
 )
 
 // Bounds of the read Rank makes when its neighbors leave no room: the
-// team's manual order, rankPage issues a page, at most rankPages pages
-// (2,500 issues, about 25,000 points by Linear's documented rule).
+// team's manual order by ID and order alone, rankPage issues a page, at
+// most rankPages pages (2,500 issues, about 3,000 points by Linear's
+// documented rule).
 const (
 	rankPage  = 250
 	rankPages = 10
@@ -20,48 +21,89 @@ const (
 
 // Rank places issues, in order, between two neighbors in the team's
 // manual order (sortOrder, which every board column and the backlog
-// share) with one update per issue. The values come from the client's
-// Spread of the neighbors' keys. When no values fit between them
-// (linear.ErrNoRoom), it reads the manual order again from the start,
-// since Linear may have spread the values itself, and renumbers the run
-// from just after Prev up to the first issue with room above Prev,
-// through the client's RenumberIssues: the issues ranked first, then
-// those it moved to make room, each its own part. It stops at the first
-// update not applied; the rest are not sent.
+// share) with one update per issue. It reads the issues and the
+// neighbors within the board first: a neighbor not on the board refuses
+// the rank, and an issue not on the board is refused while the others
+// are ranked. The values come from the client's Spread of the
+// neighbors' keys. When no values fit between them (linear.ErrNoRoom),
+// it reads the manual order again from the start, since Linear may have
+// spread the values itself, and renumbers the run from just after Prev
+// up to the first issue with room above Prev, through the client's
+// RenumberIssues: the issues ranked first, then those it moved to make
+// room, each its own part. It stops at the first update not applied; the
+// rest are not sent. The refused parts come first, as they were judged
+// before anything was sent.
 func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Result {
 	step := tracker.StepRank
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
-	ids := make([]string, len(in.Issues))
-	for i, id := range in.Issues {
-		if !linear.IsIssueID(string(id)) {
-			return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", id)}, in.Issues...)
-		}
-		ids[i] = string(id)
+	ids, bad := issueIDs(in.Issues)
+	if len(bad) > 0 {
+		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", bad[0])}, in.Issues...)
 	}
 	before, err := neighborValue(in.Prev)
-	if err == nil {
-		var after *float64
-		after, err = neighborValue(in.Next)
-		if err == nil {
-			_, err = linear.Spread(before, after, len(ids))
-			if err == nil {
-				return p.renumber(ctx, in.Board, ids, before, after)
-			}
-		}
-	}
-	if !errors.Is(err, linear.ErrNoRoom) {
+	if err != nil {
 		return tracker.Invalid(step, err, in.Issues...)
 	}
-	if in.Prev == nil {
-		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: "no order value fits before the first issue"}, in.Issues...)
-	}
-	run, lo, hi, err := p.crowdedRun(ctx, in.Board, in.Prev.Issue, ids)
+	after, err := neighborValue(in.Next)
 	if err != nil {
-		return editRefusal(step, err, in.Issues...)
+		return tracker.Invalid(step, err, in.Issues...)
 	}
-	return p.renumber(ctx, in.Board, run, lo, hi)
+	read := slices.Clone(ids)
+	for _, n := range []*tracker.Neighbor{in.Prev, in.Next} {
+		if n != nil {
+			read = append(read, string(n.Issue))
+		}
+	}
+	on, err := p.onBoard(ctx, in.Board, read)
+	if err != nil {
+		return beforeWrite(step, err, in.Issues...)
+	}
+	for _, n := range []*tracker.Neighbor{in.Prev, in.Next} {
+		if n != nil && !on[string(n.Issue)] {
+			return tracker.Refuse(step, notOnBoard(n.Issue, in.Board), in.Issues...)
+		}
+	}
+	var out tracker.Result
+	var moving []string
+	for _, id := range in.Issues {
+		if on[string(id)] {
+			moving = append(moving, string(id))
+		} else {
+			out.Parts = append(out.Parts, tracker.Part{Issue: id, Step: step, Outcome: tracker.Refused(notOnBoard(id, in.Board))})
+		}
+	}
+	if len(moving) == 0 {
+		return out
+	}
+	ranked := p.rankOnBoard(ctx, in.Board, moving, in.Prev, before, after)
+	out.Parts = append(out.Parts, ranked.Parts...)
+	return out
+}
+
+// rankOnBoard ranks moving, every one on board, between before and
+// after, the values of prev and the next neighbor.
+func (p *Provider) rankOnBoard(ctx context.Context, board tracker.BoardID, moving []string, prev *tracker.Neighbor, before, after *float64) tracker.Result {
+	step := tracker.StepRank
+	issues := make([]tracker.IssueID, len(moving))
+	for i, id := range moving {
+		issues[i] = tracker.IssueID(id)
+	}
+	_, err := linear.Spread(before, after, len(moving))
+	switch {
+	case err == nil:
+		return p.renumber(ctx, board, moving, before, after)
+	case !errors.Is(err, linear.ErrNoRoom):
+		return tracker.Invalid(step, err, issues...)
+	case prev == nil:
+		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: "no order value fits before the first issue"}, issues...)
+	}
+	run, lo, hi, err := p.crowdedRun(ctx, board, prev.Issue, moving)
+	if err != nil {
+		return editRefusal(step, err, issues...)
+	}
+	return p.renumber(ctx, board, run, lo, hi)
 }
 
 // neighborValue is a neighbor's sortOrder from its order key; nil for no
@@ -87,7 +129,7 @@ func (p *Provider) crowdedRun(ctx context.Context, board tracker.BoardID, prev t
 	run := slices.Clone(moving)
 	after := ""
 	for range rankPages {
-		page, err := p.c.ListIssues(ctx, q, after)
+		page, err := p.c.ListIssuePositions(ctx, q, after)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("linearprovider: read the manual order of %s: %w", board, err)
 		}
@@ -118,19 +160,20 @@ func (p *Provider) crowdedRun(ctx context.Context, board tracker.BoardID, prev t
 
 // renumber gives the run Spread values between lo and hi through the
 // client, one part per issue in order: those stored applied, the one
-// that failed by its outcome, the rest not sent.
+// that failed by its outcome, the rest not sent. Each names the issue's
+// row on board and its card, which every board sharing the team's order
+// draws.
 func (p *Provider) renumber(ctx context.Context, board tracker.BoardID, run []string, lo, hi *float64) tracker.Result {
 	step := tracker.StepRank
 	stored, err := p.c.RenumberIssues(ctx, linear.RenumberInput{Field: linear.OrderSort, IssueIDs: run, Before: lo, After: hi})
 	var out tracker.Result
 	for i, id := range run {
 		issue := tracker.IssueID(id)
-		changed := tracker.RowOf(board, issue)
 		switch {
 		case i < len(stored):
-			out.Parts = append(out.Parts, part(issue, step, nil, changed))
+			out.Parts = append(out.Parts, part(issue, step, nil, tracker.RowOf(board, issue), tracker.CardOf(issue)))
 		case i == len(stored) && err != nil:
-			out.Parts = append(out.Parts, part(issue, step, err, changed))
+			out.Parts = append(out.Parts, part(issue, step, err, tracker.RowOf(board, issue), tracker.CardOf(issue)))
 		default:
 			failed := tracker.IssueID(run[len(stored)])
 			out.Parts = append(out.Parts, notSentAfter(step, failed, []tracker.IssueID{issue})...)

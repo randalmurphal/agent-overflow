@@ -104,11 +104,11 @@ type Provider interface {
 	// AssignableUsers are the users who can be assigned in scope whose
 	// name or email starts with text. Empty text returns those the
 	// tracker offers unasked, which may be none.
-	AssignableUsers(ctx context.Context, scope FieldScope, text string) ([]User, error)
+	AssignableUsers(ctx context.Context, scope FieldScope, text string) (UserList, error)
 	// Choices are the values field takes in scope whose name starts with
 	// text: options, or users for a user field. Empty text returns those
 	// the tracker offers unasked, which may be none.
-	Choices(ctx context.Context, scope FieldScope, field FieldID, text string) ([]Choice, error)
+	Choices(ctx context.Context, scope FieldScope, field FieldID, text string) (ChoiceList, error)
 	// Lookup finds the issues keys name, after CheckLookupKeys; it
 	// splits the keys into as many requests as its tracker needs.
 	Lookup(ctx context.Context, keys []string) (KeyLookup, error)

@@ -27,9 +27,11 @@ func pollVars(since time.Time, after string) string {
 	return js(v)
 }
 
-// A delta page's rows carry the card with named labels, the order key of
-// sortOrder and the estimate of a team that uses estimates; its cursor
-// continues the walk and a later page ends it.
+// A delta page's rows carry the card with its labels named from the
+// issue's nested list, and a label that list leaves out named by a read
+// of exactly its ID; the order key of sortOrder and the estimate of a
+// team whose scale the issue carries; its cursor continues the walk and
+// a later page ends it. No team or catalog is read.
 func TestChangedRows(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
@@ -40,8 +42,7 @@ func TestChangedRows(t *testing.T) {
 	second.UpdatedAt = "2026-11-02T11:00:00.000Z"
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Issues", Vars: pollVars(start, ""), Body: lineartest.Data(lineartest.PageJSON([]string{first.JSON()}, true, "c1"))},
-		labelsX(web, lineartest.Label{ID: "label-bug", Name: "Bug"}),
-		teamsX(lineartest.NewTeam("WEB")),
+		labelsByIDX([]string{"label-gone"}),
 		lineartest.Exchange{Op: "Issues", Vars: pollVars(start, "c1"), Body: page(second.JSON())},
 	)
 	ctx := context.Background()
@@ -77,13 +78,8 @@ func TestChangedRowsNoEstimateUnit(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	is := issue(1, 1)
-	is.Estimate = f64(5)
-	off := lineartest.NewTeam("WEB")
-	off.Scale = "notUsed"
-	p, _ := newProvider(t,
-		lineartest.Exchange{Op: "Issues", Vars: pollVars(start, ""), Body: page(is.JSON())},
-		teamsX(off),
-	)
+	is.Estimate, is.TeamScale = f64(5), "notUsed"
+	p, _ := newProvider(t, lineartest.Exchange{Op: "Issues", Vars: pollVars(start, ""), Body: page(is.JSON())})
 	pg, err := p.ChangedRows(context.Background(), tracker.DeltaQuery{Board: web, Start: start})
 	if err != nil || len(pg.Rows) != 1 || pg.Rows[0].Estimate != nil {
 		t.Fatalf("page %+v %v", pg, err)
@@ -108,9 +104,6 @@ func TestChangedRowsRestartInsideSameTimeRun(t *testing.T) {
 	var cursor tracker.Cursor
 	walk := func() {
 		for range 5 {
-			// Each page's labels and estimates: the store's issues carry
-			// the default label and estimate.
-			srv.Expect(labelsX(web), teamsX(lineartest.NewTeam("WEB")))
 			pg, err := providerOf(t, srv).ChangedRows(context.Background(), tracker.DeltaQuery{Board: web, From: cursor, Start: start})
 			if err != nil {
 				t.Fatal(err)
@@ -181,26 +174,43 @@ func TestChangedRowsRefusesForeignCursor(t *testing.T) {
 	}
 }
 
+// positionsX is one page of a listing's walk of issues, by ID and order.
+func positionsX(vars string, more bool, cursor string, issues ...lineartest.Issue) lineartest.Exchange {
+	var nodes []string
+	for _, is := range issues {
+		nodes = append(nodes, js(map[string]any{"id": is.ID, "sortOrder": is.SortOrder}))
+	}
+	return lineartest.Exchange{Op: "IssuePositions", Vars: vars, Body: lineartest.Data(lineartest.PageJSON(nodes, more, cursor))}
+}
+
+// The variables of BoardIssues's walks of team web.
+var (
+	openVars = `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
+		`{"state":{"type":{"in":["triage","backlog","unstarted","started"]}}}]}}`
+	recentVars = `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
+		`{"updatedAt":{"gte":"2026-10-01T00:00:00.000Z"}}]}}`
+)
+
+func afterVars(vars, cursor string) string {
+	return strings.Replace(vars, `{"first"`, `{"after":"`+cursor+`","first"`, 1)
+}
+
 // BoardIssues lists open issues, those updated in the window and those
-// in kept cycles, each once; an archived or trashed issue is not listed,
-// so a reconcile removes its row.
+// in the cycles Linear says the window keeps, each once, reading IDs
+// alone; an archived or trashed issue is not listed, so a reconcile
+// removes its row.
 func TestBoardIssues(t *testing.T) {
 	t.Parallel()
 	window := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	open := `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
-		`{"state":{"type":{"in":["triage","backlog","unstarted","started"]}}}]}}`
-	recent := `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
-		`{"updatedAt":{"gte":"2026-10-01T00:00:00.000Z"}}]}}`
 	inCycle := `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
 		`{"cycle":{"id":{"in":["c-now"]}}}]}}`
 	p, _ := newProvider(t,
-		cyclesX(web, false,
-			lineartest.Cycle{ID: "c-old", Number: 1, Team: web, StartsAt: "2026-08-01T00:00:00.000Z", EndsAt: "2026-08-15T00:00:00.000Z", Past: true},
+		keptCyclesX(web, "2026-10-01T00:00:00.000Z",
 			lineartest.Cycle{ID: "c-now", Number: 2, Team: web, StartsAt: "2026-11-16T00:00:00.000Z", EndsAt: "2026-11-30T00:00:00.000Z", Active: true}),
-		lineartest.Exchange{Op: "Issues", Vars: open, Body: lineartest.Data(lineartest.PageJSON([]string{issue(1, 1).JSON()}, true, "o1"))},
-		lineartest.Exchange{Op: "Issues", Vars: strings.Replace(open, `{"first"`, `{"after":"o1","first"`, 1), Body: page(issue(2, 2).JSON())},
-		issuesX(recent, issue(2, 2), issue(3, 3)),
-		issuesX(inCycle, issue(4, 4), issue(1, 1)),
+		positionsX(openVars, true, "o1", issue(1, 1)),
+		positionsX(afterVars(openVars, "o1"), false, "", issue(2, 2)),
+		positionsX(recentVars, false, "", issue(2, 2), issue(3, 3)),
+		positionsX(inCycle, false, "", issue(4, 4), issue(1, 1)),
 	)
 	l, err := p.BoardIssues(context.Background(), web, window)
 	if err != nil {
@@ -212,23 +222,43 @@ func TestBoardIssues(t *testing.T) {
 	}
 }
 
+// A walk that ends on an empty page after a page that promised more is
+// complete with what the pages held; a walk whose later page fails fails
+// the listing rather than report it complete.
+func TestBoardIssuesEndOnEmptyPage(t *testing.T) {
+	t.Parallel()
+	window := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	p, _ := newProvider(t,
+		keptCyclesX(web, "2026-10-01T00:00:00.000Z"),
+		positionsX(openVars, true, "o1", issue(1, 1)),
+		positionsX(afterVars(openVars, "o1"), false, ""),
+		positionsX(recentVars, false, ""),
+		keptCyclesX(web, "2026-10-01T00:00:00.000Z"),
+		positionsX(openVars, true, "o1", issue(1, 1)),
+		lineartest.Exchange{Op: "IssuePositions", Vars: afterVars(openVars, "o1"), Status: 400,
+			Body: `{"errors":[{"message":"Invalid cursor","extensions":{"code":"INPUT_ERROR","userError":true}}]}`},
+	)
+	l, err := p.BoardIssues(context.Background(), web, window)
+	if err != nil || !l.Complete || fmt.Sprint(l.IDs) != fmt.Sprint([]tracker.IssueID{tracker.IssueID(issueID(1))}) {
+		t.Errorf("listing %+v %v", l, err)
+	}
+	if l, err := p.BoardIssues(context.Background(), web, window); err == nil {
+		t.Errorf("a refused cursor: listing %+v", l)
+	}
+}
+
 // A walk longer than its bound makes the listing incomplete, so the
 // caller removes nothing.
 func TestBoardIssuesIncompletePastBound(t *testing.T) {
 	t.Parallel()
 	window := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	open := `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
-		`{"state":{"type":{"in":["triage","backlog","unstarted","started"]}}}]}}`
-	recent := `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["` + web + `"]}}},` +
-		`{"updatedAt":{"gte":"2026-10-01T00:00:00.000Z"}}]}}`
-	script := []lineartest.Exchange{cyclesX(web, false), issuesX(recent)}
+	script := []lineartest.Exchange{keptCyclesX(web, "2026-10-01T00:00:00.000Z"), positionsX(recentVars, false, "")}
 	for i := range listingPages {
-		vars := open
+		vars := openVars
 		if i > 0 {
-			vars = strings.Replace(open, `{"first"`, fmt.Sprintf(`{"after":"o%d","first"`, i), 1)
+			vars = afterVars(openVars, fmt.Sprintf("o%d", i))
 		}
-		script = append(script, lineartest.Exchange{Op: "Issues", Vars: vars,
-			Body: lineartest.Data(lineartest.PageJSON([]string{issue(i+1, float64(i)).JSON()}, true, fmt.Sprintf("o%d", i+1)))})
+		script = append(script, positionsX(vars, true, fmt.Sprintf("o%d", i+1), issue(i+1, float64(i))))
 	}
 	p, _ := newProvider(t, script...)
 	l, err := p.BoardIssues(context.Background(), web, window)
@@ -237,36 +267,36 @@ func TestBoardIssuesIncompletePastBound(t *testing.T) {
 	}
 }
 
-// BoardRows reads by ID in requests of 100 within the team; an issue of
+// BoardRows reads by ID in requests of 250 within the team; an issue of
 // another team, an archived or deleted one and an ID that is not an
 // issue ID are missing, each once.
 func TestBoardRows(t *testing.T) {
 	t.Parallel()
 	var asked []tracker.IssueID
 	var first []string
-	for i := 1; i <= 101; i++ {
+	for i := 1; i <= 251; i++ {
 		asked = append(asked, tracker.IssueID(issueID(i)))
-		if i <= 100 {
+		if i <= 250 {
 			first = append(first, issueID(i))
 		}
 	}
 	asked = append(asked, "WEB-1", tracker.IssueID(issueID(1)))
 	var found []lineartest.Issue
-	for i := 1; i <= 99; i++ {
+	for i := 1; i <= 249; i++ {
 		found = append(found, issue(i, float64(i)))
 	}
 	// An answer naming an issue outside the team is not a row of it.
-	moved := issue(101, 1)
+	moved := issue(251, 1)
 	moved.Team = app
 	p, _ := newProvider(t,
 		issuesX(byIDVars(first, []string{web}, false), found...),
-		issuesX(byIDVars([]string{issueID(101)}, []string{web}, false), moved),
+		issuesX(byIDVars([]string{issueID(251)}, []string{web}, false), moved),
 	)
 	rows, err := p.BoardRows(context.Background(), web, asked)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.Rows) != 99 || fmt.Sprint(rows.Missing) != fmt.Sprint([]tracker.IssueID{tracker.IssueID(issueID(100)), tracker.IssueID(issueID(101)), "WEB-1"}) {
+	if len(rows.Rows) != 249 || fmt.Sprint(rows.Missing) != fmt.Sprint([]tracker.IssueID{tracker.IssueID(issueID(250)), tracker.IssueID(issueID(251)), "WEB-1"}) {
 		t.Errorf("%d rows, missing %v", len(rows.Rows), rows.Missing)
 	}
 }

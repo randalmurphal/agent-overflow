@@ -3,6 +3,7 @@ package linearprovider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/tracker"
@@ -10,11 +11,13 @@ import (
 )
 
 // Detail is one issue as its ticket shows it: the issue with its first 50
-// comments, 25 relations each way, its team's states as moves, its due
+// comments, every relation each way, its team's states as moves, its due
 // date and project as fields, and its whole history with every ID named.
 // Linear's attachments are links, not files, so there are none. The
-// catalogs its history names (users, cycles, projects, teams, parent
-// issues) are read only when an entry names one.
+// project's name and its labels' names come with the issue; the labels
+// it does not name and the users, cycles, projects, teams and parent
+// issues its history names are read by exactly their IDs, each kind only
+// when something names one.
 func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.Detail, error) {
 	if issue == "" {
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail: %w: no issue named", tracker.ErrInvalidInput)
@@ -165,72 +168,59 @@ func (n names) name(of map[string]string, id string) string {
 	return id
 }
 
-// readNames reads the catalogs the issue and its entries name, each only
-// when something names it.
+// readNames reads the names of what the issue and its entries name, by
+// exactly those IDs: one request for each kind something names.
 func (p *Provider) readNames(ctx context.Context, d *linear.IssueDetail, states []linear.WorkflowState, entries []linear.HistoryEntry) (names, error) {
 	n := names{states: map[string]string{}, labels: map[string]string{}}
+	for _, l := range d.Labels {
+		n.labels[l.ID] = l.Name
+	}
 	for _, s := range states {
 		n.states[s.ID] = s.Name
 	}
-	var need struct{ labels, users, cycles, projects, teams bool }
-	need.labels = len(d.LabelIDs) > 0
-	need.projects = d.ProjectID != ""
-	var parents []string
+	labels := slices.Clone(d.LabelIDs)
+	var users, cycles, projects, teams, parents []string
+	both := func(c *linear.Change) []string { return []string{c.From, c.To} }
 	for _, e := range entries {
-		need.labels = need.labels || len(e.AddedLabelIDs) > 0 || len(e.RemovedLabelIDs) > 0
-		need.users = need.users || e.Assignee != nil
-		need.cycles = need.cycles || e.Cycle != nil
-		need.projects = need.projects || e.Project != nil
-		need.teams = need.teams || e.Team != nil
+		labels = append(append(labels, e.AddedLabelIDs...), e.RemovedLabelIDs...)
+		if e.Assignee != nil {
+			users = append(users, both(e.Assignee)...)
+		}
+		if e.Cycle != nil {
+			cycles = append(cycles, both(e.Cycle)...)
+		}
+		if e.Project != nil {
+			for _, id := range both(e.Project) {
+				if id != d.ProjectID {
+					projects = append(projects, id)
+				}
+			}
+		}
+		if e.Team != nil {
+			teams = append(teams, both(e.Team)...)
+		}
 		if e.Parent != nil {
-			parents = append(parents, e.Parent.From, e.Parent.To)
+			parents = append(parents, both(e.Parent)...)
 		}
 	}
 	var err error
-	if need.labels {
-		if err := p.addLabelNames(ctx, d.TeamID, n.labels); err != nil {
-			return names{}, err
-		}
+	if n.labels, err = labelsByID(ctx, p, n.labels, labels); err != nil {
+		return names{}, err
 	}
-	if need.users {
-		users, err := p.c.Users(ctx, true)
-		if err != nil {
-			return names{}, fmt.Errorf("linearprovider: users: %w", err)
-		}
-		n.users = map[string]string{}
-		for _, u := range users {
-			n.users[u.ID] = userName(u)
-		}
+	if n.users, err = namesOf(ctx, "users", map[string]string{}, users, p.c.UsersByID, func(u linear.User) (string, string) { return u.ID, userName(u) }); err != nil {
+		return names{}, err
 	}
-	if need.cycles {
-		cycles, err := p.c.Cycles(ctx, linear.CycleQuery{TeamID: d.TeamID, IncludeArchived: true})
-		if err != nil {
-			return names{}, fmt.Errorf("linearprovider: cycles of team %s: %w", d.TeamID, err)
-		}
-		n.cycles = map[string]string{}
-		for _, c := range cycles {
-			n.cycles[c.ID] = sprint(c).Name
-		}
+	if n.cycles, err = namesOf(ctx, "cycles", map[string]string{}, cycles, p.c.CyclesByID, func(c linear.Cycle) (string, string) { return c.ID, sprint(c).Name }); err != nil {
+		return names{}, err
 	}
-	if need.projects {
-		projects, err := p.c.Projects(ctx, "", true)
-		if err != nil {
-			return names{}, fmt.Errorf("linearprovider: projects: %w", err)
-		}
-		n.projects = map[string]string{}
-		for _, pr := range projects {
-			n.projects[pr.ID] = pr.Name
-		}
+	if n.projects, err = namesOf(ctx, "projects", map[string]string{}, projects, p.c.ProjectsByID, func(pr linear.Project) (string, string) { return pr.ID, pr.Name }); err != nil {
+		return names{}, err
 	}
-	if need.teams {
-		teams, err := p.c.Teams(ctx)
-		if err != nil {
-			return names{}, fmt.Errorf("linearprovider: teams: %w", err)
-		}
-		n.teams = map[string]string{}
-		for _, t := range teams {
-			n.teams[t.ID] = t.Key + " " + t.Name
-		}
+	if d.ProjectID != "" {
+		n.projects[d.ProjectID] = d.ProjectName
+	}
+	if n.teams, err = namesOf(ctx, "teams", map[string]string{}, teams, p.c.TeamsByID, func(t linear.Team) (string, string) { return t.ID, t.Key + " " + t.Name }); err != nil {
+		return names{}, err
 	}
 	if n.issues, err = p.identifiers(ctx, parents); err != nil {
 		return names{}, err

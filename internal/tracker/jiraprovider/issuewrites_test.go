@@ -16,6 +16,7 @@ import (
 
 func TestSprintWrites(t *testing.T) {
 	f, p := newSite(t)
+	sprintsOfBoard3(f)
 	start := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, 14)
 	f.On("POST", "/rest/agile/1.0/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
@@ -72,6 +73,7 @@ const (
 // nil; closing answers the close.
 func completionSite(t *testing.T, added string, move, closing jiratest.Handler) *jiratest.Server {
 	f, _ := newSite(t)
+	sprintsOfBoard3(f)
 	f.On("GET", sprint7Path, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
 	f.On("GET", "/rest/agile/1.0/sprint/8", jiratest.Reply(200, `{"id":8,"name":"Sprint 2","state":"future","originBoardId":3}`))
 	var mu sync.Mutex
@@ -163,7 +165,7 @@ func TestCompleteSprint(t *testing.T) {
 					if part.Issue != id {
 						t.Errorf("part %d is issue %q", i, part.Issue)
 					}
-					want, step = []tracker.Resource{tracker.RowOf("3", id), tracker.CardOf(id)}, tracker.StepSprintMove
+					want, step = []tracker.Resource{tracker.RowOf("3", id), tracker.CardOf(id), tracker.DetailOf(id)}, tracker.StepSprintMove
 				}
 				if part.Step != step || !slices.Equal(part.Changed, want) {
 					t.Errorf("part %d: %s %+v", i, part.Step, part.Changed)
@@ -192,7 +194,7 @@ func TestCompleteSprintRefused(t *testing.T) {
 		reason tracker.Reason
 	}{
 		"a future sprint": {tracker.SprintCompletion{Board: "3", Sprint: "7"}, func(f *jiratest.Server) {
-			f.On("GET", sprint7Path, jiratest.Reply(200, `{"id":7,"state":"future","originBoardId":3}`))
+			f.On("GET", board3Sprint, jiratest.Reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"future"}]}`))
 		}, tracker.ReasonInvalid},
 		"a sprint name for an ID":     {tracker.SprintCompletion{Board: "3", Sprint: "Sprint 1"}, nil, tracker.ReasonInvalid},
 		"a board name for an ID":      {tracker.SprintCompletion{Board: "Board 3", Sprint: "7"}, nil, tracker.ReasonInvalid},
@@ -281,6 +283,8 @@ func TestLinksAndAttachments(t *testing.T) {
 		jiratest.WantJSON(t, b, `{"type":{"id":"10000"},"outwardIssue":{"id":"10001"},"inwardIssue":{"id":"10002"}}`)
 		w.WriteHeader(http.StatusCreated)
 	})
+	f.On("GET", issuePath, jiratest.Reply(200, `{"id":"10001","key":"WEB-1","fields":{"issuelinks":[
+		{"id":"300","type":{"id":"10000","name":"Blocks","inward":"is blocked by","outward":"blocks"},"inwardIssue":{"id":"10002","key":"WEB-2"}}]}}`))
 	f.On("DELETE", "/rest/api/3/issueLink/300", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(http.StatusNoContent) })
 	f.On("POST", uploadPath, jiratest.Reply(200, `[{"id":"501","filename":"a.txt","mimeType":"text/plain","size":5}]`))
 	both := []tracker.Resource{tracker.DetailOf("10001"), tracker.DetailOf("10002")}

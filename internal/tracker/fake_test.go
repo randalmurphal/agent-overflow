@@ -45,11 +45,11 @@ func (fakeProvider) Comments(context.Context, IssueID, PageToken) (CommentPage, 
 func (fakeProvider) CreateFields(context.Context, ProjectID, IssueTypeID) ([]Field, error) {
 	return nil, nil
 }
-func (fakeProvider) AssignableUsers(context.Context, FieldScope, string) ([]User, error) {
-	return nil, nil
+func (fakeProvider) AssignableUsers(context.Context, FieldScope, string) (UserList, error) {
+	return UserList{}, nil
 }
-func (fakeProvider) Choices(context.Context, FieldScope, FieldID, string) ([]Choice, error) {
-	return nil, nil
+func (fakeProvider) Choices(context.Context, FieldScope, FieldID, string) (ChoiceList, error) {
+	return ChoiceList{}, nil
 }
 func (fakeProvider) Create(context.Context, CreateInput) Result              { return Result{} }
 func (fakeProvider) Edit(context.Context, EditInput) Result                  { return Result{} }

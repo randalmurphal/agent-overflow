@@ -3,9 +3,9 @@ package linearprovider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -277,24 +277,23 @@ func TestEdit(t *testing.T) {
 	expectResult(t, p.Edit(ctx, md("x", "")), "1:edit:refused(tracker)")
 }
 
-// SetEstimate reads the issue and its team, sends a value on the team's
-// scale or none, and refuses an issue of another team, a value off the
-// scale and a team without estimates before the update.
+// SetEstimate reads the issue within the board and the team, sends a
+// value on the team's scale or none, and refuses an issue not on the
+// board, a value off the scale and a team without estimates before the
+// update.
 func TestSetEstimate(t *testing.T) {
 	t.Parallel()
 	is := issue(1, 1)
-	other := issue(1, 1)
-	other.Team = app
 	unused := lineartest.NewTeam("WEB")
 	unused.Scale = "notUsed"
 	id := tracker.IssueID(issueID(1))
 	p, _ := newProvider(t,
-		summaryX(issueID(1), is), teamsX(lineartest.NewTeam("WEB")), updateX(issueID(1), `{"estimate":5}`, applied(is.JSON())),
-		summaryX(issueID(1), is), teamsX(lineartest.NewTeam("WEB")), updateX(issueID(1), `{"estimate":null}`, applied(is.JSON())),
-		summaryX(issueID(1), is), teamsX(lineartest.NewTeam("WEB")),
-		summaryX(issueID(1), is), teamsX(lineartest.NewTeam("WEB")),
-		summaryX(issueID(1), other),
-		summaryX(issueID(1), is), teamsX(unused),
+		onBoardX(ids(1), is), teamX(lineartest.NewTeam("WEB")), updateX(issueID(1), `{"estimate":5}`, applied(is.JSON())),
+		onBoardX(ids(1), is), teamX(lineartest.NewTeam("WEB")), updateX(issueID(1), `{"estimate":null}`, applied(is.JSON())),
+		onBoardX(ids(1), is), teamX(lineartest.NewTeam("WEB")),
+		onBoardX(ids(1), is), teamX(lineartest.NewTeam("WEB")),
+		onBoardX(ids(1)),
+		onBoardX(ids(1), is), teamX(unused),
 	)
 	ctx := context.Background()
 	set := func(v *float64) tracker.Result {
@@ -302,57 +301,110 @@ func TestSetEstimate(t *testing.T) {
 	}
 	r := set(f64(5))
 	expectResult(t, r, "1:estimate:applied")
-	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.RowOf(web, id), tracker.DetailOf(id)}) {
+	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.RowOf(web, id), tracker.CardOf(id), tracker.DetailOf(id)}) {
 		t.Errorf("changed %+v", r.Parts[0].Changed)
 	}
 	expectResult(t, set(nil), "1:estimate:applied")
 	expectResult(t, set(f64(4)), "1:estimate:refused(invalid)")
 	expectResult(t, set(f64(2.5)), "1:estimate:refused(invalid)")
+	expectResult(t, set(f64(3)), "1:estimate:refused(stale)")
 	expectResult(t, set(f64(3)), "1:estimate:refused(invalid)")
-	expectResult(t, set(f64(3)), "1:estimate:refused(invalid)")
+	expectResult(t, p.SetEstimate(ctx, tracker.EstimateInput{Board: web, Issue: "WEB-1", Value: f64(3)}), "WEB-1:estimate:refused(invalid)")
 }
 
-// MoveToSprint sends one update per issue in order and stops at the
-// first not applied; the rest are not sent. An empty sprint clears the
-// cycle.
+// cycleX expects the read of cycle c.
+func cycleX(c lineartest.Cycle) lineartest.Exchange {
+	return lineartest.Exchange{Op: "Cycle", Vars: `{"id":"` + c.ID + `"}`, Body: `{"data":{"cycle":` + c.JSON() + `}}`}
+}
+
+// MoveToSprint reads the cycle and the issues on the board, sends one
+// update per issue on the board in order and stops at the first not
+// applied; an issue not on the board is refused as stale and the rest
+// after a failure are not sent. An empty sprint clears the cycle without
+// reading one; a cycle of another board, a closed one and one that is
+// gone refuse the move before any update.
 func TestMoveToSprint(t *testing.T) {
 	t.Parallel()
 	is := issue(1, 1).JSON()
+	open := lineartest.Cycle{ID: "c1", Number: 1, Team: web, StartsAt: at, EndsAt: at, Active: true}
+	future, other, closed := open, open, open
+	future.ID, future.Active, future.Future = "c2", false, true
+	other.ID, other.Team = "c-app", app
+	closed.ID, closed.Active, closed.Past = "c-old", false, true
+	gone := `{"data":null,"errors":[{"message":"Entity not found: Cycle","path":["cycle"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`
 	p, _ := newProvider(t,
+		cycleX(open), onBoardX(ids(1, 2, 4, 5), issue(1, 1), issue(2, 2), issue(4, 4)),
 		updateX(issueID(1), `{"cycleId":"c1"}`, applied(is)),
 		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"` + issueID(2) + `","input":{"cycleId":"c1"}}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
-		updateX(issueID(3), `{"cycleId":null}`, applied(is)),
+		onBoardX(ids(3), issue(3, 3)), updateX(issueID(3), `{"cycleId":null}`, applied(is)),
+		cycleX(future), onBoardX(ids(3), issue(3, 3)), updateX(issueID(3), `{"cycleId":"c2"}`, applied(is)),
+		cycleX(other), cycleX(closed),
+		lineartest.Exchange{Op: "Cycle", Vars: `{"id":"c-gone"}`, Body: gone},
 	)
-	ids := []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2)), tracker.IssueID(issueID(4))}
-	r := p.MoveToSprint(context.Background(), tracker.SprintMoveInput{Board: web, Sprint: "c1", Issues: ids})
-	expectResult(t, r, "1:sprint move:applied 2:sprint move:unknown 4:sprint move:not sent")
-	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.RowOf(web, ids[0]), tracker.CardOf(ids[0])}) {
+	ctx := context.Background()
+	in := []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2)), tracker.IssueID(issueID(4)), tracker.IssueID(issueID(5))}
+	r := p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Sprint: "c1", Issues: in})
+	expectResult(t, r, "1:sprint move:applied 2:sprint move:unknown 4:sprint move:not sent 5:sprint move:refused(stale)")
+	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.RowOf(web, in[0]), tracker.CardOf(in[0]), tracker.DetailOf(in[0])}) {
 		t.Errorf("changed %+v", r.Parts[0].Changed)
 	}
-	r = p.MoveToSprint(context.Background(), tracker.SprintMoveInput{Board: web, Issues: []tracker.IssueID{tracker.IssueID(issueID(3))}})
-	expectResult(t, r, "3:sprint move:applied")
+	three := []tracker.IssueID{tracker.IssueID(issueID(3))}
+	expectResult(t, p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Issues: three}), "3:sprint move:applied")
+	expectResult(t, p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Sprint: "c2", Issues: three}), "3:sprint move:applied")
+	expectResult(t, p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Sprint: "c-app", Issues: three}), "3:sprint move:refused(invalid)")
+	expectResult(t, p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Sprint: "c-old", Issues: three}), "3:sprint move:refused(stale)")
+	expectResult(t, p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Sprint: "c-gone", Issues: three}), "3:sprint move:refused(stale)")
+	expectResult(t, p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Issues: []tracker.IssueID{"WEB-3"}}), "WEB-3:sprint move:refused(invalid)")
 }
 
+// Move reads the issue and its team's states and refuses a state of
+// another team before the update.
 func TestMove(t *testing.T) {
 	t.Parallel()
-	p, _ := newProvider(t, updateX(issueID(1), `{"stateId":"s-done"}`, applied(issue(1, 1).JSON())))
-	expectResult(t, p.Move(context.Background(), tracker.MoveInput{Issue: tracker.IssueID(issueID(1)), Move: "s-done"}), "1:move:applied")
+	states := statesX(web, lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web})
+	p, _ := newProvider(t,
+		summaryX(issueID(1), issue(1, 1)), states, updateX(issueID(1), `{"stateId":"s-done"}`, applied(issue(1, 1).JSON())),
+		summaryX(issueID(1), issue(1, 1)), states,
+		lineartest.Exchange{Op: "IssueSummary", Vars: `{"id":"` + issueID(1) + `"}`, Body: notFound},
+	)
+	ctx := context.Background()
+	move := func(to tracker.MoveID) tracker.Result {
+		return p.Move(ctx, tracker.MoveInput{Issue: tracker.IssueID(issueID(1)), Move: to})
+	}
+	expectResult(t, move("s-done"), "1:move:applied")
+	expectResult(t, move("s-app-done"), "1:move:refused(invalid)")
+	expectResult(t, move("s-done"), "1:move:refused(tracker)")
 }
 
-// Comment writes: an add, an edit checked against the body it was
-// written from (gone or changed is stale), a delete Linear refuses.
+// commentX expects the read of comment c.
+func commentX(c lineartest.Comment) lineartest.Exchange {
+	return lineartest.Exchange{Op: "Comment", Vars: `{"id":"` + c.ID + `"}`, Body: `{"data":{"comment":` + c.JSON() + `}}`}
+}
+
+// Comment writes: an add; an edit and a delete that read the comment
+// first, refusing one on another issue and, as stale, one that is gone
+// or changed; a delete Linear refuses.
 func TestCommentWrites(t *testing.T) {
 	t.Parallel()
 	c := lineartest.NewComment()
+	c.Issue = issueID(1)
+	elsewhere := c
+	elsewhere.ID, elsewhere.Issue = "comment-b", issueID(2)
+	gone := `{"data":null,"errors":[{"message":"Entity not found: Comment","path":["comment"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`
 	id := tracker.IssueID(issueID(1))
-	comments := lineartest.Exchange{Op: "IssueComments", Vars: `{"id":"` + issueID(1) + `","first":100}`,
-		Body: `{"data":{` + lineartest.NodePageJSON([]string{c.JSON()}, false, "") + `}}`}
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "CreateComment", Vars: `{"input":{"issueId":"` + issueID(1) + `","body":"Hi"}}`, Body: applied(c.JSON())},
-		comments,
+		commentX(c),
 		lineartest.Exchange{Op: "UpdateComment", Vars: `{"id":"comment-2","input":{"body":"Edited"}}`, Body: applied(c.JSON())},
-		comments, comments,
+		commentX(c),
+		lineartest.Exchange{Op: "Comment", Vars: `{"id":"comment-9"}`, Body: gone},
+		commentX(elsewhere),
+		commentX(c),
 		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":false}}}`},
+		commentX(c),
+		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":true}}}`},
+		commentX(elsewhere),
+		lineartest.Exchange{Op: "Comment", Vars: `{"id":"comment-9"}`, Body: gone},
 	)
 	ctx := context.Background()
 	r := p.AddComment(ctx, tracker.CommentInput{Issue: id, Markdown: "Hi"})
@@ -367,16 +419,51 @@ func TestCommentWrites(t *testing.T) {
 	expectResult(t, edit("comment-2", c.Body), "1:comment:applied")
 	expectResult(t, edit("comment-2", "Older text"), "1:comment:refused(stale)")
 	expectResult(t, edit("comment-9", c.Body), "1:comment:refused(stale)")
-	expectResult(t, p.DeleteComment(ctx, tracker.CommentDelete{Issue: id, Comment: "comment-2"}), "1:comment:refused(tracker)")
+	r = edit("comment-b", c.Body)
+	expectResult(t, r, "1:comment:refused(invalid)")
+	if ref, _ := r.Parts[0].Outcome.Refusal(); ref.Message != "comment comment-b is not on issue "+issueID(1) {
+		t.Errorf("refusal %q", ref.Message)
+	}
+	del := func(comment tracker.CommentID) tracker.Result {
+		return p.DeleteComment(ctx, tracker.CommentDelete{Issue: id, Comment: comment})
+	}
+	expectResult(t, del("comment-2"), "1:comment:refused(tracker)")
+	r = del("comment-2")
+	expectResult(t, r, "1:comment:applied")
+	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.DetailOf(id)}) {
+		t.Errorf("changed %+v", r.Parts[0].Changed)
+	}
+	expectResult(t, del("comment-b"), "1:comment:refused(invalid)")
+	expectResult(t, del("comment-9"), "1:comment:refused(stale)")
 }
 
+// relationX expects the read of relation id, from issue n to issue m.
+func relationX(id string, n, m int) lineartest.Exchange {
+	ref := func(n int) lineartest.IssueRef {
+		return lineartest.IssueRef{ID: issueID(n), Identifier: fmt.Sprintf("WEB-%d", n)}
+	}
+	return lineartest.Exchange{Op: "Relation", Vars: `{"id":"` + id + `"}`,
+		Body: `{"data":{"issueRelation":` + lineartest.RelationJSON(id, "blocks", ref(n), ref(m)) + `}}`}
+}
+
+// A link names both issues' detail. An unlink reads the relation first:
+// one between the two issues named, either way round, is deleted and
+// names both details; one between other issues is refused and one that
+// is gone is refused as stale, before any delete.
 func TestLinkWrites(t *testing.T) {
 	t.Parallel()
 	a, b := tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2))
 	rel := lineartest.RelationJSON("rel-1", "blocks", lineartest.IssueRef{ID: issueID(1), Identifier: "WEB-1"}, lineartest.IssueRef{ID: issueID(2), Identifier: "WEB-2"})
+	gone := `{"data":null,"errors":[{"message":"Entity not found: IssueRelation","path":["issueRelation"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "CreateRelation", Vars: `{"input":{"issueId":"` + issueID(1) + `","relatedIssueId":"` + issueID(2) + `","type":"blocks"}}`, Body: applied(rel)},
+		relationX("rel-1", 1, 2),
 		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-1"}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
+		relationX("rel-2", 2, 1),
+		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-2"}`, Body: `{"data":{"result":{"success":true}}}`},
+		relationX("rel-3", 3, 4),
+		relationX("rel-4", 1, 3),
+		lineartest.Exchange{Op: "Relation", Vars: `{"id":"rel-9"}`, Body: gone},
 	)
 	ctx := context.Background()
 	r := p.Link(ctx, tracker.LinkInput{Type: "blocks", Outward: a, Inward: b})
@@ -385,34 +472,24 @@ func TestLinkWrites(t *testing.T) {
 		t.Errorf("changed %+v", r.Parts[0].Changed)
 	}
 	expectResult(t, p.Link(ctx, tracker.LinkInput{Type: "similar", Outward: a, Inward: b}), "1:link:refused(invalid)")
-	expectResult(t, p.Unlink(ctx, tracker.UnlinkInput{Issue: a, Link: "rel-1", Other: b}), "1:link:unknown")
-}
-
-// A comment not among the newest pages the edit reads is not searched
-// further, and the edit is not sent.
-func TestEditCommentPastBound(t *testing.T) {
-	t.Parallel()
-	var script []lineartest.Exchange
-	after := ""
-	for page := range commentPages {
-		v := map[string]any{"id": issueID(1), "first": 100}
-		if after != "" {
-			v["after"] = after
-		}
-		cursor := "cc" + strconv.Itoa(page)
-		script = append(script, lineartest.Exchange{Op: "IssueComments", Vars: js(v),
-			Body: `{"data":{` + lineartest.NodePageJSON([]string{lineartest.NewComment().JSON()}, true, cursor) + `}}`})
-		after = cursor
+	unlink := func(link tracker.LinkID) tracker.Result {
+		return p.Unlink(ctx, tracker.UnlinkInput{Issue: a, Link: link, Other: b})
 	}
-	p, _ := newProvider(t, script...)
-	r := p.EditComment(context.Background(), tracker.CommentEdit{Issue: tracker.IssueID(issueID(1)), Comment: "comment-old", Markdown: "Edited", From: "Old"})
-	expectResult(t, r, "1:comment:not sent")
+	expectResult(t, unlink("rel-1"), "1:link:unknown")
+	r = unlink("rel-2")
+	expectResult(t, r, "1:link:applied")
+	if !reflect.DeepEqual(r.Parts[0].Changed, []tracker.Resource{tracker.DetailOf(a), tracker.DetailOf(b)}) {
+		t.Errorf("changed %+v", r.Parts[0].Changed)
+	}
+	expectResult(t, unlink("rel-3"), "1:link:refused(invalid)")
+	expectResult(t, unlink("rel-4"), "1:link:refused(invalid)")
+	expectResult(t, unlink("rel-9"), "1:link:refused(stale)")
 }
 
 // A read a write needs that fails leaves the write not sent.
 func TestWriteAfterFailedRead(t *testing.T) {
 	t.Parallel()
-	p, _ := newProvider(t, lineartest.Exchange{Op: "IssueSummary", Vars: `{"id":"` + issueID(1) + `"}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`})
+	p, _ := newProvider(t, lineartest.Exchange{Op: "Issues", Vars: byIDVars(ids(1), []string{web}, false), Status: 500, Body: `{"errors":[{"message":"boom"}]}`})
 	r := p.SetEstimate(context.Background(), tracker.EstimateInput{Board: web, Issue: tracker.IssueID(issueID(1)), Value: f64(3)})
 	expectResult(t, r, "1:estimate:not sent")
 	if _, ok := errors.AsType[*trackerapi.StatusError](r.Parts[0].Outcome.Err()); !ok {

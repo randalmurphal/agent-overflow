@@ -13,11 +13,12 @@ import (
 )
 
 // Lookup finds the issues keys name. Keys are matched to current
-// identifiers in requests of 100 (archived issues included, trashed ones
-// not). A key still unmatched whose team key names a visible team is
-// then read alone, light, since Linear may answer an identifier an issue
-// had before it moved team; a hit is the key asked with the issue's card.
-// A key that is not an identifier is unmatched without a request.
+// identifiers in requests of 250 (archived issues included, trashed ones
+// not). A key still unmatched whose team key names a visible team, which
+// one read of the teams by those keys tells, is then read alone, light,
+// since Linear may answer an identifier an issue had before it moved
+// team; a hit is the key asked with the issue's card. A key that is not
+// an identifier is unmatched without a request.
 func (p *Provider) Lookup(ctx context.Context, keys []string) (tracker.KeyLookup, error) {
 	if err := tracker.CheckLookupKeys(keys); err != nil {
 		return tracker.KeyLookup{}, err
@@ -68,20 +69,23 @@ func (p *Provider) Lookup(ctx context.Context, keys []string) (tracker.KeyLookup
 }
 
 // lookupMoved reads alone each of keys byKey lacks whose team key names a
-// team the key can see, and adds those Linear answers.
+// team the key can see, and adds those Linear answers. The teams are read
+// by the team keys left, not as a catalog.
 func (p *Provider) lookupMoved(ctx context.Context, keys []string, byKey map[string]linear.Issue) error {
-	var left []string
+	var left, teamKeys []string
 	for _, k := range keys {
 		if _, ok := byKey[strings.ToUpper(k)]; !ok {
 			left = append(left, k)
+			teamKey, _, _ := linear.ParseIdentifier(k)
+			teamKeys = append(teamKeys, teamKey)
 		}
 	}
 	if len(left) == 0 {
 		return nil
 	}
-	teams, err := p.c.Teams(ctx)
+	teams, err := p.c.TeamsByKey(ctx, teamKeys)
 	if err != nil {
-		return fmt.Errorf("linearprovider: lookup: teams: %w", err)
+		return fmt.Errorf("linearprovider: lookup: teams by key: %w", err)
 	}
 	for _, k := range left {
 		teamKey, _, _ := linear.ParseIdentifier(k)

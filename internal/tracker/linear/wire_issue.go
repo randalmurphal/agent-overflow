@@ -2,15 +2,24 @@ package linear
 
 import "time"
 
-// issueSelection is what every read of an issue selects. By Linear's
-// documented rule it costs about 10 complexity points per issue: 23
-// scalars at 0.1 and seven { id } objects at 1.1. Related entities are
-// selected by ID only; the catalog calls supply their names.
+// issueSelection is what every read of an issue selects. Linear charges
+// a page of issues by the issues it returns, about 3 points each
+// (measured). Related entities are selected by ID, and their names are
+// read by ID for the IDs a result names, with two exceptions nested in
+// the issue because they cost less than a second request. The team's
+// estimate scale is a scalar on an object already selected, so a list of
+// rows tells whether their estimates count without reading the team. The
+// labels' names cost about 1.5 points an issue whatever the nested page
+// size or the labels it holds (measured), so the page is maxIssuePage:
+// only an issue with more labels than that, or with one the list leaves
+// out, needs LabelsByID.
+// labelIds stays the complete set.
 const issueSelection = `
   id identifier number title description url branchName
   priority estimate sortOrder prioritySortOrder subIssueSortOrder
-  team { id } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
-  labelIds dueDate createdAt updatedAt startedAt completedAt canceledAt archivedAt trashed
+  team { id issueEstimationType } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
+  labelIds labels(first: 250) { nodes { id name } }
+  dueDate createdAt updatedAt startedAt completedAt canceledAt archivedAt trashed
 `
 
 const issueFields = `fragment IssueFields on Issue {` + issueSelection + `}`
@@ -32,7 +41,7 @@ type wireIssue struct {
 	SortOrder         float64    `json:"sortOrder"`
 	PrioritySortOrder float64    `json:"prioritySortOrder"`
 	SubIssueSortOrder *float64   `json:"subIssueSortOrder"`
-	Team              *ref       `json:"team"`
+	Team              *issueTeam `json:"team"`
 	State             *ref       `json:"state"`
 	Assignee          *ref       `json:"assignee"`
 	Creator           *ref       `json:"creator"`
@@ -40,6 +49,7 @@ type wireIssue struct {
 	Project           *ref       `json:"project"`
 	Parent            *ref       `json:"parent"`
 	LabelIDs          []string   `json:"labelIds"`
+	Labels            labelRefs  `json:"labels"`
 	DueDate           Date       `json:"dueDate"`
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
@@ -50,18 +60,52 @@ type wireIssue struct {
 	Trashed           *bool      `json:"trashed"`
 }
 
+// labelRefs is an issue's labels as issueSelection nests them.
+type labelRefs struct {
+	Nodes []LabelRef `json:"nodes"`
+}
+
+// issueTeam is an issue's team as issueSelection selects it.
+type issueTeam struct {
+	ID                  string `json:"id"`
+	IssueEstimationType string `json:"issueEstimationType"`
+}
+
+func (t *issueTeam) id() string {
+	if t == nil {
+		return ""
+	}
+	return t.ID
+}
+
+func (t *issueTeam) scale() EstimateScale {
+	if t == nil {
+		return ""
+	}
+	return EstimateScale(t.IssueEstimationType)
+}
+
 func (w wireIssue) typed() Issue {
 	return Issue{
 		ID: w.ID, Identifier: w.Identifier, Number: int(w.Number), Title: w.Title, Description: w.Description,
 		URL: w.URL, BranchName: w.BranchName, Priority: Priority(w.Priority), Estimate: w.Estimate,
 		SortOrder: w.SortOrder, PrioritySortOrder: w.PrioritySortOrder, SubIssueSortOrder: w.SubIssueSortOrder,
-		TeamID: w.Team.id(), StateID: w.State.id(), AssigneeID: w.Assignee.id(), CreatorID: w.Creator.id(),
-		CycleID: w.Cycle.id(), ProjectID: w.Project.id(), ParentID: w.Parent.id(), LabelIDs: w.LabelIDs,
+		TeamID: w.Team.id(), TeamEstimateScale: w.Team.scale(), StateID: w.State.id(), AssigneeID: w.Assignee.id(), CreatorID: w.Creator.id(),
+		CycleID: w.Cycle.id(), ProjectID: w.Project.id(), ParentID: w.Parent.id(), LabelIDs: w.LabelIDs, Labels: w.Labels.Nodes,
 		DueDate: w.DueDate, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, StartedAt: w.StartedAt,
 		CompletedAt: w.CompletedAt, CanceledAt: w.CanceledAt, ArchivedAt: w.ArchivedAt,
 		Trashed: w.Trashed != nil && *w.Trashed,
 	}
 }
+
+const positionFields = `fragment PositionFields on Issue { id sortOrder }`
+
+type wirePosition struct {
+	ID        string  `json:"id"`
+	SortOrder float64 `json:"sortOrder"`
+}
+
+func (w wirePosition) typed() IssuePosition { return IssuePosition(w) }
 
 const issueRefFields = `fragment IssueRefFields on Issue { id identifier title state { id } }`
 

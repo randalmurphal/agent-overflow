@@ -13,10 +13,12 @@ import (
 
 // A write's parts follow the client's steps. A step the client did not
 // reach is not sent; the step that failed is judged by outcome; the steps
-// before it were applied. An upload part stands for every image a
-// Markdown body embeds and is reported when the write uploaded one or
-// failed uploading. Nothing is sent again: an unknown outcome is reported
-// as it is.
+// before it were applied. What a write's images stored is what the client
+// reports stored, never inferred from its error: an applied upload part
+// stands for every attachment the client names in its result, and a
+// second upload part, with the failure's outcome, for the attach request
+// that failed. Nothing is sent again: an unknown outcome is reported as
+// it is.
 
 // issueResources are what an edit, a move or an image upload may change:
 // the issue's card and its detail.
@@ -33,24 +35,41 @@ func stepOf(err error) jira.Step {
 	return ""
 }
 
-// stepParts are the parts of a write of issue whose main step is step,
-// which uploaded images first when uploaded is set or the write failed
-// uploading.
-func stepParts(issue tracker.IssueID, step tracker.Step, uploaded bool, err error) tracker.Result {
-	main := tracker.Part{Issue: issue, Step: step, Outcome: outcome(err), Changed: issueResources(issue)}
-	failed := stepOf(err)
-	if failed == jira.StepCheck || failed == "" && err != nil {
-		main.Outcome = beforeSend(err)
+// uploadParts are the upload parts of a write of issue that embeds
+// images: one applied when the client reports an attachment stored, and
+// one with the failure's outcome when an attach request failed.
+func uploadParts(issue tracker.IssueID, stored []jira.Attachment, err error) []tracker.Part {
+	var parts []tracker.Part
+	if len(stored) > 0 {
+		parts = append(parts, tracker.Part{Issue: issue, Step: tracker.StepUpload, Outcome: tracker.Applied(), Changed: issueResources(issue)})
 	}
-	if !uploaded && failed != jira.StepUpload {
-		return tracker.Result{Parts: []tracker.Part{main}}
+	if stepOf(err) == jira.StepUpload {
+		parts = append(parts, tracker.Part{Issue: issue, Step: tracker.StepUpload, Outcome: outcome(err), Changed: issueResources(issue)})
 	}
-	upload := tracker.Part{Issue: issue, Step: tracker.StepUpload, Outcome: tracker.Applied(), Changed: issueResources(issue)}
-	if failed == jira.StepUpload {
-		upload.Outcome = outcome(err)
-		main.Outcome = tracker.NotSent(fmt.Errorf("jiraprovider: not sent after the upload failed: %w", err))
+	return parts
+}
+
+// mainOutcome is the outcome of the write a write's images are for: not
+// sent when it failed before its first request or at an image's upload or
+// media ID read, and its own answer's otherwise.
+func mainOutcome(err error) tracker.Outcome {
+	switch stepOf(err) {
+	case "", jira.StepCheck:
+		if err != nil {
+			return beforeSend(err)
+		}
+	case jira.StepUpload, jira.StepMediaID:
+		return tracker.NotSent(fmt.Errorf("jiraprovider: not sent after an image's upload failed: %w", err))
 	}
-	return tracker.Result{Parts: []tracker.Part{upload, main}}
+	return outcome(err)
+}
+
+// stepParts are the parts of a write of issue whose main step is step:
+// the upload parts of the images stored, which the client reports in
+// stored, and of the attach that failed, then the main part.
+func stepParts(issue tracker.IssueID, step tracker.Step, stored []jira.Attachment, err error) tracker.Result {
+	main := tracker.Part{Issue: issue, Step: step, Outcome: mainOutcome(err), Changed: issueResources(issue)}
+	return tracker.Result{Parts: append(uploadParts(issue, stored, err), main)}
 }
 
 // Create makes an issue: the create, then, when its Markdown embeds local
@@ -104,16 +123,9 @@ func createParts(res jira.CreateResult, images bool, err error) tracker.Result {
 	if !images {
 		return tracker.Result{Parts: parts}
 	}
-	upload := tracker.Part{Issue: id, Step: tracker.StepUpload, Outcome: tracker.Applied(), Changed: issueResources(id)}
-	finish := tracker.Part{Issue: id, Step: tracker.StepEdit, Outcome: tracker.Applied(), Changed: issueResources(id)}
-	switch failed {
-	case jira.StepUpload:
-		upload.Outcome = outcome(err)
-		finish.Outcome = tracker.NotSent(fmt.Errorf("jiraprovider: not sent after the upload failed: %w", err))
-	case jira.StepFinish:
-		finish.Outcome = outcome(err)
-	}
-	return tracker.Result{Parts: append(parts, upload, finish)}
+	parts = append(parts, uploadParts(id, res.Uploaded, err)...)
+	finish := tracker.Part{Issue: id, Step: tracker.StepEdit, Outcome: mainOutcome(err), Changed: issueResources(id)}
+	return tracker.Result{Parts: append(parts, finish)}
 }
 
 // Edit changes fields of an issue through a plan the client checks and
@@ -127,16 +139,16 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 	}
 	inputs, err := p.fieldInputs(ctx, in.Issue, in.Fields)
 	if err != nil {
-		return stepParts(in.Issue, tracker.StepEdit, false, err)
+		return stepParts(in.Issue, tracker.StepEdit, nil, err)
 	}
 	plan, err := p.jira.PlanEdit(ctx, jira.EditInput{
 		Issue: string(in.Issue), Fields: inputs, ImageDir: in.ImageDir, AcceptLoss: in.AcceptLoss,
 	})
 	if err != nil {
-		return stepParts(in.Issue, tracker.StepEdit, false, err)
+		return stepParts(in.Issue, tracker.StepEdit, nil, err)
 	}
 	res, err := p.jira.ApplyEdit(ctx, plan)
-	return stepParts(in.Issue, tracker.StepEdit, len(res.Uploaded) > 0, err)
+	return stepParts(in.Issue, tracker.StepEdit, res.Uploaded, err)
 }
 
 // Move moves an issue by one of its transitions, with the fields its
@@ -153,18 +165,19 @@ func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Resul
 	}
 	inputs, err := p.fieldInputs(ctx, in.Issue, in.Fields)
 	if err != nil {
-		return stepParts(in.Issue, tracker.StepMove, false, err)
+		return stepParts(in.Issue, tracker.StepMove, nil, err)
 	}
 	res, err := p.jira.Transition(ctx, jira.TransitionInput{
 		Issue: string(in.Issue), Transition: string(in.Move), Fields: inputs, ImageDir: in.ImageDir, AcceptLoss: in.AcceptLoss,
 	})
-	return stepParts(in.Issue, tracker.StepMove, len(res.Uploaded) > 0, err)
+	return stepParts(in.Issue, tracker.StepMove, res.Uploaded, err)
 }
 
 // SetEstimate writes an issue's estimate through the board's estimation
 // field, in the board's unit: points, or seconds for original time,
 // which Jira takes in whole minutes. Zero is an estimate of zero, as the
-// jira client writes it; a nil Value clears.
+// jira client writes it; a nil Value clears. An issue the board does not
+// list is refused before anything is sent.
 func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepEstimate, err, in.Issue)
@@ -172,11 +185,12 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 	if err := checkIssue(in.Issue); err != nil {
 		return tracker.Invalid(tracker.StepEstimate, err, in.Issue)
 	}
-	part := tracker.Part{Issue: in.Issue, Step: tracker.StepEstimate, Changed: []tracker.Resource{tracker.RowOf(in.Board, in.Issue), tracker.DetailOf(in.Issue)}}
+	part := func(o tracker.Outcome) tracker.Result {
+		return tracker.Result{Parts: []tracker.Part{{Issue: in.Issue, Step: tracker.StepEstimate, Outcome: o, Changed: boardResources(tracker.StepEstimate, in.Board, in.Issue)}}}
+	}
 	b, err := p.board(ctx, in.Board)
 	if err != nil {
-		part.Outcome = beforeSend(err)
-		return tracker.Result{Parts: []tracker.Part{part}}
+		return part(beforeSend(err))
 	}
 	value := jira.NoEstimate()
 	switch v := in.Value; {
@@ -189,14 +203,21 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 	default:
 		value = jira.Points(*v)
 	}
-	_, _, err = p.jira.SetEstimate(ctx, jira.EstimateInput{Issue: string(in.Issue), Board: b.cfg.BoardID, Value: value})
-	part.Outcome = outcome(err)
-	return tracker.Result{Parts: []tracker.Part{part}}
+	listed, err := p.onBoard(ctx, b, []tracker.IssueID{in.Issue})
+	if err != nil {
+		return part(beforeSend(err))
+	}
+	return boardParts(in.Board, tracker.StepEstimate, []tracker.IssueID{in.Issue}, listed, func([]tracker.IssueID) tracker.Result {
+		_, _, err := p.jira.SetEstimate(ctx, jira.EstimateInput{Issue: string(in.Issue), Board: b.cfg.BoardID, Value: value})
+		return part(outcome(err))
+	})
 }
 
-// Rank places issues on a board just after Prev, or just before Next when
-// there is no Prev, through the board's rank field. Each issue's outcome
-// is the one the client's batch reports for it.
+// Rank places issues on a board next to the input's anchor, through the
+// board's rank field: just after Prev, or just before Next when there is
+// no Prev. An anchor the board does not list refuses the rank; an issue
+// it does not list is refused and the others are ranked. Each issue's
+// outcome is the one the client's batch reports for it.
 func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepRank, err, in.Issues...)
@@ -208,12 +229,22 @@ func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Resul
 	if err != nil {
 		return batchParts(in.Board, tracker.StepRank, in.Issues, jira.BatchResult{}, err)
 	}
-	pos := jira.RankBefore(string(in.Next.Issue))
-	if in.Prev != nil {
-		pos = jira.RankAfter(string(in.Prev.Issue))
+	anchor, after := in.Anchor()
+	listed, err := p.onBoard(ctx, b, append([]tracker.IssueID{anchor.Issue}, in.Issues...))
+	if err != nil {
+		return batchParts(in.Board, tracker.StepRank, in.Issues, jira.BatchResult{}, err)
 	}
-	res, err := p.jira.Rank(ctx, jira.RankInput{Issues: refs(in.Issues), Position: pos, RankFieldID: b.cfg.RankFieldID})
-	return batchParts(in.Board, tracker.StepRank, in.Issues, res, err)
+	if !listed[anchor.Issue] {
+		return tracker.Invalid(tracker.StepRank, invalidf("issue %s, which the issues go next to, is not on board %s now; read the board again", anchor.Issue, in.Board), in.Issues...)
+	}
+	pos := jira.RankBefore(string(anchor.Issue))
+	if after {
+		pos = jira.RankAfter(string(anchor.Issue))
+	}
+	return boardParts(in.Board, tracker.StepRank, in.Issues, listed, func(send []tracker.IssueID) tracker.Result {
+		res, err := p.jira.Rank(ctx, jira.RankInput{Issues: refs(send), Position: pos, RankFieldID: b.cfg.RankFieldID})
+		return batchParts(in.Board, tracker.StepRank, send, res, err)
+	})
 }
 
 func rankChecks(in tracker.RankInput) error {
@@ -230,9 +261,11 @@ func rankChecks(in tracker.RankInput) error {
 	return nil
 }
 
-// MoveToSprint moves issues into a sprint, or to the board's backlog when
-// the input names no sprint. Each issue's outcome is the one the client's
-// batch reports for it.
+// MoveToSprint moves issues into an active or future sprint the board
+// lists, or to the board's backlog when the input names no sprint. A
+// sprint the board does not list open refuses the move; an issue the
+// board does not list is refused and the others are moved. Each issue's
+// outcome is the one the client's batch reports for it.
 func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepSprintMove, err, in.Issues...)
@@ -241,30 +274,61 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 		return tracker.Invalid(tracker.StepSprintMove, err, in.Issues...)
 	}
 	board, err := boardNumber(in.Board)
+	if err == nil && in.Sprint != "" {
+		_, err = sprintNumber(in.Sprint)
+	}
 	if err != nil {
 		return tracker.Invalid(tracker.StepSprintMove, err, in.Issues...)
 	}
-	var res jira.BatchResult
-	if in.Sprint == "" {
-		res, err = p.jira.MoveToBacklog(ctx, jira.BacklogMove{Board: board, Issues: refs(in.Issues)})
-	} else {
-		sprint, serr := sprintNumber(in.Sprint)
-		if serr != nil {
-			return tracker.Invalid(tracker.StepSprintMove, serr, in.Issues...)
-		}
-		res, err = p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint, Issues: refs(in.Issues)})
+	notSent := func(err error) tracker.Result {
+		return batchParts(in.Board, tracker.StepSprintMove, in.Issues, jira.BatchResult{}, err)
 	}
-	return batchParts(in.Board, tracker.StepSprintMove, in.Issues, res, err)
+	b, err := p.board(ctx, in.Board)
+	if err != nil {
+		return notSent(err)
+	}
+	var sprint int64
+	if in.Sprint != "" {
+		if sprint, err = p.boardSprint(ctx, in.Board, in.Sprint, jira.SprintActive, jira.SprintFuture); err != nil {
+			return notSent(err)
+		}
+	}
+	listed, err := p.onBoard(ctx, b, in.Issues)
+	if err != nil {
+		return notSent(err)
+	}
+	return boardParts(in.Board, tracker.StepSprintMove, in.Issues, listed, func(send []tracker.IssueID) tracker.Result {
+		var res jira.BatchResult
+		var err error
+		if sprint == 0 {
+			res, err = p.jira.MoveToBacklog(ctx, jira.BacklogMove{Board: board, Issues: refs(send)})
+		} else {
+			res, err = p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint, Issues: refs(send)})
+		}
+		return batchParts(in.Board, tracker.StepSprintMove, send, res, err)
+	})
+}
+
+// boardResources are what a write of an issue on a board may change: its
+// row on the board, its card (read through every board the mirror has it
+// on, which covers the boards sharing this one's rank or estimate field)
+// and, but for a rank, its detail, which shows its sprints and estimate.
+func boardResources(step tracker.Step, board tracker.BoardID, issue tracker.IssueID) []tracker.Resource {
+	out := []tracker.Resource{tracker.RowOf(board, issue), tracker.CardOf(issue)}
+	if step != tracker.StepRank {
+		out = append(out, tracker.DetailOf(issue))
+	}
+	return out
 }
 
 // batchParts are one part per issue of a batch: the client's outcome for
 // each issue it reports, and for a batch refused before any group was
-// sent the outcome of that refusal for every issue. A rank or sprint move
-// may change the issue's row on the board and its card on every board.
+// sent the outcome of that refusal for every issue. Each part names
+// boardResources.
 func batchParts(board tracker.BoardID, step tracker.Step, issues []tracker.IssueID, res jira.BatchResult, err error) tracker.Result {
 	parts := make([]tracker.Part, len(issues))
 	for i, id := range issues {
-		parts[i] = tracker.Part{Issue: id, Step: step, Changed: []tracker.Resource{tracker.RowOf(board, id), tracker.CardOf(id)}}
+		parts[i] = tracker.Part{Issue: id, Step: step, Changed: boardResources(step, board, id)}
 	}
 	if len(res.Issues) != len(issues) {
 		if err == nil {

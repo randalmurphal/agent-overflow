@@ -156,7 +156,13 @@ Other:
   warning. The board issue list (`/rest/software/1.0/board/{id}/issue`)
   reads the same JQL: the millisecond literal, the two-key order, and
   `updated > T OR updated >= T AND id > N` to resume after one row, with
-  or without parentheses around the `AND`.
+  or without parentheses around the `AND`. It takes `id in (...)` of 100
+  IDs and returns those on the board; the ID of an issue that is not on
+  the board is left out with a 200.
+- Measured on 2026-11-19, read-only: `GET /rest/api/3/issue/{A}/comment/{id}`
+  and `GET /rest/api/3/issue/{A}/worklog/{id}` return the record when it
+  is A's and answer not found when it is another issue's. Whether the
+  matching writes refuse the same way is not measured.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
@@ -219,6 +225,24 @@ Source for schema facts: the
   issues 9; the catalog reads (teams, states, users, labels, projects,
   cycles) 310 to 730 each; one issue with its comments, attachments and
   relations 286; an issue's history 641.
+- Measured on 2026-11-19 with `live_scope_test.go`, on a workspace with
+  one team, three labels, no projects and cycles off. Which connections
+  are charged by their results and which by `first`: the `issues`
+  connection is charged by what it returns (IDs and sort orders of three
+  issues cost 4 at `first: 50` and at `first: 250`), and so is a `labels`
+  list nested in it (two issues cost 3 without labels and 6 with, at any
+  outer or inner page size and with one label or three). The catalog
+  connections are charged by `first`: labels by ID cost 4 for one ID and
+  10 for three, teams by key 9 for two keys and one match, and a cycles
+  read that returned nothing 441 at `first: 50` and 176 at `first: 20`.
+  The largest page is 250, outer or nested: `first: 251` answers
+  `INVALID_INPUT` with "first must not be greater than 250". `comment`, `issueRelation`, `cycle` and
+  `team` for an ID that names nothing answer `INPUT_ERROR` with "Could not
+  find referenced" and the type's name, at that field. A sub-issue created
+  naming only its parent took none of the parent's priority, assignee, due
+  date or labels. Not measured there: project and cycle inheritance, what
+  a cycle filter selects, and whether `issueUpdate` refuses another team's
+  status, cycle, label or project.
 - Webhooks need a public HTTPS URL
   ([webhooks](https://linear.app/developers/webhooks)). Polling filters and
   orders by `updatedAt`. Polling cannot see hard deletes.

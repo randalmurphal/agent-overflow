@@ -119,6 +119,40 @@ func TestAddCommentWithImageAndMention(t *testing.T) {
 	}
 }
 
+// TestAddCommentImageFailures proves a comment whose image upload or media
+// ID read fails reports what was stored and sends no comment.
+func TestAddCommentImageFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		route    func(*jiratest.Server)
+		step     Step
+		uploaded int
+	}{
+		{"the upload refused", func(f *jiratest.Server) {
+			f.On("POST", "/rest/api/3/issue/WEB-1/attachments", jiratest.Reply(413, `{"errorMessages":["too large"]}`))
+		}, StepUpload, 0},
+		{"the media ID read failed", func(f *jiratest.Server) {
+			f.On("GET", "/rest/api/3/attachment/content/501", jiratest.Reply(500, `{}`))
+		}, StepMediaID, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, c := commentSite(t, "software")
+			var uploads atomic.Int32
+			imageRoutes(t, f, "WEB-1", &uploads)
+			tc.route(f)
+			res, err := c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "![a](a.png)",
+				ImageDir: imageDir(t, map[string][]byte{"a.png": pngBytes})})
+			se, ok := errors.AsType[*StepError](err)
+			if !ok || se.Step != tc.step || len(res.Uploaded) != tc.uploaded || res.Comment != nil {
+				t.Fatalf("got %+v %v", res, err)
+			}
+			if f.Count("POST", "/rest/api/3/issue/WEB-1/comment") != 0 {
+				t.Error("the comment was sent")
+			}
+		})
+	}
+}
+
 func TestCommentsPage(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)

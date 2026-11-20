@@ -132,19 +132,19 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 	}
 	var ids map[string]string
 	if len(tp.imgs) > 0 {
-		if ids, err = c.uploadImages(ctx, in.Issue, tp.imgs, tp.held, &res.Uploaded); err != nil {
-			return res, &StepError{Step: StepUpload, Err: err}
+		if ids, err = c.uploadImages(ctx, in.Issue, tp.imgs, tp.held, &res.Uploaded, StepTransition); err != nil {
+			return res, err
 		}
 		if tp.comment != nil {
 			if tp.comment, err = copyDoc(tp.comment); err != nil {
-				return res, &StepError{Step: StepTransition, Err: notSentErr(err)}
+				return res, unsent(StepTransition, err)
 			}
 			adf.ReplaceMediaIDs(tp.comment, ids)
 		}
 	}
 	fields, err := patchedFields(tp.values, ids, false)
 	if err != nil {
-		return res, &StepError{Step: StepTransition, Err: notSentErr(err)}
+		return res, unsent(StepTransition, err)
 	}
 	update := map[string]any{}
 	for _, v := range tp.values {

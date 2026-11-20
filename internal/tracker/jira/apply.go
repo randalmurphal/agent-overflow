@@ -73,13 +73,13 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	if len(p.images) == 0 {
 		return res, nil
 	}
-	ids, err := c.uploadImages(ctx, res.ID, p.images, held, &res.Uploaded)
+	ids, err := c.uploadImages(ctx, res.ID, p.images, held, &res.Uploaded, StepFinish)
 	if err != nil {
-		return res, &StepError{Step: StepUpload, Err: err}
+		return res, err
 	}
 	finish, err := patchedFields(p.values, ids, true)
 	if err != nil {
-		return res, &StepError{Step: StepFinish, Err: notSentErr(err)}
+		return res, unsent(StepFinish, err)
 	}
 	finishReq := trackerapi.Request{Method: http.MethodPut, Path: apiPath + "issue/" + url.PathEscape(res.ID), Body: map[string]any{"fields": finish}}
 	if _, err := c.write(ctx, finishReq, emptyAnswer(http.StatusNoContent), nil); err != nil {
@@ -135,23 +135,29 @@ func patchedFields(vs []Value, ids map[string]string, onlyImages bool) (map[stri
 	return out, nil
 }
 
-// uploadImages attaches imgs, whose content held has, to the issue and
-// returns their media IDs by placeholder, adding each attachment to done
-// as it is stored.
-func (c *Client) uploadImages(ctx context.Context, issue string, imgs []*Image, held map[*Image][]byte, done *[]Attachment) (map[string]string, error) {
+// uploadImages attaches imgs, whose content held has, to the issue, one
+// attach request each, reads each one's media ID, and returns the IDs by
+// placeholder. Every attachment Jira stored is added to done as soon as
+// its answer names it, whatever fails after. A failure is a *StepError:
+// StepUpload when an attach request failed, StepMediaID when a media ID
+// read did, and next, the write the images are for, when an attach answer
+// named other than one attachment; in the last two next was not sent. An
+// attach whose answer names its attachment and did not decode in full is
+// applied, and the upload goes on.
+func (c *Client) uploadImages(ctx context.Context, issue string, imgs []*Image, held map[*Image][]byte, done *[]Attachment, next Step) (map[string]string, error) {
 	ids := map[string]string{}
 	for _, img := range imgs {
 		stored, err := c.attach(ctx, issue, File{Name: img.Name, Content: bytes.NewReader(held[img])})
 		*done = append(*done, stored...)
-		if err != nil {
-			return ids, err
+		if err != nil && !answerApplied(err) {
+			return ids, &StepError{Step: StepUpload, Err: err}
 		}
 		if len(stored) != 1 {
-			return ids, &AnswerError{Message: fmt.Sprintf("attaching %s stored %d attachments", img.Name, len(stored))}
+			return ids, unsent(next, &AnswerError{Message: fmt.Sprintf("attaching %s stored %d attachments, so which one the document names is not known", img.Name, len(stored))})
 		}
 		mediaID, err := c.mediaID(ctx, stored[0].ID)
 		if err != nil {
-			return ids, err
+			return ids, unsent(StepMediaID, err)
 		}
 		ids[img.placeholder] = mediaID
 	}
@@ -203,13 +209,13 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 	}
 	var ids map[string]string
 	if len(p.images) > 0 {
-		if ids, err = c.uploadImages(ctx, p.issueID, p.images, held, &res.Uploaded); err != nil {
-			return res, &StepError{Step: StepUpload, Err: err}
+		if ids, err = c.uploadImages(ctx, p.issueID, p.images, held, &res.Uploaded, StepEdit); err != nil {
+			return res, err
 		}
 	}
 	fields, err := patchedFields(p.values, ids, false)
 	if err != nil {
-		return res, &StepError{Step: StepEdit, Err: notSentErr(err)}
+		return res, unsent(StepEdit, err)
 	}
 	update := map[string]json.RawMessage{}
 	var names []string

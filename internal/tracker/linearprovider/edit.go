@@ -57,8 +57,8 @@ func needsTeam(edits []tracker.FieldEdit) bool {
 }
 
 // resolve resolves edits. A refusal is a *refusedEdit; any other error
-// is a read that failed. On a create a clear sets nothing, since a new
-// issue holds nothing to clear.
+// is a read that failed. A clear is kept as a clear on a create too:
+// changes.create decides what Linear needs to hear of it.
 func (r *resolver) resolve(ctx context.Context, edits []tracker.FieldEdit, create bool) (changes, error) {
 	var ch changes
 	for _, e := range edits {
@@ -69,9 +69,7 @@ func (r *resolver) resolve(ctx context.Context, edits []tracker.FieldEdit, creat
 		var err error
 		switch e.Value.Form() {
 		case tracker.EditClear:
-			if !create {
-				err = clearField(f, &ch)
-			}
+			err = clearField(f, &ch)
 		case tracker.EditPick:
 			err = pick(f, e.Value.Values(), &ch)
 		case tracker.EditTyped:
@@ -146,11 +144,9 @@ func markdown(f fieldSpec, e tracker.Edit, create bool, ch *changes) error {
 		return refusedf(tracker.ReasonInvalid, "%s is not rich text", f.name)
 	}
 	md, from := e.Markdown()
-	switch {
-	case md == "" && create:
-	case md == "":
+	if md == "" {
 		ch.description = linear.Null[string]()
-	default:
+	} else {
 		ch.description = linear.Set(md)
 	}
 	if !create {

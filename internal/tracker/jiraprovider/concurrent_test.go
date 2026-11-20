@@ -50,7 +50,10 @@ func TestConcurrentUse(t *testing.T) {
 				errs <- err
 			case 3:
 				res := p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: &tracker.Neighbor{Issue: "10002", Order: "0|b"}})
-				if !res.AllApplied() {
+				switch err := res.Check(); {
+				case err != nil:
+					errs <- err
+				case !res.AllApplied():
 					errs <- errors.New("rank " + states(res))
 				}
 			}

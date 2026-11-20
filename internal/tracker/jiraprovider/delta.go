@@ -23,9 +23,10 @@ import (
 // page tokens are never used, so nothing a cursor holds expires, and a
 // result set that shifts between pages skips nothing.
 //
-// At the end of a walk the cursor steps back by walkOverlap and forgets
-// the last ID, so the next walk delivers again every row updated in that
-// last stretch. Jira documents that its search may not yet show a recent
+// At the end of a walk that delivered a row, on its last page or an
+// earlier one, the cursor steps back by walkOverlap and forgets the last
+// ID, so the next walk delivers again every row updated in that last
+// stretch. Jira documents that its search may not yet show a recent
 // update: an issue whose update the index took only after the walk passed
 // its time is read then.
 
@@ -151,9 +152,11 @@ func (p *Provider) ChangedRows(ctx context.Context, q tracker.DeltaQuery) (track
 		out.Rows = append(out.Rows, row)
 	}
 	// A page with no rows ends the walk whatever its token says: the next
-	// page would ask the same.
+	// page would ask the same. A walk that ends past its start, on this
+	// page or an earlier one, steps back; one that never left its start
+	// stays, so an idle cursor does not drift back.
 	out.More = page.NextPageToken != "" && len(out.Rows) > 0
-	if !out.More && len(out.Rows) > 0 {
+	if !out.More && next.AfterID > 0 {
 		next.AfterMS, next.AfterID = max(next.AfterMS-walkOverlap.Milliseconds(), 1), 0
 	}
 	out.Catalog = cat.out

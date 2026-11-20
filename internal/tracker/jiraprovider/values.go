@@ -11,10 +11,14 @@ import (
 )
 
 const (
-	// userChoices is the most users a user field's choices list.
-	userChoices = 50
-	// parentChoices is the most issues a parent field's choices list.
-	parentChoices = 20
+	// pickLimit is the most rows a pick list returns: Choices and
+	// AssignableUsers return at most this many, with More set when they
+	// leave a match out.
+	pickLimit = 50
+	// assignableWindow is the window of users Jira's assignable search
+	// checks in one call: the largest it takes, since it examines no user
+	// past the thousandth.
+	assignableWindow = 1000
 )
 
 // createSkipped are the create screen's fields CreateFields leaves out:
@@ -75,49 +79,61 @@ func (p *Provider) screen(ctx context.Context, scope tracker.FieldScope) (jira.S
 }
 
 // AssignableUsers are the users Jira says can be assigned in scope whose
-// name or email starts with text. Jira takes no empty query, so empty
-// text returns none.
-func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) ([]tracker.User, error) {
-	q := jira.AssignableQuery{Query: strings.TrimSpace(text)}
+// name or email starts with text, at most pickLimit. Jira takes no empty
+// query, so empty text returns none, with More set.
+//
+// Jira's assignable search takes a window of the users matching text and
+// returns only the assignable ones in it, never looking past the
+// thousandth user, so a short answer proves nothing about a larger
+// window. One call asks for the whole window Jira allows, and More is set
+// when more than pickLimit users came back (a full window always does).
+// More false proves that no other assignable user is among the users Jira
+// examines for text, read as the documentation reads: the first
+// assignableWindow users matching text. With more matching users than
+// that, an assignable one past them can be missing, which this endpoint
+// cannot show.
+func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) (tracker.UserList, error) {
+	q := jira.AssignableQuery{Query: strings.TrimSpace(text), MaxResults: assignableWindow}
 	if issue, ok := scope.Issue(); ok {
 		if err := checkIssue(issue); err != nil {
-			return nil, err
+			return tracker.UserList{}, err
 		}
 		q.Issue = string(issue)
 	} else if project, _, ok := scope.Create(); ok {
 		if err := checkProject(project); err != nil {
-			return nil, err
+			return tracker.UserList{}, err
 		}
 		q.Project = string(project)
 	} else {
-		return nil, invalidf("a field scope names neither an issue nor a project")
+		return tracker.UserList{}, invalidf("a field scope names neither an issue nor a project")
 	}
 	if q.Query == "" {
-		return nil, nil
+		return tracker.UserList{More: true}, nil
 	}
 	found, err := p.jira.AssignableUsers(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("jiraprovider: assignable users: %w", err)
+		return tracker.UserList{}, fmt.Errorf("jiraprovider: assignable users: %w", err)
 	}
-	out := make([]tracker.User, len(found))
-	for i, u := range found {
-		out[i] = userOf(u)
+	out := tracker.UserList{More: len(found) > pickLimit}
+	for _, u := range found[:min(len(found), pickLimit)] {
+		out.Users = append(out.Users, userOf(u))
 	}
 	return out, nil
 }
 
 // Choices are the values field takes in scope whose name starts with
-// text, case ignored: the screen's allowed values (the site's priorities
-// for a priority field that lists none), users for a user field, found by
-// Jira's search, and none for a field whose values are free.
-func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field tracker.FieldID, text string) ([]tracker.Choice, error) {
+// text, case ignored, at most pickLimit: the screen's allowed values (the
+// site's priorities for a priority field that lists none), users for a
+// user field, found by Jira's search, issues for the parent, and none for
+// a field whose values are free.
+func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field tracker.FieldID, text string) (tracker.ChoiceList, error) {
 	screen, err := p.screen(ctx, scope)
 	if err != nil {
-		return nil, err
+		return tracker.ChoiceList{}, err
 	}
 	f, ok := screenField(screen, jiraField(field))
 	if !ok {
-		return nil, invalidf("field %s is not on the screen", field)
+		return tracker.ChoiceList{}, invalidf("field %s is not on the screen", field)
 	}
 	text = strings.TrimSpace(text)
 	if f.Schema.System == "parent" {
@@ -127,25 +143,37 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 	case tracker.KindUser:
 		return p.userChoices(ctx, scope, f, text)
 	case tracker.KindOption:
-		allowed := f.Allowed
-		if allowed == nil && f.Schema.Type == "priority" {
-			ps, err := p.jira.Priorities(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("jiraprovider: priorities: %w", err)
-			}
-			for _, pr := range ps {
-				allowed = append(allowed, jira.AllowedValue{ID: pr.ID, Name: pr.Name})
-			}
-		}
-		var out []tracker.Choice
-		for _, a := range allowed {
-			if !a.Disabled && strings.HasPrefix(strings.ToLower(a.Name), strings.ToLower(text)) {
-				out = append(out, tracker.Choice{ID: a.ID, Name: a.Name})
-			}
-		}
-		return out, nil
+		return p.allowedChoices(ctx, f, text)
 	}
-	return nil, nil
+	return tracker.ChoiceList{}, nil
+}
+
+// allowedChoices are f's allowed values starting with text: the screen's
+// list, or the site's priorities, each read whole, so More is set only
+// when more than pickLimit match.
+func (p *Provider) allowedChoices(ctx context.Context, f jira.FieldMeta, text string) (tracker.ChoiceList, error) {
+	allowed := f.Allowed
+	if allowed == nil && f.Schema.Type == "priority" {
+		ps, err := p.jira.Priorities(ctx)
+		if err != nil {
+			return tracker.ChoiceList{}, fmt.Errorf("jiraprovider: priorities: %w", err)
+		}
+		for _, pr := range ps {
+			allowed = append(allowed, jira.AllowedValue{ID: pr.ID, Name: pr.Name})
+		}
+	}
+	var out tracker.ChoiceList
+	for _, a := range allowed {
+		if a.Disabled || !strings.HasPrefix(strings.ToLower(a.Name), strings.ToLower(text)) {
+			continue
+		}
+		if len(out.Choices) == pickLimit {
+			out.More = true
+			break
+		}
+		out.Choices = append(out.Choices, tracker.Choice{ID: a.ID, Name: a.Name})
+	}
+	return out, nil
 }
 
 // parentChoices are the issues text finds, most recently updated first,
@@ -154,10 +182,12 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 // its key and title. Jira's edit and create metadata list no allowed
 // values for the parent, so which issues may be one (by hierarchy level
 // and project) is not filtered here: a parent Jira does not take is
-// refused by its answer to the edit. Empty text offers none.
-func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, text string) ([]tracker.Choice, error) {
+// refused by its answer to the edit. Empty text offers none, with More
+// set. More is set when Jira names a further page, the page is full, or
+// Jira warned that the search may be incomplete.
+func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, text string) (tracker.ChoiceList, error) {
 	if text == "" {
-		return nil, nil
+		return tracker.ChoiceList{More: true}, nil
 	}
 	jql := "text ~ " + jira.QuoteJQLText(text)
 	if keyShape.MatchString(text) {
@@ -166,38 +196,50 @@ func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, 
 	if issue, ok := scope.Issue(); ok {
 		jql += " AND id != " + string(issue) // checked numeric by screen
 	}
-	page, err := p.jira.Search(ctx, jira.SearchQuery{JQL: jql + " ORDER BY updated DESC", Fields: []string{jiraSummary}, MaxResults: parentChoices})
+	page, err := p.jira.Search(ctx, jira.SearchQuery{JQL: jql + " ORDER BY updated DESC", Fields: []string{jiraSummary}, MaxResults: pickLimit})
 	if err != nil {
-		return nil, fmt.Errorf("jiraprovider: parents for %q: %w", text, err)
+		return tracker.ChoiceList{}, fmt.Errorf("jiraprovider: parents for %q: %w", text, err)
 	}
-	out := make([]tracker.Choice, len(page.Issues))
-	for i, is := range page.Issues {
-		out[i] = tracker.Choice{ID: is.ID, Name: is.Key + " " + is.Summary}
+	out := tracker.ChoiceList{More: page.NextPageToken != "" || len(page.Issues) >= pickLimit || len(page.Warnings) > 0}
+	for _, is := range page.Issues[:min(len(page.Issues), pickLimit)] {
+		out.Choices = append(out.Choices, tracker.Choice{ID: is.ID, Name: is.Key + " " + is.Summary})
 	}
 	return out, nil
 }
 
 // userChoices are the users a user field offers for text: the assignable
-// users for the assignee, any user otherwise. Empty text offers none.
-func (p *Provider) userChoices(ctx context.Context, scope tracker.FieldScope, f jira.FieldMeta, text string) ([]tracker.Choice, error) {
-	var users []tracker.User
-	if f.ID == "assignee" {
+// users for the assignee, any user otherwise. Empty text offers none,
+// with More set.
+//
+// Jira's user search matches text first and then pages the matches, so
+// asking for one more than pickLimit shows whether any is left out. More
+// false proves that no other active user whose name or email starts with
+// text is visible to the credential, up to Jira's thousandth match: a
+// credential without the Browse users and groups permission is answered
+// with no users, which no answer tells apart from no match.
+func (p *Provider) userChoices(ctx context.Context, scope tracker.FieldScope, f jira.FieldMeta, text string) (tracker.ChoiceList, error) {
+	var users tracker.UserList
+	switch {
+	case f.ID == "assignee":
 		var err error
 		if users, err = p.AssignableUsers(ctx, scope, text); err != nil {
-			return nil, err
+			return tracker.ChoiceList{}, err
 		}
-	} else if text != "" {
-		found, err := p.jira.SearchUsers(ctx, text, userChoices)
+	case text == "":
+		users.More = true
+	default:
+		found, err := p.jira.SearchUsers(ctx, text, pickLimit+1)
 		if err != nil {
-			return nil, fmt.Errorf("jiraprovider: users for %s: %w", f.Name, err)
+			return tracker.ChoiceList{}, fmt.Errorf("jiraprovider: users for %s: %w", f.Name, err)
 		}
-		for _, u := range found {
-			users = append(users, userOf(u))
+		users.More = len(found) > pickLimit
+		for _, u := range found[:min(len(found), pickLimit)] {
+			users.Users = append(users.Users, userOf(u))
 		}
 	}
-	out := make([]tracker.Choice, len(users))
-	for i, u := range users {
-		out[i] = tracker.Choice{ID: string(u.ID), Name: u.Name}
+	out := tracker.ChoiceList{More: users.More}
+	for _, u := range users.Users {
+		out.Choices = append(out.Choices, tracker.Choice{ID: string(u.ID), Name: u.Name})
 	}
 	return out, nil
 }

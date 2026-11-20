@@ -273,30 +273,31 @@ func TestChoices(t *testing.T) {
 	f.On("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantQuery(t, r, "issueId", "10001")
 		jiratest.WantQuery(t, r, "query", "user")
+		jiratest.WantQuery(t, r, "maxResults", "1000")
 		jiratest.Reply(200, `[`+user1JSON+`,`+user2JSON+`]`)(w, r, b)
 	})
 	f.On("GET", "/rest/api/3/priority/search", jiratest.Reply(200, `{"isLast":true,"values":[{"id":"1","name":"High"},{"id":"4","name":"Low"}]}`))
 	onCreate := tracker.OnCreate("10000", "10002")
 	sev, err := p.Choices(t.Context(), onCreate, "customfield_10050", " min")
-	if err != nil || !slices.Equal(sev, []tracker.Choice{{ID: "20", Name: "Minor"}, {ID: "21", Name: "MINOR"}}) {
+	if err != nil || sev.More || !slices.Equal(sev.Choices, []tracker.Choice{{ID: "20", Name: "Minor"}, {ID: "21", Name: "MINOR"}}) {
 		t.Errorf("severity %+v %v", sev, err)
 	}
 	users, err := p.AssignableUsers(t.Context(), tracker.OnIssue("10001"), "user")
-	if err != nil || len(users) != 2 || users[1].ID != "acc-user2" {
+	if err != nil || users.More || len(users.Users) != 2 || users.Users[1].ID != "acc-user2" {
 		t.Errorf("assignable %+v %v", users, err)
 	}
-	if users, err := p.AssignableUsers(t.Context(), tracker.OnIssue("10001"), " "); err != nil || users != nil {
+	if users, err := p.AssignableUsers(t.Context(), tracker.OnIssue("10001"), " "); err != nil || users.Users != nil || !users.More {
 		t.Errorf("no text: %+v %v", users, err)
 	}
 	if _, err := p.Choices(t.Context(), onCreate, "customfield_10016", ""); !errors.Is(err, tracker.ErrInvalidInput) {
 		t.Errorf("a field not on the screen: %v", err)
 	}
-	if got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), "summary", "x"); err != nil || got != nil {
+	if got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), "summary", "x"); err != nil || got.Choices != nil || got.More {
 		t.Errorf("free text: %v %v", got, err)
 	}
 	// An edit screen's priority with no allowed values lists the site's.
 	f.On("GET", editMetaPath, jiratest.Reply(200, `{"fields":{"priority":{"key":"priority","name":"Priority","schema":{"type":"priority","system":"priority"},"operations":["set"]}}}`))
-	if got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), "priority", "l"); err != nil || !slices.Equal(got, []tracker.Choice{{ID: "4", Name: "Low"}}) {
+	if got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), "priority", "l"); err != nil || got.More || !slices.Equal(got.Choices, []tracker.Choice{{ID: "4", Name: "Low"}}) {
 		t.Errorf("priorities %v %v", got, err)
 	}
 }
@@ -312,13 +313,13 @@ func TestParentChoices(t *testing.T) {
 	f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		v := bodyOf(t, b)
 		jqls = append(jqls, v["jql"].(string))
-		if v["maxResults"] != 20.0 || fmt.Sprint(v["fields"]) != "[summary]" {
+		if v["maxResults"] != float64(pickLimit) || fmt.Sprint(v["fields"]) != "[summary]" {
 			t.Errorf("search %s", b)
 		}
 		jiratest.Reply(200, `{"isLast":true,"issues":[{"id":"10005","key":"WEB-5","fields":{"summary":"Epic"}}]}`)(w, r, b)
 	})
 	got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), tracker.FieldParent, " web-5 ")
-	if err != nil || !slices.Equal(got, []tracker.Choice{{ID: "10005", Name: "WEB-5 Epic"}}) {
+	if err != nil || got.More || !slices.Equal(got.Choices, []tracker.Choice{{ID: "10005", Name: "WEB-5 Epic"}}) {
 		t.Errorf("choices %+v %v", got, err)
 	}
 	if _, err := p.Choices(t.Context(), tracker.OnCreate("10000", "10002"), tracker.FieldParent, "login"); err != nil {
@@ -331,7 +332,7 @@ func TestParentChoices(t *testing.T) {
 	if !slices.Equal(jqls, want) {
 		t.Errorf("sent\n%s", strings.Join(jqls, "\n"))
 	}
-	if got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), tracker.FieldParent, " "); err != nil || got != nil || len(jqls) != 2 {
+	if got, err := p.Choices(t.Context(), tracker.OnIssue("10001"), tracker.FieldParent, " "); err != nil || got.Choices != nil || !got.More || len(jqls) != 2 {
 		t.Errorf("no text: %+v %v, %d searches", got, err, len(jqls))
 	}
 }

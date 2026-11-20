@@ -21,8 +21,22 @@ func keyClause(key string, numbers ...int) map[string]any {
 	return map[string]any{"number": map[string]any{"in": numbers}, "team": map[string]any{"key": map[string]any{"eqIgnoreCase": key}}}
 }
 
+// teamsByKeyX expects the read of the teams keys name.
+func teamsByKeyX(keys []string, teams ...lineartest.Team) lineartest.Exchange {
+	var or []any
+	for _, k := range keys {
+		or = append(or, map[string]any{"key": map[string]string{"eqIgnoreCase": k}})
+	}
+	var nodes []string
+	for _, t := range teams {
+		nodes = append(nodes, t.JSON())
+	}
+	return lineartest.Exchange{Op: "TeamsByKey", Vars: js(map[string]any{"first": len(keys), "filter": map[string]any{"or": or}}), Body: page(nodes...)}
+}
+
 // Lookup matches keys in one batch, case ignored; a key the batch misses
-// is read alone only when its team key names a visible team; a trashed
+// is read alone only when its team key names a visible team, which one
+// read of the teams by the keys left tells; a trashed
 // issue, an identifier Linear does not know and a key that is no
 // identifier are unmatched.
 func TestLookupMatches(t *testing.T) {
@@ -32,7 +46,7 @@ func TestLookupMatches(t *testing.T) {
 	trashed.Trashed = true
 	p, srv := newProvider(t,
 		issuesX(lookupVars(5, keyClause("WEB", 2, 1, 3, 7), keyClause("OPS", 4)), issue(1, 1), issue(2, 1), trashed),
-		teamsX(lineartest.NewTeam("WEB")),
+		teamsByKeyX([]string{"WEB", "OPS"}, lineartest.NewTeam("WEB")),
 		lineartest.Exchange{Op: "IssueSummary", Vars: `{"id":"WEB-3"}`, Body: `{"data":{"issue":` + trashed.JSON() + `}}`},
 		summaryX("WEB-7", moved),
 	)
@@ -50,7 +64,7 @@ func TestLookupMatches(t *testing.T) {
 	// An identifier Linear does not know is unmatched, not an error.
 	srv.Expect(
 		issuesX(lookupVars(1, keyClause("WEB", 404))),
-		teamsX(lineartest.NewTeam("WEB")),
+		teamsByKeyX([]string{"WEB"}, lineartest.NewTeam("WEB")),
 		lineartest.Exchange{Op: "IssueSummary", Vars: `{"id":"WEB-404"}`, Body: notFound},
 	)
 	if l, err := p.Lookup(context.Background(), []string{"WEB-404"}); err != nil || l.Unmatched[0] != "WEB-404" {
