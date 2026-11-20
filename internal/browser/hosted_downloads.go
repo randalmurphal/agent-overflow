@@ -33,7 +33,7 @@ import (
 // a status question names the last cancel sent, so the launcher makes one
 // it never got. Nothing about downloads crosses CDP. A popup is a pane page
 // too: a download it starts before the Manager lists its tab names it and
-// its openers, for the Manager to list (popup_adoption.go). A page admits
+// its openers, for the Manager to list (popup_parked.go). A page admits
 // downloads from its bind or report until its close or discard is
 // received, and one still running when its lane retires it ends there
 // (retirePage).

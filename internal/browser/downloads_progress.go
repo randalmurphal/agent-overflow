@@ -68,7 +68,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	}
 	saving := m.engine.DownloadSaving()
 	// Over the cap: running, it is canceled; finished, which a popup's
-	// download listed only at its finish can be (popup_adoption.go), its
+	// download listed only at its finish can be (popup_parked.go), its
 	// file goes all the same.
 	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && !event.State.stopped() {
 		if err := entry.settle(downloadStateCanceled); err != nil {

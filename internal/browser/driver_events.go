@@ -58,7 +58,7 @@ type downloadStart struct {
 	// it, nearest first, and Profile the handle of its engine profile. The
 	// Manager lists the download in the popup's tab, or in the nearest
 	// listed opener's if the popup is never listed, and cancels it through
-	// the profile when neither is (popup_adoption.go).
+	// the profile when neither is (popup_parked.go).
 	Popup   ids.PageHandle
 	Openers []ids.PageHandle
 	Profile profileHandle

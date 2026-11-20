@@ -29,7 +29,7 @@ import (
 // of its targets (cdpTargets). Its downloads go to the Manager as they
 // come, naming the popup and its openers, and the Manager lists them in
 // the popup's tab or, if the popup is never listed, in its nearest listed
-// opener's (popup_adoption.go). Its crash and its close go to the Manager
+// opener's (popup_parked.go). Its crash and its close go to the Manager
 // as they come too, whose admission of the popup decides whether it
 // becomes a tab (engineEvents). A popup reported with no target (one that
 // went before the launcher read it) is never offered for adoption: the

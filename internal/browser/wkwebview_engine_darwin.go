@@ -201,7 +201,7 @@ func (e *wkEngine) heldOpener(handle ids.PageHandle) ids.PageHandle {
 // view's page, or, for a popup not adopted yet, the popup's number. A
 // popup's download names the popup by its handle and its opener, before
 // adoption and after, so the Manager lists it while the popup is not
-// (popup_adoption.go).
+// (popup_parked.go).
 func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 	var start downloadStart
 	switch {

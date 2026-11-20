@@ -37,7 +37,7 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	case p != nil:
 		return m.admitTo(p, event, m.downloadFileOf(scope, event.ID), nil)
 	case event.Popup != "":
-		// A popup not listed yet: its fate lists it (popup_adoption.go).
+		// A popup not listed yet: its fate lists it (popup_parked.go).
 		return m.parkDownload(event)
 	}
 	return downloadUnowned

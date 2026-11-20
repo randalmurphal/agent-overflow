@@ -123,7 +123,7 @@ popup view gets its policy and create handlers when it is made
 download a popup starts before its tab is listed names the popup by the
 handle the Manager adopts it under (`downloadStart.Popup`), and the Manager
 parks it, newest progress only, until the popup's fate lists it in the
-popup's tab or its nearest listed opener's (`popup_adoption.go`); the tab
+popup's tab or its nearest listed opener's (`popup_parked.go`); the tab
 and its parked downloads are listed in one `parkMu` hold that a page's
 close also takes. An engine keeps no download of its own for a popup.
 Headless Chromium runs with its popup blocker off, so a window a page opens
