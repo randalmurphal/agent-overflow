@@ -277,7 +277,7 @@ func artifactNames(name string) func(i int) string {
 // creates it exclusively; one that moves a file there uses placeNoReplace.
 func uniqueArtifactPath(dir, name string) (string, error) {
 	names := artifactNames(name)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < maxNameVariants; i++ {
 		candidate := filepath.Join(dir, names(i))
 		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
 			return candidate, nil

@@ -156,8 +156,10 @@ func userDirsValue(value, home string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-// maxDownloadNameCollisions bounds the walk over a name's variants.
-const maxDownloadNameCollisions = 1000
+// maxNameVariants bounds every walk over a name's variants for one that is
+// free in a directory: a download's or an artifact's name, a private name,
+// a run directory.
+const maxNameVariants = 1000
 
 // linkDownload is os.Link and renameDownload renameNoReplace: test seams
 // for a file appearing at a name as it is taken, and for a filesystem
@@ -212,7 +214,7 @@ func placeNoReplace(source string, info os.FileInfo, dir, where string, name fun
 	if err != nil {
 		return "", nil, err
 	}
-	for i := 0; i < maxDownloadNameCollisions; i++ {
+	for i := 0; i < maxNameVariants; i++ {
 		candidate := filepath.Join(dir, name(i))
 		err := place.move(private, candidate)
 		switch {
@@ -230,7 +232,7 @@ func placeNoReplace(source string, info os.FileInfo, dir, where string, name fun
 		}
 	}
 	place.undo(private, source)
-	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxDownloadNameCollisions, name(0), dir)
+	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxNameVariants, name(0), dir)
 }
 
 // placingNamePrefix starts the private name a file takes in its
@@ -257,7 +259,7 @@ type placement struct {
 // name is seen to hold info's file. A refused link switches the placement
 // to renames.
 func (p *placement) private(source string, info os.FileInfo) (string, error) {
-	for range maxDownloadNameCollisions {
+	for range maxNameVariants {
 		private := filepath.Join(p.dir, placingName())
 		err := p.move(source, private)
 		switch {

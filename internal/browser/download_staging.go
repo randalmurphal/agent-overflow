@@ -156,7 +156,7 @@ func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, fs.ErrExist) || i >= maxDownloadNameCollisions {
+		if !errors.Is(err, fs.ErrExist) || i >= maxNameVariants {
 			return nil, fmt.Errorf("browser: create the download staging folder %s: %w", runDir, err)
 		}
 	}
