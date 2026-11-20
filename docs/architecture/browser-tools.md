@@ -469,7 +469,10 @@ behave as a desktop browser's:
   cancel keeps its file; a repeated cancel never withdraws the first), under
   headless Chromium a quota or its size, or its page leaving by any path (a
   close, a suspend, the engine's close, Clear site data, disabling the
-  browser), which settles it at once and releases any reservation; a
+  browser), which settles it at once and releases any reservation, with
+  the bytes the engine last reported; a download a tab's load starts
+  while the tab is being created or restored is the tab's from then, and
+  one whose tab never opens is canceled the same way; a
   download that starts on a page already leaving is refused to the engine
   and never listed; headless Chromium cancels a refused download at once
   and removes its file when its end arrives or its browser has stopped,
@@ -491,7 +494,9 @@ behave as a desktop browser's:
   running download the launcher has not reported for ten seconds is asked
   for one, so a row whose end was lost settles. An answer settles or
   advances a row and never creates one; for an id the launcher has no
-  record of it says so, which ends the row only if it still runs. WebView2
+  record of it says so, which ends the row only if it still runs, listed
+  failed with that reason even when its tab closes before the answer is
+  applied. WebView2
   resumes a dropped download itself, as a new download start that carries
   the interruption's reason; the launcher keeps it as the same row, saving
   to the file the download started with, so one click is one row, one file
@@ -524,6 +529,8 @@ behave as a desktop browser's:
   adopted, and otherwise in the tab of its nearest opener still listed, as
   it is, finished or running, or canceled with the reason when the popup's
   close ended it (WebView2 cancels a closing page's downloads). A popup
+  whose close arrived while that opener was listed lists them there even
+  when the opener closes before the backend has processed the close. A popup
   whose window went before the launcher reported it is never a tab; its
   downloads are listed at its close. Under headless Chromium such a
   download holds the quota of the workspace of the nearest page that opened

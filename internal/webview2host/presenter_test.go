@@ -159,6 +159,7 @@ func TestFocusDecisionNeedsAShownPageAndTheForeground(t *testing.T) {
 		{"shown, another app in front", shown, false, focusNotForeground},
 		{"hidden", shownView{placement: shown.placement}, true, focusNotShown},
 		{"at no known place", shownView{visible: true}, true, focusNotShown},
+		{"shown, its raise failed", shownView{placement: shown.placement, visible: true, raiseFailed: true}, true, focusNotShown},
 		{"nothing", shownView{}, false, focusNotShown},
 	} {
 		taken := false
@@ -477,6 +478,16 @@ func TestNextPresentStepMovesBeforeShowingAndNeverMovesHidden(t *testing.T) {
 	step = nextPresentStep(shown, reshown, false)
 	if !step.move || !step.show || step.bounds.X != 3 {
 		t.Fatalf("reshow = %+v", step)
+	}
+	// Shown with its raise failed: still shown, so a hide hides it, and a
+	// show unasked for a raise shows and raises it again.
+	unraised := applied(shown, step)
+	unraised.raiseFailed = true
+	if step := nextPresentStep(unraised, paneView{}, false); !step.hide || step.show {
+		t.Fatalf("hide after a failed raise = %+v", step)
+	}
+	if step := nextPresentStep(unraised, reshown, false); !step.show || step.move || !step.focus {
+		t.Fatalf("show after a failed raise = %+v", step)
 	}
 }
 
