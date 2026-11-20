@@ -4195,6 +4195,12 @@ export class OwnerLinkRead {
      */
     "held"?: string[];
 
+    /**
+     * NudgesTaken lists the ended nudge runs the caller recorded
+     * (threadAgentPeerArgs.NudgesTaken).
+     */
+    "nudgesTaken"?: string[];
+
     /** Creates a new OwnerLinkRead instance. */
     constructor($$source: Partial<OwnerLinkRead> = {}) {
         if (!("token" in $$source)) {
@@ -4212,9 +4218,13 @@ export class OwnerLinkRead {
      */
     static createFrom($$source: any = {}): OwnerLinkRead {
         const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("held" in $$parsedSource) {
             $$parsedSource["held"] = $$createField2_0($$parsedSource["held"]);
+        }
+        if ("nudgesTaken" in $$parsedSource) {
+            $$parsedSource["nudgesTaken"] = $$createField3_0($$parsedSource["nudgesTaken"]);
         }
         return new OwnerLinkRead($$parsedSource as Partial<OwnerLinkRead>);
     }
@@ -8844,12 +8854,16 @@ export class ThreadAgentRows {
     "runOpen"?: boolean;
 
     /**
-     * Nudge is the latest nudge run of the listed thread's link to the
-     * asking spawn (store.ReceiptRunOf), which the asking computer records
-     * as its nudge row (store.RecordRemoteNudgeRun). Nil when there is none,
-     * and from a computer that predates it, whose nudges show no row.
+     * Nudges is the nudge runs of the listed thread's link to the asking
+     * spawn that the asking computer has not taken (store.ReceiptRunOf):
+     * the open one first, then the ended ones oldest first, a bounded
+     * number. The asking computer records each as its nudge row
+     * (store.RecordRemoteNudgeRun) and names the ended ones it recorded in
+     * its next read (threadAgentPeerArgs.NudgesTaken), after which they are
+     * not reported again. Empty when there is none, and from a computer
+     * that predates it, whose nudges show no row.
      */
-    "nudge"?: ThreadAgentNudge | null;
+    "nudges"?: ThreadAgentNudge[];
 
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
@@ -8878,8 +8892,8 @@ export class ThreadAgentRows {
         if ("runEnd" in $$parsedSource) {
             $$parsedSource["runEnd"] = $$createField19_0($$parsedSource["runEnd"]);
         }
-        if ("nudge" in $$parsedSource) {
-            $$parsedSource["nudge"] = $$createField21_0($$parsedSource["nudge"]);
+        if ("nudges" in $$parsedSource) {
+            $$parsedSource["nudges"] = $$createField21_0($$parsedSource["nudges"]);
         }
         return new ThreadAgentRows($$parsedSource as Partial<ThreadAgentRows>);
     }
@@ -12700,7 +12714,7 @@ const $$createType153 = $Create.Nullable($$createType89);
 const $$createType154 = ThreadAgentPrompt.createFrom;
 const $$createType155 = $Create.Array($$createType154);
 const $$createType156 = ThreadAgentNudge.createFrom;
-const $$createType157 = $Create.Nullable($$createType156);
+const $$createType157 = $Create.Array($$createType156);
 const $$createType158 = ThreadContextUsageCategory.createFrom;
 const $$createType159 = $Create.Array($$createType158);
 const $$createType160 = LiveStateActiveTurn.createFrom;

@@ -70,6 +70,11 @@ var (
 	             AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id))`
 )
 
+// nudgePastFloorSQL matches, over idx_thread_receipt_nudges_ended, a nudge
+// run kept for a paired computer's link that ended before the floor ?1 and
+// that computer never took (TakeNudgeRuns). An open one is never past it.
+const nudgePastFloorSQL = `run_open = 0 AND ended_at < ?1`
+
 const orphanLineageSQL = `lineage_only = 1 AND target_computer_id = ''
 	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
 
@@ -179,7 +184,8 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphan+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)
-	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)`,
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_receipt_nudges WHERE `+nudgePastFloorSQL+`)`,
 		cutoff, threads, eligible, outstanding, unpaired, cutoff, cutoff).Scan(&due); err != nil {
 		return 0, nil, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
@@ -216,6 +222,7 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 		// The step before kept the lineage, which the floor's set leaves out.
 		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, floor},
 		{"sweep lineage thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + orphanReceiptLineageSQL, nil},
+		{"sweep thread_receipt_nudges", `DELETE FROM thread_receipt_nudges WHERE ` + nudgePastFloorSQL, floor[:1]},
 	}
 	for _, step := range steps {
 		result, err := tx.Exec(step.query, step.args...)

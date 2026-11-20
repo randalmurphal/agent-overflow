@@ -313,11 +313,11 @@ func nudgeLinkSQL(thread, by string) string {
 // endNudgeRunsTx ends the open nudge runs on threadID now, whatever its
 // rest, when it is no owned worker: a worker given a sidebar row is no
 // longer its spawner's outside the runs the spawner started. That covers
-// the nudge run a paired computer's link here keeps for it.
+// the nudge runs kept here for a paired computer's link to it.
 func endNudgeRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
 	now := nowMillis()
 	const unowned = `NOT EXISTS (SELECT 1 FROM threads nw WHERE nw.id = ?1 AND nw.placement = 'owned')`
-	if err := endReceiptNudgesTx(tx, `target_thread_id = ?1 AND `+unowned, threadID, now); err != nil {
+	if err := endReceiptNudgesTx(tx, ` AND `+unowned, threadID, now); err != nil {
 		return nil, err
 	}
 	tally := tallyFiguresSQL("?1", "?2")
@@ -366,7 +366,7 @@ func (s *Store) EndThreadRequestRunsAtRest(threadID string, rest *RestGuard) (_ 
 // OpenRunThreads lists the threads on this computer that requests with an
 // open run went to, this computer's or, on their receipts, a paired
 // computer's, with one of those requests settled, for the rest pass: a
-// settled one's run ends on its worker's rest. A nudge's open run on a
+// settled one's run ends on its worker's rest. A nudge's open run for a
 // paired computer's link counts as settled. Any is false when no run is
 // open on this computer at all.
 func (s *Store) OpenRunThreads() (settled []string, any bool, err error) {
@@ -380,8 +380,8 @@ func (s *Store) OpenRunThreads() (settled []string, any bool, err error) {
 		   WHERE run_open = 1 AND target_thread_id IS NOT NULL
 		  UNION ALL
 		  SELECT target_thread_id, 1
-		    FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_nudge_open
-		   WHERE nudge_open = 1 AND target_thread_id IS NOT NULL)
+		    FROM thread_receipt_nudges INDEXED BY idx_thread_receipt_nudges_open
+		   WHERE run_open = 1)
 		 GROUP BY thread`)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: list the open runs: %w", err)

@@ -118,7 +118,7 @@ func (a *App) remoteRunWorker(row store.ThreadRequest) workerRest {
 // open there (RunOpen): a nudge's message on its way, not yet started. A
 // computer that predates the open state says nothing of rest, and its runs
 // stay open: its rows read as they did before runs were kept. The answer's
-// nudge run is recorded, or ended, after (recordRemoteNudge).
+// nudge runs are recorded, or ended, after (recordRemoteNudges).
 func (a *App) endRemoteRunsAtRest(spawn store.ThreadRequest, listing ThreadAgentRows) error {
 	var figures store.RunFigures
 	switch {
@@ -127,31 +127,41 @@ func (a *App) endRemoteRunsAtRest(spawn store.ThreadRequest, listing ThreadAgent
 	case listing.Open != nil && !*listing.Open && !listing.RunOpen:
 		figures = store.RunFigures{ToolCalls: listing.ToolCalls, Tokens: listing.Tokens, TurnMs: listing.RuntimeMs}
 	default:
-		return a.recordRemoteNudge(spawn, listing)
+		return a.recordRemoteNudges(spawn, listing)
 	}
 	if err := a.store.EndRemoteThreadRequestRuns(spawn.TargetComputerID, spawn.TargetThreadID, figures); err != nil {
 		return err
 	}
-	return a.recordRemoteNudge(spawn, listing)
+	return a.recordRemoteNudges(spawn, listing)
 }
 
-// recordRemoteNudge records the nudge run a paired computer's answer
+// recordRemoteNudges records each nudge run a paired computer's answer
 // reports on its worker as the spawn's caller's nudge row here, the row a
 // nudge of a worker on this computer has, or ends it once the answer says
 // it ended (store.RecordRemoteNudgeRun). Nothing is delivered for it and
-// nobody is woken: the row is settled when written and owes nothing.
-func (a *App) recordRemoteNudge(spawn store.ThreadRequest, listing ThreadAgentRows) error {
-	nudge := listing.Nudge
-	if nudge == nil {
-		return nil
+// nobody is woken: the row is settled when written and owes nothing. The
+// ended runs it recorded are what the spawn's next read says it took
+// (nudgesTakenOf); a run whose write failed is not among them, so that
+// computer reports it again.
+func (a *App) recordRemoteNudges(spawn store.ThreadRequest, listing ThreadAgentRows) error {
+	var taken []string
+	var errs []error
+	for _, nudge := range listing.Nudges {
+		run := store.NudgeRun{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: runFiguresOf(nudge.Base)}
+		if nudge.End != nil {
+			end := runFiguresOf(*nudge.End)
+			run.End = &end
+		}
+		if _, err := a.store.RecordRemoteNudgeRun(spawn.Token, run); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if run.End != nil {
+			taken = append(taken, run.Token)
+		}
 	}
-	run := store.NudgeRun{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: runFiguresOf(nudge.Base)}
-	if nudge.End != nil {
-		end := runFiguresOf(*nudge.End)
-		run.End = &end
-	}
-	_, err := a.store.RecordRemoteNudgeRun(spawn.Token, run)
-	return err
+	a.threadAgentPeers.noteNudgesTaken(spawn, taken)
+	return errors.Join(errs...)
 }
 
 // runFiguresOf is figures an agent_rows answer carried.

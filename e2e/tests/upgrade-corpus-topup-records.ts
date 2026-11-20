@@ -206,12 +206,13 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
  * whose receipts here carry the run each spawn tracks: two end at rest and
  * record their figures (run_open 0, run_tool_calls and the rest), the other
  * keeps an hourly loop armed, so its run stays open (run_open 1). The
- * person here then nudges both rested workers, and each spawn's link keeps
- * the nudge's run: one ends at rest with its figures (nudge_open 0), the
- * other arms a loop, so it stays open (nudge_open 1). The spawning computer
- * is a backend of the top-up's own, closed once the receipts are written;
- * its pairing stays in the store. Returns the project and the workers'
- * threads.
+ * spawning computer is a backend of the top-up's own, closed once the
+ * receipts are written; its pairing stays in the store. The person here
+ * then nudges both rested workers, and each nudge's run is kept for the
+ * spawn's link (thread_receipt_nudges) until that computer takes it, which
+ * it never does once closed: one ends at rest with its figures (run_open
+ * 0), the other arms a loop, so it stays open (run_open 1). Returns the
+ * project and the workers' threads.
  */
 export async function writePeerSpawns(harness: HarnessApp, version: string, nonce: string): Promise<{ projectId: string; threadIds: string[] }> {
   const name = `topup-peer-spawns-v${version}-${nonce}`;
@@ -219,6 +220,7 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
     projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': `# Top-up peer spawns v${version}\n` } }] }, threads: [] }],
   });
   const [{ projectId, path: cwd }] = seeded.projects;
+  const workers: string[] = [];
   const peer = await launchHarness();
   try {
     const computerId = await pairOwnDevice(peer, harness, `Top-up v${version} computer`);
@@ -267,7 +269,6 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
     }));
     await peer.rpc('StartSession', caller);
     await peer.rpc('SendMessage', caller, 'Start all three on the other computer.', null);
-    const workers: string[] = [];
     for (const run of ['ends', 'stays open', 'is nudged']) {
       const answer = await awaitToolAnswer<{ thread_id: string }>(peer, { tool: 'thread_spawn', cwd: callerCwd, timeoutMs: TURN_TIMEOUT_MS });
       if (answer.isError || !answer.value) throw new Error(`top-up: the paired spawn whose run ${run} was refused: ${answer.text}`);
@@ -277,22 +278,22 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       message: "top-up: the paired spawns' receipts never recorded two ended runs and one open run",
       timeout: TURN_TIMEOUT_MS,
     }).toEqual([{ run_open: 0, figures: 1 }, { run_open: 1, figures: 0 }, { run_open: 0, figures: 1 }]);
-    // The person's messages to the rested owned workers are nudges. The
-    // first worker's new session runs its first turn, which ends; the
-    // third's second turn arms a loop, which keeps its nudge open.
-    const [ended, , nudged] = workers;
-    await harness.rpc('StopSession', ended);
-    await harness.rpc('StartSession', ended);
-    await harness.rpc('SendMessage', ended, 'Check the notes once more.', null);
-    await harness.rpc('SendMessage', nudged, 'Keep an eye on the notes.', null);
-    await expect.poll(() => receiptNudges(harness, [ended, nudged]), {
-      message: "top-up: the paired spawns' links never recorded one ended and one open nudge",
-      timeout: TURN_TIMEOUT_MS,
-    }).toEqual([{ nudge_open: 0, figures: 1 }, { nudge_open: 1, figures: 0 }]);
-    return { projectId, threadIds: workers };
   } finally {
     await peer.close();
   }
+  // The person's messages to the rested owned workers are nudges. The
+  // first worker's new session runs its first turn, which ends; the
+  // third's second turn arms a loop, which keeps its nudge open.
+  const [ended, , nudged] = workers;
+  await harness.rpc('StopSession', ended);
+  await harness.rpc('StartSession', ended);
+  await harness.rpc('SendMessage', ended, 'Check the notes once more.', null);
+  await harness.rpc('SendMessage', nudged, 'Keep an eye on the notes.', null);
+  await expect.poll(() => receiptNudges(harness, [ended, nudged]), {
+    message: "top-up: the paired spawns' links never kept one ended and one open nudge run",
+    timeout: TURN_TIMEOUT_MS,
+  }).toEqual([{ run_open: 0, figures: 1 }, { run_open: 1, figures: 0 }]);
+  return { projectId, threadIds: workers };
 }
 
 /** The run each of `workers`' spawn receipts records, in their order: open or not, and whether its figures are written. */
@@ -310,16 +311,17 @@ function receiptRuns(harness: HarnessApp, workers: string[]): Array<{ run_open: 
   }
 }
 
-/** The nudge each of `workers`' spawn links records, in their order: open or not, and whether its end's figures are written beside its start's. */
-function receiptNudges(harness: HarnessApp, workers: string[]): Array<{ nudge_open: number | null; figures: number }> {
+/** The latest nudge run kept for each of `workers`' spawn links, in their order: open or not, and whether its end and figures are written. */
+function receiptNudges(harness: HarnessApp, workers: string[]): Array<{ run_open: number | null; figures: number }> {
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
   try {
     return workers.map((worker) => {
-      const row = database.prepare(`SELECT nudge_open,
-          (nudge_started_at IS NOT NULL AND nudge_base_tool_calls IS NOT NULL AND nudge_base_tokens IS NOT NULL AND nudge_base_turn_ms IS NOT NULL
-           AND nudge_tool_calls IS NOT NULL AND nudge_tokens IS NOT NULL AND nudge_turn_ms IS NOT NULL) AS figures
-        FROM thread_request_receipts WHERE target_thread_id = ? AND kind = 'spawn' AND spawn_link = 1`).get(worker) as { nudge_open: number | null; figures: number } | undefined;
-      return row ? { nudge_open: row.nudge_open, figures: row.figures } : { nudge_open: null, figures: 0 };
+      const row = database.prepare(`SELECT n.run_open,
+          (n.ended_at IS NOT NULL AND n.run_tool_calls IS NOT NULL AND n.run_tokens IS NOT NULL AND n.run_turn_ms IS NOT NULL) AS figures
+        FROM thread_receipt_nudges n JOIN thread_request_receipts link ON link.token = n.link_token
+        WHERE n.target_thread_id = ? AND link.kind = 'spawn' AND link.spawn_link = 1
+        ORDER BY n.started_at DESC LIMIT 1`).get(worker) as { run_open: number; figures: number } | undefined;
+      return row ? { run_open: row.run_open, figures: row.figures } : { run_open: null, figures: 0 };
     });
   } finally {
     database.close();

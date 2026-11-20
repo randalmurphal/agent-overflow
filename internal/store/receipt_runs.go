@@ -2,8 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // A paired computer's request to a thread here keeps its run on its receipt
@@ -43,8 +45,8 @@ func spawnRunOpenSQL(alias string) string {
 }
 
 // endReceiptRunsTx ends the open runs of the settled receipts to thread,
-// and the open nudge run of its link, recording its figures over its life
-// at now.
+// and the open nudge runs on it, recording its figures over its life at
+// now.
 func endReceiptRunsTx(tx *sql.Tx, threadID string, now int64) error {
 	tally := tallyFiguresSQL("?1", "?2")
 	_, err := tx.Exec(`UPDATE thread_request_receipts INDEXED BY idx_thread_request_receipts_run_open
@@ -53,22 +55,25 @@ func endReceiptRunsTx(tx *sql.Tx, threadID string, now int64) error {
 	if err != nil {
 		return fmt.Errorf("end the runs of the receipts to %s: %w", threadID, err)
 	}
-	return endReceiptNudgesTx(tx, `target_thread_id = ?1`, threadID, now)
+	return endReceiptNudgesTx(tx, "", threadID, now)
 }
 
-// A paired computer's spawn link keeps the run a nudge of its worker here
-// starts (migration v161): this computer alone sees the worker rest. It is
-// the rule of StartNudgeRun for a link here: a message the person or a
-// thread other than the spawner there sends the owned worker while no run of
-// the spawner's is open on it, on its receipts here. The link keeps its
-// latest nudge: its token, its start and the worker's figures over its life
-// then, and once it ended, at the worker's rest (endReceiptRunsTx), its
-// sidebar row (endNudgeRunsTx) or the link's end (releaseSpawnLinksTx),
+// A paired computer's spawn link keeps the runs nudges of its worker here
+// start (migration v161), one row each in thread_receipt_nudges: this
+// computer alone sees the worker rest. It is the rule of StartNudgeRun for a
+// link here: a message the person or a thread other than the spawner there
+// sends the owned worker while no run of the spawner's is open on it, on its
+// receipts or its link. A run keeps its start and the worker's figures over
+// its life then, and once it ended, at the worker's rest (endReceiptRunsTx),
+// its sidebar row (endNudgeRunsTx) or the link's end (releaseSpawnLinksTx),
 // the worker's figures over its life then. A request of the spawner's during
 // it starts a run of its own on its receipt, as any does, which the
 // spawner's computer joins to the nudge's row. The spawner's computer reads
-// it with the link's runs (ReceiptRunOf) and records the nudge's row there
-// (RecordRemoteNudgeRun).
+// the link's runs (ReceiptRunOf), records each as its nudge's row there
+// (RecordRemoteNudgeRun), and says which ended ones it took, which are then
+// forgotten here (TakeNudgeRuns). An ended run that computer never takes
+// goes at the retention floor, or once its device holds no session here
+// (endSessionsTx).
 
 // peerNudgeLinkSQL is the FROM and WHERE of the paired computer's spawn
 // link a message to thread from by is a nudge through, as `link`
@@ -79,7 +84,9 @@ func peerNudgeLinkSQL(thread, by string) string {
 	return `FROM thread_request_receipts AS link INDEXED BY idx_thread_request_receipts_spawn_link
 		   CROSS JOIN threads AS w ON w.id = link.target_thread_id
 		  WHERE link.spawn_link = 1 AND link.target_thread_id IS NOT NULL AND link.target_thread_id = ` + thread + `
-		    AND w.placement = 'owned' AND link.source_thread_id <> ` + by + ` AND link.nudge_open IS NOT 1
+		    AND w.placement = 'owned' AND link.source_thread_id <> ` + by + `
+		    AND NOT EXISTS (SELECT 1 FROM thread_receipt_nudges n INDEXED BY idx_thread_receipt_nudges_open
+		                     WHERE n.target_thread_id = link.target_thread_id AND n.run_open = 1 AND n.link_token = link.token)
 		    AND NOT ` + spawnRunOpenSQL("link")
 }
 
@@ -88,13 +95,12 @@ func peerNudgeLinkSQL(thread, by string) string {
 // reports whether it recorded one.
 func (s *Store) startPeerNudgeRun(token, threadID, byThreadID string, start NudgeStart) (bool, error) {
 	var link string
-	err := s.db.QueryRow(`UPDATE thread_request_receipts
-		    SET nudge_token = ?1, nudge_open = 1, nudge_started_at = ?3,
-		        nudge_base_tool_calls = ?5, nudge_base_tokens = ?6, nudge_base_turn_ms = ?7,
-		        nudge_tool_calls = NULL, nudge_tokens = NULL, nudge_turn_ms = NULL, updated_at = ?8
-		  WHERE token = (SELECT link.token `+peerNudgeLinkSQL("?2", "?4")+`)
-		 RETURNING token`, token, threadID, start.At, byThreadID,
-		start.Base.ToolCalls, start.Base.Tokens, start.Base.TurnMs, nowMillis()).Scan(&link)
+	err := s.db.QueryRow(`INSERT INTO thread_receipt_nudges (
+		    token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms)
+		 SELECT ?1, link.token, ?2, ?3, 1, ?5, ?6, ?7
+		 `+peerNudgeLinkSQL("?2", "?4")+`
+		 RETURNING link_token`, token, threadID, start.At, byThreadID,
+		start.Base.ToolCalls, start.Base.Tokens, start.Base.TurnMs).Scan(&link)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -106,16 +112,38 @@ func (s *Store) startPeerNudgeRun(token, threadID, byThreadID string, start Nudg
 	return true, nil
 }
 
-// endReceiptNudgesTx ends the open nudge runs of the links where matches,
-// with ?1 the thread they reach and ?2 now, recording the thread's figures
-// over its life then.
-func endReceiptNudgesTx(tx *sql.Tx, where string, threadID string, now int64) error {
+// endReceiptNudgesTx ends the open nudge runs on threadID (?1) at now (?2)
+// where also holds, recording the thread's figures over its life then.
+func endReceiptNudgesTx(tx *sql.Tx, also string, threadID string, now int64, args ...any) error {
 	tally := tallyFiguresSQL("?1", "?2")
-	_, err := tx.Exec(`UPDATE thread_request_receipts INDEXED BY idx_thread_request_receipts_nudge_open
-		    SET nudge_open = 0, nudge_tool_calls = `+tally[0]+`, nudge_tokens = `+tally[1]+`, nudge_turn_ms = `+tally[2]+`
-		  WHERE nudge_open = 1 AND `+where, threadID, now)
+	_, err := tx.Exec(`UPDATE thread_receipt_nudges INDEXED BY idx_thread_receipt_nudges_open
+		    SET run_open = 0, ended_at = ?2, run_tool_calls = `+tally[0]+`, run_tokens = `+tally[1]+`, run_turn_ms = `+tally[2]+`
+		  WHERE target_thread_id = ?1 AND run_open = 1`+also, append([]any{threadID, now}, args...)...)
 	if err != nil {
 		return fmt.Errorf("end the nudge runs on %s: %w", threadID, err)
+	}
+	return nil
+}
+
+// TakeNudgeRuns forgets the ended nudge runs named in tokens of the link to
+// threadID that the source thread sourceThreadID on owner's computer holds:
+// that computer recorded their ends. An open run, one of another link, and
+// a token already forgotten are left as they are, so a repeated take is
+// harmless.
+func (s *Store) TakeNudgeRuns(owner, sourceThreadID, threadID string, tokens []string) error {
+	if len(tokens) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(tokens)
+	if err != nil {
+		return fmt.Errorf("store: take the nudge runs on %s: %w", threadID, err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM thread_receipt_nudges
+		  WHERE token IN (SELECT value FROM json_each(?4)) AND run_open = 0
+		    AND link_token IN (SELECT token FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_target
+		                        WHERE target_thread_id = ?1 AND owner_device_id = ?2 AND source_thread_id = ?3 AND kind = 'spawn')`,
+		threadID, owner, sourceThreadID, string(encoded)); err != nil {
+		return fmt.Errorf("store: take the nudge runs on %s: %w", threadID, err)
 	}
 	return nil
 }
@@ -129,8 +157,8 @@ func (s *Store) ThreadRunsEnding(threadID string) (bool, error) {
 		   WHERE `+runOpenSQL("ro")+` AND ro.target_computer_id = '' AND ro.target_thread_id = ?1 AND ro.settled_at IS NOT NULL)
 		 OR EXISTS (SELECT 1 FROM thread_request_receipts rr INDEXED BY idx_thread_request_receipts_run_open
 		   WHERE rr.target_thread_id = ?1 AND rr.run_open = 1 AND rr.settled_at IS NOT NULL)
-		 OR EXISTS (SELECT 1 FROM thread_request_receipts rn INDEXED BY idx_thread_request_receipts_nudge_open
-		   WHERE rn.target_thread_id = ?1 AND rn.nudge_open = 1)`, threadID).Scan(&open)
+		 OR EXISTS (SELECT 1 FROM thread_receipt_nudges rn INDEXED BY idx_thread_receipt_nudges_open
+		   WHERE rn.target_thread_id = ?1 AND rn.run_open = 1)`, threadID).Scan(&open)
 	if err != nil {
 		return false, fmt.Errorf("store: read whether a run is open on %s: %w", threadID, err)
 	}
@@ -147,14 +175,19 @@ type ReceiptRun struct {
 	// End is the worker's figures over its life when the latest run ended,
 	// nil while one is open or none ended.
 	End *RunFigures
-	// Nudge is the latest nudge run of the spawn's link, nil for none. It
-	// is apart from the runs above: Open and End are those of the source
-	// thread's requests alone.
-	Nudge *NudgeRun
+	// Nudges is the nudge runs of the spawn's link its source has not
+	// taken: the open one first, then the ended ones oldest first, at most
+	// nudgeRunsReported. They are apart from the runs above: Open and End
+	// are those of the source thread's requests alone.
+	Nudges []NudgeRun
 }
 
+// nudgeRunsReported bounds the nudge runs one answer reports: a source that
+// takes them reads the rest in its next answers.
+const nudgeRunsReported = 16
+
 // NudgeRun is a nudge's run on a paired computer's worker, as the worker's
-// computer recorded it on the spawn's link.
+// computer recorded it for the spawn's link.
 type NudgeRun struct {
 	Token string
 	// StartedAt is when it began, on the worker's computer's clock.
@@ -168,12 +201,12 @@ type NudgeRun struct {
 
 // ReceiptRunOf reads the runs the thread sourceThreadID on the computer
 // whose device is owner started on threadID here, through their receipts,
-// and the latest nudge run of its spawn's link.
-func (s *Store) ReceiptRunOf(owner, sourceThreadID, threadID string) (ReceiptRun, error) {
+// and the nudge runs of its spawn's link it has not taken.
+func (s *Store) ReceiptRunOf(owner, sourceThreadID, threadID string) (_ ReceiptRun, err error) {
 	var run ReceiptRun
 	var open bool
 	var calls, tokens, ms sql.NullInt64
-	err := s.reader().QueryRow(`SELECT run_open, run_tool_calls, run_tokens, run_turn_ms
+	err = s.reader().QueryRow(`SELECT run_open, run_tool_calls, run_tokens, run_turn_ms
 		  FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_target
 		 WHERE target_thread_id = ?1 AND owner_device_id = ?2 AND source_thread_id = ?3 AND run_open IS NOT NULL
 		 ORDER BY run_open DESC, settled_at DESC, created_at DESC LIMIT 1`,
@@ -188,25 +221,31 @@ func (s *Store) ReceiptRunOf(owner, sourceThreadID, threadID string) (ReceiptRun
 			run.End = &RunFigures{ToolCalls: calls.Int64, Tokens: tokens.Int64, TurnMs: ms.Int64}
 		}
 	}
-	var nudge NudgeRun
-	var nudgeOpen bool
-	err = s.reader().QueryRow(`SELECT nudge_token, nudge_open, nudge_started_at,
-		    nudge_base_tool_calls, nudge_base_tokens, nudge_base_turn_ms, nudge_tool_calls, nudge_tokens, nudge_turn_ms
-		  FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_target
-		 WHERE target_thread_id = ?1 AND owner_device_id = ?2 AND source_thread_id = ?3 AND kind = 'spawn'
-		   AND nudge_token IS NOT NULL
-		 ORDER BY created_at DESC LIMIT 1`,
-		threadID, owner, sourceThreadID).Scan(&nudge.Token, &nudgeOpen, &nudge.StartedAt,
-		&nudge.Base.ToolCalls, &nudge.Base.Tokens, &nudge.Base.TurnMs, &calls, &tokens, &ms)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return ReceiptRun{}, fmt.Errorf("store: read the nudge run of %s on %s: %w", sourceThreadID, threadID, err)
-	default:
+	rows, err := s.reader().Query(`SELECT n.token, n.run_open, n.started_at, n.run_base_tool_calls, n.run_base_tokens, n.run_base_turn_ms,
+		    n.run_tool_calls, n.run_tokens, n.run_turn_ms
+		  FROM thread_request_receipts AS link INDEXED BY idx_thread_request_receipts_target
+		 CROSS JOIN thread_receipt_nudges AS n INDEXED BY idx_thread_receipt_nudges_link ON n.link_token = link.token
+		 WHERE link.target_thread_id = ?1 AND link.owner_device_id = ?2 AND link.source_thread_id = ?3 AND link.kind = 'spawn'
+		 ORDER BY n.run_open DESC, n.started_at, n.token LIMIT `+strconv.Itoa(nudgeRunsReported),
+		threadID, owner, sourceThreadID)
+	if err != nil {
+		return ReceiptRun{}, fmt.Errorf("store: read the nudge runs of %s on %s: %w", sourceThreadID, threadID, err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var nudge NudgeRun
+		var nudgeOpen bool
+		if err := rows.Scan(&nudge.Token, &nudgeOpen, &nudge.StartedAt, &nudge.Base.ToolCalls, &nudge.Base.Tokens, &nudge.Base.TurnMs,
+			&calls, &tokens, &ms); err != nil {
+			return ReceiptRun{}, fmt.Errorf("store: read the nudge runs of %s on %s: %w", sourceThreadID, threadID, err)
+		}
 		if !nudgeOpen {
 			nudge.End = &RunFigures{ToolCalls: calls.Int64, Tokens: tokens.Int64, TurnMs: ms.Int64}
 		}
-		run.Nudge = &nudge
+		run.Nudges = append(run.Nudges, nudge)
+	}
+	if err := rows.Err(); err != nil {
+		return ReceiptRun{}, fmt.Errorf("store: read the nudge runs of %s on %s: %w", sourceThreadID, threadID, err)
 	}
 	return run, nil
 }

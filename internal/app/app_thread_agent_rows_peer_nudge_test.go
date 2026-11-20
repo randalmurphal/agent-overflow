@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,19 +23,23 @@ import (
 )
 
 // remoteNudgedWorker is a worker the pair's caller spawned on the
-// destination that answered and rested, the spawn's run ended here; its next
-// turn makes one tool call and holds until gate exists.
-func remoteNudgedWorker(t *testing.T, pair *reachPair, gate string) (*agentPeerPair, string) {
+// destination that answered and rested, the spawn's run ended here; each
+// later turn makes one tool call and holds until its gate exists.
+func remoteNudgedWorker(t *testing.T, pair *reachPair, gates ...string) (*agentPeerPair, string) {
 	t.Helper()
 	// The destination's events reach its taps as a running app's emit does.
 	pair.destBus.mu.Lock()
 	pair.destBus.tap = pair.dest.emit
 	pair.destBus.mu.Unlock()
-	installMockClaudeTurns(t, pair.dest, [][]string{{
+	turns := [][]string{{
 		mockClaudeInitLine,
 		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"The first pass is done."}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
-	}, runTurnLines("nudged", "Checked the docs.", gate)})
+	}}
+	for i, gate := range gates {
+		turns = append(turns, runTurnLines(fmt.Sprintf("nudged-%d", i), "Checked the docs.", gate))
+	}
+	installMockClaudeTurns(t, pair.dest, turns)
 	installMockClaudeReplies(t, pair.source, "Noted.")
 	ack := pair.spawnThere(t, "do the first pass", nil)
 	child := pair.receipt(t, ack.Token).TargetThreadID
@@ -165,7 +170,7 @@ func TestARemoteNudgeIsOneRunOfItsSpawnerHere(t *testing.T) {
 			receipt := pair.receipt(t, agentPair.spawn.Token)
 			waitUntil(t, 10*time.Second, func() bool {
 				run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child)
-				return err == nil && run.Nudge != nil && run.Nudge.End != nil
+				return err == nil && len(run.Nudges) == 1 && run.Nudges[0].End != nil
 			})
 			ended := agentPair.nudgeEnded(t, row.Token)
 			if ended.RunTotal.ToolCalls != 1 || ended.RunTotal.Tokens == 0 {
@@ -206,8 +211,8 @@ func TestARemoteNudgeDuringItsSpawnersRunJoinsIt(t *testing.T) {
 		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
 	})
 	receipt := pair.receipt(t, agentPair.spawn.Token)
-	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || run.Nudge != nil {
-		t.Fatalf("the spawner's send recorded nudge %+v, %v", run.Nudge, err)
+	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || len(run.Nudges) != 0 {
+		t.Fatalf("the spawner's send recorded nudges %+v, %v", run.Nudges, err)
 	}
 	other, err := createTestThread(t, pair.dest, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
 	if err != nil {
@@ -217,8 +222,8 @@ func TestARemoteNudgeDuringItsSpawnersRunJoinsIt(t *testing.T) {
 		threadtools.SendCall{ThreadID: child, Message: "and the release notes"}); err != nil {
 		t.Fatalf("Send there: %v", err)
 	}
-	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || run.Nudge != nil {
-		t.Fatalf("a message during the spawner's run recorded nudge %+v, %v", run.Nudge, err)
+	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || len(run.Nudges) != 0 {
+		t.Fatalf("a message during the spawner's run recorded nudges %+v, %v", run.Nudges, err)
 	}
 	listing := agentPair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		row, ok := agentRowByToken(rows.Rows, send.Token)
@@ -271,8 +276,8 @@ func TestARemoteNudgeOutlivesARestartOfItsWorkersComputer(t *testing.T) {
 	})
 	pair.dest.endRestedRuns()
 	receipt := pair.receipt(t, agentPair.spawn.Token)
-	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || run.Nudge == nil || run.Nudge.End != nil {
-		t.Fatalf("the nudge there %+v, %v; want it open while the boot recovers", run.Nudge, err)
+	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || len(run.Nudges) != 1 || run.Nudges[0].End != nil {
+		t.Fatalf("the nudges there %+v, %v; want one open while the boot recovers", run.Nudges, err)
 	}
 	pair.dest.recoverRestAtBoot()
 	if ended := agentPair.nudgeEnded(t, row.Token); ended.RunTotal.ToolCalls != 1 {
@@ -308,23 +313,29 @@ func TestARemoteNudgeOutlivesARestartOfItsSpawnersComputer(t *testing.T) {
 }
 
 // The pairing ends while the nudge's run is open: the worker's computer
-// ends the run with the link, and the spawner's computer lists no open row
-// for a computer it no longer reaches and delivers nothing.
+// ends the run with the link and forgets it, since no device left can take
+// it, and the spawner's computer ends its row with nothing more counted,
+// lists no open row for a computer it no longer reaches and delivers
+// nothing.
 func TestARemoteNudgeEndsWithThePairing(t *testing.T) {
 	t.Parallel()
 	pair := newReachPair(t)
 	gate := filepath.Join(t.TempDir(), "nudged-turn")
 	agentPair, child := remoteNudgedWorker(t, pair, gate)
 	nudgeThere(t, pair, "the person there", child)
-	agentPair.openNudgeRow(t)
+	row := agentPair.openNudgeRow(t)
 	receipt := pair.receipt(t, agentPair.spawn.Token)
 	queuedBefore := len(durableQueueRows(t, pair.source, pair.caller.ID))
 
 	revokeReachDevice(t, pair.dest, "source")
 	pair.learnPairingEnded(t)
-	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || run.Nudge == nil || run.Nudge.End == nil {
-		t.Fatalf("the nudge there %+v, %v; want it ended with the link", run.Nudge, err)
+	if run, err := pair.dest.store.ReceiptRunOf(receipt.OwnerDeviceID, pair.caller.ID, child); err != nil || len(run.Nudges) != 0 {
+		t.Fatalf("the nudges there %+v, %v; want none kept for a device with no session", run.Nudges, err)
 	}
+	if open, err := pair.dest.store.ThreadRunsEnding(child); err != nil || open {
+		t.Fatalf("a run is open there: %v, %v; want the nudge's ended with the link", open, err)
+	}
+	waitUntil(t, 10*time.Second, func() bool { return pair.request(t, row.Token).RunEnded() })
 	waitUntil(t, 10*time.Second, func() bool {
 		summary, err := pair.source.GetThreadWorkerSummary(t.Context(), pair.caller.ID)
 		return err == nil && summary.Open == 0
@@ -361,8 +372,8 @@ func TestAnAnswerThatSaysARunIsOpenThereEndsNoRunHere(t *testing.T) {
 	}
 	spawn := f.request(t, "spawn")
 	atRest := false
-	nudge := &ThreadAgentNudge{Token: "nudge", StartedAt: time.Now().UnixMilli(), Base: ThreadAgentRunEnd{ToolCalls: 2}}
-	answer := ThreadAgentRows{Open: &atRest, RunOpen: true, ToolCalls: 2, Nudge: nudge}
+	nudge := ThreadAgentNudge{Token: "nudge", StartedAt: time.Now().UnixMilli(), Base: ThreadAgentRunEnd{ToolCalls: 2}}
+	answer := ThreadAgentRows{Open: &atRest, RunOpen: true, ToolCalls: 2, Nudges: []ThreadAgentNudge{nudge}}
 	if err := f.app.endRemoteRunsAtRest(spawn, answer); err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +384,7 @@ func TestAnAnswerThatSaysARunIsOpenThereEndsNoRunHere(t *testing.T) {
 		t.Fatalf("nudge row %+v; want it recorded open from the reported base", row)
 	}
 	answer.RunOpen = false
-	nudge.End = &ThreadAgentRunEnd{ToolCalls: 5}
+	answer.Nudges[0].End = &ThreadAgentRunEnd{ToolCalls: 5}
 	if err := f.app.endRemoteRunsAtRest(spawn, answer); err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +413,7 @@ func (p *previousReleasePeer) ThreadToolQuery(ctx context.Context, call ThreadPe
 	if err := json.Unmarshal(reply.Result, &answer); err != nil {
 		return ThreadPeerReply{}, err
 	}
-	delete(answer, "nudge")
+	delete(answer, "nudges")
 	delete(answer, "runOpen")
 	reply.Result, err = json.Marshal(answer)
 	return reply, err
@@ -464,8 +475,8 @@ func TestAPreviousReleasesSpawnerReadsTheNewAnswerAsBefore(t *testing.T) {
 	if listing.RunEnd == nil || listing.RunEnd.ToolCalls != spawnEnd.ToolCalls || listing.RunEnd.Tokens != spawnEnd.Tokens {
 		t.Fatalf("RunEnd %+v; want the spawner's own run's end %+v, the nudge apart from it", listing.RunEnd, spawnEnd)
 	}
-	if listing.Open == nil || !*listing.Open || listing.Nudge == nil || !listing.RunOpen {
-		t.Fatalf("answer open %v nudge %+v runOpen %v; want the thread open with its nudge", listing.Open, listing.Nudge, listing.RunOpen)
+	if listing.Open == nil || !*listing.Open || len(listing.Nudges) != 1 || !listing.RunOpen {
+		t.Fatalf("answer open %v nudges %+v runOpen %v; want the thread open with its nudge", listing.Open, listing.Nudges, listing.RunOpen)
 	}
 	encoded, err := json.Marshal(listing)
 	if err != nil {

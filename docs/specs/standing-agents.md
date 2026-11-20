@@ -778,15 +778,20 @@ Ruling 36, as built:
     joins it. A Stop of its row brings the worker to rest and tells the
     spawner, as for a worker that outlived its spawn. A worker a paired
     computer's spawner owns is nudged by the same rule, its spawner the
-    link's source thread there: its computer keeps the nudge's run on the
-    spawn's link (`thread_request_receipts.nudge_*`), ends it at the
-    worker's rest, its sidebar row or the link's end, and reports the
-    latest one in its `agent_rows` answer (`ThreadAgentRows.Nudge`). The
-    spawner's computer records it as the same row of the spawner's,
+    link's source thread there: its computer keeps each nudge's run for
+    the spawn's link (`thread_receipt_nudges`), ends it at the worker's
+    rest, its sidebar row or the link's end, and reports it in its
+    `agent_rows` answers (`ThreadAgentRows.Nudges`) until the spawner's
+    computer names it taken in a later read (`nudges_taken`). The
+    spawner's computer records each as the same row of the spawner's,
     under the same token, and ends it with the figures that answer gives
-    (`store.RecordRemoteNudgeRun`), across a restart of either computer;
-    a pairing that ends ends it there. A worker's computer that predates
-    it reports no nudge, and its worker's later work is no row there.
+    (`store.RecordRemoteNudgeRun`), across a restart of either computer, a
+    lost read and several nudges between two reads. A pairing that ends
+    ends the run on both computers, with nothing more counted on the
+    spawner's. A worker's computer that predates it reports no nudge, and
+    its worker's later work is no row there; a spawner's computer that
+    predates it takes none, and the ended runs it never takes go at the
+    retention floor.
   - Its prompts go to the spawner whoever started the run
     (`store.SpawnOwnerOf`), and the worker reads `waiting on <spawner>`.
     One the spawner does not take now stays the spawner's: a wake that

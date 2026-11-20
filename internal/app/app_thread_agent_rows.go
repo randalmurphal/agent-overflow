@@ -243,11 +243,15 @@ type ThreadAgentRows struct {
 	// of its runs on the thread for Open alone (endRemoteRunsAtRest). False
 	// from a computer that predates it, which reads as before.
 	RunOpen bool `json:"runOpen,omitempty"`
-	// Nudge is the latest nudge run of the listed thread's link to the
-	// asking spawn (store.ReceiptRunOf), which the asking computer records
-	// as its nudge row (store.RecordRemoteNudgeRun). Nil when there is none,
-	// and from a computer that predates it, whose nudges show no row.
-	Nudge *ThreadAgentNudge `json:"nudge,omitempty"`
+	// Nudges is the nudge runs of the listed thread's link to the asking
+	// spawn that the asking computer has not taken (store.ReceiptRunOf):
+	// the open one first, then the ended ones oldest first, a bounded
+	// number. The asking computer records each as its nudge row
+	// (store.RecordRemoteNudgeRun) and names the ended ones it recorded in
+	// its next read (threadAgentPeerArgs.NudgesTaken), after which they are
+	// not reported again. Empty when there is none, and from a computer
+	// that predates it, whose nudges show no row.
+	Nudges []ThreadAgentNudge `json:"nudges,omitempty"`
 }
 
 // ThreadAgentNudge is a nudge's run on a paired computer's worker: its

@@ -1,9 +1,15 @@
 package store
 
-import "testing"
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+)
 
-// v161 adds a link's nudge run columns and the index of the open ones. A
-// receipt from before it keeps every column it had and has no nudge.
+// v161 adds the table of the nudge runs kept for a paired computer's links,
+// with its indexes. A receipt from before it keeps every column it had and
+// has no nudge.
 func TestReceiptNudgeRunsMigration(t *testing.T) {
 	db := migrateThrough(t, receiptNudgeRunsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO thread_request_receipts (token, owner_device_id, source_computer_id, source_thread_id, kind, state, created_at, updated_at)
@@ -12,20 +18,21 @@ func TestReceiptNudgeRunsMigration(t *testing.T) {
 	migrateFrom(t, db, receiptNudgeRunsMigrationVersion-1)
 
 	var state string
-	var token, open any
-	if err := db.QueryRow(`SELECT state, nudge_token, nudge_open FROM thread_request_receipts WHERE token = 'old-link'`).Scan(&state, &token, &open); err != nil {
-		t.Fatal(err)
+	if err := db.QueryRow(`SELECT state FROM thread_request_receipts WHERE token = 'old-link'`).Scan(&state); err != nil || state != "finished" {
+		t.Fatalf("the old receipt reads %q, %v; want it as it was", state, err)
 	}
-	if state != "finished" || token != nil || open != nil {
-		t.Fatalf("the old receipt reads %s, nudge %v open %v; want it as it was, with no nudge", state, token, open)
+	var nudges, columns int
+	if err := db.QueryRow(`SELECT count(*) FROM thread_receipt_nudges`).Scan(&nudges); err != nil || nudges != 0 {
+		t.Fatalf("thread_receipt_nudges holds %d, %v; want none", nudges, err)
 	}
-	var columns int
-	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('thread_request_receipts') WHERE name LIKE 'nudge\_%' ESCAPE '\'`).Scan(&columns); err != nil || columns != 9 {
-		t.Fatalf("thread_request_receipts has %d nudge columns, %v; want 9", columns, err)
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('thread_request_receipts') WHERE name LIKE 'nudge\_%' ESCAPE '\'`).Scan(&columns); err != nil || columns != 0 {
+		t.Fatalf("thread_request_receipts has %d nudge columns, %v; want none", columns, err)
 	}
-	var index string
-	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_thread_request_receipts_nudge_open'`).Scan(&index); err != nil || index == "" {
-		t.Fatalf("idx_thread_request_receipts_nudge_open: %q, %v", index, err)
+	for _, name := range []string{"idx_thread_receipt_nudges_open", "idx_thread_receipt_nudges_link", "idx_thread_receipt_nudges_ended"} {
+		var index string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&index); err != nil || index == "" {
+			t.Fatalf("%s: %q, %v", name, index, err)
+		}
 	}
 }
 
@@ -44,14 +51,178 @@ func peerRestedWorker(t *testing.T, s *Store) {
 		run_open = 0, run_tool_calls = 3, run_tokens = 30, run_turn_ms = 300 WHERE token = 'link'`)
 }
 
-// peerNudge reads the link's latest nudge run as its owner's answer does.
-func peerNudge(t *testing.T, s *Store) *NudgeRun {
+// peerNudges reads the link's nudge runs as its owner's answer does.
+func peerNudges(t *testing.T, s *Store) []NudgeRun {
 	t.Helper()
 	run, err := s.ReceiptRunOf("dev", "lead-link", "w")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return run.Nudge
+	return run.Nudges
+}
+
+// peerNudge reads the link's one nudge run, nil for none.
+func peerNudge(t *testing.T, s *Store) *NudgeRun {
+	t.Helper()
+	nudges := peerNudges(t, s)
+	switch len(nudges) {
+	case 0:
+		return nil
+	case 1:
+		return &nudges[0]
+	}
+	t.Fatalf("the link reports nudges %+v; want one", nudges)
+	return nil
+}
+
+// restPeerWorker brings w to rest with calls more tool calls than before,
+// ending the runs its rest ends.
+func restPeerWorker(t *testing.T, s *Store, calls int) {
+	t.Helper()
+	mustExec(t, s.db, `UPDATE thread_tallies SET tool_calls = tool_calls + ? WHERE thread_id = 'w'`, calls)
+	rest := &RestGuard{Roots: []string{"w"}, AtRest: func(SubtreeRest) []string { return []string{"w"} }}
+	if ended, err := s.EndThreadRequestRunsAtRest("w", rest); err != nil || !ended {
+		t.Fatalf("EndThreadRequestRunsAtRest = %v, %v", ended, err)
+	}
+}
+
+// nudgeTokens is the tokens of nudges, in order.
+func nudgeTokens(nudges []NudgeRun) []string {
+	out := []string{}
+	for _, n := range nudges {
+		out = append(out, n.Token)
+	}
+	return out
+}
+
+// Each nudge run is kept on its own until the link's owner takes its end:
+// two that ended and one open, between two reads, are each reported, the
+// open one first, then the ended ones oldest first, each with its own
+// figures. A take forgets the ended runs it names and leaves the open one;
+// a repeated take, a take of another link's owner or source, and a take of
+// an open run change nothing. A restart keeps what was not taken.
+func TestAPeerLinkKeepsEachNudgeRunUntilItsOwnerTakesIt(t *testing.T) {
+	t.Parallel()
+	s := openStoreAt(t)
+	peerRestedWorker(t, s)
+	for i, token := range []string{"a", "b", "c"} {
+		if !startNudge(t, s, token, "") {
+			t.Fatalf("nudge %s recorded no run", token)
+		}
+		if i < 2 {
+			restPeerWorker(t, s, i+1)
+		}
+	}
+	nudges := peerNudges(t, s)
+	if got := nudgeTokens(nudges); !slices.Equal(got, []string{"c", "a", "b"}) {
+		t.Fatalf("the link reports %v; want the open one, then the ended oldest first", got)
+	}
+	if nudges[0].End != nil || nudges[1].End == nil || nudges[2].End == nil ||
+		nudges[1].Base.ToolCalls != 3 || nudges[1].End.ToolCalls != 4 ||
+		nudges[2].Base.ToolCalls != 4 || nudges[2].End.ToolCalls != 6 || nudges[0].Base.ToolCalls != 6 {
+		t.Fatalf("nudges %+v; want each with its own base and end", nudges)
+	}
+	for _, other := range []struct{ owner, source string }{{"other-dev", "lead-link"}, {"dev", "another"}} {
+		if err := s.TakeNudgeRuns(other.owner, other.source, "w", []string{"a", "b", "c"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := nudgeTokens(peerNudges(t, s)); len(got) != 3 {
+		t.Fatalf("a take of another owner or source left %v; want all three", got)
+	}
+	s = reopenStore(t, s)
+	if got := nudgeTokens(peerNudges(t, s)); !slices.Equal(got, []string{"c", "a", "b"}) {
+		t.Fatalf("after a restart the link reports %v; want all three", got)
+	}
+	for range 2 {
+		if err := s.TakeNudgeRuns("dev", "lead-link", "w", []string{"a", "b", "c"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := nudgeTokens(peerNudges(t, s)); !slices.Equal(got, []string{"c"}) {
+			t.Fatalf("after the take the link reports %v; want the open one alone", got)
+		}
+	}
+}
+
+// One answer reports at most nudgeRunsReported runs; the rest follow once
+// the owner takes those.
+func TestAPeerLinksNudgeRunsAreReportedInBoundedAnswers(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	peerRestedWorker(t, s)
+	total := nudgeRunsReported + 4
+	for i := range total {
+		if !startNudge(t, s, fmt.Sprintf("n%02d", i), "") {
+			t.Fatalf("nudge %d recorded no run", i)
+		}
+		restPeerWorker(t, s, 1)
+	}
+	first := peerNudges(t, s)
+	if len(first) != nudgeRunsReported || first[0].Token != "n00" {
+		t.Fatalf("the first answer reports %v; want %d from the oldest", nudgeTokens(first), nudgeRunsReported)
+	}
+	if err := s.TakeNudgeRuns("dev", "lead-link", "w", nudgeTokens(first)); err != nil {
+		t.Fatal(err)
+	}
+	if rest := peerNudges(t, s); len(rest) != total-nudgeRunsReported || rest[0].Token != fmt.Sprintf("n%02d", nudgeRunsReported) {
+		t.Fatalf("the next answer reports %v; want the remaining %d", nudgeTokens(rest), total-nudgeRunsReported)
+	}
+}
+
+// An ended nudge run its owner never takes goes at the retention floor,
+// read through idx_thread_receipt_nudges_ended; an open one is never past
+// it.
+func TestRetentionForgetsAnUntakenEndedNudgeRunOnly(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	peerRestedWorker(t, s)
+	for _, token := range []string{"ended", "open"} {
+		if !startNudge(t, s, token, "") {
+			t.Fatalf("nudge %s recorded no run", token)
+		}
+		if token == "ended" {
+			restPeerWorker(t, s, 1)
+		}
+	}
+	// Past the floor the runs alone: the link, made at 10, stands.
+	const floor = 5
+	mustExec(t, s.db, `UPDATE thread_receipt_nudges SET started_at = 1, ended_at = CASE WHEN run_open = 0 THEN 2 END`)
+	if _, _, err := s.DeleteThreadRequestsBefore(floor, nil); err != nil {
+		t.Fatal(err)
+	}
+	if nudge := peerNudge(t, s); nudge == nil || nudge.Token != "open" {
+		t.Fatalf("after the sweep the link reports %+v; want the open run alone", nudge)
+	}
+	if plan := queryPlanText(t, s.db, `EXPLAIN QUERY PLAN SELECT 1 FROM thread_receipt_nudges WHERE `+nudgePastFloorSQL, floor); !strings.Contains(plan, "idx_thread_receipt_nudges_ended") {
+		t.Fatalf("the sweep's nudge set reads %s; want idx_thread_receipt_nudges_ended", plan)
+	}
+}
+
+// The device's last session ending releases its link, which ends its open
+// nudge run, and forgets every nudge run kept for its links: no device left
+// can take them.
+func TestASessionEndForgetsTheNudgeRunsOfItsDevicesLinks(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	peerRestedWorker(t, s)
+	for _, token := range []string{"ended", "open"} {
+		if !startNudge(t, s, token, "") {
+			t.Fatalf("nudge %s recorded no run", token)
+		}
+		if token == "ended" {
+			restPeerWorker(t, s, 1)
+		}
+	}
+	if _, released, err := s.RevokeSession("reach-dev-0", nowMillis()); err != nil || len(released) != 1 {
+		t.Fatalf("RevokeSession released %v, %v; want the worker", released, err)
+	}
+	var kept int
+	if err := s.db.QueryRow(`SELECT count(*) FROM thread_receipt_nudges`).Scan(&kept); err != nil || kept != 0 {
+		t.Fatalf("%d nudge runs kept, %v; want none for a device that holds no session", kept, err)
+	}
+	if ending, err := s.ThreadRunsEnding("w"); err != nil || ending {
+		t.Fatalf("ThreadRunsEnding = %v, %v; want none open", ending, err)
+	}
 }
 
 // A paired computer's owned worker here is nudged by the rule a local one
@@ -202,7 +373,8 @@ func TestAPeerNudgeRunEndsWithTheWorkersOwnership(t *testing.T) {
 // its base once that computer says the run ended, and an answer repeating
 // either writes nothing. A nudge of an archived caller, or older than the
 // retention floor, records nothing. An end of the spawner's runs there
-// leaves the nudge's row to the nudge's own word.
+// leaves the nudge's row to the nudge's own word, and the end of the
+// pairing ends it with nothing more counted.
 func TestTheSpawnersComputerRecordsAPeerNudgeRun(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -261,6 +433,16 @@ func TestTheSpawnersComputerRecordsAPeerNudgeRun(t *testing.T) {
 	old := NudgeRun{Token: "old", StartedAt: now - int64(ThreadRequestRetentionDays+1)*24*60*60*1000, End: &RunFigures{}}
 	if record(old) {
 		t.Fatal("a nudge older than the retention floor was recorded")
+	}
+	open := NudgeRun{Token: "open-at-the-end", StartedAt: now, Base: RunFigures{ToolCalls: 6}}
+	if !record(open) {
+		t.Fatal("the open nudge was not recorded")
+	}
+	if _, err := s.EndPairing("pc", nil, PairingEnd{}); err != nil {
+		t.Fatal(err)
+	}
+	if total := rawThreadRequest(t, s, "open-at-the-end").RunTotal; total == nil || *total != (RunFigures{}) {
+		t.Fatalf("after the pairing ended the nudge run is %+v; want it ended with nothing more counted", total)
 	}
 	mustExec(t, s.db, `UPDATE threads SET archived = 1 WHERE id = 'lead'`)
 	if record(NudgeRun{Token: "archived", StartedAt: now}) {

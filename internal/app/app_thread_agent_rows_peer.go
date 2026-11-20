@@ -79,6 +79,11 @@ type threadAgentPeerArgs struct {
 	// Held names the listed prompts the caller holds now: their leases
 	// are renewed.
 	Held []string `json:"held,omitempty"`
+	// NudgesTaken names the ended nudge runs the caller recorded from an
+	// earlier answer (ThreadAgentRows.Nudges): they are forgotten here
+	// before the answer is read (store.TakeNudgeRuns). A computer that
+	// predates it ignores it and reports none.
+	NudgesTaken []string `json:"nudges_taken,omitempty"`
 }
 
 // errThreadAgentPeerTimedOut marks a forwarded call that ran out its own
@@ -146,7 +151,10 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 // paired computer, nested depth levels, or with depth 0 the thread's state
 // alone, and the prompts its worker routed here, renewing those held here.
 func (a *App) peerThreadAgentRows(ctx context.Context, spawn store.ThreadRequest, depth int) (ThreadAgentRows, attachedbackends.PeerRead, error) {
-	args := threadAgentPeerArgs{ThreadID: spawn.TargetThreadID, Depth: depth, Spawn: spawn.Token, Held: a.heldRemotePrompts(spawn)}
+	args := threadAgentPeerArgs{
+		ThreadID: spawn.TargetThreadID, Depth: depth, Spawn: spawn.Token,
+		Held: a.heldRemotePrompts(spawn), NudgesTaken: a.threadAgentPeers.nudgesTakenOf(spawn.Token),
+	}
 	if depth <= 0 {
 		args.Depth, args.StateOnly = 1, true
 	}
@@ -276,6 +284,9 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	}
 	open := rest.unrest != ""
 	listing.Open = &open
+	if err := a.store.TakeNudgeRuns(owner, source, args.ThreadID, args.NudgesTaken); err != nil {
+		return ThreadAgentRows{}, err
+	}
 	run, err := a.store.ReceiptRunOf(owner, source, args.ThreadID)
 	if err != nil {
 		return ThreadAgentRows{}, err
@@ -284,13 +295,14 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 		listing.RunEnd = runEndOf(*run.End)
 	}
 	listing.RunOpen = run.Open
-	if nudge := run.Nudge; nudge != nil {
-		listing.Nudge = &ThreadAgentNudge{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: *runEndOf(nudge.Base)}
+	for _, nudge := range run.Nudges {
+		reported := ThreadAgentNudge{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: *runEndOf(nudge.Base)}
 		if nudge.End != nil {
-			listing.Nudge.End = runEndOf(*nudge.End)
+			reported.End = runEndOf(*nudge.End)
 		} else {
 			listing.RunOpen = true
 		}
+		listing.Nudges = append(listing.Nudges, reported)
 	}
 	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, time.Now())
 	if err != nil {
