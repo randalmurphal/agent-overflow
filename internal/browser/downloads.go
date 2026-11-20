@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The states a DownloadInfo, and the ThreadDownload behind it, moves through.
@@ -81,13 +83,22 @@ func (m *Manager) releaseStagedDownload(id downloadID) {
 }
 
 // pageForFrame walks the registry the Manager owns and asks each driver whether
-// the frame is one of its own. Ownership stays here; frame bookkeeping does not.
+// the frame is one of its own: a listed page's, or that of a page being
+// created or restored, which owns what its load downloads from its attach
+// on, its listing keeping it and its abandonment settling it
+// (abandonPage). A popup being adopted lists its downloads at its fate
+// (popup_parked.go). Ownership stays here; frame bookkeeping does not.
 func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.driver.OwnsFrame(frame) {
+				return p, scope
+			}
+		}
+		for p := range scope.creating {
+			if p.driver != nil && !m.adoptingLocked(p) && p.driver.OwnsFrame(frame) {
 				return p, scope
 			}
 		}
@@ -141,21 +152,20 @@ type endedDownloads struct {
 // reports before it processes them (the hosted engine's report lanes), so
 // a download it received may not be admitted yet when the page leaves.
 type receivingDriver interface {
-	// TakeReceivedDownloads answers the starts of the page's downloads its
-	// engine received and has not had admitted, but for those listed says
-	// the page lists, oldest first, and hands each to the caller: the
-	// engine applies its later reports to the row the caller lists for it.
-	TakeReceivedDownloads(listed func(downloadID) bool) []downloadStart
+	// TakeReceivedDownloads answers the starts of the downloads its engine
+	// received and has not had admitted, but for those listed says the page
+	// lists, oldest first, and hands each to the caller: the engine applies
+	// its later reports to the row the caller lists for it. They are the
+	// page's own and those of carried, the popups never listed whose end
+	// the engine received while this page was their nearest listed opener:
+	// the page's leave carries what they started (popupCarrier).
+	TakeReceivedDownloads(listed func(downloadID) bool) (starts []downloadStart, carried []ids.PageHandle)
 }
 
 // pageLeftLocked takes p out of scope's live pages. Every way a page stops
 // being the Manager's goes through it (a close, a jar switch, a suspend, the
 // engine's own close, the browser's close), so none can leave the page's
-// downloads running with nothing to settle them: a download its engine
-// received and has not had admitted is listed first (receivingDriver), and
-// they settle here as canceled with reason, but for one whose end its
-// engine received and will deliver (downloadStart.EndReported), which that
-// end settles, and the page admits none after (downloadStarted).
+// downloads running with nothing to settle them (downloadsLeftLocked).
 // The caller holds m.mu, publishes the answer once it is released
 // (publishDownloads), and stops it (stopEndedDownloads) before the profile
 // is disposed.
@@ -168,49 +178,81 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 		m.unlistedLocked().put(p.driver.Handle(), struct{}{})
 		m.admissions.Leave(p.driver.Handle())
 	}
+	return m.downloadsLeftLocked(scope, p, reason)
+}
+
+// downloadsLeftLocked ends p's download log as p leaves scope, listed or
+// not: a download its engine received and has not had admitted is listed
+// first (receivingDriver), and a carried popup's parked downloads are
+// listed at that popup's fate as this leave would have (popupCarrier);
+// every row then running settles as the leave settles it (departLocked),
+// and the page admits none after (downloadStarted). The caller holds m.mu.
+func (m *Manager) downloadsLeftLocked(scope *jarScope, p *managedPage, reason string) endedDownloads {
 	ended := endedDownloads{scope: scope}
 	held := p.downloads.hold()
 	held.end()
 	if receiving, ok := p.driver.(receivingDriver); ok {
 		listed := func(id downloadID) bool { return held.entry(id) != nil }
-		for _, start := range receiving.TakeReceivedDownloads(listed) {
+		starts, carried := receiving.TakeReceivedDownloads(listed)
+		for _, start := range starts {
 			start = boundedStart(start)
 			entry := m.downloadEntry(start)
 			entry.source = m.downloadFileOf(scope, start.ID)
 			ended.notes = append(ended.notes, m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, start)))
 		}
+		for _, popup := range carried {
+			m.carriersLocked().put(popup, popupCarrier{page: p, reason: reason})
+		}
 	}
 	for _, entry := range held.running() {
-		// One being published settles when its file is in place
-		// (publishFinishedDownload).
-		if !entry.takesReports() {
-			continue
+		if note, discard, canceled := m.departLocked(p, entry, reason); canceled {
+			ended.notes = append(ended.notes, note)
+			ended.discards = append(ended.discards, discard)
 		}
-		if entry.endReported != nil && entry.endReported() {
-			to := rowEndPending
-			if entry.phase == rowCancelRequested {
-				to = rowEndPendingCancelRequested
-			}
-			if err := entry.advance(to); err != nil {
-				log.Printf("browser: %v", err)
-				continue
-			}
-			if m.endPending == nil {
-				m.endPending = make(map[downloadID]*managedPage)
-			}
-			m.endPending[downloadID(entry.ID)] = p
-			continue
-		}
-		if err := entry.settle(downloadStateCanceled); err != nil {
-			log.Printf("browser: %v", err)
-			continue
-		}
-		entry.Error = reason
-		ended.notes = append(ended.notes, m.noteDownloadLocked(p, entry))
-		ended.discards = append(ended.discards, entry.discard())
 	}
 	held.release()
 	return ended
+}
+
+// departLocked settles entry, a running row of p, as p leaves for reason:
+// one whose end its engine received and will deliver
+// (downloadStart.EndReported) waits for that end, and any other is
+// canceled with reason and the newest counts its engine received
+// (downloadStart.NewestCounts). It answers the note and the discard of a
+// row it canceled. One being published settles when its file is in place
+// (publishFinishedDownload). The caller holds m.mu and p's download log.
+func (m *Manager) departLocked(p *managedPage, entry *DownloadInfo, reason string) (note downloadNote, discard downloadDiscard, canceled bool) {
+	if !entry.takesReports() {
+		return downloadNote{}, downloadDiscard{}, false
+	}
+	if entry.endReported != nil && entry.endReported() {
+		to := rowEndPending
+		if entry.phase == rowCancelRequested {
+			to = rowEndPendingCancelRequested
+		}
+		if err := entry.advance(to); err != nil {
+			log.Printf("browser: %v", err)
+			return downloadNote{}, downloadDiscard{}, false
+		}
+		if m.endPending == nil {
+			m.endPending = make(map[downloadID]*managedPage)
+		}
+		m.endPending[downloadID(entry.ID)] = p
+		return downloadNote{}, downloadDiscard{}, false
+	}
+	if err := entry.settle(downloadStateCanceled); err != nil {
+		log.Printf("browser: %v", err)
+		return downloadNote{}, downloadDiscard{}, false
+	}
+	entry.Error = reason
+	if entry.newestCounts != nil {
+		received, total := entry.newestCounts()
+		entry.Bytes = received
+		if total > 0 {
+			entry.TotalBytes = total
+		}
+	}
+	return m.noteDownloadLocked(p, entry), entry.discard(), true
 }
 
 // stopEndedDownloads asks the engine to stop the downloads a page left

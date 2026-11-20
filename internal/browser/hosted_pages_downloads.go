@@ -46,7 +46,12 @@ type hostedDownload struct {
 	// hostedPages.mu.
 	url, name string
 	order     uint64
-	// ending is how far its terminal snapshot has come. Guarded by
+	// seq, received and total are the number and byte counts of the newest
+	// numbered snapshot received. Guarded by hostedPages.mu.
+	seq             uint64
+	received, total int64
+	// ending is how far the report that ends its tracking, a terminal
+	// snapshot or the launcher's DownloadUnknown, has come. Guarded by
 	// hostedPages.mu.
 	ending hostedEnding
 	// The lane's alone: applied is the number of the last snapshot
@@ -55,9 +60,9 @@ type hostedDownload struct {
 	refused webview2host.CancelAttempt
 }
 
-// hostedEnding is how far a download's terminal snapshot has come: from
-// its receipt it is the download's end, which whoever takes it delivers
-// once, its lane or Stop (takeEnd, stopAll).
+// hostedEnding is how far the report ending a download's tracking has
+// come: from its receipt it is the download's end, which whoever takes it
+// delivers once, its lane or Stop (takeEnd, stopAll).
 type hostedEnding int
 
 const (
@@ -71,6 +76,25 @@ func (p *hostedPages) endReported(d *hostedDownload) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return d.ending != endNotReceived
+}
+
+// newestCounts is d's downloadStart.NewestCounts.
+func (p *hostedPages) newestCounts(d *hostedDownload) (received, total int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return d.received, d.total
+}
+
+// untracked is the end of d that the launcher's DownloadUnknown answer
+// reports: tracking lost, for reason, at the counts last received.
+func (p *hostedPages) untracked(d *hostedDownload, reason string) downloadProgress {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return untrackedLocked(d, reason)
+}
+
+func untrackedLocked(d *hostedDownload, reason string) downloadProgress {
+	return downloadProgress{ID: d.key.id, State: downloadUntracked, Error: reason, Received: float64(d.received), Total: float64(d.total)}
 }
 
 // takeEnd answers whether the caller delivers d's received end, which
@@ -123,30 +147,61 @@ func (p *hostedPages) refuse(d *hostedDownload) bool {
 }
 
 // takeReceived hands the caller, page's leave (receivingDriver), the
-// downloads of page received and not admitted, but for those listed says
-// the page lists already (one its lane is admitting), oldest first, each
-// now admitted: the lane applies their snapshots to the rows the caller
-// lists for them.
-func (p *hostedPages) takeReceived(page ids.PageHandle, listed func(downloadID) bool) []downloadStart {
+// downloads received and not admitted, but for those listed says the page
+// lists already (one its lane is admitting), oldest first, each now
+// admitted: the lane applies their snapshots to the rows the caller lists
+// for them. They are page's own and those of each popup the Manager has
+// not listed whose close or discard was received while page was its
+// nearest listed opener (carriedLocked), which page's leave carries, as
+// it would had the popup's end been processed first; carried names those
+// popups.
+func (p *hostedPages) takeReceived(page ids.PageHandle, listed func(downloadID) bool) (starts []downloadStart, carried []ids.PageHandle) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	r := p.records[page]
-	if r == nil {
-		return nil
+	if p.records[page] == nil {
+		return nil, nil
 	}
 	var taken []*hostedDownload
-	for id, d := range r.downloads {
-		if d.admission == hostedAnnouncing && !listed(id) {
-			d.admission = hostedAdmitted
-			taken = append(taken, d)
+	for handle, r := range p.records {
+		if handle != page {
+			if !p.carriedLocked(r, page) {
+				continue
+			}
+			carried = append(carried, handle)
+		}
+		for id, d := range r.downloads {
+			if d.admission == hostedAnnouncing && !listed(id) {
+				d.admission = hostedAdmitted
+				taken = append(taken, d)
+			}
 		}
 	}
 	slices.SortFunc(taken, func(a, b *hostedDownload) int { return cmp.Compare(a.order, b.order) })
-	starts := make([]downloadStart, 0, len(taken))
+	starts = make([]downloadStart, 0, len(taken))
 	for _, d := range taken {
 		starts = append(starts, p.startLocked(d))
 	}
-	return starts
+	return starts, carried
+}
+
+// carriedLocked reports whether r is a popup the Manager has not listed
+// whose close or discard was received and whose nearest listed opener,
+// past the pending popups between them, is page. The caller holds p.mu.
+func (p *hostedPages) carriedLocked(r *hostedPageRecord, page ids.PageHandle) bool {
+	if r.state != hostedPopupClosing {
+		return false
+	}
+	// Each opener is reported before its popups, so the chain ends; the
+	// bound stops a cycle all the same.
+	opener := r.opener
+	for range len(p.records) {
+		next := p.records[opener]
+		if next == nil || !next.state.pendingPopup() {
+			break
+		}
+		opener = next.opener
+	}
+	return opener == page
 }
 
 // end records d's end: it leaves its page's running downloads for its
@@ -230,13 +285,14 @@ func (p *hostedPages) start(d *hostedDownload) downloadStart {
 
 // startLocked answers the Manager's start of d: its page as its frame
 // (hostedPage.OwnsFrame), its id, address and name, whether its end was
-// received, and, when its page is a popup the Manager has not listed, that
-// popup, its openers, nearest first, and its profile. The caller holds
-// p.mu.
+// received, its newest counts received, and, when its page is a popup the
+// Manager has not listed, that popup, its openers, nearest first, and its
+// profile. The caller holds p.mu.
 func (p *hostedPages) startLocked(d *hostedDownload) downloadStart {
 	page := d.key.page
 	start := downloadStart{Frame: frameID(page), ID: d.key.id, URL: d.url, SuggestedName: d.name}
 	start.EndReported = func() bool { return p.endReported(d) }
+	start.NewestCounts = func() (int64, int64) { return p.newestCounts(d) }
 	r := p.records[page]
 	if r == nil || !r.state.pendingPopup() {
 		return start

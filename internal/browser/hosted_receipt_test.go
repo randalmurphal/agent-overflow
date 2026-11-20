@@ -367,10 +367,12 @@ func TestEveryManagerActionFindsWhatTheEngineReceived(t *testing.T) {
 }
 
 // Stop during a discard whose retirement is held in its last callback
-// tells the discard's waiter it was interrupted, not that the page is
-// gone, and the retirement's completion is its own: it comes only once
-// that callback returned.
-func TestStopInterruptsADiscardWithoutFinishingIt(t *testing.T) {
+// tells every discard of the page it was interrupted, whenever it arrives:
+// one waiting before Stop and one arriving after it, while the callback is
+// held. The retirement's completion is its own: it comes only once that
+// callback returned, and a discard arriving after that finds the page
+// gone.
+func TestStopInterruptsEveryDiscardOfARetirementUnderWay(t *testing.T) {
 	engine, _, _ := newDownloadHostedEngine(t)
 	bindTestPage(t, engine, "page1", "TARGET-1")
 	reportDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadRunning, 10))
@@ -383,8 +385,22 @@ func TestStopInterruptsADiscardWithoutFinishingIt(t *testing.T) {
 		}
 		progress(event)
 	}
-	discarded := make(chan error, 1)
-	go func() { discarded <- engine.DiscardPage(context.Background(), "page1") }()
+	discard := func() <-chan error {
+		discarded := make(chan error, 1)
+		go func() { discarded <- engine.DiscardPage(context.Background(), "page1") }()
+		return discarded
+	}
+	answer := func(discarded <-chan error, when string) error {
+		t.Helper()
+		select {
+		case err := <-discarded:
+			return err
+		case <-time.After(hostedTestDeadline):
+			t.Fatalf("the discard %s never answered", when)
+			return nil
+		}
+	}
+	first := discard()
 	awaitClosed(t, inGone, "the discard's page-gone callback")
 	joined := engine.pages.receive("page1", receivedDiscard())
 	if joined.outcome != receiptEnding {
@@ -395,13 +411,11 @@ func TestStopInterruptsADiscardWithoutFinishingIt(t *testing.T) {
 		engine.Stop()
 		close(stopped)
 	}()
-	select {
-	case err := <-discarded:
-		if !errors.Is(err, errDiscardInterrupted) {
-			t.Fatalf("the discard Stop interrupted answered %v", err)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("Stop did not end the discard's wait")
+	if err := answer(first, "waiting before Stop"); !errors.Is(err, errDiscardInterrupted) {
+		t.Fatalf("the discard waiting before Stop answered %v", err)
+	}
+	if err := answer(discard(), "arriving after Stop, its callback held"); !errors.Is(err, errDiscardInterrupted) {
+		t.Fatalf("the discard arriving after Stop, its callback held, answered %v", err)
 	}
 	select {
 	case <-joined.retired:
@@ -411,6 +425,15 @@ func TestStopInterruptsADiscardWithoutFinishingIt(t *testing.T) {
 	close(releaseGone)
 	awaitClosed(t, joined.retired, "the retirement's completion")
 	awaitClosed(t, stopped, "Stop")
+	if err := answer(discard(), "arriving after the callback returned"); err != nil {
+		t.Fatalf("the discard arriving after the retirement completed answered %v", err)
+	}
+	engine.pages.mu.Lock()
+	kept := len(engine.pages.interrupted)
+	engine.pages.mu.Unlock()
+	if kept != 0 {
+		t.Fatalf("the engine keeps %d interrupted retirements past their completion", kept)
+	}
 }
 
 // A create the engine cannot send leaves no record of its page.

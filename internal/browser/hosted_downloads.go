@@ -92,9 +92,12 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 	}
 	admitted := admission == hostedAdmitted
 	if report.State == webview2host.DownloadUnknown {
-		// Created by no answer, so the download is admitted. The launcher
-		// lost it, so how it ended is unknown.
-		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadUntracked, Error: report.Reason})
+		// The launcher lost it, so how it ended is unknown. Its receipt
+		// made this its end, unless an earlier one is.
+		if !e.pages.takeEnd(d) {
+			return
+		}
+		e.events.DownloadProgress(e.pages.untracked(d, report.Reason))
 		e.pages.end(d)
 		return
 	}
@@ -164,6 +167,13 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 	if report.Terminal() {
 		e.pages.end(d)
 	}
+}
+
+// endsTracking reports whether report ends its download's tracking: a
+// terminal snapshot, or the launcher's answer that it has no record of
+// the download.
+func endsTracking(report webview2host.DownloadReport) bool {
+	return report.Terminal() || report.State == webview2host.DownloadUnknown
 }
 
 // receivedProgress is the progress a snapshot reports before any path

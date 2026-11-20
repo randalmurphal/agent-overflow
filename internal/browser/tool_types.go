@@ -237,8 +237,10 @@ type DownloadInfo struct {
 	// settled numbers the entry among its page's settled ones in the order
 	// they settled, from 1; zero while it runs (trimDownloadsLocked).
 	settled uint64
-	// endReported is its start's downloadStart.EndReported.
-	endReported func() bool
+	// endReported and newestCounts are its start's
+	// downloadStart.EndReported and NewestCounts.
+	endReported  func() bool
+	newestCounts func() (received, total int64)
 }
 
 type DownloadOptions struct {

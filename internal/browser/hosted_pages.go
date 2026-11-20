@@ -162,8 +162,10 @@ type hostedPageRecord struct {
 	ended     []downloadID
 	// retired is closed once the page's lane retired it and the
 	// retirement's callbacks returned, or as a page being created is
-	// abandoned. Stop does not close it (receipt.stopped).
-	retired chan struct{}
+	// abandoned. Stop does not close it (receipt.stopped). retiring is set
+	// once its lane's retirement of it began (retire).
+	retired  chan struct{}
+	retiring bool
 	// stopAttach signals a popup's attach under way to end (attaching); it
 	// waits for nothing, and the attach joins its own teardown.
 	stopAttach context.CancelFunc
@@ -184,6 +186,10 @@ func (r *hostedPageRecord) to(event hostedPageEvent) bool {
 type hostedPages struct {
 	mu      sync.Mutex
 	records map[ids.PageHandle]*hostedPageRecord
+	// interrupted is, by page, each retirement under way at Stop, which
+	// forgot its record, until its last callback returns: a close or
+	// discard received meanwhile joins it (receive).
+	interrupted map[ids.PageHandle]receipt
 	// owners is the page of each download id a record holds, running or
 	// ended, so a report naming another page's id is refused.
 	owners map[downloadID]ids.PageHandle
@@ -204,12 +210,13 @@ type hostedPages struct {
 
 func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(page ids.PageHandle, closed bool, crash string)) *hostedPages {
 	return &hostedPages{
-		records: make(map[ids.PageHandle]*hostedPageRecord),
-		owners:  make(map[downloadID]ids.PageHandle),
-		lanes:   newReportLanes(),
-		process: process,
-		watch:   watch,
-		observe: observe,
+		records:     make(map[ids.PageHandle]*hostedPageRecord),
+		interrupted: make(map[ids.PageHandle]receipt),
+		owners:      make(map[downloadID]ids.PageHandle),
+		lanes:       newReportLanes(),
+		process:     process,
+		watch:       watch,
+		observe:     observe,
 	}
 }
 
@@ -418,11 +425,15 @@ func (r receipt) wait(ctx context.Context) error {
 //     to end and queues its retirement behind the work already received,
 //     once; a crash queues the Manager's report of it.
 //   - A snapshot checks the download's owner and starts a download its page
-//     admits, with its address and name, numbered in the order received:
-//     the page's leave lists it from that record (takeReceived) when the
-//     lane has not admitted it yet, so a download received before its tab
-//     closed, was suspended or the browser closed is listed in that tab. A
-//     terminal snapshot marks the download's end received, which then
+//     admits, with its address and name, numbered in the order received,
+//     and keeps the counts of the newest numbered one: the page's leave
+//     lists it from that record (takeReceived) when the lane has not
+//     admitted it yet, so a download received before its tab closed, was
+//     suspended or the browser closed is listed in that tab, and a row the
+//     leave cancels keeps those counts (downloadStart.NewestCounts). A
+//     popup's received close hands its downloads to its nearest listed
+//     opener's leave the same way. A terminal snapshot, or the launcher's
+//     DownloadUnknown, marks the download's end received, which then
 //     settles its row (downloadStart.EndReported) whatever left the page
 //     meanwhile.
 //
@@ -443,6 +454,9 @@ func (p *hostedPages) receive(page ids.PageHandle, in received) receipt {
 	defer p.mu.Unlock()
 	r := p.records[page]
 	if r == nil {
+		if joined, ok := p.interrupted[page]; ok && in.kind != acceptedSnapshot && in.kind != acceptedCrash {
+			return joined
+		}
 		return receipt{outcome: receiptNoPage}
 	}
 	if in.kind == acceptedSnapshot {
@@ -497,7 +511,10 @@ func (p *hostedPages) snapshotLocked(page ids.PageHandle, r *hostedPageRecord, r
 		}
 	}
 	d.heard = time.Now()
-	if report.Terminal() && d.ending == endNotReceived {
+	if report.Seq > d.seq {
+		d.seq, d.received, d.total = report.Seq, report.Received, report.Total
+	}
+	if endsTracking(report) && d.ending == endNotReceived {
 		d.ending = endReceived
 	}
 	p.submitLocked(&acceptedWork{kind: acceptedSnapshot, page: page, snapshot: report, download: d})
@@ -517,6 +534,7 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 	if r == nil {
 		return nil, func() {}
 	}
+	r.retiring = true
 	for id, d := range r.downloads {
 		if d.admission == hostedAdmitted {
 			running = append(running, id)
@@ -531,7 +549,10 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		close(r.retired)
-		// Stop may have dropped it first.
+		// Stop may have forgotten it first.
+		if joined, ok := p.interrupted[page]; ok && joined.retired == r.retired {
+			delete(p.interrupted, page)
+		}
 		if p.records[page] == r {
 			delete(p.records, page)
 			if r.state.pendingPopup() {
@@ -561,7 +582,9 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 // the lanes (Stop): work still waiting is dropped, a path conversion under
 // way ends, and whoever waits for a page to go is told it was interrupted
 // (receipt.stopped); a retirement under way still closes its record's
-// retired when its last callback returns. It answers the
+// retired when its last callback returns, and until then a close or
+// discard of its page joins it (interrupted), so its waiter, too, hears
+// that retirement's completion or the interruption. It answers the
 // wait for the lanes' goroutines, which the caller makes once it holds no
 // lock, and the received ends its lanes have not delivered, in each
 // lane's order, the one under way first, which the Manager may be waiting
@@ -569,7 +592,7 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 // to deliver (takeEnd). A download's admission may still be in flight on
 // its lane, so an end is taken whether or not it was admitted; the
 // Manager drops the end of a download it has no row for.
-func (p *hostedPages) stopAll() (join func(), ends []webview2host.DownloadReport) {
+func (p *hostedPages) stopAll() (join func(), ends []downloadProgress) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stop != nil {
@@ -583,15 +606,26 @@ func (p *hostedPages) stopAll() (join func(), ends []webview2host.DownloadReport
 		}
 	}
 	take := func(w *acceptedWork) {
-		if w != nil && w.kind == acceptedSnapshot && w.download.ending == endReceived && w.snapshot.Terminal() {
-			w.download.ending = endTaken
-			ends = append(ends, w.snapshot)
+		if w == nil || w.kind != acceptedSnapshot || w.download.ending != endReceived || !endsTracking(w.snapshot) {
+			return
 		}
+		w.download.ending = endTaken
+		if w.snapshot.State == webview2host.DownloadUnknown {
+			ends = append(ends, untrackedLocked(w.download, w.snapshot.Reason))
+			return
+		}
+		ends = append(ends, receivedProgress(w.snapshot))
 	}
 	for _, lane := range p.lanes.byKey {
 		take(lane.current)
 		for _, w := range lane.jobs {
 			take(w)
+		}
+	}
+	stopped := p.lanes.ctx.Done()
+	for page, r := range p.records {
+		if r.retiring {
+			p.interrupted[page] = receipt{outcome: receiptEnding, retired: r.retired, stopped: stopped}
 		}
 	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)

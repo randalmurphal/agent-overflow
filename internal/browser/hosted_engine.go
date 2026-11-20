@@ -324,7 +324,7 @@ func (e *hostedEngine) Stop() {
 	// A received end the lanes no longer process is still the end of a row
 	// the Manager may have left to it (downloadStart.EndReported).
 	for _, end := range ends {
-		e.events.DownloadProgress(receivedProgress(end))
+		e.events.DownloadProgress(end)
 	}
 }
 

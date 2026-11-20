@@ -426,8 +426,9 @@ func (p *hostedPage) Close() {
 func (p *hostedPage) Listed() { p.engine.pages.listed(p.id) }
 
 // TakeReceivedDownloads is receivingDriver: the page's leave lists what the
-// launcher reported of it that its lane has not admitted yet.
-func (p *hostedPage) TakeReceivedDownloads(listed func(downloadID) bool) []downloadStart {
+// launcher reported of it, and of the closed popups it carries, that its
+// lane has not admitted yet (hostedPages.takeReceived).
+func (p *hostedPage) TakeReceivedDownloads(listed func(downloadID) bool) ([]downloadStart, []ids.PageHandle) {
 	return p.engine.pages.takeReceived(p.id, listed)
 }
 

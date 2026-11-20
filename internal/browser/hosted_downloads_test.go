@@ -38,6 +38,14 @@ func TestHostedEngineTurnsLauncherSnapshotsIntoDownloadEvents(t *testing.T) {
 			t.Fatal("the start does not report the end its engine received")
 		}
 		starts[0].EndReported = nil
+		// So was its newest snapshot.
+		if starts[0].NewestCounts == nil {
+			t.Fatal("the start reports no counts its engine received")
+		}
+		if received, total := starts[0].NewestCounts(); received != 100 || total != 100 {
+			t.Fatalf("the start reports %d of %d bytes received, want the newest snapshot's 100 of 100", received, total)
+		}
+		starts[0].NewestCounts = nil
 	}
 	if len(starts) != 1 || !reflect.DeepEqual(starts[0], wantStart) {
 		t.Fatalf("starts %+v, want %+v", starts, wantStart)

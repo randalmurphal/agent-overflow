@@ -114,7 +114,7 @@ func (m *Manager) downloadEntry(event downloadStart) DownloadInfo {
 		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
 		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		key:         DownloadKey(fmt.Sprintf("d%d", m.downloadKeys.Add(1))),
-		endReported: event.EndReported,
+		endReported: event.EndReported, newestCounts: event.NewestCounts,
 	}
 }
 
