@@ -53,6 +53,21 @@ func (r *scrubRef) mark() CredentialMark {
 	return CredentialMark{client: r.c.tag, read: r.read}
 }
 
+// CredentialMark is the mark a request sent to the base origin now would
+// carry: the read that stored the credential the client holds. Zero when
+// it holds none (nothing read yet, ForgetCredential, a re-read that
+// failed, Close), so what a caller remembered under an earlier mark no
+// longer compares equal. It is the client's own state, so it is right
+// whichever call drew the last answer.
+func (c *Client) CredentialMark() CredentialMark {
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	if c.cred == nil {
+		return CredentialMark{}
+	}
+	return CredentialMark{client: c.tag, read: c.credRead}
+}
+
 // CredentialMark tells which read of the client's credential source this
 // answer's request carried; zero when it carried none. Compare two marks
 // to learn whether two answers were drawn under the same credential.

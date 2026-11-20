@@ -39,9 +39,15 @@ func TestCredentialMarks(t *testing.T) {
 		return resp.CredentialMark()
 	}
 
+	if c.CredentialMark() != (CredentialMark{}) {
+		t.Fatal("a client that read no credential has a mark")
+	}
 	first := mark(Request{Path: "ok"})
 	if first == (CredentialMark{}) || mark(Request{Path: "issue/WEB-99"}) != first {
 		t.Fatal("a 404 and a 200 under the first read carry different marks, or a zero one")
+	}
+	if c.CredentialMark() != first {
+		t.Fatal("the client's mark is not the mark of the answers it draws")
 	}
 	// The 401 under the first read makes the client read again and send
 	// once more: the answer the caller gets is the retry's.
@@ -49,8 +55,15 @@ func TestCredentialMarks(t *testing.T) {
 	if replaced == first || mark(Request{Path: "ok"}) != replaced {
 		t.Fatal("the retried call's mark is not the replacing read's")
 	}
+	if c.CredentialMark() != replaced {
+		t.Fatal("the client's mark did not follow the replacing read")
+	}
 	c.ForgetCredential()
-	if again := mark(Request{Path: "ok"}); again == replaced || again == (CredentialMark{}) {
+	if c.CredentialMark() != (CredentialMark{}) {
+		t.Fatal("the client has a mark after ForgetCredential")
+	}
+	again := mark(Request{Path: "ok"})
+	if again == replaced || again == (CredentialMark{}) || c.CredentialMark() != again {
 		t.Fatal("a read after ForgetCredential kept the earlier mark")
 	}
 	for _, path := range []string{"/file/1", "/file/2"} {
@@ -58,6 +71,15 @@ func TestCredentialMarks(t *testing.T) {
 			t.Fatalf("%s off the base origin: mark %v, want zero", path, got)
 		}
 	}
+	if c.CredentialMark() != again {
+		t.Fatal("an answer off the base origin moved the client's mark")
+	}
+	defer func() {
+		c.Close()
+		if c.CredentialMark() != (CredentialMark{}) {
+			t.Error("a closed client has a mark")
+		}
+	}()
 
 	other, _ := loopbackClient(t, testOptions(tr.url()))
 	resp, err := other.Do(t.Context(), Request{Path: "ok"})

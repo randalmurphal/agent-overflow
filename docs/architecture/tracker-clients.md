@@ -88,6 +88,7 @@ func (c *Client) ForgetCredential()
 func (c *Client) Close()
 func (r *Response) Scrub(text string) string       // also on *StatusError and *AuthError
 func (r *Response) CredentialMark() CredentialMark // also on *StatusError and *AuthError
+func (c *Client) CredentialMark() CredentialMark   // the mark a request sent now would carry; zero when none is held
 
 type Request struct {
     Method       string

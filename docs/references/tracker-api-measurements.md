@@ -139,6 +139,18 @@ Other:
   `/file/{media id}/binary` and whose query carries a signed token. With
   `redirect=false` the same path answers 200 with the file from the Jira
   site itself.
+- `POST /issue/bulkfetch` is documented to take 1000 issues when `fields`
+  names at least one field and at most 100, none of them a wildcard or
+  one that "returns multiple values (for example `comment`, `worklog`, or
+  `attachment`)", and `expand` asks for nothing heavy; 100 otherwise,
+  with a 400 for more. It is documented to find an issue by an old key
+  and by a key in another case. Measured 2026-11-20: 101 issues with the
+  default fields and 101 with `comment` among the fields were refused;
+  250 issues with summary, status, issue type, priority, assignee, labels,
+  parent, project, created, updated, resolution date and the sprint field
+  returned all 250 (85 with labels, 105 with sprints, 912 KB), so labels
+  and sprints do not count as multiple values. A key that names nothing,
+  sent beside two IDs, was left out with no `issueErrors` entry.
 - Measured the same day. `POST /rest/api/3/changelog/bulkfetch` gives each
   history's `created` as a number of epoch milliseconds (13 digits) and the
   issue as a string `issueId`, with no key. The spec declares `created` a
@@ -397,7 +409,16 @@ Source for schema facts: the
   `updatedAt: {lte: ...}` with
   `or: [{updatedAt: {lt: ...}}, {id: {nin: [...]}}]`, continued a walk of
   six issues exactly: after two were delivered, the next page was the
-  other four in order.
+  other four in order. `updatedAt: {eq: ...}` with an issue's own
+  millisecond `updatedAt` returned that issue alone under a
+  creation-ordered sort.
+- Measured the same day. A catalog nested under an issue is charged by
+  its `first` whatever the issue page's `first`:
+  `issues(first: F) { nodes { id team { members(first: N) { nodes { id } } } } }`
+  cost 4 points at N=1, 14 at N=50 and 54 at N=250, the same for F of 1,
+  10 and 50. Without the catalog, `issues(first: 10)` with the team's ID
+  and name, the assignee's and the state's IDs cost 4, and with only
+  issue IDs 2.
 - Measured the same day with throwaway issues. A walk ordered by creation
   pages by cursor safely: with six open issues read two at a time, the
   continuation was right after the cursor's issue was completed (leaving
