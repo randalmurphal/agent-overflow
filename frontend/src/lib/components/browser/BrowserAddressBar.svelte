@@ -26,7 +26,7 @@
   import type { AddressSuggestion } from './browserAddressMatch';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { intendFocus, type FocusIntent } from '../../utils/focusIntent';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
   // address, and the pane's own controls. The address behaves as a
@@ -97,18 +97,32 @@
     return activePage?.url === 'about:blank' ? '' : (activePage?.url ?? '');
   }
 
-  // The field follows the page, except while the user edits it. Another tab
-  // becoming active replaces it even then: what was typed was for the tab
-  // that left. Focus is read on every run, so leaving the field always puts
-  // the page's address back.
-  let shownPageId = '';
+  // The field shows the page's address until the user edits it. From that
+  // edit the field is the user's draft, and nothing the page pushes replaces
+  // it (its address changing, another tab becoming active, a tab switch
+  // answered) until the user commits the draft (Enter, a suggestion) or
+  // abandons it (Escape, leaving the field); then the field takes the page's
+  // address again. This effect is the one place the field takes it.
+  let draft = $state(false);
   $effect(() => {
     const url = pageAddress();
-    const pageId = activePage?.id ?? '';
-    const editing = addressFocused;
-    if (pageId !== shownPageId || !editing) address = url;
-    shownPageId = pageId;
+    if (draft) return;
+    untrack(() => showAddress(url));
   });
+
+  /**
+   * Shows `url` in the field. A focused field with all its text selected
+   * keeps the new text selected, so the user's typing still replaces it.
+   */
+  function showAddress(url: string): void {
+    const field = input;
+    const selectedAll = !!field && document.activeElement === field && field.selectionStart === 0 && field.selectionEnd === field.value.length;
+    address = url;
+    if (field && selectedAll && field.value !== url) {
+      field.value = url;
+      field.select();
+    }
+  }
 
   /** Focuses the address with its text selected (a new tab, mod+l). */
   export function focusAddress(): void {
@@ -146,7 +160,7 @@
       // The field's press: neither a find bar nor a running turn behind it
       // takes it (the app dispatcher declines a prevented event).
       event.preventDefault();
-      address = pageAddress();
+      draft = false;
       onLeave();
       return;
     }
@@ -157,6 +171,7 @@
     if (isLocalEnter(event) && pageId) {
       event.preventDefault();
       const target = address;
+      draft = false;
       onLeave();
       void onAct(browserAction.navigate(pageId, target));
     }
@@ -166,15 +181,15 @@
   // first, so the field leaves for that tab's page once the switch is
   // answered. That leave is an intent taken when the tab is chosen: the
   // user's next edit of the field, or a focus or press anywhere else, ends
-  // it, so a slow switch neither moves focus nor puts back the address over
-  // what the user did meanwhile.
+  // it, so a slow switch moves no focus away from what the user did
+  // meanwhile, and an edit made meanwhile is a draft its answer leaves alone.
   let suggestions: ReturnType<typeof BrowserAddressSuggestions> | undefined = $state(undefined);
   let leaveAfterSwitch: FocusIntent | null = null;
   onDestroy(() => leaveAfterSwitch?.end());
   function takeSuggestion(suggestion: AddressSuggestion): void {
     const pageId = pageIdOf(activePage?.id);
     if (!pageId || !input) return;
-    address = pageAddress();
+    draft = false;
     const suggested = pageIdOf(suggestion.pageId);
     if (suggested) {
       const field = input;
@@ -229,10 +244,12 @@
     onfocus={onFocus}
     onblur={() => {
       addressFocused = false;
+      draft = false;
       pressFocusing = false;
       suggestions?.close();
     }}
     oninput={(event) => {
+      draft = true;
       leaveAfterSwitch?.end();
       suggestions?.input(event.currentTarget.value);
     }}

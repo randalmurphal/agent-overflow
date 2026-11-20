@@ -104,15 +104,18 @@ describe('<BrowserAddressBar>', () => {
     expect(onLeave).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps an edit while its tab is shown, and shows another tab\'s address when that tab becomes active', async () => {
+  it('keeps an edit over the page changing and another tab becoming active, until the field is left', async () => {
     const { view, input } = mount();
     input.focus();
     await fireEvent.input(input, { target: { value: 'half typed' } });
     await view.rerender({ activePage: page({ title: 'Page a, loaded' }) as never });
     expect(input.value).toBe('half typed');
     await view.rerender({ activePage: page({ id: 'b', url: 'https://example.test/b' }) as never });
-    expect(input.value).toBe('https://example.test/b');
+    expect(input.value).toBe('half typed');
     expect(document.activeElement).toBe(input);
+    input.blur();
+    await tick();
+    expect(input.value).toBe('https://example.test/b');
   });
 
   it('puts the page address back when the field loses focus with an edit, on a settled tab and after a switch', async () => {
