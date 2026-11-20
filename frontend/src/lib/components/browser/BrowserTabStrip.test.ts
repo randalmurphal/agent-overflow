@@ -227,8 +227,10 @@ describe('<BrowserTabStrip>', () => {
   });
 
   // The drop names the tab it lands beside, never a position in the strip
-  // the user saw, and a drop either side of the tab itself sends nothing.
-  it('names the tab a dropped tab lands beside, and sends nothing for a drop beside itself', async () => {
+  // the user saw. A drop beside the tab's neighbor is sent too: whether it
+  // moves anything is the backend's to decide at the move's turn. Only a
+  // drop on the tab itself sends nothing.
+  it('names the tab a dropped tab lands beside, and sends nothing for a drop on itself', async () => {
     const { view, onAct } = mount([page('a'), page('b'), page('c'), page('d')]);
     const transfer = {
       data: new Map<string, string>(),
@@ -248,8 +250,37 @@ describe('<BrowserTabStrip>', () => {
     await dropOn('a', 'c');
     expect(onAct).toHaveBeenLastCalledWith({ kind: 'move', pageId: 'a', beside: 'c', after: true });
     onAct.mockClear();
-    await dropOn('b', 'b');
     await dropOn('b', 'a');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'move', pageId: 'b', beside: 'a', after: true });
+    onAct.mockClear();
+    await dropOn('b', 'b');
     expect(onAct).not.toHaveBeenCalled();
+  });
+
+  // A tab inserted between the drag-over and the drop moves nothing the
+  // drop names: it names the tab the pointer was over, and that side.
+  it('names the tab the pointer was over when a tab is inserted before the drop', async () => {
+    const { view, onAct } = mount([page('a'), page('b'), page('c'), page('d')]);
+    const transfer = {
+      data: new Map<string, string>(),
+      types: [] as string[],
+      setData(type: string, value: string) { this.data.set(type, value); this.types.push(type); },
+      getData(type: string) { return this.data.get(type) ?? ''; },
+      effectAllowed: '', dropEffect: '',
+    };
+    await fireEvent.dragStart(tabOf(view, 'a'), { dataTransfer: transfer });
+    const target = tabOf(view, 'c');
+    target.getBoundingClientRect = () => ({ left: 200, right: 300, width: 100, top: 0, bottom: 30, height: 30, x: 200, y: 0, toJSON() {} });
+    // The test DOM's drag events drop the pointer position; a mouse event
+    // of the drag-over type carries it, on the left half of c.
+    const over = new MouseEvent('dragover', { bubbles: true, cancelable: true, clientX: 210 });
+    Object.defineProperty(over, 'dataTransfer', { value: transfer });
+    target.dispatchEvent(over);
+    await tick();
+    expect(view.getByTestId('browser-tab-drop-indicator').dataset.side).toBe('before');
+    await view.rerender({ pages: [page('a'), page('b'), page('x'), page('c'), page('d')] as never });
+    await fireEvent.drop(tabOf(view, 'c'), { dataTransfer: transfer });
+    expect(onAct).toHaveBeenCalledTimes(1);
+    expect(onAct).toHaveBeenCalledWith({ kind: 'move', pageId: 'a', beside: 'c', after: false });
   });
 });

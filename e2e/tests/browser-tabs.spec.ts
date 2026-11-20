@@ -22,9 +22,12 @@
 // then the x of the same tab close one tab, whichever reaches the backend
 // first. A tab dragged after a close to the right that has not reached the
 // backend yet moves once that close has closed the tabs the user saw to its
-// right. A drag names the tab it was dropped beside: dropped before three
-// while a reopen of one is on its way, four lands before three once one is
-// back in front.
+// right. A drag names the tab it was dropped beside and is sent even when
+// the strip shows it there already: dropped before three while a reopen of
+// one is on its way, four lands before three once one is back in front, and
+// dropped after two, which it already follows, while a reopen of three is
+// on its way, it lands after two once three is back before it.
+import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -501,12 +504,11 @@ test('the keyboard close and the x of the same tab close one tab', async ({ harn
   await expect(tabs).toHaveCount(3);
 });
 
-// Close Tabs to the Right on two, then one dragged after two before the
-// close reaches the backend: the move takes its place after the close in
-// the pane's order, so the close reads the strip the user saw, closes
-// three, and one survives behind two.
-test('a tab dragged after a close to the right waits for it', async ({ harness, page }) => {
-  // The close's frame, held, and the way to the backend it goes by.
+/**
+ * Holds the first `held` call on its way to the backend until `release`,
+ * and counts the `held` and `move` calls sent and answered.
+ */
+async function holdBeforeMove(page: Page, held: string) {
   const wire: { held?: string; send?: (message: string) => void } = {};
   const sent: string[] = [];
   const answered = new Set<string>();
@@ -516,9 +518,9 @@ test('a tab dragged after a close to the right waits for it', async ({ harness, 
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       const kind = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1]?.kind : '';
-      if (kind === 'close-right' || kind === 'move') {
+      if (kind === held || kind === 'move') {
         sent.push(frame.id);
-        if (kind === 'close-right') {
+        if (kind === held && wire.held === undefined) {
           wire.held = String(message);
           return;
         }
@@ -531,6 +533,20 @@ test('a tab dragged after a close to the right waits for it', async ({ harness, 
       if (frame.type === 'rpc' && sent.includes(frame.id)) answered.add(frame.id);
     });
   });
+  return {
+    held: () => wire.held !== undefined,
+    release: () => wire.send?.(wire.held ?? ''),
+    sent: () => sent.length,
+    answered: () => answered.size,
+  };
+}
+
+// Close Tabs to the Right on two, then one dragged after two before the
+// close reaches the backend: the move takes its place after the close in
+// the pane's order, so the close reads the strip the user saw, closes
+// three, and one survives behind two.
+test('a tab dragged after a close to the right waits for it', async ({ harness, page }) => {
+  const wire = await holdBeforeMove(page, 'close-right');
   const threadId = await seedBrowserThread(harness, 'Browser move after close');
   const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three'];
   for (const address of urls) {
@@ -546,14 +562,14 @@ test('a tab dragged after a close to the right waits for it', async ({ harness, 
   await tabs.nth(1).click({ button: 'right' });
   const menu = page.getByRole('menu', { name: 'Tab actions' });
   await menu.getByTestId('browser-tab-menu-close-right').click();
-  await expect.poll(() => wire.held !== undefined).toBe(true);
+  await expect.poll(() => wire.held()).toBe(true);
   // Dropped on the right half of two, one lands after it.
   const target = await tabs.nth(1).boundingBox();
   if (!target) throw new Error('tab two has no box');
   await tabs.nth(0).dragTo(tabs.nth(1), { targetPosition: { x: target.width * 0.75, y: target.height / 2 } });
-  await expect.poll(() => sent.length).toBe(2);
-  wire.send?.(wire.held ?? '');
-  await expect.poll(() => answered.size).toBe(2);
+  await expect.poll(() => wire.sent()).toBe(2);
+  wire.release();
+  await expect.poll(() => wire.answered()).toBe(2);
   expect(await tabURLs(harness, threadId)).toEqual([urls[1], urls[0]]);
   await expect(tabs).toHaveCount(2);
 });
@@ -563,30 +579,7 @@ test('a tab dragged after a close to the right waits for it', async ({ harness, 
 // reaching the backend first: the move waits for the reopen's turn and
 // lands beside three, so one two four three.
 test('a tab dropped beside another lands beside it after a reopen before it', async ({ harness, page }) => {
-  const wire: { held?: string; send?: (message: string) => void } = {};
-  const sent: string[] = [];
-  const answered = new Set<string>();
-  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
-    const server = socket.connectToServer();
-    wire.send = (message) => server.send(message);
-    socket.onMessage((message) => {
-      const frame = JSON.parse(String(message));
-      const kind = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1]?.kind : '';
-      if (kind === 'reopen' || kind === 'move') {
-        sent.push(frame.id);
-        if (kind === 'reopen') {
-          wire.held = String(message);
-          return;
-        }
-      }
-      server.send(message);
-    });
-    server.onMessage((message) => {
-      socket.send(message);
-      const frame = JSON.parse(String(message));
-      if (frame.type === 'rpc' && sent.includes(frame.id)) answered.add(frame.id);
-    });
-  });
+  const wire = await holdBeforeMove(page, 'reopen');
   const threadId = await seedBrowserThread(harness, 'Browser move after reopen');
   const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three', 'https://example.test/four'];
   for (const address of urls) {
@@ -604,14 +597,50 @@ test('a tab dropped beside another lands beside it after a reopen before it', as
   await expect(tabs).toHaveCount(3);
   await tabs.nth(0).click({ button: 'right' });
   await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-reopen').click();
-  await expect.poll(() => wire.held !== undefined).toBe(true);
+  await expect.poll(() => wire.held()).toBe(true);
   // Dropped on the left half of three, four lands before it.
   const target = await tabs.nth(1).boundingBox();
   if (!target) throw new Error('tab three has no box');
   await tabs.nth(2).dragTo(tabs.nth(1), { targetPosition: { x: target.width * 0.25, y: target.height / 2 } });
-  await expect.poll(() => sent.length).toBe(2);
-  wire.send?.(wire.held ?? '');
-  await expect.poll(() => answered.size).toBe(2);
+  await expect.poll(() => wire.sent()).toBe(2);
+  wire.release();
+  await expect.poll(() => wire.answered()).toBe(2);
+  expect(await tabURLs(harness, threadId)).toEqual([urls[0], urls[1], urls[3], urls[2]]);
+  await expect(tabs).toHaveCount(4);
+});
+
+// Three closed and then reopened, and while the reopen is on its way four
+// dragged after two in the strip one two four the user sees, where four is
+// already after two. The drop is sent all the same: at its turn, after the
+// reopen put three back between two and four, it moves four after two, so
+// one two four three.
+test('a tab dropped beside the tab it already follows is moved there at its turn', async ({ harness, page }) => {
+  const wire = await holdBeforeMove(page, 'reopen');
+  const threadId = await seedBrowserThread(harness, 'Browser move beside neighbor');
+  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three', 'https://example.test/four'];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser move beside neighbor').click();
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(4);
+
+  await tabs.nth(2).click({ button: 'right' });
+  await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-close').click();
+  await expect(tabs).toHaveCount(3);
+  await tabs.nth(0).click({ button: 'right' });
+  await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-reopen').click();
+  await expect.poll(() => wire.held()).toBe(true);
+  // Dropped on the right half of two, four lands after it.
+  const target = await tabs.nth(1).boundingBox();
+  if (!target) throw new Error('tab two has no box');
+  await tabs.nth(2).dragTo(tabs.nth(1), { targetPosition: { x: target.width * 0.75, y: target.height / 2 } });
+  await expect.poll(() => wire.sent()).toBe(2);
+  wire.release();
+  await expect.poll(() => wire.answered()).toBe(2);
   expect(await tabURLs(harness, threadId)).toEqual([urls[0], urls[1], urls[3], urls[2]]);
   await expect(tabs).toHaveCount(4);
 });
