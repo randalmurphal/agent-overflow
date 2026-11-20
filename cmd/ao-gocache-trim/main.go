@@ -89,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	}
 	capBytes, err := capFromEnv(os.Getenv(capEnv))
 	if err != nil {
-		fmt.Fprintln(stderr, "ao-gocache-trim:", err)
+		say(stderr, "ao-gocache-trim:", err)
 		return 2
 	}
 	if capBytes == 0 {
@@ -97,10 +97,10 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	}
 	failed := func(err error) int {
 		if *warn {
-			fmt.Fprintf(stderr, "ao-gocache-trim: %v (the cache was not trimmed)\n", err)
+			sayf(stderr, "ao-gocache-trim: %v (the cache was not trimmed)\n", err)
 			return 0
 		}
-		fmt.Fprintln(stderr, "ao-gocache-trim:", err)
+		say(stderr, "ao-gocache-trim:", err)
 		return 1
 	}
 	var dir string
@@ -113,7 +113,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	case 1:
 		dir = flags.Arg(0)
 	default:
-		fmt.Fprintln(stderr, "usage: ao-gocache-trim [-warn] [cache-dir]")
+		say(stderr, "usage: ao-gocache-trim [-warn] [cache-dir]")
 		return 2
 	}
 	result, err := trim(dir, capBytes, now)
@@ -121,14 +121,26 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return failed(err)
 	}
 	if result.removed > 0 {
-		fmt.Fprintf(stdout, "ao-gocache-trim: removed %d least recently used entries (%s) from %s: %s -> %s, cap %s\n",
+		sayf(stdout, "ao-gocache-trim: removed %d least recently used entries (%s) from %s: %s -> %s, cap %s\n",
 			result.removed, gib(result.before-result.after), dir, gib(result.before), gib(result.after), gib(capBytes))
 	}
 	if result.walked && result.after > capBytes {
-		fmt.Fprintf(stderr, "ao-gocache-trim: %s holds %s, over its %s cap: %s of it was used within the last hour, which a trim keeps\n",
+		sayf(stderr, "ao-gocache-trim: %s holds %s, over its %s cap: %s of it was used within the last hour, which a trim keeps\n",
 			dir, gib(result.after), gib(capBytes), gib(result.recent))
 	}
 	return 0
+}
+
+// say writes a line of the tool's output. A failed write to stdout or
+// stderr has nowhere better to be reported and leaves the exit status as
+// the pass decided it.
+func say(w io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(w, args...)
+}
+
+// sayf is say with a format, which ends the line itself.
+func sayf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
 }
 
 // capFromEnv parses AO_GOCACHE_MAX_GIB into bytes. It refuses what

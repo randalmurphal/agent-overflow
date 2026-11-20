@@ -68,7 +68,7 @@ func sweepRunDirs(stderr io.Writer) {
 	parent := diskParent()
 	for _, prefix := range []string{goWorkPrefix, diskTempPrefix} {
 		if err := ownedtemp.Sweep(parent, prefix); err != nil {
-			fmt.Fprintln(stderr, "netisolate: remove an earlier run's directories:", err)
+			warn(stderr, "netisolate: remove an earlier run's directories:", err)
 		}
 	}
 }

@@ -39,7 +39,10 @@ func TestMain(m *testing.M) {
 		os.Exit(netisolate.RunHelper(os.Args[2:], os.Stderr))
 	}
 	if os.Getenv(launcherEnv) != "" {
-		os.Setenv(launcherEnv, "")
+		if err := os.Setenv(launcherEnv, ""); err != nil {
+			fmt.Fprintln(os.Stderr, "clear", launcherEnv+":", err)
+			os.Exit(1)
+		}
 		// It runs this binary again as the program its role names.
 		os.Exit(run(os.Args, os.Stdin, os.Stdout, os.Stderr))
 	}
@@ -134,13 +137,19 @@ func TestGoWorkDirectoryIsRemovedWhenASignalEndsTheRun(t *testing.T) {
 		var stderr bytes.Buffer
 		code <- run([]string{binary, "-test.run=^$"}, nil, writer, &stderr)
 		t.Logf("stderr: %s", stderr.String())
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			t.Errorf("close the program's output: %v", err)
+		}
 	}()
 	line, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil {
 		t.Fatalf("program did not start: %v", err)
 	}
-	go io.Copy(io.Discard, reader)
+	go func() {
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			t.Errorf("drain the program's output: %v", err)
+		}
+	}()
 	dir := strings.TrimSpace(line)
 	if !strings.HasPrefix(filepath.Base(dir), "ao-gowork-") {
 		t.Fatalf("program reports Go work directory %q", dir)
@@ -239,7 +248,11 @@ func TestKilledLauncherEndsTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer out.Close()
+	defer func() {
+		if err := out.Close(); err != nil {
+			t.Errorf("close the output file: %v", err)
+		}
+	}()
 	launcher.Stdout, launcher.Stderr = out, out
 	if err := launcher.Start(); err != nil {
 		t.Fatal(err)
@@ -310,13 +323,19 @@ func TestSIGQUITReachesTheProgram(t *testing.T) {
 	code := make(chan int, 1)
 	go func() {
 		code <- runSelf(t, "await-quit", writer)
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			t.Errorf("close the program's output: %v", err)
+		}
 	}()
 	line, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil || line != "ready\n" {
 		t.Fatalf("program did not start: %q %v", line, err)
 	}
-	go io.Copy(io.Discard, reader)
+	go func() {
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			t.Errorf("drain the program's output: %v", err)
+		}
+	}()
 	if err := syscall.Kill(os.Getpid(), syscall.SIGQUIT); err != nil {
 		t.Fatal(err)
 	}

@@ -226,7 +226,7 @@ func TestLowMemoryRunGetsItsTempDirOnDisk(t *testing.T) {
 			t.Fatalf("the probe's temp file is not in the run's directory on disk: %v", err)
 		}
 		if probe.GoWorkFile == "" {
-			t.Fatal("probe could not write to the Go work directory")
+			t.Fatalf("probe could not write to the Go work directory: %s", probe.GoWorkError)
 		}
 		if err := release(); err != nil {
 			t.Fatal(err)

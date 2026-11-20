@@ -196,7 +196,8 @@ func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, erro
 		return pageUnit{}, false, err
 	}
 	w.take(1)
-	if !first.isMember(w.rule) && !(prevIsMember && first.isAbsorbed(w.rule)) {
+	joinsRun := first.isMember(w.rule) || (prevIsMember && first.isAbsorbed(w.rule))
+	if !joinsRun {
 		return pageUnit{rows: []activityScanRow{first}}, true, nil
 	}
 	unit := pageUnit{rows: []activityScanRow{first}, run: true}

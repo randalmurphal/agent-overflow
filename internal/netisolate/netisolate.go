@@ -18,7 +18,11 @@
 //	}
 package netisolate
 
-import "net"
+import (
+	"fmt"
+	"io"
+	"net"
+)
 
 // HelperArg is argv[1] when an executable re-runs itself as the first
 // process inside the namespaces.
@@ -78,4 +82,10 @@ func containedInterfaces(ifaces []net.Interface, addrs func(net.Interface) ([]ne
 		lan = true
 	}
 	return lan
+}
+
+// warn writes a diagnostic line to stderr. A failed write to stderr has
+// nowhere better to be reported, so it changes no outcome.
+func warn(stderr io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(stderr, args...)
 }

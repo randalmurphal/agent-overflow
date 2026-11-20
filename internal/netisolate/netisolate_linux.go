@@ -119,7 +119,7 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 		}
 		dirs = append(dirs, diskTemp)
 		options.diskTemp = diskTemp.Dir
-		fmt.Fprintf(stderr, "netisolate: this run's temp directory is on disk (%s): %s\n", diskTemp.Dir, reason)
+		warn(stderr, fmt.Sprintf("netisolate: this run's temp directory is on disk (%s): %s", diskTemp.Dir, reason))
 	}
 	for _, dir := range dirs {
 		options.owned = append(options.owned, dir.Dir)
@@ -243,12 +243,12 @@ func RunHelper(args []string, stderr io.Writer) int {
 	options, args := parseHelperOptions(args)
 	for _, dir := range options.owned {
 		if err := ownedtemp.KeepForMountNamespace(dir); err != nil {
-			fmt.Fprintln(stderr, "netisolate:", err)
+			warn(stderr, "netisolate:", err)
 			return 1
 		}
 	}
 	if err := configureIsolatedNetwork(); err != nil {
-		fmt.Fprintln(stderr, "netisolate: configure isolated network:", explainConfigureError(err))
+		warn(stderr, "netisolate: configure isolated network:", explainConfigureError(err))
 		return 1
 	}
 	// Read before the private temp directory hides a file in the one it
@@ -257,35 +257,35 @@ func RunHelper(args []string, stderr io.Writer) int {
 	if options.goWork != "" {
 		var err error
 		if userGoEnv, err = goenvfile.Read(); err != nil {
-			fmt.Fprintln(stderr, "netisolate:", err)
+			warn(stderr, "netisolate:", err)
 			return 1
 		}
 	}
 	if !options.keepTemp {
 		if err := mountPrivateTemp(TempDir(), options.diskTemp, tempDirBytes); err != nil {
-			fmt.Fprintln(stderr, "netisolate: mount the private temp directory:", explainMountError(err))
+			warn(stderr, "netisolate: mount the private temp directory:", explainMountError(err))
 			return 1
 		}
 	}
 	if options.goWork != "" {
 		if err := mountGoWork(options.goWork, userGoEnv); err != nil {
-			fmt.Fprintln(stderr, "netisolate: mount the Go work directory:", explainMountError(err))
+			warn(stderr, "netisolate: mount the Go work directory:", explainMountError(err))
 			return 1
 		}
 	}
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
-		fmt.Fprintln(stderr, "netisolate: clear ambient capabilities:", err)
+		warn(stderr, "netisolate: clear ambient capabilities:", err)
 		return 1
 	}
 	if len(args) == 0 {
 		return 0
 	}
 	if len(args) < 3 || args[1] != "--" {
-		fmt.Fprintln(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--owned=DIR...] path -- argv...`")
+		warn(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--owned=DIR...] path -- argv...`")
 		return 2
 	}
 	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, Niceness); err != nil {
-		fmt.Fprintf(stderr, "netisolate: run at normal CPU priority: lower it to nice %d: %v\n", Niceness, err)
+		warn(stderr, fmt.Sprintf("netisolate: run at normal CPU priority: lower it to nice %d: %v", Niceness, err))
 	}
 	err := recordNamespace()
 	if err == nil && !options.keepTemp {
@@ -297,7 +297,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 	if err == nil {
 		err = syscall.Exec(args[0], args[2:], os.Environ())
 	}
-	fmt.Fprintln(stderr, "netisolate: start isolated command:", err)
+	warn(stderr, "netisolate: start isolated command:", err)
 	return 1
 }
 

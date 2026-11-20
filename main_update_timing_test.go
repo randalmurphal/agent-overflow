@@ -260,7 +260,8 @@ func TestBootsEndTheUpdateBootOnEveryExit(t *testing.T) {
 		start := strings.Index(text, "startErr := appService.Start(bootCtx)")
 		ready := strings.Index(text, "srv.MarkReady()")
 		ended := strings.Index(text, "boot.end(nil)")
-		if begin < 0 || !(begin < bind && bind < start && start < failed && failed < ready && ready < ended) {
+		ordered := begin < bind && bind < start && start < failed && failed < ready && ready < ended
+		if begin < 0 || !ordered {
 			t.Fatalf("%s: begin=%d bootTransport=%d Start=%d end(startErr)=%d MarkReady=%d end(nil)=%d; want the boot begun before the transport and ended on both of Start's outcomes",
 				path, begin, bind, start, failed, ready, ended)
 		}

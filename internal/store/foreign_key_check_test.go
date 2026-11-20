@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+// closeTestRows closes rows a test read and fails the test if the close
+// fails.
+func closeTestRows(t *testing.T, rows *sql.Rows) {
+	t.Helper()
+	if err := rows.Close(); err != nil {
+		t.Errorf("close rows: %v", err)
+	}
+}
+
 // fkRef names one foreign key as PRAGMA foreign_key_check numbers it.
 type fkRef struct {
 	table string
@@ -23,7 +32,7 @@ func pragmaForeignKeyViolations(t *testing.T, tx *sql.Tx) map[fkRef]bool {
 	if err != nil {
 		t.Fatalf("foreign_key_check: %v", err)
 	}
-	defer rows.Close()
+	defer closeTestRows(t, rows)
 	found := map[fkRef]bool{}
 	for rows.Next() {
 		var table, parent sql.NullString
@@ -108,7 +117,7 @@ func schemaForeignKeys(t *testing.T, db *sql.DB) []schemaForeignKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer closeTestRows(t, rows)
 	var keys []schemaForeignKey
 	for rows.Next() {
 		var table, from string
@@ -139,7 +148,7 @@ func schemaColumns(t *testing.T, tx *sql.Tx, table string) []schemaColumn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer closeTestRows(t, rows)
 	var columns []schemaColumn
 	for rows.Next() {
 		var c schemaColumn
@@ -514,7 +523,7 @@ func queryPlanDetails(t *testing.T, tx *sql.Tx, query string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer closeTestRows(t, rows)
 	var details []string
 	for rows.Next() {
 		var id, parent, notUsed int

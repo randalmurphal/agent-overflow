@@ -159,7 +159,7 @@ func reserveRAMTemp(stderr io.Writer) (reservation *ownedtemp.Shared, reason str
 	}
 	defer func() {
 		if err := filelock.Release(lock); err != nil {
-			fmt.Fprintln(stderr, "netisolate: release the RAM admission lock:", err)
+			warn(stderr, "netisolate: release the RAM admission lock:", err)
 		}
 	}()
 	live, err := ownedtemp.Held(dir, reservationPrefix)

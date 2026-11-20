@@ -3,7 +3,6 @@
 package netisolate
 
 import (
-	"fmt"
 	"io"
 	"os/exec"
 )
@@ -18,7 +17,7 @@ func Command(*exec.Cmd, io.Writer) (func() error, error) {
 func Check(io.Writer) error { return nil }
 
 func RunHelper(_ []string, stderr io.Writer) int {
-	fmt.Fprintln(stderr, "netisolate: network isolation is Linux-only")
+	warn(stderr, "netisolate: network isolation is Linux-only")
 	return 2
 }
 

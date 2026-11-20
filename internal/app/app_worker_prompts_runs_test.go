@@ -175,7 +175,7 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 				}
 				app.waitAgentNoticeWork()
 				tokens = workerPromptTokens(t, app, middle.ID)
-				return !(c.toSpawner || owned) || len(tokens) == 2
+				return (!c.toSpawner && !owned) || len(tokens) == 2
 			})
 
 			pending := app.triage.PendingInteractiveRequests(worker.ID)

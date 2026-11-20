@@ -58,7 +58,11 @@ wait
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer out.Close()
+	defer func() {
+		if err := out.Close(); err != nil {
+			t.Errorf("close the output file: %v", err)
+		}
+	}()
 	cmd.Stdout, cmd.Stderr = out, out
 	output := func() string {
 		data, _ := os.ReadFile(out.Name())

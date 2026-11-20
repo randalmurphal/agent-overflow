@@ -356,6 +356,7 @@ type tempProbe struct {
 	GoEnvFile    string
 	GoTmpDirEnv  string
 	GoWorkFile   string
+	GoWorkError  string
 	NestedTemp   string
 	NestedSeen   bool
 	NestedStderr string
@@ -374,9 +375,10 @@ func runTempProbe(out io.Writer) int {
 	probe.MountNS, _ = os.Readlink("/proc/self/ns/mnt")
 	if file, err := os.CreateTemp("", "netisolate-probe-"); err != nil {
 		probe.WriteError = err.Error()
+	} else if err := file.Close(); err != nil {
+		probe.WriteError = err.Error()
 	} else {
 		probe.Written = file.Name()
-		file.Close()
 	}
 	if data, err := os.ReadFile(os.Getenv(hostFileEnv)); err != nil {
 		probe.HostFile = "unreadable: " + err.Error()
@@ -390,9 +392,12 @@ func runTempProbe(out io.Writer) int {
 	if data, err := os.ReadFile(probe.GoEnv); err == nil {
 		probe.GoEnvFile = string(data)
 	}
-	if file, err := os.CreateTemp(goWorkPath(), "probe-work-"); err == nil {
+	if file, err := os.CreateTemp(goWorkPath(), "probe-work-"); err != nil {
+		probe.GoWorkError = err.Error()
+	} else if err := file.Close(); err != nil {
+		probe.GoWorkError = err.Error()
+	} else {
 		probe.GoWorkFile = file.Name()
-		file.Close()
 	}
 	probe.PdeathSig = parentDeathSignal()
 	return encodeProbe(out, probe)
@@ -418,7 +423,10 @@ func runNestedTempProbe(out io.Writer) int {
 		return encodeProbe(out, probe)
 	}
 	probe.Written = file.Name()
-	file.Close()
+	if err := file.Close(); err != nil {
+		probe.WriteError = err.Error()
+		return encodeProbe(out, probe)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		probe.NestedStderr = err.Error()
@@ -573,7 +581,11 @@ func TestIsolatedCommandGetsAPrivateRAMTempDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Remove(hostFile.Name()) })
+	t.Cleanup(func() {
+		if err := os.Remove(hostFile.Name()); err != nil {
+			t.Errorf("remove the host file: %v", err)
+		}
+	})
 	if _, err := hostFile.WriteString("from the host"); err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +650,7 @@ func TestIsolatedCommandGetsAPrivateRAMTempDir(t *testing.T) {
 		t.Fatalf("Go environment file = %q, want %q", probe.GoEnvFile, want)
 	}
 	if probe.GoWorkFile == "" {
-		t.Fatal("probe could not write to the Go work directory")
+		t.Fatalf("probe could not write to the Go work directory: %s", probe.GoWorkError)
 	}
 	if _, err := os.Stat(filepath.Join(goWork, filepath.Base(probe.GoWorkFile))); err != nil {
 		t.Fatalf("a file in the Go work directory is not in the run's directory on disk: %v", err)

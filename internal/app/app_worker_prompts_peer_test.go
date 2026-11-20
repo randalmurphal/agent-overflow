@@ -232,7 +232,9 @@ func TestAHeldPromptStaysWithItsSpawnerThereWhileItsLinkStands(t *testing.T) {
 	f.list(t, 0, named)
 	f.list(t, 1)
 	time.Sleep(3 * time.Second)
-	f.app.drainWorkerPrompts(t.Context(), 10*time.Second)
+	if err := f.app.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
 	for i, token := range []string{named, unnamed} {
 		if route := f.route(t, f.workers[i].ID); route == nil || route.ThreadID != f.lead {
 			t.Fatalf("the prompt under %s is routed to %+v, want the lead there", token, route)

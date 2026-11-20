@@ -67,7 +67,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// reaches the program, not this process.
 	defer func() {
 		if err := release(); err != nil {
-			fmt.Fprintln(stderr, "ao-netns:", err)
+			// A failed write to stderr has nowhere better to be reported.
+			_, _ = fmt.Fprintln(stderr, "ao-netns:", err)
 		}
 	}()
 

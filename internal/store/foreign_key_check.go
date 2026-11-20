@@ -80,10 +80,9 @@ func compileForeignKeyCheck(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return fmt.Errorf("foreign_key_check: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return fmt.Errorf("foreign_key_check: %w", err)
 	}
 	return nil
@@ -107,12 +106,16 @@ func foreignKeyProbeFinds(ctx context.Context, tx *sql.Tx, probe string) (bool, 
 
 // reportForeignKeyViolation runs the pragma on table and returns its first
 // row as the migration's failure, or nil when it reports none.
-func reportForeignKeyViolation(ctx context.Context, tx *sql.Tx, table string) error {
+func reportForeignKeyViolation(ctx context.Context, tx *sql.Tx, table string) (err error) {
 	rows, err := tx.QueryContext(ctx, "PRAGMA main.foreign_key_check("+quoteSQLIdent(table)+")")
 	if err != nil {
 		return fmt.Errorf("foreign_key_check(%q): %w", table, err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("foreign_key_check(%q): close: %w", table, closeErr))
+		}
+	}()
 	if rows.Next() {
 		// Columns: child table, child rowid, referenced table, fk index.
 		var child, referred sql.NullString
@@ -189,7 +192,7 @@ func foreignKeyProbes(ctx context.Context, tx *sql.Tx) ([]foreignKeyProbe, error
 	return kept, nil
 }
 
-func foreignKeyDecls(ctx context.Context, tx *sql.Tx) ([]foreignKeyDecl, error) {
+func foreignKeyDecls(ctx context.Context, tx *sql.Tx) (_ []foreignKeyDecl, err error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT m.name, f.id, f.seq, f."table", f."from", f."to"
 		FROM main.sqlite_schema AS m, pragma_foreign_key_list(m.name, 'main') AS f
@@ -198,7 +201,11 @@ func foreignKeyDecls(ctx context.Context, tx *sql.Tx) ([]foreignKeyDecl, error) 
 	if err != nil {
 		return nil, fmt.Errorf("list foreign keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("list foreign keys: close: %w", closeErr))
+		}
+	}()
 	var decls []foreignKeyDecl
 	for rows.Next() {
 		var table, parent, from string
@@ -261,8 +268,7 @@ func readForeignKeyParent(ctx context.Context, tx *sql.Tx, name string) (*foreig
 	for rows.Next() {
 		var column string
 		if err := rows.Scan(&column); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan primary key of %q: %w", parent.name, err)
+			return nil, errors.Join(fmt.Errorf("scan primary key of %q: %w", parent.name, err), rows.Close())
 		}
 		pk = append(pk, column)
 	}
@@ -278,7 +284,6 @@ func readForeignKeyParent(ctx context.Context, tx *sql.Tx, name string) (*foreig
 	if err != nil {
 		return nil, fmt.Errorf("read indexes of %q: %w", parent.name, err)
 	}
-	defer rows.Close()
 	hasPKIndex := false
 	seen := map[string]bool{}
 	lastIndex := ""
@@ -286,7 +291,7 @@ func readForeignKeyParent(ctx context.Context, tx *sql.Tx, name string) (*foreig
 		var index, origin, coll string
 		var column sql.NullString
 		if err := rows.Scan(&index, &origin, &column, &coll); err != nil {
-			return nil, fmt.Errorf("scan indexes of %q: %w", parent.name, err)
+			return nil, errors.Join(fmt.Errorf("scan indexes of %q: %w", parent.name, err), rows.Close())
 		}
 		if index != lastIndex {
 			lastIndex = index
@@ -311,7 +316,7 @@ func readForeignKeyParent(ctx context.Context, tx *sql.Tx, name string) (*foreig
 		parent.pkColumns = append(parent.pkColumns, column.String)
 		parent.pkCollations = append(parent.pkCollations, coll)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("read indexes of %q: %w", parent.name, err)
 	}
 	// A primary key with no index of its own is the rowid alias.

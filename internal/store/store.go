@@ -165,30 +165,34 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	// failed closes the writer of an open that cannot finish and joins a
+	// failed close into the open's error.
+	failed := func(err error) (*Store, error) {
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("store: close the database after a failed open: %w", closeErr))
+		}
+		return nil, err
+	}
 
 	if opts.RefusePendingMigrations {
 		if err := refusePendingMigrations(db); err != nil {
-			db.Close()
-			return nil, err
+			return failed(err)
 		}
 	}
 	if err := runMigrationsContext(ctx, db, pragmas, opts.OnMigration); err != nil {
-		db.Close()
 		// The refusal is already the sentence the boot failure shows.
 		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {
-			return nil, err
+			return failed(err)
 		}
-		return nil, fmt.Errorf("store: run migrations: %w", err)
+		return failed(fmt.Errorf("store: run migrations: %w", err))
 	}
 	if err := ensureStoreIdentity(db); err != nil {
-		db.Close()
-		return nil, err
+		return failed(err)
 	}
 
 	run, err := newRunID()
 	if err != nil {
-		db.Close()
-		return nil, err
+		return failed(err)
 	}
 	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed, run: run}
 
@@ -207,8 +211,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	s.logCheckpoint("boot", checkpointed, bootCheckpoint, bootErr)
 
 	if read, err := openReadPool(db, dbPath, gate); err != nil {
-		db.Close()
-		return nil, err
+		return failed(err)
 	} else {
 		s.read = read
 	}
@@ -257,14 +260,20 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	read.SetMaxIdleConns(readPoolConns)
 	var probe int
 	if err := read.QueryRow("SELECT 1").Scan(&probe); err != nil {
-		read.Close()
-		return nil, fmt.Errorf("store: read pool probe: %w", err)
+		return nil, errors.Join(fmt.Errorf("store: read pool probe: %w", err), closeFailedReadPool(read))
 	}
 	if err := verifyConnPragmas(read, readerConnPragmas); err != nil {
-		read.Close()
-		return nil, err
+		return nil, errors.Join(err, closeFailedReadPool(read))
 	}
 	return read, nil
+}
+
+// closeFailedReadPool closes a read pool openReadPool refused.
+func closeFailedReadPool(read *sql.DB) error {
+	if err := read.Close(); err != nil {
+		return fmt.Errorf("store: close the refused read pool: %w", err)
+	}
+	return nil
 }
 
 // reader returns the pool read-only accessors run their queries on:

@@ -481,7 +481,8 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 // link (spawnActiveSQL): its own run ended, and the request its row shows
 // is no send of its caller's whose run is open there.
 func remoteSpawnEnded(spawn, shown store.ThreadRequest) bool {
-	return spawn.RunEnded() && !(shown.Kind == store.ThreadRequestSend && shown.RunOpen())
+	openSend := shown.Kind == store.ThreadRequestSend && shown.RunOpen()
+	return spawn.RunEnded() && !openSend
 }
 
 // withholdApprovalDetail clears what an approval asks from the listing's

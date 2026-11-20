@@ -180,14 +180,14 @@ func run(args []string, stdout, stderr *os.File) int {
 	if isolate {
 		release, err := netisolate.Command(command, stderr)
 		if err != nil {
-			fmt.Fprintln(stderr, "ao-harness-e2e: isolate the suite:", err)
+			warn(stderr, "ao-harness-e2e: isolate the suite:", err)
 			return 1
 		}
 		// run returns once the suite's process tree has been waited for,
 		// a signal's teardown included.
 		defer func() {
 			if err := release(); err != nil {
-				fmt.Fprintln(stderr, "ao-harness-e2e:", err)
+				warn(stderr, "ao-harness-e2e:", err)
 			}
 		}()
 	}
@@ -217,10 +217,9 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	interrupted := haltOnSignal(ctx, signals, func(sig os.Signal) {
 		stopOnce.Do(func() {
-			// stderr is the only place to report; a failed write has nowhere else to go.
-			_, _ = fmt.Fprintf(stderr, "ao-harness-e2e: stopping contained suite: received %v\n", sig)
+			warn(stderr, fmt.Sprintf("ao-harness-e2e: stopping contained suite: received %v", sig))
 			if err := terminateProcessTreeVerified(command, group, identity); err != nil {
-				_, _ = fmt.Fprintln(stderr, "ao-harness-e2e: terminate contained suite:", err)
+				warn(stderr, "ao-harness-e2e: terminate contained suite:", err)
 			}
 		})
 	})
@@ -292,6 +291,12 @@ func haltOnSignal(ctx context.Context, signals <-chan os.Signal, halt func(os.Si
 		}
 	}()
 	return got
+}
+
+// warn writes a diagnostic line to stderr. A failed write to stderr has
+// nowhere better to be reported, so it changes no outcome.
+func warn(stderr io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(stderr, args...)
 }
 
 // signalExitCode is the status a shell reports for a process a signal ended.

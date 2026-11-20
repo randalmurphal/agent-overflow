@@ -262,7 +262,7 @@ func TestAsyncQuestionRunMigrationLeavesOldQuestionsUnmarked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer closeTestRows(t, rows)
 	var read int
 	for rows.Next() {
 		var itemID, title, options string
