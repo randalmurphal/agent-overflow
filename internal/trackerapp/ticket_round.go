@@ -182,13 +182,28 @@ func (s *Service) nextReadLocked() uint64 {
 // readTickets reads the tickets of pumps, all of connection conn, together
 // (readDetails), each checked against what its pump settled last, passes
 // what the read stored through the change funnel under the root the read
-// held, and settles each pump with its own outcome. opened records a
-// person's opening. A failure is told to each pump; the caller owns its
-// retry (the round its own, readOwnTicket a pump's).
+// held, and settles each pump with its own outcome (settleTickets).
+// opened records a person's opening.
 func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketPump, u Urgency, full, opened bool) ticketsResult {
+	began, reads := s.ticketReads(pumps)
+	at := millis(s.now())
+	var openedAt int64
+	if opened {
+		openedAt = at
+	}
+	res, err := s.readDetails(ctx, conn, reads, u, full, openedAt)
+	s.publish(res.root, conn, res.ch, nil, &tickOrigin{tickets: pumps})
+	return s.settleTickets(ctx, conn, pumps, began, reads, res, err, at)
+}
+
+// ticketReads are the reads of pumps' tickets, each to be checked against
+// what its pump settled last, and the read's place among those settled
+// into ticket pumps (nextReadLocked). Each pump's missed read is taken.
+func (s *Service) ticketReads(pumps []*ticketPump) (began uint64, reads []*ticketRead) {
 	s.subMu.Lock()
-	began := s.nextReadLocked()
-	reads := make([]*ticketRead, len(pumps))
+	defer s.subMu.Unlock()
+	began = s.nextReadLocked()
+	reads = make([]*ticketRead, len(pumps))
 	for i, tp := range pumps {
 		reads[i] = &ticketRead{issue: tp.key.issue}
 		if tp.check != nil {
@@ -197,14 +212,16 @@ func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketP
 		}
 		tp.missed = false
 	}
-	s.subMu.Unlock()
-	at := millis(s.now())
-	var openedAt int64
-	if opened {
-		openedAt = at
-	}
-	res, err := s.readDetails(ctx, conn, reads, u, full, openedAt)
-	s.publish(res.root, Scope{Connection: conn}, res.ch, &tickOrigin{tickets: pumps})
+	return began, reads
+}
+
+// settleTickets settles reads, what a read of pumps' tickets on connection
+// conn that began at began found, into each pump: res and err are how the
+// read ended (readDetails), ctx the context it ran under, and at when it
+// ended. A failure is told to each pump, and the caller owns its retry
+// (the round its own, readOwnTicket a pump's); a connection that ended
+// ends every pump.
+func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
 	var out ticketsResult
 	var failure *FailureView
 	stopped := err != nil && ctx.Err() != nil

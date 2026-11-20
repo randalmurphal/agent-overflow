@@ -174,3 +174,18 @@ func (c *countingStore) ListMirrorIssueBoards(root int64, issues []string) ([]st
 	c.count("ListMirrorIssueBoards")
 	return c.Store.ListMirrorIssueBoards(root, issues)
 }
+
+func (c *countingStore) ReadMirrorRefreshTargets(root int64, issues, boards []string) (store.MirrorRefreshTargets, error) {
+	c.count("ReadMirrorRefreshTargets")
+	return c.Store.ReadMirrorRefreshTargets(root, issues, boards)
+}
+
+func (c *countingStore) ReplaceMirrorWorklogs(root int64, author, from, to string, readAt int64, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
+	c.count("ReplaceMirrorWorklogs")
+	return c.Store.ReplaceMirrorWorklogs(root, author, from, to, readAt, logs)
+}
+
+func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) ([]store.MirrorWorklog, bool, error) {
+	c.count("ListMirrorWorklogs")
+	return c.Store.ListMirrorWorklogs(root, author, from, to)
+}

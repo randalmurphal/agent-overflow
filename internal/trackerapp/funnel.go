@@ -11,6 +11,23 @@ import (
 // ListMirrorIssueBoards).
 const lookupBatch = 500
 
+// boardChanges are what a run's reads through one board stored: the
+// board's rows and removed rows, the cards those rows carried, and its
+// structure.
+type boardChanges struct {
+	board tracker.BoardID
+	ch    Changes
+}
+
+// ownOf is the changes of a tick of scope as its own board's: none for a
+// scope with no board.
+func ownOf(scope Scope, ch Changes) []boardChanges {
+	if scope.Board == "" {
+		return nil
+	}
+	return []boardChanges{{board: scope.Board, ch: ch}}
+}
+
 // publish is the change funnel: every tick's changes (tick.go) and every
 // read of open tickets pass through it, and it turns them into what each
 // subscription of the connection needs, under subMu:
@@ -35,12 +52,15 @@ const lookupBatch = 500
 // which sends it with its failure in one event, and a read of tickets
 // settles its own tickets' cards and details; every other subscription is
 // sent its event or nudge here. root is the connection's mirror root the
-// change was stored under, as the run that stored it held it.
-func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigin) {
+// change was stored under, as the run that stored it held it. ch is
+// everything the run stored on connection conn, and own the changes of
+// its reads through each board, whose rows, removed rows, cards and
+// structure are that board's: a tick's own board, or every board a
+// write's refresh read through.
+func (s *Service) publish(root int64, conn string, ch Changes, own []boardChanges, origin *tickOrigin) {
 	if ch.Empty() {
 		return
 	}
-	conn := scope.Connection
 	cards := unite(slices.Clone(ch.Cards), ch.History)
 	s.subMu.Lock()
 	var boards []*boardPump
@@ -82,10 +102,11 @@ func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigi
 		changed := rowsOf[string(p.scope.Board)]
 		var removed []tracker.IssueID
 		readAgain := ch.Catalog || lookupFailed
-		if p.scope == scope {
-			changed = unite(unite(slices.Clone(ch.Rows), ch.Cards), changed)
-			removed = ch.Removed
-			readAgain = readAgain || ch.Structure
+		if i := slices.IndexFunc(own, func(b boardChanges) bool { return b.board == p.scope.Board }); i >= 0 {
+			o := own[i].ch
+			changed = unite(unite(slices.Clone(o.Rows), o.Cards), changed)
+			removed = o.Removed
+			readAgain = readAgain || o.Structure
 		}
 		p.pending.add(changed, removed, readAgain)
 		if origin == nil || origin.board != p {

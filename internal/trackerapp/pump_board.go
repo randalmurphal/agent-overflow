@@ -16,7 +16,7 @@ import (
 // handle on the board's scope, plus the retry timer while a tick fails.
 // Its core and the fields below it are under subMu.
 type boardPump struct {
-	core  pump.Core[struct{}]
+	core  pump.Core[readRequest]
 	scope Scope
 	// every is the delta interval of the connection's kind.
 	every time.Duration
@@ -225,7 +225,7 @@ func (s *Service) subscribableLocked(id string) (kind string, err error) {
 func (s *Service) RefreshSubscription(ctx context.Context, id string) error {
 	s.subMu.Lock()
 	h := s.subs.handles[id]
-	var core *pump.Core[struct{}]
+	var core *pump.Core[readRequest]
 	if h != nil {
 		core = h.core()
 	}
@@ -233,7 +233,7 @@ func (s *Service) RefreshSubscription(ctx context.Context, id string) error {
 	if core == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
 	}
-	return core.Request(ctx, struct{}{})
+	return core.Request(ctx, readRequest{})
 }
 
 // runBoardPump is a board pump's goroutine: an interactive first tick,
@@ -249,23 +249,31 @@ func (s *Service) runBoardPump(p *boardPump) {
 	missed := false
 	// step runs a tick and re-arms the timers; again reports a tick to run
 	// at once (More while shown), over that the pump ended.
-	step := func(refresh bool, u Urgency) (again, over bool, err error) {
+	step := func(refresh bool, u Urgency) (again, over bool, res tickResult) {
 		missed = false
-		res := s.boardTick(p, refresh, u)
+		res = s.boardTick(p, refresh, u)
 		retry.Arm(res.failed, res.retryAt)
 		next.Reset(p.every)
 		if res.over {
-			return false, true, res.err
+			return false, true, res
 		}
 		if res.more && !res.failed && p.core.Paused() {
 			missed = true
 		}
-		return res.more && !res.failed && !p.core.Paused(), false, res.err
+		return res.more && !res.failed && !p.core.Paused(), false, res
 	}
-	serve := func(req *pump.Request[struct{}]) (again, over bool) {
-		again, over, err := step(true, Interactive)
-		if over {
+	// serve runs a request: a person's refresh, whose tracker failure
+	// reaches the subscribers alone, or the tick due now, whose caller is
+	// handed it too.
+	serve := func(req *pump.Request[readRequest]) (again, over bool) {
+		now := req.Body().now
+		again, over, res := step(!now, Interactive)
+		err := res.err
+		switch {
+		case over:
 			err = ErrSubscriptionEnded
+		case now && err == nil && res.failure != nil:
+			err = &failureError{f: *res.failure}
 		}
 		req.Finish(err)
 		return again, over
@@ -314,12 +322,27 @@ func (s *Service) runBoardPump(p *boardPump) {
 	}
 }
 
-// tickResult is how a pump's tick ended, for its schedule.
+// tickResult is how a pump's tick ended, for its schedule, with the
+// tracker's failure that stopped it.
 type tickResult struct {
 	more, failed, over bool
 	retryAt            time.Time
+	failure            *Failure
 	err                error
 }
+
+// readRequest is a read a caller hands a pump. The zero request is a
+// person's refresh: a board's every unit, a ticket in full. now asks a
+// board's pump for the tick its timer would run, at once and interactive:
+// the delta, and whatever else is due. A write that may have made an
+// issue nobody can name asks it (Service.Create).
+type readRequest struct{ now bool }
+
+// failureError hands a tracker failure that stopped a read to the caller
+// that asked for the read.
+type failureError struct{ f Failure }
+
+func (e *failureError) Error() string { return e.f.Message }
 
 // boardTick runs one tick of p's board: what is due by the board's sync
 // state, or for a refresh every unit. It settles the outcome into the
@@ -333,7 +356,7 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 		due = func(*run) BoardDue { return BoardDue{Structure: true, Delta: true, Reconcile: true, History: true} }
 	}
 	out, err := s.syncBoardPlanned(p.core.Context(), p.scope, u, due, origin)
-	res := tickResult{more: out.More(), retryAt: out.RetryAt, err: err}
+	res := tickResult{more: out.More(), retryAt: out.RetryAt, failure: out.Failure, err: err}
 	stopped := err != nil && p.core.Context().Err() != nil
 	res.failed = out.Failure != nil || (err != nil && !stopped)
 	internal := err != nil && !stopped && !errors.Is(err, ErrStopped)

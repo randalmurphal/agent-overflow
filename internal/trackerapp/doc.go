@@ -37,6 +37,15 @@
 // (funnel.go), which turns it into the events and nudges each
 // subscription needs, sent through Deps callbacks; a client patches the
 // sections it holds from an event with one read (patch.go).
+//
+// Writes go to the tracker first, each through one path (write.go) that
+// holds the connection, calls the provider, reads again and stores what
+// the result names through the shared reads (write_refresh.go), settles
+// the connection's problem, publishes through the funnel and answers the
+// outcomes as views (write_views.go); write_methods.go and
+// write_inputs.go are the methods and their JSON requests. The reads a
+// write form needs go to the tracker (form_reads.go).
+//
 // One loop for the service syncs linked issues and finishes the mirror
 // cleanup (linked_loop.go). New starts nothing: StartLinkedSync arms the
 // loop, and a subscribe starts its pump.

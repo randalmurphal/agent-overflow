@@ -95,6 +95,10 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		},
 		func() error { _, err := s.ListMirrorIssueBoards(root, []string{"10001", "10002"}); return err },
 		func() error {
+			_, err := s.ReadMirrorRefreshTargets(root, []string{"10001", "10002"}, []string{"10", "11"})
+			return err
+		},
+		func() error {
 			_, _, err := s.ReadMirrorBoardView(root, "10", []MirrorSection{{Kind: MirrorSectionBacklog}})
 			return err
 		},

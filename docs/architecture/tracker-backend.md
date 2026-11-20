@@ -410,6 +410,7 @@ and writes share:
 | Card | an issue with no board (a linked issue outside every listed board) | the card |
 | Detail | one issue, or a connection's open tickets together | the detail document |
 | Structure | one board | columns, statuses, estimate, sprints, users |
+| Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
@@ -567,27 +568,57 @@ row writes.
 
 ## Writes
 
-Every edit goes to the tracker first.
+Every edit goes to the tracker first, through one path
+(`trackerapp/write.go`, `Service.write`). Each write method converts its
+JSON request in one place (`write_inputs.go`) and names its provider
+call; the path does the rest.
 
-1. `trackerapp` calls the provider and gets the operation's outcomes and
-   the resources it may have changed.
-2. Each named resource whose outcome is applied or unknown is read again
-   through that resource's read and stored: a ranked issue's row on the
-   board it was ranked on, a commented issue's detail when it is cached or
-   open, a board's structure after a sprint is created. An issue's card is
-   refreshed through every board the mirror has it on.
-3. The caller gets the outcomes as they are: all applied, all refused with
-   the tracker's reason, or a mix that names which issues and steps
-   landed. An operation that created an issue and then failed a later step
-   reports the issue as created.
-4. A create of unknown outcome is reported as that, with a warning that a
-   second attempt may make a second issue. The board's delta runs at once;
+1. It holds the connection as a tick does, interactive. A connection that
+   is off, removed or Tempo is refused with `ErrDisabled`, `ErrNotFound`
+   or `ErrNoProvider`, and a request the conversion refuses with
+   `ErrInvalidRequest`, before anything is sent.
+2. It calls the provider and checks the result (`tracker.Result.Check`).
+   A result that fails the check is `ErrBadResult`, never a partial
+   success, and nothing is read again.
+3. Each resource a part that is applied or unknown names is read again
+   through that resource's read and stored (`write_refresh.go`), batched:
+   one store read of where the mirror holds them
+   (`ReadMirrorRefreshTargets`), one rows read per board for the rows
+   named on it and the cards the mirror has on it, one cards read for
+   kept cards on no shown board, one details read for the open tickets
+   and the stored details named, a structure read per shown board named,
+   and a worklogs read per author and span of consecutive days. A card or
+   detail the mirror neither keeps nor holds is not read. An issue a
+   create made is read through the board the create was made from. A
+   write adds no history read.
+4. The last tracker call settles the connection's problem: a failed
+   refresh read, else a part that could not reach the tracker. A write
+   whose every part was refused before sending (invalid input, a write
+   the tracker cannot make) settles nothing.
+5. The stored changes pass through the change funnel once, with each
+   board the refresh read through as that board's own changes, and the
+   open tickets the refresh read are settled by it.
+6. The caller gets a `WriteView`: each part's issue, step, state and
+   refusal (reason, message, field messages, candidates, lost content),
+   the issue a create made, `CreateUnknown`, and the resources a refresh
+   read could not refresh with its failure (`Stale`). A failed refresh is
+   never a write failure.
+7. A create of unknown outcome is reported as that and never retried. The
+   board's delta runs at once, through the board's pump when one is live;
    an issue it brings in is the only evidence, and nothing matches it to
    the attempt.
-5. Subscribers get the stored changes.
+
+A connection turned off, removed or stopped during the provider call
+answers a write that may have happened with its parts and `Ended`, and
+reads nothing; one where nothing happened is refused by name. A refresh
+writes under the root, sweep and board lifetimes the hold captured, so
+nothing lands in a mirror made after the write began.
 
 The mirror is never written ahead of the tracker. A client that shows a
 drop before the answer owns that preview and replaces it with the event.
+A Jira list read shows an edit up to about 2 seconds after it was made,
+so a row read right after a write may return the old version; it stores
+nothing new, and the next delta brings the change.
 
 A write an agent made is recorded in `tracker_agent_writes` (thread, issue,
 what changed, when), which the ticket's history view joins. That table is
@@ -679,6 +710,37 @@ funnel (`trackerapp/funnel.go`):
   names may have changed rebuilds its view with no tracker call.
 - The root a change is published under is the one the run that stored it
   held, so a connection change during the read cannot lose it.
+- A write's refresh publishes once, with the changes of each board it read
+  through as that board's own, and settles the open tickets it read
+  itself instead of nudging them.
+
+### Writes and form reads
+
+Each write is one `trackerapp.Service` method on a connection ID with a
+JSON request, answering a `WriteView` (`write_methods.go`): `Create`,
+`Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`,
+`StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`,
+`EditComment`, `DeleteComment`, `Link`, `Unlink`, `Attach`, `AddWorklog`,
+`EditWorklog` and `DeleteWorklog`. A field value is given as a ticket
+shows one (`FieldValueView`), as typed text, or as Markdown with the
+Markdown it was written from; one decoder turns it into the model's edit
+and refuses a value its kind cannot hold. A worklog write on a tracker
+with no time tracking is a refused part.
+
+`Worklogs(connection, author, from, to)` answers an author's days from
+the mirror with no tracker call. `RefreshWorklogs` reads at most 31 days
+from the time tracker through the worklogs resource first, on the write
+path with no write.
+
+The reads a write form needs go to the tracker, interactive, and settle
+the connection's problem with their outcome (`form_reads.go`): `Projects`,
+`IssueTypes`, `Boards`, `CreateFields`, `Moves`, `AssignableUsers`,
+`Choices`, `LinkTypes`, `Lookup`, `Search`, `Comments` (a later page) and
+`Download`. The mirror holds none of them: configuration it never reads,
+moves that follow a workflow change no update time shows, matches against
+the whole tracker, and pages and files it does not store. Statuses and
+users an answer names without names are named from the mirror; a found
+card's parent is named by ID.
 
 ### The patch read
 

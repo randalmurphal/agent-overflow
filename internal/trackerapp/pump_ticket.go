@@ -18,7 +18,7 @@ import (
 // (ticket_round.go) polls it while shown. Its core and the fields below
 // viewChanged are under subMu.
 type ticketPump struct {
-	core pump.Core[struct{}]
+	core pump.Core[readRequest]
 	key  ticketKey
 	// every is the connection's round interval, the answer's PollEvery.
 	every  time.Duration
@@ -278,10 +278,15 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 // round. The pump keeps no retry schedule: a failed read is owed to the
 // round, which retries it with the connection's other shown tickets.
 func (s *Service) readOwnTicket(tp *ticketPump, u Urgency, full, opened bool) ticketsResult {
-	res := s.readTickets(tp.core.Context(), tp.key.connection, []*ticketPump{tp}, u, full, opened)
+	return s.oweFailedRead(tp.key.connection, s.readTickets(tp.core.Context(), tp.key.connection, []*ticketPump{tp}, u, full, opened))
+}
+
+// oweFailedRead has connection conn's round retry res, a read of its
+// tickets the round did not make, when it failed; it returns res.
+func (s *Service) oweFailedRead(conn string, res ticketsResult) ticketsResult {
 	if res.failed {
 		s.subMu.Lock()
-		s.oweRetryLocked(tp.key.connection, res.retryAt)
+		s.oweRetryLocked(conn, res.retryAt)
 		s.subMu.Unlock()
 	}
 	return res

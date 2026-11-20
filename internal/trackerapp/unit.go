@@ -41,7 +41,11 @@ type run struct {
 	state        store.MirrorSync
 	stored       bool
 	structureDue bool
-	stop         func()
+	// lifetimes are the lifetimes of the boards a write's refresh reads
+	// through, captured before its reads (refreshTargets); a tick names its
+	// own board's from state.
+	lifetimes map[tracker.BoardID]int64
+	stop      func()
 }
 
 // connHold is what ticks of a connection reuse until a change to it made
@@ -206,13 +210,17 @@ func (r *run) readState() error {
 	return nil
 }
 
-// lifetime is the lifetime of board the tick captured, which every write
-// of the board names; only the tick's own board has one.
+// lifetime is the lifetime of board the run captured, which every write
+// of the board names: a tick's own board's, or one a write's refresh
+// captured.
 func (r *run) lifetime(board tracker.BoardID) (int64, error) {
-	if board != r.scope.Board || r.state.Lifetime == 0 {
-		return 0, fmt.Errorf("trackerapp: board %s is not the board %q of the tick", board, r.scope.Board)
+	if board == r.scope.Board && r.state.Lifetime != 0 {
+		return r.state.Lifetime, nil
 	}
-	return r.state.Lifetime, nil
+	if l := r.lifetimes[board]; l != 0 {
+		return l, nil
+	}
+	return 0, fmt.Errorf("trackerapp: board %s is not a board the run captured (its own is %q)", board, r.scope.Board)
 }
 
 func (r *run) finish() { r.stop() }

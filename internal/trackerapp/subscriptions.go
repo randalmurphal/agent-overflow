@@ -113,7 +113,7 @@ type subscriptions struct {
 type handle struct {
 	board  *boardPump
 	ticket *ticketPump
-	ref    *pump.Handle[struct{}]
+	ref    *pump.Handle[readRequest]
 }
 
 // ticketKey names an open ticket's pump.
@@ -131,13 +131,13 @@ func (s *Service) nextSeqLocked() uint64 {
 // newCore is a pump core under the service's lifetime: a request it
 // cannot serve fails with ErrSubscriptionEnded, or ErrStopped once the
 // service's lifetime ended.
-func (s *Service) newCore() pump.Core[struct{}] {
-	return pump.NewCore[struct{}](s.life, pump.Refusals{Stopped: ErrSubscriptionEnded, LifetimeEnded: ErrStopped})
+func (s *Service) newCore() pump.Core[readRequest] {
+	return pump.NewCore[readRequest](s.life, pump.Refusals{Stopped: ErrSubscriptionEnded, LifetimeEnded: ErrStopped})
 }
 
 // takeHandleLocked registers a handle on core and returns its ID. The
 // caller holds subMu and has checked the cap.
-func (s *Service) takeHandleLocked(h *handle, core *pump.Core[struct{}]) string {
+func (s *Service) takeHandleLocked(h *handle, core *pump.Core[readRequest]) string {
 	if s.subs.handles == nil {
 		s.subs.handles = map[string]*handle{}
 	}
@@ -206,7 +206,7 @@ func (s *Service) ReleaseSubscription(id string) {
 }
 
 // coreOfLocked is the pump core handle id is on. The caller holds subMu.
-func (h *handle) core() *pump.Core[struct{}] {
+func (h *handle) core() *pump.Core[readRequest] {
 	if h.board != nil {
 		return &h.board.core
 	}
@@ -215,7 +215,7 @@ func (h *handle) core() *pump.Core[struct{}] {
 
 // endHandlesLocked forgets every handle on core: its pump ended. The
 // caller holds subMu.
-func (s *Service) endHandlesLocked(core *pump.Core[struct{}]) {
+func (s *Service) endHandlesLocked(core *pump.Core[readRequest]) {
 	for id, h := range s.subs.handles {
 		if h.core() == core {
 			s.forgetHandleLocked(id, h)
@@ -228,7 +228,7 @@ func (s *Service) endHandlesLocked(core *pump.Core[struct{}]) {
 // off meanwhile), in which case exited closes here, saving a goroutine
 // that would exit at once: the goroutine closes it otherwise. The caller
 // holds subMu, inside the subscribe's call, so Stop joins what it starts.
-func (s *Service) launchLocked(core *pump.Core[struct{}], exited chan struct{}, run func()) {
+func (s *Service) launchLocked(core *pump.Core[readRequest], exited chan struct{}, run func()) {
 	if core.DeadLocked() {
 		close(exited)
 		return

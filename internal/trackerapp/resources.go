@@ -183,6 +183,35 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	return Changes{Structure: stored.Changed, Catalog: stored.Catalog}, nil
 }
 
+// worklogs reads author's worklogs whose day is from to to (at most
+// worklogSpan days) through the connection's time tracker, and makes them
+// the mirror's for those days. Worklogs name no issue the mirror must
+// keep, so they change no view the funnel tells of.
+func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
+	tt := r.p.Time()
+	if tt == nil {
+		return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", r.row.ID, tracker.ErrUnsupported)
+	}
+	read := r.readAt()
+	r.calls++
+	logs, err := tt.Worklogs(r.ctx, tracker.WorklogQuery{Author: author, From: from, To: to})
+	if err != nil {
+		return fmt.Errorf("trackerapp: read the worklogs of %s from %s to %s: %w", author, from, to, call(err))
+	}
+	stored := make([]store.MirrorWorklog, len(logs))
+	for i, w := range logs {
+		if w.Author != author || w.Day.Compare(from) < 0 || w.Day.Compare(to) > 0 {
+			return fmt.Errorf("trackerapp: the worklogs of %s from %s to %s: %w", author, from, to,
+				call(fmt.Errorf("the tracker answered worklog %s of %s on %s", w.ID, w.Author, w.Day)))
+		}
+		stored[i] = mirrorWorklog(w)
+	}
+	if _, err := r.s.store.ReplaceMirrorWorklogs(r.root, string(author), from.String(), to.String(), read, stored); err != nil {
+		return fmt.Errorf("trackerapp: store the worklogs of %s from %s to %s: %w", author, from, to, err)
+	}
+	return nil
+}
+
 // markStructureDue marks the run's structure due when a row write found
 // the board due a structure read (store MirrorChanges.StructureDue).
 func (r *run) markStructureDue(stored store.MirrorChanges) {

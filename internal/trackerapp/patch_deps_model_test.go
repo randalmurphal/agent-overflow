@@ -85,7 +85,7 @@ func (d *depsModel) write(b tracker.BoardID, issues []tracker.IssueID, missing [
 	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, rows, missing, d.catalog, d.readAt))
 	page.Lifetime = d.m.sync(b).Lifetime
 	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
-	d.m.svc.publish(d.root, Scope{Connection: d.m.conn.ID, Board: b}, ch, nil)
+	d.m.svc.publish(d.root, d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
 }
 
 // tick moves the clock to the next read.

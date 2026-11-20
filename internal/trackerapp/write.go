@@ -1,0 +1,300 @@
+package trackerapp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+
+	"agent-overflow/internal/tracker"
+)
+
+// Writes. Every edit goes to the tracker first, through one path
+// (Service.write), which owns, in order:
+//
+//   - the hold of the connection, taken as a tick takes one (start),
+//     interactive: a person or an agent waits on every write;
+//   - the provider's write, and tracker.Result.Check before anything acts
+//     on its result;
+//   - the refresh: every resource a part that is applied or unknown names
+//     is read again through the read sync uses and stored, under the root
+//     and the fences the hold captured (write_refresh.go);
+//   - the settlement of the connection's problem by the last tracker call
+//     made;
+//   - the change funnel, so a subscriber hears of a write as of a sync,
+//     and the settlement of the open tickets the refresh read;
+//   - the view of the outcomes, with what could not be refreshed beside
+//     them.
+//
+// A write method (write_methods.go) converts its request (write_inputs.go)
+// and names its provider call; nothing else.
+
+// ErrBadResult is a write whose provider returned a result no provider
+// may return (tracker.Result.Check): it is an error, never a partial
+// success. The write may have happened; nothing was read again.
+var ErrBadResult = errors.New("trackerapp: the tracker's provider answered a write with a result it may not")
+
+// writeOp is one write as Service.write runs it.
+type writeOp struct {
+	// call is the provider's write; nil for a refresh alone
+	// (RefreshWorklogs).
+	call func(ctx context.Context, p tracker.Provider) tracker.Result
+	// board is the board a create was made from: an issue the create made
+	// is read through it, and a create of unknown outcome runs its tick.
+	board tracker.BoardID
+	// also are resources read again besides those the result names.
+	also []tracker.Resource
+	// unable, when set, refuses op on the provider the hold found, before
+	// anything is sent.
+	unable func(p tracker.Provider) error
+}
+
+// write makes op's write on connection id and refreshes what it may have
+// changed. A connection that is off, removed or a Tempo connection is
+// refused (ErrDisabled, ErrNotFound, ErrNoProvider), as is one turned off
+// or removed during the write when no part of it may have happened; one
+// turned off when a part may have happened answers the parts with Ended
+// and refreshes nothing, since the mirror was cleared with it.
+func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, error) {
+	r, err := s.interact(ctx, id)
+	if err != nil {
+		return WriteView{}, err
+	}
+	finished := false
+	finish := func() {
+		if !finished {
+			finished = true
+			r.finish()
+		}
+	}
+	defer finish()
+	if op.unable != nil {
+		if err := op.unable(r.p); err != nil {
+			return WriteView{}, err
+		}
+	}
+	var res tracker.Result
+	resources := op.also
+	if op.call != nil {
+		res = op.call(r.ctx, r.p)
+		if err := res.Check(); err != nil {
+			return WriteView{}, fmt.Errorf("%w: %w", ErrBadResult, err)
+		}
+		if !sentNothing(res) {
+			r.calls++
+		}
+		resources = slices.Concat(resources, res.Refresh())
+		if created, ok := res.Created(); ok && op.board != "" {
+			resources = append(resources, tracker.RowOf(op.board, created))
+		}
+	}
+	view := WriteView{Parts: partViews(r.row.Kind, res, millis(s.now())), CreateUnknown: res.CreateUnknown()}
+	if created, ok := res.Created(); ok {
+		view.Created = string(created)
+	}
+	if !r.inUse() {
+		if !happened(res) {
+			return WriteView{}, s.endedNow(id)
+		}
+		view.Ended = true
+		return view, nil
+	}
+	writeCalls := r.calls
+	f := r.refresh(resources)
+	if f.ended || !r.inUse() {
+		// The mirror was cleared with the connection: nothing stored is
+		// shown, and nobody is told.
+		view.Ended = true
+		if !happened(res) {
+			return WriteView{}, s.endedNow(id)
+		}
+		return view, nil
+	}
+	if r.ctx.Err() == nil {
+		callErr := f.lastCallError()
+		if callErr == nil && r.calls == writeCalls {
+			callErr = writeProblem(r.row.Kind, res)
+		}
+		// A settlement Stop overtook changes nothing: the outcome stands.
+		_ = r.settleCalls(callErr)
+	}
+	if len(f.pumps) > 0 && f.detailsErr == nil {
+		// Only an open ticket shows a view. One that cannot be built leaves
+		// the stored detail as read: its ticket is told a failure outside
+		// the tracker, and its next read builds it.
+		if err := s.ticketViews(r.root, f.reads[:len(f.pumps)]); err != nil {
+			f.details.failure, f.detailsErr = nil, err
+		}
+	}
+	s.publish(r.root, id, f.ch, f.own, &tickOrigin{tickets: f.pumps})
+	if len(f.pumps) > 0 {
+		// A refresh that could not read an open ticket is retried by the
+		// connection's round.
+		s.oweFailedRead(id, s.settleTickets(ctx, id, f.pumps, f.began, f.reads[:len(f.pumps)], f.details, f.detailsErr, millis(s.now())))
+	}
+	view.Stale = s.staleViews(r.row.Kind, f.stale)
+	finish()
+	if view.CreateUnknown && op.board != "" {
+		if err := s.tickNow(ctx, Scope{Connection: id, Board: op.board}); err != nil {
+			view.Stale = append(view.Stale, s.staleView(r.row.Kind, []ResourceView{{Kind: resourceDelta, Board: string(op.board)}}, err))
+		}
+	}
+	return view, nil
+}
+
+// interact holds connection id for a call a person waits on: a write, or
+// a read a write form needs. A connection that is off or removed is
+// refused with ErrDisabled or ErrNotFound; a client that could not be
+// built is settled as the connection's problem and returned. The caller
+// ends the run with finish.
+func (s *Service) interact(ctx context.Context, id string) (*run, error) {
+	if id == "" {
+		return nil, fmt.Errorf("%w: no connection named", ErrInvalidRequest)
+	}
+	r, err := s.start(ctx, id, Interactive)
+	switch {
+	case errors.Is(err, errEnded):
+		return nil, endedError(id, err)
+	case err != nil:
+		return nil, err
+	}
+	r.scope = Scope{Connection: id}
+	if r.startErr != nil {
+		settleErr := r.settleCalls(r.startErr)
+		r.finish()
+		var c *callError
+		errors.As(r.startErr, &c)
+		return nil, errors.Join(c.err, settleErr)
+	}
+	return r, nil
+}
+
+// endedError is err, a run that found connection id off or gone, as the
+// caller's error: ErrNotFound for a connection removed, ErrDisabled for
+// one turned off or whose mirror was cleared.
+func endedError(id string, err error) error {
+	if errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("%w %s", ErrNotFound, id)
+	}
+	return fmt.Errorf("%w: %s", ErrDisabled, id)
+}
+
+// endedNow is the error of a write whose connection stopped being used
+// while it was made: ErrStopped after Stop, ErrNotFound when the
+// connection was removed, ErrDisabled otherwise.
+func (s *Service) endedNow(id string) error {
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if stopped {
+		return ErrStopped
+	}
+	if _, err := s.store.GetTrackerConnection(id); err != nil {
+		return endedError(id, fmt.Errorf("%w: %w", ErrNotFound, err))
+	}
+	return fmt.Errorf("%w: %s was turned off while the write was sent", ErrDisabled, id)
+}
+
+// inUse reports whether the run's connection is still used through the
+// client the run began on: not turned off, removed or stopped since.
+func (r *run) inUse() bool {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	return !r.s.stopped && r.s.clients[r.row.ID] == r.at.c
+}
+
+// happened reports a result some part of which may have happened:
+// applied, or sent and not answered.
+func happened(res tracker.Result) bool {
+	t := res.Tally()
+	return t.Applied+t.Unknown > 0
+}
+
+// sentNothing reports a result every part of which was refused before
+// anything was sent: input the provider's checks refused, or a write the
+// tracker cannot make. Such a write says nothing of the connection.
+func sentNothing(res tracker.Result) bool {
+	for _, p := range res.Parts {
+		r, ok := p.Outcome.Refusal()
+		if !ok || r.Reason != tracker.ReasonInvalid && r.Reason != tracker.ReasonUnsupported {
+			return false
+		}
+	}
+	return true
+}
+
+// writeProblem is the failure among res's parts that is the connection's
+// rather than the write's: a credential refused, a tracker that could not
+// be reached or that is limiting requests. A part the tracker otherwise
+// judged, applied or refused, shows the connection works.
+func writeProblem(kind string, res tracker.Result) error {
+	for _, p := range res.Parts {
+		err := p.Outcome.Err()
+		if err == nil || p.Outcome.State() == tracker.StateApplied {
+			continue
+		}
+		switch ClassifyFailure(kind, err).Kind {
+		case FailureSetup, FailureTransient, FailureRateLimited:
+			return err
+		}
+	}
+	return nil
+}
+
+// tickNow runs the tick scope's board is due now, interactive: through
+// its pump when one is live, so the board's ticks have one sequence and
+// its subscribers hear the outcome with the pump's sync state, and
+// otherwise as a delta of its own. It returns the tracker's failure as a
+// *failureError.
+func (s *Service) tickNow(ctx context.Context, scope Scope) error {
+	s.subMu.Lock()
+	p := s.subs.boards[scope]
+	live := p != nil && !p.over && !p.core.DeadLocked()
+	s.subMu.Unlock()
+	if live {
+		err := p.core.Request(ctx, readRequest{now: true})
+		if !errors.Is(err, ErrSubscriptionEnded) {
+			return err
+		}
+	}
+	out, err := s.SyncBoard(ctx, scope, BoardDue{Delta: true}, Interactive)
+	switch {
+	case err != nil:
+		return err
+	case out.Failure != nil:
+		return &failureError{f: *out.Failure}
+	}
+	return nil
+}
+
+// staleViews are stale as views; kind names the tracker in a failure's
+// sentence.
+func (s *Service) staleViews(kind string, stale []staleRead) []StaleView {
+	var out []StaleView
+	for _, st := range stale {
+		views := make([]ResourceView, len(st.resources))
+		for i, res := range st.resources {
+			views[i] = resourceView(res)
+		}
+		out = append(out, s.staleView(kind, views, st.err))
+	}
+	return out
+}
+
+// staleView is resources left stale by err: the tracker's failure as
+// ClassifyFailure sorts it, and any other as a failure outside the
+// tracker, which is logged.
+func (s *Service) staleView(kind string, resources []ResourceView, err error) StaleView {
+	at := millis(s.now())
+	var c *callError
+	var fe *failureError
+	switch {
+	case errors.As(err, &fe):
+		return StaleView{Resources: resources, Failure: FailureView{Kind: string(fe.f.Kind), Message: fe.f.Message, At: at}}
+	case errors.As(err, &c):
+		f := ClassifyFailure(kind, c.err)
+		return StaleView{Resources: resources, Failure: FailureView{Kind: string(f.Kind), Message: f.Message, At: at}}
+	}
+	s.logf("trackerapp: the refresh after a write left %d resources stale: %v", len(resources), err)
+	return StaleView{Resources: resources, Failure: *internalFailure(at)}
+}

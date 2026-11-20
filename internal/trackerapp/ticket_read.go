@@ -105,18 +105,25 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 		out.failure, out.retryAt = o.Failure, o.RetryAt
 		return out, readErr
 	}
+	return out, s.ticketViews(r.root, reads)
+}
+
+// ticketViews builds the view of each of reads whose document changed, or
+// that its pump is to hold and held none of (prior.held nil), named from
+// root.
+func (s *Service) ticketViews(root int64, reads []*ticketRead) error {
 	for _, rd := range reads {
 		heldNew := rd.check.held != nil && (rd.prior == nil || rd.prior.held == nil)
 		if rd.err != nil || rd.detail == nil || !rd.changed && !heldNew {
 			continue
 		}
-		v, err := s.detailView(r.root, *rd.detail)
+		v, err := s.detailView(root, *rd.detail)
 		if err != nil {
-			return out, err
+			return err
 		}
 		rd.view, rd.digest, rd.shows = &v, s.digestOf(v), showsOf(*rd.detail)
 	}
-	return out, nil
+	return nil
 }
 
 // detailReadAtNext is when a detail read begins as the store orders the
