@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -152,5 +153,57 @@ func TestDisposingAFakeProfileCancelsItsDownloads(t *testing.T) {
 				t.Fatalf("the disposed profile keeps %s", left)
 			}
 		})
+	}
+}
+
+// A profile disposed while a download's destination is chosen, which its
+// sweep finds no record of yet, refuses the download as it registers: it
+// ends canceled, writes nothing and leaves no record.
+func TestDisposingAFakeProfileWhileADestinationIsChosen(t *testing.T) {
+	engine := newFakeEngine()
+	engine.saving = downloadsStaged
+	var reports []downloadProgress
+	engine.events = engineEvents{
+		DownloadStarted:  func(downloadStart) downloadAdmission { return downloadAdmitted },
+		DownloadProgress: func(progress downloadProgress) { reports = append(reports, progress) },
+	}
+	if err := engine.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(t.TempDir(), "staged")
+	choosing, chosen := make(chan struct{}), make(chan struct{})
+	opened, err := engine.NewProfile(t.Context(), profileOptions{Jar: "w", DownloadDir: t.TempDir(), StageDownload: func(downloadID) (string, error) {
+		close(choosing)
+		<-chosen
+		return staged, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := opened.(*fakeProfile)
+	ran := make(chan error, 1)
+	go func() {
+		request, _ := fakeDownloadAddress(fakeDownloadURL("f.bin", 64))
+		ran <- profile.download("frame", request)
+	}()
+	<-choosing
+	if err := profile.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(chosen)
+	if err := <-ran; err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].State != downloadCanceled || reports[0].Received != 0 {
+		t.Fatalf("the download reported %+v, want its cancel alone with no bytes", reports)
+	}
+	if _, err := os.Lstat(staged); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the download wrote its staged file: %v", err)
+	}
+	profile.mu.Lock()
+	left := len(profile.held)
+	profile.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("the disposed profile keeps %d download records", left)
 	}
 }

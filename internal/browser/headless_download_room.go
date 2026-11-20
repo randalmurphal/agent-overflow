@@ -58,7 +58,7 @@ type downloadRoom struct {
 }
 
 // openDownloadRoom makes a new room in dir, made if it is missing, for one
-// browser process.
+// browser process, and holds only the directory it made (openMadeDir).
 func openDownloadRoom(dir string, logf func(string, ...any)) (*downloadRoom, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create the download directory: %w", err)
@@ -71,13 +71,9 @@ func openDownloadRoom(dir string, logf func(string, ...any)) (*downloadRoom, err
 	if err := parent.Mkdir(name, 0o700); err != nil {
 		return nil, errors.Join(fmt.Errorf("browser: create the browser's download directory: %w", err), parent.Close())
 	}
-	room, err := parent.OpenRoot(name)
+	room, held, err := openMadeDir(parent, dir, name)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("browser: open the browser's download directory: %w", err), parent.Remove(name), parent.Close())
-	}
-	held, err := room.Stat(".")
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("browser: read the browser's download directory: %w", err), room.Close(), parent.Remove(name), parent.Close())
+		return nil, errors.Join(fmt.Errorf("browser: open the browser's download directory: %w", err), parent.Close())
 	}
 	return &downloadRoom{logf: logf, dir: dir, parent: parent, name: name, room: room, held: held, handed: map[downloadID]os.FileInfo{}}, nil
 }

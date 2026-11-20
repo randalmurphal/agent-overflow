@@ -161,14 +161,17 @@ type cancelMark struct{}
 // (awaitOwner) has begun, and ended why that wait ended while an offer was
 // under way. canceled is whether an AO cancel reached it before its end
 // report ran, which then withdraws what the Manager did not take of its
-// file.
+// file. endReceived is whether Chromium's end of it was received, set at
+// that receipt whatever its state, held or delivered; d is forgotten once
+// its end report returns.
 type trackedDownload struct {
-	state    trackedState
-	held     *cdpbrowser.EventDownloadProgress
-	cancel   *cancelMark
-	waiting  bool
-	ended    waitEnd
-	canceled bool
+	state       trackedState
+	held        *cdpbrowser.EventDownloadProgress
+	cancel      *cancelMark
+	waiting     bool
+	ended       waitEnd
+	canceled    bool
+	endReceived bool
 }
 
 // to moves d to next along the edges of the state machine, which panics
@@ -286,6 +289,14 @@ func (t *downloadTracker) decideLocked(event cdpbrowser.EventDownloadWillBegin, 
 	if t.downloads[guid] != d {
 		return
 	}
+	if t.stopped && admission != downloadAdmitted {
+		// The browser is gone, so there is nothing to cancel: the end the
+		// stop kept for this answer (reportsEnd) goes with its file.
+		delete(t.downloads, guid)
+		t.post(func() { t.files.discard(guid) })
+		t.closeIfLastLocked()
+		return
+	}
 	switch admission {
 	case downloadAdmitted:
 		t.admitLocked(guid, d)
@@ -324,11 +335,12 @@ func (t *downloadTracker) startLocked(event cdpbrowser.EventDownloadWillBegin, d
 }
 
 // endReported is the EndReported of d's start: whether its end was
-// received and its end report has not run yet.
+// received (endReceived), in whatever state, and its end report has not
+// returned, which forgets d.
 func (t *downloadTracker) endReported(guid downloadID, d *trackedDownload) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.downloads[guid] == d && d.state == trackedEnding
+	return t.downloads[guid] == d && d.endReceived
 }
 
 // admitLocked makes d the Manager's, whatever its wait did meanwhile: a
@@ -391,11 +403,26 @@ func (t *downloadTracker) deliverLocked(guid downloadID, d *trackedDownload, eve
 // queued or under way. The caller holds t.mu.
 func (t *downloadTracker) endingLocked() bool {
 	for _, d := range t.downloads {
-		if d.state == trackedEnding {
+		if d.reportsEnd() {
 			return true
 		}
 	}
 	return false
+}
+
+// reportsEnd is whether the tracker still reports d's received end: it is
+// being reported, or is held for the answer of an admission in flight,
+// which reports it if the answer admits d.
+func (d *trackedDownload) reportsEnd() bool {
+	return d.state == trackedEnding || (d.state == trackedOffering && d.endReceived)
+}
+
+// closeIfLastLocked queues the directory's close once the browser has
+// stopped and no end is still reported. The caller holds t.mu.
+func (t *downloadTracker) closeIfLastLocked() {
+	if t.stopped && !t.endingLocked() {
+		t.post(t.files.close)
+	}
 }
 
 // refuseLocked refuses d, sending its cancel when send says one is due,
@@ -486,6 +513,11 @@ func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 	if d == nil {
 		return
 	}
+	if event.State != cdpbrowser.DownloadProgressStateInProgress {
+		// Its end is the Manager's from here, held or delivered
+		// (EndReported).
+		d.endReceived = true
+	}
 	switch d.state {
 	case trackedAwaiting, trackedOffered, trackedOffering:
 		d.held = &event
@@ -506,15 +538,16 @@ func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 // is sent, and answers the undo for a cancel Chromium refused, which
 // withdraws only the mark this call made. An admitted download is
 // canceling from here; one the Manager has not answered yet keeps the mark
-// for its admission (admitLocked). One whose end was received answers
-// ended, with no cancel to send: its end report settles it, and what that
-// report leaves of its file is withdrawn. Any other marks nothing.
+// for its admission (admitLocked). One whose end was received, held or
+// delivered, answers ended, with no cancel to send: its end report settles
+// it, and what that report leaves of its file is withdrawn. Any other
+// marks nothing.
 func (t *downloadTracker) canceling(guid downloadID) (undo func(), ended bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	d := t.downloads[guid]
 	switch {
-	case d != nil && d.state == trackedEnding:
+	case d != nil && d.endReceived:
 		d.canceled = true
 		return func() {}, true
 	case d == nil || d.cancel != nil:
@@ -543,16 +576,16 @@ func (t *downloadTracker) canceling(guid downloadID) (undo func(), ended bool) {
 // stop settles every download the connection still has, once its browser
 // process has exited and writes nothing more: none of them finished, so
 // everything in the process's directory goes, the Manager's running
-// downloads' files included, apart from those of the ends being reported,
-// whose last report removes what is left (deliverLocked). Later events are
-// dropped.
+// downloads' files included, apart from those of the ends still reported
+// (reportsEnd), whose last report removes what is left (deliverLocked,
+// decideLocked). Later events are dropped.
 func (t *downloadTracker) stop() {
 	defer t.flush()
 	t.mu.Lock()
 	t.stopped = true
 	keep := make(map[downloadID]bool)
 	for guid, d := range t.downloads {
-		if d.state == trackedEnding {
+		if d.reportsEnd() {
 			keep[guid] = true
 			continue
 		}

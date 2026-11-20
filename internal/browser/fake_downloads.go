@@ -126,7 +126,14 @@ func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error
 	// reports it as the download's one end after that report, with the
 	// bytes written by then. The record goes once the run's end report
 	// returns, unless the run left it held.
-	p.track(id, fakeDownload{total: request.bytes, file: file, phase: fakeRunning})
+	if !p.track(id, fakeDownload{total: request.bytes, file: file, phase: fakeRunning}) {
+		// Its profile was disposed while its destination was chosen, after
+		// disposal's sweep: it ends canceled before a byte is written.
+		if events.DownloadStarted(start) == downloadAdmitted {
+			events.DownloadProgress(downloadProgress{ID: id, Total: float64(request.bytes), State: downloadCanceled})
+		}
+		return discard()
+	}
 	parked := false
 	defer func() {
 		if !parked {
@@ -320,14 +327,21 @@ func (p *fakeProfile) disposeDownloads() error {
 	return errors.Join(errs...)
 }
 
-// track records download id, running, before its start is reported.
-func (p *fakeProfile) track(id downloadID, d fakeDownload) {
+// track records download id, running, before its start is reported, and
+// answers false, recording nothing, once the profile is disposed.
+func (p *fakeProfile) track(id downloadID, d fakeDownload) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Dispose marks the profile disposed under p.mu before its sweep
+	// (disposeDownloads), so a record is either swept or refused here.
+	if p.disposed {
+		return false
+	}
 	if p.held == nil {
 		p.held = make(map[downloadID]fakeDownload)
 	}
 	p.held[id] = d
+	return true
 }
 
 // recordLocked is download id's record, which its run expects to be there

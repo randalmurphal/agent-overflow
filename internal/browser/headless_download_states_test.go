@@ -31,6 +31,8 @@ type stateRig struct {
 	// held is the goroutine holding a report at a gate, done once it
 	// returns.
 	held chan struct{}
+	// endReported is the EndReported of G's last offered start.
+	endReported func() bool
 }
 
 const guidG, guidB = "G", "B"
@@ -44,6 +46,7 @@ func newStateRig(t *testing.T) *stateRig {
 			}
 			r.mu.Lock()
 			r.offers++
+			r.endReported = start.EndReported
 			gate := r.offerGate
 			r.mu.Unlock()
 			r.pass(gate)
@@ -218,6 +221,21 @@ var downloadStateEvents = map[string]func(r *stateRig){
 	"completed": func(r *stateRig) { r.report(guidG, cdpbrowser.DownloadProgressStateCompleted) },
 	"canceled":  func(r *stateRig) { r.report(guidG, cdpbrowser.DownloadProgressStateCanceled) },
 	"exit":      func(r *stateRig) { r.stop() },
+	// held is G's completion, its report held at the Manager.
+	"held": func(r *stateRig) {
+		r.hold(func(gate chan struct{}) { r.endGate = gate }, func() { r.report(guidG, cdpbrowser.DownloadProgressStateCompleted) })
+	},
+	// close is its tab's close as the Manager makes it (pageLeftLocked):
+	// a download whose start says its end was received is left to that
+	// end, and any other is canceled.
+	"close": func(r *stateRig) {
+		r.mu.Lock()
+		ended := r.endReported
+		r.mu.Unlock()
+		if ended == nil || !ended() {
+			r.canceling(guidG)
+		}
+	},
 	// answered lets what the setup holds go: the Manager answers.
 	"answered": func(r *stateRig) { r.release() },
 }
@@ -337,6 +355,31 @@ func TestDownloadTrackerStates(t *testing.T) {
 		// The browser's exit keeps the file of an end being reported, and
 		// the directory goes once that report is done.
 		{"ending", []string{"exit"}, want{"ending", "gone", 0, 0, done, "handOver kept", 1}},
+
+		// An end received in any state is the Manager's from its receipt: a
+		// tab closed before its report leaves the row to that report, so
+		// nothing is canceled and the finished file is not withdrawn.
+		{"awaiting", []string{"completed", "close"}, want{"awaiting", "gone", 1, 0, done, "handOver", 0}},
+		{"awaiting", []string{"canceled", "close"}, want{"awaiting", "gone", 1, 0, failed, "discard", 0}},
+		{"offered", []string{"completed", "close"}, want{"offered", "gone", 1, 0, done, "handOver", 0}},
+		{"offered", []string{"canceled", "close"}, want{"offered", "gone", 1, 0, failed, "discard", 0}},
+		{"offering", []string{"completed", "close"}, want{"offering", "gone", 0, 0, done, "handOver", 0}},
+		{"offering", []string{"canceled", "close"}, want{"offering", "gone", 0, 0, failed, "discard", 0}},
+		{"admitted", []string{"held", "close"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
+		{"canceling", []string{"held", "close"}, want{"ending", "gone", 0, 0, done, "handOver withdraw", 0}},
+		{"refused", []string{"completed", "close"}, want{"gone", "gone", 0, 0, "", "discard", 0}},
+		{"ending", []string{"close"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
+		// A cancel after Chromium's own end was received has nothing to
+		// cancel: that end is listed as the failure it was.
+		{"awaiting", []string{"canceled", "cancel"}, want{"awaiting", "gone", 1, 0, failed, "discard", 0}},
+		{"offering", []string{"canceled", "cancel"}, want{"offering", "gone", 0, 0, failed, "discard", 0}},
+		// The browser's exit keeps an end held for an admission in flight,
+		// which reports it if the answer admits it and otherwise removes
+		// its file; the directory goes after either.
+		{"offering", []string{"completed", "close", "exit"}, want{"offering", "gone", 0, 0, done, "kept handOver", 1}},
+		{"offering", []string{"unowned", "completed", "exit"}, want{"offering", "gone", 0, 0, "", "kept discard", 1}},
+		// A tab closed while its download runs cancels it.
+		{"admitted", []string{"close", "canceled"}, want{"gone", "gone", 0, 0, canceled, "discard", 0}},
 	}
 	for _, row := range rows {
 		name := row.state
