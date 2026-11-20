@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,10 +87,10 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 		t.Fatal("an 800x600 pane must place a 1280x720 page")
 	}
 	engine.SetPageBounds("page1", placement)
-	if err := engine.OpenPageDevTools("page1"); err != nil {
+	if err := answerDevTools(t, engine, sink, "page1", webview2host.ReportDevToolsOpened, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.OpenPageDevTools(""); err == nil {
+	if err := engine.OpenPageDevTools(t.Context(), ""); err == nil {
 		t.Fatal("a devtools directive the launcher would refuse was reported sent")
 	}
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
@@ -443,5 +444,83 @@ func TestHostedEngineReShowRestoresThePlacementScale(t *testing.T) {
 	engine.ShowPage("page1")
 	if got := scaleOf(); got != 0.5 {
 		t.Fatalf("re-show at an unchanged placement must restore its scale, got %v", got)
+	}
+}
+
+// answerDevTools runs a DevTools open of page, answers its directive as
+// the launcher would with kind and errText (no answer when kind is
+// empty), and returns what the open answered.
+func answerDevTools(t *testing.T, engine *hostedEngine, sink *directiveSink, page string, kind webview2host.ReportKind, errText string) error {
+	t.Helper()
+	before := len(sink.ops())
+	done := make(chan error, 1)
+	go func() { done <- engine.OpenPageDevTools(t.Context(), ids.PageHandle(page)) }()
+	var directive webview2host.Directive
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		sink.mu.Lock()
+		sent := len(sink.all) > before
+		if sent {
+			directive = sink.all[before]
+		}
+		sink.mu.Unlock()
+		if sent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the devtools directive was never sent")
+		}
+	}
+	if directive.Op != webview2host.OpDevTools || directive.PageID != page || directive.Request == 0 {
+		t.Fatalf("the devtools open sent %+v", directive)
+	}
+	if kind != "" {
+		engine.Report(ids.PageHandle(page), kind, webview2host.DevToolsReport{Request: directive.Request, Error: errText}.Encode())
+	}
+	return awaitAnswer(t, done, "the devtools open")
+}
+
+// A DevTools open answers what the launcher reported of its numbered
+// request: nil once opened, the launcher's error when it failed, and an
+// error saying no answer arrived when none came within the bound, as from
+// a launcher that predates the answer. An answer naming another page or
+// another request is not the request's, and an interrupt ends the wait.
+func TestADevToolsOpenAnswersWhatTheLauncherReported(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	if err := answerDevTools(t, engine, sink, "page1", webview2host.ReportDevToolsOpened, ""); err != nil {
+		t.Fatalf("an opened window answered %v", err)
+	}
+	if err := answerDevTools(t, engine, sink, "page1", webview2host.ReportDevToolsFailed, "E_FAIL"); err == nil || !strings.Contains(err.Error(), "E_FAIL") {
+		t.Fatalf("a refused window answered %v, want the launcher's error", err)
+	}
+	engine.devtoolsTimeout = 50 * time.Millisecond
+	if err := answerDevTools(t, engine, sink, "page1", "", ""); err == nil || !strings.Contains(err.Error(), "no answer arrived") {
+		t.Fatalf("a request nobody answered answered %v", err)
+	}
+	engine.devtoolsTimeout = hostedTestDeadline
+
+	sink.drain()
+	done := make(chan error, 1)
+	go func() { done <- engine.OpenPageDevTools(t.Context(), "page1") }()
+	directive := sink.next(t)
+	if directive.Op != webview2host.OpDevTools {
+		t.Fatalf("the devtools open sent %+v", directive)
+	}
+	engine.Report("page2", webview2host.ReportDevToolsOpened, webview2host.DevToolsReport{Request: directive.Request}.Encode())
+	engine.Report("page1", webview2host.ReportDevToolsOpened, webview2host.DevToolsReport{Request: directive.Request + 1}.Encode())
+	select {
+	case err := <-done:
+		t.Fatalf("an answer for another page or request ended the open with %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	engine.Interrupt()
+	if err := awaitAnswer(t, done, "the interrupted open"); err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("an interrupted open answered %v", err)
+	}
+	engine.devtools.mu.Lock()
+	waiting := len(engine.devtools.waiting)
+	engine.devtools.mu.Unlock()
+	if waiting != 0 {
+		t.Fatalf("%d devtools requests still wait", waiting)
 	}
 }

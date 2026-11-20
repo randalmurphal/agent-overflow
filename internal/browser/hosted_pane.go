@@ -2,7 +2,9 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/browser/ids"
@@ -248,16 +250,90 @@ func (e *hostedEngine) setBounds(handle ids.PageHandle, placement PanePlacement)
 	return true
 }
 
-// OpenPageDevTools sends the devtools directive, and answers only whether
-// it was sent: the launcher opens the window when the directive arrives
-// and logs a failure there, which no report carries back, so nil means
-// requested, not opened. A directive the pane host cannot take fails the
-// request.
-func (e *hostedEngine) OpenPageDevTools(handle ids.PageHandle) error {
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: string(handle)}) {
-		return fmt.Errorf("browser: open devtools: the pane host refused the request")
+// OpenPageDevTools sends the devtools directive, numbered, and answers
+// what the launcher reports of it within ctx and e.devtoolsTimeout: nil
+// once the window opened, and the launcher's error when it did not. A
+// directive the pane host cannot take fails the request, and so does no
+// answer within the bound, which is what a launcher that predates the
+// answer gives (webview2host.OpDevTools).
+func (e *hostedEngine) OpenPageDevTools(ctx context.Context, handle ids.PageHandle) error {
+	request, waiter := e.devtools.watch(handle)
+	defer e.devtools.unwatch(request)
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: string(handle), Request: request}) {
+		return errors.New("browser: open devtools: the pane host refused the request")
+	}
+	answer, err := awaitHostReport(ctx, waiter, e.devtoolsTimeout)
+	switch {
+	case errors.Is(err, errHostNoAnswer):
+		return fmt.Errorf("browser: open devtools: no answer arrived from the pane host within %s; a launcher older than this backend does not answer", e.devtoolsTimeout)
+	case err != nil:
+		return fmt.Errorf("browser: open devtools: %w", err)
+	case answer.kind != webview2host.ReportDevToolsOpened:
+		return fmt.Errorf("browser: open devtools: %s", answer.detail)
 	}
 	return nil
+}
+
+// devToolsRequests numbers the engine's DevTools requests and holds, by
+// number, the wait of each one for its answer and the page it names.
+type devToolsRequests struct {
+	mu      sync.Mutex
+	last    uint64
+	waiting map[uint64]devToolsWait
+}
+
+type devToolsWait struct {
+	page   ids.PageHandle
+	answer chan hostReport
+}
+
+// watch numbers a request of page and registers its wait, before the
+// directive goes, so an instant answer finds it.
+func (r *devToolsRequests) watch(page ids.PageHandle) (uint64, chan hostReport) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.waiting == nil {
+		r.waiting = make(map[uint64]devToolsWait)
+	}
+	r.last++
+	answer := make(chan hostReport, 1)
+	r.waiting[r.last] = devToolsWait{page: page, answer: answer}
+	return r.last, answer
+}
+
+func (r *devToolsRequests) unwatch(request uint64) {
+	r.mu.Lock()
+	delete(r.waiting, request)
+	r.mu.Unlock()
+}
+
+// deliver hands the launcher's answer about page to the wait of the
+// request it names, and reports whether one of that page took it.
+func (r *devToolsRequests) deliver(page ids.PageHandle, request uint64, report hostReport) bool {
+	r.mu.Lock()
+	wait, ok := r.waiting[request]
+	if ok && wait.page == page {
+		delete(r.waiting, request)
+	} else {
+		ok = false
+	}
+	r.mu.Unlock()
+	if ok {
+		wait.answer <- report
+	}
+	return ok
+}
+
+// interrupt ends every wait, which its caller reads as the launcher
+// interrupted (awaitHostReport).
+func (r *devToolsRequests) interrupt() {
+	r.mu.Lock()
+	waiting := r.waiting
+	r.waiting = nil
+	r.mu.Unlock()
+	for _, wait := range waiting {
+		close(wait.answer)
+	}
 }
 
 // setShown reports whether the visibility actually changed for a page this

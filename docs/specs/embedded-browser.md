@@ -319,7 +319,9 @@ view is positioned over.
   presentation is visible as such. The placement never changes a page's
   size.
 - DevTools: Windows opens `OpenDevToolsWindow` on the page's controller
-  (full Chromium devtools). Linux opens the WebKitGTK inspector
+  (full Chromium devtools), and the launcher answers the numbered request
+  with the outcome; a failure, or no answer within the bound, shows in the
+  pane. Linux opens the WebKitGTK inspector
   (`webkit_web_inspector_show`). macOS views are inspectable from Safari's
   Develop menu; WKWebView has no call that opens its inspector, so the
   pane's devtools action is refused there.

@@ -60,6 +60,9 @@ const (
 	// user-data folder for up to its own 15s budget while the WebView2
 	// browser process lets go of its file handles.
 	hostClearTimeout = 45 * time.Second
+	// hostDevToolsTimeout bounds the wait for a DevTools request's answer:
+	// the launcher opens the window in one native call on its UI thread.
+	hostDevToolsTimeout = 5 * time.Second
 	// hostClosedFallback bounds how long a page whose CDP target went
 	// waits for the launcher's close before the engine retires it itself.
 	// The launcher reports a closing page's download ends and then its
@@ -102,9 +105,12 @@ type hostedEngine struct {
 
 	// The two bounds are fields rather than the constants directly so a
 	// test can drive the timeout paths without spending them.
-	createTimeout time.Duration
-	attachTimeout time.Duration
-	clearTimeout  time.Duration
+	createTimeout   time.Duration
+	attachTimeout   time.Duration
+	clearTimeout    time.Duration
+	devtoolsTimeout time.Duration
+	// devtools holds each DevTools request's wait for its answer.
+	devtools devToolsRequests
 	// ownerWait bounds a paused request's wait for its owner
 	// (awaitRequestOwner); zero is requestOwnerWait.
 	ownerWait time.Duration
@@ -193,15 +199,16 @@ type hostedEngine struct {
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
 	e := &hostedEngine{
-		relay:         relay,
-		send:          send,
-		events:        events,
-		accelerators:  accelerators,
-		logf:          log.Printf,
-		createTimeout: hostCreateTimeout,
-		attachTimeout: hostAttachTimeout,
-		clearTimeout:  hostClearTimeout,
-		closeFallback: hostClosedFallback,
+		relay:           relay,
+		send:            send,
+		events:          events,
+		accelerators:    accelerators,
+		logf:            log.Printf,
+		createTimeout:   hostCreateTimeout,
+		attachTimeout:   hostAttachTimeout,
+		clearTimeout:    hostClearTimeout,
+		devtoolsTimeout: hostDevToolsTimeout,
+		closeFallback:   hostClosedFallback,
 
 		pageByTarget: make(map[target.ID]ids.PageHandle),
 		targetByPage: make(map[ids.PageHandle]target.ID),
@@ -288,6 +295,7 @@ func (e *hostedEngine) Interrupt() {
 		cancel()
 	}
 	e.waiters.interrupt()
+	e.devtools.interrupt()
 	e.setups.interrupt()
 }
 

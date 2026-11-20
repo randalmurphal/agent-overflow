@@ -3,6 +3,7 @@
 package browser
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -109,7 +110,9 @@ func (e *webkitEngine) FocusPage(handle ids.PageHandle, req focusRequest) (focus
 
 var _ paneHost = (*webkitEngine)(nil)
 
-func (e *webkitEngine) OpenPageDevTools(handle ids.PageHandle) error {
+// OpenPageDevTools opens the inspector on the UI thread, which answers at
+// once; ctx bounds nothing longer.
+func (e *webkitEngine) OpenPageDevTools(_ context.Context, handle ids.PageHandle) error {
 	p := webkitPaneTarget(handle)
 	if p == nil {
 		return fmt.Errorf("browser: open devtools: %w", errViewClosed)
