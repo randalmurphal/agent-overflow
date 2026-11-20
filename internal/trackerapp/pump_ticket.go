@@ -12,49 +12,61 @@ import (
 )
 
 // ticketPump is an open ticket's pump: one goroutine for every handle on
-// the issue, with no timer. It reads the ticket when it opens, on a
-// person's refresh, when another read stored a changed card of the issue,
-// and when shown again after it missed a read; its connection's round
-// (ticket_round.go) polls it while shown. Its core and the fields below
-// viewChanged are under subMu.
+// the issue, with no timer. It makes the reads a person waits on (the
+// opening's first read and a refresh) and rebuilds its view when an input
+// of it moves; every other read of the ticket is its connection's round's
+// (ticket_round.go). Its core and the fields below viewChanged are under
+// subMu.
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
+	// gen is the mirror generation the pump shows (genLocked).
+	gen uint64
 	// every is the connection's round interval, the answer's PollEvery.
 	every  time.Duration
 	exited chan struct{}
-	// cardChanged nudges the pump to read the ticket: another read stored
-	// a changed card of the issue. viewChanged nudges it to rebuild its
-	// view from what it holds (rebuildTicket): another read stored the
-	// issue's detail, a changed card of an issue the view shows, or a
-	// changed user or status. One queued nudge of each is enough.
-	cardChanged, viewChanged chan struct{}
+	// viewChanged nudges the pump to rebuild its view (rebuildTicket): an
+	// input of it other than its document moved. One queued nudge is
+	// enough; a hidden pump rebuilds when shown again.
+	viewChanged chan struct{}
 
-	// check is what the next read checks the ticket against, nil when it
-	// decodes the mirror's copy. settled is when the last read settled into
-	// the pump began (Service.nextReadLocked), zero before the first.
-	check   *detailCheck
-	settled uint64
-	// missed reports a read the pump owes: a round passed while it was
-	// hidden, a nudge came while hidden, or a read failed. stale reports a
-	// view rebuild it owes from a nudge that came while hidden.
-	missed, stale bool
-	// digest identifies the view the subscribers were last told of (viewed
-	// reports one is set), so a read that finds the same view emits
-	// nothing. shows are the other issues that view shows (showsOf).
-	digest uint64
-	viewed bool
-	shows  []tracker.IssueID
-	// held is the last view when the pump, not the mirror, holds the
-	// ticket's content (check.held is its document): the mirror does not
-	// keep the issue. Which one holds it is decided on every successful
-	// read. Nothing else of a ticket is held.
+	// check is the document: what the next read checks the ticket against,
+	// nil when it decodes the mirror's copy. settled is when the last read
+	// settled into the pump began (Service.nextStampLocked), zero before
+	// the first; docs counts the documents settled into it.
+	check         *detailCheck
+	settled, docs uint64
+	// due is when the round reads the ticket next. nudged is the stamp of
+	// the last request to read it at once (readNowLocked): a read that
+	// began before it neither undoes it nor counts as its read, and the
+	// next read is a full one. inputs is the stamp of the last change to
+	// an input of the view other than its document (ticketInputs).
+	due            time.Time
+	nudged, inputs uint64
+	// view is the view the subscribers were last told of, and shows are
+	// the other issues it shows (showsOf).
+	view  toldView
+	shows []tracker.IssueID
+	// held is the view when the pump, not the mirror, holds the ticket's
+	// content (check.held is its document): the mirror does not keep the
+	// issue or no longer holds its detail. Which one holds it is decided
+	// on every successful read. Nothing else of a ticket is held.
 	held *heldDetail
 	// failure is the failure the subscribers were last told of; changed and
-	// due are what the next event carries.
-	failure      *FailureView
-	changed, due bool
-	over         bool
+	// pending are what the next event carries.
+	failure          *FailureView
+	changed, pending bool
+	over             bool
+}
+
+// toldView is what a ticket's subscribers were last told of its view:
+// whether it is loaded and a digest of its content, and what it was built
+// from: the document (ticketPump.docs) and the stamp its build began at,
+// which a later change of another input outdates.
+type toldView struct {
+	loaded   bool
+	digest   uint64
+	docs, at uint64
 }
 
 // heldDetail is a view a ticket pump holds, with when its read began.
@@ -102,6 +114,7 @@ func (s *Service) SubscribeTicket(id string, issue tracker.IssueID) (TicketSubsc
 		return TicketSubscription{}, err
 	}
 	answer := TicketSubscription{ID: hid, Seq: seq, PollEvery: tp.every.Milliseconds(), TicketView: told}
+	asked := s.stamp()
 	if !answer.Loaded {
 		v, readAt, err := s.MirroredDetail(id, issue)
 		switch {
@@ -125,13 +138,32 @@ func (s *Service) SubscribeTicket(id string, issue tracker.IssueID) (TicketSubsc
 	}
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
-	if start {
-		if !tp.viewed {
-			tp.digest, tp.viewed = digest, answer.Loaded
-		}
+	switch {
+	case start:
+		tp.view.loaded, tp.view.digest = answer.Loaded, digest
 		s.launchTicketLocked(tp)
+	case !answer.Loaded:
+		s.answeredNotLoadedLocked(tp, asked)
 	}
 	return answer, nil
+}
+
+// stamp is the next stamp of the ticket pumps' order (nextStampLocked).
+func (s *Service) stamp() uint64 {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return s.nextStampLocked()
+}
+
+// answeredNotLoadedLocked records that a subscriber of tp was answered,
+// from what the pump and the mirror held after stamp asked, that its
+// ticket is not loaded (notLoadedLocked), unless a read that began later
+// settled since: a document held again is told then, whatever its
+// content. The caller holds subMu.
+func (s *Service) answeredNotLoadedLocked(tp *ticketPump, asked uint64) {
+	if tp.settled < asked {
+		s.notLoadedLocked(tp, asked)
+	}
 }
 
 // launchTicketLocked starts tp's goroutine and follows its connection's
@@ -165,8 +197,8 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 			s.subs.tickets = map[ticketKey]*ticketPump{}
 		}
 		tp = &ticketPump{
-			core: s.newCore(), key: key, every: s.cadence.ticket(kind), exited: make(chan struct{}),
-			cardChanged: make(chan struct{}, 1), viewChanged: make(chan struct{}, 1),
+			core: s.newCore(), key: key, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind), exited: make(chan struct{}),
+			viewChanged: make(chan struct{}, 1),
 		}
 		s.subs.tickets[key] = tp
 		start = true
@@ -193,7 +225,8 @@ func (tp *ticketPump) toldLocked() TicketView {
 
 // TicketDetail is handle id's ticket as its subscribers were last told of
 // it: its failure, and the view its pump holds or else the mirror's copy
-// (MirroredDetail), not Loaded while neither holds one.
+// (MirroredDetail), not Loaded while neither holds one, which its
+// subscribers are then told when they were told otherwise.
 func (s *Service) TicketDetail(id string) (TicketView, error) {
 	s.subMu.Lock()
 	h := s.subs.handles[id]
@@ -202,6 +235,7 @@ func (s *Service) TicketDetail(id string) (TicketView, error) {
 	if h != nil && h.ticket != nil {
 		key, told = h.ticket.key, h.ticket.toldLocked()
 	}
+	asked := s.nextStampLocked()
 	s.subMu.Unlock()
 	switch {
 	case h == nil || h.ticket == nil:
@@ -212,6 +246,9 @@ func (s *Service) TicketDetail(id string) (TicketView, error) {
 	v, readAt, err := s.MirroredDetail(key.connection, key.issue)
 	switch {
 	case errors.Is(err, ErrNotMirrored):
+		s.subMu.Lock()
+		s.answeredNotLoadedLocked(h.ticket, asked)
+		s.subMu.Unlock()
 		return told, nil
 	case err != nil:
 		return TicketView{}, err
@@ -231,24 +268,21 @@ func (s *Service) digestOf(v DetailView) uint64 {
 }
 
 // runTicketPump is a ticket pump's goroutine: an interactive first read
-// that records the opening, a full read on a person's request, a read when
-// another read stored a changed card of the issue or when shown again after
-// it missed one, and a view rebuild with no tracker call when what its view
-// shows of other issues changed. A failed read is retried by the
-// connection's round (readOwnTicket).
+// that records the opening, a full read on a person's request, and a view
+// rebuild with no tracker call when an input of the view moved, made when
+// shown again if it came while hidden. A failed read is retried by the
+// connection's round.
 func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.workers.Done()
 	defer close(tp.exited)
-	read := func(u Urgency, full, opened bool) ticketsResult {
-		return s.readOwnTicket(tp, u, full, opened)
-	}
-	over := read(Interactive, false, true).over
+	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
+	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
 	for !over {
 		select {
 		case <-tp.core.Done():
 			return
 		case req := <-tp.core.Requests():
-			res := read(Interactive, true, true)
+			res := s.readTickets(ctx, conn, self, Interactive, true, true)
 			over = res.over
 			err := res.err
 			if over {
@@ -256,84 +290,32 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 			}
 			req.Finish(err)
 		case <-tp.core.Wake():
-			switch missed, stale := s.owedOf(tp); {
-			case missed:
-				over = read(Background, false, false).over
-			case stale:
+			s.subMu.Lock()
+			behind := tp.behindLocked()
+			s.subMu.Unlock()
+			if behind {
 				s.rebuildTicket(tp)
 			}
-		case <-tp.cardChanged:
-			if !s.oweWhilePaused(tp, true) {
-				over = read(Background, false, false).over
-			}
 		case <-tp.viewChanged:
-			if !s.oweWhilePaused(tp, false) {
+			if !tp.core.Paused() {
 				s.rebuildTicket(tp)
 			}
 		}
 	}
 }
 
-// readOwnTicket is tp's own read of its ticket, outside the connection's
-// round. The pump keeps no retry schedule: a failed read is owed to the
-// round, which retries it with the connection's other shown tickets.
-func (s *Service) readOwnTicket(tp *ticketPump, u Urgency, full, opened bool) ticketsResult {
-	return s.oweFailedRead(tp.key.connection, s.readTickets(tp.core.Context(), tp.key.connection, []*ticketPump{tp}, u, full, opened))
-}
-
-// oweFailedRead has connection conn's round retry res, a read of its
-// tickets the round did not make, when it failed; it returns res.
-func (s *Service) oweFailedRead(conn string, res ticketsResult) ticketsResult {
-	if res.failed {
-		s.subMu.Lock()
-		s.oweRetryLocked(conn, res.retryAt)
-		s.subMu.Unlock()
-	}
-	return res
-}
-
-// owedOf takes what tp owes now that it is shown: a read, or a view
-// rebuild; neither while it is paused.
-func (s *Service) owedOf(tp *ticketPump) (missed, stale bool) {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	if tp.core.Paused() {
-		return false, false
-	}
-	missed, stale = tp.missed, tp.stale && !tp.missed
-	tp.missed, tp.stale = false, false
-	return missed, stale
-}
-
-// oweWhilePaused records a nudge that came while tp is paused, a read
-// when read is set and else a view rebuild, for the resume; it reports
-// whether it recorded it.
-func (s *Service) oweWhilePaused(tp *ticketPump, read bool) bool {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	if !tp.core.Paused() {
-		return false
-	}
-	if read {
-		tp.missed = true
-	} else {
-		tp.stale = true
-	}
-	return true
-}
-
 // flushTicketLocked emits tp's pending event, if any, or its end. Every
 // event names its ticket and carries its failure as of the event. The
 // caller holds subMu.
 func (s *Service) flushTicketLocked(tp *ticketPump, end bool) {
-	if tp.over || (!tp.due && !end) || (tp.core.DeadLocked() && !end) {
+	if tp.over || (!tp.pending && !end) || (tp.core.DeadLocked() && !end) {
 		return
 	}
 	ev := IssueEvent{
 		Connection: tp.key.connection, Issue: tp.key.issue, Seq: s.nextSeqLocked(),
 		Changed: tp.changed, Failure: tp.failure, Ended: end,
 	}
-	tp.changed, tp.due = false, false
+	tp.changed, tp.pending = false, false
 	s.emitIssue(ev)
 }
 
@@ -341,7 +323,7 @@ func (s *Service) flushTicketLocked(tp *ticketPump, end bool) {
 // one its subscribers were last told of. The caller holds subMu.
 func (tp *ticketPump) tellFailureLocked(f *FailureView) {
 	if !sameFailure(tp.failure, f) {
-		tp.failure, tp.due = f, true
+		tp.failure, tp.pending = f, true
 	}
 }
 

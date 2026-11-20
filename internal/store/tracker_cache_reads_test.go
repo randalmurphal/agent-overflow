@@ -381,7 +381,7 @@ func TestMirrorListReadsTakeEachIDOnce(t *testing.T) {
 			patch, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids)
 			return patch, err
 		}},
-		{"ListMirrorIssueBoards", func(ids []string) (any, error) { return s.ListMirrorIssueBoards(root, ids) }},
+		{"ListMirrorIssueBoards", func(ids []string) (any, error) { return s.ListMirrorIssueBoards(root, ids, ids) }},
 		{"ListMirrorCards", func(ids []string) (any, error) { return s.ListMirrorCards(root, ids) }},
 		{"GetMirrorCatalog users", func([]string) (any, error) {
 			return s.GetMirrorCatalog(root, []string{"acc-user1", "acc-user1"}, []string{"1"})
@@ -402,7 +402,7 @@ func TestMirrorListReadsTakeEachIDOnce(t *testing.T) {
 			t.Errorf("%s of a list with repeats = %+v\nwant %+v", read.name, got, want)
 		}
 	}
-	if boards, err := s.ListMirrorIssueBoards(root, twice); err != nil || len(boards) != 4 || boards[0] != (MirrorIssueBoard{ids[3], "10"}) {
+	if boards, err := s.ListMirrorIssueBoards(root, twice, twice); err != nil || len(boards) != 4 || boards[0] != (MirrorIssueBoard{ids[3], "10"}) {
 		t.Errorf("boards of %v = %v, %v; want ids[3] on 10 and 11 first, then the others once", twice, boards, err)
 	}
 	if catalog, err := s.GetMirrorCatalog(root, []string{"acc-user1", "acc-user1"}, []string{"3", "1", "3"}); err != nil ||

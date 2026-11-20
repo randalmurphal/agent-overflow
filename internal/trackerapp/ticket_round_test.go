@@ -164,9 +164,11 @@ func TestARoundFailureIsToldOncePerTicket(t *testing.T) {
 	}
 }
 
-// A hidden ticket is left out of the round and reads when shown again
-// after a round passed without it; a ticket opened between rounds reads at
-// once and joins the next round.
+// A hidden ticket is left out of the round. Shown again before its read is
+// due it reads nothing; shown after its time passed while it was hidden,
+// it is due at once, with every shown ticket then due, in one read, even
+// when every ticket was hidden and the round stopped. A ticket opened
+// between rounds reads at once and joins the next round.
 func TestARoundReadsTheShownTickets(t *testing.T) {
 	t.Parallel()
 	m, _, issues, subs := newRoundFixture(t, 2, false)
@@ -181,10 +183,40 @@ func TestARoundReadsTheShownTickets(t *testing.T) {
 	if err := m.svc.SetSubscriptionVisible(subs[0].ID, true); err != nil {
 		t.Fatal(err)
 	}
+	quiet(t, m.svc)
+	if n := m.p.count("Details"); n != reads {
+		t.Fatalf("shown again before its read was due, it made %d reads", n-reads)
+	}
+	show := func(sub TicketSubscription, visible bool) {
+		t.Helper()
+		if err := m.svc.SetSubscriptionVisible(sub.ID, visible); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One hidden: shown again, both are due and read together.
+	show(subs[0], false)
+	m.pass(time.Hour)
+	reads = m.p.count("Details")
+	show(subs[0], true)
 	waitCalls(t, m.p, "Details", reads+1)
-	m.settledTickets(t)
-	if got := m.p.detailsRead()[reads]; !slices.Equal(got, issues[:1]) {
-		t.Fatalf("shown again, it read %v", got)
+	quiet(t, m.svc)
+	if got := m.p.detailsRead()[reads:]; len(got) != 1 || !slices.Equal(got[0], issues) {
+		t.Fatalf("shown again after its time passed, the reads %v", got)
+	}
+	// Both hidden, so no round runs: each is due when shown.
+	rd := m.svc.roundOf(m.conn.ID)
+	show(subs[0], false)
+	show(subs[1], false)
+	waitClosed(t, "the round with every ticket hidden", rd.done)
+	m.pass(time.Hour)
+	for _, i := range []int{0, 1} {
+		reads = m.p.count("Details")
+		show(subs[i], true)
+		waitCalls(t, m.p, "Details", reads+1)
+		quiet(t, m.svc)
+		if got := m.p.detailsRead()[reads:]; len(got) != 1 || !slices.Equal(got[0], issues[i:i+1]) {
+			t.Fatalf("every ticket hidden, %s shown again after its time passed: the reads %v", issues[i], got)
+		}
 	}
 
 	// A third ticket, opened between rounds.
@@ -269,9 +301,7 @@ func TestTheRoundFollowsTheShownTickets(t *testing.T) {
 				return ctx.Err()
 			}
 		})
-		m.svc.subMu.Lock()
-		m.svc.oweRetryLocked(m.conn.ID, time.Time{})
-		m.svc.subMu.Unlock()
+		m.readSoon(issues[0])
 		select {
 		case <-inRead:
 		case <-time.After(20 * time.Second):

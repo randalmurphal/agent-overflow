@@ -104,9 +104,22 @@ type subscriptions struct {
 	// loop is the linked loop (linked_loop.go).
 	loop loopState
 	// rounds are the connections' ticket rounds (ticket_round.go), and
-	// reads the counter that orders the reads settled into ticket pumps.
+	// stamps the counter that orders what settles into ticket pumps
+	// (nextStampLocked).
 	rounds map[string]*ticketRound
-	reads  uint64
+	stamps uint64
+	// gens is each connection's mirror generation (genLocked).
+	gens map[string]uint64
+}
+
+// genLocked is connection conn's mirror generation: it moves when the
+// connection's subscriptions end (turned off or removed), which is also
+// when its mirror is detached, so a run and a pump of one generation
+// store into and show one mirror. A run reads it with its mirror root
+// (Service.hold), a pump when it is made, and the funnel delivers a run's
+// changes only to the pumps of its generation. The caller holds subMu.
+func (s *Service) genLocked(conn string) uint64 {
+	return s.subs.gens[conn]
 }
 
 // handle is one subscriber's reference on a pump.
@@ -264,6 +277,10 @@ func (s *Service) haltSubscriptions() {
 // that close when their goroutines have exited. The caller holds opMu and
 // subMu.
 func (s *Service) endConnectionLocked(id string) []<-chan struct{} {
+	if s.subs.gens == nil {
+		s.subs.gens = map[string]uint64{}
+	}
+	s.subs.gens[id]++
 	var exited []<-chan struct{}
 	if done := s.stopRoundLocked(id); done != nil {
 		exited = append(exited, done)

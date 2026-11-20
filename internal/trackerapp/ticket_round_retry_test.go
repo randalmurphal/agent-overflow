@@ -49,9 +49,7 @@ func TestTheRoundRetriesFailedTicketReads(t *testing.T) {
 	m.events.issueEvents(t, 3)
 	m.settledTickets(t)
 	failing.Store(1)
-	m.svc.subMu.Lock()
-	m.svc.oweRetryLocked(m.conn.ID, time.Time{})
-	m.svc.subMu.Unlock()
+	m.readSoon("10001", "10002")
 	got = m.events.issueEvents(t, 7)[3:]
 	if len(got) != 4 || got[0].Failure == nil || got[1].Failure == nil || got[2].Failure != nil || got[3].Failure != nil {
 		t.Fatalf("events %+v", got)

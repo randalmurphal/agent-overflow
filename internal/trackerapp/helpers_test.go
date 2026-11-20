@@ -58,6 +58,13 @@ type fixture struct {
 	tempo   *tempotest.Server
 	linear  *lineartest.Server
 	changes atomic.Int64
+	// skew moves the service's clock (Deps.Now) forward, in nanoseconds;
+	// pass moves it.
+	skew atomic.Int64
+	// ticking makes each read of the clock a millisecond later than the
+	// last, ticks counting them (tickingClock).
+	ticking atomic.Bool
+	ticks   atomic.Int64
 	// origin, when set, replaces the fakes as the Origin.
 	origin func(kind, site string) (string, error)
 	// events records what the service emits and reports.
@@ -79,6 +86,10 @@ func testCallbacks(d Deps, log *eventLog) Deps {
 }
 
 func newFixture(t *testing.T) *fixture { return newFixtureWith(t, Cadence{}) }
+
+// pass moves the service's clock d forward, as time passing would, safe
+// while the service's goroutines read it.
+func (f *fixture) pass(d time.Duration) { f.skew.Add(int64(d)) }
 
 // newFixtureWith is newFixture with the service's sync intervals cad.
 func newFixtureWith(t *testing.T, cad Cadence) *fixture {
@@ -104,7 +115,13 @@ func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 			return f.linear.URL(), nil
 		},
 		Version: "1.2.3",
-		Now:     func() time.Time { return time.UnixMilli(1_800_000_000_000) },
+		Now: func() time.Time {
+			now := time.UnixMilli(1_800_000_000_000).Add(time.Duration(f.skew.Load()))
+			if f.ticking.Load() {
+				now = now.Add(time.Duration(f.ticks.Add(1)) * time.Millisecond)
+			}
+			return now
+		},
 		Life:    t.Context(),
 		Cadence: cad,
 	}, f.events)

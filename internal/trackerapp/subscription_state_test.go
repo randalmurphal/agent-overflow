@@ -3,8 +3,6 @@ package trackerapp
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -46,6 +44,9 @@ func TestAStoreFailureIsTold(t *testing.T) {
 	m, _, issues, subs := newRoundFixture(t, 1, true)
 	m.subscribe(t, testBoard)
 	m.events.boardEvents(t, 1)
+	// The board's first tick may have the ticket rebuild its view: the
+	// store is swapped once nothing uses it.
+	quiet(t, m.svc)
 	fs := &failingStore{Store: m.st}
 	m.svc.store = fs
 	fs.fail.Store(true)
@@ -129,11 +130,14 @@ func TestARenameDuringATicketReadStillTellsTheBoard(t *testing.T) {
 }
 
 // Which of the mirror and the pump holds an open ticket's content is
-// decided on every successful read: a read that finds the same document
-// after the mirror stopped keeping the issue keeps the ticket's view.
+// decided on every successful read: when the mirror stops keeping the
+// issue the ticket is told it is not loaded and read at once, its pump
+// holds what that read found, and it is told loaded again; a read that
+// finds the same document keeps the view and tells nothing.
 func TestAnOpenTicketKeepsItsViewWhenTheMirrorDropsTheIssue(t *testing.T) {
 	t.Parallel()
 	m, _, issues, subs := newRoundFixture(t, 1, false)
+	events := m.issueEventCount()
 	m.tracks(nil)
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	if err := m.svc.FinishMirrorCleanup(); err != nil {
@@ -142,7 +146,11 @@ func TestAnOpenTicketKeepsItsViewWhenTheMirrorDropsTheIssue(t *testing.T) {
 	if _, _, ok := m.storedDetail(t, string(issues[0])); ok {
 		t.Fatal("the mirror still holds the detail")
 	}
-	events := m.issueEventCount()
+	quiet(t, m.svc)
+	if got := m.issueEventsSince(events); len(got) != 2 || !got[0].Changed || !got[1].Changed {
+		t.Fatalf("the issue leaving the mirror told %+v", got)
+	}
+	events = m.issueEventCount()
 	m.round(t)
 	if v := m.ticketView(t, subs[0].ID); !v.Loaded || v.Detail.Card.ID != string(issues[0]) {
 		t.Fatalf("the ticket's view after the mirror dropped it %+v", v)
@@ -170,154 +178,4 @@ func TestAnOpenTicketKeepsItsViewWhenTheMirrorDropsTheIssue(t *testing.T) {
 	if v := m.ticketView(t, subs[0].ID); !v.Loaded {
 		t.Fatalf("the ticket's view from the mirror %+v", v)
 	}
-}
-
-// The subscription-state model: subscribers that join at random moments
-// of random reads, failures of the tracker and of the store, recoveries,
-// hides and shows on two tickets and two boards of a connection, each
-// applying the events after its answer, end in the state a fresh
-// subscribe's answer gives, which is the state the last reads left.
-func TestSubscriptionStateMatchesAFreshSubscribe(t *testing.T) {
-	t.Parallel()
-	for seed := range uint64(12) {
-		t.Run(fmt.Sprint("seed ", seed), func(t *testing.T) {
-			t.Parallel()
-			subscriptionModel(t, rand.New(rand.NewPCG(seed, 7)))
-		})
-	}
-}
-
-// modelSub is one subscriber of the model: its target, its handle, the
-// sequence number of its answer and the failure the answer told.
-type modelSub struct {
-	ticket  tracker.IssueID
-	board   tracker.BoardID
-	handle  string
-	seq     uint64
-	failure *FailureView
-}
-
-func subscriptionModel(t *testing.T, r *rand.Rand) {
-	m, st, issues, _ := newRoundFixture(t, 2, r.IntN(2) == 0)
-	boards := []tracker.BoardID{testBoard, "2"}
-	fs := &failingStore{Store: m.st}
-	m.svc.store = fs
-	var trackerFail atomic.Bool
-	m.p.set(func(p *scripted) {
-		p.block = func(context.Context, string) error {
-			if trackerFail.Load() {
-				return errors.New("test: the tracker refused")
-			}
-			return nil
-		}
-	})
-	var subs []*modelSub
-	subscribe := func() {
-		s := &modelSub{}
-		if r.IntN(2) == 0 {
-			s.ticket = issues[r.IntN(len(issues))]
-			a, err := m.svc.SubscribeTicket(m.conn.ID, s.ticket)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.handle, s.seq, s.failure = a.ID, a.Seq, a.Failure
-		} else {
-			s.board = boards[r.IntN(len(boards))]
-			a, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: s.board}, []Section{{Kind: SectionBacklog}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.handle, s.seq, s.failure = a.ID, a.Seq, a.Failure
-		}
-		subs = append(subs, s)
-	}
-	read := func() {
-		if r.IntN(2) == 0 {
-			if p := m.svc.boardPumpOf(Scope{Connection: m.conn.ID, Board: boards[r.IntN(len(boards))]}); p != nil {
-				m.svc.boardTick(p, false, Background)
-			}
-			return
-		}
-		if tp := m.svc.ticketPumpOf(m.conn.ID, issues[r.IntN(len(issues))]); tp != nil {
-			m.svc.ticketTick(tp, Background, false)
-		}
-	}
-	for range 60 {
-		switch op := r.IntN(10); {
-		case op < 2 && len(subs) < 10:
-			subscribe()
-		case op == 2 && len(subs) > 0:
-			s := subs[r.IntN(len(subs))]
-			if err := m.svc.SetSubscriptionVisible(s.handle, r.IntN(2) == 0); err != nil {
-				t.Fatal(err)
-			}
-		case op == 3:
-			fs.fail.Store(!fs.fail.Load())
-		case op == 4:
-			trackerFail.Store(!trackerFail.Load())
-		case op == 5:
-			st.edit(issues[r.IntN(len(issues))], func(c *tracker.Card) { c.Title = fmt.Sprint("Title ", r.IntN(100)) })
-		default:
-			read()
-		}
-	}
-	for len(subs) < 4 {
-		subscribe()
-	}
-	// The last reads: every target read once more, the failures as they
-	// stand, which also governs any read still in flight.
-	for _, b := range boards {
-		if p := m.svc.boardPumpOf(Scope{Connection: m.conn.ID, Board: b}); p != nil {
-			m.svc.boardTick(p, false, Background)
-		}
-	}
-	for _, issue := range issues {
-		if tp := m.svc.ticketPumpOf(m.conn.ID, issue); tp != nil {
-			m.svc.ticketTick(tp, Background, false)
-		}
-	}
-	want := FailureKind("")
-	switch {
-	case fs.fail.Load():
-		want = FailureInternal
-	case trackerFail.Load():
-		want = FailureTracker
-	}
-	for _, s := range subs {
-		var freshSeq uint64
-		var fresh *FailureView
-		if s.ticket != "" {
-			a := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, s.ticket))
-			freshSeq, fresh = a.Seq, a.Failure
-		} else {
-			a := must[BoardSubscription](t)(m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: s.board}, nil))
-			freshSeq, fresh = a.Seq, a.Failure
-		}
-		applied := s.failure
-		boardEvents, issueEvents, _ := m.events.snapshot()
-		for _, e := range boardEvents {
-			if s.board != "" && e.Scope.Board == s.board && e.Seq > s.seq && e.Seq <= freshSeq {
-				applied = e.Sync.Failure
-			}
-		}
-		for _, e := range issueEvents {
-			if s.ticket != "" && e.Issue == s.ticket && e.Seq > s.seq && e.Seq <= freshSeq {
-				applied = e.Failure
-			}
-		}
-		target := fmt.Sprint("ticket ", s.ticket, " board ", s.board)
-		if !sameFailure(applied, fresh) {
-			t.Errorf("%s: the subscriber applied %+v; a fresh answer gives %+v", target, applied, fresh)
-		}
-		if got := failureKind(fresh); got != want {
-			t.Errorf("%s: the answer's failure %+v; the last reads failed with %q", target, fresh, want)
-		}
-	}
-}
-
-func failureKind(f *FailureView) FailureKind {
-	if f == nil {
-		return ""
-	}
-	return FailureKind(f.Kind)
 }

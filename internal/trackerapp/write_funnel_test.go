@@ -88,12 +88,18 @@ func TestAWriteReachesTheFunnelOnce(t *testing.T) {
 	boards, issues, _ := f.events.snapshot()
 	nb, ni := len(boards), len(issues)
 	details := len(f.p.detailsRead())
+	nudged := func() uint64 {
+		f.svc.subMu.Lock()
+		defer f.svc.subMu.Unlock()
+		return tp.nudged
+	}
+	before := nudged()
 	f.answer(appliedEdit)
 	f.state.set(testBoard, writeRow("10001", 1, "a"))
 	if _, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(tp.cardChanged) > 0 {
+	if nudged() != before {
 		t.Fatal("the ticket the write read was nudged to read again")
 	}
 	f.events.waitFor(t, "the write's events", func(b []BoardEvent, i []IssueEvent, _ []error) bool {

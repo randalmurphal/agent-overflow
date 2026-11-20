@@ -158,7 +158,7 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 	defer r.finish()
 	defer func() {
 		ch := out.Changes()
-		s.publish(r.root, scope.Connection, ch, ownOf(scope, ch), origin)
+		s.publish(r.root, r.gen, scope.Connection, ch, ownOf(scope, ch), origin)
 	}()
 	r.scope = scope
 	if err := r.readState(); errors.Is(err, errEnded) || endsMirror(err) {

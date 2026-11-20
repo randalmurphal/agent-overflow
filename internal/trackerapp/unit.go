@@ -21,6 +21,7 @@ type run struct {
 	row  store.TrackerConnection
 	p    tracker.Provider
 	root int64
+	gen  uint64 // root's mirror generation (genLocked)
 	at   stamp
 	ctx  context.Context
 	// startErr is a client that could not be built: the tick's failure,
@@ -54,6 +55,7 @@ type run struct {
 type connHold struct {
 	row  store.TrackerConnection
 	root int64
+	gen  uint64
 	p    tracker.Provider
 	c    *clients
 }
@@ -126,7 +128,7 @@ func (s *Service) hold(id string) (*run, error) {
 		inUse := s.clients[id] == h.c
 		s.mu.Unlock()
 		if inUse {
-			return &run{s: s, row: h.row, root: h.root, p: h.p, at: s.begin(h.c)}, nil
+			return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, at: s.begin(h.c)}, nil
 		}
 		delete(s.holds, id)
 	}
@@ -148,7 +150,7 @@ func (s *Service) hold(id string) (*run, error) {
 	case err != nil:
 		return nil, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
 	}
-	r := &run{s: s, row: row, root: root}
+	r := &run{s: s, row: row, root: root, gen: s.gen(id)}
 	p, c, err := s.providerLocked(row)
 	if _, ok := errors.AsType[*ClientError](err); ok {
 		// No client means no call: the connection's problem is why.
@@ -159,28 +161,38 @@ func (s *Service) hold(id string) (*run, error) {
 		return nil, err
 	}
 	r.p, r.at = p, s.begin(c)
-	s.holds[id] = &connHold{row: row, root: root, p: p, c: c}
+	s.holds[id] = &connHold{row: row, root: root, gen: r.gen, p: p, c: c}
 	return r, nil
 }
 
 // rehold looks connection id's mirror root up again after the store
-// reported the root held, stale, gone, and keeps the new one; a
-// connection turned off meanwhile ends the run (errEnded).
-func (s *Service) rehold(id string, stale int64) (int64, error) {
+// reported the root held, stale, gone, and keeps the new one with its
+// generation; a connection turned off meanwhile ends the run (errEnded).
+func (s *Service) rehold(id string, stale int64) (int64, uint64, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	root, _, err := s.store.GetOrCreateMirrorRoot(id)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheGone), errors.Is(err, sql.ErrNoRows):
 		delete(s.holds, id)
-		return 0, fmt.Errorf("%w: %w", errEnded, err)
+		return 0, 0, fmt.Errorf("%w: %w", errEnded, err)
 	case err != nil:
-		return 0, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
+		return 0, 0, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
 	}
+	gen := s.gen(id)
 	if h := s.holds[id]; h != nil && h.root == stale {
-		h.root = root
+		h.root, h.gen = root, gen
 	}
-	return root, nil
+	return root, gen, nil
+}
+
+// gen is connection id's mirror generation (genLocked). Read under opMu
+// with the mirror root, it pairs them: a turn off moves it, under opMu,
+// before it detaches the root.
+func (s *Service) gen(id string) uint64 {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return s.genLocked(id)
 }
 
 // readState reads the scope's sync state, the tick's one read before its
@@ -195,7 +207,7 @@ func (r *run) readState() error {
 	board := string(r.scope.Board)
 	st, shown, err := r.s.store.GetMirrorSync(r.root, board, r.steadyAt())
 	if errors.Is(err, store.ErrTrackerCacheGone) {
-		if r.root, err = r.s.rehold(r.row.ID, r.root); err != nil {
+		if r.root, r.gen, err = r.s.rehold(r.row.ID, r.root); err != nil {
 			return err
 		}
 		st, shown, err = r.s.store.GetMirrorSync(r.root, board, r.steadyAt())

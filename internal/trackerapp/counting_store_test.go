@@ -170,9 +170,9 @@ func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, sections 
 	return c.Store.ReadMirrorBoardPatch(root, board, sections, issues)
 }
 
-func (c *countingStore) ListMirrorIssueBoards(root int64, issues []string) ([]store.MirrorIssueBoard, error) {
+func (c *countingStore) ListMirrorIssueBoards(root int64, issues, parents []string) ([]store.MirrorIssueBoard, error) {
 	c.count("ListMirrorIssueBoards")
-	return c.Store.ListMirrorIssueBoards(root, issues)
+	return c.Store.ListMirrorIssueBoards(root, issues, parents)
 }
 
 func (c *countingStore) ReadMirrorRefreshTargets(root int64, issues, boards []string) (store.MirrorRefreshTargets, error) {

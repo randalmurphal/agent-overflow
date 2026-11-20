@@ -121,11 +121,13 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 			f.details.failure, f.detailsErr = nil, err
 		}
 	}
-	s.publish(r.root, id, f.ch, f.own, &tickOrigin{tickets: f.pumps})
+	s.publish(r.root, r.gen, id, f.ch, f.own, &tickOrigin{tickets: f.pumps})
 	if len(f.pumps) > 0 {
-		// A refresh that could not read an open ticket is retried by the
-		// connection's round.
-		s.oweFailedRead(id, s.settleTickets(ctx, id, f.pumps, f.began, f.reads[:len(f.pumps)], f.details, f.detailsErr, millis(s.now())))
+		// The open tickets settle with everything the write's refresh stored;
+		// one it could not read is due on the connection's retry schedule.
+		d := f.details
+		d.ch = f.ch
+		s.settleTickets(ctx, id, f.pumps, f.began, f.reads[:len(f.pumps)], d, f.detailsErr, millis(s.now()))
 	}
 	if ended {
 		view.Ended = true

@@ -18,6 +18,8 @@ import (
 type boardPump struct {
 	core  pump.Core[readRequest]
 	scope Scope
+	// gen is the mirror generation the pump shows (genLocked).
+	gen uint64
 	// every is the delta interval of the connection's kind.
 	every time.Duration
 	// exited closes when the goroutine has exited, or at once when it
@@ -174,7 +176,7 @@ func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start b
 		if s.subs.boards == nil {
 			s.subs.boards = map[Scope]*boardPump{}
 		}
-		p = &boardPump{core: s.newCore(), scope: scope, every: s.cadence.delta(kind), exited: make(chan struct{})}
+		p = &boardPump{core: s.newCore(), scope: scope, gen: s.genLocked(scope.Connection), every: s.cadence.delta(kind), exited: make(chan struct{})}
 		s.subs.boards[scope] = p
 		start = true
 	}

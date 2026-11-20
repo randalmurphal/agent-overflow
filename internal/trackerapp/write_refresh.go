@@ -231,18 +231,18 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 		}
 	}
 	f.pumps = open
-	f.began, f.reads = r.s.ticketReads(open)
+	f.began, f.reads = r.s.ticketReads(open, true)
 	for _, id := range cached {
 		if !slices.ContainsFunc(open, func(tp *ticketPump) bool { return string(tp.key.issue) == id }) {
-			f.reads = append(f.reads, &ticketRead{issue: tracker.IssueID(id)})
+			f.reads = append(f.reads, &ticketRead{issue: tracker.IssueID(id), full: true})
 		}
 	}
 	if len(f.reads) == 0 {
 		return nil
 	}
-	ch, err := r.verifiedDetails(f.reads, true, 0)
+	ch, err := r.verifiedDetails(f.reads, 0)
 	f.ch.add(ch)
-	f.details = detailsRead{ch: ch, root: r.root, kind: r.row.Kind}
+	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
 	if err == nil {
 		f.covered(detailResources(f.reads)...)
 		return nil

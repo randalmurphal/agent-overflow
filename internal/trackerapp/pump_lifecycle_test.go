@@ -274,15 +274,15 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 }
 
 // On a tracker whose update time does not move with a comment, an open
-// ticket picks a new comment up at its next read with no card change: the
-// mirror's copy for an issue it keeps, the view the pump holds for one it
-// does not.
+// ticket picks a new comment up at its next round with no card change:
+// the mirror's copy for an issue it keeps, the view the pump holds for one
+// it does not. The test runs each round itself.
 func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 	t.Parallel()
 	for _, kept := range []bool{true, false} {
 		t.Run(map[bool]string{true: "kept", false: "not kept"}[kept], func(t *testing.T) {
 			t.Parallel()
-			m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: 10 * time.Millisecond})
+			m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 			issue := tracker.IssueID("10001")
 			if !kept {
 				issue = "20001"
@@ -308,13 +308,20 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 				t.Fatal(err)
 			}
 			m.events.issueEvents(t, 1)
-			waitCalls(t, m.p, "Details", 3) // reads that found no change
+			m.settledTickets(t)
+			// Rounds that find no change.
+			m.round(t)
+			m.round(t)
+			if n := m.p.count("Details"); n != 3 {
+				t.Fatalf("the opening and two rounds read %d details", n)
+			}
 			if _, issues, _ := m.events.snapshot(); len(issues) != 1 {
 				t.Fatalf("reads that found no change told %+v", issues)
 			}
 			mu.Lock()
 			comments = append(comments, tracker.Comment{ID: "2", Author: "acc-user1", Body: "Second", Created: time.UnixMilli(1_799_000_100_000)})
 			mu.Unlock()
+			m.round(t)
 			if e := m.events.issueEvents(t, 2)[1]; e.Issue != issue || !e.Changed {
 				t.Fatalf("the new comment's event %+v", e)
 			}

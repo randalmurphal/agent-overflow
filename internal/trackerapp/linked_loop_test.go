@@ -17,7 +17,7 @@ type loopStore struct {
 	mu                      sync.Mutex
 	lists, linked, cleanups int
 	asked                   int
-	cleanupErr              error
+	cleanupErr, listErr     error
 	changed                 chan struct{}
 	connected               bool
 }
@@ -35,7 +35,11 @@ func (l *loopStore) count(f func()) {
 }
 
 func (l *loopStore) ListTrackerConnections() ([]store.TrackerConnection, error) {
-	l.count(func() { l.lists++ })
+	var err error
+	l.count(func() { l.lists++; err = l.listErr })
+	if err != nil {
+		return nil, err
+	}
 	return l.Store.ListTrackerConnections()
 }
 
@@ -123,8 +127,8 @@ func TestLinkedLoopFollowsTheConnections(t *testing.T) {
 	if err := f.svc.StartLinkedSync(); err != nil {
 		t.Fatal(err)
 	}
-	if lists, _, _, _ := ls.snapshot(); lists != 1 {
-		t.Fatalf("arming the loop twice with no connection read the connections %d times; want 1", lists)
+	if lists, _, _, _ := ls.snapshot(); lists != 2 {
+		t.Fatalf("arming the loop twice with no connection read the connections %d times; want 2", lists)
 	}
 	if f.svc.loopRunning() != nil {
 		t.Fatal("the loop runs with no connection on")
@@ -161,6 +165,41 @@ func assertExited(t *testing.T, done <-chan struct{}, what string) {
 	case <-done:
 	default:
 		t.Fatalf("the loop runs after %s returned", what)
+	}
+}
+
+// A loop running because a read of the connections failed, with none on,
+// stops at the next read that succeeds: a later StartLinkedSync, or its
+// own round.
+func TestALoopWithNoConnectionStopsAtTheNextRead(t *testing.T) {
+	t.Parallel()
+	for _, by := range []string{"start", "round"} {
+		t.Run(by, func(t *testing.T) {
+			t.Parallel()
+			f, ls := newLoopFixture(t)
+			// No round reads the connections until the test lets one.
+			ls.count(func() { ls.connected, ls.listErr = false, errors.New("test: the connections could not be read") })
+			if err := f.svc.StartLinkedSync(); err == nil {
+				t.Fatal("a failed read of the connections reported no failure")
+			}
+			running := f.svc.loopRunning()
+			if running == nil {
+				t.Fatal("no loop runs after the failed read")
+			}
+			ls.count(func() { ls.listErr = nil })
+			if by == "start" {
+				if err := f.svc.StartLinkedSync(); err != nil {
+					t.Fatal(err)
+				}
+				assertExited(t, running, "StartLinkedSync with no connection on")
+				return
+			}
+			ls.count(func() { ls.connected = true })
+			waitClosed(t, "the loop with no connection on", running)
+			if f.svc.loopRunning() != nil {
+				t.Fatal("a loop runs with no connection on")
+			}
+		})
 	}
 }
 

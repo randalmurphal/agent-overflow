@@ -7,7 +7,8 @@ import (
 )
 
 // The reads a client's patch of a board needs: which boards hold rows of
-// changed issues (ListMirrorIssueBoards, for the service's change funnel),
+// changed issues and of their children (ListMirrorIssueBoards, for the
+// service's change funnel),
 // and the rows of named issues that are members of each section a client
 // holds, with the board's totals (ReadMirrorBoardPatch).
 
@@ -128,36 +129,43 @@ type MirrorIssueBoard struct {
 }
 
 // mirrorIssueBoardsSQL reads the board rows of the issues of the JSON list
-// ?2, each probed by its key prefix.
+// ?2, and those of the issues whose parent is in the JSON list ?3, each
+// probed by its key prefix.
 const mirrorIssueBoardsSQL = `SELECT b.issue_id, b.board_id FROM json_each(?2) l
 	CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value
 	UNION ALL
-	SELECT b.issue_id, b.board_id FROM json_each(?2) l
+	SELECT b.issue_id, b.board_id FROM json_each(?3) l
 	CROSS JOIN tracker_cache_issues c ON c.root_id = ?1 AND c.parent_id = l.value AND c.parent_id <> ''
 	CROSS JOIN tracker_cache_board_issues b ON b.root_id = c.root_id AND b.issue_id = c.issue_id`
 
-// ListMirrorIssueBoards reads which boards hold a row of each of issueIDs
-// (at most mirrorMaxLookup, a repeated one read once), and of each issue
-// whose parent is one of them, whose row shows its parent's key and title,
-// in one statement; a board no project shows may be among them, and a pair
-// may repeat (an issue named beside its parent). An issue with no row is
-// absent. A parent's children are not bounded, so the read waits for a
-// history read slot (mirrorReadSnapshot).
-func (s *Store) ListMirrorIssueBoards(rootID int64, issueIDs []string) ([]MirrorIssueBoard, error) {
-	if len(issueIDs) > mirrorMaxLookup {
-		return nil, fmt.Errorf("%w: %d issues, over %d", ErrInvalidTrackerCache, len(issueIDs), mirrorMaxLookup)
+// ListMirrorIssueBoards reads which boards hold a row of each of issueIDs,
+// and of each issue whose parent is one of parentIDs, whose row shows its
+// parent's key and title while the mirror keeps the parent (each list at
+// most mirrorMaxLookup, a repeated one read once), in one statement. A
+// parent is named by ID alone, so a parent that just lost its last row,
+// or has none yet, still names its children. A board no project shows may
+// be among them, and a pair may repeat (an issue named beside its
+// parent). An issue with no row is absent. A parent's children are not
+// bounded, so the read waits for a history read slot (mirrorReadSnapshot).
+func (s *Store) ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]MirrorIssueBoard, error) {
+	if len(issueIDs) > mirrorMaxLookup || len(parentIDs) > mirrorMaxLookup {
+		return nil, fmt.Errorf("%w: %d issues and %d parents, over %d", ErrInvalidTrackerCache, len(issueIDs), len(parentIDs), mirrorMaxLookup)
 	}
-	if len(issueIDs) == 0 {
+	if len(issueIDs)+len(parentIDs) == 0 {
 		return nil, nil
 	}
 	list, err := encodeMirrorIDs(issueIDs)
 	if err != nil {
 		return nil, err
 	}
-	label := fmt.Sprintf("read tracker mirror %d boards of %d issues", rootID, len(issueIDs))
+	parents, err := encodeMirrorIDs(parentIDs)
+	if err != nil {
+		return nil, err
+	}
+	label := fmt.Sprintf("read tracker mirror %d boards of %d issues and children of %d", rootID, len(issueIDs), len(parentIDs))
 	return mirrorReadSnapshot(s, label, func(q sqlQueryer) ([]MirrorIssueBoard, error) {
 		var out []MirrorIssueBoard
-		err := scanMirrorRows(q, mirrorIssueBoardsSQL, []any{rootID, list}, func(r rowScanner) error {
+		err := scanMirrorRows(q, mirrorIssueBoardsSQL, []any{rootID, list, parents}, func(r rowScanner) error {
 			var ib MirrorIssueBoard
 			err := r.Scan(&ib.IssueID, &ib.BoardID)
 			out = append(out, ib)

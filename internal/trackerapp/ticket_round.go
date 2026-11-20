@@ -3,24 +3,24 @@ package trackerapp
 import (
 	"cmp"
 	"context"
-	"errors"
-	"hash/maphash"
 	"slices"
 	"time"
-
-	"agent-overflow/internal/pump"
-	"agent-overflow/internal/tracker"
 )
 
-// A connection's round polls its open tickets together: one goroutine and
-// one timer per connection, alive while a client shows one of its
-// tickets, reads every shown ticket each Cadence.Ticket of the
-// connection's kind in one verified read (readTickets), and owns the
-// retry schedule of the connection's ticket reads, a pump's own included.
-// A hidden ticket is left out and owes a read its pump makes when shown
-// again.
+// A connection's round makes every background read of its open tickets:
+// one goroutine and one timer per connection, alive while a client shows
+// one of its tickets. Each ticket carries when its next read is due
+// (ticketPump.due), set by whoever changes it under subMu: a settled read
+// makes it due with the round's next regular read, a failed read on the
+// connection's retry schedule, and a stored change of its card at once
+// (readNowLocked). The round's timer is the earliest due time of the shown
+// tickets, and each time it fires the round reads every shown ticket then
+// due together, in one verified read (readTickets). A hidden ticket is
+// left out and keeps its due time, so it is due when shown if its time
+// passed while hidden. The pump makes only the reads a person waits on:
+// the opening's first read and a refresh (pump_ticket.go).
 
-// ticketRound is a connection's round. Its fields below done are under
+// ticketRound is a connection's round. Its fields below wake are under
 // subMu.
 type ticketRound struct {
 	conn   string
@@ -28,21 +28,30 @@ type ticketRound struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
-	// owed wakes the round when a pump's own read failed; owing and owedAt
-	// (when a rate limit lifts) say what it owes.
-	owed   chan struct{}
-	owing  bool
-	owedAt time.Time
+	// wake makes the round take its timer again from the due times; one
+	// queued wake is enough.
+	wake chan struct{}
+
+	// next is when the round's next regular read is due: a ticket whose
+	// read settled is due then, so the shown tickets are read together.
+	// Zero until the first read settles while the round runs.
+	next time.Time
+	// delay is the step of the retry schedule the connection's failed
+	// ticket reads are on, retryAt when the scheduled retry is due, and
+	// hold when a rate limit lifts: no round starts before it.
+	delay         time.Duration
+	retryAt, hold time.Time
 }
 
 // followRoundLocked starts connection conn's round when a ticket of it is
-// shown and none runs, and stops it when none is shown, returning the
+// shown and none runs, has a running round take its timer again (a ticket
+// shown again may be due), and stops it when none is shown, returning the
 // channel that closes when its goroutine exited, for a caller that joins
 // it. The caller holds subMu.
 func (s *Service) followRoundLocked(conn string) <-chan struct{} {
 	var shown *ticketPump
 	for k, tp := range s.subs.tickets {
-		if k.connection == conn && !tp.over && !tp.core.DeadLocked() && !tp.core.Paused() {
+		if k.connection == conn && tp.shownLocked() {
 			shown = tp
 			break
 		}
@@ -50,17 +59,25 @@ func (s *Service) followRoundLocked(conn string) <-chan struct{} {
 	switch rd := s.subs.rounds[conn]; {
 	case shown != nil && rd == nil && !s.subs.halted:
 		ctx, cancel := context.WithCancel(s.life)
-		rd = &ticketRound{conn: conn, every: shown.every, ctx: ctx, cancel: cancel, done: make(chan struct{}), owed: make(chan struct{}, 1)}
+		rd = &ticketRound{conn: conn, every: shown.every, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
 		if s.subs.rounds == nil {
 			s.subs.rounds = map[string]*ticketRound{}
 		}
 		s.subs.rounds[conn] = rd
 		s.workers.Add(1)
 		go s.runTicketRound(rd)
+	case shown != nil && rd != nil:
+		nudge(rd.wake)
 	case shown == nil && rd != nil:
 		return s.stopRoundLocked(conn)
 	}
 	return nil
+}
+
+// shownLocked reports whether tp is live and a handle shows it. The
+// caller holds subMu.
+func (tp *ticketPump) shownLocked() bool {
+	return !tp.over && !tp.core.DeadLocked() && !tp.core.Paused()
 }
 
 // stopRoundLocked cancels connection conn's round, if any, and returns the
@@ -75,82 +92,61 @@ func (s *Service) stopRoundLocked(conn string) <-chan struct{} {
 	return rd.done
 }
 
-// runTicketRound is a round's goroutine: a round every interval, and on
-// the retry schedule while the connection's ticket reads fail.
+// runTicketRound is a round's goroutine: it waits for the earliest due
+// time of the shown tickets, or a wake, and reads the tickets then due.
 func (s *Service) runTicketRound(rd *ticketRound) {
 	defer s.workers.Done()
 	defer close(rd.done)
-	next := time.NewTimer(rd.every)
-	defer next.Stop()
-	retry := pump.Retry{Base: s.cadence.RetryBase, Interval: rd.every}
-	round := func() {
-		res := s.roundTick(rd)
-		if rd.ctx.Err() != nil {
-			return
-		}
-		retry.Arm(res.failed, res.retryAt)
-		next.Reset(rd.every)
-	}
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 	for {
+		at, ok := s.roundAt(rd)
+		if ok {
+			timer.Reset(max(at.Sub(s.now()), 0))
+		} else {
+			timer.Stop()
+		}
 		select {
 		case <-rd.ctx.Done():
 			return
-		case <-rd.owed:
-			// A pump's own read failed: the round retries it, unless a retry
-			// is armed already.
-			if at, ok := s.takeOwed(rd); ok && retry.C() == nil {
-				retry.Arm(true, at)
-			}
-		case <-retry.C():
-			round()
-		case <-next.C:
-			// A rate limit leaves the timer unarmed: its release runs the round.
-			if retry.Held() {
-				continue
-			}
-			round()
+		case <-rd.wake:
+		case <-timer.C:
+			s.roundRead(rd, at, false)
 		}
 	}
 }
 
-// takeOwed takes what rd owes from its pumps' failed reads.
-func (s *Service) takeOwed(rd *ticketRound) (time.Time, bool) {
+// roundAt is when rd's next read is due: the earliest due time of the
+// shown tickets whose first read settled, no earlier than a rate limit's
+// release; ok is false when none is shown.
+func (s *Service) roundAt(rd *ticketRound) (at time.Time, ok bool) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
-	at, ok := rd.owedAt, rd.owing
-	rd.owing, rd.owedAt = false, time.Time{}
+	for k, tp := range s.subs.tickets {
+		if k.connection == rd.conn && tp.shownLocked() && tp.settled > 0 && (!ok || tp.due.Before(at)) {
+			at, ok = tp.due, true
+		}
+	}
+	if ok && rd.hold.After(at) {
+		at = rd.hold
+	}
 	return at, ok
 }
 
-// oweRetryLocked has connection conn's round retry a pump's failed read,
-// no earlier than at when set (a rate limit). The caller holds subMu.
-func (s *Service) oweRetryLocked(conn string, at time.Time) {
-	rd := s.subs.rounds[conn]
-	if rd == nil {
-		return
-	}
-	rd.owing = true
-	if at.After(rd.owedAt) {
-		rd.owedAt = at
-	}
-	select {
-	case rd.owed <- struct{}{}:
-	default:
-	}
-}
-
-// roundTick reads the connection's shown tickets together. A hidden one
-// owes its pump a read; one whose first read has not settled is its
-// pump's to read.
-func (s *Service) roundTick(rd *ticketRound) ticketsResult {
+// roundRead reads the connection's shown tickets due at at (the timer's
+// time, which counts as now when the clock reads earlier), or every shown
+// ticket when all is set, together. One whose first read has not settled
+// is its pump's to read.
+func (s *Service) roundRead(rd *ticketRound, at time.Time, all bool) ticketsResult {
 	s.subMu.Lock()
+	now := s.now()
+	if at.After(now) {
+		now = at
+	}
 	var members []*ticketPump
 	for k, tp := range s.subs.tickets {
-		switch {
-		case k.connection != rd.conn || tp.over || tp.core.DeadLocked() || tp.settled == 0:
-		case tp.core.Paused():
-			tp.missed = true
-		default:
+		if k.connection == rd.conn && tp.shownLocked() && tp.settled > 0 && (all || !tp.due.After(now)) {
 			members = append(members, tp)
 		}
 	}
@@ -162,151 +158,79 @@ func (s *Service) roundTick(rd *ticketRound) ticketsResult {
 	return s.readTickets(rd.ctx, rd.conn, members, Background, false, false)
 }
 
-// ticketsResult is how a read of tickets ended: failed for the read as a
-// whole, with when a rate limit lifts, err for a failure that was not the
-// tracker's, over when every pump read ended.
-type ticketsResult struct {
-	failed  bool
-	retryAt time.Time
-	err     error
-	over    bool
-}
-
-// nextReadLocked orders the reads settled into ticket pumps by when they
-// began. The caller holds subMu.
-func (s *Service) nextReadLocked() uint64 {
-	s.subs.reads++
-	return s.subs.reads
-}
-
-// readTickets reads the tickets of pumps, all of connection conn, together
-// (readDetails), each checked against what its pump settled last, passes
-// what the read stored through the change funnel under the root the read
-// held, and settles each pump with its own outcome (settleTickets).
-// opened records a person's opening.
-func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketPump, u Urgency, full, opened bool) ticketsResult {
-	began, reads := s.ticketReads(pumps)
-	at := millis(s.now())
-	var openedAt int64
-	if opened {
-		openedAt = at
+// readNowLocked makes tp due a read at once, a full one (a stored card
+// of its issue changed, or nothing holds its document), and wakes its
+// connection's round. A read that began before this does not undo it. The
+// caller holds subMu.
+func (s *Service) readNowLocked(tp *ticketPump) {
+	tp.nudged = s.nextStampLocked()
+	tp.due = s.now()
+	if rd := s.subs.rounds[tp.key.connection]; rd != nil {
+		nudge(rd.wake)
 	}
-	res, err := s.readDetails(ctx, conn, reads, u, full, openedAt)
-	s.publish(res.root, conn, res.ch, nil, &tickOrigin{tickets: pumps})
-	return s.settleTickets(ctx, conn, pumps, began, reads, res, err, at)
 }
 
-// ticketReads are the reads of pumps' tickets, each to be checked against
-// what its pump settled last, and the read's place among those settled
-// into ticket pumps (nextReadLocked). Each pump's missed read is taken.
-func (s *Service) ticketReads(pumps []*ticketPump) (began uint64, reads []*ticketRead) {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	began = s.nextReadLocked()
-	reads = make([]*ticketRead, len(pumps))
-	for i, tp := range pumps {
-		reads[i] = &ticketRead{issue: tp.key.issue}
-		if tp.check != nil {
-			prior := *tp.check
-			reads[i].prior = &prior
-		}
-		tp.missed = false
-	}
-	return began, reads
-}
-
-// settleTickets settles reads, what a read of pumps' tickets on connection
-// conn that began at began found, into each pump: res and err are how the
-// read ended (readDetails), ctx the context it ran under, and at when it
-// ended. A failure is told to each pump, and the caller owns its retry
-// (the round its own, readOwnTicket a pump's); a connection that ended
-// ends every pump.
-func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
-	var out ticketsResult
-	var failure *FailureView
-	stopped := err != nil && ctx.Err() != nil
-	ended := errors.Is(err, errEnded) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStopped)
-	switch {
-	case stopped, ended:
-	case res.failure != nil:
-		failure = &FailureView{Kind: string(res.failure.Kind), Message: res.failure.Message, At: at}
-		out.failed, out.retryAt = true, res.retryAt
-	case err != nil:
-		failure = internalFailure(at)
-		out.failed, out.err = true, err
-		s.logf("trackerapp: the read of %d open tickets of %s failed: %v", len(pumps), conn, err)
-	}
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	out.over = true
-	for i, tp := range pumps {
-		switch {
-		case tp.over || tp.core.DeadLocked():
-		case ended:
-			s.endTicketLocked(tp)
-		case stopped:
-			out.over = false
-		default:
-			s.settleTicketLocked(tp, began, reads[i], failure, res.kind, at)
-			out.over = false
-		}
-	}
-	return out
-}
-
-// settleTicketLocked settles rd, what a read that began at began found of
-// tp's ticket, into tp, unless a read that began later settled already: a
-// failure of the read as a whole, the tracker leaving the ticket out, or
-// the document now and which of the mirror and the pump holds it. A
-// changed view or failure is told. kind is the connection's kind as the
-// read held it. The caller holds subMu.
-func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRead, failure *FailureView, kind string, at int64) {
-	if began < tp.settled {
-		if rd.stored {
-			// The mirror's copy may be this read's: the view is rebuilt from it.
-			nudge(tp.viewChanged)
-		}
+// dueLocked makes tp due at t after a read that began at began settled,
+// unless a request to read it at once came after that read began. The
+// caller holds subMu.
+func (s *Service) dueLocked(tp *ticketPump, began uint64, t time.Time) {
+	if tp.nudged > began {
 		return
 	}
-	tp.settled = began
-	switch {
-	case failure != nil:
-		tp.missed = true
-		if failure.Kind == string(FailureInternal) {
-			// What the read stored may not be in the view: the next read
-			// decodes and rebuilds it.
-			tp.check = nil
-		}
-		tp.tellFailureLocked(failure)
-	case rd.err != nil:
-		tp.tellFailureLocked(notFoundFailure(kind, at))
-	default:
-		tp.check = nil
-		if rd.check != (detailCheck{}) {
-			check := rd.check
-			tp.check = &check
-		}
-		switch {
-		case rd.check.held == nil:
-			tp.held = nil
-		case rd.view != nil:
-			tp.held = &heldDetail{view: *rd.view, readAt: rd.check.readAt}
-		}
-		if rd.view != nil {
-			tp.shows = rd.shows
-			tp.viewLocked(rd.digest)
-		}
-		tp.tellFailureLocked(nil)
+	tp.due = t
+	if rd := s.subs.rounds[tp.key.connection]; rd != nil {
+		nudge(rd.wake)
 	}
-	s.flushTicketLocked(tp, false)
 }
 
-// viewLocked records digest as tp's view, a change to tell when it differs
-// from the one its subscribers were last told of. The caller holds subMu.
-func (tp *ticketPump) viewLocked(digest uint64) {
-	if !tp.viewed || digest != tp.digest {
-		tp.digest, tp.viewed, tp.changed, tp.due = digest, true, true, true
+// regularLocked is when a ticket of tp's connection whose read settled now
+// is next due: with the round's next regular read, which a read settling
+// past it moves an interval on, or an interval from now while no round
+// runs. A successful read ends the retry schedule. The caller holds
+// subMu.
+func (s *Service) regularLocked(tp *ticketPump, now time.Time) time.Time {
+	rd := s.subs.rounds[tp.key.connection]
+	if rd == nil {
+		return now.Add(tp.every)
 	}
+	rd.delay, rd.retryAt = 0, time.Time{}
+	if !rd.next.After(now) {
+		rd.next = now.Add(rd.every)
+	}
+	return rd.next
+}
+
+// retryLocked is when a ticket of tp's connection whose read failed now is
+// due again: when the rate limit lifts (release), which holds the round
+// until then; else with the retry already scheduled, or at the schedule's
+// next step, doubling from Cadence.RetryBase up to the interval, as
+// pump.Retry's curve does. With no round running it is the first step.
+// The caller holds subMu.
+func (s *Service) retryLocked(tp *ticketPump, now, release time.Time) time.Time {
+	rd := s.subs.rounds[tp.key.connection]
+	switch {
+	case !release.IsZero():
+		if rd != nil && release.After(rd.hold) {
+			rd.hold = release
+		}
+		return release
+	case rd == nil:
+		return now.Add(min(s.cadence.RetryBase, tp.every))
+	case rd.retryAt.After(now):
+		return rd.retryAt
+	}
+	rd.delay = min(max(rd.delay*2, s.cadence.RetryBase), rd.every)
+	rd.retryAt = now.Add(rd.delay)
+	return rd.retryAt
+}
+
+// nextStampLocked is the next stamp of the counter that orders what
+// settles into ticket pumps: the reads by when they began, view builds,
+// changes to a view's inputs and requests to read at once. The caller
+// holds subMu.
+func (s *Service) nextStampLocked() uint64 {
+	s.subs.stamps++
+	return s.subs.stamps
 }
 
 // nudge queues one nudge on c, a channel of capacity one.
@@ -315,73 +239,4 @@ func nudge(c chan struct{}) {
 	case c <- struct{}{}:
 	default:
 	}
-}
-
-// rebuildTicket rebuilds tp's view, with no tracker call, from the
-// document its pump holds or else the mirror's copy, and tells a changed
-// view. A read that settled after the rebuild began wins. A rebuild that
-// fails is told as a failure outside the tracker when no failure is told,
-// and leaves the next read to decode and rebuild.
-func (s *Service) rebuildTicket(tp *ticketPump) {
-	s.subMu.Lock()
-	began := s.nextReadLocked()
-	var held *tracker.Detail
-	if tp.check != nil {
-		held = tp.check.held
-	}
-	s.subMu.Unlock()
-	at := millis(s.now())
-	v, d, check, ok, err := s.rebuiltView(tp.key, held)
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	switch {
-	case tp.over || tp.core.DeadLocked() || tp.settled > began:
-		return
-	case err != nil:
-		s.logf("trackerapp: rebuild the view of open ticket %s of %s: %v", tp.key.issue, tp.key.connection, err)
-		tp.check = nil
-		if tp.failure == nil {
-			tp.tellFailureLocked(internalFailure(at))
-		}
-	case !ok:
-		// Neither holds a document: the next read reads it.
-		tp.check, tp.missed = nil, true
-		return
-	default:
-		switch {
-		case held == nil:
-			tp.check, tp.held = &check, nil
-		case tp.held != nil:
-			tp.held = &heldDetail{view: v, readAt: tp.held.readAt}
-		}
-		tp.shows = showsOf(d)
-		tp.viewLocked(s.digestOf(v))
-	}
-	s.flushTicketLocked(tp, false)
-}
-
-// rebuiltView is key's view built from held when the pump holds its
-// document, else from the mirror's copy decoded, with that copy's check;
-// ok is false when neither holds one.
-func (s *Service) rebuiltView(key ticketKey, held *tracker.Detail) (DetailView, tracker.Detail, detailCheck, bool, error) {
-	root, err := s.readRoot(key.connection)
-	if errors.Is(err, ErrNotMirrored) {
-		return DetailView{}, tracker.Detail{}, detailCheck{}, false, nil
-	}
-	if err != nil {
-		return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
-	}
-	defer s.leave()
-	var check detailCheck
-	d := held
-	if d == nil {
-		m, stored, ok, err := s.storedDetail(root, key.issue)
-		if err != nil || !ok {
-			return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
-		}
-		d = &stored
-		check = detailCheck{readAt: m.ReadAt, updated: millis(stored.Card.Updated), doc: maphash.Bytes(s.digestSeed, m.Data)}
-	}
-	v, err := s.detailView(root, *d)
-	return v, *d, check, err == nil, err
 }

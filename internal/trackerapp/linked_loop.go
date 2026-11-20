@@ -16,8 +16,9 @@ import (
 // (Deps.ClientConnected), each connection that is on syncs its linked
 // issues' cards and the history due (SyncLinked) until no unit reports
 // More, and the mirror's cleanup runs (FinishMirrorCleanup). A round with
-// no client connected is skipped whole. A failure is reported to
-// Deps.LoopFailed and logged, and the loop goes on.
+// no client connected is skipped whole. Every read of the connections, a
+// round's included, decides whether the loop runs (followLoopLocked). A
+// failure is reported to Deps.LoopFailed and logged, and the loop goes on.
 
 // loopState is the loop's state, under subMu.
 type loopState struct {
@@ -33,38 +34,33 @@ type loopState struct {
 // StartLinkedSync arms the linked loop, the app's call from its
 // unattended-work boot step: it starts now when a Jira or Linear
 // connection is on, and from then on with the first one turned on or
-// added, and it stops with the last one turned off or removed. Calling it
-// again does nothing more. Its cost with no connection on is the one read
-// of the connections. When that read fails, the loop runs (syncLoopLocked)
-// and the error is returned.
+// added, and it stops with the last one turned off or removed. Each call
+// reads the connections and starts or stops the loop to match. Its cost
+// with no connection on is that one read. When the read fails, the loop
+// runs (followLoopLocked) and the error is returned. A loop it stops has
+// exited when it returns.
 func (s *Service) StartLinkedSync() error {
 	if err := s.enter(); err != nil {
 		return err
 	}
 	defer s.leave()
 	s.opMu.Lock()
-	defer s.opMu.Unlock()
 	s.subMu.Lock()
-	armed := s.subs.loop.armed
 	s.subs.loop.armed = true
 	s.subMu.Unlock()
-	if armed {
-		return nil
+	done, err := s.syncLoopLocked()
+	s.opMu.Unlock()
+	if done != nil {
+		<-done
 	}
-	_, err := s.syncLoopLocked()
 	return err
 }
 
-// syncLoopLocked starts or stops the armed loop to match whether a Jira
-// or Linear connection is on, one read of the connections. A loop it
-// stops is returned for the caller to join once it released opMu: the
-// loop's tick may be waiting for it. When the read fails, the loop runs
-// (started if none runs) and the error is returned: a loop with no
-// connection on costs a read of the connections a round, and the next
-// change to the connections stops it, where a loop left stopped with a
-// connection on would wait for a change that may never come. The caller
-// holds opMu, so changes to the connections and their effect on the loop
-// apply in one order.
+// syncLoopLocked starts or stops the armed loop to match the connections
+// after a change to them, one read of the connections; it reads nothing
+// while the loop is not armed. A loop it stops is returned for the caller
+// to join once it released opMu: the loop's tick may be waiting for it.
+// The caller holds opMu.
 func (s *Service) syncLoopLocked() (<-chan struct{}, error) {
 	s.subMu.Lock()
 	armed := s.subs.loop.armed
@@ -72,10 +68,30 @@ func (s *Service) syncLoopLocked() (<-chan struct{}, error) {
 	if !armed {
 		return nil, nil
 	}
-	rows, listErr := s.store.ListTrackerConnections()
-	if listErr != nil {
-		listErr = fmt.Errorf("trackerapp: list connections for the linked-issues loop: %w", listErr)
+	rows, err := s.listForLoop()
+	return s.followLoopLocked(rows, err), err
+}
+
+// listForLoop reads the connections for the loop.
+func (s *Service) listForLoop() ([]store.TrackerConnection, error) {
+	rows, err := s.store.ListTrackerConnections()
+	if err != nil {
+		return nil, fmt.Errorf("trackerapp: list connections for the linked-issues loop: %w", err)
 	}
+	return rows, nil
+}
+
+// followLoopLocked is the one rule for whether the armed loop runs, applied
+// to every read of the connections, rows or the read's failure listErr:
+// at its start and on each change to the connections (syncLoopLocked), and
+// at each of its rounds (linkedRound). It runs while a Jira or Linear
+// connection is on, and when the read failed: a loop with no connection on
+// costs a read of the connections a round and the next successful read
+// stops it, where a loop left stopped with a connection on would wait for
+// a change that may never come. A loop it stops is returned for a caller
+// other than the loop to join. The caller holds opMu, so the reads of the
+// connections and their effect on the loop apply in one order.
+func (s *Service) followLoopLocked(rows []store.TrackerConnection, listErr error) <-chan struct{} {
 	on := listErr != nil
 	for _, row := range rows {
 		on = on || (row.Enabled && row.Kind != store.TrackerKindTempo)
@@ -83,15 +99,16 @@ func (s *Service) syncLoopLocked() (<-chan struct{}, error) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	switch l := &s.subs.loop; {
+	case !l.armed:
 	case on && l.cancel == nil && !s.subs.halted:
 		ctx, cancel := context.WithCancel(s.life)
 		l.cancel, l.done = cancel, make(chan struct{})
 		s.workers.Add(1)
 		go s.runLinkedLoop(ctx, l.done)
 	case !on && l.cancel != nil:
-		return s.stopLoopLocked(), nil
+		return s.stopLoopLocked()
 	}
-	return nil, listErr
+	return nil
 }
 
 // stopLoopLocked cancels the running loop, if any, and returns the channel
@@ -143,24 +160,28 @@ func (s *Service) runLinkedLoop(ctx context.Context, done chan struct{}) {
 }
 
 // linkedRound syncs the linked issues of each Jira or Linear connection
-// that is on (linkedConnection).
+// that is on (linkedConnection). Its read of the connections decides
+// whether the loop goes on (followLoopLocked): a loop that finds none on
+// stops itself, ending ctx, and is not joined here.
 func (s *Service) linkedRound(ctx context.Context) {
 	if err := s.enter(); err != nil {
 		return
 	}
-	rows, err := s.store.ListTrackerConnections()
+	s.opMu.Lock()
+	rows, err := s.listForLoop()
+	s.followLoopLocked(rows, err)
+	s.opMu.Unlock()
 	s.leave()
 	if err != nil {
-		s.loopFailure(fmt.Errorf("trackerapp: list connections for the linked issues: %w", err))
+		s.loopFailure(err)
 		return
 	}
 	for _, row := range rows {
-		if !row.Enabled || row.Kind == store.TrackerKindTempo {
-			continue
-		}
-		s.linkedConnection(ctx, row.ID)
 		if ctx.Err() != nil {
 			return
+		}
+		if row.Enabled && row.Kind != store.TrackerKindTempo {
+			s.linkedConnection(ctx, row.ID)
 		}
 	}
 }

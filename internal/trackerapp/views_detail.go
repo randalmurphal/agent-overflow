@@ -153,9 +153,12 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 	if issue == "" {
 		return DetailView{}, Changes{}, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
 	}
-	rd := &ticketRead{issue: issue}
-	res, err := s.readDetails(ctx, id, []*ticketRead{rd}, u, full, millis(s.now()))
+	rd := &ticketRead{issue: issue, full: full}
+	res, err := s.readDetails(ctx, id, []*ticketRead{rd}, u, millis(s.now()))
 	ch := res.ch
+	// An open ticket of the issue, or one whose view shows it, is told what
+	// the read stored.
+	s.publish(res.root, res.gen, id, ch, nil, nil)
 	switch {
 	case err != nil:
 		return DetailView{}, ch, err
@@ -173,8 +176,10 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 // it, for a first paint before IssueDetail answers, with when its read
 // began (Unix milliseconds). It builds no client and makes no tracker
 // call, and marks the detail opened now. It fails wrapping ErrNotMirrored
-// when the mirror holds no detail of the issue that this version reads,
-// or no longer holds the one it read when it marks it opened.
+// when the mirror holds no detail of the issue that this version reads. A
+// detail another read rewrote, or a sweep reached, between its read and
+// its marking is read again: only the mirror holding none is an answer of
+// not mirrored.
 func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, int64, error) {
 	if issue == "" {
 		return DetailView{}, 0, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
@@ -184,22 +189,25 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 		return DetailView{}, 0, err
 	}
 	defer s.leave()
-	m, d, ok, err := s.storedDetail(root, issue)
-	switch {
-	case err != nil:
-		return DetailView{}, 0, err
-	case !ok:
-		return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s", ErrNotMirrored, issue)
+	for {
+		m, d, ok, err := s.storedDetail(root, issue)
+		switch {
+		case err != nil:
+			return DetailView{}, 0, err
+		case !ok:
+			return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s", ErrNotMirrored, issue)
+		}
+		confirmed, err := s.store.ConfirmMirrorDetail(root, m, millis(s.now()))
+		switch {
+		case errors.Is(err, store.ErrTrackerCacheGone):
+			return DetailView{}, 0, fmt.Errorf("%w: the mirror of issue %s went while it was read", ErrNotMirrored, issue)
+		case err != nil:
+			return DetailView{}, 0, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
+		case confirmed.Stored:
+			v, err := s.detailView(root, d)
+			return v, m.ReadAt, err
+		}
 	}
-	confirmed, err := s.store.ConfirmMirrorDetail(root, m, millis(s.now()))
-	switch {
-	case errors.Is(err, store.ErrTrackerCacheGone) || err == nil && !confirmed.Stored:
-		return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s went while it was read", ErrNotMirrored, issue)
-	case err != nil:
-		return DetailView{}, 0, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
-	}
-	v, err := s.detailView(root, d)
-	return v, m.ReadAt, err
 }
 
 // storedDetail is issue's detail as the mirror holds it, stored and

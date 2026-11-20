@@ -16,9 +16,7 @@ import (
 // tickingClock makes the fixture's clock move a millisecond each read, so
 // openings and reads have an order.
 func (m *mirrorFixture) tickingClock() {
-	var n atomic.Int64
-	base := m.svc.now()
-	m.svc.now = func() time.Time { return base.Add(time.Duration(n.Add(1)) * time.Millisecond) }
+	m.ticking.Store(true)
 }
 
 // storedDetail is issue's stored detail, decoded; ok is false for none.
@@ -148,7 +146,8 @@ func TestAStaleInFlightDetailReadStoresNothing(t *testing.T) {
 
 // capFixture is a mirror fixture whose board keeps 210 issues, 40000 to
 // 40209, whose detail reads answer their card, with 40000's detail
-// stored; evict opens 200 others later, which drops 40000's detail.
+// stored; evict opens 200 others later, which drops 40000's detail, and
+// passes what it stored through the change funnel as a read does.
 func capFixture(t *testing.T) (m *mirrorFixture, evict func()) {
 	t.Helper()
 	m = newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
@@ -168,25 +167,45 @@ func capFixture(t *testing.T) (m *mirrorFixture, evict func()) {
 		return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
 	}
 	m.openDetail(t, "40000")
-	return m, func() {
-		// 200 other details opened later, stored as a read stores them.
-		var docs []store.MirrorDetailDoc
-		for i := 1; i <= 200; i++ {
-			id := fmt.Sprintf("%05d", 40000+i)
-			data, err := mirrorDetail(tracker.Detail{Card: card(id, 1_799_000_000_000)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data})
+	return m, func() { m.publishRaw(m.evictUntold(t)) }
+}
+
+// evictUntold opens 200 issues other than 40000 later, as a read stores
+// them, which drops 40000's detail, and returns what it stored without
+// passing it through the change funnel.
+func (m *mirrorFixture) evictUntold(t *testing.T) Changes {
+	t.Helper()
+	var docs []store.MirrorDetailDoc
+	for i := 1; i <= 200; i++ {
+		id := fmt.Sprintf("%05d", 40000+i)
+		data, err := mirrorDetail(tracker.Detail{Card: card(id, 1_799_000_000_000)})
+		if err != nil {
+			t.Fatal(err)
 		}
-		at := m.now().UnixMilli()
-		if _, err := m.st.StoreMirrorDetails(m.root(), m.sync("").Sweep, docs, at, at); err != nil {
-			t.Error(err)
-		}
-		if _, _, ok := m.storedDetail(t, "40000"); ok {
-			t.Error("the openings did not drop the detail")
+		docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data})
+	}
+	at := m.now().UnixMilli()
+	written, err := m.st.StoreMirrorDetails(m.root(), m.sync("").Sweep, docs, at, at)
+	if err != nil {
+		t.Error(err)
+	}
+	var ch Changes
+	for i, w := range written.Docs {
+		if w.Changed {
+			ch.Details = append(ch.Details, tracker.IssueID(docs[i].IssueID))
 		}
 	}
+	ch.Dropped = issueIDs(written.Dropped)
+	if _, _, ok := m.storedDetail(t, "40000"); ok {
+		t.Error("the openings did not drop the detail")
+	}
+	return ch
+}
+
+// publishRaw passes ch through the change funnel as the read that stored
+// it would.
+func (m *mirrorFixture) publishRaw(ch Changes) {
+	m.svc.publish(m.root(), m.svc.gen(m.conn.ID), m.conn.ID, ch, nil, nil)
 }
 
 // A detail the cap drops while its card is checked is not marked opened
@@ -243,6 +262,34 @@ func TestTheMirrorsCopyDroppedBeforeItsOpeningIsNotMirrored(t *testing.T) {
 	}
 	if m.heldDetail(t, "40000") || !m.heldDetail(t, "40001") {
 		t.Fatal("the opening added a detail with no document, dropping the least recently opened")
+	}
+}
+
+// The mirror's copy of a detail another read rewrites between its read and
+// its opening is read again, and the answer is the rewritten document: the
+// mirror holds the issue's detail throughout.
+func TestTheMirrorsCopyRewrittenBeforeItsOpeningIsReadAgain(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	c := card("10001", 1_799_000_000_000)
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	m.openDetail(t, "10001")
+	rewritten := false
+	m.svc.store = afterDetailRead{Store: m.st, then: func() {
+		if rewritten {
+			return
+		}
+		rewritten = true
+		m.pass(time.Minute)
+		c.Title = "Rewritten"
+		if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
+			t.Error(err)
+		}
+	}}
+	v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001")
+	if err != nil || v.Card.Title != "Rewritten" {
+		t.Fatalf("the mirror's copy rewritten before its opening: %v, %q", err, v.Card.Title)
 	}
 }
 

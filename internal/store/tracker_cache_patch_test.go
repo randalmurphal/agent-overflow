@@ -235,7 +235,7 @@ func TestMirrorBoardPatchStatements(t *testing.T) {
 		t.Fatalf("a patch of one issue in %d sections ran %d statements; want %d", len(sections), statements, want)
 	}
 	statements = countMirrorStatements(t, func() {
-		if _, err := s.ListMirrorIssueBoards(root, ids); err != nil {
+		if _, err := s.ListMirrorIssueBoards(root, ids, ids); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -265,7 +265,8 @@ func TestMirrorPatchReadsProbeByKey(t *testing.T) {
 }
 
 // The boards of issues are their own rows' and their children's: a row
-// shows its parent's key and title.
+// shows its parent's key and title. The parent list reads children alone,
+// so a parent that lost its last row still names its children's boards.
 func TestMirrorIssueBoards(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -273,15 +274,28 @@ func TestMirrorIssueBoards(t *testing.T) {
 	child.Card.ParentID = "10002"
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a"), webRow("10002", 5, "b")})
 	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a"), child})
-	got, err := s.ListMirrorIssueBoards(root, []string{"10001", "10002", "10009"})
-	if err != nil {
+	boards := func(issues, parents []string) []MirrorIssueBoard {
+		t.Helper()
+		got, err := s.ListMirrorIssueBoards(root, issues, parents)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.SortFunc(got, func(a, b MirrorIssueBoard) int {
+			return strings.Compare(a.IssueID+" "+a.BoardID, b.IssueID+" "+b.BoardID)
+		})
+		return got
+	}
+	all := []string{"10001", "10002", "10009"}
+	if got, want := boards(all, all), []MirrorIssueBoard{{"10001", "10"}, {"10001", "11"}, {"10002", "10"}, {"10003", "11"}}; !slices.Equal(got, want) {
+		t.Fatalf("boards %v, want %v", got, want)
+	}
+	if got, want := boards(nil, []string{"10002"}), []MirrorIssueBoard{{"10003", "11"}}; !slices.Equal(got, want) {
+		t.Fatalf("the children of 10002: %v, want %v", got, want)
+	}
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 30})); err != nil {
 		t.Fatal(err)
 	}
-	slices.SortFunc(got, func(a, b MirrorIssueBoard) int {
-		return strings.Compare(a.IssueID+" "+a.BoardID, b.IssueID+" "+b.BoardID)
-	})
-	want := []MirrorIssueBoard{{"10001", "10"}, {"10001", "11"}, {"10002", "10"}, {"10003", "11"}}
-	if !slices.Equal(got, want) {
-		t.Fatalf("boards %v, want %v", got, want)
+	if got, want := boards([]string{"10002"}, []string{"10002"}), []MirrorIssueBoard{{"10003", "11"}}; !slices.Equal(got, want) {
+		t.Fatalf("a parent with no row left: %v, want its child's %v", got, want)
 	}
 }

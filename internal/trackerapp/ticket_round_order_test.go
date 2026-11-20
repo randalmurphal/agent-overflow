@@ -168,8 +168,7 @@ func TestARoundReadsADetailPastTheAgeBound(t *testing.T) {
 	t.Parallel()
 	m, _, issues, _ := newRoundFixture(t, 1, true)
 	m.round(t)
-	base := m.now()
-	m.svc.now = func() time.Time { return base.Add(detailMaxAge + time.Minute) }
+	m.pass(detailMaxAge + time.Minute)
 	calls := len(m.p.callsInOrder())
 	m.round(t)
 	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Details:1" || !slices.Equal(m.lastDetailsRead(), issues) {
@@ -182,9 +181,10 @@ func TestARoundReadsADetailPastTheAgeBound(t *testing.T) {
 	}
 }
 
-// A shown ticket whose stored detail the cap dropped is read in full by
-// the next round and held by its pump (a background read opens nothing),
-// then checked against what the pump holds.
+// A shown ticket whose stored detail the cap dropped is told it is not
+// loaded, read in full at once by its round and held by its pump (a
+// background read opens nothing), told loaded again, then checked against
+// what the pump holds.
 func TestARoundReadsAnEvictedDetail(t *testing.T) {
 	t.Parallel()
 	m, evict := capFixture(t)
@@ -192,11 +192,15 @@ func TestARoundReadsAnEvictedDetail(t *testing.T) {
 	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
 	m.settledTickets(t)
 	m.round(t)
+	calls, events := len(m.p.callsInOrder()), m.issueEventCount()
 	evict()
-	calls := len(m.p.callsInOrder())
-	m.round(t)
+	quiet(t, m.svc)
 	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Details:1" {
 		t.Fatalf("after the eviction the round called %s", describeCounts(got))
+	}
+	got := m.issueEventsSince(events)
+	if len(got) != 2 || !got[0].Changed || !got[1].Changed {
+		t.Fatalf("the eviction and the read told %+v", got)
 	}
 	if _, _, ok := m.storedDetail(t, "40000"); ok {
 		t.Fatal("a background read stored a detail no one opened")

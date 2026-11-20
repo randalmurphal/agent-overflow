@@ -29,10 +29,12 @@
 // Clients subscribe (subscriptions.go): each subscribed board has one
 // pump, a goroutine that ticks on Cadence while a handle shows it
 // (pump_board.go). Each open ticket has a pump goroutine with no timer for
-// its first read, a person's refresh, the reads it is nudged to make and
-// its view rebuilds (pump_ticket.go); a connection's shown tickets are
-// read together by its round, one goroutine and timer per connection
-// (ticket_round.go), in one verified read (ticket_read.go). What every
+// the reads a person waits on (its first read and a refresh) and its view
+// rebuilds (pump_ticket.go); every other read of a connection's tickets
+// is its round's, one goroutine and timer per connection reading the
+// shown tickets due together (ticket_round.go), in one verified read
+// (ticket_read.go), whose outcome settles into each pump under one rule
+// (ticket_settle.go). What every
 // tick and ticket read stores passes through one change funnel
 // (funnel.go), which turns it into the events and nudges each
 // subscription needs, sent through Deps callbacks; a client patches the

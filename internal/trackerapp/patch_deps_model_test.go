@@ -85,7 +85,36 @@ func (d *depsModel) write(b tracker.BoardID, issues []tracker.IssueID, missing [
 	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, rows, missing, d.catalog, d.readAt))
 	page.Lifetime = d.m.sync(b).Lifetime
 	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
-	d.m.svc.publish(d.root, d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
+	d.m.svc.publish(d.root, d.m.svc.gen(d.m.conn.ID), d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
+}
+
+// restore stores id's row on b again, its card as d holds it, unchanged,
+// as one read of b, and passes the change through the funnel: the issue is
+// kept again, and its children's rows show it again.
+func (d *depsModel) restore(b tracker.BoardID, id tracker.IssueID) {
+	d.t.Helper()
+	d.tick()
+	r := tracker.Row{Card: d.cards[id], Order: d.key()}
+	d.rows[b][id] = r
+	page := must[store.MirrorRowPage](d.t)(mirrorRows(b, []tracker.Row{r}, nil, d.catalog, d.readAt))
+	page.Lifetime = d.m.sync(b).Lifetime
+	ch := changesOf(must[store.MirrorChanges](d.t)(d.m.st.WriteMirrorRows(d.root, page)))
+	d.m.svc.publish(d.root, d.m.svc.gen(d.m.conn.ID), d.m.conn.ID, ch, ownOf(Scope{Connection: d.m.conn.ID, Board: b}, ch), nil)
+}
+
+// parent is a random issue some card names as its parent; "" for none.
+func (d *depsModel) parent() tracker.IssueID {
+	var ids []tracker.IssueID
+	for _, c := range d.cards {
+		if c.Parent != "" && !slices.Contains(ids, c.Parent) {
+			ids = append(ids, c.Parent)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	slices.Sort(ids)
+	return ids[d.rng.IntN(len(ids))]
 }
 
 // tick moves the clock to the next read.
@@ -121,7 +150,27 @@ func (d *depsModel) newCard() tracker.IssueID {
 func (d *depsModel) change() {
 	b := depsBoards[d.rng.IntN(2)]
 	id := d.anyIssue(b)
-	switch kind := d.rng.IntN(11); {
+	switch kind := d.rng.IntN(14); {
+	case kind >= 11 && kind <= 12:
+		// A parent loses its row on this board, or on every board, so the
+		// mirror no longer keeps it and its children's rows stop showing it.
+		p := d.parent()
+		if p == "" {
+			return
+		}
+		for _, on := range depsBoards {
+			if _, ok := d.rows[on][p]; ok && (kind == 12 || on == b) {
+				d.write(on, nil, []tracker.IssueID{p})
+			}
+		}
+	case kind == 13:
+		// A parent with no row comes back to a board, its card unchanged.
+		p := d.parent()
+		_, on1 := d.rows[depsBoards[0]][p]
+		_, on2 := d.rows[depsBoards[1]][p]
+		if p != "" && !on1 && !on2 {
+			d.restore(b, p)
+		}
 	case kind == 0 || id == "":
 		d.write(b, []tracker.IssueID{d.newCard()}, nil)
 	case kind == 1:
@@ -190,8 +239,10 @@ func (d *depsModel) change() {
 // every event the funnel sends their board, patching or reading again, and
 // hold what reading the board again holds, on random changes of every
 // dependency a row has: parents on the same board and across boards,
-// users and statuses renamed, a status changing group, column and estimate
-// changes of a board's structure, and issues shared between the boards.
+// parents that stop being kept (their row removed from one board or from
+// every board) and are kept again with their card unchanged, users and
+// statuses renamed, a status changing group, column and estimate changes
+// of a board's structure, and issues shared between the boards.
 func TestPatchingFollowsEveryDependency(t *testing.T) {
 	t.Parallel()
 	for seed := range uint64(4) {
