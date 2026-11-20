@@ -25,6 +25,8 @@
   import BrowserAddressSuggestions from './BrowserAddressSuggestions.svelte';
   import type { AddressSuggestion } from './browserAddressMatch';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
+  import { intendFocus, type FocusIntent } from '../../utils/focusIntent';
+  import { onDestroy } from 'svelte';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
   // address, and the pane's own controls. The address behaves as a
@@ -161,17 +163,27 @@
   }
 
   // A suggestion is taken as Enter takes typed text. A tab is switched to
-  // first, so the field leaves for that tab's page, unless focus has moved
-  // on meanwhile.
+  // first, so the field leaves for that tab's page once the switch is
+  // answered. That leave is an intent taken when the tab is chosen: the
+  // user's next edit of the field, or a focus or press anywhere else, ends
+  // it, so a slow switch neither moves focus nor puts back the address over
+  // what the user did meanwhile.
   let suggestions: ReturnType<typeof BrowserAddressSuggestions> | undefined = $state(undefined);
+  let leaveAfterSwitch: FocusIntent | null = null;
+  onDestroy(() => leaveAfterSwitch?.end());
   function takeSuggestion(suggestion: AddressSuggestion): void {
     const pageId = pageIdOf(activePage?.id);
-    if (!pageId) return;
+    if (!pageId || !input) return;
     address = pageAddress();
     const suggested = pageIdOf(suggestion.pageId);
     if (suggested) {
+      const field = input;
+      const intent = intendFocus({ holdsFocus: (node) => field.contains(node), holdsPress: () => false });
+      leaveAfterSwitch = intent;
       void onAct(browserAction.select(suggested)).then(() => {
-        if (document.activeElement === input) onLeave();
+        intent.land(() => {
+          if (document.activeElement === field) onLeave();
+        });
       });
       return;
     }
@@ -220,7 +232,10 @@
       pressFocusing = false;
       suggestions?.close();
     }}
-    oninput={(event) => suggestions?.input(event.currentTarget.value)}
+    oninput={(event) => {
+      leaveAfterSwitch?.end();
+      suggestions?.input(event.currentTarget.value);
+    }}
     onkeydown={onKeydown}
     {...suggestions?.inputAria()}
   />

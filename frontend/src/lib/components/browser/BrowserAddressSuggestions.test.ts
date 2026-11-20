@@ -8,6 +8,7 @@ import { resetDevServersForTest } from '../../stores/devServers.svelte';
 import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { attachBrowserPaneForTest } from '../../../test/helpers/browserPane';
+import { resetFocusIntentForTest } from '../../utils/focusIntent';
 import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -88,6 +89,7 @@ describe('<BrowserAddressSuggestions>', () => {
     resetDevServersForTest();
     resetBindingMocks();
     resetAirspaceForTest();
+    resetFocusIntentForTest();
   });
 
   it('reads the recent addresses and dev servers on focus and offers them for typed text', async () => {
@@ -156,6 +158,43 @@ describe('<BrowserAddressSuggestions>', () => {
     key(input, { key: 'ArrowDown' });
     key(input, { key: 'Enter' });
     input.blur();
+    finish();
+    await Promise.resolve();
+    await tick();
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  it('keeps what the user typed while a tab switch was answered', async () => {
+    let finish: () => void = () => {};
+    const { input, onAct, onLeave } = mount();
+    onAct.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(1));
+    key(input, { key: 'ArrowDown' });
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenCalledWith({ kind: 'activate', pageId: 'b' });
+    // The field still has focus; the user starts another address.
+    await type(input, 'https://next.test/');
+    finish();
+    await Promise.resolve();
+    await tick();
+    expect(onLeave).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('https://next.test/');
+  });
+
+  it('does not leave the field after a tab switch once another control was pressed', async () => {
+    let finish: () => void = () => {};
+    const { view, input, onAct, onLeave } = mount();
+    onAct.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(1));
+    key(input, { key: 'ArrowDown' });
+    key(input, { key: 'Enter' });
+    // A press on the toolbar, which leaves focus in the field.
+    await fireEvent.pointerDown(view.getByTestId('browser-close'));
     finish();
     await Promise.resolve();
     await tick();
