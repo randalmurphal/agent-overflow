@@ -58,7 +58,7 @@ func TestSwitchingTheJarSuspendsTheTabsIntoTheNewJar(t *testing.T) {
 	if _, err := manager.LabelPage(t.Context(), access, PageID(second.ID), "login"); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.MoveCompanionPage(t.Context(), access, PageID(third.ID), 0); err != nil {
+	if err := manager.MoveCompanionPage(t.Context(), access, PageID(third.ID), TabPlace{Beside: PageID(first.ID)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(second.ID)); err != nil {

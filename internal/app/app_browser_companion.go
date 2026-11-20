@@ -17,10 +17,15 @@ type BrowserCompanionAction struct {
 	Kind    string `json:"kind"`
 	PageID  string `json:"pageId,omitempty"`
 	Address string `json:"address,omitempty"`
-	// Index is the target tab position for "move" and the relative step for
-	// "step" (1 next, -1 previous, wrapping). Not omitempty: index 0 (move to
-	// the front) is a real value.
+	// Index is the relative step for "step" (1 next, -1 previous,
+	// wrapping).
 	Index int `json:"index"`
+	// Beside and After are where a "move" drops PageID: beside the tab
+	// Beside, after it when After and before it otherwise. The Manager
+	// resolves the position from that neighbor at the move's turn
+	// (Manager.MoveCompanionPage).
+	Beside string `json:"beside,omitempty"`
+	After  bool   `json:"after,omitempty"`
 	// Jar is the cookie jar for "jar": worktree, project, thread or private.
 	Jar string `json:"jar,omitempty"`
 	// Confirmed says the user agreed, for "jar", to lose the live tabs' page
@@ -258,7 +263,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case kindStep:
 		err = m.StepCompanionPage(ctx, access, cmd.index)
 	case kindMove:
-		err = m.MoveCompanionPage(ctx, access, cmd.page, cmd.index)
+		err = m.MoveCompanionPage(ctx, access, cmd.page, appbrowser.TabPlace{Beside: cmd.beside, After: cmd.after})
 	case kindShow:
 		visible := true
 		_, err = m.Visibility(ctx, access, &visible, cmd.page)

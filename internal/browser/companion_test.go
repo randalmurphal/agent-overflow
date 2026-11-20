@@ -34,18 +34,18 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 		return ids
 	}
 
-	if err := m.MoveCompanionPage(t.Context(), access, "third", 0); err != nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "third", TabPlace{Beside: "first"}); err != nil {
 		t.Fatalf("move = %v", err)
 	}
 	if got := order(); got[0] != "third" || got[1] != "first" || got[2] != "second" {
 		t.Fatalf("order after front move = %v", got)
 	}
-	// An out-of-range index clamps to the end instead of failing.
-	if err := m.MoveCompanionPage(t.Context(), access, "third", 99); err != nil {
-		t.Fatalf("clamped move = %v", err)
+	// Dropped after the last tab, it is last.
+	if err := m.MoveCompanionPage(t.Context(), access, "third", TabPlace{Beside: "second", After: true}); err != nil {
+		t.Fatalf("move to the end = %v", err)
 	}
 	if got := order(); got[2] != "third" {
-		t.Fatalf("order after clamped move = %v", got)
+		t.Fatalf("order after a move to the end = %v", got)
 	}
 	// A page opened after a renumbering move still lands at the end.
 	late := &managedPage{id: "late", owner: threads["thread"], createdAt: time.Now().UnixNano()}
@@ -56,7 +56,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 	if got := order(); got[3] != "late" {
 		t.Fatalf("order with late page = %v", got)
 	}
-	if err := m.MoveCompanionPage(t.Context(), access, "missing", 0); err == nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "missing", TabPlace{Beside: "first"}); err == nil {
 		t.Fatal("moving an unknown page did not fail")
 	}
 }

@@ -56,7 +56,7 @@ func TestSavedPagesComeBackSuspendedAfterARestart(t *testing.T) {
 	if _, err := first.LabelPage(t.Context(), live, PageID(a.ID), "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.MoveCompanionPage(t.Context(), live, PageID(b.ID), 0); err != nil {
+	if err := first.MoveCompanionPage(t.Context(), live, PageID(b.ID), TabPlace{Beside: PageID(a.ID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := first.SelectPage(t.Context(), live, PageID(a.ID)); err != nil {

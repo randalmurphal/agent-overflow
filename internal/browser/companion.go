@@ -9,18 +9,32 @@ import (
 	"agent-overflow/internal/browser/turnorder"
 )
 
-// MoveCompanionPage places one of the thread's tabs, in any state, at
-// index in tab order (clamped). Moving a tab is not a touch. A suspended
-// page's new position is saved with it. From a pane it carries its numbered
-// place in the pane's order (ctx, WithSelection) and moves the tab in the
-// m.mu hold that ends its turn, so a close that reads the strip's order
-// (close to the right) acts on the order the user saw when they asked for
-// it; a passed turn moves nothing.
-func (m *Manager) MoveCompanionPage(ctx context.Context, access Access, pageID PageID, index int) error {
+// TabPlace is where the user dropped a dragged tab: beside the tab Beside,
+// after it when After and before it otherwise.
+type TabPlace struct {
+	Beside PageID
+	After  bool
+}
+
+// MoveCompanionPage places one of the thread's tabs, in any state, beside
+// the tab the user dropped it next to, on the side they dropped it (place).
+// Moving a tab is not a touch. A suspended page's new position is saved
+// with it. From a pane it carries its numbered place in the pane's order
+// (ctx, WithSelection) and moves the tab in the m.mu hold that ends its
+// turn, so a close that reads the strip's order (close to the right) acts
+// on the order the user saw when they asked for it; a passed turn moves
+// nothing. The position is resolved from the neighbor at that turn, so a
+// tab an earlier command opened, reopened or closed meanwhile does not
+// shift where the tab lands. A neighbor gone by then leaves the tab where
+// it is: the place the user chose no longer exists, and any other place
+// would be one they did not choose. A tab that is gone is errPageNotFound;
+// a neighbor that is the moved tab itself is refused.
+func (m *Manager) MoveCompanionPage(ctx context.Context, access Access, pageID PageID, place TabPlace) error {
 	if err := m.bound(access); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
+	place.Beside = place.Beside.trim()
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil {
 		return err
@@ -33,20 +47,53 @@ func (m *Manager) MoveCompanionPage(ctx context.Context, access Access, pageID P
 		m.mu.Unlock()
 		return nil
 	}
+	if place.Beside == "" || place.Beside == pageID {
+		// Refused inside the turn, so the numbers after it do not wait.
+		m.mu.Unlock()
+		return fmt.Errorf("browser: a tab moves beside another tab")
+	}
 	if err := access.admitLocked(); err != nil {
 		m.mu.Unlock()
 		return err
 	}
-	savedMoved, found := m.placeTabLocked(access.tb, pageID, index)
-	m.mu.Unlock()
+	index, found := besideIndexLocked(m.companionTabsLocked(access.tb), pageID, place)
 	if !found {
+		m.mu.Unlock()
 		return errPageNotFound
 	}
+	if index < 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	savedMoved, _ := m.placeTabLocked(access.tb, pageID, index)
+	m.mu.Unlock()
 	m.emitThreadState(access.ThreadID())
 	if savedMoved {
 		return m.persistThreads([]ThreadID{access.ThreadID()})
 	}
 	return nil
+}
+
+// besideIndexLocked is where place puts pageID among tabs, as an index in
+// the order without pageID (placeTabLocked's): -1 when the neighbor is not
+// among them. found reports whether pageID is.
+func besideIndexLocked(tabs []threadTab, pageID PageID, place TabPlace) (index int, found bool) {
+	index = -1
+	at := 0
+	for _, tab := range tabs {
+		switch tab.id {
+		case pageID:
+			found = true
+			continue
+		case place.Beside:
+			index = at
+			if place.After {
+				index++
+			}
+		}
+		at++
+	}
+	return index, found
 }
 
 // placeTabLocked places tb's tab pageID at index in tab order (clamped),

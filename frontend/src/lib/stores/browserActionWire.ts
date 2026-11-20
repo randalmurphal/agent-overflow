@@ -71,7 +71,9 @@ export type DownloadKind = 'download-cancel' | 'download-reveal' | 'download-ope
 export type BrowserAction =
   | { readonly kind: NamedTabKind; readonly pageId: PageId }
   | { readonly kind: 'navigate'; readonly pageId: PageId; readonly address: string }
-  | { readonly kind: 'move'; readonly pageId: PageId; readonly index: number }
+  /** A dragged tab dropped beside `beside`, after it when `after`: the
+   *  backend finds that neighbor at the move's turn. */
+  | { readonly kind: 'move'; readonly pageId: PageId; readonly beside: PageId; readonly after: boolean }
   | { readonly kind: 'activate' | 'duplicate'; readonly pageId: PageId }
   | { readonly kind: 'step'; readonly step: 1 | -1 }
   | { readonly kind: 'new'; readonly address: string }
@@ -93,7 +95,7 @@ export type ThreadAction = Extract<BrowserAction, { readonly kind: 'new' | 'show
 export const browserAction = {
   onTab: (kind: NamedTabKind, pageId: PageId): BrowserAction => ({ kind, pageId }),
   navigate: (pageId: PageId, address: string): BrowserAction => ({ kind: 'navigate', pageId, address }),
-  move: (pageId: PageId, index: number): BrowserAction => ({ kind: 'move', pageId, index }),
+  move: (pageId: PageId, beside: PageId, after: boolean): BrowserAction => ({ kind: 'move', pageId, beside, after }),
   select: (pageId: PageId): BrowserAction => ({ kind: 'activate', pageId }),
   duplicate: (pageId: PageId): BrowserAction => ({ kind: 'duplicate', pageId }),
   step: (step: 1 | -1): BrowserAction => ({ kind: 'step', step }),
@@ -180,7 +182,7 @@ function wireAction(action: BrowserAction | PageFocusRequest, origin: ActionOrig
     case 'navigate':
       return new BrowserCompanionAction({ ...base, kind: 'navigate', pageId: action.pageId, address: action.address });
     case 'move':
-      return new BrowserCompanionAction({ ...base, kind: 'move', pageId: action.pageId, index: action.index });
+      return new BrowserCompanionAction({ ...base, kind: 'move', pageId: action.pageId, beside: action.beside, after: action.after });
     case 'step':
       return new BrowserCompanionAction({ ...base, kind: 'step', index: action.step });
     case 'new':

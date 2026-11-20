@@ -435,7 +435,7 @@ func TestLabelsAndTabMovesIncludeSuspendedPages(t *testing.T) {
 	if _, err := manager.LabelPage(t.Context(), access, PageID(live.ID), "DOCS"); err == nil {
 		t.Fatal("a live page took a suspended page's label")
 	}
-	if err := manager.MoveCompanionPage(t.Context(), access, PageID(b.ID), 0); err != nil {
+	if err := manager.MoveCompanionPage(t.Context(), access, PageID(b.ID), TabPlace{Beside: PageID(a.ID)}); err != nil {
 		t.Fatalf("move a suspended tab: %v", err)
 	}
 	if ids := suspendedIDs(manager, string(access.ThreadID())); len(ids) != 2 || ids[0] != b.ID {

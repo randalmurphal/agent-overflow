@@ -117,10 +117,14 @@ var companionSpecs = map[string]companionSpec{
 // companionCommand is a BrowserCompanionAction that parseCompanionAction
 // accepted: its kind, and the fields that kind requires, present.
 type companionCommand struct {
-	kind     companionKind
-	page     appbrowser.PageID
-	address  string
-	index    int
+	kind    companionKind
+	page    appbrowser.PageID
+	address string
+	index   int
+	// beside and after are a move's drop place: required, and never the
+	// moved tab, for kindMove only.
+	beside   appbrowser.PageID
+	after    bool
 	jar      string
 	download appbrowser.DownloadKey
 	// place is the command's numbered place in its pane mount's order:
@@ -173,6 +177,15 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 	cmd := companionCommand{
 		kind: spec.kind, page: appbrowser.PageID(page), address: action.Address, index: action.Index,
 		jar: strings.TrimSpace(action.Jar), download: appbrowser.DownloadKey(strings.TrimSpace(action.DownloadID)),
+	}
+	beside := strings.TrimSpace(action.Beside)
+	if spec.kind == kindMove {
+		if beside == "" || beside == page {
+			return refuse("names the other tab it was dropped beside")
+		}
+		cmd.beside, cmd.after = appbrowser.PageID(beside), action.After
+	} else if beside != "" || action.After {
+		return refuse("names no drop place")
 	}
 	fromPane := mount != "" || action.Select != 0 || action.Epoch != 0
 	switch spec.place {
