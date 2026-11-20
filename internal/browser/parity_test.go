@@ -166,7 +166,11 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	t.Cleanup(func() {
+		if err := dir.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	first, err := uniqueArtifactName(dir, "file.txt")
 	if err != nil {
 		t.Fatal(err)
