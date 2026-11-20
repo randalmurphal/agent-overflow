@@ -213,8 +213,29 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		return listing.Rows[len(listing.Rows)-1].NestedHidden
 	}
 	var listing ThreadAgentRows
-	waitUntil(t, 20*time.Second, func() bool {
-		listing = read()
+	// seen is the listing as a failed wait reports it.
+	seen := func() string {
+		at, err := c.entryAt(0, c.spawns[0])
+		out := fmt.Sprintf("hidden %v, first answer %s after the reset (%v);", listing.Hidden, at.Sub(reset).Round(time.Millisecond), err)
+		for _, row := range listing.Rows {
+			out += fmt.Sprintf(" [%d: %s worker %s open %v nested hidden %v %q]", slices.Index(c.spawns, row.Token),
+				row.State, row.Worker, row.open(), row.NestedHidden, row.NestedUnavailable)
+		}
+		return out
+	}
+	await := func(what string, done func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(peerRowsWait); ; time.Sleep(10 * time.Millisecond) {
+			listing = read()
+			if done() {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %s", what, seen())
+			}
+		}
+	}
+	await("the chain never read open", func() bool {
 		at, _ := c.entryAt(0, c.spawns[0])
 		return at.After(reset) && open(listing)
 	})
@@ -247,8 +268,7 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 	// that computer as not answering.
 	before, _ := c.entryAt(0, c.spawns[0])
 	later := false
-	waitUntil(t, 20*time.Second, func() bool {
-		listing = read()
+	await("after a later answer the chain did not read open", func() bool {
 		at, _ := c.entryAt(0, c.spawns[0])
 		later = later || at.After(before)
 		return later && open(listing)

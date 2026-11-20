@@ -246,16 +246,23 @@ func TestNestedRowsAcrossThreeComputersKeepTheirPlacement(t *testing.T) {
 				t.Fatal(err)
 			}
 			var first, nested ThreadAgentRow
-			waitUntil(t, 15*time.Second, func() bool {
-				listing, err := c.apps[0].ListThreadAgentRows(t.Context(), c.caller.ID)
-				if err != nil {
-					return false
+			var listed bool
+			var listErr error
+			deadline := time.Now().Add(peerRowsWait)
+			for {
+				var listing ThreadAgentRows
+				if listing, listErr = c.apps[0].ListThreadAgentRows(t.Context(), c.caller.ID); listErr == nil {
+					first, _ = agentRowByToken(listing.Rows, c.spawns[0])
+					nested, listed = agentRowByToken(listing.Rows, c.spawns[1])
+					if listed && (tc.older || nested.Archived) {
+						break
+					}
 				}
-				var ok bool
-				first, _ = agentRowByToken(listing.Rows, c.spawns[0])
-				nested, ok = agentRowByToken(listing.Rows, c.spawns[1])
-				return ok && (tc.older || nested.Archived)
-			})
+				if time.Now().After(deadline) {
+					t.Fatalf("the nested row never read as wanted (listed %v, err %v): first %+v, nested %+v", listed, listErr, first, nested)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
 			want := store.PlacementOwned
 			if tc.older {
 				want = ""
