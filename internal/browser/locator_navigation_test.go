@@ -56,7 +56,8 @@ func (d *navigationDriver) NavigationMark(context.Context) (navigationMark, erro
 // failed reads after it are no navigation, so a page that never moved fails
 // the expectation with the read's error. A read that finds the page moved
 // is one, and so is a document commit its marks do not show (a reload on
-// WebKit, whose mark is the address and the history length).
+// WebKit, whose mark is the address and the history length), even when no
+// mark after it can be read.
 func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 	refused := errors.New("frame tree unreadable")
 	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
@@ -71,6 +72,7 @@ func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 		{"every read after the click fails", &navigationDriver{first: here, laterErr: refused}, 1, false, true},
 		{"a read after the click finds the page moved", &navigationDriver{first: here, later: navigationMark{URL: "https://example.test/b", Loader: "2"}}, 1, true, false},
 		{"a reload its marks do not show counts by its commit", &navigationDriver{first: here, later: here, commit: true}, 1, true, false},
+		{"a commit counts though no mark after it can be read", &navigationDriver{first: here, laterErr: refused, commit: true}, 1, true, false},
 		{"no commit and the same marks are no navigation", &navigationDriver{first: here, later: here}, 1, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -292,12 +292,15 @@ func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before 
 	defer ticker.Stop()
 	// readErr is the last read's failure. A page in the middle of a
 	// navigation can fail one; it is no evidence either way, so the wait
-	// reads again, and a wait that ends on one says so.
+	// reads again, and a wait that ends on one says so. A main-frame commit
+	// the Manager counted is a navigation whether or not the engine's mark
+	// can be read; an unreadable mark only adds no evidence of its own.
 	var readErr error
 	for {
 		current, err := readNavigation(ctx, p)
 		readErr = err
-		if err == nil && current.movedFrom(before) {
+		committed := p.docEpoch.Load() != before.commits
+		if committed || err == nil && current.movedFrom(before) {
 			return m.waitForPage(ctx, p, urlPattern, loadState)
 		}
 		select {
