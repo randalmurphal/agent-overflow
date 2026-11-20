@@ -258,3 +258,46 @@ func TestAFailedMoveHidesThePageUntilItIsPlaced(t *testing.T) {
 		})
 	}
 }
+
+// A numbered DevTools request is answered with what the native call did:
+// opened, refused with the view's error, or failed for a page that is
+// gone. An unnumbered one, from a backend that predates the answer, opens
+// the window and answers nothing.
+func TestADevToolsRequestIsAnsweredWithItsOutcome(t *testing.T) {
+	r := newPopupRig(t)
+	defer r.done()
+	_, controller := r.createPage("page-1", "jar", false)
+	view := controller.view
+	answer := func(request uint64) rigReport {
+		t.Helper()
+		r.host.Apply(Directive{Op: OpDevTools, PageID: "page-1", Request: request})
+		got := r.takeReports()
+		if len(got) != 1 || got[0].page != "page-1" {
+			t.Fatalf("request %d reported %+v, want one answer of page-1", request, got)
+		}
+		return got[0]
+	}
+	opened := answer(1)
+	if opened.kind != ReportDevToolsOpened || opened.detail != (DevToolsReport{Request: 1}).Encode() || view.inspectorOpens != 1 {
+		t.Fatalf("an opened DevTools window answered %+v after %d opens", opened, view.inspectorOpens)
+	}
+	view.inspectorErr = 0x80004005 // E_FAIL
+	failed := answer(2)
+	report, err := ParseDevToolsReport(failed.detail)
+	if failed.kind != ReportDevToolsFailed || err != nil || report.Request != 2 || report.Error != hresult(0x80004005).Error() {
+		t.Fatalf("a refused DevTools window answered %+v (%+v, %v)", failed, report, err)
+	}
+	view.inspectorErr = 0
+	r.host.Apply(Directive{Op: OpDevTools, PageID: "page-1"})
+	if got := r.takeReports(); len(got) != 0 || view.inspectorOpens != 3 {
+		t.Fatalf("an unnumbered request reported %+v after %d opens, want the window and no answer", got, view.inspectorOpens)
+	}
+	r.host.Apply(Directive{Op: OpDevTools, PageID: "page-gone", Request: 3})
+	got := r.takeReports()
+	if len(got) != 1 || got[0].page != "page-gone" || got[0].kind != ReportDevToolsFailed {
+		t.Fatalf("a request for a page that is gone reported %+v", got)
+	}
+	if report, err := ParseDevToolsReport(got[0].detail); err != nil || report.Request != 3 || report.Error == "" {
+		t.Fatalf("a request for a page that is gone answered %+v, %v", report, err)
+	}
+}
