@@ -48,7 +48,7 @@ func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSavi
 	if _, err := os.Stat(partial); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the partial file is still there: %v", err)
 	}
-	if reserved := p.authority.downloadBytes.Used(); reserved != 0 {
+	if reserved := p.authority.pool.Pool().Used(); reserved != 0 {
 		t.Fatalf("the workspace still reserves %d bytes", reserved)
 	}
 	// A second cancel of a settled download is no error and changes nothing.

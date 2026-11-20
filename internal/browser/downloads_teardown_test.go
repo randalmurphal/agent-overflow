@@ -47,8 +47,8 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			if entries != 0 {
 				t.Fatalf("the page that left holds %d download entries", entries)
 			}
-			if authority.downloadBytes.Used() != 0 || manager.artifactBytes.Used() != baseline {
-				t.Fatalf("the workspace reserves %d bytes and the artifacts %d over %d", authority.downloadBytes.Used(), manager.artifactBytes.Used(), baseline)
+			if authority.pool.Pool().Used() != 0 || manager.artifactBytes.Used() != baseline {
+				t.Fatalf("the workspace reserves %d bytes and the artifacts %d over %d", authority.pool.Pool().Used(), manager.artifactBytes.Used(), baseline)
 			}
 			if n := countKind(log.take(), "download"); n != 0 {
 				t.Fatalf("the refused download was announced %d times", n)
@@ -152,11 +152,11 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 				profile.mu.Unlock()
 				_, statErr := os.Stat(partial)
 				partialGone := errors.Is(statErr, os.ErrNotExist)
-				if !running && settled && !held && partialGone && authority.downloadBytes.Used() == 0 && manager.artifactBytes.Used() == baseline {
+				if !running && settled && !held && partialGone && authority.pool.Pool().Used() == 0 && manager.artifactBytes.Used() == baseline {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, its partial file is gone: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, partialGone, authority.downloadBytes.Used(), manager.artifactBytes.Used(), baseline)
+					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, its partial file is gone: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, partialGone, authority.pool.Pool().Used(), manager.artifactBytes.Used(), baseline)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}

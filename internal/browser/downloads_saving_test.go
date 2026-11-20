@@ -199,12 +199,12 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, mode.saving)
 			frame := paneHandle(manager, access, page.ID)
 
-			authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+			authorityOf(t, manager, access).pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 			admitted := manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "quota", SuggestedName: "q.bin"}) == downloadAdmitted
 			if admitted == artifacts {
 				t.Fatalf("a download past the workspace quota was admitted: %v", admitted)
 			}
-			authorityOf(t, manager, access).downloadBytes.SetUsed(0)
+			authorityOf(t, manager, access).pool.Pool().SetUsed(0)
 
 			if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "big", SuggestedName: "big.bin"}) != downloadAdmitted {
 				t.Fatal("a download within quota was refused")

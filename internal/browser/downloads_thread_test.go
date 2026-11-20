@@ -132,11 +132,11 @@ func TestDownloadProgressCoalescesIntoOneStatePush(t *testing.T) {
 func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
 	manager, log, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	frame := paneHandle(manager, access, page.ID)
-	authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+	authorityOf(t, manager, access).pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "over", SuggestedName: "over.bin"}) == downloadAdmitted {
 		t.Fatal("a download over quota was kept")
 	}
-	authorityOf(t, manager, access).downloadBytes.SetUsed(0)
+	authorityOf(t, manager, access).pool.Pool().SetUsed(0)
 	if manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "kept", SuggestedName: "kept.bin"}) != downloadAdmitted {
 		t.Fatal("a download within quota was refused")
 	}

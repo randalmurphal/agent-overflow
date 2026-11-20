@@ -35,7 +35,7 @@ func unremovable(t *testing.T, file string) int64 {
 func awaitCharged(t *testing.T, m *Manager, authority *workspaceAuthority, workspace, artifacts int64) {
 	t.Helper()
 	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
-		gotWorkspace, gotArtifacts := authority.downloadBytes.Used(), m.artifactBytes.Used()
+		gotWorkspace, gotArtifacts := authority.pool.Pool().Used(), m.artifactBytes.Used()
 		if gotWorkspace == workspace && gotArtifacts == artifacts {
 			return
 		}
@@ -133,7 +133,7 @@ func TestAParkedDiscardRemovesTheFileItWasParkedWith(t *testing.T) {
 		t.Run(how, func(t *testing.T) {
 			manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 			authority := authorityOf(t, manager, access)
-			workspace, artifacts := authority.downloadBytes.Used(), manager.artifactBytes.Used()
+			workspace, artifacts := authority.pool.Pool().Used(), manager.artifactBytes.Used()
 			file := engineArtifact(t, manager, "dl-1")
 			if !popupDownload(manager, engine, "popup", "dl-1", opener) {
 				t.Fatal("the popup's download was refused")

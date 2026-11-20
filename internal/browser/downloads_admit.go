@@ -143,10 +143,15 @@ func (m *Manager) downloadEntry(event downloadStart) DownloadInfo {
 var errNoWorkspace = errors.New("the download belongs to no workspace")
 
 // reserveDownload holds maxDownloadBytes of the workspace's download quota
-// and the artifact root's, both or neither.
+// and the artifact root's, both or neither. The workspace's pool is the
+// one its name has as the reservation is taken, so the authority of a
+// page that left, which a workspace opened again since has replaced,
+// reserves against the pool that workspace's pages meet.
 func (m *Manager) reserveDownload(authority *workspaceAuthority) (*quota.Reservation, error) {
 	if authority == nil {
 		return nil, errNoWorkspace
 	}
-	return m.reserveArtifacts(maxDownloadBytes, authority.downloadBytes)
+	pool := m.workspacePools.Hold(authority.workspace)
+	defer pool.Release()
+	return m.reserveArtifacts(maxDownloadBytes, pool.Pool())
 }

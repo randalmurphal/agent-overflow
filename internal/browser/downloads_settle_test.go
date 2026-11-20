@@ -19,7 +19,7 @@ func settleRig(t *testing.T) (m *Manager, access Access, file string, workspaceB
 	t.Helper()
 	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	authority := authorityOf(t, manager, access)
-	workspaceBefore, artifactsBefore = authority.downloadBytes.Used(), manager.artifactBytes.Used()
+	workspaceBefore, artifactsBefore = authority.pool.Pool().Used(), manager.artifactBytes.Used()
 	file = engineArtifact(t, manager, "dl-1")
 	if manager.downloadStarted(downloadStart{Frame: frameID(paneHandle(manager, access, page.ID)), ID: "dl-1", SuggestedName: "a.bin"}) != downloadAdmitted {
 		t.Fatal("the download was refused")
@@ -121,12 +121,12 @@ func TestAParkedDownloadWhoseJarWentIsRemovedAtItsFate(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 	manager.parkTimeout = 50 * time.Millisecond
 	authority := authorityOf(t, manager, access)
-	workspace, artifacts := authority.downloadBytes.Used(), manager.artifactBytes.Used()
+	workspace, artifacts := authority.pool.Pool().Used(), manager.artifactBytes.Used()
 	file := engineArtifact(t, manager, "dl-1")
 	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
 		t.Fatal("the popup's download was refused")
 	}
-	if got := authority.downloadBytes.Used() - workspace; got != maxDownloadBytes {
+	if got := authority.pool.Pool().Used() - workspace; got != maxDownloadBytes {
 		t.Fatalf("before its fate the download holds %d workspace bytes, want %d", got, maxDownloadBytes)
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadInProgress, 3))

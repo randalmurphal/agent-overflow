@@ -343,7 +343,7 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	}
 	manager.mu.Lock()
 	for _, authority := range manager.authorities {
-		authority.downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+		authority.pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 	}
 	manager.mu.Unlock()
 	if got := manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G-over"}); got != downloadRefused {

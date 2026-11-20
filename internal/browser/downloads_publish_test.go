@@ -169,7 +169,7 @@ func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
 	if err := os.WriteFile(authority.downloadDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspaceBefore, artifactsBefore := authority.downloadBytes.Used(), manager.artifactBytes.Used()
+	workspaceBefore, artifactsBefore := authority.pool.Pool().Used(), manager.artifactBytes.Used()
 	startDownload(t, manager, access, page, "report.pdf", 5)
 	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if item.State != downloadStateFailed {

@@ -193,11 +193,11 @@ func framePageLocked(scope *jarScope, frame frameID) *managedPage {
 // which a reservation against it keeps after the authority goes, so a
 // workspace whose authority is made again meets the bytes still held.
 type workspaceAuthority struct {
-	workspace     string
-	downloadDir   string
-	downloadBytes *quota.Pool
-	// pool is the authority's hold on downloadBytes, released as it goes
-	// (pruneAuthoritiesLocked, forgetAuthoritiesLocked).
+	workspace   string
+	downloadDir string
+	// pool is the authority's hold on the workspace's pool, which keeps
+	// what its finished downloads charged while the workspace has a page,
+	// released as it goes (pruneAuthoritiesLocked, forgetAuthoritiesLocked).
 	pool *quota.PoolHold
 }
 
@@ -209,8 +209,7 @@ func (m *Manager) authorityLocked(workspace, downloadDir string) *workspaceAutho
 	}
 	authority := m.authorities[workspace]
 	if authority == nil {
-		pool := m.workspacePools.Hold(workspace)
-		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir, downloadBytes: pool.Pool(), pool: pool}
+		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir, pool: m.workspacePools.Hold(workspace)}
 		m.authorities[workspace] = authority
 	}
 	return authority

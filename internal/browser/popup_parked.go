@@ -466,12 +466,14 @@ func (m *Manager) settleCarried(owner parkedOwner, id downloadID) (discard downl
 // held (holdParkedOwner), as any download starting in that page is
 // admitted (listStart), and it answers downloadUnowned when no page takes
 // it. In a carrier's log the row then settles as that leave settled its
-// others (settleCarried). An engine whose downloads are AO's keeps a file
-// only for a listed page, in the download's open jar and against that
-// page's workspace: for a carrier it answers downloadRefused with a row
-// canceled as the leave canceled its others, and with the jar closed
-// downloadUnowned, and either way the engine ends the download and
-// removes its file.
+// others (settleCarried): kept when its engine has received its end,
+// canceled otherwise. An engine whose downloads are AO's keeps a file in
+// the download's open jar, against its page's workspace, and reserves
+// nothing for a download the leave cancels: for a carrier whose engine has
+// not received the download's end, or whose jar is closed, it answers
+// downloadRefused with a row canceled as the leave canceled its others,
+// and for a listed page with the jar closed downloadUnowned, and either
+// way the engine ends the download and removes its file.
 func (m *Manager) admitLate(event downloadStart, fate popupFate) downloadAdmission {
 	m.mu.Lock()
 	scope := m.profileScopeLocked(event.Profile)
@@ -481,8 +483,9 @@ func (m *Manager) admitLate(event downloadStart, fate popupFate) downloadAdmissi
 		return downloadUnowned
 	}
 	if m.downloadsToArtifacts() {
+		ended := event.EndReported != nil && event.EndReported()
 		switch {
-		case owner.carried:
+		case owner.carried && (scope == nil || !ended):
 			note := m.listRefused(owner.page, owner.held, event, owner.carrier.reason, owner.source)
 			owner.held.release()
 			m.publishDownloads(note)

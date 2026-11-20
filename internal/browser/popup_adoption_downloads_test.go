@@ -245,14 +245,14 @@ func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
 func TestAParkedDownloadHoldsItsWorkspacesAllowance(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 	authority := authorityOf(t, manager, access)
-	before := authority.downloadBytes.Used()
+	before := authority.pool.Pool().Used()
 	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
 		t.Fatal("a parked download within the quotas was refused")
 	}
-	if got := authority.downloadBytes.Used() - before; got != maxDownloadBytes {
+	if got := authority.pool.Pool().Used() - before; got != maxDownloadBytes {
 		t.Fatalf("a parked download holds %d of its workspace's bytes, want %d", got, maxDownloadBytes)
 	}
-	authority.downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+	authority.pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 	if popupDownload(manager, engine, "popup", "dl-2", opener) {
 		t.Fatal("a parked download past its workspace's quota was admitted")
 	}
@@ -280,7 +280,7 @@ func TestAParkedDownloadsListingKeepsItsReservation(t *testing.T) {
 	if got := manager.artifactBytes.Used(); got != maxArtifactRootBytes-maxDownloadBytes+5 {
 		t.Fatalf("%d artifact bytes are reserved, want the competitor's and the file's", got)
 	}
-	if got := authorityOf(t, manager, access).downloadBytes.Used(); got != 5 {
+	if got := authorityOf(t, manager, access).pool.Pool().Used(); got != 5 {
 		t.Fatalf("the workspace holds %d download bytes, want the file's 5", got)
 	}
 }

@@ -43,7 +43,7 @@ func TestAWorkspaceKeepsOnePoolWhileItsDownloadsHoldIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := authorityOf(t, manager, access).downloadBytes; got != authority.downloadBytes {
+	if got := authorityOf(t, manager, access).pool.Pool(); got != authority.pool.Pool() {
 		t.Fatal("the workspace has a second pool while its first holds reservations")
 	}
 	frame := paneHandle(manager, access, again.ID)
@@ -99,7 +99,7 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 			return manager.downloadStarted(downloadStart{Frame: frameID(p.driver.Handle()), ID: id, URL: "https://example.test/" + string(id), SuggestedName: string(id)})
 		}
 		wantAdmission(t, "a download within the quotas", start("a"), downloadAdmitted)
-		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+		authorityOf(t, manager, access).pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 		wantAdmission(t, "a download past its workspace's quota", start("b"), downloadRefused)
 		wantAdmission(t, "a frame no page owns", manager.downloadStarted(downloadStart{Frame: "nobody", ID: "c"}), downloadUnowned)
 	})
@@ -109,7 +109,7 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 		wantAdmission(t, "a popup whose opener is not listed yet", startPopupDownload(manager, engine, "orphan", "b", "not-yet"), downloadUnowned)
 		wrongProfile := manager.downloadStarted(downloadStart{Frame: "other", ID: "c", Popup: "other", Openers: []ids.PageHandle{opener}, Profile: "no-such-jar"})
 		wantAdmission(t, "a popup of a jar that is not open", wrongProfile, downloadUnowned)
-		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+		authorityOf(t, manager, access).pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 		wantAdmission(t, "a popup past its workspace's quota", startPopupDownload(manager, engine, "full", "d", opener), downloadRefused)
 		if popups, downloads := parkedState(manager); popups != 1 || downloads != 1 {
 			t.Fatalf("parked %d popups with %d downloads, want only the admitted one", popups, downloads)
@@ -124,7 +124,7 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 		wantAdmission(t, "a popup that went, with no opener listed", startPopupDownload(manager, engine, "orphaned", "b"), downloadUnowned)
 		closedJar := manager.downloadStarted(downloadStart{Frame: "gone", ID: "j", Popup: "gone", Openers: []ids.PageHandle{opener}, Profile: "no-such-jar"})
 		wantAdmission(t, "a popup that went, of a jar that is not open", closedJar, downloadUnowned)
-		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+		authorityOf(t, manager, access).pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 		wantAdmission(t, "a popup that went, past its opener's quota", startPopupDownload(manager, engine, "gone", "c", opener), downloadRefused)
 		// The refusal is a row in the opener's tab that says why, as a
 		// download starting in that tab past its quota is.
@@ -144,7 +144,7 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 func TestRefusedPopupDownloadsTakeNoParkingSlot(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 	authority := authorityOf(t, manager, access)
-	authority.downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
+	authority.pool.Pool().SetUsed(maxWorkspaceDownloadBytes)
 	for i := range maxParkedPopups + 1 {
 		got := startPopupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("popup-%d", i)), downloadID(fmt.Sprintf("dl-%d", i)), opener)
 		wantAdmission(t, fmt.Sprintf("start %d past the quota", i), got, downloadRefused)
@@ -152,7 +152,7 @@ func TestRefusedPopupDownloadsTakeNoParkingSlot(t *testing.T) {
 	if popups, downloads := parkedState(manager); popups != 0 || downloads != 0 {
 		t.Fatalf("refused starts left %d popups and %d downloads parked", popups, downloads)
 	}
-	authority.downloadBytes.SetUsed(0)
+	authority.pool.Pool().SetUsed(0)
 	for i := range maxParkedPopups + 1 {
 		got := startPopupDownload(manager, engine, ids.PageHandle(fmt.Sprintf("orphan-%d", i)), downloadID(fmt.Sprintf("o-%d", i)), "not-yet")
 		wantAdmission(t, fmt.Sprintf("start %d with no owner", i), got, downloadUnowned)
