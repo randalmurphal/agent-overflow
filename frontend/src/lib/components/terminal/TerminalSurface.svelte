@@ -39,14 +39,12 @@
 
   interface Props {
     surface: ThreadTerminalSurfaceContext;
-    /** Injected by tests to skip auto-ListTerminals/OpenTerminal on mount. */
-    manual?: boolean;
     /** Whether to offer the ▾ collapse affordance. True in the bottom drawer;
      *  false in a full terminal pane, where there is nothing to collapse into. */
     collapsible?: boolean;
   }
 
-  let { surface, manual = false, collapsible = true }: Props = $props();
+  let { surface, collapsible = true }: Props = $props();
 
   let bodyEl: { focus: () => void; focusTarget: () => HTMLElement | null } | undefined = $state(undefined);
   // Latch a "focus the terminal body once it exists" intent, drained (and
@@ -93,7 +91,7 @@
   // mount (cold drawer open: intent set before mount) AND re-runs whenever the
   // intent flips on a live surface (warm nav-into via pane.focusLeft/Right),
   // because consumeFocusRequest reads the pane's `pendingTerminalFocus` $state.
-  // It returns true at most once per requestTerminalFocus(), so a remount can't
+  // It returns the intent at most once per requestTerminalFocus(), so a remount can't
   // re-grab focus; the rAF effect above lands it once TerminalBody binds.
   $effect(() => {
     const requested = surface.consumeFocusRequest();
@@ -125,7 +123,8 @@
     try {
       await CloseTerminal(terminalID);
     } catch (err) {
-      console.error('terminal: CloseTerminal for stale open failed', err);
+      // Nobody is watching this surface any more; the diagnostic is the record.
+      reportFrontendDiagnostic('terminal close of a stale open failed', errString(err));
     }
   }
 
@@ -183,10 +182,18 @@
     // The cursor follows into the sibling a close leaves; the intent is the
     // click's, taken before the close is answered.
     const intent = intendTerminalFocus();
+    const threadId = surface.threadId;
+    const workspacePath = surface.workspacePath;
     try {
       await CloseTerminal(terminalID);
     } catch (err) {
-      console.error('terminal: CloseTerminal failed', err);
+      // The shell may still run: its tab stays, and the refusal is shown
+      // while the surface that asked remains.
+      intent.end();
+      if (threadId && canUseTerminalResult(threadId, workspacePath)) {
+        addErrorToast(`Could not close terminal: ${userFacingError(err)}`, err);
+      }
+      return;
     }
     handle.removeTab(terminalID);
     // Closing the last tab leaves nothing to render. In the drawer, collapse
@@ -219,7 +226,7 @@
     const terminalID = handle.activeTerminalID;
     if (!terminalID) return;
     RefreshTerminal(terminalID).catch((err) => {
-      console.error('terminal: RefreshTerminal failed', err);
+      addErrorToast(`Could not refresh terminal: ${userFacingError(err)}`, err);
     });
   }
 
@@ -296,7 +303,7 @@
   onMount(() => {
     const threadId = surface.threadId;
     const workspacePath = surface.workspacePath;
-    if (manual || !threadId) return;
+    if (!threadId) return;
     // A re-read leaves the active tab alone, like a terminal another client opens.
     return registerTerminalSurface(threadId, () => syncTerminals(threadId, workspacePath, false));
   });
@@ -304,7 +311,7 @@
   onMount(async () => {
     const threadId = surface.threadId;
     const workspacePath = surface.workspacePath;
-    if (manual || !threadId) return;
+    if (!threadId) return;
 
     await syncTerminals(threadId, workspacePath, true);
     if (!canUseTerminalResult(threadId, workspacePath)) return;

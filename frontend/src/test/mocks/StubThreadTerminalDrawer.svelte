@@ -6,11 +6,10 @@
   // `surface.settleAfterAsyncMount()` — actually runs.
   import type { ThreadTerminalDrawerProps } from '../../lib/components/terminal/terminalDrawerTypes';
 
-  let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
+  let { surface }: ThreadTerminalDrawerProps = $props();
 </script>
 
 <div
   data-testid="stub-terminal-drawer"
   data-pane-id={surface.paneId}
-  data-manual={manual}
 ></div>

@@ -47,10 +47,7 @@ vi.mock('../../stores/bindings', async (importOriginal) => ({
   CloseTerminal: vi.fn(async (terminalID: string) => {
     callLog.push({ fn: 'CloseTerminal', args: [terminalID] });
   }),
-  ListTerminals: vi.fn(async (threadID: string) => {
-    callLog.push({ fn: 'ListTerminals', args: [threadID] });
-    return [];
-  }),
+  ListTerminals: vi.fn(),
   ResizeTerminal: vi.fn(async (terminalID: string, rows: number, cols: number) => {
     callLog.push({ fn: 'ResizeTerminal', args: [terminalID, rows, cols] });
   }),
@@ -128,6 +125,24 @@ async function defaultOpenTerminalImpl(threadID: string, opts: unknown) {
   };
 }
 
+// The list a surface reads as it mounts, held unanswered: these tests drive
+// the tabs themselves, and the mount neither lists nor opens one. A test of
+// the mount's own first open answers it (answerTerminalList).
+function heldTerminalList(threadID: string): Promise<never> {
+  callLog.push({ fn: 'ListTerminals', args: [threadID] });
+  return new Promise(() => {});
+}
+
+async function answerTerminalList(): Promise<void> {
+  const bindings = await import('../../stores/bindings');
+  (bindings.ListTerminals as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+    async (threadID: string) => {
+      callLog.push({ fn: 'ListTerminals', args: [threadID] });
+      return [];
+    },
+  );
+}
+
 beforeEach(async () => {
   callLog.length = 0;
   resetThreadTerminalStatesForTest();
@@ -137,6 +152,7 @@ beforeEach(async () => {
   (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
     defaultOpenTerminalImpl,
   );
+  (bindings.ListTerminals as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(heldTerminalList);
 });
 
 afterEach(() => {
@@ -148,7 +164,7 @@ afterEach(() => {
 describe('ThreadTerminalDrawer', () => {
   it('renders while global terminal event routing is installed', async () => {
     const pane = makeSurface();
-    render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    render(ThreadTerminalDrawer, { surface: pane as never });
     // Next microtask: onMount async.
     await Promise.resolve();
     await Promise.resolve();
@@ -157,19 +173,9 @@ describe('ThreadTerminalDrawer', () => {
     expect(wailsListenerCount('terminal:exit')).toBeGreaterThan(0);
   });
 
-  it('does not list or open terminals when mounted in manual mode', async () => {
-    const pane = makeSurface();
-    render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(callLog.filter((c) => c.fn === 'ListTerminals')).toHaveLength(0);
-    expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(0);
-  });
-
   it('opens a terminal via OpenTerminal on +', async () => {
     const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -220,6 +226,7 @@ describe('ThreadTerminalDrawer', () => {
   // Closing a new terminal pane during its first open is closing it after the
   // open: the shell keeps the thread alive, and its next surface lists it.
   it("leaves a thread's shell running when its first open resolves after the pane closed", async () => {
+    await answerTerminalList();
     const finishOpen = await deferOpenTerminal();
     const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface('terminal-thread') as never });
     await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
@@ -239,7 +246,7 @@ describe('ThreadTerminalDrawer', () => {
     let canAdopt = true;
     pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
     const finishOpen = await deferOpenTerminal();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -264,7 +271,7 @@ describe('ThreadTerminalDrawer', () => {
     let canAdopt = true;
     pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
     const finishOpen = await deferOpenTerminal();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -280,6 +287,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it("closes a draft placeholder's shell when its first open resolves after the pane closed", async () => {
     const draftId = 'draft:main:project-1:terminal:abc';
+    await answerTerminalList();
     const finishOpen = await deferOpenTerminal();
     const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface(draftId) as never });
     await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
@@ -306,7 +314,7 @@ describe('ThreadTerminalDrawer', () => {
     );
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const { getByTestId, unmount } = render(ThreadTerminalDrawer, { surface: makeSurface() as never, manual: true });
+      const { getByTestId, unmount } = render(ThreadTerminalDrawer, { surface: makeSurface() as never });
       await tick();
       getByTestId('terminal-open').click();
       await waitFor(() => expect(rejects).toHaveLength(1));
@@ -331,7 +339,6 @@ describe('ThreadTerminalDrawer', () => {
     const pane = makeSurface();
     const { getByTestId, queryByTestId, queryByLabelText } = render(ThreadTerminalDrawer, {
       surface: pane as never,
-      manual: true,
     });
     await tick();
 
@@ -347,7 +354,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it('closes a terminal and clears its tab', async () => {
     const pane = makeSurface();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -366,9 +373,48 @@ describe('ThreadTerminalDrawer', () => {
     expect(queryByTestId('terminal-tab-t1')).toBeNull();
   });
 
+  // The shell may still run after a refused close: its tab stays and the
+  // drawer stays open, and the refusal is shown.
+  it('keeps the tab and says so when its close is refused', async () => {
+    const { addErrorToast } = await import('../../stores/toast.svelte');
+    vi.mocked(addErrorToast).mockClear();
+    const bindings = await import('../../stores/bindings');
+    const failure = new Error('terminal: kill failed');
+    vi.mocked(bindings.CloseTerminal).mockImplementationOnce(async (terminalID: string) => {
+      callLog.push({ fn: 'CloseTerminal', args: [terminalID] });
+      throw failure;
+    });
+    const pane = makeSurface();
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
+    await tick();
+    getByTestId('terminal-open').click();
+    await waitFor(() => expect(getByTestId('terminal-tab-t1')).toBeDefined());
+
+    getByTestId('terminal-tab-close-t1').click();
+    await waitFor(() => expect(addErrorToast).toHaveBeenCalledWith(expect.stringContaining('Could not close terminal'), failure));
+    expect(getByTestId('terminal-tab-t1')).toBeDefined();
+    expect(pane.setVisible).not.toHaveBeenCalled();
+  });
+
+  it('says so when a refresh is refused', async () => {
+    const { addErrorToast } = await import('../../stores/toast.svelte');
+    vi.mocked(addErrorToast).mockClear();
+    const bindings = await import('../../stores/bindings');
+    const failure = new Error('terminal: no such terminal');
+    vi.mocked(bindings.RefreshTerminal).mockImplementationOnce(async () => {
+      throw failure;
+    });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: makeSurface() as never });
+    await tick();
+    getByTestId('terminal-open').click();
+    await waitFor(() => expect(getByTestId('terminal-tab-t1')).toBeDefined());
+    getByTestId('terminal-refresh').click();
+    await waitFor(() => expect(addErrorToast).toHaveBeenCalledWith(expect.stringContaining('Could not refresh terminal'), failure));
+  });
+
   it('collapses when ▾ is pressed', async () => {
     const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await Promise.resolve();
     getByTestId('terminal-collapse').click();
     expect(pane.setVisible).toHaveBeenCalledWith(false);
@@ -376,7 +422,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it('auto-removes a tab when terminal:exit fires for it', async () => {
     const pane = makeSurface();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -427,7 +473,7 @@ describe('ThreadTerminalDrawer', () => {
       },
     );
 
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -454,7 +500,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it('ignores terminal:exit for other threads', async () => {
     const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -476,7 +522,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it('auto-collapses when the last tab is closed', async () => {
     const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     // Open one terminal, then close it — that's the last tab.
@@ -520,7 +566,7 @@ describe('ThreadTerminalDrawer', () => {
       },
     );
 
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -542,7 +588,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it('routes terminal:output events to the active tab', async () => {
     const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await Promise.resolve();
     getByTestId('terminal-open').click();
     await Promise.resolve();
@@ -563,7 +609,7 @@ describe('ThreadTerminalDrawer', () => {
 
   it('filters events for other threads', async () => {
     const pane = makeSurface();
-    render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    render(ThreadTerminalDrawer, { surface: pane as never });
     await Promise.resolve();
 
     // Emitting an event for a different thread must not crash even if no tabs
@@ -584,7 +630,6 @@ describe('ThreadTerminalDrawer', () => {
     const pane = makeSurface();
     const { container } = render(ThreadTerminalDrawer, {
       surface: pane as never,
-      manual: true,
     });
     await tick();
     const drawerEl = container.querySelector('[data-drawer-position="bottom"]');
@@ -598,7 +643,6 @@ describe('ThreadTerminalDrawer', () => {
     const pane = makeSurface();
     const { container } = render(ThreadTerminalDrawer, {
       surface: pane as never,
-      manual: true,
     });
     await tick();
     const drawerEl = container.querySelector('[data-drawer-position="bottom"]') as HTMLElement;
@@ -623,7 +667,6 @@ describe('ThreadTerminalDrawer', () => {
       const pane = makeSurface();
       const { container, getByTestId } = render(ThreadTerminalDrawer, {
         surface: pane as never,
-        manual: true,
       });
       await tick();
 
