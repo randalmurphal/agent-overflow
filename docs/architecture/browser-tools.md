@@ -291,8 +291,9 @@ per-platform no-op.
   and with no tab it opens one blank tab, selected and shown, which the
   answer names. So an agent's open or the user's selection before its turn
   wins, two shows open one tab between them, and the client decides nothing
-  from a state it may not have read yet. A press repeated before the show's
-  state lands joins it; a hide press ends that run. A new tab the user
+  from a state it may not have read yet. Every press sends; a repeated
+  press's address focus request replaces the one before it, and its refusal
+  is not toasted again while the same text is on screen. A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted

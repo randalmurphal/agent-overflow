@@ -81,21 +81,62 @@ describe('the chat header browser button', () => {
     expect(companionForSource('main', 'browser')).not.toBeNull();
   });
 
-  // Both presses saw the button offer show: one action, one focus request.
-  it('a press repeated before the answer joins the show under way', async () => {
-    let reply: (state: unknown) => void = () => {};
-    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+  // Every press sends; the Manager converges the shows. The second press's
+  // focus request replaces the first's, so the first answer settles nothing.
+  it('a press repeated before the answer sends again, and its focus request replaces the first', async () => {
+    const replies: Array<(state: unknown) => void> = [];
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
     const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
-    expect(runBrowserHeaderIntent(browserHeaderIntent('thread-browser'))).toBe(first);
-    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(1));
-    reply({ ...shown(2), pageId: 'page-1' });
+    const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(2));
+    replies[0]({ ...shown(2), pageId: 'page-1' });
     await first;
-    expect(act).toHaveBeenCalledTimes(1);
+    expect(addressFocusIntent('thread-browser')).toBe('');
+    replies[1]({ ...shown(3), pageId: 'page-1' });
+    await again;
+    expect(addressFocusIntent('thread-browser')).toBe('page-1');
+    expect(kinds(act)).toEqual(['show-browser', 'show-browser']);
+  });
+
+  // The reviewer's sequence: the first show's tab opened the pane, and its
+  // last tab closed before the show answered. The button offers show
+  // again, and a press is a new show, not the old one joined.
+  it('a press after the shown pane closed sends a show while an older one is unanswered', async () => {
+    const replies: Array<(state: unknown) => void> = [];
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
+    const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    applyBrowserCompanionState(shown(2) as never);
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    applyBrowserCompanionState(none(3) as never);
+    expect(companionForSource('main', 'browser')).toBeNull();
+    expect(browserHeaderIntent('thread-browser').kind).toBe('show');
+    const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(2));
+    replies[0](none(3));
+    replies[1]({ ...shown(4), pageId: 'page-1' });
+    await Promise.all([first, again]);
+    expect(companionForSource('main', 'browser')).not.toBeNull();
     expect(addressFocusIntent('thread-browser')).toBe('page-1');
   });
 
-  // A hide between two shows ends the run: the second show is the user's
-  // newest press, not the first one repeated.
+  // Two presses refused for one reason: one toast says it.
+  it('a repeated press refused for the same reason raises one toast', async () => {
+    resetToastsForTest();
+    const refusals: Array<(err: Error) => void> = [];
+    setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((_resolve, reject) => { refusals.push(reject); })));
+    const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+    await vi.waitFor(() => expect(refusals).toHaveLength(2));
+    refusals[0](new Error('browser: engine unavailable'));
+    refusals[1](new Error('browser: engine unavailable'));
+    await Promise.all([first, again]);
+    expect(getToasts().map((toast) => toast.message)).toEqual(['browser: engine unavailable']);
+    expect(addressFocusIntent('thread-browser')).toBeNull();
+  });
+
+  // A hide between two shows: the second show is the user's newest press,
+  // and the pane ends shown.
   it('show, hide, show ends shown while the first show is still unanswered', async () => {
     const replies: Array<(state: unknown) => void> = [];
     const act = setBindingMock('BrowserCompanionDo', vi.fn((_thread: string, action: { kind: string }) => (

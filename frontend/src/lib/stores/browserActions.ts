@@ -28,7 +28,7 @@ import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelt
 import { getCompanionPane } from './companionPanes.svelte';
 import { getPane, paneCommandTarget } from './panes.svelte';
 import { TransportError } from '../transport/wsClient';
-import { addErrorToast } from './toast.svelte';
+import { addErrorToast, getToasts } from './toast.svelte';
 
 // What the user's gestures on a thread's browser mean: the pane's chrome,
 // the chat header's button, the keyboard's commands on the shown tab. Each
@@ -321,35 +321,30 @@ export function browserHeaderIntent(threadId: string): BrowserHeaderIntent {
   return browserPaneShown(threadId) ? { kind: 'hide', threadId } : { kind: 'show', threadId };
 }
 
-// A header show still unanswered, per thread. A press while the button
-// still offers show (the show's state has not landed) is the same press
-// repeated and joins it, so a double click arms one address focus and
-// raises one toast. A hide press of the thread ends the run: a show after
-// it is sent again. The Manager converges two shows on its own
-// (ShowCompanion); this is only the UI's.
-const headerShows = new Map<string, Promise<void>>();
-
 /**
- * Carries out a header press. A refusal reaches a toast, since a hidden
- * pane has no banner.
+ * Carries out a header press. Every press sends: the Manager converges two
+ * shows (ShowCompanion), and a repeated press's effects are settled where
+ * they are produced. Its address focus request replaces the one before it
+ * (armAddressFocus), and a refusal already on screen in a toast is not
+ * raised again (toastHeaderFailure). A refusal reaches a toast, since a
+ * hidden pane has no banner.
  */
 export function runBrowserHeaderIntent(intent: BrowserHeaderIntent): Promise<void> {
   switch (intent.kind) {
     case 'hide':
-      headerShows.delete(intent.threadId);
       return hideBrowserFromHeader(intent.threadId);
-    case 'show': {
-      const pending = headerShows.get(intent.threadId);
-      if (pending) return pending;
-      const show = showBrowserFromHeader(intent.threadId).finally(() => {
-        if (headerShows.get(intent.threadId) === show) headerShows.delete(intent.threadId);
-      });
-      headerShows.set(intent.threadId, show);
-      return show;
-    }
+    case 'show':
+      return showBrowserFromHeader(intent.threadId);
     default:
       return unhandledIntent(intent);
   }
+}
+
+// A header press's refusal, in a toast unless one with the same text is on
+// screen: a repeated press refused for the same reason says it once.
+function toastHeaderFailure(failure: BrowserActionFailure): void {
+  if (getToasts().some((toast) => toast.type === 'error' && toast.message === failure.error)) return;
+  addErrorToast(failure.error, failure.cause);
 }
 
 function unhandledIntent(intent: never): never {
@@ -358,7 +353,7 @@ function unhandledIntent(intent: never): never {
 
 async function hideBrowserFromHeader(threadId: string): Promise<void> {
   const failure = await browserCompanionAct(threadId, browserAction.hide());
-  if (failure) addErrorToast(failure.error, failure.cause);
+  if (failure) toastHeaderFailure(failure);
 }
 
 /**
@@ -384,7 +379,7 @@ async function showBrowserFromHeader(threadId: string): Promise<void> {
   const { failure, state } = await actForThread(threadId, browserAction.showBrowser());
   settleAddressFocus(threadId, request, failure ? '' : (state?.pageId ?? ''));
   // An older backend refuses the kind ("unsupported companion action").
-  if (failure) addErrorToast(failure.error, failure.cause);
+  if (failure) toastHeaderFailure(failure);
 }
 
 observeBrowserCompanion({
@@ -393,6 +388,5 @@ observeBrowserCompanion({
   },
   resetForTest: () => {
     browserActionCounts.clear();
-    headerShows.clear();
   },
 });
