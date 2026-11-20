@@ -255,7 +255,6 @@ type Controller interface {
 	Type(context.Context, Access, TypeOptions) (PageInfo, error)
 	Press(context.Context, Access, PageID, string) (PageInfo, error)
 	Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error)
-	Wait(context.Context, Access, PageID, string, int) (PageInfo, error)
 	History(context.Context, Access, PageID, string) (PageInfo, error)
 	Evaluate(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)
 	EvaluateReadOnly(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)

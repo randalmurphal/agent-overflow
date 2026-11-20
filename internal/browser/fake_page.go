@@ -311,8 +311,6 @@ func (p *fakePage) Scroll(context.Context, string, float64, float64) error {
 	return errFakeEngineHasNoPage
 }
 
-func (p *fakePage) WaitVisible(context.Context, string) error { return errFakeEngineHasNoPage }
-
 func (p *fakePage) FindMode() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

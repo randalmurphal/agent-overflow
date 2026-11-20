@@ -58,7 +58,6 @@ func (s *MCPServer) RegisterThread(caller Caller, session string) (map[string]an
 	}
 	return s.Server.RegisterThread(string(caller.ThreadID), session, caller)
 }
-func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) { s.ServeHTTP(w, r) }
 func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, req threadmcp.Request, caller Caller) {
 	call, err := threadmcp.DecodeToolCall(req.Params)
 	if err != nil {

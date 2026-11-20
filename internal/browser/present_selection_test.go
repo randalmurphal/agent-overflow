@@ -142,7 +142,7 @@ func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 		t.Fatalf("visibility: %v", err)
 	}
 	attachSizedPane(t, manager, engine, access)
-	if _, err := manager.Wait(t.Context(), access, PageID(firstID), "", 1); err != nil {
+	if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(firstID), Milliseconds: 1}); err != nil {
 		t.Fatalf("lay the first tab out: %v", err)
 	}
 	awaitViewportIdle(t, manager, string(access.ThreadID()))
@@ -181,7 +181,7 @@ func TestAFocusIntentNeverReachesATabASwitchLeft(t *testing.T) {
 	}
 	mount := attachSizedPane(t, manager, engine, access)
 	// An operation lays the other tab out, so the switch shows it at once.
-	if _, err := manager.Wait(t.Context(), access, PageID(firstID), "", 1); err != nil {
+	if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(firstID), Milliseconds: 1}); err != nil {
 		t.Fatalf("lay the first tab out: %v", err)
 	}
 	awaitViewportIdle(t, manager, string(access.ThreadID()))

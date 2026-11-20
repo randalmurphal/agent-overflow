@@ -11,7 +11,6 @@ import (
 	"image/jpeg"
 	"io"
 	"strings"
-	"time"
 )
 
 // A WebKitGTK page's operations on its content (webkit_page_linux.go):
@@ -184,27 +183,6 @@ func (p *webkitPage) Pointer(ctx context.Context, opts PointerOptions) error {
 	}
 	_, err = p.evalBody(ctx, script)
 	return err
-}
-
-// WaitVisible polls, because WebKit has no wait primitive. The Manager owns
-// the deadline; this only samples until it is reached.
-func (p *webkitPage) WaitVisible(ctx context.Context, selector string) error {
-	opCtx, cancel := p.bind(ctx)
-	defer cancel()
-	script := webkitVisibleScript(selector)
-	ticker := time.NewTicker(webkitPollInterval)
-	defer ticker.Stop()
-	for {
-		var visible bool
-		if err := p.evalInto(opCtx, script, &visible); err == nil && visible {
-			return nil
-		}
-		select {
-		case <-opCtx.Done():
-			return opCtx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 // SetViewport sizes the view itself: WebKit has no device-metrics override,

@@ -11,7 +11,6 @@ import (
 	"image/jpeg"
 	"io"
 	"strings"
-	"time"
 )
 
 // A WKWebView page's operations on its content (wkwebview_page_darwin.go):
@@ -177,27 +176,6 @@ func (p *wkPage) Pointer(ctx context.Context, opts PointerOptions) error {
 	}
 	_, err = p.evalBody(ctx, script)
 	return err
-}
-
-// WaitVisible polls, because WebKit has no wait primitive. The Manager owns the
-// deadline; this only samples until it is reached.
-func (p *wkPage) WaitVisible(ctx context.Context, selector string) error {
-	opCtx, cancel := p.bind(ctx)
-	defer cancel()
-	script := webkitVisibleScript(selector)
-	ticker := time.NewTicker(wkPollInterval)
-	defer ticker.Stop()
-	for {
-		var visible bool
-		if err := p.evalInto(opCtx, script, &visible); err == nil && visible {
-			return nil
-		}
-		select {
-		case <-opCtx.Done():
-			return opCtx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 // SetViewport sizes the view's bounds: WebKit has no device-metrics override,

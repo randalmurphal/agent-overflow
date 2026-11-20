@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (Snapshot, error) {
@@ -244,45 +243,6 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, sele
 	defer cancel()
 	if err := p.driver.Scroll(opCtx, selector, x, y); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: scroll: %w", err)
-	}
-	return m.finishPageOperation(opCtx, p)
-}
-
-func (m *Manager) Wait(ctx context.Context, access Access, pageID PageID, selector string, milliseconds int) (PageInfo, error) {
-	if err := m.bound(access); err != nil {
-		return PageInfo{}, err
-	}
-	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
-	if err != nil {
-		return PageInfo{}, err
-	}
-	if err := m.lockPageForOperation(ctx, p); err != nil {
-		return PageInfo{}, err
-	}
-	defer p.mu.Unlock()
-	if milliseconds < 0 || milliseconds > 30_000 {
-		return PageInfo{}, fmt.Errorf("browser: wait duration must be between 0 and 30000 ms")
-	}
-	timeout := operationTimeout
-	if milliseconds > 0 {
-		timeout = time.Duration(milliseconds+1000) * time.Millisecond
-	}
-	opCtx, cancel := operationContext(ctx, p.ctx, timeout)
-	defer cancel()
-	if strings.TrimSpace(selector) != "" {
-		if err := p.driver.WaitVisible(opCtx, selector); err != nil {
-			return PageInfo{}, fmt.Errorf("browser: wait for %q: %w", selector, err)
-		}
-	} else if milliseconds > 0 {
-		timer := time.NewTimer(time.Duration(milliseconds) * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-opCtx.Done():
-			return PageInfo{}, opCtx.Err()
-		}
-	} else {
-		return PageInfo{}, fmt.Errorf("browser: selector or duration is required")
 	}
 	return m.finishPageOperation(opCtx, p)
 }

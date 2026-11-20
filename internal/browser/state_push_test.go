@@ -82,7 +82,7 @@ func TestAToolCallPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	pushes := countStatePushes(manager)
 	wait := func() {
 		t.Helper()
-		if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+		if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -223,7 +223,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 				t.Fatalf("after the read the tabs show %q (before: %q), want what it stored", got, old)
 			}
 			manager.updatePageInfo(p.driver.Handle(), page.URL, "Retitled", 1)
-			if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+			if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 				t.Fatal(err)
 			}
 			if got := pushes.shownTitle(page.ID); got != "Retitled" {
@@ -245,7 +245,7 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 		if _, err := manager.Pages(t.Context(), access); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+		if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,7 +268,7 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 	if !labeled.Selected || labeled.LastOpened != pages[0].LastOpened {
 		t.Fatalf("browser_label_page after browser_pages answers %+v", labeled)
 	}
-	if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+	if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 		t.Fatal(err)
 	}
 	relabeled, err := manager.LabelPage(t.Context(), access, PageID(page.ID), "docs")
