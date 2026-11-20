@@ -287,7 +287,9 @@ id. A link that ends hands its prompts back (`handBackLinkPrompts`) through
 `announceReleasedWorkers`, the one place every write that releases a
 link's thread reports it; do not call either part alone. The spawner's
 computer gives a prompt back at once when no thread there can hold it
-(`store.RemotePromptHolder`). Listing, answering and returning a held
+(`store.RemotePromptHolder`), marked `no_holder`; a return without the
+mark keeps the prompt the spawner's and offers it again later
+(`offerPeerPromptAgain`). Listing, answering and returning a held
 prompt need the calling session to hold `approvals:respond`. A prompt
 being answered is skipped by every other transition, so an answer that
 does not land ends through one exit per side, which reconciles what

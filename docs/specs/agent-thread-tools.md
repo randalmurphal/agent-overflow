@@ -2066,9 +2066,15 @@ ride the `agent_rows` answer and wake the spawner here, as a local
 worker's do: the wake names the worker on its computer and opens it
 there. `agent_prompt_reply` carries the spawner's `thread_reply`, and
 `agent_prompt_return` gives a prompt back to the person there when no
-thread here can hold it. The destination keeps a prompt with the
-spawner for as long as the link stands, however long the spawner's
-computer takes to answer; the prompts a call names as held renew the
+thread here can hold it, and says so (`reason` `no_holder`). The
+destination keeps a prompt with the spawner for as long as the worker's
+prompts are the spawner's, however long the spawner's computer takes to
+answer. A return with no reason, from a computer that predates it and
+also returns a prompt its thread did not take at once, keeps the prompt
+the spawner's: the worker reads waiting on the spawner, the person there
+can answer it in the worker and is not asked, and the prompt is listed
+again under a new token after a wait of a minute, doubled with each
+return up to 30 minutes. The prompts a call names as held renew the
 lease of a destination on an older version, which gives a prompt to its
 person two minutes after it was routed or last named. `agent_owner_op` carries what archiving or
 deleting the spawner owes the worker, sent until that computer answers.

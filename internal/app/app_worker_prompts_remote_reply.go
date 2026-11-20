@@ -106,10 +106,11 @@ func (a *App) rerouteRemotePromptsFrom(threadID string) {
 	}
 }
 
-// returnRemotePrompt gives a routed prompt back to the computer that holds
-// its worker, which puts it to the person there, and withdraws its wake
-// here. The prompt is kept as returned until that computer stops listing
-// it. Nothing is sent for a worker this computer owes an archive or delete
+// returnRemotePrompt gives a routed prompt no thread here can hold back to
+// the computer that holds its worker, which puts it to the person there,
+// and withdraws its wake here. The return says so (peerPromptNoHolder): a
+// prompt a thread here did not take now is parked, never returned. The
+// prompt is kept as returned until that computer stops listing it. Nothing is sent for a worker this computer owes an archive or delete
 // (owesWorkerEnd): that operation ends the prompt with the worker, so the
 // person there is not asked about a worker on its way out.
 func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) error {
@@ -139,7 +140,7 @@ func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) error {
 		ctx, cancel := context.WithTimeout(a.lifeCtx(), remotePromptCallTimeout)
 		defer cancel()
 		if err := a.callPeerPrompt(ctx, returned.spawn, threadAgentPeerPromptReturn,
-			threadPromptPeerArgs{Spawn: returned.spawn.Token, Token: key.token}, &struct{}{}); err != nil {
+			threadPromptPeerArgs{Spawn: returned.spawn.Token, Token: key.token, Reason: peerPromptNoHolder}, &struct{}{}); err != nil {
 			log.Printf("worker prompts: give %s back to %s: %v", key.token, key.computerID, err)
 		}
 	})

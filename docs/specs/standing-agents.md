@@ -794,7 +794,10 @@ Ruling 36, as built:
     start failed stays queued for the spawner's next session; a paused
     assistant's waits in its queue until assistants are on; a paired
     computer's spawner holds it for as long as the worker's prompts are
-    its, and one that computer gives back is the person's there. The person can
+    its, and one that computer gives back because no thread there can
+    hold it is the person's there; an older computer's return is offered
+    to it again later
+    ([agent_rows](agent-thread-tools.md#reaching-another-computer)). The person can
     answer it in the worker throughout.
   - An async question an earlier run of the app recorded is asked of
     nobody: it holds neither the worker nor its spawner, and no boot

@@ -40,8 +40,10 @@ import (
 //     can still answer it in the worker. A link that ends hands its prompts
 //     back at once (handBackLinkPrompts, through announceReleasedWorkers), a
 //     placement that routes them elsewhere moves them as it moves a local
-//     spawner's (routeWorkerPromptsAgain), and a return from that computer,
-//     which no thread there could hold, hands it back.
+//     spawner's (routeWorkerPromptsAgain), and a return from that computer
+//     because no thread there can hold it hands it back. A return from a
+//     computer that predates the reason is offered to it again later
+//     (offerPeerPromptAgain).
 //
 // One binding (remotePromptFor) is the only door for an answer and a
 // return.
@@ -64,6 +66,11 @@ type remotePromptHold struct {
 	computerID, computerName, title string
 	device, spawnToken              string
 	registeredAt                    time.Time
+	// offerAt is when agent_rows lists it, zero for at once; returns is how
+	// many times an older spawner's computer gave it back
+	// (offerPeerPromptAgain).
+	offerAt time.Time
+	returns int
 }
 
 // ThreadAgentPrompt is one prompt of the thread an agent_rows call lists,
@@ -94,6 +101,57 @@ type threadPromptPeerArgs struct {
 	Decision string   `json:"decision,omitempty"`
 	Text     string   `json:"text,omitempty"`
 	Answers  []string `json:"answers,omitempty"`
+	// Reason is why a return gives the prompt back: peerPromptNoHolder, or
+	// empty from a computer that predates it.
+	Reason string `json:"reason,omitempty"`
+}
+
+// peerPromptNoHolder is a return's reason when no thread on the spawner's
+// computer can hold the prompt.
+const peerPromptNoHolder = "no_holder"
+
+// How long a prompt an older spawner's computer gave back waits before it
+// is offered again: the first wait, doubled with each return, up to the
+// most.
+const (
+	peerPromptOfferFirst = time.Minute
+	peerPromptOfferMost  = 30 * time.Minute
+)
+
+// peerPromptOfferDelay is the wait before the returns-th offer again.
+func peerPromptOfferDelay(returns int) time.Duration {
+	wait := peerPromptOfferFirst
+	for i := 1; i < returns && wait < peerPromptOfferMost; i++ {
+		wait *= 2
+	}
+	return min(wait, peerPromptOfferMost)
+}
+
+// offerPeerPromptAgain answers a return that names no reason, from a
+// spawner's computer that predates it, which gives back a prompt its thread
+// did not take now as well as one no thread there can hold. While the
+// worker's prompts are still that spawn's thread's (promptLinkStands), the
+// prompt stays its, routed there and read as waiting on it, and is
+// registered again under a new token that agent_rows lists once the wait
+// runs out (peerPromptOfferDelay): that computer takes a new token as a new
+// prompt, and forgets the old one once it is no longer listed. Any other is
+// handed back.
+func (a *App) offerPeerPromptAgain(token string) error {
+	prompt, found := a.workerPrompts.get(token)
+	if !found || prompt.remote == nil || !a.promptLinkStands(prompt) {
+		a.handBackWorkerPrompt(token)
+		return nil
+	}
+	offered, ok := a.workerPrompts.reoffer(token, func(returns int) time.Time {
+		return time.Now().Add(peerPromptOfferDelay(returns))
+	})
+	if !ok {
+		// Answered, closed or moved meanwhile: that transition is its.
+		return nil
+	}
+	log.Printf("worker prompts: %s of %s is offered to %s again at %s, after %d returns",
+		offered.requestID, offered.workerID, offered.remote.computerID, offered.remote.offerAt.Format(time.RFC3339), offered.remote.returns)
+	return nil
 }
 
 // threadPromptPeerAnswer is agent_prompt_reply's answer: false when the
@@ -236,13 +294,15 @@ func peerPromptWire(title string, prompt workerPrompt) ThreadAgentPrompt {
 }
 
 // heldFor is the routed prompts of workerID held for the spawn spawnToken
-// names, in the order they were registered.
+// names and offered now, in the order they were registered.
 func (w *workerPrompts) heldFor(spawnToken, workerID string) []workerPrompt {
+	now := time.Now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var held []workerPrompt
 	for _, prompt := range w.byToken {
-		if prompt.remote != nil && prompt.remote.spawnToken == spawnToken && prompt.workerID == workerID && prompt.state == workerPromptRouted {
+		if prompt.remote != nil && prompt.remote.spawnToken == spawnToken && prompt.workerID == workerID && prompt.state == workerPromptRouted &&
+			!prompt.remote.offerAt.After(now) {
 			held = append(held, *prompt)
 		}
 	}
@@ -284,7 +344,11 @@ func (a *App) servePeerPrompt(ctx context.Context, owner string, call ThreadPeer
 		}
 		result = threadPromptPeerAnswer{Accepted: ack.Accepted}
 	default:
-		a.handBackWorkerPrompt(args.Token)
+		if args.Reason == peerPromptNoHolder {
+			a.handBackWorkerPrompt(args.Token)
+		} else if err := a.offerPeerPromptAgain(args.Token); err != nil {
+			return ThreadPeerReply{}, err
+		}
 		result = struct{}{}
 	}
 	encoded, err := json.Marshal(result)

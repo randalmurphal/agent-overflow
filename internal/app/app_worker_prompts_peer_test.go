@@ -292,7 +292,11 @@ func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 		t.Fatalf("the local prompt is routed to %+v after the refused calls", route)
 	}
 
-	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReturn, threadPromptPeerArgs{Spawn: f.spawns[0], Token: first}); err != nil {
+	// The link's own return, from a spawner there that no thread can hold
+	// it for, gives it to the person here.
+	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReturn, threadPromptPeerArgs{
+		Spawn: f.spawns[0], Token: first, Reason: peerPromptNoHolder,
+	}); err != nil {
 		t.Fatalf("the link's own return: %v", err)
 	}
 	if f.route(t, f.workers[0].ID) != nil || !f.handedToPerson(f.workers[0].ID) {

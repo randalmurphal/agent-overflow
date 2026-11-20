@@ -225,6 +225,31 @@ func (w *workerPrompts) settleToken(token string) (workerPrompt, bool) {
 	return *prompt, true
 }
 
+// reoffer registers again, under a fresh token, the routed prompt held for
+// a paired computer under token, and closes that registration: a routed
+// one is its prompt's current one (add). The new hold counts one more
+// return and is listed from offerAt(returns). It returns the new
+// registration, and false when token names no such prompt.
+func (w *workerPrompts) reoffer(token string, offerAt func(returns int) time.Time) (workerPrompt, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	prompt := w.byToken[token]
+	if prompt == nil || prompt.remote == nil || prompt.state != workerPromptRouted {
+		return workerPrompt{}, false
+	}
+	now := time.Now()
+	prompt.state, prompt.closedAt = workerPromptSettled, now
+	fresh := *prompt
+	hold := *prompt.remote
+	hold.returns++
+	hold.registeredAt, hold.offerAt = now, offerAt(hold.returns)
+	fresh.token, fresh.state, fresh.closedAt, fresh.remote = newThreadRequestToken(), workerPromptRouted, time.Time{}, &hold
+	w.byToken[fresh.token] = &fresh
+	w.current[fresh.key()] = fresh.token
+	fresh.noteOwner()
+	return fresh, true
+}
+
 // beginAnswer claims a routed prompt for the agent's answer.
 func (w *workerPrompts) beginAnswer(token, answer string) error {
 	w.mu.Lock()

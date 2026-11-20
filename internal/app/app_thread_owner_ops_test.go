@@ -33,6 +33,9 @@ type ownerOpPeer struct {
 	unreachable atomic.Bool
 	// returns counts the prompt hand-backs that reached this computer.
 	returns atomic.Int32
+	// reasonless drops a hand-back's reason, as a spawner's computer from
+	// before it sends one.
+	reasonless atomic.Bool
 	// spawning, when set, runs before a forwarded thread_spawn reaches the
 	// app, with the call.
 	spawning atomic.Pointer[func(ThreadPeerCall)]
@@ -67,6 +70,18 @@ func (p *ownerOpPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (
 	switch call.Tool {
 	case threadAgentPeerPromptReturn:
 		p.returns.Add(1)
+		if p.reasonless.Load() {
+			var args threadPromptPeerArgs
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return ThreadPeerReply{}, err
+			}
+			args.Reason = ""
+			encoded, err := json.Marshal(args)
+			if err != nil {
+				return ThreadPeerReply{}, err
+			}
+			call.Args = encoded
+		}
 	case "thread_spawn":
 		if spawning := p.spawning.Load(); spawning != nil {
 			(*spawning)(call)
