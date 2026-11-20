@@ -6,7 +6,8 @@
 // that tab; any other navigates the field's tab. A cookie jar switch forgets
 // the recent addresses. A dev server started in the thread's terminal after
 // the pane opened is found by the scan the field's focus runs.
-import { connect, createServer, type AddressInfo } from 'node:net';
+import { connect } from 'node:net';
+import { unusedPort } from '../src/ports.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
 interface BrowserState {
@@ -115,7 +116,7 @@ test('a dev server the thread runs is offered, read when the field takes focus',
 
   // Started after the pane, in the thread's own terminal, so the scan
   // attributes it to the thread and only a read on focus can find it.
-  const port = await freePort();
+  const port = await unusedPort();
   const terminal = await harness.rpc<{ terminalID: string }>('OpenTerminal', threadId, { cwd: seed.projects[0].path });
   const server = `require('http').createServer((q,r)=>{r.setHeader('content-type','text/html');r.end('<title>dev</title>')}).listen(${port},'127.0.0.1')`;
   const command = `exec '${process.execPath}' -e "${server}"\n`;
@@ -148,12 +149,4 @@ function listening(port: number): Promise<boolean> {
     });
     socket.once('error', () => resolve(false));
   });
-}
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
 }
