@@ -17,11 +17,12 @@
 // cascade; and an answer held in the caller's queue (its session cannot
 // start) is an incoming row there, named by its sender and kind, whose Stop
 // withdraws it and leaves the answer owed with its wake disarmed. A row is
-// a run: once a spawned worker answered and rested, a person's message to
-// it opens no row, count or Stop of its spawner's and leaves the spawn in
-// Past; the spawner's own send to it is one row, the send's, counted once,
-// offering Show in Sidebar, beside the spawn in Past, and joins Past
-// itself once the worker rests. The cross-computer rows are
+// a run: once a spawned worker with no sidebar row answered and rested, a
+// person's message to it is a nudge, one running row of its spawner's,
+// counted, that joins Past at the worker's rest and delivers the spawner
+// nothing; the spawner's own send to it is one row, the send's, counted
+// once, offering Show in Sidebar, beside the spawn and the nudge in Past,
+// and joins Past itself once the worker rests. The cross-computer rows are
 // thread-tools-paired.spec.ts's.
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
@@ -290,7 +291,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     }
   });
 
-  test(`${provider}: a rested worker's later runs: the person's opens no row, the spawner's send is one row`, async ({ harness, page }) => {
+  test(`${provider}: a rested worker's later runs: the person's is a nudge row that wakes nothing, the spawner's send is one row`, async ({ harness, page }) => {
     test.setTimeout(240_000);
     const tag = `agents-runs-${provider}`;
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -346,22 +347,31 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(past).toHaveText('1');
     await expect(open).toHaveCount(0, { timeout: 30_000 });
 
-    // The person continues the worker from its own pane: that run is the
-    // person's, no row, count or Stop of the lead's.
+    // The person continues the worker from its own pane. With no sidebar
+    // row the worker is the lead's sub-agent still, so that run is a nudge:
+    // one row of the lead's, counted, its own run's figures, holding the
+    // lead, and delivering the lead nothing when it ends.
     await harness.rpc('SendMessage', worker, 'also tidy the imports', null);
     const person = await awaitGate(harness, 'person-hold', workerProject.path);
-    await expect.poll(async () => (await harness.rpc<{ open: number }>('GetThreadWorkerSummary', lead)).open, { timeout: 10_000 }).toBe(0);
-    // The spawn's row, listed while its settled window lasts, keeps its run
-    // as it ended: no worker state, no open turn.
-    const listed = (await harness.rpc<{ rows?: { token: string; worker?: string; turnOpen?: boolean }[] }>('ListThreadAgentRows', lead)).rows ?? [];
-    expect(listed.map((r) => [r.token, r.worker ?? '', r.turnOpen ?? false])).toEqual(listed.length ? [[spawn, '', false]] : []);
-    expect((await harness.rpc<unknown[] | null>('StopThreadAgentRows', lead)) ?? []).toEqual([]);
-    await expect(open).toHaveCount(0);
-    await expect(toggleCount).toHaveCount(0);
+    const nudgeRow = agentsBody(page).locator('[data-testid="agent-tray-row"][data-kind="nudge"]:not([data-past])');
+    await expect(nudgeRow).toHaveCount(1, { timeout: 30_000 });
+    await expect(nudgeRow.getByTestId('agent-tray-row-state')).toHaveText('running');
+    await expect(open).toHaveCount(1);
+    await expect(toggleCount).toHaveText('1');
     await expect(past).toHaveText('1');
+    await expect.poll(async () => (await harness.rpc<{ open: number }>('GetThreadWorkerSummary', lead)).open, { timeout: 10_000 }).toBe(1);
+    const nudge = await nudgeRow.getAttribute('data-token');
+    expect(nudge).toBeTruthy();
+    expect(nudge).not.toBe(spawn);
+    await capture(page, `agents-${provider}-nudge-run.png`, agentsBody(page));
+    const leadItems = (await harness.rpc<unknown[]>('ListItems', lead, false)).length;
     const personDone = awaitTurnCompleted(harness, worker);
     await advanceGate(harness, person.mockId, 'person-hold');
     await personDone;
+    await expect(past).toHaveText('2', { timeout: 30_000 });
+    await expect(open).toHaveCount(0, { timeout: 30_000 });
+    expect(heldSendIds(harness, lead)).toEqual([]);
+    expect((await harness.rpc<unknown[]>('ListItems', lead, false)).length).toBe(leadItems);
 
     // The lead sends the worker a follow-up: one row, the send's, counted once.
     await harness.rpc('SendMessage', lead, 'check the migration too', null);
@@ -375,15 +385,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(open).toHaveCount(1);
     await expect(toggleCount).toHaveText('1');
     await expect(sendRow.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(1);
-    await expect(past).toHaveText('1');
+    await expect(past).toHaveText('2');
     await expect(openAgentRow(page, spawn)).toHaveCount(0);
     await openPast(page);
     await expect(pastRow(page, spawn)).toHaveCount(1);
+    await expect(pastRow(page, nudge!)).toHaveCount(1);
     await capture(page, `agents-${provider}-send-run.png`, agentsBody(page));
 
-    // The worker answers and rests: the send's row joins Past beside the spawn.
+    // The worker answers and rests: the send's row joins Past beside the
+    // spawn's and the nudge's.
     await advanceGate(harness, hold.mockId, 'send-hold');
-    await expect(past).toHaveText('2', { timeout: 30_000 });
+    await expect(past).toHaveText('3', { timeout: 30_000 });
     await expect(open).toHaveCount(0, { timeout: 30_000 });
     await expect(pastRow(page, sendToken)).toHaveCount(1);
   });

@@ -88,13 +88,13 @@ type RestGuard struct {
 	AtRest              func(SubtreeRest) []string
 }
 
-// atRestTx reads the guard's roots inside tx and names those AtRest says
-// are at rest. A nil guard names none.
-func (g *RestGuard) atRestTx(tx *sql.Tx) ([]string, error) {
+// atRestTx reads the guard's roots inside tx, run the Store's, and names
+// those AtRest says are at rest. A nil guard names none.
+func (g *RestGuard) atRestTx(tx *sql.Tx, run string) ([]string, error) {
 	if g == nil || len(g.Roots) == 0 {
 		return nil, nil
 	}
-	subtree, err := readSubtreeRest(tx, g.Roots)
+	subtree, err := readSubtreeRest(tx, run, g.Roots)
 	if err != nil {
 		return nil, fmt.Errorf("read the rest of %s: %w", strings.Join(g.Roots, ", "), err)
 	}
@@ -118,7 +118,7 @@ func (s *Store) ReadSubtreeRest(roots []string) (_ SubtreeRest, err error) {
 			err = fmt.Errorf("%s: end the read: %w", action, rollbackErr)
 		}
 	}()
-	out, err := readSubtreeRest(tx, roots)
+	out, err := readSubtreeRest(tx, s.run, roots)
 	if err != nil {
 		return SubtreeRest{}, fmt.Errorf("%s: %w", action, err)
 	}
@@ -126,8 +126,8 @@ func (s *Store) ReadSubtreeRest(roots []string) (_ SubtreeRest, err error) {
 }
 
 // readSubtreeRest walks from roots down the local spawn links and reads the
-// sources of every thread reached, on q.
-func readSubtreeRest(q sqlQueryer, roots []string) (SubtreeRest, error) {
+// sources of every thread reached, on q; run is the Store's.
+func readSubtreeRest(q sqlQueryer, run string, roots []string) (SubtreeRest, error) {
 	encodedRoots, err := json.Marshal(roots)
 	if err != nil {
 		return SubtreeRest{}, fmt.Errorf("encode the roots: %w", err)
@@ -157,7 +157,7 @@ func readSubtreeRest(q sqlQueryer, roots []string) (SubtreeRest, error) {
 	if err != nil {
 		return SubtreeRest{}, fmt.Errorf("walk the spawn links: %w", err)
 	}
-	if out.Sources, err = readRestSources(q, threads); err != nil {
+	if out.Sources, err = readRestSources(q, run, threads); err != nil {
 		return SubtreeRest{}, err
 	}
 	return out, nil
@@ -166,15 +166,16 @@ func readSubtreeRest(q sqlQueryer, roots []string) (SubtreeRest, error) {
 // ReadThreadRestSources reads one thread's sources of rest
 // (ThreadRestSources).
 func (s *Store) ReadThreadRestSources(threadID string) (ThreadRestSources, error) {
-	sources, err := readRestSources(s.reader(), []string{threadID})
+	sources, err := readRestSources(s.reader(), s.run, []string{threadID})
 	if err != nil {
 		return ThreadRestSources{}, fmt.Errorf("store: read the rest of %s: %w", threadID, err)
 	}
 	return sources[threadID], nil
 }
 
-// readRestSources reads the sources of each of threads in one statement.
-func readRestSources(q sqlQueryer, threads []string) (_ map[string]ThreadRestSources, err error) {
+// readRestSources reads the sources of each of threads in one statement;
+// run is the Store's.
+func readRestSources(q sqlQueryer, run string, threads []string) (_ map[string]ThreadRestSources, err error) {
 	out := make(map[string]ThreadRestSources, len(threads))
 	if len(threads) == 0 {
 		return out, nil
@@ -183,7 +184,7 @@ func readRestSources(q sqlQueryer, threads []string) (_ map[string]ThreadRestSou
 	if err != nil {
 		return nil, fmt.Errorf("encode the threads: %w", err)
 	}
-	rows, err := q.Query(threadRestSourcesSQL, string(encodedThreads))
+	rows, err := q.Query(threadRestSourcesSQL, string(encodedThreads), run)
 	if err != nil {
 		return nil, fmt.Errorf("read the sources: %w", err)
 	}
@@ -268,8 +269,8 @@ func remoteCommandRunningSQL(alias string) string {
 	         OR json_extract(` + alias + `.receipt, '$.state') = 'running')`
 }
 
-// threadRestSourcesSQL reads each thread of ?1 (a JSON array) with its
-// sources: one search per source and thread, each through the index that
+// threadRestSourcesSQL reads each thread of ?1 (a JSON array), ?2 the
+// Store's run, with its sources: one search per source and thread, each through the index that
 // holds only that source's live rows (idx_async_questions_pending,
 // idx_thread_requests_answer_due, idx_items_running_bg_tool_calls,
 // idx_agent_wakes_thread, idx_thread_requests_open_created,
@@ -281,7 +282,8 @@ var threadRestSourcesSQL = `SELECT j.value,
        COALESCE((SELECT t.completed_at IS NULL FROM turns t INDEXED BY turns_thread_index
                   WHERE t.thread_id = j.value ORDER BY t.turn_index DESC LIMIT 1), 0),
        EXISTS (SELECT 1 FROM async_questions q INDEXED BY idx_async_questions_pending
-                WHERE q.thread_id = j.value AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered')
+                WHERE q.thread_id = j.value AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered'
+                  AND ` + asyncQuestionHoldsSQL("q", "?2") + `)
          AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = j.value AND t.archived = 0),
        EXISTS (SELECT 1 FROM thread_requests d INDEXED BY idx_thread_requests_answer_due
                 WHERE d.caller_thread_id = j.value AND ` + threadAnswerDueSQL("d") + `),

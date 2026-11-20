@@ -75,11 +75,12 @@ func (f *requestFixture) assertSpawnerClosed(t *testing.T, worker string) {
 	}
 }
 
-// A worker spawned before runs were kept answered and rested; the person
-// then messages it. While that turn runs and asks an approval, its old
-// spawner lists nothing open, reads at rest, owns no Stop, and the
-// approval is the person's. The spawn's Past row shows none of the
-// worker's figures, which it never recorded.
+// A worker spawned before runs were kept, with a sidebar row, answered and
+// rested; the person then messages it. While that turn runs and asks an
+// approval, its old spawner lists nothing open, reads at rest, owns no
+// Stop, and the approval is the person's. The spawn's Past row shows none
+// of the worker's figures, which it never recorded. An owned worker's is a
+// nudge (TestANudgeOfAWorkerSpawnedBeforeRunsIsARunOfItsOwn).
 func TestASpawnFromBeforeRunsStaysClosedWhenThePersonContinuesItsWorker(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -136,9 +137,8 @@ func TestASpawnFromBeforeRunsStaysClosedWhenThePersonContinuesItsWorker(t *testi
 		t.Fatalf("threads %q were started for the worker's prompt; want none", woken)
 	}
 	mu.Unlock()
-	if !f.app.liveWorker(worker.ID) {
-		t.Fatal("the person's turn is not running; the test needs the worker busy")
-	}
+	// The worker's state is recorded as its approval's frame is handled.
+	waitUntil(t, 10*time.Second, func() bool { return f.app.liveWorker(worker.ID) })
 	f.assertSpawnerClosed(t, worker.ID)
 	row, ok := f.pastRow(t, f.caller.ID, "old-spawn")
 	if !ok || row.ToolCalls != 0 || row.Tokens != 0 || row.RuntimeMs != 0 || row.TurnOpen || row.Worker != "" {
@@ -180,8 +180,9 @@ func TestASpawnFromBeforeRunsIsOpenUntilItSettles(t *testing.T) {
 
 // The same on a paired computer: a worker there that a spawn from before
 // runs were kept made, and its receipt there, which tracks none either.
-// Once both settled, the person continuing the worker there routes its
-// prompts to the person, and the spawner here reads at rest.
+// Once both settled, the person continuing the worker there, given a
+// sidebar row there, routes its prompts to the person, and the spawner here
+// reads at rest.
 func TestARemoteSpawnFromBeforeRunsStaysClosed(t *testing.T) {
 	t.Parallel()
 	pair := newReachPair(t)
@@ -192,6 +193,9 @@ func TestARemoteSpawnFromBeforeRunsStaysClosed(t *testing.T) {
 		WHERE token = ?`, spawn.Token)
 	if row := pair.request(t, spawn.Token); row.RunBase != nil {
 		t.Fatalf("spawn %+v; the test needs one that tracks no run", row)
+	}
+	if _, err := pair.dest.store.SetThreadPlacement([]string{child}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {

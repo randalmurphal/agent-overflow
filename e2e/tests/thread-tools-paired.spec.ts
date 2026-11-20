@@ -30,7 +30,8 @@
 // and can neither open nor place it. Its approval wakes the spawner here,
 // whose Agents row reads "waiting on" the spawner, whose wake row opens
 // it there, and whose reply answers it there; with the spawner's computer
-// stopped, it reaches the person there once the lease runs out. Archiving
+// stopped, it stays the spawner's and that reply answers it once the
+// computer is back. Archiving
 // and deleting the spawner archive and delete it there, the delete
 // confirmation saying so; with that computer stopped, both stand here, are
 // named as pending there, and land when it is back; a computer older than
@@ -1647,72 +1648,63 @@ test("a question over there wakes the spawner here, whose reply answers it there
   await done;
 });
 
-test("with the spawner's computer stopped, a question over there reaches the person there once the lease runs out", async () => {
-  test.setTimeout(300_000);
-  // The lease is shortened on the worker's computer only.
-  const leased = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},prompt-lease=10s` } });
-  let leasedID = '';
-  try {
-    leasedID = await pairOwnDevice(home, leased, 'Lease computer');
-    const caller = await seed(home, 'lease-caller', ['Lease caller']);
-    const there = await seed(leased, 'lease-work', []);
-    await setScenario(leased, there.path, threadToolsScenario({
-      name: 'lease-worker', provider: 'claude',
-      turns: [{ steps: [
-        { approval: { toolName: 'Bash', input: { command: 'make soak' }, onAllow: [], onDeny: [] } },
-      ], text: 'Soaked.' }],
-      afterTurns: 'repeatLast',
-    }));
-    // The spawner takes the wake and holds it, unanswered.
-    await setScenario(home, caller.path, threadToolsScenario({
-      name: 'lease-caller-script', provider: 'claude',
-      turns: [
-        { steps: [{ call: {
-          tool: 'thread_spawn',
-          args: { prompt: 'Run the soak.', title: 'Lease worker', computer_id: leasedID, project_id: there.projectId, notify: true },
-          timeoutMs: 120_000,
-        } }], text: 'Started it over there.' },
-        { steps: [{ gate: 'lease-caller-hold' }], text: 'Not now.' },
-        { text: 'Noted.' },
-      ],
-      afterTurns: 'repeatLast',
-    }));
-    await home.rpc('StartSession', caller.threadIds[0]);
-    await home.rpc('SendMessage', caller.threadIds[0], 'have the lease computer run the soak', null);
-    const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
-    expect(spawn.isError, spawn.text).toBe(false);
-    const worker = spawn.value!.thread_id;
-    const holding = await awaitGate(home, 'lease-caller-hold', caller.path);
-    type Pending = { requestId: string; routedTo?: { threadId: string } | null };
-    const approvals = async () => (await leased.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
-    await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
+test("with the spawner's computer stopped, a question over there stays the spawner's and its reply answers it once that computer is back", async () => {
+  test.setTimeout(240_000);
+  const caller = await seed(home, 'stopped-caller', ['Stopped caller']);
+  const there = await seed(remote, 'stopped-work', []);
+  await setScenario(remote, there.path, threadToolsScenario({
+    name: 'stopped-worker', provider: 'claude',
+    turns: [{ steps: [
+      { approval: { toolName: 'Bash', input: { command: 'make soak' }, onAllow: [], onDeny: [] } },
+    ], text: 'Soaked.' }],
+    afterTurns: 'repeatLast',
+  }));
+  // The spawner takes the wake and holds it, unanswered, until it is let go.
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'stopped-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Run the soak.', title: 'Soak worker', computer_id: remoteID, project_id: there.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { steps: [
+        { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: PROMPT_TOKEN } },
+        { gate: 'stopped-caller-hold' },
+        { call: { tool: 'thread_reply', args: { token: '${TOKEN}', decision: 'allow', text: 'Run it.' } } },
+      ], text: 'Allowed it.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer run the soak', null);
+  const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const worker = spawn.value!.thread_id;
+  const holding = await awaitGate(home, 'stopped-caller-hold', caller.path);
+  type Pending = { requestId: string; routedTo?: { threadId: string } | null };
+  const approvals = async () => (await remote.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
+  await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
 
-    // While the spawner's computer holds it, it outlasts the lease.
+  // Stopped, the spawner's computer answers nothing; the worker's computer
+  // keeps the question routed to the spawner, not to the person there. No
+  // timer moves it, so the wait only has to cover several of that
+  // computer's reads of the spawner's prompts.
+  const pid = home.bootstrap.pid;
+  expect(pid).toBeGreaterThan(0);
+  process.kill(pid, 'SIGSTOP');
+  try {
     await new Promise((resolve) => setTimeout(resolve, 15_000));
     expect((await approvals())[0]?.routedTo?.threadId).toBe(caller.threadIds[0]);
-
-    // Stopped, the spawner's computer holds it no longer: once the lease
-    // runs out, the person there has it.
-    const pid = home.bootstrap.pid;
-    expect(pid).toBeGreaterThan(0);
-    process.kill(pid, 'SIGSTOP');
-    try {
-      await expect.poll(async () => {
-        const [approval] = await approvals();
-        return approval ? (approval.routedTo?.threadId ?? 'the person') : 'none';
-      }, { timeout: 60_000 }).toBe('the person');
-    } finally {
-      process.kill(pid, 'SIGCONT');
-    }
-    // The person answers it there.
-    const done = awaitTurnCompleted(leased, worker);
-    await leased.rpc('RespondToApproval', worker, { requestId: (await approvals())[0].requestId, decision: 'allow' });
-    await done;
-    await advanceGate(home, holding.mockId, 'lease-caller-hold');
   } finally {
-    if (leasedID !== '') await home.rpc('RemoveBackend', leasedID, true);
-    await leased.close();
+    process.kill(pid, 'SIGCONT');
   }
+  // Back, the spawner's reply answers it there.
+  const done = awaitTurnCompleted(remote, worker);
+  await advanceGate(home, holding.mockId, 'stopped-caller-hold');
+  await expect.poll(async () => (await approvals()).length, { timeout: 60_000 }).toBe(0);
+  await done;
 });
 
 test('an accepted send shows the approval blocking a busy ordinary thread on the other computer', async ({ page }) => {

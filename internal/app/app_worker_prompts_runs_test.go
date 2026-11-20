@@ -1,9 +1,10 @@
 package app
 
-// A worker's question or approval goes to its spawner only while it works
-// in a run its spawner started (store.SpawnOwnerOf): its spawn, or a send of
-// the spawner's, with the run still open. In any other run, the person's or
-// one another thread's send started, the prompt is the person's.
+// A worker's question or approval goes to its spawner (store.SpawnOwnerOf)
+// always while the worker is owned, and for a worker with a sidebar row only
+// while it works in a run its spawner started: its spawn, or a send of the
+// spawner's, with the run still open. In any other run of such a worker, the
+// person's or one another thread's send started, the prompt is the person's.
 
 import (
 	"context"
@@ -49,13 +50,26 @@ func settleTaken(t *testing.T, a *App, token string) {
 }
 
 // A middle thread a lead spawned spawns a worker, whose spawn's run ends at
-// its rest. A later run asks an approval and a question: the person's run,
-// whether the person's message lands before or after the rest pass ended
-// the spawn's run, and one another thread's send started, put both to the
-// person, wake nothing in the middle thread, and the worker reads blocked
-// on the person; a run the middle thread's send started puts both to it.
+// its rest. A later run asks an approval and a question. For a worker with a
+// sidebar row, the person's run, whether the person's message lands before
+// or after the rest pass ended the spawn's run, and one another thread's
+// send started, put both to the person, wake nothing in the middle thread,
+// and the worker reads blocked on the person; a run the middle thread's send
+// started puts both to it. An owned worker puts both to the middle thread in
+// every run, and a nudge's run is the middle thread's one row of it, blocked
+// on the prompt routed there.
 func TestAWorkersPromptsGoToItsSpawnerOnlyInItsSpawnersRun(t *testing.T) {
 	t.Parallel()
+	for _, placement := range []string{store.PlacementStandalone, store.PlacementOwned} {
+		t.Run(placement, func(t *testing.T) {
+			t.Parallel()
+			testWorkerPromptsByRun(t, placement)
+		})
+	}
+}
+
+func testWorkerPromptsByRun(t *testing.T, placement string) {
+	owned := placement == store.PlacementOwned
 	for _, c := range []struct {
 		name string
 		// passEnded ends the spawn's run before the later run starts.
@@ -108,6 +122,9 @@ func TestAWorkersPromptsGoToItsSpawnerOnlyInItsSpawnersRun(t *testing.T) {
 			}
 			acceptRequest(t, app, "lead-middle", lead.ID, store.ThreadRequestSpawn, middle.ID)
 			acceptRequest(t, app, "middle-worker", middle.ID, store.ThreadRequestSpawn, worker.ID)
+			if _, err := app.store.SetThreadPlacement([]string{worker.ID}, placement); err != nil {
+				t.Fatal(err)
+			}
 			settleTaken(t, app, "middle-worker")
 			if c.passEnded {
 				if err := app.endRunsAtRest(worker.ID); err != nil {
@@ -158,12 +175,12 @@ func TestAWorkersPromptsGoToItsSpawnerOnlyInItsSpawnersRun(t *testing.T) {
 				}
 				app.waitAgentNoticeWork()
 				tokens = workerPromptTokens(t, app, middle.ID)
-				return !c.toSpawner || len(tokens) == 2
+				return !(c.toSpawner || owned) || len(tokens) == 2
 			})
 
 			pending := app.triage.PendingInteractiveRequests(worker.ID)
 			waiting := app.threadWaitingOn(worker.ID)
-			if !c.toSpawner {
+			if !c.toSpawner && !owned {
 				for _, route := range []*provider.PromptRoute{pending.Approvals[0].RoutedTo, pending.UserInputs[0].RoutedTo} {
 					if route != nil {
 						t.Fatalf("a prompt is routed to %+v; want the person's", route)
@@ -190,46 +207,77 @@ func TestAWorkersPromptsGoToItsSpawnerOnlyInItsSpawnersRun(t *testing.T) {
 			if waiting.route == nil || waiting.route.ThreadID != middle.ID {
 				t.Fatalf("the worker waits on %q routed to %+v; want the middle thread", waiting.on, waiting.route)
 			}
+			if !owned || c.toSpawner {
+				return
+			}
+			// The row reads the prompt as it is routed now.
+			var rows []ThreadAgentRow
+			waitUntil(t, 10*time.Second, func() bool {
+				listing, err := app.ListThreadAgentRows(context.Background(), middle.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rows = listing.Rows
+				return len(rows) == 1 && rows[0].BlockedOn != ""
+			})
+			if rows[0].ThreadID != worker.ID || rows[0].Kind != threadAgentKindNudge || rows[0].BlockedRoutedTo == "" {
+				t.Fatalf("the middle thread's rows %+v; want the worker's one row, a nudge's, blocked on the prompt routed to it", rows)
+			}
 		})
 	}
 }
 
 // A worker's async question follows the same rule: asked in a run its
-// spawner did not start, it goes to the person, who is notified, and no
-// wake reaches the spawner.
-func TestAWorkersAsyncQuestionOutsideItsSpawnersRunIsThePersons(t *testing.T) {
+// spawner did not start, a sidebar worker's goes to the person, as any
+// thread's does, and no wake reaches the spawner; an owned worker's goes to
+// its spawner, and nobody is notified.
+func TestAWorkersAsyncQuestionOutsideItsSpawnersRunFollowsItsPlacement(t *testing.T) {
 	t.Parallel()
-	a, dbPath := newTestAppWithStorePath(t)
-	notified := wireAsyncQuestionApp(a)
-	spawner := noticeTestThread(t, a, "async-runs-spawner")
-	worker := testThread("async-runs-worker")
-	worker.WorkspacePath, worker.Title = t.TempDir(), "Release worker"
-	if err := a.store.CreateThread(worker); err != nil {
-		t.Fatal(err)
-	}
-	acceptRequest(t, a, "async-runs-spawn", spawner.ID, store.ThreadRequestSpawn, worker.ID)
-	if _, err := a.store.SetThreadPlacement([]string{worker.ID}, store.PlacementOwned); err != nil {
-		t.Fatal(err)
-	}
-	settleTaken(t, a, "async-runs-spawn")
-	if err := a.endRunsAtRest(worker.ID); err != nil {
-		t.Fatal(err)
-	}
-	if row := requestRow(t, a, "async-runs-spawn"); !row.RunEnded() {
-		t.Fatalf("the spawn %+v; want its run ended at its worker's rest", row)
-	}
-	f := asyncQuestionFixture{app: a, dbPath: dbPath, spawner: spawner, worker: worker, notified: notified}
-	f.ask(t, "question:later", twoAsyncQuestions)
-	for _, row := range durableQueueRows(t, a, spawner.ID) {
-		if strings.HasPrefix(row.SendID, workerPromptSendIDRoot) {
-			t.Fatalf("the spawner holds a prompt wake %+v; want none", row)
-		}
-	}
-	if waiting := a.threadWaitingOn(worker.ID); waiting.on != "question" || waiting.route != nil {
-		t.Fatalf("the worker waits on %q routed to %+v; want its question the person's", waiting.on, waiting.route)
-	}
-	if sends := f.questionSends("question:later"); len(sends) == 0 || sends[len(sends)-1].Retract {
-		t.Fatalf("question notifications = %+v; want the person notified", sends)
+	for _, placement := range []string{store.PlacementStandalone, store.PlacementOwned} {
+		t.Run(placement, func(t *testing.T) {
+			t.Parallel()
+			a, dbPath := newTestAppWithStorePath(t)
+			notified := wireAsyncQuestionApp(a)
+			spawner := noticeTestThread(t, a, "async-runs-spawner")
+			worker := testThread("async-runs-worker")
+			worker.WorkspacePath, worker.Title = t.TempDir(), "Release worker"
+			if err := a.store.CreateThread(worker); err != nil {
+				t.Fatal(err)
+			}
+			acceptRequest(t, a, "async-runs-spawn", spawner.ID, store.ThreadRequestSpawn, worker.ID)
+			if _, err := a.store.SetThreadPlacement([]string{worker.ID}, placement); err != nil {
+				t.Fatal(err)
+			}
+			settleTaken(t, a, "async-runs-spawn")
+			if err := a.endRunsAtRest(worker.ID); err != nil {
+				t.Fatal(err)
+			}
+			if row := requestRow(t, a, "async-runs-spawn"); !row.RunEnded() {
+				t.Fatalf("the spawn %+v; want its run ended at its worker's rest", row)
+			}
+			f := asyncQuestionFixture{app: a, dbPath: dbPath, spawner: spawner, worker: worker, notified: notified}
+			f.ask(t, "question:later", twoAsyncQuestions)
+			woken := slices.ContainsFunc(durableQueueRows(t, a, spawner.ID), func(row store.FlushQueueItem) bool {
+				return strings.HasPrefix(row.SendID, workerPromptSendIDRoot)
+			})
+			waiting := a.threadWaitingOn(worker.ID)
+			sends := f.questionSends("question:later")
+			if placement == store.PlacementOwned {
+				if !woken || waiting.route == nil || waiting.route.ThreadID != spawner.ID {
+					t.Fatalf("woken %v, the worker waits on %q routed to %+v; want its question its spawner's", woken, waiting.on, waiting.route)
+				}
+				if len(sends) != 0 && !sends[len(sends)-1].Retract {
+					t.Fatalf("question notifications = %+v; want the person not notified", sends)
+				}
+				return
+			}
+			if woken {
+				t.Fatal("the spawner holds a prompt wake; want none")
+			}
+			if waiting.on != "question" || waiting.route != nil {
+				t.Fatalf("the worker waits on %q routed to %+v; want its question the person's", waiting.on, waiting.route)
+			}
+		})
 	}
 }
 

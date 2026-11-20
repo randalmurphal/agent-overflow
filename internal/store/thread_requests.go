@@ -197,6 +197,10 @@ type ThreadRequest struct {
 	// RunToken is the token of the first request of the run this one
 	// counts, its own for that first, empty for a request that tracks none.
 	RunToken string `json:"-"`
+	// Nudge marks the record of a run of an owned worker that someone other
+	// than its spawner started (StartNudgeRun): CallerThreadID is the
+	// spawner, which made no request and is owed nothing.
+	Nudge bool `json:"-"`
 }
 
 // RemoteRequestSource is the thread a destination's receipts name for the
@@ -337,7 +341,7 @@ func (r ThreadRequest) RemoteListingReach() bool {
 // to extra.
 func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly, nestedOpen, restUnreported, lateReplyExpired int
+	var notify, polling, lineageOnly, nestedOpen, restUnreported, lateReplyExpired, nudge int
 	var answerAgentRole, lateReplyAgentRole string
 	var answerAgent, lateReplyAgent int64
 	var run [6]sql.NullInt64
@@ -359,8 +363,9 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg, &r.AdmitUntil,
 		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName, &r.LinkEnd,
-		&run[0], &run[1], &run[2], &run[3], &run[4], &run[5], &r.RunToken,
+		&run[0], &run[1], &run[2], &run[3], &run[4], &run[5], &r.RunToken, &nudge,
 	}, extra...)...)
+	r.Nudge = nudge != 0
 	r.RunBase, r.RunTotal = runFiguresOf(run[:3]), runFiguresOf(run[3:])
 	r.LateReplyExpired = lateReplyExpired != 0
 	r.NestedOpen = nestedOpen != 0
@@ -1058,8 +1063,9 @@ func (s *Store) GetThreadRequests(tokens []string) ([]ThreadRequest, error) {
 
 // ListThreadRequestsByCaller returns one thread's requests, open ones first
 // and newest first within each group, which is how `thread_status` lists them
-// and how an agent recovers its tokens after a compaction. limit and offset
-// page the list; the tool layer encodes them into its opaque cursor.
+// and how an agent recovers its tokens after a compaction. A nudge's record
+// is no request the thread made and is left out. limit and offset page the
+// list; the tool layer encodes them into its opaque cursor.
 func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset int) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 20
@@ -1069,7 +1075,7 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE caller_thread_id = ? AND lineage_only = 0
+		  WHERE caller_thread_id = ? AND lineage_only = 0 AND nudge = 0
 		  ORDER BY (settled_at IS NULL) DESC, created_at DESC, token ASC
 		  LIMIT `+strconv.Itoa(limit)+` OFFSET ?`,
 		callerThreadID, offset)

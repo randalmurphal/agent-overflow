@@ -90,12 +90,13 @@ describe('an open row', () => {
 });
 
 describe('agentRowCallers', () => {
-  it('names the thread and the local threads its spawn and send rows stand for, not a paired computer\'s or an ask\'s copy', () => {
+  it('names the thread and the local threads its spawn, send and nudge rows stand for, not a paired computer\'s or an ask\'s copy', () => {
     const rows = [
       row('local', 0), row('remote', 0, 'running', { computerId: 'peer', threadId: 'far' }),
       row('send', 0, 'running', { kind: 'send', threadId: 'other' }), row('ask', 0, 'running', { kind: 'ask', threadId: 'copy' }),
+      row('nudge', 0, 'running', { kind: 'nudge', threadId: 'nudged' }),
     ];
-    expect([...agentRowCallers('me', rows)].sort()).toEqual(['c', 'me', 'other', 't-local']);
+    expect([...agentRowCallers('me', rows)].sort()).toEqual(['c', 'me', 'nudged', 'other', 't-local']);
   });
 });
 

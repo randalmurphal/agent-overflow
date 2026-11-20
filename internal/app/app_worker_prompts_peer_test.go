@@ -222,59 +222,29 @@ func TestALinkedWorkersPromptIsHeldForItsSpawnerThere(t *testing.T) {
 	}
 }
 
-// A held prompt goes to the person here once its lease runs out after it
-// was registered or last held, with the announcement that notifies them;
-// one the paired computer keeps naming as held stays routed there, and
-// listing it without naming it renews nothing.
-func TestAHeldPromptGoesToThePersonWhenItsLeaseRunsOut(t *testing.T) {
+// A held prompt stays its spawner's there while its link stands, however
+// long that computer goes without asking or without naming it as held: the
+// person here is not asked.
+func TestAHeldPromptStaysWithItsSpawnerThereWhileItsLinkStands(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 2)
-	kept, lapsed := f.ask(t, 0), f.ask(t, 1)
-	f.shortenLease(2*time.Second, kept, lapsed)
-	deadline := time.Now().Add(15 * time.Second)
-	for f.route(t, f.workers[1].ID) != nil {
-		if time.Now().After(deadline) {
-			t.Fatal("a prompt nobody held is still routed to the spawner there past its lease")
+	named, unnamed := f.ask(t, 0), f.ask(t, 1)
+	f.list(t, 0, named)
+	f.list(t, 1)
+	time.Sleep(3 * time.Second)
+	f.app.drainWorkerPrompts(t.Context(), 10*time.Second)
+	for i, token := range []string{named, unnamed} {
+		if route := f.route(t, f.workers[i].ID); route == nil || route.ThreadID != f.lead {
+			t.Fatalf("the prompt under %s is routed to %+v, want the lead there", token, route)
 		}
-		f.list(t, 0, kept)
-		f.list(t, 1)
-		time.Sleep(50 * time.Millisecond)
+		if f.handedToPerson(f.workers[i].ID) {
+			t.Fatalf("the person was asked about the prompt under %s", token)
+		}
 	}
-	if !f.handedToPerson(f.workers[1].ID) {
-		t.Fatal("the prompt whose lease ran out was not announced to the person")
-	}
-	if route := f.route(t, f.workers[0].ID); route == nil || route.ThreadID != f.lead {
-		t.Fatalf("the prompt held throughout is routed to %+v, want the lead there", route)
-	}
-	// No longer named as held, it goes too.
-	waitUntil(t, 15*time.Second, func() bool { return f.route(t, f.workers[0].ID) == nil })
-}
-
-// shortenLease shortens the lease to lease once the prompts under tokens
-// are registered and checks them against it, so a test that must first see
-// them held does not race the lease.
-func (f *linkedWorkers) shortenLease(lease time.Duration, tokens ...string) {
-	f.app.workerPromptLeaseOverride = lease
-	for _, token := range tokens {
-		f.app.armPromptLease(token, 0)
-	}
-}
-
-// heldAt is when the paired computer last said it holds the prompt under
-// token, zero for never.
-func (f *linkedWorkers) heldAt(t *testing.T, token string) time.Time {
-	t.Helper()
-	f.app.workerPrompts.mu.Lock()
-	defer f.app.workerPrompts.mu.Unlock()
-	prompt := f.app.workerPrompts.byToken[token]
-	if prompt == nil || prompt.remote == nil {
-		t.Fatalf("no prompt is held for a paired computer under %s", token)
-	}
-	return prompt.remote.heldAt
 }
 
 // Only the link's own device, for its own source thread and spawn, may
-// renew, answer or give back a held prompt. Each refusal leaves the prompt
+// answer or give back a held prompt. Each refusal leaves the prompt
 // as it was; the binding's own call gives it back to the person.
 func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 	t.Parallel()
@@ -317,18 +287,9 @@ func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 		if prompt, _ := f.app.workerPrompts.get(token); prompt.state != workerPromptRouted {
 			t.Fatalf("prompt %d is %v after the refused calls, want it still routed", i, prompt.state)
 		}
-		// None of the refused renewals renewed.
-		if held := f.heldAt(t, token); !held.IsZero() {
-			t.Fatalf("prompt %d was renewed at %v by a refused call", i, held)
-		}
 	}
 	if route := f.route(t, f.local.ID); route == nil || route.ComputerID != "" {
 		t.Fatalf("the local prompt is routed to %+v after the refused calls", route)
-	}
-	// The link's own renewal renews.
-	f.list(t, 0, first)
-	if f.heldAt(t, first).IsZero() {
-		t.Fatal("the link's own renewal did not renew its prompt")
 	}
 
 	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReturn, threadPromptPeerArgs{Spawn: f.spawns[0], Token: first}); err != nil {
@@ -393,7 +354,7 @@ func TestTheBindingHoldsACallToTheLinkThenAndNow(t *testing.T) {
 
 // A prompt announced routed through a link that no longer routes there by
 // the time it is held, the link replaced or gone, goes to the person at
-// once rather than when its lease runs out.
+// once.
 func TestAPromptRoutedThroughAStaleLinkGoesToThePersonAtOnce(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 1)

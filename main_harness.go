@@ -309,10 +309,6 @@ type harnessTiming struct {
 	// UsageProbeGap is the shortest gap between two usage probes of one
 	// provider (app.IsolationConfig.UsageProbeGap).
 	UsageProbeGap time.Duration
-	// PromptLease is how long a worker's prompt stays routed to its spawner
-	// on a paired computer without that computer saying it holds it
-	// (app.IsolationConfig.WorkerPromptLease).
-	PromptLease time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -340,7 +336,6 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"remote-watch-poll":    &timing.RemoteWatchPoll,
 		"drain-stall":          &timing.DrainStall,
 		"usage-probe-gap":      &timing.UsageProbeGap,
-		"prompt-lease":         &timing.PromptLease,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -504,7 +499,6 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
-		WorkerPromptLease:       opts.Timing.PromptLease,
 		OmitOwnerOps:            opts.OlderComputer,
 	})
 	window := &isolatedNativeWindow{}

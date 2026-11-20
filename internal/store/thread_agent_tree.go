@@ -347,7 +347,7 @@ const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE
     r.target_provider, r.nested_open, r.late_delivered_how, r.made_in_thread_id,
     r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, r.answer_cause, r.answer_cause_arg, r.admit_until,
     r.late_reply_expired, r.ack_owed, r.target_computer_name, r.link_end,
-    r.run_base_tool_calls, r.run_base_tokens, r.run_base_turn_ms, r.run_tool_calls, r.run_tokens, r.run_turn_ms, COALESCE(r.run_token, ''), ` + wakeItemSQL
+    r.run_base_tool_calls, r.run_base_tokens, r.run_base_turn_ms, r.run_tool_calls, r.run_tokens, r.run_turn_ms, COALESCE(r.run_token, ''), r.nudge, ` + wakeItemSQL
 
 // wakeItemSQL is the caller's row that carried request r's answer: the late
 // reply's confirmed wake, else the first answer's, each while the caller's

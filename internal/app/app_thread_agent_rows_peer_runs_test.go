@@ -35,8 +35,8 @@ func TestARemoteWorkersLaterRunIsThePersonsThere(t *testing.T) {
 	waitUntil(t, 10*time.Second, func() bool {
 		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
 	})
-	if route := pair.dest.routeWorkerPrompt(child); route != nil {
-		t.Fatalf("a prompt of the person's run there routes to %+v; want the person's", route)
+	if route := pair.dest.routeWorkerPrompt(child); route == nil || route.ThreadID != pair.caller.ID || route.ComputerID == "" {
+		t.Fatalf("a prompt of the owned worker's nudged run there routes to %+v; want its spawner here", route)
 	}
 
 	// This computer had not heard of the rest when the person started.

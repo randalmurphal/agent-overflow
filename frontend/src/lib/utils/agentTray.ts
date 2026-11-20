@@ -120,15 +120,15 @@ export function visibleAgentRows(
 
 /**
  * The threads whose requests a listing shows: the listed thread and every
- * thread on this computer one of its spawn or send rows stands for, whose
- * own rows nest under it. A frame naming any of them can change the
+ * thread on this computer one of its spawn, send or nudge rows stands for,
+ * whose own rows nest under it. A frame naming any of them can change the
  * listing.
  */
 export function agentRowCallers(threadId: string, rows: readonly ThreadAgentRow[]): Set<string> {
   const out = new Set<string>([threadId]);
   for (const row of rows) {
     out.add(row.callerThreadId);
-    if ((row.kind === 'spawn' || row.kind === 'send') && !row.computerId && row.threadId) out.add(row.threadId);
+    if (row.kind !== 'ask' && !row.computerId && row.threadId) out.add(row.threadId);
   }
   return out;
 }

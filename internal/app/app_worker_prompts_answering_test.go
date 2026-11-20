@@ -19,10 +19,10 @@ import (
 )
 
 // A prompt being answered is a state it passes through: what happened
-// meanwhile, a lease that ran out, a hand-back, a link that ended, a
-// handoff or a pause of its holder, is reconciled when the answer ends
-// without landing, on both computers. And only a session that may answer a
-// prompt reads or renews it.
+// meanwhile, a hand-back, a link that ended, a handoff, a pause of its
+// holder or a change of its worker's placement, is reconciled when the
+// answer ends without landing, on both computers. And only a session that
+// may answer a prompt reads it.
 
 // blockedAnswer is a hook that holds one answer until it is released and
 // then fails it: entered is closed once the answer is held.
@@ -64,18 +64,11 @@ func (f *linkedWorkers) answerBlocked(t *testing.T, token string, blocked *block
 }
 
 // On the worker's computer, a held prompt whose answer fails goes on as
-// what happened while it was answered says: its lease ran out, its link
-// ended, or that computer gave it back.
+// what happened while it was answered says: its link ended, or that
+// computer gave it back.
 func TestAHeldPromptWhoseAnswerFailsIsReconciled(t *testing.T) {
 	t.Parallel()
 	for name, meanwhile := range map[string]func(t *testing.T, f *linkedWorkers, token string){
-		"the lease ran out": func(t *testing.T, f *linkedWorkers, token string) {
-			// The check fires while the answer is written.
-			f.app.workerPromptLeaseOverride = 50 * time.Millisecond
-			f.app.expirePromptLease(token)
-			time.Sleep(100 * time.Millisecond)
-			f.app.expirePromptLease(token)
-		},
 		"the link ended": func(t *testing.T, f *linkedWorkers, token string) {
 			revocation, err := f.app.store.RevokeDevice(f.device, time.Now().UnixMilli())
 			if err != nil || !slices.Contains(revocation.ReleasedThreads, f.workers[0].ID) {
@@ -112,30 +105,25 @@ func TestAHeldPromptWhoseAnswerFailsIsReconciled(t *testing.T) {
 	}
 }
 
-// A held prompt whose answer fails inside its lease stays held, and its
-// lease is checked again: it goes to the person when the lease runs out.
-func TestAHeldPromptWhoseAnswerFailsKeepsItsLease(t *testing.T) {
+// A held prompt whose answer fails with nothing else changed stays held
+// for its spawner there, however long that computer takes to answer again.
+func TestAHeldPromptWhoseAnswerFailsStaysHeld(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 1)
 	token := f.ask(t, 0)
 	blocked := newBlockedAnswer(t)
 	done := f.answerBlocked(t, token, blocked)
-	// The registration's check fires while the answer is written, inside
-	// the lease, and is dropped.
-	f.app.workerPromptLeaseOverride = time.Second
-	f.app.expirePromptLease(token)
 	blocked.free()
 	if err := within(t, "the answer", done); err == nil {
 		t.Fatal("the failed answer was taken")
 	}
 	f.drain(t)
 	if route := f.route(t, f.workers[0].ID); route == nil || route.ThreadID != f.lead {
-		t.Fatalf("the prompt is routed to %+v after a failed answer inside its lease, want the lead", route)
+		t.Fatalf("the prompt is routed to %+v after a failed answer, want the lead", route)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		f.drain(t)
-		return f.route(t, f.workers[0].ID) == nil && f.handedToPerson(f.workers[0].ID)
-	})
+	if held := f.app.workerPrompts.heldFor(f.spawns[0], f.workers[0].ID); len(held) != 1 || held[0].token != token {
+		t.Fatalf("held %+v after a failed answer, want %s still held", held, token)
+	}
 }
 
 // failRemoteAnswers holds the spawner's first answer at the worker's
@@ -150,17 +138,22 @@ func failRemoteAnswers(t *testing.T, peer *ownerOpPeer) *blockedAnswer {
 
 // On the spawner's computer, a prompt whose answer fails is reconciled with
 // what happened to its holder meanwhile: a handoff moves it to the
-// successor, assistants turned off and a wake its holder did not take give
-// it back to the person there.
+// successor; with assistants turned off, or a wake its holder did not take,
+// it stays the holder's, as the owned worker's prompts are its spawner's.
 func TestARemotePromptWhoseAnswerFailsFollowsItsHolder(t *testing.T) {
 	t.Parallel()
 	type outcome func(t *testing.T, p *remotePromptPair, moved string)
-	gaveBack := func(t *testing.T, p *remotePromptPair, _ string) {
+	stayed := func(t *testing.T, p *remotePromptPair, _ string) {
 		t.Helper()
-		p.givenToThePerson(t)
 		p.drain(t)
-		if held := p.source.heldRemotePrompts(p.spawn); len(held) != 0 {
-			t.Fatalf("this computer still holds %q", held)
+		if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID {
+			t.Fatalf("the prompt there is routed to %+v (open %v), want the spawner here", route, open)
+		}
+		if p.announcedToPerson("req-allow") {
+			t.Fatal("the person there was asked")
+		}
+		if held := p.source.heldRemotePrompts(p.spawn); len(held) != 1 {
+			t.Fatalf("this computer holds %q, want the prompt kept for its holder", held)
 		}
 	}
 	for name, tc := range map[string]struct {
@@ -188,19 +181,19 @@ func TestARemotePromptWhoseAnswerFailsFollowsItsHolder(t *testing.T) {
 				p.source.convergeAssistants()
 				return ""
 			},
-			then: gaveBack,
+			then: stayed,
 		},
 		"its wake not taken": {
 			meanwhile: func(t *testing.T, p *remotePromptPair, wake workerPromptWake) string {
 				p.source.remotePromptNotTaken(p.keyOf(wake.token), wake.delivery)
 				return ""
 			},
-			then: gaveBack,
+			then: stayed,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			p, peer := promptOwnerOpPair(t, 0)
+			p, peer := promptOwnerOpPair(t)
 			testAssistant(t, p.source, p.caller.ID)
 			p.openThere(t, 1)
 			p.readOwnerState(t, p.source)
@@ -245,8 +238,8 @@ func narrowSessionThere(t *testing.T, p *remotePromptPair) context.Context {
 }
 
 // A session of the link's device that may not answer prompts reads the
-// worker's blocked state, and neither lists the prompt's content, renews
-// it, answers it nor gives it back.
+// worker's blocked state, and neither lists the prompt's content, answers
+// it nor gives it back.
 func TestOnlyASessionThatMayAnswerAPromptReadsIt(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -272,12 +265,6 @@ func TestOnlyASessionThatMayAnswerAPromptReadsIt(t *testing.T) {
 	}
 	if listing.BlockedOn != "approval" || len(listing.Prompts) != 0 {
 		t.Fatalf("the listing = blocked on %q with prompts %+v; want the blocked state and no prompt", listing.BlockedOn, listing.Prompts)
-	}
-	p.dest.workerPrompts.mu.Lock()
-	renewed := !p.dest.workerPrompts.byToken[token].remote.heldAt.IsZero()
-	p.dest.workerPrompts.mu.Unlock()
-	if renewed {
-		t.Fatal("a session that may not answer the prompt renewed it")
 	}
 	for _, tool := range []string{threadAgentPeerPromptReply, threadAgentPeerPromptReturn} {
 		args, err := json.Marshal(threadPromptPeerArgs{Spawn: p.spawn.Token, Token: token, Decision: threadtools.DecisionAllow})
@@ -353,7 +340,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 	t.Parallel()
 	t.Run("a queued wake", func(t *testing.T) {
 		t.Parallel()
-		p, peer := promptOwnerOpPair(t, 0)
+		p, peer := promptOwnerOpPair(t)
 		p.openThere(t, 1)
 		p.readOwnerState(t, p.source)
 		wake := p.wakesFor(t, p.caller.ID, 1)[0]
@@ -371,7 +358,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 	})
 	t.Run("a listing recorded before the forget", func(t *testing.T) {
 		t.Parallel()
-		p, peer := promptOwnerOpPair(t, 0)
+		p, peer := promptOwnerOpPair(t)
 		p.openThere(t, 1)
 		listing, origin, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 		if err != nil || len(listing.Prompts) != 1 {

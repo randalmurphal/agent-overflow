@@ -83,6 +83,10 @@ type workerPrompts struct {
 	// reads SQLite after it closes.
 	gate   sync.Mutex
 	closed bool
+	// parked holds, by agent, the prompts of owned workers their agent did
+	// not take, still routed to it, put to it again when its next turn
+	// starts (parkWorkerPrompt).
+	parked map[string][]workerPrompt
 	// async is where each open async question prompt goes.
 	async asyncQuestionRoutes
 	// remote is the prompts paired computers' workers put to threads here.
@@ -271,4 +275,52 @@ func (w *workerPrompts) endAnswer(token string, state workerPromptState) (worker
 	}
 	prompt.closedAt = time.Now()
 	return *prompt, false, false
+}
+
+// park keeps prompt, a closed registration, for its agent's next turn, and
+// forgets the parked prompts that are no longer open or whose registration
+// a later one replaced, so it holds no more than the open prompts.
+func (w *workerPrompts) park(prompt workerPrompt, open func(workerPrompt) bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.parked == nil {
+		w.parked = make(map[string][]workerPrompt)
+	}
+	for agent, held := range w.parked {
+		kept := held[:0]
+		for _, p := range held {
+			if w.current[p.key()] == p.token && open(p) {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			delete(w.parked, agent)
+		} else {
+			w.parked[agent] = kept
+		}
+	}
+	w.parked[prompt.agentID] = append(w.parked[prompt.agentID], prompt)
+}
+
+// hasParked reports whether agentID has a parked prompt.
+func (w *workerPrompts) hasParked(agentID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.parked[agentID]) > 0
+}
+
+// takeParked removes and returns agentID's parked prompts whose
+// registration is still their prompt's current one.
+func (w *workerPrompts) takeParked(agentID string) []workerPrompt {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	held := w.parked[agentID]
+	delete(w.parked, agentID)
+	var out []workerPrompt
+	for _, p := range held {
+		if w.current[p.key()] == p.token {
+			out = append(out, p)
+		}
+	}
+	return out
 }

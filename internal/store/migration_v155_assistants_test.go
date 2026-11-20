@@ -634,9 +634,9 @@ func TestUpgradeSupersededSpawnOwnsNothing(t *testing.T) {
 			if err != nil || !slices.Equal(linked, []string{want}) && !(want == "" && len(linked) == 0) {
 				t.Errorf("%s: %s's link names %q, %v; want %q", when, id, linked, err, want)
 			}
-			// Spawns that settled before runs were kept route no prompt.
-			if spawner, _, found, err := localSpawnerOf(s, id); err != nil || found {
-				t.Errorf("%s: SpawnOwnerOf(%s) = %q, %v, %v; want nobody", when, id, spawner, found, err)
+			// An owned worker's prompts are its owner's, whatever its runs.
+			if spawner, _, found, err := localSpawnerOf(s, id); err != nil || found != (want != "") || spawner != want {
+				t.Errorf("%s: SpawnOwnerOf(%s) = %q, %v, %v; want %q", when, id, spawner, found, err, want)
 			}
 			row, err := s.GetThread(id)
 			if err != nil || row.SpawnedByThreadID != want {

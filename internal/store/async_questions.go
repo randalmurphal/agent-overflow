@@ -240,9 +240,10 @@ func asyncQuestionRevision(db sqlQueryer, threadID, itemID string) (int64, error
 }
 
 // ThreadsWithUnansweredAsyncQuestions lists the threads with a question
-// still waiting for an answer, on idx_async_questions_pending.
+// still waiting for an answer that holds its thread (asyncQuestionHoldsSQL),
+// on idx_async_questions_pending.
 func (s *Store) ThreadsWithUnansweredAsyncQuestions() ([]string, error) {
-	rows, err := s.reader().Query(threadsWithUnansweredAsyncQuestionsSQL)
+	rows, err := s.reader().Query(threadsWithUnansweredAsyncQuestionsSQL, s.run)
 	if err != nil {
 		return nil, fmt.Errorf("store: list the threads with unanswered questions: %w", err)
 	}
@@ -261,9 +262,19 @@ func (s *Store) ThreadsWithUnansweredAsyncQuestions() ([]string, error) {
 }
 
 // The state IN term is idx_async_questions_pending's predicate, which lets
-// the plan use the partial index.
-const threadsWithUnansweredAsyncQuestionsSQL = `SELECT DISTINCT thread_id FROM async_questions
- WHERE state IN ('unanswered','submitted','restored') AND state='unanswered'`
+// the plan use the partial index. ?1 is the Store's run.
+var threadsWithUnansweredAsyncQuestionsSQL = `SELECT DISTINCT q.thread_id FROM async_questions q
+ WHERE q.state IN ('unanswered','submitted','restored') AND q.state='unanswered' AND ` + asyncQuestionHoldsSQL("q", "?1")
+
+// asyncQuestionHoldsSQL is whether question alias q, still unanswered,
+// holds its thread from rest: it was asked in this run of the app (run, the
+// Store's), or its thread is no owned worker. An owned worker's question an
+// earlier run recorded is asked of nobody (docs/specs/agent-thread-tools.md,
+// "thread_reply"): it holds neither the worker nor its spawner, and no
+// boot pass takes it up.
+func asyncQuestionHoldsSQL(q, run string) string {
+	return `(` + q + `.run_id = ` + run + ` OR NOT EXISTS (SELECT 1 FROM threads hq WHERE hq.id = ` + q + `.thread_id AND hq.placement = 'owned'))`
+}
 
 // DismissUnansweredAsyncQuestions dismisses every question of threadID
 // still waiting for an answer and reports how many it dismissed.

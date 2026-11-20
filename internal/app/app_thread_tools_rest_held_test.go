@@ -221,11 +221,12 @@ func TestNoHeldSpawnSettlesBeforeTheBootRecoveredItsWorkers(t *testing.T) {
 	}
 }
 
-// A held spawn whose worker's turn ended asking an async question does not
-// settle at the boot: the boot's passes wait for its recovery, and the
-// recovery reads the stored question, which after the restart is the
-// person's and has no route. Once the question is dismissed the worker is
-// at rest and the spawn settles finished.
+// A held spawn whose worker, given a sidebar row, ended its turn asking an
+// async question does not settle at the boot: the boot's passes wait for
+// its recovery, and the recovery reads the stored question, which after the
+// restart is the person's and has no route. Once the question is dismissed
+// the worker is at rest and the spawn settles finished. An owned worker's
+// such question holds nothing (TestAQuestionFromAnEarlierRunHoldsNothingForAnOwnedWorker).
 func TestNoHeldSpawnSettlesBeforeTheBootRestoredItsWorkersQuestion(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -243,6 +244,9 @@ func TestNoHeldSpawnSettlesBeforeTheBootRestoredItsWorkersQuestion(t *testing.T)
 	}})
 	ack := f.spawnWorker(t, "run the board")
 	f.awaitTurnRunning(t, ack.Token)
+	if _, err := f.app.store.SetThreadPlacement([]string{ack.ThreadID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.app.store.RecordAsyncQuestions(store.Item{ID: "question:ask", ThreadID: ack.ThreadID, Kind: "assistant_text", Role: "assistant",
 		Status: "completed", Meta: `{"delivery":"async","questions":[{"title":"Which board?"}]}`}); err != nil {
 		t.Fatal(err)

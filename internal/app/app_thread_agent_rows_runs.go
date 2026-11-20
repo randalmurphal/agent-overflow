@@ -3,7 +3,9 @@ package app
 import (
 	"fmt"
 	"log"
+	"sync"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 )
 
@@ -201,6 +203,96 @@ func (a *App) endRestedRuns() {
 	}
 }
 
+// workStarts counts, by thread, the messages between their run boundary
+// (beginWork) and their placement in the thread: no rest ends a run there
+// meanwhile (endRunsAtRest), so the run a nudge starts is not ended before
+// its message reaches the thread.
+type workStarts struct {
+	mu      sync.Mutex
+	threads map[string]int
+}
+
+// hold counts one message on threadID until the returned release.
+func (w *workStarts) hold(threadID string) func() {
+	w.mu.Lock()
+	if w.threads == nil {
+		w.threads = map[string]int{}
+	}
+	w.threads[threadID]++
+	w.mu.Unlock()
+	return sync.OnceFunc(func() {
+		w.mu.Lock()
+		if w.threads[threadID]--; w.threads[threadID] <= 0 {
+			delete(w.threads, threadID)
+		}
+		w.mu.Unlock()
+	})
+}
+
+// holds reports whether a message on threadID is between its boundary and
+// its placement.
+func (w *workStarts) holds(threadID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.threads[threadID] > 0
+}
+
+// workBy is whose message opts sends, for its run boundary: the thread an
+// agent request comes from, here or on a paired computer, or the person
+// (empty) for a message the person sends. nudges is false for a message the
+// app writes, a wake or an answer, which starts no run of anyone's.
+func workBy(opts sendMessageOptions) (by string, nudges bool) {
+	switch opts.Origin {
+	case "":
+		return "", true
+	case agentmeta.OriginAgentThread:
+		if from := opts.OriginThread; from != nil && from.Kind != agentmeta.OriginKindWake {
+			return from.ThreadID, true
+		}
+	}
+	return "", false
+}
+
+// beginWork is the run boundary of a message that is about to start work on
+// threadID, from by (workBy): the runs its rest already ended are recorded
+// ended first (endRunsBeforeWork), and on an owned worker whose spawner has
+// no run open on it, a message of the person's or another thread's is a
+// nudge, whose work is a run of the spawner's of its own
+// (store.StartNudgeRun). The caller passes done whether it placed the
+// message: until then no rest ends a run on the thread, and a nudge whose
+// message was not placed records no run. An error is returned before
+// anything is recorded, and the caller fails with it.
+func (a *App) beginWork(threadID, by string, nudges bool) (done func(placed bool), err error) {
+	if err := a.endRunsBeforeWork(threadID); err != nil {
+		return nil, err
+	}
+	release := a.workStarts.hold(threadID)
+	token := ""
+	if nudges {
+		token = newThreadRequestToken()
+		started, err := a.store.StartNudgeRun(token, threadID, by)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		if !started {
+			token = ""
+		}
+	}
+	return func(placed bool) {
+		if token != "" && !placed {
+			if err := a.store.DropNudgeRun(token); err != nil {
+				// The run stays recorded and ends, empty, at the worker's rest.
+				log.Printf("thread tools: %v", err)
+			}
+		}
+		release()
+		if token != "" {
+			a.noteRunsMayBeOpen()
+		}
+	}, nil
+}
+
 // endRunsBeforeWork ends the runs on threadID that its rest has already
 // ended and the rest pass has not yet recorded, before a message starts work
 // there: that work is a run of its own, the person's, another thread's or a
@@ -228,7 +320,7 @@ func (a *App) endRunsAtRest(threadID string) error {
 	a.threadRequests.mu.Lock()
 	barred := a.threadRequests.rest.barred
 	a.threadRequests.mu.Unlock()
-	if barred || a.resting.holds(threadID) {
+	if barred || a.resting.holds(threadID) || a.workStarts.holds(threadID) {
 		return nil
 	}
 	if _, held := a.runEndsHeldForTest.Load(threadID); held {

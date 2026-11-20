@@ -221,10 +221,11 @@ func TestAPairedComputersRunIsKeptOnItsReceipts(t *testing.T) {
 	}
 }
 
-// A spawn that tracks no run, written before v159, here or as a paired
-// computer's link receipt, is open until it settles and closed once it
-// has: RunOpen, RunEnded, ownRunOpenSQL and linkRunOpenSQL read it alike,
-// and so does SpawnOwnerOf, which routes the worker's prompts by them.
+// A spawn that tracks no run, written before v159, is open until it settles
+// and closed once it has: RunOpen, RunEnded and ownRunOpenSQL read it alike,
+// and so does SpawnOwnerOf for a worker with a sidebar row, which routes the
+// worker's prompts by them. An owned worker's prompts, here or on a paired
+// computer's link receipt, are its spawner's either way.
 func TestASpawnThatTracksNoRunIsOpenUntilItSettles(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -234,6 +235,9 @@ func TestASpawnThatTracksNoRunIsOpenUntilItSettles(t *testing.T) {
 	insertRun(t, s, "old", ThreadRequestSpawn, "", "w", nil, 10)
 	acceptLink(t, s, "old-link", "dev", "far", 10)
 	mustExec(t, s.db, `UPDATE thread_request_receipts SET run_open = NULL WHERE token = 'old-link'`)
+	if _, err := s.SetThreadPlacement([]string{"w"}, PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
 	read := func(when string, open bool) {
 		t.Helper()
 		row := rawThreadRequest(t, s, "old")
@@ -244,13 +248,11 @@ func TestASpawnThatTracksNoRunIsOpenUntilItSettles(t *testing.T) {
 		if err := s.db.QueryRow(`SELECT ` + ownRunOpenSQL("r") + ` FROM thread_requests r WHERE token = 'old'`).Scan(&sqlOpen); err != nil || sqlOpen != open {
 			t.Fatalf("%s: ownRunOpenSQL = %v, %v; want %v", when, sqlOpen, err, open)
 		}
-		if err := s.db.QueryRow(`SELECT ` + linkRunOpenSQL("l") + ` FROM thread_request_receipts l WHERE token = 'old-link'`).Scan(&sqlOpen); err != nil || sqlOpen != open {
-			t.Fatalf("%s: linkRunOpenSQL = %v, %v; want %v", when, sqlOpen, err, open)
+		if _, found, err := s.SpawnOwnerOf("w"); err != nil || found != open {
+			t.Fatalf("%s: SpawnOwnerOf(w) found %v, %v; want %v", when, found, err, open)
 		}
-		for _, thread := range []string{"w", "far"} {
-			if _, found, err := s.SpawnOwnerOf(thread); err != nil || found != open {
-				t.Fatalf("%s: SpawnOwnerOf(%s) found %v, %v; want %v", when, thread, found, err, open)
-			}
+		if _, found, err := s.SpawnOwnerOf("far"); err != nil || !found {
+			t.Fatalf("%s: SpawnOwnerOf(far), an owned worker, found %v, %v; want its link", when, found, err)
 		}
 	}
 	read("unsettled", true)

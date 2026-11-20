@@ -247,7 +247,7 @@ func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
 	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"open", "other"}) {
 		t.Fatalf("threads with unanswered questions = %q, %v", ids, err)
 	}
-	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+threadsWithUnansweredAsyncQuestionsSQL)
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+threadsWithUnansweredAsyncQuestionsSQL, s.run)
 	if n, err := s.DismissUnansweredAsyncQuestions("open"); err != nil || n != 2 {
 		t.Fatalf("dismissed %d, %v; want both of its questions", n, err)
 	}

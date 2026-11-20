@@ -106,11 +106,6 @@ type IsolationConfig struct {
 	// one provider, so a spec that sets a usage answer is not held behind a
 	// probe the boot just made. Zero keeps the product gap.
 	UsageProbeGap time.Duration
-	// WorkerPromptLease replaces workerPromptLease, how long a worker's
-	// prompt stays routed to its spawner on a paired computer without that
-	// computer saying it holds it, so a test can see it reach the person
-	// here without waiting minutes. Zero keeps the product lease.
-	WorkerPromptLease time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -136,7 +131,6 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
-	a.workerPromptLeaseOverride = config.WorkerPromptLease
 	a.ownerOpsOmitted = config.OmitOwnerOps
 	a.usageProbeGap = config.UsageProbeGap
 	a.transferPendingRetry = config.TransferPendingRetry

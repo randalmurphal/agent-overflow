@@ -7,16 +7,13 @@ import (
 )
 
 // A paired computer's request to a thread here keeps its run on its receipt
-// (migration v159): this computer alone sees the worker rest, and the
-// worker's prompts go to that computer's thread only while a run it started
-// is open (SpawnOwnerOf). A spawn, and a send from the thread whose spawn
-// made the worker here, start one when their receipt is written
-// (receiptRunStartSQL); a receipt written before v159, and every other
-// receipt, tracks none (linkRunOpenSQL says how such a link reads). The
-// run ends with the runs on the thread here, when the worker is at rest
-// after the receipt settled (endThreadRunsTx), and keeps the worker's
-// figures over its life then, which the requesting computer takes as the
-// run's end (ReceiptRunOf).
+// (migration v159): this computer alone sees the worker rest. A spawn, and
+// a send from the thread whose spawn made the worker here, start one when
+// their receipt is written (receiptRunStartSQL); a receipt written before
+// v159, and every other receipt, tracks none. The run ends with the runs on
+// the thread here, when the worker is at rest after the receipt settled
+// (endThreadRunsTx), and keeps the worker's figures over its life then,
+// which the requesting computer takes as the run's end (ReceiptRunOf).
 
 // receiptRunStartSQL is the run_open a receipt is inserted with
 // (insertThreadReceiptSQL's parameters): 1 for a paired computer's request
@@ -31,18 +28,6 @@ const receiptRunStartSQL = `CASE
                                   WHERE sl.target_thread_id = ?8 AND sl.kind = 'spawn'
                                     AND sl.owner_device_id = ?2 AND sl.source_thread_id = ?5) THEN 1
   END`
-
-// linkRunOpenSQL is whether link, a paired computer's spawn receipt here,
-// has a run of its source thread's open on its thread: its own, or a later
-// send's from the same device and thread. A link that tracks no run, one
-// written before v159, reads open until it settles and closed once it has,
-// as ownRunOpenSQL reads a spawn of this computer's.
-func linkRunOpenSQL(link string) string {
-	l := link + "."
-	return `((` + l + `run_open IS NULL AND ` + l + `settled_at IS NULL) OR EXISTS (SELECT 1 FROM thread_request_receipts rr INDEXED BY idx_thread_request_receipts_run_open
-	          WHERE rr.target_thread_id = ` + l + `target_thread_id AND rr.run_open = 1
-	            AND rr.owner_device_id = ` + l + `owner_device_id AND rr.source_thread_id = ` + l + `source_thread_id))`
-}
 
 // endReceiptRunsTx ends the open runs of the settled receipts to thread,
 // recording its figures over its life at now.

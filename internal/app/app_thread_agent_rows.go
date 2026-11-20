@@ -60,6 +60,10 @@ const (
 	threadAgentStopsInFlight = 8
 )
 
+// threadAgentKindNudge is the Kind of the row that records a nudge's run
+// (store.StartNudgeRun): work the spawner did not ask for, with no answer.
+const threadAgentKindNudge = "nudge"
+
 // ThreadAgentRow is one request a thread made of another thread, with that
 // thread as it stands.
 type ThreadAgentRow struct {
@@ -67,7 +71,8 @@ type ThreadAgentRow struct {
 	// CallerThreadID made the request: the listed thread for a depth-0 row,
 	// the thread a nested row's parent spawned otherwise.
 	CallerThreadID string `json:"callerThreadId"`
-	// Kind is spawn, send or ask.
+	// Kind is spawn, send or ask, or nudge for the run of an owned worker
+	// the person's or another thread's message started (threadAgentKindNudge).
 	Kind string `json:"kind"`
 	// ThreadID is the target; for an ask, the hidden copy that answers it.
 	ThreadID string `json:"threadId,omitempty"`

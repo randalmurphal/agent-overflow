@@ -380,7 +380,7 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return statementVMSteps(t, s, subtreeReachedSQL, `["root"]`) + statementVMSteps(t, s, threadRestSourcesSQL, string(encoded))
+		return statementVMSteps(t, s, subtreeReachedSQL, `["root"]`) + statementVMSteps(t, s, threadRestSourcesSQL, string(encoded), s.run)
 	}
 	// endedTurn gives the reached child a turn that ended.
 	endedTurn := func(index int, at int64) {
@@ -463,7 +463,7 @@ func TestAReachedThreadsFinishedRunsCostItsReadNothing(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThread(t, s, "worker")
-	quiet := statementVMSteps(t, s, threadRestSourcesSQL, `["worker"]`)
+	quiet := statementVMSteps(t, s, threadRestSourcesSQL, `["worker"]`, s.run)
 	for i := range 500 {
 		item := testWorkItem(fmt.Sprintf("old-%03d", i), "project-a", "running", int64(100+i))
 		item.OriginThreadID = "worker"
@@ -477,7 +477,7 @@ func TestAReachedThreadsFinishedRunsCostItsReadNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	history := statementVMSteps(t, s, threadRestSourcesSQL, `["worker"]`)
+	history := statementVMSteps(t, s, threadRestSourcesSQL, `["worker"]`, s.run)
 	read, err := s.ReadSubtreeRest([]string{"worker"})
 	if err != nil || read.Sources["worker"].Workflow {
 		t.Fatalf("a thread whose runs all ended: %+v, %v; want it at rest", read, err)

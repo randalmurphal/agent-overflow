@@ -279,13 +279,14 @@ func TestAWorkersAsyncQuestionAnsweredInTheWorkerRefusesTheSpawnersReply(t *test
 	}
 }
 
-// A question the spawner cannot take goes to the person: when its wake is
-// withdrawn from the spawner's queue, the worker's row needs the user and,
-// as the owned worker's turn end raised nothing, the question notifies,
-// until the person answers it.
-func TestAnOwnedWorkersAsyncQuestionTheSpawnerCannotTakeNotifiesThePerson(t *testing.T) {
+// A question an owned worker's spawner did not take stays the spawner's:
+// when its wake is withdrawn from the spawner's queue, the worker's row reads
+// blocked on the spawner, nothing needs the user or notifies, and the
+// spawner's next turn puts the question to it again under a new token. The
+// person can still answer it in the worker.
+func TestAnOwnedWorkersAsyncQuestionItsSpawnerDidNotTakeWaitsForItsNextTurn(t *testing.T) {
 	t.Parallel()
-	f := newAsyncQuestionFixture(t, "async-handed-back", store.PlacementOwned)
+	f := newAsyncQuestionFixture(t, "async-parked", store.PlacementOwned)
 	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
 	token, _ := f.wake(t, f.spawner.ID)
 	stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.spawner.ID, workerPromptSendIDRoot+token)
@@ -294,26 +295,85 @@ func TestAnOwnedWorkersAsyncQuestionTheSpawnerCannotTakeNotifiesThePerson(t *tes
 	}
 	f.drain(t)
 	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); len(tokens) != 0 {
-		t.Fatalf("the spawner was given the question again: %q", tokens)
+		t.Fatalf("the spawner was given the question again before its next turn: %q", tokens)
 	}
 	row, summary := f.row(t)
-	if row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
-		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on the user", row, summary)
+	if row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedRoutedTo != f.spawner.Title || summary.NeedYou != 0 {
+		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on its spawner", row, summary)
 	}
-	sends := f.questionSends("question:ask")
-	if len(sends) == 0 || sends[len(sends)-1].Retract || sends[len(sends)-1].Body != "Waiting for your answer" ||
-		sends[len(sends)-1].Target.ThreadID != f.worker.ID {
-		t.Fatalf("question notifications = %+v, want the last one raised for the worker", sends)
+	if sends := f.questionSends("question:ask"); len(sends) != 0 && !sends[len(sends)-1].Retract {
+		t.Fatalf("question notifications = %+v, want none raised", sends)
 	}
-	if _, _, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: token, Text: "One"}); !errors.Is(err, errWorkerPromptClosed) {
-		t.Fatalf("the spawner's late reply: %v, want the prompt closed", err)
+
+	workerEvent(t, f.app, f.spawner.ID, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: f.spawner.ID + ":next"}, nil)
+	f.drain(t)
+	again, _ := f.wake(t, f.spawner.ID)
+	if again == token {
+		t.Fatalf("the question was put to the spawner again under its old token %s", token)
 	}
 	if err := f.app.SubmitAsyncAnswers(t.Context(), f.worker.ID, "person", []store.AsyncQuestionAnswer{{ItemID: "question:ask", Index: 0, Answer: "One"}}); err != nil {
 		t.Fatal(err)
 	}
 	f.drain(t)
-	if sends := f.questionSends("question:ask"); !sends[len(sends)-1].Retract {
-		t.Fatalf("question notifications = %+v, want the last one retracted", sends)
+	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); len(tokens) != 0 {
+		t.Fatalf("the person's answer left the spawner's wake %q", tokens)
+	}
+}
+
+// A question an earlier run of the app recorded holds nothing for an owned
+// worker: the restarted app reads the worker at rest, records it as no live
+// worker and reads nothing open below its spawner; the question stays open
+// in the worker. A sidebar worker's such question is the person's and still
+// keeps the worker from rest.
+func TestAQuestionFromAnEarlierRunHoldsNothingForAnOwnedWorker(t *testing.T) {
+	t.Parallel()
+	for _, placement := range []string{store.PlacementOwned, store.PlacementStandalone} {
+		t.Run(placement, func(t *testing.T) {
+			t.Parallel()
+			f := newAsyncQuestionFixture(t, "async-earlier-"+placement, placement)
+			f.ask(t, "question:old", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+			// Its spawn answered, so only the worker's own state is left to read.
+			if _, err := f.app.store.SettleThreadRequest("async-earlier-"+placement+"-spawn", []string{store.ThreadRequestRunning}, store.ThreadRequestSettlement{
+				State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+			after.app.recoverThreadRequestsAtBoot()
+			after.drain(t)
+			waitUntil(t, 10*time.Second, func() bool {
+				after.app.threadRequests.mu.Lock()
+				defer after.app.threadRequests.mu.Unlock()
+				return !after.app.threadRequests.rest.barred
+			})
+			sources, err := after.app.store.ReadThreadRestSources(after.worker.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			threads, err := after.app.store.ThreadsWithUnansweredAsyncQuestions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rest, err := after.app.workerUnrest(after.worker.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if placement == store.PlacementOwned {
+				if sources.Asking || slices.Contains(threads, after.worker.ID) || rest.unrest != "" || after.app.liveWorker(after.worker.ID) {
+					t.Fatalf("asking %v, boot lists %q, worker reads %+v, live %v; want the earlier question to hold nothing",
+						sources.Asking, threads, rest, after.app.liveWorker(after.worker.ID))
+				}
+				if spawner, err := after.app.threadRest(after.spawner.ID); err != nil || spawner.unrest != "" {
+					t.Fatalf("the spawner reads %+v, %v; want nothing below it open", spawner, err)
+				}
+			} else if !sources.Asking || !slices.Contains(threads, after.worker.ID) || rest.unrest != workerBlocked {
+				t.Fatalf("asking %v, boot lists %q, worker reads %+v; want the person's question to keep it from rest", sources.Asking, threads, rest)
+			}
+			if questions, err := after.app.store.ListAsyncQuestions(after.worker.ID, "question:old"); err != nil || len(questions) != 1 || questions[0].State != "unanswered" {
+				t.Fatalf("the question = %+v, %v; want it left unanswered", questions, err)
+			}
+		})
 	}
 }
 

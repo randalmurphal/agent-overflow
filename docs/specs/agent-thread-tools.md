@@ -646,10 +646,12 @@ start on their own, not whether they can answer.
 A spawner also answers its workers with it
 ([ruling 19](standing-agents.md#decisions)). A thread another thread
 spawned on this computer does not put an approval or a question to the
-user while that spawner is not archived and the worker works in a run
-the spawner started, its spawn or a later send of its, until the worker
-is next at rest (`store.SpawnOwnerOf`); in a run the person or another
-thread started, the prompt is the user's. Each prompt the spawner takes is delivered to
+user while that spawner is not archived: an owned worker asks its
+spawner in every run, and a worker with a sidebar row only in a run the
+spawner started, its spawn or a later send of its, until the worker is
+next at rest (`store.SpawnOwnerOf`,
+[owned workers](standing-agents.md#owned-workers)); in a run the person
+or another thread started, such a worker's prompt is the user's. Each prompt the spawner takes is delivered to
 the spawner, an assistant, an ordinary thread or another worker alike,
 as a wake badged with the worker, the worker's text quoted as data,
 carrying a token for this tool. The spawner is the caller of the
@@ -662,8 +664,10 @@ whose `text` is the agent's reason. A form-style MCP elicitation can
 only be denied this way. The prompt stays open in the worker, so the
 user can still answer it there; that withdraws a wake still queued and
 refuses the agent's later reply. A wake the agent's session never took
-in, or that
-the end of its session cleared, hands the prompt back to the user. The
+in, or that the end of its session cleared, leaves an owned worker's
+prompt the spawner's until its next turn
+([owned workers](standing-agents.md#owned-workers)), and hands any other
+prompt back to the user. The
 token lives as long as the prompt, in memory: a restart ends the
 worker's session and its prompts with it. A Codex worker's async
 question, which its turn ends by asking and a later message answers,
@@ -684,11 +688,13 @@ the user withdraws from the worker's Incoming rows puts them to the
 user. It never becomes text in the worker's composer. `decision` and
 `answers` on any other token are refused.
 
-A question not recorded by this run of the app is the user's, as every
-question was before a spawner could answer one: it goes to no agent on
-any computer, raises no notification and is not what its thread waits on
-(`threadWaitingOn`), though as an unanswered question it still keeps the
-thread from rest. The boot reads none. The store marks each question with
+A question not recorded by this run of the app goes to no agent on any
+computer, raises no notification and is not what its thread waits on
+(`threadWaitingOn`). In a thread with a sidebar row it is the user's, as
+every question was before a spawner could answer one, and as an
+unanswered question it still keeps the thread from rest. In an owned
+worker it is asked of nobody and holds nothing: neither the worker nor
+its spawner, and no boot pass takes it up. The boot reads none. The store marks each question with
 the run that recorded it, not with a time, since the clock can be set
 during a run; the mark never changes and a fork copies it, so parts a
 later change leaves open (the user answering one, a reply the restart
@@ -1678,8 +1684,8 @@ still wants the work. A target deleted while a request is open settles
 `errored` with that reason.
 
 An owned worker's prompt reaches its spawner through the paired owner's
-wait. The spawner's computer queues the prompt as a wake and renews its
-lease while it holds it. See [reaching another computer](#reaching-another-computer).
+wait. The spawner's computer queues the prompt as a wake. See
+[reaching another computer](#reaching-another-computer).
 
 ## Attribution (Q9, Q16)
 
@@ -2057,18 +2063,19 @@ spawn's link, is reached by three more forwarded write calls over
 ride the `agent_rows` answer and wake the spawner here, as a local
 worker's do: the wake names the worker on its computer and opens it
 there. `agent_prompt_reply` carries the spawner's `thread_reply`, and
-`agent_prompt_return` gives a prompt back to the person there when the
-spawner here cannot take it. The destination keeps a prompt with the
-spawner while the spawner's computer names it as held on its
-`agent_rows` calls, and gives it to the person there two minutes after
-it was routed or last named. `agent_owner_op` carries what archiving or
+`agent_prompt_return` gives a prompt back to the person there when no
+thread here can hold it. The destination keeps a prompt with the
+spawner for as long as the link stands, however long the spawner's
+computer takes to answer; the prompts a call names as held renew the
+lease of a destination on an older version, which gives a prompt to its
+person two minutes after it was routed or last named. `agent_owner_op` carries what archiving or
 deleting the spawner owes the worker, sent until that computer answers.
 A computer that predates `agent_owner_op` answers that it is not a
 thread tools write call, and the operation is reported once as on a
 computer that runs an older version. An isolated boot with `AO_HARNESS_OLDER_COMPUTER=1` answers
 `agent_owner_op` that way, as a computer on v0.0.19 does
-([testing harness](testing-harness.md#8-e2e-and-gates)), and `AO_HARNESS_TIMING`'s `prompt-lease`
-shortens the two minutes; no other boot honors either.
+([testing harness](testing-harness.md#8-e2e-and-gates)); no other boot
+honors it.
 
 Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the

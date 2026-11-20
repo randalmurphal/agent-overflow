@@ -127,21 +127,25 @@ user changes it.
     thread another thread spawned on this computer does not put a
     question or approval to the user while its spawner is not archived,
     whoever the spawner is: an assistant, an ordinary thread or another
-    worker, whose own worker then asks it. It does so only in a run its
-    spawner started: the spawn, or a later send of the spawner's, until
-    the worker is next at rest ([At rest](#at-rest)). In a run the
-    person or another thread started, it asks the person, as a thread
-    nobody spawned does. An open prompt keeps the worker from rest, so a
-    prompt put to the spawner stays with it until it is answered. Its awaiting-input and
+    worker, whose own worker then asks it. An owned worker asks its
+    spawner in every run; one the spawner cannot take now stays the
+    spawner's and reaches it when it next can
+    ([Owned workers](#owned-workers)). A worker with a sidebar row asks
+    its spawner only in a run its spawner started: the spawn, or a later
+    send of the spawner's, until the worker is next at rest
+    ([At rest](#at-rest)); in a run the person or another thread
+    started, it asks the person, as a thread nobody spawned does. An
+    open prompt keeps the worker from rest, so a prompt put to the
+    spawner stays with it until it is answered. Its awaiting-input and
     approval stops are delivered to the spawner as a badged wake, the
     worker shows `waiting on <spawner>` rather than needs-you, and the
     spawner answers through `thread_reply` or escalates by asking the
     user itself, as one question with the context. The user can still
     open the worker and answer directly, which settles the wake. A
     worker a thread on a paired computer spawned and owns (its spawn's
-    link) asks that spawn's caller there, named with this computer; a
-    prompt that computer does not say it holds for two minutes, or
-    whose link ends, goes back to the user here. When that spawner is
+    link) asks that spawn's caller there, named with this computer, for
+    as long as the link stands; a prompt whose link ends goes back to the
+    user here. When that spawner is
     archived or deleted, its archive or delete reaches the worker and
     closes the prompt with it; the user there gets the prompt only while
     the spawner's computer cannot reach theirs. A worker whose spawner
@@ -756,6 +760,42 @@ Ruling 36, as built:
 - An owned thread's turn rest raises no notification
   (`notify.MapTurnRest` on `ThreadRef.Owned`) unless an attention flag
   is up; prompts still notify.
+- The sidebar row is the only thing that changes whose a spawned thread
+  is. An owned worker is its spawner's sub-agent in every run:
+  - A message the person or any thread but its spawner sends it while no
+    run of the spawner's is open on it is a nudge
+    (`beginWork`, `store.StartNudgeRun`). Its work is a run of the
+    spawner's of its own, recorded on a row of the spawner's
+    (`thread_requests.nudge`): a settled send nobody made, owed nothing,
+    its base the worker's tally then. It is the worker's one active
+    Agents row, kind `nudge`, counting only that run, and holds the
+    spawner as any run of its does. It ends at the worker's rest, and
+    nothing is delivered to the spawner and nothing starts it; Past keeps
+    it as one row. A nudge during a run of the spawner's is part of that
+    run, and a request of the spawner's made while a nudge's run is open
+    joins it. A Stop of its row brings the worker to rest and tells the
+    spawner, as for a worker that outlived its spawn.
+  - Its prompts go to the spawner whoever started the run
+    (`store.SpawnOwnerOf`), and the worker reads `waiting on <spawner>`.
+    One the spawner does not take now stays the spawner's: a wake that
+    is withdrawn, dropped with its session or never queued waits,
+    starting and waking nothing, for the spawner's next turn, which puts
+    it to the spawner again (`parkWorkerPrompt`); a wake whose session
+    start failed stays queued for the spawner's next session; a paused
+    assistant's waits in its queue until assistants are on; a paired
+    computer's spawner holds it for as long as the link stands, and one
+    that computer gives back is the person's there. The person can
+    answer it in the worker throughout.
+  - An async question an earlier run of the app recorded is asked of
+    nobody: it holds neither the worker nor its spawner, and no boot
+    pass takes it up (`asyncQuestionHoldsSQL`).
+
+  A worker with a sidebar row is its spawner's only in a run the spawner
+  started ([At rest](#at-rest)). Show in Sidebar ends a nudge's run then
+  (`endNudgeRunsTx`), and gives the person the prompts the spawner holds
+  outside its runs; Remove from Sidebar puts the person's prompts to the
+  spawner, and a message after it is a nudge
+  (`routeWorkerPromptsAgain`).
 - A placement or group change is announced with
   `ThreadAnnouncer.AnnouncePlaced`: `listed` while the row is unarchived
   and not owned, else `full`. Never `unlisted`, the archive frame that
@@ -1086,8 +1126,7 @@ Ruling 36, as built:
   A computer with `thread-tools.v2` tells the spawner which tokens
   changed, including work below an already open worker. The spawner
   reads the affected state in batches. A pane reads the full tree when
-  it displays a changed link. A newly held prompt reaches its spawner during an ordinary read. Held prompts renew
-  their two-minute lease on the worker's computer.
+  it displays a changed link. A newly held prompt reaches its spawner during an ordinary read.
   After reconnecting, the spawner discards cached placement, collects
   held prompts, active workers, uncollected answers and pending structural revisions, and
   reconciles the links it recorded open. A rename, placement change,
@@ -1121,10 +1160,11 @@ started. A run is its spawn of a thread, or a later send of its to that
 thread, from the request until that thread is next at rest; the thread
 holds it through the whole run, with the background work, loops, watches
 and threads it started in that run. Once that thread came to rest, work
-the person or another thread's send starts there is not its run: it
-holds neither the spawner nor any thread above it, is not what their
-`waiting_on` names, and its prompts go to the person
-([Owned workers](#owned-workers)). A Stop of a thread a thread spawned brings it to
+the person or another thread's send starts in a thread with a sidebar
+row is not its run: it holds neither the spawner nor any thread above
+it, is not what their `waiting_on` names, and its prompts go to the
+person. In an owned worker the same work is a nudge, a run of the
+spawner's of its own ([Owned workers](#owned-workers)). A Stop of a thread a thread spawned brings it to
 rest: the Agents row's Stop of a spawn and Stop All
 ([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
 thread id of a thread it spawned
@@ -1714,12 +1754,12 @@ and the live watch list) also leave out every thread that lives under an
 assistant, its current thread, its past threads and its helpers; that
 is scheduling only, not the admission. No session starts for those
 threads: an app-written message waits in its queue, and any other start
-and any new work is refused with the same message. A worker's question
-goes to the user. A worker on a paired computer keeps running there, the
-pause being this computer's: its prompts, routed here, go back there the
-first time this computer sees them, and one already routed here when
-the pause lands goes back then, so the user there has them without
-waiting out the lease; turning assistants on brings none back. The pause
+and any new work is refused with the same message. An owned worker's
+question stays its assistant's: its wake waits in the assistant's queue
+and is delivered when assistants are on. A worker with a sidebar row
+asks the user. A worker on a paired computer keeps running there, the
+pause being this computer's, and its prompts, routed here, wait here
+the same way. The pause
 is set from the setting at boot, before the
 sweep's first pass, so a restart keeps it.
 
@@ -1925,8 +1965,11 @@ closes up their spacing so the row holds at a phone width.
   read where its run starts on a paired computer, fails with the error
   before anything is sent. A spawn's run is never reopened: once
   its thread rested, work anything else starts there (the person, another
-  thread's send, its own wake) is no row, no count and no Stop of the
-  spawner's, and does not move the spawn out of Past. A worker that never
+  thread's send, its own wake) does not move the spawn out of Past. On an
+  owned worker the person's or another thread's message is a nudge, a run
+  of the spawner's of its own ([owned workers](#owned-workers)); any other
+  such work, and all of it on a worker with a sidebar row, is no row, no
+  count and no Stop of the spawner's. A worker that never
   came to rest stays in its spawn's run. A run on a paired computer is
   kept there too, on its request's receipt (`run_open`), and ends there
   at the worker's rest; here it ends when that computer's `agent_rows`
@@ -2430,7 +2473,7 @@ ticket keys.
 | 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool. No mock speaks claude-tui, so the claude-tui leg is proven at the argv level and at the app level through the real threadmcp transport, and the only unproven step is the real Claude TUI binary reading --mcp-config and --allowedTools, which the manual provider smoke covers. |
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
-| 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time and back to 8 on Show less, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; workers owned on another computer (no row, Show in Sidebar and Remove from Sidebar on their own computer, a window attached only to the spawner's, the waiting line, the wake, the lease, archive and delete with that computer stopped or older) in `thread-tools-paired.spec.ts`, `thread-tools-three-computers.spec.ts` and `assistants-toggle-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
+| 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time and back to 8 on Show less, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; workers owned on another computer (no row, Show in Sidebar and Remove from Sidebar on their own computer, a window attached only to the spawner's, the waiting line, the wake, archive and delete with that computer stopped or older) in `thread-tools-paired.spec.ts`, `thread-tools-three-computers.spec.ts` and `assistants-toggle-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
 | 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
 | 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 

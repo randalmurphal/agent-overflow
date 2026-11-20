@@ -4,10 +4,11 @@
 //
 // Coverage: a worker's question and approval delivered to the standing agent
 // that spawned it, answered with thread_reply, and settled by the user
-// answering in the worker; and a worker's approval or question handed back
-// to the user, and notified, when its agent's session died before taking it
-// in; and a Codex worker's async question routed and answered the same way,
-// or handed back to the person.
+// answering in the worker; and a worker with a sidebar row whose approval
+// or question is handed back to the user, and notified, when its agent's
+// session died before taking it in; and a Codex worker's async question
+// routed and answered the same way, waiting for its lead when the worker is
+// owned, or handed back to the person when it has a sidebar row.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Page } from '@playwright/test';
@@ -519,7 +520,12 @@ for (const lead of ['claude', 'codex'] as const satisfies readonly ProviderName[
   });
 }
 
-test(`an owned Codex worker's async question its lead never took in goes to the person`, async ({ harness, page }) => {
+test(`an owned Codex worker's async question its lead never took in waits for the lead`, async ({ harness, page }) => {
   test.setTimeout(120_000);
-  await runAsyncQuestionHandedBack(harness, page, 'desktop');
+  await runAsyncQuestionHandedBack(harness, page, 'desktop', 'owned');
+});
+
+test(`a Codex worker with a sidebar row whose async question its lead never took in goes to the person`, async ({ harness, page }) => {
+  test.setTimeout(120_000);
+  await runAsyncQuestionHandedBack(harness, page, 'desktop', 'standalone');
 });

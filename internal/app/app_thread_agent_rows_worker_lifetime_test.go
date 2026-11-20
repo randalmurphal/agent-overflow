@@ -254,10 +254,12 @@ func TestAWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	}
 }
 
-// After a worker's spawn finished and the worker rested, a person
-// continues it from its own composer. That run is the person's: its
-// spawner lists no row for it, neither the summary nor the sidebar's bulk
-// read counts it, Stop All leaves it running, and the spawn stays in Past.
+// After a worker's spawn finished and the worker, given a sidebar row,
+// rested, a person continues it from its own composer. That run is the
+// person's: its spawner lists no row for it, neither the summary nor the
+// sidebar's bulk read counts it, Stop All leaves it running, and the spawn
+// stays in Past. An owned worker's is a nudge
+// (TestANudgedOwnedWorkerIsOneRunOfItsSpawner).
 func TestAWorkerContinuedFromItsPaneStaysInItsSpawnersPast(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -270,10 +272,10 @@ func TestAWorkerContinuedFromItsPaneStaysInItsSpawnersPast(t *testing.T) {
 		t.Fatalf("Spawn: %v", err)
 	}
 	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
-	if worker, err := f.app.store.GetThread(ack.ThreadID); err != nil || worker.Placement != store.PlacementOwned {
-		t.Fatalf("worker %+v, %v; this test assumes an owned worker with no sidebar row", worker, err)
-	}
 	f.awaitRunEnded(t, ack.Token)
+	if _, err := f.app.SetThreadPlacement([]string{ack.ThreadID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)

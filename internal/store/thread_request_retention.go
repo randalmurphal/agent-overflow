@@ -193,7 +193,7 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	defer rollbackTx(tx, "store: thread request retention sweep", &err)
 	// The roots read at rest again with the writer held: a thread that took
 	// work since keeps its spawns whole.
-	rested, err := rest.atRestTx(tx)
+	rested, err := rest.atRestTx(tx, s.run)
 	if err != nil {
 		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: %w", cutoff, err)
 	}

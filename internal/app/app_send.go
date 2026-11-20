@@ -477,10 +477,15 @@ func (a *App) sendMessageWithOptions(
 		}
 	}
 
-	// Work this message starts on a thread at rest is a run of its own.
-	if err := a.endRunsBeforeWork(threadID); err != nil {
+	// Work this message starts on a thread at rest is a run of its own, and
+	// on an owned worker the person's or another thread's is its spawner's.
+	by, nudges := workBy(opts)
+	workDone, err := a.beginWork(threadID, by, nudges)
+	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
+	placed := false
+	defer func() { workDone(placed) }()
 
 	// Per-thread critical section: only one Send per thread at a time.
 	// This keeps the runtime-mode update, turn-index read, optimistic
@@ -493,7 +498,9 @@ func (a *App) sendMessageWithOptions(
 	}
 	defer unlock()
 
-	return a.sendMessageLocked(ctx, threadID, content, opts, prepared)
+	item, err := a.sendMessageLocked(ctx, threadID, content, opts, prepared)
+	placed = err == nil
+	return item, err
 }
 
 // sendMessageLocked is the send pipe's critical section: runtime-mode

@@ -13,6 +13,10 @@ package store
 // its own for the first: every Agents read takes one request per run
 // through idx_thread_requests_run_token, and a worker's newest run through
 // idx_thread_requests_run_heads, which holds each run's first request.
+// `nudge` marks the row that records a run of an owned worker's spawner
+// that someone else's message started (request_runs.go, StartNudgeRun):
+// a settled send of the spawner's that nobody made and that delivers
+// nothing.
 //
 // A paired computer's request keeps the same run on its receipt here, the
 // worker's computer, which alone sees the worker rest (receipt_runs.go):
@@ -32,6 +36,7 @@ ALTER TABLE thread_requests ADD COLUMN run_tool_calls INTEGER;
 ALTER TABLE thread_requests ADD COLUMN run_tokens INTEGER;
 ALTER TABLE thread_requests ADD COLUMN run_turn_ms INTEGER;
 ALTER TABLE thread_requests ADD COLUMN run_token TEXT;
+ALTER TABLE thread_requests ADD COLUMN nudge INTEGER NOT NULL DEFAULT 0 CHECK(nudge IN (0,1));
 CREATE INDEX idx_thread_requests_run_open
     ON thread_requests(caller_thread_id, created_at)
  WHERE run_base_tool_calls IS NOT NULL AND run_tool_calls IS NULL;

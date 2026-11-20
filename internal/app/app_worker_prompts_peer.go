@@ -27,23 +27,21 @@ import (
 //     (holdPeerWorkerPrompt) and nothing is queued here.
 //   - agent_rows from the link's own device, for the link's source thread
 //     and naming the link's spawn token, lists the link's held prompts
-//     (ThreadAgentRows.Prompts), and renews the lease of those it names as
-//     held (threadAgentPeerArgs.Held). Listing alone renews nothing.
+//     (ThreadAgentRows.Prompts).
 //   - agent_prompt_reply answers one, as thread_reply does here
 //     (answerRoutedPrompt); agent_prompt_return gives one back.
 //   - Listing, renewing, answering and returning need the calling session
 //     to hold approvals:respond, as answering the person's own prompts
 //     does; agent_rows without it lists no prompt content.
-//   - A lease hands a prompt back to where the worker's prompts route now,
-//     the person when that is the same thread, once the lease has passed
-//     since it was registered or last held, whichever is later: a
-//     computer that stops answering, or keeps answering without taking
-//     the prompt, leaves it with the person here.
-//   - A link that ends hands its prompts back at once
-//     (handBackLinkPrompts, through announceReleasedWorkers).
+//   - The worker is owned, so its prompt stays held for the spawner there
+//     however long that computer takes: one that stops answering leaves it
+//     waiting on the spawner, and the person here can still answer it in
+//     the worker. A link that ends hands its prompts back at once
+//     (handBackLinkPrompts, through announceReleasedWorkers), and a return
+//     from that computer, which no thread there could hold, hands it back.
 //
-// One binding (remotePromptFor) is the only door for a renewal, an answer
-// and a return.
+// One binding (remotePromptFor) is the only door for an answer and a
+// return.
 
 // Forwarded tool names of the prompts held for a paired computer.
 const (
@@ -51,34 +49,18 @@ const (
 	threadAgentPeerPromptReturn = "agent_prompt_return"
 )
 
-// workerPromptLease is how long a prompt stays routed to a paired
-// computer's thread after it was registered or that computer last said it
-// holds it (owner choice).
+// peerPromptClosed is the code agent_prompt_reply refuses a prompt that is
+// no longer open with.
 const peerPromptClosed = "thread_prompt_closed"
 
-const workerPromptLease = 2 * time.Minute
-
 // remotePromptHold is a prompt routed to a thread on a paired computer:
-// the route, the link it was routed through, and its lease. heldAt, when
-// that computer last said it holds the prompt, and timer are guarded by
-// workerPrompts.mu.
+// the route, the link it was routed through, and when it was registered,
+// which orders the link's listing.
 type remotePromptHold struct {
 	activity                        *ownerActivity
 	computerID, computerName, title string
 	device, spawnToken              string
 	registeredAt                    time.Time
-	heldAt                          time.Time
-	timer                           *time.Timer
-}
-
-// leaseEnd is when the lease runs out: lease after the later of the
-// prompt's registration and its last renewal.
-func (h *remotePromptHold) leaseEnd(lease time.Duration) time.Time {
-	from := h.registeredAt
-	if h.heldAt.After(from) {
-		from = h.heldAt
-	}
-	return from.Add(lease)
 }
 
 // ThreadAgentPrompt is one prompt of the thread an agent_rows call lists,
@@ -117,24 +99,15 @@ type threadPromptPeerAnswer struct {
 	Accepted bool `json:"accepted"`
 }
 
-// errPeerPromptNotYours refuses a renewal, an answer or a return the
-// binding does not admit.
+// errPeerPromptNotYours refuses an answer or a return the binding does not
+// admit.
 var errPeerPromptNotYours = errorsx.Public(threadtools.CodeRequestNotYours,
 	"That token names no prompt this computer routed to your thread through that spawn.", nil)
 
-// promptLease is workerPromptLease, or the shorter one a test or a harness
-// boot set (IsolationConfig.WorkerPromptLease).
-func (a *App) promptLease() time.Duration {
-	if a.workerPromptLeaseOverride > 0 {
-		return a.workerPromptLeaseOverride
-	}
-	return workerPromptLease
-}
-
 // holdPeerWorkerPrompt registers a prompt announced routed to a paired
-// computer's thread, held for the link that owns the worker, and arms its
-// lease. A link that no longer routes there, or a failed read of it, hands
-// the prompt back at once.
+// computer's thread, held for the link that owns the worker. A link that no
+// longer routes there, or a failed read of it, hands the prompt back at
+// once.
 func (a *App) holdPeerWorkerPrompt(route provider.PromptRoute, prompt workerPrompt) {
 	link, linked, err := a.store.SpawnOwnerOf(prompt.workerID)
 	prompt.agentID = route.ThreadID
@@ -152,25 +125,7 @@ func (a *App) holdPeerWorkerPrompt(route provider.PromptRoute, prompt workerProm
 	if err != nil || !linked || link.ComputerID != route.ComputerID || link.ThreadID != route.ThreadID {
 		log.Printf("worker prompts: %s of %s is not held for %s: its link is gone (%v)", prompt.requestID, prompt.workerID, route.ComputerID, err)
 		a.handBackWorkerPrompt(registered.token)
-		return
 	}
-	a.armPromptLease(registered.token, a.promptLease())
-}
-
-// armPromptLease checks the lease of the prompt held under token after d,
-// in place of a check already armed.
-func (a *App) armPromptLease(token string, d time.Duration) {
-	w := &a.workerPrompts
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	prompt := w.byToken[token]
-	if prompt == nil || prompt.remote == nil || prompt.state != workerPromptRouted {
-		return
-	}
-	if prompt.remote.timer != nil {
-		prompt.remote.timer.Stop()
-	}
-	prompt.remote.timer = time.AfterFunc(d, func() { w.run(func() { a.expirePromptLease(token) }) })
 }
 
 // promptLinkStands reports whether the link a held prompt was routed
@@ -186,39 +141,7 @@ func (a *App) promptLinkStands(prompt workerPrompt) bool {
 		link.ComputerID == prompt.remote.computerID && link.ThreadID == prompt.agentID
 }
 
-// expirePromptLease hands back the prompt held under token once its lease
-// has run out, and checks again when it was renewed meanwhile. A prompt
-// being answered is checked when its answer ends (endPromptAnswer).
-func (a *App) expirePromptLease(token string) {
-	w := &a.workerPrompts
-	w.mu.Lock()
-	prompt := w.byToken[token]
-	if prompt == nil || prompt.remote == nil || prompt.state != workerPromptRouted {
-		w.mu.Unlock()
-		return
-	}
-	left := time.Until(prompt.remote.leaseEnd(a.promptLease()))
-	w.mu.Unlock()
-	if left > 0 {
-		a.armPromptLease(token, left)
-		return
-	}
-	log.Printf("worker prompts: %s of %s goes back: %s did not hold it", prompt.requestID, prompt.workerID, prompt.remote.computerID)
-	a.handBackWorkerPrompt(token)
-}
-
-// stopLeases stops every armed lease, at shutdown.
-func (w *workerPrompts) stopLeases() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for _, prompt := range w.byToken {
-		if prompt.remote != nil && prompt.remote.timer != nil {
-			prompt.remote.timer.Stop()
-		}
-	}
-}
-
-// remotePromptFor is the binding every renewal, answer and return passes:
+// remotePromptFor is the binding every answer and return passes:
 // the prompt under promptToken is held for a paired computer through the
 // spawn spawnToken names, and that spawn's link, reached for the calling
 // device and its source thread (store.ReachSpawnLink), still owns its
@@ -243,10 +166,11 @@ func (a *App) remotePromptFor(device, source, spawnToken, promptToken string) (w
 // the spawn whose link reaches threadID, from that link's device and source
 // thread, is its owner's contact, whatever the thread's placement
 // (store.ReachSpawnLink). While the link owns the thread, a calling session
-// that may answer prompts (approvals:respond) gets the link's held prompts,
-// with the lease of each it says it holds renewed; one that may not gets
-// none and renews nothing, and still reads the thread's blocked state from
-// the row. Any other call lists none.
+// that may answer prompts (approvals:respond) gets the link's held prompts;
+// one that may not gets none, and still reads the thread's blocked state
+// from the row. Any other call lists none. The prompts a call names as held
+// (threadAgentPeerArgs.Held) renew the lease of a computer on an older
+// version; this one keeps no lease.
 func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, args threadAgentPeerArgs) ([]ThreadAgentPrompt, error) {
 	if args.Spawn == "" {
 		return nil, nil
@@ -267,9 +191,6 @@ func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, ar
 		if !a.workerPromptOpenTo(prompt) {
 			continue
 		}
-		if slices.Contains(args.Held, prompt.token) {
-			a.workerPrompts.renew(prompt.token, time.Now())
-		}
 		out = append(out, peerPromptWire(title, prompt))
 	}
 	return out, nil
@@ -286,15 +207,6 @@ func peerPromptWire(title string, prompt workerPrompt) ThreadAgentPrompt {
 		wire.Questions = prompt.question.Questions
 	}
 	return wire
-}
-
-// renew records that the computer a prompt is held for holds it now.
-func (w *workerPrompts) renew(token string, now time.Time) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if prompt := w.byToken[token]; prompt != nil && prompt.remote != nil && prompt.state == workerPromptRouted {
-		prompt.remote.heldAt = now
-	}
 }
 
 // heldFor is the routed prompts of workerID held for the spawn spawnToken

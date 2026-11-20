@@ -133,7 +133,7 @@ func (s *Store) SettleLocalThreadRequestAtRest(token string, from []string, sett
 	}
 	defer rollbackTx(tx, action, &err)
 	if rest != nil {
-		rested, err := rest.atRestTx(tx)
+		rested, err := rest.atRestTx(tx, s.run)
 		if err != nil {
 			return LocalSettlement{}, fmt.Errorf("%s: %w", action, err)
 		}

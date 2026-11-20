@@ -117,6 +117,9 @@ type App struct {
 	// resting holds the threads being brought to rest, which take no
 	// app-written message and start no work meanwhile (app_thread_rest_fence.go).
 	resting threadRestFence
+	// workStarts holds the threads a message is starting work on, whose
+	// runs no rest ends meanwhile (beginWork).
+	workStarts workStarts
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
 	// owner reads. Its own queue because a send to Google can hang for its
@@ -958,10 +961,6 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
-	// workerPromptLeaseOverride shortens the lease of a prompt routed to a
-	// paired computer (workerPromptLease) for a test. Zero keeps the
-	// product lease.
-	workerPromptLeaseOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool

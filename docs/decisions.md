@@ -346,12 +346,21 @@ Mechanism in
   it. Threads selected together are one delete per computer. Placement
   is organization only: the spawn record, the reply path and the read
   mark on an answer do not change. An assistant row never joins a group.
+- The sidebar row is the only thing that changes whose a spawned thread
+  is (owner ruling 2026-11-19,
+  [owned workers](specs/standing-agents.md#owned-workers)). An owned
+  worker is its spawner's sub-agent in every run: a message the person or
+  another thread sends it is a nudge, whose work is one run of the
+  spawner's row, holds the spawner and delivers it nothing at its end; its
+  prompts go to the spawner whoever started the run, and one the spawner
+  cannot take now waits for it, never for the person. A worker with a
+  sidebar row is the spawner's only in a run the spawner started. Each
+  rule applies as the placement stands when the thing happens.
 - Ownership crosses paired computers (owner rulings 2026-11-17,
   [standing agents](specs/standing-agents.md#owned-workers)): a worker a
   thread spawns on another computer is owned there through the receipt's
   link, with no sidebar row in any window. Its prompts go to the spawner,
-  pulled by the spawner's computer, and reach the person there when the
-  spawner's computer has not said it holds them for two minutes. The
+  pulled by the spawner's computer, for as long as the link stands. The
   spawner's computer owes it the spawner's archive and delete, and that
   computer admits them through its own archive and delete. An archive or
   delete that computer refuses or cannot receive stands here, is named as

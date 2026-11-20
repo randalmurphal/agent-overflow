@@ -143,6 +143,9 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
 		RestUnreported: row.RestUnreported, LateReplyExpiredAt: state.LateReplyExpiredAt,
 	}
+	if row.Nudge {
+		out.Kind = threadAgentKindNudge
+	}
 	if row.Kind == store.ThreadRequestAsk {
 		// The copy that answers an ask is the worker: the row opens it while
 		// it runs. Once the ask settles the copy is deleted, and the row
