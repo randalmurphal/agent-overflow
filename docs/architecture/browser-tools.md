@@ -724,7 +724,8 @@ machine that runs the page's engine puts it: that user's Downloads folder (`down
   Each browser process writes into a directory of its own inside the
   jar's `downloading` directory (`headless_download_room.go`), removed
   with everything left in it once the process exits. A finished download
-  is moved out under its id, then into the workspace's `finished`
+  is placed beside it under its id, never replacing a file, then moved
+  into the workspace's `finished`
   directory under a sanitized unique name. Downloads are capped at
   512 MiB each and 2 GiB reserved per live workspace, whichever jars its
   pages are in. Downloads and asset bundles share a 4 GiB artifact quota

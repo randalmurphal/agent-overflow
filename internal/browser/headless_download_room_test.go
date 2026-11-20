@@ -145,3 +145,91 @@ func TestTheBrowsersStopRemovesADownloadNoEventNamed(t *testing.T) {
 		t.Errorf("%s is left in the download directory", entry.Name())
 	}
 }
+
+func wantBytes(t *testing.T, path, want string) {
+	t.Helper()
+	if got, err := os.ReadFile(path); err != nil || string(got) != want {
+		t.Fatalf("%s reads %q, %v; want %q", path, got, err, want)
+	}
+}
+
+// swapRoom moves the room's directory aside and puts another at its name,
+// holding file as someone else's; it answers where the room went.
+func swapRoom(t *testing.T, room *downloadRoom, file string) string {
+	t.Helper()
+	aside := room.path() + "-aside"
+	if err := os.Rename(room.path(), aside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(room.path(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(room.path(), file), []byte("not AO's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return aside
+}
+
+// A hand-over never replaces a file at the Manager's name for the download.
+func TestDownloadRoomHandOverNeverReplacesAFile(t *testing.T) {
+	room, dir := newTestRoom(t)
+	if err := os.WriteFile(filepath.Join(dir, "G"), []byte("not AO's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeRoomFile(t, filepath.Join(room.path(), "G"))
+	if _, err := room.handOver("G"); err == nil {
+		t.Fatal("handed over onto a file already there")
+	}
+	wantBytes(t, filepath.Join(dir, "G"), "not AO's")
+}
+
+// A hand-over places only the file the room holds: a directory put at the
+// room's name meanwhile hands nothing over, and the room's close removes
+// nothing of it.
+func TestDownloadRoomActsOnlyOnTheDirectoryItHolds(t *testing.T) {
+	room, dir := newTestRoom(t)
+	writeRoomFile(t, filepath.Join(room.path(), "G"))
+	aside := swapRoom(t, room, "G")
+	if _, err := room.handOver("G"); err == nil {
+		t.Fatal("handed over from a directory put at the room's name")
+	}
+	wantGone(t, filepath.Join(dir, "G"))
+	room.close()
+	wantBytes(t, filepath.Join(room.path(), "G"), "not AO's")
+	// The room itself was emptied through its handle; its directory, no
+	// longer at its name, stays.
+	entries, err := os.ReadDir(aside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Errorf("the room kept %s", entry.Name())
+	}
+}
+
+// withdraw removes a handed-over file only while its name still holds the
+// file handOver placed.
+func TestDownloadRoomWithdrawsOnlyWhatItPlaced(t *testing.T) {
+	room, dir := newTestRoom(t)
+	writeRoomFile(t, filepath.Join(room.path(), "taken"))
+	if _, err := room.handOver("taken"); err != nil {
+		t.Fatal(err)
+	}
+	room.withdraw("taken")
+	wantGone(t, filepath.Join(dir, "taken"))
+
+	writeRoomFile(t, filepath.Join(room.path(), "replaced"))
+	path, err := room.handOver("replaced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The placed file is moved on, so its identity is not reused.
+	if err := os.Rename(path, path+"-taken"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not AO's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	room.withdraw("replaced")
+	wantBytes(t, path, "not AO's")
+}

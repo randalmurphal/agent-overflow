@@ -38,9 +38,10 @@ type fakeEngine struct {
 	running bool
 	seq     atomic.Uint64
 	events  engineEvents
-	// downloadReleased is a test seam run between a held download's
-	// release and its terminal report (finishHeld, CancelDownload), where a
-	// native engine releases its record. Nil outside tests.
+	// downloadReleased is a test seam run between the taking of a
+	// download's end (fakeEnding) and its terminal report (finishHeld,
+	// reportCancel), where a native engine releases its record. Nil
+	// outside tests.
 	downloadReleased func(id downloadID)
 	// saving is the engine this fake stands in for: downloadsStaged, the
 	// zero value, writes into the profile's directory for the Manager to
@@ -156,13 +157,12 @@ func (p *fakeProfile) Dispose(context.Context) error {
 		pages = append(pages, page)
 	}
 	p.pages = nil
-	p.held = nil
 	p.disposed = true
 	p.mu.Unlock()
 	for _, page := range pages {
 		page.Close()
 	}
-	return nil
+	return p.disposeDownloads()
 }
 
 func (p *fakeProfile) forget(page *fakePage) {

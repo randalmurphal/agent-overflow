@@ -204,6 +204,8 @@ func (f *fakeDownloadFiles) handOver(id downloadID) (string, error) {
 	return "/downloads/" + string(id), nil
 }
 
+func (f *fakeDownloadFiles) withdraw(id downloadID) { f.note(id, "withdraw") }
+
 func (f *fakeDownloadFiles) empty(keep map[downloadID]bool) {
 	f.mu.Lock()
 	f.emptied++

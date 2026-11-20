@@ -235,7 +235,7 @@ func TestDownloadTrackerTellsTheCancelItSentFromAFailure(t *testing.T) {
 	}{
 		{"no cancel", func(*downloadTracker, downloadID) {}, downloadFailed},
 		{"a cancel sent", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid) }, downloadCanceled},
-		{"a cancel refused", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid)() }, downloadFailed},
+		{"a cancel refused", func(tr *downloadTracker, guid downloadID) { undo, _ := tr.canceling(guid); undo() }, downloadFailed},
 	} {
 		r := newTrackerRig(true)
 		r.begin("G1")
