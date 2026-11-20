@@ -80,11 +80,11 @@ type mountFocus struct {
 	intent *pageFocusIntent
 }
 
-// mountFocusLocked answers a mounted pane's focus state, nil for a mount the
-// thread does not hold. The caller holds m.mu.
-func (m *Manager) mountFocusLocked(threadID ThreadID, mount MountID) *mountFocus {
-	pane, ok := m.panes[mount]
-	if !ok || pane.threadID != threadID {
+// mountFocusLocked answers a mounted pane's focus state, nil for a mount
+// the thread lifetime tb does not hold (mountLocked). The caller holds m.mu.
+func (m *Manager) mountFocusLocked(tb *threadBrowser, mount MountID) *mountFocus {
+	pane, ok := m.mountLocked(tb, mount)
+	if !ok {
 		return nil
 	}
 	if pane.focus == nil {
@@ -112,7 +112,7 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 		return nil
 	}
 	m.mu.Lock()
-	focus := m.mountFocusLocked(access.ThreadID(), mount)
+	focus := m.mountFocusLocked(access.tb, mount)
 	if focus == nil {
 		m.mu.Unlock()
 		return errors.New("browser: pane mount not found")
@@ -144,7 +144,7 @@ func (m *Manager) WithdrawCompanionPageFocus(access Access, mount MountID, inten
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	focus := m.mountFocusLocked(access.ThreadID(), mount)
+	focus := m.mountFocusLocked(access.tb, mount)
 	if focus == nil {
 		return nil
 	}

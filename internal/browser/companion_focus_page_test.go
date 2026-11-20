@@ -528,7 +528,7 @@ func TestTheLaunchersFocusReportsReachTheIntentsPane(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	m.mu.Lock()
-	m.panes["mount1"] = paneMount{threadID: access.ThreadID(), owner: access.tb, seq: 1}
+	m.panes["mount1"] = paneMount{owner: access.tb, seq: 1}
 	m.mu.Unlock()
 	page := &managedPage{id: "page1", owner: access.tb, driver: &fakePage{handle: "handle1"}}
 	m.mu.Lock()

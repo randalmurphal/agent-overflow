@@ -85,8 +85,8 @@ var errSelectionPassed = errors.New("browser: the pane this tab action came from
 // the m.mu hold that acts and releases it when done.
 func (m *Manager) awaitTurn(ctx context.Context, access Access, sel Numbered) (*turnorder.Turn, error) {
 	m.mu.Lock()
-	mount, ok := m.panes[sel.mount]
-	if !ok || access.tb == nil || mount.owner != access.tb || access.tb.detached.Load() {
+	mount, ok := m.mountLocked(access.tb, sel.mount)
+	if !ok {
 		m.mu.Unlock()
 		return turnorder.PassedTurn(), nil
 	}
