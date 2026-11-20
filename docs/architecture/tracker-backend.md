@@ -103,7 +103,10 @@ this is its shape.
   ([measured](../references/tracker-api-measurements.md)). The capability
   `DetailMovesUpdated` says which, and covers only the issue's own
   changes: a linked issue's title and status and a workflow edit move
-  nothing.
+  nothing. With it, a provider reads nothing a detail holds of the issue
+  before the read that gives the card's update time has returned, so
+  content newer than that time costs one more read later and never
+  passes for current.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -325,9 +328,20 @@ a thread links it.
 
 A stored detail is current only when the tracker says so in the call that
 opens it (`IssueDetail`). Where the issue's update time moves with its
-detail, that is one card read of the issue, stored as the card resource,
-whose update time equals that of the stored detail's card; otherwise, or
-when the mirror holds no detail, the detail is read and stored. A failed
+detail, that is one cards read of the issue and of the issues it links,
+stored as the card resource, in which the issue's update time equals that
+of the stored detail's card. The links then show the key, title and status
+of those cards, and the detail is stored again when they changed; a linked
+issue the tracker did not return keeps what the detail holds. The detail is
+read and stored instead when the mirror holds none, when the mirror's card
+is already newer than the stored detail's, when the stored detail's read
+began more than 30 minutes ago (its moves and field metadata come from the
+workflow and screens, which move no update time), when it links more
+issues than one cards read takes, on a person's refresh
+(`RefreshIssueDetail`), and where the update time does not move with the
+detail. The opening is recorded only while the mirror still holds the
+document checked, the same row from the same read with no sweep since
+(`ConfirmMirrorDetail`); otherwise the detail is read again. A failed
 check leaves the stored detail as it is. `MirroredDetail` returns the
 stored detail and when it was read, with no tracker call, for a first
 paint before the check answers.

@@ -393,9 +393,10 @@ func TestIssueDetail(t *testing.T) {
 	if err != nil || m.p.count("Detail") != 1 || m.p.count("Cards") != 1 || len(ch.Details) != 0 || v.Description != "Body" {
 		t.Fatalf("an unchanged card: %d detail reads, %d card reads, changes %+v, %v", m.p.count("Detail"), m.p.count("Cards"), ch, err)
 	}
-	// The card moved: the detail is read again, an hour later, which marks
-	// it opened then, and the mirror's card is the one the check read.
-	later := m.now().Add(time.Hour)
+	// The card moved: the detail is read again, ten minutes later (within
+	// detailMaxAge), which marks it opened then, and the mirror's card is
+	// the one the check read.
+	later := m.now().Add(10 * time.Minute)
 	m.svc.now = func() time.Time { return later }
 	c.Updated, c.Title = c.Updated.Add(500*time.Millisecond), "Renamed"
 	v, ch, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)

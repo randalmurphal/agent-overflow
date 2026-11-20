@@ -95,8 +95,15 @@ type scenario struct {
 
 func newScenario(t *testing.T, withTempo bool) *scenario {
 	t.Helper()
+	return newObservedScenario(t, withTempo, nil)
+}
+
+// newObservedScenario is newScenario whose fake reports each request it
+// records to onRequest (trackerfake.Options.OnRequest).
+func newObservedScenario(t *testing.T, withTempo bool, onRequest func(trackerfake.Request)) *scenario {
+	t.Helper()
 	clock := &scenarioClock{now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
-	e := trackerfake.New(trackerfake.Options{Now: clock.Now})
+	e := trackerfake.New(trackerfake.Options{Now: clock.Now, OnRequest: onRequest})
 	t.Cleanup(e.Close)
 	site := scenarioFixture(clock.Now())
 	if !withTempo {
@@ -481,5 +488,78 @@ func TestFakeScenarioJiraWorklogs(t *testing.T) {
 	allApplied(t, "worklog delete", tt.DeleteWorklog(s.ctx, tracker.WorklogDelete{From: wls[0]}))
 	if wls := scenarioMust[[]tracker.Worklog](t)(tt.Worklogs(s.ctx, q)); len(wls) != 0 {
 		t.Fatalf("deleted worklogs %+v", wls)
+	}
+}
+
+// TestDetailReadsNothingBeforeItsVersion proves the comments a detail
+// holds are read after the issue read that gives its card's update time
+// (tracker.Capabilities.DetailMovesUpdated): a comment added while the
+// issue's read is in flight, which moves that time, shows in the detail
+// whose card has the moved time. The issue's read is held until the
+// comment lands; a comments read made meanwhile, as when the two ran
+// together, is answered before it, and the detail would pair the new
+// update time with the old comments, which a later check of the card
+// would then certify.
+func TestDetailReadsNothingBeforeItsVersion(t *testing.T) {
+	const issueRoute, commentsRoute = "GET rest/api/3/issue/{issue}", "GET rest/api/3/issue/{issue}/comment"
+	seen := make(chan trackerfake.Request, 1024)
+	s := newObservedScenario(t, false, func(r trackerfake.Request) {
+		select {
+		case seen <- r:
+		default:
+			t.Error("the requests outran the test")
+		}
+	})
+	origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: origin, Route: issueRoute, Kind: trackerfake.FaultHold, Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	type read struct {
+		d   tracker.Detail
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		d, err := s.p.Detail(s.ctx, "10102")
+		done <- read{d, err}
+	}()
+	for r := range seen {
+		if r.Route == issueRoute && r.Held {
+			break
+		}
+	}
+	// A comments read sent with the issue's arrives at once; the grace
+	// bounds the wait for one that is never sent.
+	early := false
+	grace := time.After(300 * time.Millisecond)
+wait:
+	for {
+		select {
+		case r := <-seen:
+			if r.Route == commentsRoute && r.Status != 0 {
+				early = true
+				break wait
+			}
+		case <-grace:
+			break wait
+		}
+	}
+	s.clock.advance(time.Minute)
+	allApplied(t, "comment", s.p.AddComment(s.ctx, tracker.CommentInput{Issue: "10102", Markdown: "Added while read"}))
+	if err := s.e.Release(origin, issueRoute, false); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if early {
+		t.Error("the comments were read while the issue's read was in flight")
+	}
+	if !got.d.Card.Updated.Equal(s.clock.Now()) {
+		t.Fatalf("the card's update time is %v, not the comment's %v", got.d.Card.Updated, s.clock.Now())
+	}
+	if !slices.ContainsFunc(got.d.Comments.Comments, func(c tracker.Comment) bool { return strings.TrimSpace(c.Body) == "Added while read" }) {
+		t.Errorf("the card has the update time the comment moved it to, and the comments lack it: %+v", got.d.Comments.Comments)
 	}
 }

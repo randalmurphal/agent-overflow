@@ -519,6 +519,18 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"TouchMirrorDetail": func(root int64) error { _, err := s.TouchMirrorDetail(root, "10001", 9); return err },
+		"ConfirmMirrorDetail": func(root int64) error {
+			d, ok, err := s.GetMirrorDetail(root, "10001")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				// A gone root holds none: the detail as a live root read it.
+				d = MirrorDetail{IssueID: "10001", ReadAt: 7, row: 1, sweep: 1}
+			}
+			_, err = s.ConfirmMirrorDetail(root, d, 9, []byte(`{"v":1}`))
+			return err
+		},
 		"StoreMirrorDetail": func(root int64) error {
 			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 9, []byte(`{}`))
 			return err

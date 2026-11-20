@@ -197,32 +197,36 @@ func TestLookupCost(t *testing.T) {
 	}
 }
 
-// TestDetailFailures proves a failure of any of Detail's reads, which run
-// together, fails it and cancels the others, and a cancelled caller gets
-// its cancellation.
+// TestDetailFailures proves a failure of any of Detail's reads fails it
+// and cancels the one running with it (the field catalog's runs with the
+// issue's, then with the comments'), and a cancelled caller gets its
+// cancellation.
 func TestDetailFailures(t *testing.T) {
-	for _, failing := range []string{"/rest/api/3/issue/10001/comment", fieldPath} {
-		t.Run(failing, func(t *testing.T) {
+	for _, tc := range []struct{ failing, held string }{
+		{"/rest/api/3/issue/10001/comment", fieldPath},
+		{fieldPath, issuePath},
+	} {
+		t.Run(tc.failing, func(t *testing.T) {
 			f, p := detailSite(t, 3)
-			// The issue read answers only once its request ends, so Detail
+			// The held read answers only once its request ends, so Detail
 			// returns before the deadline only if the failure cancelled it.
 			done := make(chan struct{})
 			t.Cleanup(func() { close(done) })
-			detail := func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			held := func(w http.ResponseWriter, r *http.Request, _ []byte) {
 				select {
 				case <-r.Context().Done():
 				case <-done:
 				}
 			}
-			f.On("GET", issuePath, detail)
-			f.On("GET", failing, jiratest.Reply(403, `{"errorMessages":["no"]}`))
+			f.On("GET", tc.held, held)
+			f.On("GET", tc.failing, jiratest.Reply(403, `{"errorMessages":["no"]}`))
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			if _, err := p.Detail(ctx, "10001"); !isStatus(err, http.StatusForbidden) {
 				t.Errorf("got %v", err)
 			}
 			if ctx.Err() != nil {
-				t.Error("the issue read ran until the deadline: the failure did not cancel it")
+				t.Errorf("the read of %s ran until the deadline: the failure did not cancel it", tc.held)
 			}
 		})
 	}

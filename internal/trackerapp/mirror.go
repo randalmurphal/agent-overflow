@@ -44,7 +44,7 @@ type MirrorStore interface {
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory) ([]store.MirrorHistoryResult, error)
 	ListMirrorHistoryDue(rootID int64, after string) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt, readAt int64, data []byte) (store.MirrorDetailWrite, error)
-	TouchMirrorDetail(rootID int64, issueID string, openedAt int64) (store.MirrorDetailWrite, error)
+	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64, replace []byte) (store.MirrorDetailWrite, error)
 
 	GetMirrorDetail(rootID int64, issueID string) (store.MirrorDetail, bool, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)

@@ -128,12 +128,15 @@ func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit fu
 	})
 }
 
-// detailCosts measures the opens of one issue's detail, requests and store
-// statements: read with none stored, verified with nothing changed (a card
-// check where the tracker's update time moves with its detail, a detail
-// read otherwise), the mirror's copy, and opened again after a comment,
-// which must show.
-func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, one tracker.IssueID, pins map[string][2]int) {
+// detailCosts measures the opens of one issue's detail on scope's board,
+// requests and store statements: read with none stored, verified with
+// nothing changed (a card check where the tracker's update time moves with
+// its detail, a detail read otherwise), the mirror's copy, verified with
+// nothing changed once the issue links three others (created through
+// project with linkType), opened again after a comment, which must show,
+// after sync stored a newer card, past the age bound, and refreshed by a
+// person.
+func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, scope Scope, one tracker.IssueID, project tracker.ProjectID, issueType tracker.IssueTypeID, linkType tracker.LinkTypeID, pins map[string][2]int) {
 	t.Helper()
 	tc := func(name string, run func(t *testing.T)) tickCost {
 		p, ok := pins[name]
@@ -159,13 +162,52 @@ func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, one tracker.Is
 			}
 		}),
 	})
+	// Three links move the issue's update time: an open reads the detail
+	// with them before the measured one.
+	p := s.provider(conn.ID)
 	s.clock.advance(time.Minute)
-	applied(t, "comment", s.provider(conn.ID).AddComment(t.Context(), tracker.CommentInput{Issue: one, Markdown: "A new comment"}))
+	for i := range 3 {
+		created, ok := applied(t, "create", p.Create(t.Context(), tracker.CreateInput{Project: project, Type: issueType, Title: fmt.Sprint("Linked task ", i)})).Created()
+		if !ok {
+			t.Fatal("the create named no issue")
+		}
+		applied(t, "link", p.Link(t.Context(), tracker.LinkInput{Type: linkType, Outward: one, Inward: created}))
+	}
+	open(t)
+	s.measureTicks(t, []tickCost{
+		tc("detail, verified unchanged with 3 links", func(t *testing.T) {
+			if v := open(t); len(v.Links) != 3 {
+				t.Fatalf("%d links", len(v.Links))
+			}
+		}),
+	})
+	s.clock.advance(time.Minute)
+	applied(t, "comment", p.AddComment(t.Context(), tracker.CommentInput{Issue: one, Markdown: "A new comment"}))
 	s.measureTicks(t, []tickCost{
 		tc("detail, after a comment", func(t *testing.T) {
 			v := open(t)
 			if !slices.ContainsFunc(v.Comments, func(c CommentView) bool { return strings.TrimSpace(c.Body) == "A new comment" }) {
 				t.Fatalf("the comment does not show: %+v", v.Comments)
+			}
+		}),
+	})
+	// Sync stores the card an edit moved before the open.
+	s.clock.advance(time.Minute)
+	applied(t, "edit", p.Edit(t.Context(), tracker.EditInput{Issue: one, Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Renamed before the open")}}}))
+	tickOK(t, s.svc, scope, BoardDue{Delta: true})
+	s.measureTicks(t, []tickCost{
+		tc("detail, the mirror already newer", func(t *testing.T) {
+			if v := open(t); v.Card.Title != "Renamed before the open" {
+				t.Fatalf("the detail shows %q", v.Card.Title)
+			}
+		}),
+	})
+	s.svc.now = func() time.Time { return time.Now().Add(detailMaxAge + time.Minute) }
+	s.measureTicks(t, []tickCost{
+		tc("detail, older than the age bound", func(t *testing.T) { open(t) }),
+		tc("detail, forced refresh", func(t *testing.T) {
+			if _, _, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, one, Interactive); err != nil {
+				t.Fatal(err)
 			}
 		}),
 	})
@@ -188,11 +230,15 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 		"delta none": 1, "reconcile held": 1, "delta one": 1, "history one": 2,
 	})
 	// Jira's update time moves with its detail: a check is one card read
-	// (an issue bulk fetch), and a moved card adds the detail's two reads
-	// (the issue, its comments).
-	s.detailCosts(t, conn, "10102", map[string][2]int{
+	// (an issue bulk fetch, the linked issues' cards in it), and a moved
+	// card adds the detail's two reads (the issue, then its comments). A
+	// mirror card already newer, the age bound and a refresh read the
+	// detail with no check.
+	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
 		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 6},
-		"detail, the mirror's copy": {0, 5}, "detail, after a comment": {3, 6},
+		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 6},
+		"detail, after a comment": {3, 6}, "detail, the mirror already newer": {2, 5},
+		"detail, older than the age bound": {2, 5}, "detail, forced refresh": {2, 4},
 	})
 }
 
@@ -214,9 +260,11 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 	})
 	// Linear's update time does not move with a comment: every open reads
 	// the detail, in one request, and reads no stored detail first.
-	s.detailCosts(t, conn, tracker.IssueID(lid(61)), map[string][2]int{
+	s.detailCosts(t, conn, scope, tracker.IssueID(lid(61)), tracker.ProjectID(lid(10)), "", "related", map[string][2]int{
 		"detail, none stored": {1, 4}, "detail, verified unchanged": {1, 4},
-		"detail, the mirror's copy": {0, 5}, "detail, after a comment": {1, 4},
+		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 4},
+		"detail, after a comment": {1, 4}, "detail, the mirror already newer": {1, 4},
+		"detail, older than the age bound": {1, 4}, "detail, forced refresh": {1, 4},
 	})
 }
 

@@ -26,9 +26,12 @@ var detailSkipped = []string{"description", "comment", "attachment", "issuelinks
 // Detail reads one issue whole: every field with the edit screen's
 // metadata, its links and attachments, the whole changelog and the moves
 // its workflow allows now in one read (jira.IssueDetail, which reads the
-// older changelog when Jira embeds only its newest entries), and the
-// newest page of comments in another, run together with the field
-// catalog's read; the first to fail ends the others and is the error.
+// older changelog when Jira embeds only its newest entries), then the
+// newest page of comments in another, while the field catalog is read;
+// the first to fail ends the others and is the error. The comments are
+// read only once the issue's read, which gives the card's update time,
+// has returned, so nothing the detail holds is older than that time
+// (tracker.Capabilities.DetailMovesUpdated).
 func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.Detail, error) {
 	if err := checkIssue(issue); err != nil {
 		return tracker.Detail{}, err
@@ -47,9 +50,6 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 		if full, err = p.jira.IssueDetail(gctx, string(issue)); err != nil {
 			return fmt.Errorf("jiraprovider: detail of %s: %w", issue, err)
 		}
-		return nil
-	})
-	g.Go(func() (err error) {
 		comments, err = p.commentPage(gctx, issue, "")
 		return err
 	})

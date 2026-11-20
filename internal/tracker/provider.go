@@ -26,14 +26,19 @@ type Capabilities struct {
 	Attachments bool
 	// DetailMovesUpdated: every change to the issue that its Detail shows
 	// (a field, the description, a comment, a link, an attachment, a
-	// status change) moves the issue's update time, so a stored Detail
-	// whose card has the update time of the issue's card read now is
-	// current. It does not cover what belongs to another issue or to the
-	// workflow: a linked issue's title and status, and the moves a
-	// workflow edit changes. Jira, measured: a comment, a link, an
-	// attachment and a worklog each move `updated`. Linear has none: a
-	// comment leaves `updatedAt` as it was. See
-	// docs/references/tracker-api-measurements.md.
+	// status change) moves the issue's update time, and Detail reads
+	// nothing it holds of the issue before the read that gives
+	// Card.Updated has returned, so a stored Detail whose card has the
+	// update time of the issue's card read now holds every such change.
+	// It does not cover what belongs to another issue or to the
+	// configuration, which the caller keeps current another way: a linked
+	// issue's key, title and status (trackerapp reads the linked issues'
+	// cards with the issue's), and the moves and field metadata a workflow
+	// or screen edit changes (trackerapp reads a stored Detail again once
+	// it is older than the board structure's cadence). Jira,
+	// measured: a comment, a link, an attachment and a worklog each move
+	// `updated`. Linear has none: a comment leaves `updatedAt` as it was.
+	// See docs/references/tracker-api-measurements.md.
 	DetailMovesUpdated bool
 }
 

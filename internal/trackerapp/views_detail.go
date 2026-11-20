@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
@@ -107,21 +109,46 @@ type DetailView struct {
 	Moves        []MoveView       `json:"moves"`
 }
 
+// detailMaxAge is how long after its read began a stored detail is checked
+// rather than read: an older one is read in full. Its moves and the
+// metadata of its fields come from the workflow and the screens, which
+// change without moving the issue's update time; this is the board
+// structure's cadence, at which the mirror reads that configuration again.
+const detailMaxAge = 30 * time.Minute
+
 // IssueDetail is issue's detail on connection id as the tracker says it is
 // in this call. On a tracker whose update time moves with everything a
 // detail shows (tracker.Capabilities.DetailMovesUpdated), a detail the
-// mirror holds is checked with the issue's card (the cards resource read,
-// which refreshes the mirror's card too): it is returned, marked opened
-// now, when the card's update time is that of the stored detail's card,
-// and the detail is read otherwise. On any other tracker, or with no
-// detail stored, the detail is read (the detail resource read): stored
-// when the mirror keeps the issue, returned either way. Changes are what
-// the call stored. A tracker failure leaves the stored detail as it is
+// mirror holds is checked with one cards read of the issue and of the
+// issues it links (the cards resource read, which refreshes the mirror's
+// cards too): when the issue's card has the update time of the stored
+// detail's card, the stored detail is returned, marked opened now, its
+// linked issues' keys, titles and statuses from the cards read (stored
+// again when they changed; a linked issue the tracker did not return keeps
+// what the detail holds). The detail is read instead (the detail resource
+// read) when the card's update time differs, when the mirror's card is
+// already newer than the detail's, when the detail's read began more than
+// detailMaxAge ago, when it links more issues than one cards read takes,
+// and when the mirror no longer holds the document checked. On any other
+// tracker, or with no detail stored, the detail is read: stored when the
+// mirror keeps the issue, returned either way. Changes are what the call
+// stored. A tracker failure leaves the stored detail as it is
 // (MirroredDetail reads it), is settled as the connection's problem and is
 // returned, the transport's typed error reachable through errors.As. A
 // connection turned off or removed fails wrapping ErrDisabled or
 // ErrNotFound.
 func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
+	return s.issueDetail(ctx, id, issue, u, false)
+}
+
+// RefreshIssueDetail is IssueDetail for a person's refresh: the detail is
+// read in full whatever the mirror holds.
+func (s *Service) RefreshIssueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
+	return s.issueDetail(ctx, id, issue, u, true)
+}
+
+// issueDetail is IssueDetail, the detail read in full when full is set.
+func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency, full bool) (DetailView, Changes, error) {
 	if issue == "" {
 		return DetailView{}, Changes{}, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
 	}
@@ -140,7 +167,7 @@ func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.Issu
 		readErr = r.readState()
 	}
 	if readErr == nil {
-		d, ch, readErr = r.verifiedDetail(issue)
+		d, ch, readErr = r.verifiedDetail(issue, full)
 	}
 	var out Outcome
 	callErr, stop, err := r.failed(&out, readErr)
@@ -161,48 +188,101 @@ func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.Issu
 }
 
 // verifiedDetail is issue's detail as the tracker says it is now, and what
-// reading it stored (IssueDetail).
-func (r *run) verifiedDetail(issue tracker.IssueID) (tracker.Detail, Changes, error) {
+// reading it stored (IssueDetail); full reads it whatever the mirror
+// holds.
+func (r *run) verifiedDetail(issue tracker.IssueID, full bool) (tracker.Detail, Changes, error) {
+	var out Changes
 	read := func() (tracker.Detail, Changes, error) {
 		var d tracker.Detail
-		var ch Changes
 		err := r.againIfSwept(func() error {
+			var ch Changes
 			var err error
 			d, ch, err = r.detail(issue)
+			out.add(ch)
 			return err
 		})
-		return d, ch, err
+		return d, out, err
 	}
-	if !r.p.Capabilities().DetailMovesUpdated {
+	if full || !r.p.Capabilities().DetailMovesUpdated {
 		return read()
 	}
-	held, _, ok, err := r.s.storedDetail(r.root, issue)
+	m, held, ok, err := r.s.storedDetail(r.root, issue)
 	if err != nil {
-		return tracker.Detail{}, Changes{}, err
+		return tracker.Detail{}, out, err
 	}
 	if !ok {
 		return read()
 	}
-	c, found, ch, err := r.card(issue)
+	now := r.s.now()
+	checked := checkedIssues(held)
+	if now.Sub(timeOf(m.ReadAt)) > detailMaxAge || m.CardUpdatedAt > millis(held.Card.Updated) || len(checked) > readBatch {
+		return read()
+	}
+	cards, ch, err := r.cardsNow(checked)
+	out.add(ch)
 	if err != nil {
-		return tracker.Detail{}, ch, err
+		return tracker.Detail{}, out, err
 	}
-	if !found || millis(c.Updated) != millis(held.Card.Updated) {
-		d, dch, err := read()
-		ch.add(dch)
-		return d, ch, err
+	i := slices.IndexFunc(cards, func(c tracker.Card) bool { return c.ID == issue })
+	if i < 0 || millis(cards[i].Updated) != millis(held.Card.Updated) {
+		return read()
 	}
-	if _, err := r.s.store.TouchMirrorDetail(r.root, string(issue), millis(r.s.now())); err != nil {
-		return tracker.Detail{}, ch, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
+	var replace []byte
+	if refreshLinks(&held, cards) {
+		if replace, err = mirrorDetail(held); err != nil {
+			return tracker.Detail{}, out, err
+		}
 	}
-	return held, ch, nil
+	confirmed, err := r.s.store.ConfirmMirrorDetail(r.root, m, millis(now), replace)
+	switch {
+	case err != nil:
+		return tracker.Detail{}, out, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
+	case !confirmed.Stored:
+		return read()
+	case confirmed.Changed:
+		out.add(Changes{Details: []tracker.IssueID{issue}})
+	}
+	return held, out, nil
+}
+
+// checkedIssues are the issues a check of d reads the cards of: d's own
+// first, then each issue it links once.
+func checkedIssues(d tracker.Detail) []tracker.IssueID {
+	out := make([]tracker.IssueID, 1, 1+len(d.Links))
+	out[0] = d.Card.ID
+	for _, l := range d.Links {
+		if l.Issue.ID != "" && !slices.Contains(out, l.Issue.ID) {
+			out = append(out, l.Issue.ID)
+		}
+	}
+	return out
+}
+
+// refreshLinks sets the key, title and status of the issues d links from
+// cards read since d; one cards lacks keeps what d holds. It reports
+// whether any changed.
+func refreshLinks(d *tracker.Detail, cards []tracker.Card) bool {
+	changed := false
+	for i := range d.Links {
+		ref := &d.Links[i].Issue
+		j := slices.IndexFunc(cards, func(c tracker.Card) bool { return c.ID == ref.ID })
+		if j < 0 {
+			continue
+		}
+		if c := cards[j]; ref.Key != c.Key || ref.Title != c.Title || ref.Status != c.Status {
+			ref.Key, ref.Title, ref.Status = c.Key, c.Title, c.Status
+			changed = true
+		}
+	}
+	return changed
 }
 
 // MirroredDetail is issue's detail on connection id as the mirror holds
 // it, for a first paint before IssueDetail answers, with when its read
 // began (Unix milliseconds). It builds no client and makes no tracker
 // call, and marks the detail opened now. It fails wrapping ErrNotMirrored
-// when the mirror holds no detail of the issue that this version reads.
+// when the mirror holds no detail of the issue that this version reads,
+// or no longer holds the one it read when it marks it opened.
 func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, int64, error) {
 	if issue == "" {
 		return DetailView{}, 0, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
@@ -212,32 +292,36 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 		return DetailView{}, 0, err
 	}
 	defer s.leave()
-	d, readAt, ok, err := s.storedDetail(root, issue)
+	m, d, ok, err := s.storedDetail(root, issue)
 	switch {
 	case err != nil:
 		return DetailView{}, 0, err
 	case !ok:
 		return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s", ErrNotMirrored, issue)
 	}
-	if _, err := s.store.TouchMirrorDetail(root, string(issue), millis(s.now())); err != nil && !errors.Is(err, store.ErrTrackerCacheGone) {
+	confirmed, err := s.store.ConfirmMirrorDetail(root, m, millis(s.now()), nil)
+	switch {
+	case errors.Is(err, store.ErrTrackerCacheGone) || err == nil && !confirmed.Stored:
+		return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s went while it was read", ErrNotMirrored, issue)
+	case err != nil:
 		return DetailView{}, 0, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
 	}
 	v, err := s.detailView(root, d)
-	return v, readAt, err
+	return v, m.ReadAt, err
 }
 
-// storedDetail is issue's detail as the mirror holds it, with when its read
-// began; ok is false when the mirror holds none this version reads.
-func (s *Service) storedDetail(root int64, issue tracker.IssueID) (tracker.Detail, int64, bool, error) {
+// storedDetail is issue's detail as the mirror holds it, stored and
+// decoded; ok is false when the mirror holds none this version reads.
+func (s *Service) storedDetail(root int64, issue tracker.IssueID) (store.MirrorDetail, tracker.Detail, bool, error) {
 	m, ok, err := s.store.GetMirrorDetail(root, string(issue))
 	if err != nil {
-		return tracker.Detail{}, 0, false, fmt.Errorf("trackerapp: read the detail of %s from the mirror: %w", issue, err)
+		return store.MirrorDetail{}, tracker.Detail{}, false, fmt.Errorf("trackerapp: read the detail of %s from the mirror: %w", issue, err)
 	}
 	if !ok {
-		return tracker.Detail{}, 0, false, nil
+		return store.MirrorDetail{}, tracker.Detail{}, false, nil
 	}
 	d, ok := detailOf(m)
-	return d, m.ReadAt, ok, nil
+	return m, d, ok, nil
 }
 
 // detailView is d as a view, its names from its own catalog and, for the

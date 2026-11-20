@@ -114,7 +114,9 @@ func TestDetailReadsAgainAfterASweep(t *testing.T) {
 }
 
 // A detail check whose card write a sweep overtook reads the card again
-// once, and serves the stored detail of the issue it still keeps.
+// once; the stored detail, read from the mirror before the sweep, is not
+// the document of the issue's lifetime now (store.ConfirmMirrorDetail),
+// so the detail is read again and stored.
 func TestADetailCheckReadsItsCardAgainAfterASweep(t *testing.T) {
 	t.Parallel()
 	m, _ := sweepFixture(t)
@@ -129,8 +131,37 @@ func TestADetailCheckReadsItsCardAgainAfterASweep(t *testing.T) {
 		}
 		return cardsOf(asked)
 	})
+	before, _, _ := m.storedDetail(t, "10005")
 	v, _ := m.openDetail(t, "10005")
-	if reads != 2 || v.Card.ID != "10005" || m.p.count("Detail") != 1 {
+	if reads != 2 || v.Card.ID != "10005" || m.p.count("Detail") != 2 {
 		t.Fatalf("detail %+v after %d card reads, %d detail reads", v.Card, reads, m.p.count("Detail"))
+	}
+	if after, _, ok := m.storedDetail(t, "10005"); !ok || after.ReadAt < before.ReadAt || after.OpenedAt < after.ReadAt {
+		t.Fatalf("the detail read again: stored %v, read %d (was %d), opened %d", ok, after.ReadAt, before.ReadAt, after.OpenedAt)
+	}
+}
+
+// A detail whose issue is swept and linked again while its card is
+// checked is gone with the issue's earlier lifetime: the open does not
+// mark a detail with no document opened, it reads the detail again and
+// stores it.
+func TestADetailSweptAndLinkedAgainDuringItsCheckIsReadAgain(t *testing.T) {
+	t.Parallel()
+	m, _ := sweepFixture(t)
+	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
+		return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
+	}
+	m.openDetail(t, "10005")
+	reads := 0
+	m.p.updatedMovesWithDetail(func(asked []tracker.IssueID) (tracker.Cards, error) {
+		if reads++; reads == 1 {
+			m.sweep(t, "thread-a")
+			m.linkThread("thread-d", "10005")
+		}
+		return cardsOf(asked)
+	})
+	v, ch := m.openDetail(t, "10005")
+	if _, _, ok := m.storedDetail(t, "10005"); !ok || v.Card.ID != "10005" || m.p.count("Detail") != 2 || !slices.Equal(ch.Details, ids("10005")) {
+		t.Fatalf("after the check: stored %v, %d detail reads, changes %+v", ok, m.p.count("Detail"), ch)
 	}
 }

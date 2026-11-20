@@ -115,9 +115,9 @@ func (c *countingStore) StoreMirrorDetail(root, sweep int64, issue string, opene
 	return c.Store.StoreMirrorDetail(root, sweep, issue, openedAt, readAt, data)
 }
 
-func (c *countingStore) TouchMirrorDetail(root int64, issue string, openedAt int64) (store.MirrorDetailWrite, error) {
-	c.count("TouchMirrorDetail")
-	return c.Store.TouchMirrorDetail(root, issue, openedAt)
+func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, openedAt int64, replace []byte) (store.MirrorDetailWrite, error) {
+	c.count("ConfirmMirrorDetail")
+	return c.Store.ConfirmMirrorDetail(root, d, openedAt, replace)
 }
 
 func (c *countingStore) GetMirrorDetail(root int64, issue string) (store.MirrorDetail, bool, error) {

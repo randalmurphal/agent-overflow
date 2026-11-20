@@ -85,28 +85,20 @@ func (r *run) cards(issues []tracker.IssueID) (Changes, error) {
 	return out, nil
 }
 
-// card is the cards read of one issue: its card as the tracker returned it,
-// stored when the mirror keeps the issue. ok is false when the tracker did
-// not return it.
-func (r *run) card(issue tracker.IssueID) (tracker.Card, bool, Changes, error) {
+// cardsNow is the cards read of one batch of issues (at most readBatch):
+// the cards the tracker returned, those of the issues the mirror keeps
+// stored.
+func (r *run) cardsNow(batch []tracker.IssueID) ([]tracker.Card, Changes, error) {
 	var read []tracker.Card
 	var out Changes
 	err := r.againIfSwept(func() error {
 		var ch Changes
 		var err error
-		read, ch, err = r.cardsOf([]tracker.IssueID{issue})
+		read, ch, err = r.cardsOf(batch)
 		out.add(ch)
 		return err
 	})
-	if err != nil {
-		return tracker.Card{}, false, out, err
-	}
-	for _, c := range read {
-		if c.ID == issue {
-			return c, true, out, nil
-		}
-	}
-	return tracker.Card{}, false, out, nil
+	return read, out, err
 }
 
 // cardsOf reads and stores the cards of one batch of issues, and returns

@@ -301,7 +301,8 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 	mustDetailWrite(t, "earlier document", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":1}`))
 	mustDetailWrite(t, "identical earlier document", got, err, MirrorDetailWrite{Stored: true})
-	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 180, Data: []byte(`{"v":1}`)}) {
+	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 180,
+		Data: []byte(`{"v":1}`), CardUpdatedAt: 5, row: d.row, sweep: currentSweep(s, root)}) || d.row <= 0 {
 		t.Fatalf("detail = %+v, %v, %v", d, ok, err)
 	}
 	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 190, []byte(`{"v":2}`))
@@ -356,6 +357,142 @@ func TestMirrorDetailKeepsTheMostRecentlyOpened(t *testing.T) {
 	mustDetailWrite(t, "a new detail older than all", got, err, MirrorDetailWrite{Dropped: []string{"10201"}})
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details`, fmt.Sprint(mirrorDetailCap))
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id IN ('10001', '10201')`, "0")
+}
+
+// A confirmation marks a detail opened, and stores a replacement with its
+// read time, only while the mirror holds the document read: not once a
+// later read replaced it, the cap dropped it, a sweep ran or its issue
+// is no longer kept. Refused, it writes nothing, so it neither adds a
+// detail with no document nor drops another.
+func TestConfirmMirrorDetail(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorDetailCap+2, "a"))
+	state := func(issue string) string {
+		t.Helper()
+		var at string
+		if err := s.db.QueryRow(`SELECT opened_at || ' ' || read_at || ' ' || coalesce(data ->> 'v', '-') FROM tracker_cache_issue_details
+			WHERE root_id = ? AND issue_id = ?`, root, issue).Scan(&at); err != nil {
+			return err.Error()
+		}
+		return at
+	}
+	read := func(issue string) MirrorDetail {
+		t.Helper()
+		d, ok, err := s.GetMirrorDetail(root, issue)
+		if err != nil || !ok {
+			t.Fatalf("detail of %s: %v, %v", issue, ok, err)
+		}
+		return d
+	}
+	confirm := func(what string, d MirrorDetail, openedAt int64, replace string, want MirrorDetailWrite) {
+		t.Helper()
+		var doc []byte
+		if replace != "" {
+			doc = []byte(replace)
+		}
+		got, err := s.ConfirmMirrorDetail(root, d, openedAt, doc)
+		mustDetailWrite(t, what, got, err, want)
+	}
+	got, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10000", 100, 100, []byte(`{"v":1}`))
+	mustDetailWrite(t, "first read", got, err, MirrorDetailWrite{Stored: true, Changed: true})
+	d := read("10000")
+	if d.CardUpdatedAt != 5 {
+		t.Fatalf("the card's update time read with the detail: %d", d.CardUpdatedAt)
+	}
+	confirm("an opening", d, 150, "", MirrorDetailWrite{Stored: true})
+	confirm("an earlier opening", d, 120, "", MirrorDetailWrite{Stored: true})
+	if at := state("10000"); at != "150 100 1" {
+		t.Fatalf("after the openings: %s", at)
+	}
+	confirm("a replacement", d, 160, `{"v":2}`, MirrorDetailWrite{Stored: true, Changed: true})
+	confirm("the same replacement", d, 160, `{"v":2}`, MirrorDetailWrite{Stored: true})
+	if at := state("10000"); at != "160 100 2" {
+		t.Fatalf("after a replacement: %s", at)
+	}
+
+	// A later read replaced the document: refused, nothing written.
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10000", 0, 200, []byte(`{"v":3}`))
+	mustDetailWrite(t, "a later read", got, err, MirrorDetailWrite{Stored: true, Changed: true})
+	confirm("a replaced document", d, 300, `{"v":2}`, MirrorDetailWrite{})
+	if at := state("10000"); at != "160 200 3" {
+		t.Fatalf("after a refused confirmation: %s", at)
+	}
+
+	// The cap dropped the detail: refused, and no row comes back to drop
+	// another.
+	d = read("10000")
+	for i := range mirrorDetailCap {
+		if _, err := s.TouchMirrorDetail(root, fmt.Sprint(10001+i), int64(1000+i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
+	confirm("a dropped detail", d, 5000, "", MirrorDetailWrite{})
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details`, fmt.Sprint(mirrorDetailCap))
+
+	// An issue no longer kept: refused.
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 6000, 6000, []byte(`{"v":1}`))
+	mustDetailWrite(t, "a read of another issue", got, err, MirrorDetailWrite{Stored: true, Changed: true})
+	d = read("10001")
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: 2})); err != nil {
+		t.Fatal(err)
+	}
+	confirm("an unkept issue", d, 7000, "", MirrorDetailWrite{})
+	if at := state("10001"); at != "6000 6000 1" {
+		t.Fatalf("after an unkept issue's confirmation: %s", at)
+	}
+
+	for name, d := range map[string]MirrorDetail{"no detail read": {}, "a detail built by hand": {IssueID: "10002", ReadAt: 1}} {
+		if _, err := s.ConfirmMirrorDetail(root, d, 1, nil); !errors.Is(err, ErrInvalidTrackerCache) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := s.ConfirmMirrorDetail(root, d, 0, nil); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Errorf("no opening time: %v", err)
+	}
+}
+
+// A detail swept and stored again in its issue's next lifetime, in the
+// same row with a read of the same time, is not the document read before
+// the sweep: its confirmation is refused.
+func TestConfirmMirrorDetailRefusesADocumentFromBeforeASweep(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	keep := func(thread string) {
+		t.Helper()
+		linkIssue(t, s, thread, "10001")
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 100, 100, []byte(`{"v":1}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep("linked")
+	before, ok, err := s.GetMirrorDetail(root, "10001")
+	if err != nil || !ok {
+		t.Fatalf("detail: %v, %v", ok, err)
+	}
+	if _, err := s.ClearThreadTicket("linked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishMirrorCleanup(nil); err != nil {
+		t.Fatal(err)
+	}
+	keep("relinked")
+	after, ok, err := s.GetMirrorDetail(root, "10001")
+	if err != nil || !ok || after.row != before.row || after.ReadAt != before.ReadAt || after.sweep == before.sweep {
+		t.Fatalf("the detail stored again: row %d (was %d), read %d, sweep %d (was %d), %v, %v",
+			after.row, before.row, after.ReadAt, after.sweep, before.sweep, ok, err)
+	}
+	got, err := s.ConfirmMirrorDetail(root, before, 200, []byte(`{"v":0}`))
+	mustDetailWrite(t, "a document from before the sweep", got, err, MirrorDetailWrite{})
+	assertRows(t, s.db, `SELECT opened_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE issue_id = '10001'`, "100 1")
+	got, err = s.ConfirmMirrorDetail(root, after, 200, nil)
+	mustDetailWrite(t, "the document after it", got, err, MirrorDetailWrite{Stored: true})
 }
 
 // A batch writes every admitted history in one transaction and reports
