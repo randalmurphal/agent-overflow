@@ -697,32 +697,26 @@ func webkitLoadURI(view webkitView, uri string) error {
 	})
 }
 
-// The history action codes the C side takes.
-const (
-	webkitHistoryBack    = 0
-	webkitHistoryForward = 1
-	webkitHistoryReload  = 2
-	webkitHistoryStop    = 3
-)
-
-func webkitHistory(view webkitView, action int) error {
-	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(action)) })
+// webkitHistory takes one history step; the C side numbers the steps as
+// nativeHistoryStep does.
+func webkitHistory(view webkitView, step nativeHistoryStep) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(step)) })
 }
 
-func webkitCanGo(view webkitView, forward bool) bool {
+func webkitCanGo(view webkitView, forward bool) (bool, error) {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
-	return answer
+	err := view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
+	return answer, err
 }
 
-func webkitIsLoading(view webkitView) bool {
+func webkitIsLoading(view webkitView) (bool, error) {
 	loading := false
-	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
-	return loading
+	err := view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
+	return loading, err
 }
 
 // gtkEvaluate runs one async-function body in the page and returns its JSON

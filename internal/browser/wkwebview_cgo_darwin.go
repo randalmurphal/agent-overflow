@@ -785,32 +785,26 @@ func wkLoadFile(view wkView, path, readAccessDir string) error {
 	})
 }
 
-// The history action codes the Objective-C side takes.
-const (
-	wkHistoryBack    = 0
-	wkHistoryForward = 1
-	wkHistoryReload  = 2
-	wkHistoryStop    = 3
-)
-
-func wkHistory(view wkView, action int) error {
-	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_history(view, C.int(action)) })
+// wkHistory takes one history step; the Objective-C side numbers the steps
+// as nativeHistoryStep does.
+func wkHistory(view wkView, step nativeHistoryStep) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_history(view, C.int(step)) })
 }
 
-func wkCanGo(view wkView, forward bool) bool {
+func wkCanGo(view wkView, forward bool) (bool, error) {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wkv_view_can_go(view, flag) == 1 })
-	return answer
+	err := view.do(func(view unsafe.Pointer) { answer = C.ao_wkv_view_can_go(view, flag) == 1 })
+	return answer, err
 }
 
-func wkIsLoading(view wkView) bool {
+func wkIsLoading(view wkView) (bool, error) {
 	loading := false
-	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wkv_view_is_loading(view) == 1 })
-	return loading
+	err := view.do(func(view unsafe.Pointer) { loading = C.ao_wkv_view_is_loading(view) == 1 })
+	return loading, err
 }
 
 // wkFind runs one -findString:withConfiguration:completionHandler: and

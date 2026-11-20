@@ -348,8 +348,9 @@ type pageDriver interface {
 	Press(ctx context.Context, key string) error
 	// TypeText types text at the current focus, with no selector.
 	TypeText(ctx context.Context, text string) error
-	// SelectionText reads the page's current selection, for the copy chord.
-	SelectionText(ctx context.Context) string
+	// SelectionText reads the page's current selection, for the copy chord
+	// and an engine find's seed; an error means it could not be read.
+	SelectionText(ctx context.Context) (string, error)
 	// Pointer dispatches a raw pointer gesture at viewport coordinates.
 	Pointer(ctx context.Context, opts PointerOptions) error
 	// Scroll scrolls a selector, or the window when it is empty.

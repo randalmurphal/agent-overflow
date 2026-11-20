@@ -167,7 +167,11 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID PageID, key s
 		return PageInfo{}, err
 	}
 	if isModifierChord(key, "c") {
-		if selected := p.driver.SelectionText(opCtx); selected != "" {
+		selected, err := p.driver.SelectionText(opCtx)
+		if err != nil {
+			return PageInfo{}, fmt.Errorf("browser: copy the selection: %w", err)
+		}
+		if selected != "" {
 			p.setClipboardText(selected)
 		}
 	}

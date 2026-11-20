@@ -56,8 +56,11 @@ type fakePage struct {
 	// when set, runs first; an error fails the stop.
 	stops    int
 	stopHook func() error
-	// selection answers SelectionText.
-	selection string
+	// selection and selectionErr answer SelectionText. presses makes Press
+	// accept a key, which it otherwise refuses for want of a page.
+	selection    string
+	selectionErr error
+	presses      bool
 	// findMode answers FindMode; FindModeBar unless a test changes it.
 	findMode string
 	// findQuery is the running search, "" when there is none.
@@ -288,13 +291,21 @@ func (p *fakePage) ScrollNode(context.Context, nodeReference, float64, float64) 
 
 func (p *fakePage) Click(context.Context, string) error              { return errFakeEngineHasNoPage }
 func (p *fakePage) Type(context.Context, string, string, bool) error { return errFakeEngineHasNoPage }
-func (p *fakePage) Press(context.Context, string) error              { return errFakeEngineHasNoPage }
-func (p *fakePage) TypeText(context.Context, string) error           { return errFakeEngineHasNoPage }
-
-func (p *fakePage) SelectionText(context.Context) string {
+func (p *fakePage) Press(context.Context, string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.selection
+	if p.presses {
+		return nil
+	}
+	return errFakeEngineHasNoPage
+}
+
+func (p *fakePage) TypeText(context.Context, string) error { return errFakeEngineHasNoPage }
+
+func (p *fakePage) SelectionText(context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.selection, p.selectionErr
 }
 
 func (p *fakePage) Pointer(context.Context, PointerOptions) error { return errFakeEngineHasNoPage }

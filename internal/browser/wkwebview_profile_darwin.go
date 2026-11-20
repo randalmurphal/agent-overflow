@@ -192,6 +192,7 @@ func (p *wkProfile) newPageShell(hooks pageHooks, id uint64) (*wkPage, error) {
 		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel, slot: -1,
 	}
+	page.nativePageOps.view, page.nativePageOps.life = page, ctx
 	page.handle = pageHandle(page.id)
 	wkPageByID.Store(page.id, page)
 	return page, nil
