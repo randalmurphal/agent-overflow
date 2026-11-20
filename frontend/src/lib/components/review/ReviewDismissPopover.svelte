@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import Button from '../primitives/Button.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
@@ -43,7 +44,7 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (event.isComposing || event.key !== 'Enter') return;
+    if (event.isComposing || !isLocalEnter(event)) return;
     event.preventDefault();
     if (event.repeat || empty || blocked !== null) return;
     void manage.dismiss();

@@ -22,6 +22,7 @@
   import {
     getThreadTerminalState,
     registerTerminalSurface,
+    TERMINAL_FOCUS_REGION,
     terminalFocusRegion,
     terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
@@ -31,20 +32,19 @@
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
   import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { intendFocus, paneFocusScope, type FocusIntent } from '../../utils/focusIntent';
   import { paneFindSurface } from '../panes/paneFindRegion';
   import { hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     surface: ThreadTerminalSurfaceContext;
-    /** Injected by tests to skip auto-ListTerminals/OpenTerminal on mount. */
-    manual?: boolean;
     /** Whether to offer the ▾ collapse affordance. True in the bottom drawer;
      *  false in a full terminal pane, where there is nothing to collapse into. */
     collapsible?: boolean;
   }
 
-  let { surface, manual = false, collapsible = true }: Props = $props();
+  let { surface, collapsible = true }: Props = $props();
 
   let bodyEl: { focus: () => void; focusTarget: () => HTMLElement | null } | undefined = $state(undefined);
   // Latch a "focus the terminal body once it exists" intent, drained (and
@@ -61,27 +61,41 @@
   //     keyboard tab commands (terminal.newTab / closeTab / nextTab / prevTab),
   //     which run in builtinCommands and have no handle to this component.
   //   • In-component mouse handlers (＋ click, tab click, close-to-sibling) set
-  //     it directly, since they already hold this $state.
-  let pendingFocus = $state(false);
+  //     it directly, since they already hold this $state. Each takes its
+  //     intent at the click, before any call it waits on, so a focus choice
+  //     made during that call (a dialog) cancels it.
+  let pendingFocus = $state.raw<FocusIntent | null>(null);
+
+  // A focus this surface asks for itself: the latest focus intent, which a
+  // later choice outside the pane, or a press outside its terminal, cancels.
+  function intendTerminalFocus(): FocusIntent {
+    return intendFocus(paneFocusScope(surface.paneId, TERMINAL_FOCUS_REGION));
+  }
 
   $effect(() => {
-    if (!pendingFocus || !bodyEl) return;
+    const intent = pendingFocus;
+    if (!intent || !bodyEl) return;
     const el = bodyEl;
-    pendingFocus = false;
+    pendingFocus = null;
     // Defer one frame past the mount flush so the terminal claims focus after
-    // any focus changes that ran during this commit (e.g. the composer's own
-    // mount/autofocus), rather than being immediately overridden by them.
-    requestAnimationFrame(() => el.focus());
+    // any focus changes that ran during this commit in its pane (e.g. the
+    // composer's own mount/autofocus), rather than being immediately
+    // overridden by them. A focus choice made since the intent (another
+    // pane, a dialog) canceled it, and that focus stays.
+    requestAnimationFrame(() => {
+      intent.land(() => el.focus());
+    });
   });
 
   // Consume the pane's focus intent reactively. The read-and-clear runs on
   // mount (cold drawer open: intent set before mount) AND re-runs whenever the
   // intent flips on a live surface (warm nav-into via pane.focusLeft/Right),
   // because consumeFocusRequest reads the pane's `pendingTerminalFocus` $state.
-  // It returns true at most once per requestTerminalFocus(), so a remount can't
+  // It returns the intent at most once per requestTerminalFocus(), so a remount can't
   // re-grab focus; the rAF effect above lands it once TerminalBody binds.
   $effect(() => {
-    if (surface.consumeFocusRequest()) pendingFocus = true;
+    const requested = surface.consumeFocusRequest();
+    if (requested) pendingFocus = requested;
   });
 
   // Read the key once at init (non-reactive on purpose — the parent keys this
@@ -109,7 +123,8 @@
     try {
       await CloseTerminal(terminalID);
     } catch (err) {
-      console.error('terminal: CloseTerminal for stale open failed', err);
+      // Nobody is watching this surface any more; the diagnostic is the record.
+      reportFrontendDiagnostic('terminal close of a stale open failed', errString(err));
     }
   }
 
@@ -117,6 +132,12 @@
     const threadId = surface.threadId;
     if (!threadId) return;
     const workspacePath = surface.workspacePath;
+    // The ＋ button passes focus:true so the freshly opened tab grabs the
+    // cursor; its intent is the click's. The mount auto-open leaves it unset:
+    // its focus is driven by the pane's consume-once intent (see pendingFocus
+    // above), not here.
+    const intent = opts.focus ? intendTerminalFocus() : null;
+    let opened = false;
     try {
       let usable = false;
       const th = await startTerminal(
@@ -144,24 +165,35 @@
         if (handle.tabs.length === 0) collapseDrawer();
         return;
       }
-      // The ＋ button passes focus:true so the freshly opened tab grabs the
-      // cursor. The mount auto-open leaves it unset — its focus is driven by
-      // the pane's consume-once intent (see pendingFocus above), not here.
-      if (opts.focus) pendingFocus = true;
+      opened = true;
+      if (intent) pendingFocus = intent;
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
       // A surface that is gone asked for nothing any more: its thread may have
       // been deleted while the open was in flight.
       if (!canUseTerminalResult(threadId, workspacePath)) return;
       addErrorToast(`Could not open terminal: ${userFacingError(err)}`, err);
+    } finally {
+      if (!opened) intent?.end();
     }
   }
 
   async function closeTerminal(terminalID: string) {
+    // The cursor follows into the sibling a close leaves; the intent is the
+    // click's, taken before the close is answered.
+    const intent = intendTerminalFocus();
+    const threadId = surface.threadId;
+    const workspacePath = surface.workspacePath;
     try {
       await CloseTerminal(terminalID);
     } catch (err) {
-      console.error('terminal: CloseTerminal failed', err);
+      // The shell may still run: its tab stays, and the refusal is shown
+      // while the surface that asked remains.
+      intent.end();
+      if (threadId && canUseTerminalResult(threadId, workspacePath)) {
+        addErrorToast(`Could not close terminal: ${userFacingError(err)}`, err);
+      }
+      return;
     }
     handle.removeTab(terminalID);
     // Closing the last tab leaves nothing to render. In the drawer, collapse
@@ -171,9 +203,10 @@
     // promotes it to active (a remount); re-latch focus so the cursor follows
     // into it.
     if (handle.tabs.length === 0) {
+      intent.end();
       collapseDrawer();
     } else {
-      pendingFocus = true;
+      pendingFocus = intent;
     }
   }
 
@@ -181,7 +214,7 @@
     handle.setActive(terminalID);
     // The remount on the active-tab change drops xterm focus; re-latch it so
     // clicking a tab puts the cursor in that terminal (parity with Ctrl+Tab).
-    pendingFocus = true;
+    pendingFocus = intendTerminalFocus();
   }
 
   // Repaint the active terminal. RefreshTerminal blips the PTY winsize (rows
@@ -193,7 +226,7 @@
     const terminalID = handle.activeTerminalID;
     if (!terminalID) return;
     RefreshTerminal(terminalID).catch((err) => {
-      console.error('terminal: RefreshTerminal failed', err);
+      addErrorToast(`Could not refresh terminal: ${userFacingError(err)}`, err);
     });
   }
 
@@ -270,7 +303,7 @@
   onMount(() => {
     const threadId = surface.threadId;
     const workspacePath = surface.workspacePath;
-    if (manual || !threadId) return;
+    if (!threadId) return;
     // A re-read leaves the active tab alone, like a terminal another client opens.
     return registerTerminalSurface(threadId, () => syncTerminals(threadId, workspacePath, false));
   });
@@ -278,7 +311,7 @@
   onMount(async () => {
     const threadId = surface.threadId;
     const workspacePath = surface.workspacePath;
-    if (manual || !threadId) return;
+    if (!threadId) return;
 
     await syncTerminals(threadId, workspacePath, true);
     if (!canUseTerminalResult(threadId, workspacePath)) return;

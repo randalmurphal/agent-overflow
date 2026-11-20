@@ -124,6 +124,14 @@
      * button): the menu must get out of the way of it.
      */
     dismissOnAnchorClick?: boolean;
+    /**
+     * False for a list that leaves the keyboard with its anchor (a field's
+     * own suggestions, driven by the field's keys): it still makes a native
+     * view beneath it yield, as an airspace layer, but does not read as an
+     * open overlay, so the commands of the pane that owns the field stay
+     * live. Default true.
+     */
+    takesKeyboard?: boolean;
     children: Snippet;
   }
 
@@ -139,6 +147,7 @@
     claimTab = false,
     restoreFocusTo,
     dismissOnAnchorClick = false,
+    takesKeyboard = true,
     children,
   }: Props = $props();
 
@@ -613,7 +622,7 @@
     data-popover
     data-placement={resolvedPlacement ?? placement}
     class="z-[80]"
-    use:airspaceSurface
+    use:airspaceSurface={{ overlay: takesKeyboard }}
   >
     {@render children()}
   </div>

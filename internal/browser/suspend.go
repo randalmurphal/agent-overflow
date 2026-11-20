@@ -5,32 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
-	"strings"
 	"time"
 )
 
-// Suspended pages. A page is suspended in two cases only: the session reaper
-// ended its thread's idle provider session (SuspendThread), or the app shut
-// down with it open (saveOpenPages, then a restart loads it). Suspending
+// Suspended pages. A page is suspended when the session reaper ended its
+// thread's idle provider session (SuspendThread) or the app shut down with
+// it open (saveOpenPages, then a restart loads it); a jar switch suspends
+// the thread's live pages (jar_switch.go), and a crashed page becomes a
+// record carrying its failure (crash.go). Suspending
 // unloads the engine page; the page stays in its thread's tab set as a record
 // with its id, address, title, label and tab position, and holds no engine
 // resource. Nothing about a page or pane being hidden suspends it.
 //
 // The next touch restores it by loading its address in a new engine page with
-// the same id (resolvePage): any page-scoped tool call on it, or the user
-// presenting it in the companion pane. Listing pages and closing one is not a
-// touch. A restore passes the navigation policy every navigation passes, and
-// a restore that fails leaves the record suspended and reports the failure to
-// the caller.
-
-// restoreTimeout bounds one restore: starting the engine and a profile if
-// needed, creating the page, and loading its address.
-const restoreTimeout = 2 * operationTimeout
+// the same id (resolvePage, restore.go): any page-scoped tool call on it, or
+// the user presenting it in the companion pane. Listing pages and closing one
+// is not a touch. A restore passes the navigation policy every navigation
+// passes, and a restore that fails leaves the record suspended and reports
+// the failure to the caller.
 
 // suspendedPage is one suspended page. Every field is guarded by m.mu.
 type suspendedPage struct {
-	id, owner         string
+	id PageID
+	// owner is the thread lifetime the record is a tab of.
+	owner             *threadBrowser
 	url, title, label string
 	tabOrder          int64
 	createdAt         int64
@@ -38,218 +36,16 @@ type suspendedPage struct {
 	// restoring is the restore in flight, which concurrent touches wait for
 	// rather than loading the page twice.
 	restoring *restoreCall
+	// failure is why the page stopped when its process ended (crash.go),
+	// "" for a page suspended on purpose. Such a tab is restored only when
+	// asked to (ReloadCompanionPage) or used by a tool, never by selecting
+	// it. It is not saved: after a restart the tab is an ordinary suspended
+	// one.
+	failure string
 }
 
 func (r *suspendedPage) info() PageInfo {
-	return PageInfo{ID: r.id, Label: r.label, URL: r.url, Title: r.title, Suspended: true}
-}
-
-// restoreCall is one restore of a suspended page. err is written before done
-// closes.
-type restoreCall struct {
-	done chan struct{}
-	err  error
-}
-
-// threadTab is one entry of a thread's tab set: a live page or a suspended
-// one.
-type threadTab struct {
-	id      string
-	info    PageInfo
-	order   int64
-	created int64
-	lastUse int64
-	live    *managedPage
-	rec     *suspendedPage
-}
-
-// threadTabs is THE tab-strip order of a thread's pages, live and suspended:
-// every surface that lists them (companion state, browser_pages, ambiguity
-// errors, tab moves) uses it, so the UI, the tools and the errors never
-// disagree about which tab is first.
-func (m *Manager) threadTabs(threadID string) []threadTab {
-	m.mu.Lock()
-	tabs := m.threadTabsLocked(threadID)
-	m.mu.Unlock()
-	return tabs
-}
-
-// threadTabsLocked is threadTabs with m.mu held by the caller.
-func (m *Manager) threadTabsLocked(threadID string) []threadTab {
-	var tabs []threadTab
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.owner == threadID {
-				tabs = append(tabs, threadTab{
-					id: p.id, info: p.cachedInfo(), order: p.tabOrder.Load(), created: p.createdAt,
-					lastUse: p.lastUse.Load(), live: p,
-				})
-			}
-		}
-	}
-	for _, rec := range m.suspended {
-		if rec.owner == threadID {
-			tabs = append(tabs, threadTab{
-				id: rec.id, info: rec.info(), order: rec.tabOrder, created: rec.createdAt,
-				lastUse: rec.lastUse, rec: rec,
-			})
-		}
-	}
-	sort.Slice(tabs, func(i, j int) bool {
-		if tabs[i].order != tabs[j].order {
-			return tabs[i].order < tabs[j].order
-		}
-		return tabs[i].created < tabs[j].created
-	})
-	return tabs
-}
-
-// hasTab reports whether pageID is one of the thread's pages, live or
-// suspended.
-func (m *Manager) hasTab(threadID, pageID string) bool {
-	for _, tab := range m.threadTabs(threadID) {
-		if tab.id == pageID {
-			return true
-		}
-	}
-	return false
-}
-
-// livePageLocked finds a live page by id in any scope. The caller holds m.mu.
-func (m *Manager) livePageLocked(pageID string) (*managedPage, *workspaceScope) {
-	for _, scope := range m.scopes {
-		if p := scope.pages[pageID]; p != nil {
-			return p, scope
-		}
-	}
-	return nil, nil
-}
-
-// resolvePage answers the caller's live page with pageID, restoring it first
-// when it is suspended. Concurrent touches of one suspended page share one
-// restore. skipLoad restores the page blank, for a caller that navigates it
-// next. A page another thread owns is not found.
-func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string, skipLoad bool) (*managedPage, *workspaceScope, error) {
-	pageID = strings.TrimSpace(pageID)
-	for {
-		m.mu.Lock()
-		if p, scope := m.livePageLocked(pageID); p != nil {
-			m.mu.Unlock()
-			if p.owner != access.ThreadID {
-				return nil, nil, errPageNotFound
-			}
-			return p, scope, nil
-		}
-		rec := m.suspended[pageID]
-		if rec == nil || rec.owner != access.ThreadID {
-			m.mu.Unlock()
-			return nil, nil, errPageNotFound
-		}
-		call := rec.restoring
-		if call == nil {
-			call = &restoreCall{done: make(chan struct{})}
-			rec.restoring = call
-			// The restore runs on its own bounded context, so a caller that
-			// gives up does not fail the restore for the others waiting on it.
-			go m.runRestore(access, rec, call, skipLoad)
-		}
-		m.mu.Unlock()
-		select {
-		case <-call.done:
-		case <-ctx.Done():
-			return nil, nil, ctx.Err()
-		}
-		if call.err != nil {
-			return nil, nil, call.err
-		}
-		// Restored: the next pass finds the live page and rechecks it.
-	}
-}
-
-func (m *Manager) runRestore(access Access, rec *suspendedPage, call *restoreCall, skipLoad bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
-	err := m.restorePage(ctx, access, rec, skipLoad)
-	cancel()
-	m.mu.Lock()
-	if rec.restoring == call {
-		rec.restoring = nil
-	}
-	m.mu.Unlock()
-	call.err = err
-	close(call.done)
-}
-
-// restorePage replaces rec with a live page of the same id at rec's address.
-// The page is registered, and the record dropped, in one m.mu hold and only
-// once it is fully loaded; any failure leaves the record as it was.
-func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspendedPage, skipLoad bool) error {
-	m.mu.Lock()
-	target, title, label := rec.url, rec.title, rec.label
-	createdAt, lastUse := rec.createdAt, rec.lastUse
-	m.mu.Unlock()
-	if skipLoad || target == "" || target == "about:blank" {
-		target, title = "", ""
-	}
-	if target != "" && !m.navigationAllowed(access, target) {
-		return fmt.Errorf("browser: page %s cannot be restored: %s is not allowed; navigate the page elsewhere or close it", rec.id, target)
-	}
-
-	p := newManagedPage(access)
-	p.id, p.createdAt = rec.id, createdAt
-	p.lastUse.Store(lastUse)
-	p.info = PageInfo{ID: rec.id, URL: "about:blank", Label: label}
-	m.startMu.Lock()
-	scope, err := m.openPageLocked(ctx, access, p, false)
-	m.startMu.Unlock()
-	if err != nil {
-		return fmt.Errorf("browser: restore page %s: %w", rec.id, err)
-	}
-	// The load runs outside startMu, as any navigation does; the scope stays
-	// reserved for the page until it is registered or abandoned.
-	if target != "" {
-		p.setInfo(PageInfo{ID: rec.id, URL: target, Title: title})
-		opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
-		err := p.driver.Navigate(opCtx, target)
-		if err == nil {
-			var info PageInfo
-			if info, err = m.pageInfo(opCtx, p); err == nil {
-				p.setInfo(info)
-			}
-		}
-		cancel()
-		if err != nil {
-			return errors.Join(fmt.Errorf("browser: restore page %s at %s: %w", rec.id, target, err), m.abandonPage(scope, p))
-		}
-	}
-
-	m.mu.Lock()
-	closing := m.closed
-	current := !closing && m.suspended[rec.id] == rec
-	if current {
-		scope.creating--
-		// The record's tab position may have moved while the page loaded.
-		p.tabOrder.Store(rec.tabOrder)
-		delete(m.suspended, rec.id)
-		scope.pages[p.id] = p
-	}
-	m.mu.Unlock()
-	if closing {
-		// Close saved the record before this page loaded; it stays suspended
-		// for the next boot.
-		return errors.Join(fmt.Errorf("browser: restore page %s: the browser is shutting down", rec.id), m.abandonPage(scope, p))
-	}
-	if !current {
-		// The page was closed, its thread deleted or archived, or the browser
-		// turned off while it loaded.
-		return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound), m.abandonPage(scope, p))
-	}
-	m.pageChanged(p)
-	if err := m.persistThreads([]string{p.owner}); err != nil {
-		// The page is live; its saved copy still lists it as suspended, which
-		// only brings it back as a suspended page after a crash.
-		log.Printf("browser: restore page %s: update saved pages: %v", p.id, err)
-	}
-	return nil
+	return PageInfo{ID: string(r.id), Label: r.label, URL: r.url, Title: r.title, Suspended: true}
 }
 
 // SuspendThread unloads the live pages the thread owns and keeps each as a
@@ -259,13 +55,20 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 // it. A thread with no page suspended is left as it was. The saved copy is
 // updated, and a failure to write it is returned. A cancelled ctx (the app
 // shutting down) stops before the next page, and shutdown saves the rest.
-func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
+//
+// The reaper names the thread by id; the lifetime current then is the one
+// whose pages it suspends.
+func (m *Manager) SuspendThread(ctx context.Context, threadID ThreadID) error {
 	m.mu.Lock()
-	presented := m.presentedPageLocked(threadID)
+	tb := m.currentLocked(threadID)
+	presented := m.presentedPageLocked(tb)
 	m.mu.Unlock()
+	if tb == nil {
+		return nil
+	}
 	var errs []error
 	suspended := false
-	for _, p := range m.ownedPages(threadID) {
+	for _, p := range m.ownedPages(tb) {
 		if p.id == presented {
 			continue
 		}
@@ -282,54 +85,64 @@ func (m *Manager) SuspendThread(ctx context.Context, threadID string) error {
 	if !suspended {
 		return errors.Join(errs...)
 	}
-	m.repairActivePage(threadID)
+	m.repairActivePage(tb)
 	m.emitThreadState(threadID)
 	if ctx.Err() == nil {
 		m.syncPanePresentation(threadID)
 	}
-	errs = append(errs, m.persistThreads([]string{threadID}))
+	errs = append(errs, m.persistThreads([]ThreadID{threadID}))
 	return errors.Join(errs...)
 }
 
 // suspendPage replaces one live page with its record and reports whether it
-// did. It waits for the page's in-flight operation, reads the page's current
-// address, and moves it from its scope to the records in one m.mu hold, so a
-// lookup finds it as one or the other. A page closed meanwhile is left
-// closed; a page of a browser that began shutting down is left for Close to
-// save; and a page whose records were cleared meanwhile (the browser turned
-// off, or its site data cleared, which close it) records nothing.
+// did. It waits for the page's in-flight operation while ctx lasts, reads
+// the page's current address, and moves it from its scope to the records in
+// one m.mu hold, so a lookup finds it as one or the other. A page closed meanwhile is left
+// closed; a page a mounted pane shows by then is left live; a page of a
+// browser that began shutting down is left for Close to save; a page a
+// forget of every page (the browser turned off, or its site data cleared)
+// or its thread's close is closing records nothing. The move waits for a
+// jar switch of the thread writing its saved copy.
 func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error) {
-	m.mu.Lock()
-	cleared := m.recordsCleared
-	m.mu.Unlock()
-	p.mu.Lock()
-	info := p.cachedInfo()
+	if err := p.mu.LockContext(ctx); err != nil {
+		return false, fmt.Errorf("browser: suspend page %s: %w", p.id, err)
+	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	current, err := m.pageInfo(opCtx, p)
+	read, err := m.settledAddress(opCtx, p)
 	cancel()
+	info := p.cachedInfo()
 	if err == nil {
-		info.URL, info.Title = current.URL, current.Title
+		// The page's address as of its suspension, read under the page lock
+		// with no report landing during the read (settledAddress).
+		info.URL = truncateUTF8(read.URL, maxBrowserURLBytes)
+		info.Title = truncateUTF8(read.Title, maxBrowserTitleBytes)
 	} else if p.ctx.Err() == nil {
 		log.Printf("browser: suspend page %s: read its address: %v; keeping %s", p.id, err, info.URL)
 	}
-	m.mu.Lock()
-	var scope *workspaceScope
+	if err := m.lockStructure(ctx, p.owner); err != nil {
+		p.mu.Unlock()
+		return false, err
+	}
+	var scope *jarScope
 	for _, candidate := range m.scopes {
 		if candidate.pages[p.id] == p {
 			scope = candidate
 			break
 		}
 	}
-	if scope == nil || m.closed || m.recordsCleared != cleared {
+	// A page a mounted pane came to show meanwhile stays live, as it would
+	// have had it been shown from the start (SuspendThread).
+	if scope == nil || !m.recordsAdmittedLocked(p.owner) || m.presentedPageLocked(p.owner) == p.id {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return false, nil
 	}
-	delete(scope.pages, p.id)
+	ended := m.pageLeftLocked(scope, p, "page suspended")
 	m.suspended[p.id] = recordOf(p, info)
 	release := m.releaseScopeLocked(scope)
 	m.mu.Unlock()
-	m.cancelPageDownloads(p, scope)
+	m.publishDownloads(ended.notes...)
+	m.stopEndedDownloads(ended)
 	p.driver.Close()
 	m.endFindLocked(p)
 	p.mu.Unlock()
@@ -355,14 +168,14 @@ func (m *Manager) saveOpenPages() error {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.mu.Lock()
-	var threads []string
-	seen := make(map[string]bool)
+	var threads []ThreadID
+	seen := make(map[ThreadID]bool)
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			m.suspended[p.id] = recordOf(p, p.cachedInfo())
-			if !seen[p.owner] {
-				seen[p.owner] = true
-				threads = append(threads, p.owner)
+			if !seen[p.owner.id] {
+				seen[p.owner.id] = true
+				threads = append(threads, p.owner.id)
 			}
 		}
 	}
@@ -370,59 +183,69 @@ func (m *Manager) saveOpenPages() error {
 	return m.writeRecordFilesLocked(threads)
 }
 
-// forgetRecord closes one suspended page: its record and its saved copy go.
-func (m *Manager) forgetRecord(threadID, pageID string) error {
-	m.mu.Lock()
-	rec := m.suspended[strings.TrimSpace(pageID)]
-	found := rec != nil && rec.owner == threadID
-	if found {
-		delete(m.suspended, rec.id)
+// forgetRecordLocked closes one suspended page: it drops tb's record of
+// pageID, answering whether it had one, and the caller, which holds m.mu,
+// calls recordForgotten after releasing it, so the saved copy goes too.
+func (m *Manager) forgetRecordLocked(tb *threadBrowser, pageID PageID, byUser bool) bool {
+	rec := m.suspended[pageID.trim()]
+	if rec == nil || rec.owner != tb {
+		return false
 	}
-	m.mu.Unlock()
-	if !found {
-		return errPageNotFound
+	if byUser {
+		m.recordUserCloseLocked(tb, rec.id)
 	}
-	m.repairActivePage(threadID)
-	m.emitThreadState(threadID)
-	m.syncPanePresentation(threadID)
-	return m.persistThreads([]string{threadID})
+	m.dropRecordLocked(rec)
+	return true
 }
 
-// forgetThreadRecords drops every suspended page of the thread and removes
-// its saved copy.
-func (m *Manager) forgetThreadRecords(threadID string) error {
+// recordForgotten publishes a forgotten record of tb and saves the thread's
+// records.
+func (m *Manager) recordForgotten(tb *threadBrowser) error {
+	m.repairActivePage(tb)
+	m.emitThreadState(tb.id)
+	m.syncPanePresentation(tb.id)
+	return m.persistThreads([]ThreadID{tb.id})
+}
+
+// dropRecordLocked forgets rec and cancels its restore in flight, which
+// could only be refused at registration. The caller holds m.mu.
+func (m *Manager) dropRecordLocked(rec *suspendedPage) {
+	delete(m.suspended, rec.id)
+	if rec.restoring != nil {
+		rec.restoring.cancel()
+	}
+}
+
+// forgetAllRecords drops every suspended page and the saved copies. keepJars
+// keeps the threads' jar settings, saved again on their own; otherwise every
+// thread's browser returns to the default jar.
+func (m *Manager) forgetAllRecords(keepJars bool) error {
+	m.persistMu.Lock()
 	m.mu.Lock()
-	found := false
-	for id, rec := range m.suspended {
-		if rec.owner == threadID {
-			delete(m.suspended, id)
-			found = true
+	threads := make(map[*threadBrowser]bool)
+	for _, rec := range m.suspended {
+		threads[rec.owner] = true
+		m.dropRecordLocked(rec)
+	}
+	var jarThreads []ThreadID
+	for threadID, tb := range m.threads {
+		switch {
+		case jarKindOf(tb.session) == JarWorktree:
+		case keepJars:
+			jarThreads = append(jarThreads, threadID)
+		default:
+			tb.session.Jar = JarWorktree
 		}
 	}
 	m.mu.Unlock()
-	if found {
-		m.repairActivePage(threadID)
-		m.emitThreadState(threadID)
-	}
-	return m.persistThreads([]string{threadID})
-}
-
-// forgetAllRecords drops every suspended page and the saved copies.
-func (m *Manager) forgetAllRecords() error {
-	m.persistMu.Lock()
-	m.mu.Lock()
-	threads := make(map[string]bool)
-	for _, rec := range m.suspended {
-		threads[rec.owner] = true
-	}
-	m.suspended = make(map[string]*suspendedPage)
-	m.recordsCleared++
-	m.mu.Unlock()
 	err := removeRecordDir(m.recordDir)
+	if err == nil && len(jarThreads) > 0 {
+		err = m.writeRecordFilesLocked(jarThreads)
+	}
 	m.persistMu.Unlock()
-	for threadID := range threads {
-		m.repairActivePage(threadID)
-		m.emitThreadState(threadID)
+	for tb := range threads {
+		m.repairActivePage(tb)
+		m.emitThreadState(tb.id)
 	}
 	return err
 }

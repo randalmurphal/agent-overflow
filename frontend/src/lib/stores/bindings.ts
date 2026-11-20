@@ -154,6 +154,7 @@ export {
   BrowserCompanionPaneAttach,
   BrowserCompanionPaneDetach,
   BrowserCompanionPaneRect,
+  BrowserCompanionRecentAddresses,
   BrowserCompanionRevealPageFile,
   GetContextSettings,
 
@@ -810,6 +811,8 @@ export {
   FindState as BrowserFindState,
   PageInfo as BrowserPageInfo,
   PaneRect as BrowserPaneRect,
+  RecentAddress as BrowserRecentAddress,
+  ThreadDownload as BrowserDownload,
 } from '../../../bindings/agent-overflow/internal/browser/models.js';
 export {
   Keybinding,
@@ -1139,10 +1142,10 @@ export function StartCodexReview(
 
 // SyncThreadWindow wrapper. Same plain-object-in / class-wrap pattern as
 // CreateThread: the generated signature types the request as a class
-// instance and every call site wants to hand a literal. The response is
-// re-typed with a narrowed `status` so callers must handle the four
-// answers the store defines rather than an open string
-// (docs/architecture/thread-replica-sync.md §5).
+// instance and every call site wants to hand a literal. The response's
+// `status` names the four answers the store defines
+// (SyncThreadWindowStatus, docs/architecture/thread-replica-sync.md §5) and
+// stays typed as an open string.
 import {
   SyncThreadWindow as SyncThreadWindowRaw,
 } from '../../../bindings/agent-overflow/app.js';

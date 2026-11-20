@@ -38,7 +38,9 @@ describe('roleButtonKeys', () => {
     key(el, 'keydown', 'Enter', { repeat: true });
     key(el, 'keyup', 'Enter');
     expect(activate).toHaveBeenCalledTimes(1);
-    expect(activate.mock.calls[0][0]).toBeInstanceOf(KeyboardEvent);
+    expect(activate.mock.calls[0][0]).toEqual({ openInNewPane: false });
+    key(el, 'keydown', 'Enter', { metaKey: true });
+    expect(activate.mock.calls[1][0]).toEqual({ openInNewPane: true });
   });
 
   it('arms on Space keydown without scrolling and activates once on keyup', () => {
@@ -49,7 +51,7 @@ describe('roleButtonKeys', () => {
     expect(activate).not.toHaveBeenCalled();
     key(el, 'keyup', ' ', { ctrlKey: true });
     expect(activate).toHaveBeenCalledTimes(1);
-    expect((activate.mock.calls[0][0] as KeyboardEvent).ctrlKey).toBe(true);
+    expect(activate.mock.calls[0][0]).toEqual({ openInNewPane: true });
     // A second keyup without a new press does nothing.
     key(el, 'keyup', ' ');
     expect(activate).toHaveBeenCalledTimes(1);

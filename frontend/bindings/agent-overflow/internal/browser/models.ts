@@ -40,9 +40,23 @@ export class CompanionEvent {
     "viewportSet"?: boolean;
 
     /**
+     * Jar rides a Kind "state" event: the cookie jar the thread's pages
+     * open in (SessionInfo.Jar).
+     */
+    "jar"?: string;
+
+    /**
+     * RecentGen rides a Kind "state" event: the Manager's forget generation
+     * of recent addresses (recent.go), an opaque token. A client holding a
+     * thread's list drops it when this changes.
+     */
+    "recentGen"?: string;
+
+    /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
      * while the thread's page view held keyboard focus, for the frontend to
-     * dispatch as if the SPA had received it.
+     * dispatch as if the SPA had received it. Its PageID is the page the
+     * chord was pressed in, which a command it runs on a tab acts on.
      */
     "accelerator"?: keybindings$0.Accelerator | null;
 
@@ -50,8 +64,11 @@ export class CompanionEvent {
      * Mount rides a Kind "accelerator" or "escape" event: the pane mount
      * (AttachPane) the thread's pages are presented in. The event reaches
      * every host client, and only the one holding that mount acts on it.
+     * It also rides a Kind "focus" event, which names the mount whose
+     * FocusIntent ended: the page took the keyboard, or Error says why not.
      */
     "mount"?: string;
+    "focusIntent"?: number;
 
     /**
      * FindMode rides a Kind "state" event: how the active page's find is
@@ -63,14 +80,41 @@ export class CompanionEvent {
      * Find rides a Kind "find" event: a page's search ended without its
      * owner asking (navigation, a tab switch, a hidden pane, the page
      * closing, another owner's start), so a find bar showing it closes.
-     * A Kind "escape" event names only ThreadID and PageID: a bare Escape
-     * was pressed in that page while a pane showed it, and the page kept it.
+     * A Kind "escape" event names only ThreadID, PageID and Mount, the pane
+     * mount showing the page: a bare Escape was pressed in that page while
+     * a pane showed it, and the page kept it.
+     * A Kind "teardown" event names ThreadID, PageID and Error: a page that
+     * already left the tab set failed to close or to release its profile.
      */
     "find"?: FindState | null;
 
     /**
+     * ClosedTabs rides a Kind "state" event: how many tabs the thread can
+     * reopen (companion_tabs.go).
+     */
+    "closedTabs"?: number;
+
+    /**
+     * Downloads rides a Kind "state" event: the thread's downloads, newest
+     * first (downloads_thread.go). Download rides a Kind "download" event:
+     * one download settled other than by the user's cancel, announced once.
+     */
+    "downloads"?: ThreadDownload[];
+    "download"?: ThreadDownload | null;
+
+    /**
+     * DownloadsGen rides both: a state's is the generation of the list it
+     * shows, which a clear or the thread's close changes, zero for none; a
+     * download's is the generation that resolves it as of its Seq, zero
+     * when none does. An action announced under one resolves until a state
+     * numbered after it carries another (downloads_thread.go).
+     */
+    "downloadsGen"?: number;
+
+    /**
      * Seq rides a Kind "state" event: this process's number for the
-     * snapshot, taken under the manager's lock as the snapshot is read.
+     * snapshot, taken under the manager's lock as the snapshot is read. A
+     * Kind "download" event takes one from the same count as it is made.
      * Snapshots are published after that lock is released, and calls answer
      * with one, so a client keeps the highest Seq it has seen for a thread.
      */
@@ -93,17 +137,25 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
-        const $$createField11_0 = $$createType3;
-        const $$createField14_0 = $$createType5;
+        const $$createField13_0 = $$createType3;
+        const $$createField17_0 = $$createType5;
+        const $$createField19_0 = $$createType7;
+        const $$createField20_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
-            $$parsedSource["accelerator"] = $$createField11_0($$parsedSource["accelerator"]);
+            $$parsedSource["accelerator"] = $$createField13_0($$parsedSource["accelerator"]);
         }
         if ("find" in $$parsedSource) {
-            $$parsedSource["find"] = $$createField14_0($$parsedSource["find"]);
+            $$parsedSource["find"] = $$createField17_0($$parsedSource["find"]);
+        }
+        if ("downloads" in $$parsedSource) {
+            $$parsedSource["downloads"] = $$createField19_0($$parsedSource["downloads"]);
+        }
+        if ("download" in $$parsedSource) {
+            $$parsedSource["download"] = $$createField20_0($$parsedSource["download"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
@@ -134,7 +186,7 @@ export class CompanionSubscription {
      * Creates a new CompanionSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): CompanionSubscription {
-        const $$createField1_0 = $$createType6;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("state" in $$parsedSource) {
             $$parsedSource["state"] = $$createField1_0($$parsedSource["state"]);
@@ -174,9 +226,10 @@ export class FindState {
     "document": number;
 
     /**
-     * Session is the generation: it increases with every find action and
-     * end across the Manager, so an answer older than an end is
-     * recognizably stale.
+     * Session is the generation, from one counter across the Manager: a
+     * start, a stop and every end take a new one, and a step that succeeds
+     * keeps its search's, so an answer older than an end is recognizably
+     * stale.
      */
     "session": number;
 
@@ -281,6 +334,45 @@ export class PageInfo {
      */
     "suspended"?: boolean;
 
+    /**
+     * ReadError rides only a page listing (Pages): reading a live page
+     * failed, and its URL and title are the last the Manager knew.
+     */
+    "readError"?: string;
+
+    /**
+     * The fields below ride only the companion state (threadState); a tool
+     * result never carries them.
+     * 
+     * Creating marks a tab whose engine page is still being created, and
+     * Restoring a suspended tab whose reload is in flight. Error is why a
+     * tab the user opened could not be created, or, on a Suspended tab, why
+     * its page stopped (crash.go); either tab stays until it is closed. None
+     * of these has a page to present.
+     */
+    "creating"?: boolean;
+    "restoring"?: boolean;
+    "error"?: string;
+
+    /**
+     * Agent is whether an agent's tool call is acting on the page
+     * (activity.go).
+     */
+    "agent"?: boolean;
+
+    /**
+     * Loading is whether the page's main frame is loading, as its engine
+     * reports it (pagestate.go).
+     */
+    "loading"?: boolean;
+
+    /**
+     * Favicon is the page's icon as a bounded image data URL, read in the
+     * page on an engine with a pane; empty when the page has none, the
+     * engine cannot read one, or it was not an allowed image.
+     */
+    "favicon"?: string;
+
     /** Creates a new PageInfo instance. */
     constructor($$source: Partial<PageInfo> = {}) {
         if (!("id" in $$source)) {
@@ -314,9 +406,10 @@ export class PageInfo {
 /**
  * PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
  * CSS pixels, together with the SPA viewport it was measured in. A host never
- * assumes CSS pixels equal its units: it scales the rect by its own client
- * size over the viewport, which makes the position exact under webview zoom
- * (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+ * assumes CSS pixels equal its units: it scales the rect by the SPA's
+ * DevicePixelRatio where it positions in device pixels (the Windows
+ * launcher), or by its own size over the viewport, which makes the position
+ * exact under webview zoom (Ctrl+=) and any DPI.
  * Visible is false while the pane is mounted but must not be painted over: an
  * AO overlay intersects the rect, or the rect is entirely off the pane strip.
  * 
@@ -325,9 +418,8 @@ export class PageInfo {
  * the engine crops it: the view keeps the full rect's size (the page must not
  * relayout because it scrolled half behind the sidebar) and the host clips its
  * presentation to the clip rect. An unclipped pane reports clip == rect.
- * Background is the pane surface's resolved CSS color ("#rrggbb"); engines
- * paint it where the page has not presented yet, so freshly exposed strips
- * match the pane instead of flashing the engine default.
+ * Background is the pane surface's resolved CSS color ("#rrggbb"): the
+ * presenting pane's is the base of its thread's blank pages (pageBase).
  * 
  * DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
  * webview zoom. An engine whose page renders at the OS scale alone (the
@@ -348,6 +440,15 @@ export class PaneRect {
     "devicePixelRatio"?: number;
     "visible": boolean;
     "background"?: string;
+
+    /**
+     * Seq is the SPA's per-mount number for this report, advanced once per
+     * distinct report. The Windows SPA posts the same report to the launcher
+     * under the same number, and the hosted engine's bounds directive
+     * carries it, so the launcher places from whichever is newer. Zero is a
+     * reporter that does not number (tests, the harness bridge).
+     */
+    "seq"?: number;
 
     /** Creates a new PaneRect instance. */
     constructor($$source: Partial<PaneRect> = {}) {
@@ -397,6 +498,76 @@ export class PaneRect {
     }
 }
 
+/**
+ * RecentAddress is one address a thread's page loaded, with the title it had.
+ */
+export class RecentAddress {
+    "url": string;
+    "title"?: string;
+
+    /** Creates a new RecentAddress instance. */
+    constructor($$source: Partial<RecentAddress> = {}) {
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RecentAddress instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RecentAddress {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RecentAddress($$parsedSource as Partial<RecentAddress>);
+    }
+}
+
+/**
+ * ThreadDownload is one download in the thread's browser pane. ID is AO's
+ * own key for it. Source is the address of the page it began on, or the
+ * download's own address when that page had none, and empty when neither
+ * is known. State is a DownloadInfo state. TotalBytes is zero when the
+ * engine does not know the size. Openable is whether a browser tab can
+ * show the finished file (downloadOpensInPage).
+ */
+export class ThreadDownload {
+    "id": string;
+    "name": string;
+    "source"?: string;
+    "state": string;
+    "receivedBytes": number;
+    "totalBytes"?: number;
+    "error"?: string;
+    "openable"?: boolean;
+
+    /** Creates a new ThreadDownload instance. */
+    constructor($$source: Partial<ThreadDownload> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("receivedBytes" in $$source)) {
+            this["receivedBytes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadDownload instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadDownload {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadDownload($$parsedSource as Partial<ThreadDownload>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
@@ -404,4 +575,7 @@ const $$createType2 = keybindings$0.Accelerator.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = FindState.createFrom;
 const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = CompanionEvent.createFrom;
+const $$createType6 = ThreadDownload.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = $Create.Nullable($$createType6);
+const $$createType9 = CompanionEvent.createFrom;

@@ -26,7 +26,15 @@ var (
 	procSetFocus       = user32.NewProc("SetFocus")
 	procGUIThreadInfo  = user32.NewProc("GetGUIThreadInfo")
 	procIsChild        = user32.NewProc("IsChild")
+	// procGetWindowLongPtr reads a window's style (styleVisible).
+	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
 )
+
+// gwlStyle is GWL_STYLE.
+const gwlStyle int32 = -16
+
+// wsVisible is WS_VISIBLE.
+const wsVisible = 0x10000000
 
 // guiThreadInfo is GUITHREADINFO.
 type guiThreadInfo struct {
@@ -60,16 +68,22 @@ func focusWithin(hwnd uintptr) bool {
 	return child != 0
 }
 
+// isForeground answers whether hwnd is the foreground window.
+func isForeground(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	foreground, _, _ := procGetForeground.Call()
+	return foreground == hwnd
+}
+
 // focusWindow gives hwnd keyboard focus, only while it is the foreground
 // window: SetFocus on a window that is not would activate it, and AO never
 // takes the OS focus. Wails answers WM_SETFOCUS on the launcher window by
 // moving focus into the SPA's WebView2 controller. Answers false when hwnd
 // is not the foreground window and focus was left alone.
 func focusWindow(hwnd uintptr) bool {
-	if hwnd == 0 {
-		return false
-	}
-	if foreground, _, _ := procGetForeground.Call(); foreground != hwnd {
+	if !isForeground(hwnd) {
 		return false
 	}
 	// SetFocus answers the previous focus window, which may be none.
@@ -178,14 +192,18 @@ func newChildWindow(before []uintptr, after []uintptr) uintptr {
 // Load-bearing, and invisible when missing: WebView2 inserts every new
 // controller window at the BOTTOM of the host's child z-order, so the
 // SPA's controller (created first, by Wails) paints over every pane
-// controller. The spike measured a fully visible pane as byte-identical
-// to no pane at all until this call ran. One call per controller, after
-// creation.
-func raiseChild(child uintptr) {
+// controller, and a fully visible pane draws nothing until this call
+// runs. One call per controller, after creation. No window is nothing to
+// raise.
+func raiseChild(child uintptr) error {
 	if child == 0 {
-		return
+		return nil
 	}
-	_, _, _ = procSetWindowPo.Call(child, hwndTop, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
+	ok, _, callErr := procSetWindowPo.Call(child, hwndTop, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
+	if ok == 0 {
+		return fmt.Errorf("raise window: SetWindowPos: %w", callErr)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------
@@ -303,36 +321,58 @@ func createClipContainer(parent uintptr) (uintptr, error) {
 
 // moveWindow positions a window in its parent's client coordinates
 // without touching z-order or activation.
-func moveWindow(hwnd uintptr, r rect) {
+func moveWindow(hwnd uintptr, r rect) error {
 	if hwnd == 0 {
-		return
+		return nil
 	}
-	_, _, _ = procSetWindowPo.Call(
+	ok, _, callErr := procSetWindowPo.Call(
 		hwnd, 0,
 		uintptr(int32(r.Left)), uintptr(int32(r.Top)),
 		uintptr(int32(r.width())), uintptr(int32(r.height())),
 		swpNoZOrder|swpNoActivate,
 	)
+	if ok == 0 {
+		return fmt.Errorf("SetWindowPos: %w", callErr)
+	}
+	return nil
 }
 
-// showWindow shows or hides a window without activating it.
-func showWindow(hwnd uintptr, visible bool) {
+// showWindow shows or hides a window without activating it, and answers
+// an error unless the window's own style then says it is shown or hidden
+// as asked: ShowWindow's result is the window's previous state, not
+// whether it did anything.
+func showWindow(hwnd uintptr, visible bool) error {
 	if hwnd == 0 {
-		return
+		return errors.New("ShowWindow: no window")
 	}
 	cmd := uintptr(swHide)
 	if visible {
 		cmd = swShowNA
 	}
 	_, _, _ = procShowWindow.Call(hwnd, cmd)
+	if styleVisible(hwnd) != visible {
+		return fmt.Errorf("ShowWindow(%d) left the window's visibility unchanged", cmd)
+	}
+	return nil
+}
+
+// styleVisible reports whether a window's own style is shown, whatever its
+// parent's.
+func styleVisible(hwnd uintptr) bool {
+	index := gwlStyle
+	style, _, _ := procGetWindowLongPtr.Call(hwnd, uintptr(index))
+	return style&wsVisible != 0
 }
 
 // destroyWindow tears a container down. A leaked container is invisible
 // and eats every click over its rectangle, so this runs on every close
-// path.
-func destroyWindow(hwnd uintptr) {
+// path. No window is nothing to destroy.
+func destroyWindow(hwnd uintptr) error {
 	if hwnd == 0 {
-		return
+		return nil
 	}
-	_, _, _ = procDestroyWindow.Call(hwnd)
+	if ok, _, callErr := procDestroyWindow.Call(hwnd); ok == 0 {
+		return fmt.Errorf("DestroyWindow: %w", callErr)
+	}
+	return nil
 }

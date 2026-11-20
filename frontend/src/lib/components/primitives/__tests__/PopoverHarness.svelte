@@ -21,6 +21,7 @@
     restoreFocusToAnchor = false,
     withClipBoundary = false,
     dismissOnAnchorClick = false,
+    takesKeyboard = true,
   }: {
     open?: boolean;
     placement?: PopoverPlacement;
@@ -33,6 +34,7 @@
     /** Wrap the anchor in a `[data-popover-clip-boundary]` container. */
     withClipBoundary?: boolean;
     dismissOnAnchorClick?: boolean;
+    takesKeyboard?: boolean;
   } = $props();
 
   let anchor: HTMLButtonElement | undefined = $state(undefined);
@@ -54,6 +56,7 @@
   {matchAnchorWidth}
   {claimTab}
   {dismissOnAnchorClick}
+  {takesKeyboard}
   restoreFocusTo={restoreFocusToAnchor ? anchor : undefined}
 >
   {#snippet children()}

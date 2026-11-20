@@ -76,6 +76,8 @@ export interface SequenceGate {
    * admitted and records nothing.
    */
   admit(key: string, seq: number | undefined, launch: string): boolean;
+  /** Forgets `key`, whose values are no longer kept: the next one is admitted. */
+  forget(key: string): void;
   /** Forgets every key. */
   reset(): void;
 }
@@ -89,6 +91,9 @@ export function createSequenceGate(): SequenceGate {
       if (current && current.launch === launch && seq <= current.seq) return false;
       held.set(key, { launch, seq });
       return true;
+    },
+    forget(key) {
+      held.delete(key);
     },
     reset() {
       held.clear();

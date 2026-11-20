@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"time"
@@ -292,7 +293,9 @@ func (u *updateCommandRun) signal(name string) {
 			u.runner.logf("wsllauncher: send SIG%s to %s (pid %d): %v", name, u.command, u.pid, err)
 		}
 	case <-timer.C:
-		_ = cmd.Process.Kill()
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			u.runner.logf("wsllauncher: stop the stalled SIG%s sender for %s (pid %d): %v", name, u.command, u.pid, err)
+		}
 		<-done
 		u.runner.logf("wsllauncher: sending SIG%s to %s (pid %d) did not finish within %s", name, u.command, u.pid, updateSignalTimeout)
 	}

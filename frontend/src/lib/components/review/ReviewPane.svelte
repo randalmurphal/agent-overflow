@@ -326,6 +326,7 @@
     stats={diffStats}
     {collapsibleFileCount}
     onClose={ctx ? () => ctx?.close() : undefined}
+    promotePaneId={companionPaneId}
   />
   {#if findKey && review}
     <ReviewPaneFind

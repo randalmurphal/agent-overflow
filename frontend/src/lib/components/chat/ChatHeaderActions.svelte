@@ -11,6 +11,7 @@
   // the two badges read the resulting status through `pane.gitStatus`, which
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
+  import { untrack } from 'svelte';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Globe from '@lucide/svelte/icons/globe';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -52,11 +53,11 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
-    browserCompanionAct,
-    browserCompanionState,
-    canUseNativeBrowser,
+    browserPresentationWanted,
     hydrateBrowserCompanionState,
+    reconcileBrowserCompanionForPane,
   } from '../../stores/browserCompanion.svelte';
+  import { browserHeaderButton, runBrowserHeaderIntent } from '../../stores/browserActions';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -147,17 +148,14 @@
     const project = getProject(projectId);
     if (!project) return null;
     return {
-      id: project.project.id,
       name: getProjectLabelText(project.project.id) || project.project.name,
       path: project.project.path,
     };
   });
 
-  // The design panel needs a real thread row — its preview URL keys off it.
-  // The REVIEW panel does not: its subject is the checkout, which a draft
-  // placeholder names as well as a persisted row does. Drawer terminals are
-  // allowed on placeholders too; they use the synthetic placeholder id and
-  // are cleaned up or migrated by ThreadPane.
+  // Take control mirrors the thread's running session, which a draft
+  // placeholder does not have yet: the press asks for the thread to be
+  // started first.
   async function ensureThreadThenToggle(toggle: () => void): Promise<void> {
     if (!pane.threadId) {
       addToast('info', 'Start the thread before opening this panel.');
@@ -166,39 +164,24 @@
     toggle();
   }
 
-  // The browser chip renders only while this thread has live browser pages,
-  // so closing the companion pane no longer strands them: the chip is the
-  // reopen door. Hidden entirely when no pages exist — a control that could
-  // only say "there is nothing to show" is noise. The state read is per-key
-  // reactive, and the hydration read fills in what the ephemeral
-  // `browser:companion-state` channel cannot replay to a fresh UI.
-  // The chip's own gate, not only the hydration read's: the pane is a native
-  // view this machine paints, so a page that cannot host one offers no chip
-  // however many pages the thread has.
+  // The browser chip: how it renders and what a press means are one answer
+  // (browserHeaderButton), its intent chosen from what it shows. The
+  // hydration read fills in what the ephemeral `browser:companion-state`
+  // channel cannot replay to a fresh UI, and a state the layout could not
+  // present when it arrived (compact) is presented once it can.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserState = $derived(
-    threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser)
-      ? browserCompanionState(threadIdForBrowser)
-      : null,
-  );
-  let browserVisible = $derived(browserState?.visible === true);
+  let browserButton = $derived(browserHeaderButton(threadIdForBrowser));
+  let browserWanted = $derived(threadIdForBrowser !== '' && browserPresentationWanted(threadIdForBrowser));
 
   $effect(() => {
     if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
   });
 
-  async function toggleBrowserCompanion(): Promise<void> {
+  $effect(() => {
     const threadId = threadIdForBrowser;
-    const state = browserState;
-    if (!threadId || !state) return;
-    // A hidden companion has no pane to carry the banner, so the refusal
-    // comes back here and goes to a toast.
-    const failure = await browserCompanionAct(threadId, {
-      kind: browserVisible ? 'hide' : 'show',
-      pageId: browserVisible ? '' : (state.activePageId ?? ''),
-    });
-    if (failure) addErrorToast(failure.error, failure.cause);
-  }
+    if (!browserWanted) return;
+    untrack(() => reconcileBrowserCompanionForPane(pane.paneId, threadId));
+  });
 
   // Plain click on the PR badge opens the companion review pane on the PR
   // scope; mod+click falls through to the external forge link. False (no
@@ -427,17 +410,20 @@
     </Button>
   {/if}
 
-  {#if browserState}
-    <!-- Browser companion toggle. Present only while the thread's shared
-         browser session has live pages; reopens the pane after the user
-         closed it (closing the pane never closes the pages). -->
+  {#if browserButton.rendered}
+    {@const intent = browserButton.intent}
+    <!-- Browser companion toggle, on the desktop only (compact has no
+         browser row). Pressed while the pane is in the layout, and a press
+         then hides it; otherwise a press shows the tabs, or opens the pane
+         on a new tab when there are none. Closing the pane never closes the
+         pages. -->
     <Button
       variant="secondary"
       size="xs"
-      pressed={browserVisible}
-      ariaLabel="Toggle browser pane"
-      title="Toggle browser pane"
-      onclick={() => void toggleBrowserCompanion()}
+      pressed={browserButton.pressed}
+      ariaLabel={browserButton.label}
+      title={browserButton.label}
+      onclick={() => void runBrowserHeaderIntent(intent)}
       testId="browser-companion-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
     >

@@ -12,10 +12,14 @@ import { noteThread } from '../transport/entityIndex';
 import { getActiveTurn, getThreadStatus, projectTurnStarted } from './threadStatuses.svelte';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import type { TransportHello } from '../transport/wsClient';
+import { refreshBrowserCompanionStates } from './browserCompanion.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { __setBackendStatusForTest, __setTransportHelloForTest } from './transportStatus.svelte';
 
 vi.mock('./eventsThreadRows', () => ({ refreshSidebarProjections: vi.fn() }));
 vi.mock('./settings.svelte', async (original) => ({ ...await original<object>(), mirrorFrontendPreferences: vi.fn(), loadSettings: vi.fn() }));
 vi.mock('./workflowRuns.svelte', () => ({ refreshWorkflowRunsSoon: vi.fn(), isWorkflowOverlayLoaded: () => false, resyncWorkflowEngineState: vi.fn() }));
+vi.mock('./browserCompanion.svelte', async (original) => ({ ...await original<object>(), refreshBrowserCompanionStates: vi.fn() }));
 
 let stop: (() => void) | undefined;
 beforeEach(() => { resetStagedBackends(); vi.clearAllMocks(); });
@@ -163,4 +167,27 @@ it('rechecks the owning computer grants on every reconnect', async () => {
     else expect(read).not.toHaveBeenCalled();
     expect(activity).toHaveBeenCalledTimes(granted ? 1 : 0);
   }
+});
+
+// The browser's state channel has no replay, so each connection of the
+// home backend reads the browser state of the threads on screen again; a
+// paired computer's threads have no native browser here.
+it('reads the browser state again on every home connection edge, and on no other computer\'s', async () => {
+  const gpu = stageBackend({ id: 'gpu', status: 'reconnecting', hello: { backendId: 'gpu' } as TransportHello });
+  __setTransportHelloForTest({ backendId: '' } as TransportHello, HOME_BACKEND);
+  __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+  stop = installComputerHydration();
+  await Promise.resolve();
+  vi.mocked(refreshBrowserCompanionStates).mockClear();
+  gpu.setStatus('connected');
+  await Promise.resolve();
+  expect(refreshBrowserCompanionStates).not.toHaveBeenCalled();
+  __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+  await Promise.resolve();
+  expect(refreshBrowserCompanionStates).toHaveBeenCalledTimes(1);
+  __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+  __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+  await Promise.resolve();
+  expect(refreshBrowserCompanionStates).toHaveBeenCalledTimes(2);
+  __setTransportHelloForTest(null, HOME_BACKEND);
 });

@@ -17,6 +17,7 @@
   import MenuSectionHeader from '../primitives/MenuSectionHeader.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
 
   // The review pane's toolbar: the scope selectors, the diff's counts,
   // collapse-all, the view-options menu, reload, and close (or Back on a
@@ -37,9 +38,12 @@
     stats: { files: number; additions: number; deletions: number };
     collapsibleFileCount: number;
     onClose?: () => void;
+    /** The review's companion pane id, for the maximize control; absent on
+     * the Pull requests page, which is not a companion. */
+    promotePaneId?: string | null;
   }
 
-  let { review, workspace, threadId, branches, gitStatus, stats, collapsibleFileCount, onClose }: Props = $props();
+  let { review, workspace, threadId, branches, gitStatus, stats, collapsibleFileCount, onClose, promotePaneId = null }: Props = $props();
 
   // The "..." menu: view toggles that are set once per reading session
   // (whitespace, wrap, split), off the toolbar so the row fits a phone.
@@ -363,6 +367,9 @@
     {/if}
   </button>
 
+  {#if promotePaneId}
+    <PanePromoteButton paneId={promotePaneId} testId="review-promote" />
+  {/if}
   {#if onClose}
     <!-- Close sits past a divider so it reads as "leave", not as one more
          view toggle in the run. Same close the header badge / chord perform;

@@ -14,6 +14,7 @@
 </script>
 
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // The find bar every pane kind shares. Mounted directly under the pane's
   // header, full pane width, in the flow, so it pushes the content down
   // rather than covering it. It renders only while its pane's find is open
@@ -142,7 +143,7 @@
   }
 
   function handleInputKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Enter' || isImeComposingEvent(event)) return;
+    if (!isLocalEnter(event) || isImeComposingEvent(event)) return;
     event.preventDefault();
     if (stepping) {
       stepPaneFind(paneId, event.shiftKey ? -1 : 1);

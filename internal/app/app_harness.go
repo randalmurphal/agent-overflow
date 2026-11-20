@@ -172,56 +172,63 @@ func (h *harnessHost) BrowserPressKey(threadID, pageID string, chord keybindings
 	if h.app.browser.manager == nil {
 		return errors.New("browser manager unavailable")
 	}
-	access, err := h.app.browserAccess(threadID)
+	access, err := h.app.bindBrowser(threadID)
 	if err != nil {
 		return err
 	}
-	return h.app.browser.manager.HarnessPressKey(context.Background(), access, pageID, chord)
+	return h.app.browser.manager.HarnessPressKey(context.Background(), access, appbrowser.PageID(pageID), chord)
 }
 
 func (h *harnessHost) BrowserScroll(threadID, pageID string, x, y float64) error {
 	if h.app.browser.manager == nil {
 		return errors.New("browser manager unavailable")
 	}
-	access, err := h.app.browserAccess(threadID)
+	access, err := h.app.bindBrowser(threadID)
 	if err != nil {
 		return err
 	}
-	_, err = h.app.browser.manager.Scroll(context.Background(), access, pageID, "", x, y)
+	_, err = h.app.browser.manager.Scroll(context.Background(), access, appbrowser.PageID(pageID), "", x, y)
 	return err
 }
 
-func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error) {
+func (h *harnessHost) BrowserScreenshot(threadID, pageID string) (_ []byte, err error) {
 	if h.app.browser.manager == nil {
 		return nil, errors.New("browser manager unavailable")
 	}
-	access, err := h.app.browserAccess(threadID)
+	access, err := h.app.bindBrowser(threadID)
 	if err != nil {
 		return nil, err
 	}
 	manager := h.app.browser.manager
-	previous := manager.CompanionState(access)
-	mount, err := manager.AttachPane(access)
+	previous := manager.CompanionState(access.Caller())
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		return nil, err
 	}
+	// The thread's companion is put back as it was; a step of that which
+	// fails is in the answer, beside the capture's own error.
 	defer func() {
+		var restoreErr error
 		if previous.Visible != nil && *previous.Visible {
 			visible := true
-			_, _ = manager.Visibility(context.Background(), access, &visible, previous.ActivePageID)
+			_, restoreErr = manager.Visibility(context.Background(), access, &visible, appbrowser.PageID(previous.ActivePageID))
 		} else {
 			if previous.ActivePageID != "" {
-				_ = manager.ActivateCompanionPage(context.Background(), access, previous.ActivePageID)
+				restoreErr = manager.ActivateCompanionPage(context.Background(), access, appbrowser.PageID(previous.ActivePageID))
 			}
 			visible := false
-			_, _ = manager.Visibility(context.Background(), access, &visible, "")
+			_, hideErr := manager.Visibility(context.Background(), access, &visible, "")
+			restoreErr = errors.Join(restoreErr, hideErr)
 		}
-		manager.DetachPane(mount.ID)
+		manager.DetachPane(appbrowser.MountID(mount.ID))
+		if restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore the thread's browser pane: %w", restoreErr))
+		}
 	}()
 	// A native page with no mounted UI pane is deliberately parked at 1x1.
 	// Give the diagnostic a deterministic CSS rect so its capture remains
 	// meaningful even when a shell driver, rather than the frontend, invokes it.
-	if err := manager.SetPaneRect(mount.ID, appbrowser.PaneRect{
+	if err := manager.SetPaneRect(appbrowser.MountID(mount.ID), appbrowser.PaneRect{
 		X: 20, Y: 80, Width: 900, Height: 600,
 		ClipX: 20, ClipY: 80, ClipWidth: 900, ClipHeight: 600,
 		ViewportWidth: 1280, ViewportHeight: 800,
@@ -230,10 +237,10 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 		return nil, err
 	}
 	visible := true
-	if _, err := manager.Visibility(context.Background(), access, &visible, pageID); err != nil {
+	if _, err := manager.Visibility(context.Background(), access, &visible, appbrowser.PageID(pageID)); err != nil {
 		return nil, err
 	}
-	return manager.Screenshot(context.Background(), access, appbrowser.ScreenshotOptions{PageID: pageID})
+	return manager.Screenshot(context.Background(), access, appbrowser.ScreenshotOptions{PageID: appbrowser.PageID(pageID)})
 }
 
 func (h *harnessHost) CreateProject(path string) (store.Project, error) {

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  carryCaretIntoPane,
   focusPaneComposer,
-  focusPaneComposerIfEditableActive,
+  isEditingFocused,
+  isEditingFocusedIn,
   restorePickerFocus,
 } from './paneComposerFocus';
 
@@ -40,17 +42,43 @@ describe('paneComposerFocus', () => {
     expect(focusPaneComposer('left')).toBe(false);
   });
 
-  it('moves the caret only when an editable element was active', () => {
+  it('carries the caret to the composer, else to the pane section, without scrolling', () => {
     const target = mountPaneComposer('right');
-    const focus = vi.spyOn(target, 'focus');
+    const section = target.parentElement!;
+    const left = mountPaneComposer('left');
+    left.focus();
+    expect(isEditingFocused()).toBe(true);
+    expect(isEditingFocusedIn('left')).toBe(true);
+    expect(isEditingFocusedIn('right')).toBe(false);
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(target);
 
-    (document.activeElement as HTMLElement | null)?.blur?.();
-    focusPaneComposerIfEditableActive('right');
-    expect(focus).not.toHaveBeenCalled();
-
-    mountPaneComposer('left').focus();
-    focusPaneComposerIfEditableActive('right');
+    target.disabled = true;
+    left.focus();
+    const focus = vi.spyOn(section, 'focus');
+    carryCaretIntoPane('right');
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(document.activeElement).toBe(section);
+    expect(isEditingFocused()).toBe(false);
+    // Focusable only while it holds this focus: a click never lands on it.
+    left.focus();
+    expect(section.hasAttribute('tabindex')).toBe(false);
+  });
+
+  // The browser starts a keyboard scroll at the focused element, so a pane
+  // with no composer that takes input gets the caret in its scroller.
+  it('carries the caret to the pane\'s primary scroller before its section', () => {
+    const target = mountPaneComposer('right');
+    target.disabled = true;
+    const section = target.parentElement!;
+    const scroller = document.createElement('div');
+    scroller.tabIndex = -1;
+    scroller.setAttribute('data-pane-scroller', '');
+    section.appendChild(scroller);
+    mountPaneComposer('left').focus();
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(scroller);
+    expect(section.hasAttribute('tabindex')).toBe(false);
   });
 
   describe('restorePickerFocus', () => {

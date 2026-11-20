@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Shared pane title: the renameable, draggable title that sits at the
   // start of a pane header. Extracted from ChatHeader so the terminal pane
   // header (and any future pane surface) gets the exact same behavior —
   // left-click is the drag handle (reorder the pane), right-click renames
-  // inline (Enter submits via RenameThread, Escape/blur cancels). Pane focus
+  // inline (Enter and blur submit via RenameThread, Escape cancels). Pane focus
   // is marked on the header's separator by PaneHeaderLine, not here.
   //
   // Wrapper-less on purpose: it emits the input-or-button directly into the
@@ -19,6 +20,8 @@
   } from '../../stores/paneTitleRename';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { togglePanePromotion } from '../../stores/panes.svelte';
+  import { getPromotedPaneId } from '../../stores/paneLayout.svelte';
   import { assistantDisplayName } from '../../stores/assistants.svelte';
 
   interface Props {
@@ -156,8 +159,8 @@
   function handleKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing a CJK title; committing
     // the rename here would save the pre-composition text and exit edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       void commitRename();
     } else if (e.key === 'Escape') {
@@ -188,7 +191,8 @@
   {:else}
     <!-- Title is the pane drag-handle. Right-click renames; mousedown + drag
          reorders the pane. Left-click is reserved for the drag gesture so a
-         fast click doesn't accidentally start an edit. -->
+         fast click doesn't accidentally start an edit. Double-click
+         maximizes the pane or restores it, as a window title bar does. -->
     <button
       type="button"
       oncontextmenu={(event) => {
@@ -197,8 +201,13 @@
       }}
       draggable={onPaneDragStart != null && !isCompactLayout()}
       ondragstart={(event) => onPaneDragStart?.(event)}
+      ondblclick={() => {
+        if (!isCompactLayout()) togglePanePromotion(pane.paneId);
+      }}
       data-testid={titleTestId}
-      title={`${titleText} (right-click to rename)`}
+      title={isCompactLayout()
+        ? `${titleText} (right-click to rename)`
+        : `${titleText} (double-click to ${getPromotedPaneId() === pane.paneId ? 'restore' : 'maximize'}, right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         // In a narrow chat header the title gives way first, down to an

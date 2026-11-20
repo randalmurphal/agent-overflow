@@ -4,11 +4,27 @@ package browser
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 	"unsafe"
+
+	"agent-overflow/internal/browser/ids"
 )
+
+// holdDownloadEvents stops the engine's download reports from reaching the
+// Manager until the answered release runs, as a busy event queue would.
+func holdDownloadEvents(t *testing.T, manager *Manager) (release func()) {
+	t.Helper()
+	engine, ok := manager.engine.(*webkitEngine)
+	if !ok {
+		t.Fatalf("the manager runs %T, not WebKitGTK", manager.engine)
+	}
+	gate := make(chan struct{})
+	engine.downloadEvents.Go(func() { <-gate })
+	return func() { close(gate) }
+}
 
 // Engine selection is the one part of the WebKit engine that can be proven
 // without a display, and it is the part that decides what every OTHER
@@ -45,153 +61,82 @@ func TestNativeEngineRefusesToStartBeforeTheWindowExists(t *testing.T) {
 	engine.Interrupt()
 }
 
-// The pane background is the one piece of the presentation path that is pure
-// arithmetic, and the one whose failure is silent: an unparsed color leaves the
-// view white, which reads as a flash rather than as an error.
-func TestPaneBackgroundParsesSixDigitHexAndRefusesAnythingElse(t *testing.T) {
-	for _, tc := range []struct {
-		value string
-		want  webkitRGB
-	}{
-		{"#000000", webkitRGB{0, 0, 0}},
-		{"#ffffff", webkitRGB{1, 1, 1}},
-		{"#FFFFFF", webkitRGB{1, 1, 1}},
-		{"  #ff0000  ", webkitRGB{1, 0, 0}},
-		{"#00ff00", webkitRGB{0, 1, 0}},
-		{"#0000ff", webkitRGB{0, 0, 1}},
-		{"#1e2433", webkitRGB{30.0 / 255, 36.0 / 255, 51.0 / 255}},
-	} {
-		got, ok := webkitParseBackground(tc.value)
-		if !ok || got != tc.want {
-			t.Fatalf("webkitParseBackground(%q) = %v, %v; want %v", tc.value, got, ok, tc.want)
-		}
-	}
-	for _, value := range []string{
-		"", "   ", "#", "#fff", "#ff00ff00", "1e2433", "#12345g", "#12 456",
-		"rgb(0,0,0)", "transparent", "#+00000", "#0x0000",
-	} {
-		if got, ok := webkitParseBackground(value); ok {
-			t.Fatalf("webkitParseBackground(%q) = %v, true; want no answer", value, got)
-		}
-	}
-}
-
-// A background is pushed once per change, never per reported rect: the frontend
-// reports a rect every changed frame, and a GTK dispatch per frame is exactly
-// what the pane dedupe exists to avoid.
-func TestPaneBackgroundIsPushedOnlyWhenItChanges(t *testing.T) {
-	var st webkitPaneState
-	if _, paint := st.takeBackground(PaneRect{}); paint {
-		t.Fatal("a rect with no background must not push a color")
-	}
-	color, paint := st.takeBackground(PaneRect{Background: "#102030"})
-	if !paint || color != (webkitRGB{16.0 / 255, 32.0 / 255, 48.0 / 255}) {
-		t.Fatalf("first background = %v, %v", color, paint)
-	}
-	if _, paint := st.takeBackground(PaneRect{Background: "#102030"}); paint {
-		t.Fatal("an unchanged background must not push again")
-	}
-	if _, paint := st.takeBackground(PaneRect{}); paint {
-		t.Fatal("a rect that stopped carrying a background must leave the last color alone")
-	}
-	if _, paint := st.takeBackground(PaneRect{Background: "#405060"}); !paint {
-		t.Fatal("a changed background must push")
-	}
-}
-
-// The dedupe compares the whole placement, so a clip that moves while the rect
-// holds still, or a scale that changes, still re-presents. Losing that would
-// freeze the crop against a scroll.
-func TestPaneDedupeSeesAClipThatMovedUnderAStillRect(t *testing.T) {
-	rect := PaneRect{X: 10, Y: 20, Width: 300, Height: 400, ClipX: 10, ClipY: 20, ClipWidth: 300, ClipHeight: 400}
-	placement := PanePlacement{Rect: rect, PageWidth: 1280, PageHeight: 720, Scale: 0.5}
-	st := webkitPaneState{placement: placement, applied: placement, appliedShown: true, shown: true}
-	if !webkitPaneApplied(st) {
-		t.Fatal("an unchanged placement must stay deduped")
-	}
-	st.placement.Rect.ClipY, st.placement.Rect.ClipHeight = 60, 360
-	if webkitPaneApplied(st) {
-		t.Fatal("a moved clip must not be treated as already applied")
-	}
-	st.placement = placement
-	st.placement.Rect.Background = "#101010"
-	if webkitPaneApplied(st) {
-		t.Fatal("a changed background must not be treated as already applied")
-	}
-	st.placement = placement
-	st.placement.Scale = 0.25
-	if webkitPaneApplied(st) {
-		t.Fatal("a changed scale must not be treated as already applied")
-	}
-}
-
 func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	engine := newNativeEngine(t.TempDir(), ManagerOptions{
 		NativeWindow: func() unsafe.Pointer { return nil },
 	}, engineEvents{})
-	if _, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()}); err == nil {
+	if _, err := engine.NewProfile(context.Background(), profileOptions{Jar: jarKey(t.TempDir()), Ephemeral: true}); err == nil {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
 	}
 }
 
 // A popup loads the moment WebKit creates it, before the Manager adopts it,
-// so its first navigations reach Go with no page id. What answers them is the
-// file boundary: the workspace's policy until adoption, the page's own after,
-// and a refusal once either is gone.
-func TestWebKitNavigationPolicyCoversAPopupBeforeAdoption(t *testing.T) {
+// so the glue names its opener's page for its first navigations
+// (ao_view_policy_page_id). Every navigation answers with the policy of the
+// page named: its own once adopted, its opener's before. A page that is gone,
+// or a view with none, refuses.
+func TestWebKitNavigationPolicyIsThePagesOrItsOpeners(t *testing.T) {
 	const (
-		inside   = "file:///home/dev/repo/index.html"
-		outside  = "file:///home/dev/secret.txt"
-		pageOnly = "https://page.test/"
+		inside  = "file:///home/dev/repo/index.html"
+		outside = "file:///home/dev/secret.txt"
 	)
-	profile := &webkitProfile{id: webkitProfileSeq.Add(1), allow: func(url string) bool { return url == inside }}
-	webkitProfileByID.Store(profile.id, profile)
-	t.Cleanup(func() { webkitProfileByID.Delete(profile.id) })
-	page := &webkitPage{id: webkitPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == pageOnly }}}
+	page := &webkitPage{id: webkitPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == inside }}}
 	webkitPageByID.Store(page.id, page)
 	t.Cleanup(func() { webkitPageByID.Delete(page.id) })
-	closedPage, disposedProfile := webkitPageSeq.Add(1), webkitProfileSeq.Add(1)
+	closedPage := webkitPageSeq.Add(1)
 
 	for _, tc := range []struct {
-		name              string
-		pageID, profileID uint64
-		url               string
-		want              bool
+		name   string
+		pageID uint64
+		url    string
+		want   bool
 	}{
-		{"an unadopted popup loads a workspace file", 0, profile.id, inside, true},
-		{"an unadopted popup is refused a file outside the workspace", 0, profile.id, outside, false},
-		{"an adopted page answers with its own policy", page.id, profile.id, pageOnly, true},
-		{"an adopted page does not fall back to the workspace's policy", page.id, profile.id, inside, false},
-		{"a closed page refuses", closedPage, profile.id, inside, false},
-		{"a popup of a disposed profile refuses", 0, disposedProfile, inside, false},
+		{"a page or a popup's opener allows its workspace's file", page.id, inside, true},
+		{"a page or a popup's opener refuses a file outside it", page.id, outside, false},
+		{"a closed page or opener refuses", closedPage, inside, false},
+		{"a view with no page and no opener refuses", 0, inside, false},
 	} {
-		if got := webkitNavigationAllowed(tc.pageID, tc.profileID, tc.url); got != tc.want {
+		if got := webkitNavigationAllowed(tc.pageID, tc.url); got != tc.want {
 			t.Errorf("%s: allowed = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
 
-// The workspace policy is what answers for a popup before adoption, so a
-// profile without one must not exist.
-func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
+// A download names the popup it began in by the handle the Manager adopts
+// the popup under: a held popup's by the number its view keeps, with the
+// opener it was held with, and an adopted one's by its page. A download of
+// any other page names none.
+func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 	engine := newNativeEngine(t.TempDir(), ManagerOptions{
 		NativeWindow: func() unsafe.Pointer { return nil },
 	}, engineEvents{}).(*webkitEngine)
-	engine.started = true
-	_, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
-		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
+	profile := &webkitProfile{engine: engine, handle: "profile-1"}
+	view := unsafe.Pointer(new(byte))
+	n, handle := engine.holdPopup(view, "page-1")
+	if handle != pageHandle(n) {
+		t.Fatalf("held as %s, numbered %d", handle, n)
+	}
+	want := downloadStart{Popup: handle, Openers: []ids.PageHandle{"page-1"}, Profile: "profile-1"}
+	if got := profile.downloadStart(nil, n); !reflect.DeepEqual(got, want) {
+		t.Errorf("a held popup's download started as %+v, want %+v", got, want)
+	}
+	// Taken for adoption: the number still names it.
+	engine.takePopup(handle)
+	if got := profile.downloadStart(nil, n); got.Popup != handle || got.Profile != "profile-1" {
+		t.Errorf("a popup being adopted's download started as %+v", got)
+	}
+	adopted := &webkitPage{handle: "page-2", popup: handle, opener: "page-1"}
+	want = downloadStart{Frame: "page-2", Popup: handle, Openers: []ids.PageHandle{"page-1"}, Profile: "profile-1"}
+	if got := profile.downloadStart(adopted, n); !reflect.DeepEqual(got, want) {
+		t.Errorf("an adopted popup's download started as %+v, want %+v", got, want)
+	}
+	if got := profile.downloadStart(&webkitPage{handle: "page-1"}, 0); !reflect.DeepEqual(got, downloadStart{Frame: "page-1"}) {
+		t.Errorf("a page's download started as %+v", got)
 	}
 }
 
-// holdPopupAdoption makes the Manager adopt each popup only after hold, so
-// the popup decides its first navigations with no page: the window a
-// profile's policy covers. Call it before the Manager opens a page.
+// holdPopupAdoption makes the Manager adopt each popup only after hold
+// (heldAdoption). Call it before the Manager opens a page.
 func holdPopupAdoption(manager *Manager, hold time.Duration) {
-	engine := manager.engine.(*webkitEngine)
-	adopt := engine.events.PopupOpened
-	engine.events.PopupOpened = func(popup enginePopup) {
-		time.Sleep(hold)
-		adopt(popup)
-	}
+	manager.engine.(*webkitEngine).events.PopupOpened = heldAdoption(manager, hold)
 }

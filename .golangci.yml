@@ -2,12 +2,39 @@
 # new issues only (--new-from-patch) until the existing backlog is cleared,
 # then the gate widens to the whole tree. The default linter set is on:
 # errcheck, govet, ineffassign, staticcheck and unused. No findings are
-# excluded here: an unchecked Close in this repo is a real finding under
-# its cleanup rule, not noise.
+# excluded here beyond forbidigo's scope below: an unchecked Close in this
+# repo is a real finding under its cleanup rule, not noise.
+#
+# exhaustive is on in its strict form: a switch over an enum names every
+# constant, and a default case does not stand in for one. It reports at the
+# switch, so under the new-issues gate a constant added to an enum is caught
+# only in switches the change touches until the backlog is cleared.
+#
+# forbidigo keeps the browser's native engines on uicall: in
+# internal/browser only the adapter that builds uiThread calls Wails'
+# Invoke* (internal/browser/AGENTS.md). Other packages post to their own
+# UI loops, so the rule is scoped to that tree.
 version: "2"
 
 run:
   timeout: 20m
+
+linters:
+  enable:
+    - exhaustive
+    - forbidigo
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^application\.Invoke
+          pkg: ^github\.com/wailsapp/wails/v3/pkg/application$
+          msg: post to the UI thread through uiThread (internal/browser/native_uithread.go), whose Run withdraws an operation it did not start in time
+  exclusions:
+    rules:
+      - path-except: ^internal/browser/
+        linters:
+          - forbidigo
 
 issues:
   max-issues-per-linter: 0

@@ -39,7 +39,6 @@ import {
   type PaneLayoutItem,
 } from './paneLayout.svelte';
 import {
-  closeFocusedPaneOrCompanion,
   closePaneById,
   installCompanionPanes,
   isCompanionOpen,
@@ -331,7 +330,7 @@ describe('closing a tool', () => {
 
   it('routes the pane close control and pane.close to the tool close', () => {
     threadLayout([threadItem('left'), toolItem('workflows'), toolItem('pulls')], 'tool-pulls');
-    closeFocusedPaneOrCompanion();
+    closePaneById('tool-pulls');
     expect(layoutIds()).toEqual(['left', 'tool-workflows']);
     expect(getFocusedPaneId()).toBe('tool-workflows');
     closePaneById('tool-workflows');

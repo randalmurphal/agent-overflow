@@ -6,12 +6,15 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,11 +37,21 @@ type fixture struct {
 	endpoint *Endpoint
 	server   *httptest.Server
 	ctx      context.Context
+	// cancel ends every tunnel connection's ServeCDPTunnel, and served
+	// hears each one return.
+	cancel context.CancelFunc
+	served chan struct{}
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	endpoint, err := New(Config{Logf: func(format string, args ...any) { t.Logf(format, args...) }})
+	return newLoggingFixture(t, func(format string, args ...any) { t.Logf(format, args...) })
+}
+
+// newLoggingFixture is newFixture with its endpoint logging to logf.
+func newLoggingFixture(t *testing.T, logf func(string, ...any)) *fixture {
+	t.Helper()
+	endpoint, err := New(Config{Logf: logf})
 	if err != nil {
 		t.Fatalf("new endpoint: %v", err)
 	}
@@ -46,17 +59,29 @@ func newFixture(t *testing.T) *fixture {
 	endpoint.openTimeout = 500 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Each tunnel connection's handler logs to the test as it returns, and
+	// the server's close does not wait for a hijacked connection's: the
+	// test ends once the cancel has ended them all.
+	var handlers sync.WaitGroup
+	t.Cleanup(handlers.Wait)
 	t.Cleanup(cancel)
 
+	served := make(chan struct{}, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
 		}
 		endpoint.ServeCDPTunnel(ctx, conn)
+		select {
+		case served <- struct{}{}:
+		default:
+		}
 	}))
 	t.Cleanup(server.Close)
-	return &fixture{t: t, endpoint: endpoint, server: server, ctx: ctx}
+	return &fixture{t: t, endpoint: endpoint, server: server, ctx: ctx, cancel: cancel, served: served}
 }
 
 // dialLocal is what chromedp does: an ordinary TCP connection to the
@@ -430,6 +455,70 @@ func TestRelayClosesTheLocalConnectionOnAStreamError(t *testing.T) {
 	}
 }
 
+// stallStream sends n chunks of data for stream id, whose local reader
+// never reads: far more than loopback socket buffers hold, so the stream's
+// write to its socket parks.
+func (p *peer) stallStream(id uint32, n int) {
+	p.t.Helper()
+	chunk := make([]byte, webview2host.TunnelChunkBytes)
+	for range n {
+		p.sendData(id, chunk)
+	}
+}
+
+// A stream whose local reader stopped holds no other stream's data, and
+// cancelling the tunnel ends its session while that stream's write is
+// parked.
+func TestRelayAStalledStreamHoldsNoOtherStream(t *testing.T) {
+	f := newFixture(t)
+	f.endpoint.streamBounds = webview2host.TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: time.Hour}
+	p := f.connect()
+
+	stalled := f.dialLocal()
+	stalledID := p.acceptOpen()
+	live := f.dialLocal()
+	liveID := p.acceptOpen()
+	_ = stalled
+
+	p.stallStream(stalledID, 1024)
+	p.sendData(liveID, []byte("still-flowing"))
+	if got := string(readN(t, live, len("still-flowing"))); got != "still-flowing" {
+		t.Fatalf("the live stream saw %q", got)
+	}
+
+	f.cancel()
+	select {
+	case <-f.served:
+	case <-time.After(testDeadline):
+		t.Fatal("the tunnel's cancel did not end its session while a stream's write was parked")
+	}
+}
+
+// A stream whose local reader stopped closes, its launcher told, once its
+// queued data passes the backlog bound or one write passes its timeout.
+func TestRelayClosesAStreamItsReaderStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bounds webview2host.TunnelStreamBounds
+	}{
+		{"backlog", webview2host.TunnelStreamBounds{Backlog: 1 << 20, WriteTimeout: time.Hour}},
+		{"write timeout", webview2host.TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: 50 * time.Millisecond}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.endpoint.streamBounds = tc.bounds
+			p := f.connect()
+			_ = f.dialLocal()
+			id := p.acceptOpen()
+
+			p.stallStream(id, 512)
+			if got := p.nextControl(); got.Op != webview2host.TunnelClose || got.StreamID != id {
+				t.Fatalf("expected a close for stream %d, got %+v", id, got)
+			}
+		})
+	}
+}
+
 func TestRelayClosesTheStreamWhenTheLocalConnectionEnds(t *testing.T) {
 	f := newFixture(t)
 	p := f.connect()
@@ -556,5 +645,62 @@ func TestRewriteDebuggerURL(t *testing.T) {
 		if got, err := RewriteDebuggerURL(raw, addr); err == nil {
 			t.Fatalf("%q was accepted as %q", raw, got)
 		}
+	}
+}
+
+// A stream the launcher closed while its write to the local socket is
+// parked stays the session's until that writer finishes: it still counts
+// toward the stream cap, and the tunnel's cancel ends the session at once.
+func TestRelayADrainingStreamIsOwnedUntilItsWriterFinishes(t *testing.T) {
+	f := newFixture(t)
+	f.endpoint.streamBounds = webview2host.TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: time.Hour}
+	p := f.connect()
+
+	_ = f.dialLocal()
+	stalledID := p.acceptOpen()
+	p.stallStream(stalledID, 1024)
+	p.send(webview2host.TunnelControl{Op: webview2host.TunnelClose, StreamID: stalledID})
+	for range webview2host.MaxTunnelStreams - 1 {
+		_ = f.dialLocal()
+		p.acceptOpen()
+	}
+	overflow := f.dialLocal()
+	if err := overflow.SetReadDeadline(time.Now().Add(testDeadline)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := overflow.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("a connection past the cap was not closed while a stream drains: %v", err)
+	}
+
+	f.cancel()
+	select {
+	case <-f.served:
+	case <-time.After(testDeadline):
+		t.Fatal("the tunnel's cancel waited for a draining stream's parked write")
+	}
+}
+
+// A data frame with no data is refused at the decoder, before its stream's
+// queue, whose bound counts only bytes, and the stream carries on.
+func TestRelayQueuesNoEmptyDataFrame(t *testing.T) {
+	var mu sync.Mutex
+	var logged []string
+	f := newLoggingFixture(t, func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	p := f.connect()
+	local := f.dialLocal()
+	id := p.acceptOpen()
+	p.sendData(id, nil)
+	p.sendData(id, []byte("after"))
+	if got := string(readN(t, local, len("after"))); got != "after" {
+		t.Fatalf("the stream saw %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, webview2host.ErrEmptyDataFrame.Error()) }) {
+		t.Fatalf("an empty data frame was not refused: %q", logged)
 	}
 }

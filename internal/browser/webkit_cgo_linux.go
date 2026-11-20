@@ -12,17 +12,18 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/destination"
+	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
-
-	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // The only cgo in the WebKitGTK engine. Everything above it — the engine, the
@@ -32,47 +33,23 @@ import (
 // Two rules this file exists to enforce:
 //
 //  1. EVERY GTK or WebKit call happens on the GTK main thread, through
-//     `gtkDo`. Wails owns that thread; calling into GTK from a Go goroutine is
+//     `uiThread`: Run for an operation, Release for giving up what is held.
+//     Wails owns that thread; calling into GTK from a Go goroutine is
 //     undefined behaviour, not a race that shows up under load.
 //  2. No Go pointer is ever handed to C. Callbacks address a page or a profile
 //     by a uint64 id and this file resolves it, which is also what makes a
 //     callback arriving after teardown a lookup miss rather than a crash.
 
-// gtkCallTimeout bounds a main-thread dispatch. The app loop can already be
-// gone during shutdown, and a browser operation must fail rather than park a
-// goroutine on a queue nothing will drain again.
-const gtkCallTimeout = 10 * time.Second
-
-// gtkDo runs fn on the GTK main thread and reports whether it completed. A
-// false answer means the loop did not run it in time; fn may still run later,
-// so fn must only write to variables the caller reads after a true answer.
-// gtkAlive reports whether there is an app loop to dispatch to at all. It is
-// the difference between "this will never run" and "this did not run yet",
-// which is what decides who owns a C allocation a closure would have freed.
-func gtkAlive() bool { return application.Get() != nil }
-
-// gtkOnMainThread answers whether gtkDo would run its closure inline right now —
-// true only on the GTK thread, where Wails' dispatch short-circuits.
+// gtkOnMainThread answers whether a closure posted to uiThread would run
+// inline right now: true only on the GTK thread, where Wails' dispatch
+// short-circuits.
 func gtkOnMainThread() bool { return C.ao_wk_on_main_thread() == 1 }
 
-func gtkDo(fn func()) bool {
-	if !gtkAlive() {
-		return false
-	}
-	done := make(chan struct{})
-	application.InvokeAsync(func() {
-		defer close(done)
-		fn()
-	})
-	select {
-	case <-done:
-		return true
-	case <-time.After(gtkCallTimeout):
-		return false
-	}
-}
-
 var errGTKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
+
+// errProfileClosedBeforeView is a new page's answer when its profile was
+// disposed before its view was built (webkitNewView).
+var errProfileClosedBeforeView = errors.New("browser: workspace profile closed before the page's view was built")
 
 // webkitView is a live page's view as the page's operations reach it. The
 // page's lifetime ends (webkitPage.discard) before Close queues the view's
@@ -83,16 +60,17 @@ type webkitView struct {
 	life context.Context
 }
 
-// do runs fn with the view on the GTK thread, unless the page closed first.
+// do runs fn with the view on the GTK thread, unless the page closed first
+// or the thread did not take it in time, after which fn never runs.
 func (v webkitView) do(fn func(view unsafe.Pointer)) error {
 	closed := false
-	if !gtkDo(func() {
+	if uiThread.Run(func() {
 		if v.life.Err() != nil {
 			closed = true
 			return
 		}
 		fn(v.ptr)
-	}) {
+	}) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
 	if closed {
@@ -179,33 +157,33 @@ func aoWebKitSnapshotDone(callID C.uint64_t, pixels unsafe.Pointer, width, heigh
 }
 
 //export aoWebKitAllow
-func aoWebKitAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
+func aoWebKitAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 	target := webkitTakeString(uri)
-	page, profile := uint64(pageID), uint64(profileID)
+	page := uint64(pageID)
 	// Answered OFF the GTK thread: navigation authority is the Manager's, and
 	// asking it takes Manager locks — blocking the GTK thread on a Go lock is
 	// how the whole window freezes behind one browser operation. The delegate
 	// deferred the decision with a reference held for exactly this.
 	go func() {
 		allow := C.int(0)
-		if webkitNavigationAllowed(page, profile, target) {
+		if webkitNavigationAllowed(page, target) {
 			allow = 1
 		}
-		// A loop that is gone takes the page with it, so an unanswered
-		// decision dies with the process rather than blocking anything.
-		gtkDo(func() { C.ao_wk_policy_finish(decision, allow) })
+		// The decision's reference is given up with its answer. A loop that
+		// is gone takes the page with it, so an unanswered decision dies
+		// with the process rather than blocking anything.
+		releasePolicyAnswer.release(uiThread, func() { C.ao_wk_policy_finish(decision, allow) })
 	}()
 }
 
-// webkitNavigationAllowed answers one navigation in a view. A page answers
-// with its own policy. A view with no page is a popup the Manager has not
-// adopted yet: it loads from creation, so its workspace's policy answers
-// until adoption stamps the page. A page or profile that is gone refuses.
-func webkitNavigationAllowed(pageID, profileID uint64, target string) bool {
-	if pageID == 0 {
-		profile := webkitLookupProfile(profileID)
-		return profile != nil && profile.allow(target)
-	}
+// webkitNavigationAllowed answers one navigation in a view with the policy
+// of the page the glue names for it (ao_view_policy_page_id): the view's own
+// page, or for a popup the Manager has not adopted yet, which loads from
+// creation, its opener's. The opener's workspace authority is the one the
+// adopted popup gets, so the file policy is the same before and after
+// adoption, whatever cookie jar the pages are in. A page that is gone, or a
+// view with none, refuses.
+func webkitNavigationAllowed(pageID uint64, target string) bool {
 	page := webkitLookupPage(pageID)
 	return page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target))
 }
@@ -225,9 +203,26 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	if page == nil {
 		return
 	}
-	page.noteLoad(location)
-	// Off the GTK thread: the Manager takes its own locks to route this.
-	go page.engine.events.PageInfoChanged(page.handle, location, name)
+	page.noteLoad()
+	if page.hooks.Info == nil {
+		return
+	}
+	// Numbered here, on the GTK thread, in the order the view changed; the
+	// Manager takes its own locks, so the report leaves the thread.
+	order := page.infoOrder.Add(1)
+	go page.hooks.Info(location, name, order)
+}
+
+//export aoWebKitPageLoading
+func aoWebKitPageLoading(pageID C.uint64_t, loading C.int) {
+	page := webkitLookupPage(uint64(pageID))
+	if page == nil || page.hooks.Loading == nil {
+		return
+	}
+	// Numbered here, on the GTK thread, in the order the view changed; the
+	// Manager takes its own locks, so the report leaves the thread.
+	order := page.loadOrder.Add(1)
+	go page.hooks.Loading(loading != 0, order)
 }
 
 //export aoWebKitDocumentCommitted
@@ -256,39 +251,76 @@ func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, he
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Held: held != 0, Composing: composing != 0}) {
+	if page.engine.events.KeyChord(page.handle, pressed, keyPress{Held: held != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
 }
 
 //export aoWebKitPageClosed
-func aoWebKitPageClosed(pageID C.uint64_t) {
-	if page := webkitLookupPage(uint64(pageID)); page != nil {
-		go page.engine.events.PageClosed(page.handle)
+func aoWebKitPageClosed(pageID, popupID, profileID C.uint64_t) {
+	if events, handle, ok := webkitViewOwner(uint64(pageID), uint64(popupID), uint64(profileID)); ok {
+		events.PageClosed(handle)
 	}
 }
 
+//export aoWebKitPageCrashed
+func aoWebKitPageCrashed(pageID, popupID, profileID C.uint64_t, reason *C.char) {
+	if events, handle, ok := webkitViewOwner(uint64(pageID), uint64(popupID), uint64(profileID)); ok {
+		events.PageCrashed(handle, C.GoString(reason))
+	}
+}
+
+// webkitViewOwner answers whom to tell what ended a view, on the GTK
+// thread: its page's handle once the view answers to one, and before
+// that, for a popup, the handle its number gives it, which its adoption
+// keeps (pageHandle). The Manager records either at once (engineEvents).
+func webkitViewOwner(pageID, popupID, profileID uint64) (engineEvents, ids.PageHandle, bool) {
+	if page := webkitLookupPage(pageID); page != nil {
+		return page.engine.events, page.handle, true
+	}
+	if popupID == 0 {
+		return engineEvents{}, "", false
+	}
+	if profile := webkitLookupProfile(profileID); profile != nil {
+		return profile.engine.events, pageHandle(popupID), true
+	}
+	return engineEvents{}, "", false
+}
+
+// aoWebKitPopup holds a popup WebKit created and answers its number, zero
+// for one nothing may own. Its opener is the page openerID, or, while that
+// is zero, the popup openerPopup, held or being adopted, whose handle is
+// the one its adoption keeps (pageHandle).
+//
 //export aoWebKitPopup
-func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) {
+func aoWebKitPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := webkitTakeString(uri)
-	opener := webkitLookupPage(uint64(openerID))
+	var opener ids.PageHandle
+	if page := webkitLookupPage(uint64(openerID)); page != nil {
+		opener = page.handle
+	} else if openerPopup != 0 {
+		opener = pageHandle(uint64(openerPopup))
+	}
 	profile := webkitLookupProfile(uint64(profileID))
-	if opener == nil || profile == nil {
+	if opener == "" || profile == nil {
 		// Nothing can own it, so nothing may keep it alive — but not YET, and
 		// not from here. This export runs on the GTK thread inside `create`,
 		// which is about to return this very widget to WebKit: unreffing it now
-		// would hand WebKit a finalized object. And a bare gtkDo would queue the
-		// close behind the delegate it is running inside, freezing the UI for a
-		// full gtkCallTimeout. The goroutine's dispatch lands on a later GTK
+		// would hand WebKit a finalized object. And a close posted from here
+		// would queue behind the delegate it is running inside, freezing the UI
+		// for a full nativeCallTimeout. The goroutine's dispatch lands on a later GTK
 		// turn, which is both safe and immediate.
 		go webkitCloseView(view)
-		return
+		return 0
 	}
-	handle := profile.engine.holdPopup(view)
-	go profile.engine.events.PopupOpened(enginePopup{
-		Profile: profile.Handle(), Opener: opener.handle, Handle: handle, URL: target,
+	n, handle := profile.engine.holdPopup(view, opener)
+	// Before the view can report its close, which the popup's admission
+	// then holds for its listing (engineEvents).
+	profile.engine.events.PopupOpened(enginePopup{
+		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
+	return C.uint64_t(n)
 }
 
 //export aoWebKitPagePresented
@@ -301,8 +333,8 @@ func aoWebKitPagePresented(pageID C.uint64_t) C.int {
 	return C.ao_wk_host_presented(page.view)
 }
 
-//export aoWebKitDownloadStarted
-func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
+//export aoWebKitDownloadDestination
+func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := webkitTakeString(uri), webkitTakeString(suggested)
 	profile := webkitLookupProfile(uint64(profileID))
 	if profile == nil {
@@ -310,31 +342,104 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 		C.ao_wk_download_unref(download)
 		return
 	}
-	page := webkitLookupPage(uint64(pageID))
-	frame := ""
-	if page != nil {
-		frame = page.handle
-	}
-	// The handle IS the on-disk name the C side gave the file, which is what
-	// lets the Manager find and rename a finished download.
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
-	profile.registerDownload(handle, download)
+	handle := downloadHandle(uint64(downloadID))
 	if name == "" {
-		name = handle
+		name = string(handle)
 	}
-	go func() {
-		if !profile.engine.events.DownloadStarted(downloadStart{
-			Frame: frame, ID: handle, URL: target, SuggestedName: name,
-		}) {
-			profile.CancelDownload(handle)
+	pending := webkitPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
+	if !profile.destinations.Hold(handle, pending) {
+		// The profile is closing, and Dispose cancels what it holds, or the
+		// id already has an open decision, which stays: this one is canceled.
+		C.ao_wk_download_decide(download, nil)
+		C.ao_wk_download_unref(download)
+		return
+	}
+	// Naming the staged file resolves the Downloads folder and prunes the
+	// staging directory, file system work this GTK thread must not wait on;
+	// the decision is completed on it afterwards, by whichever of its
+	// worker and Dispose takes it first.
+	go destination.Settle(uiThread, func() bool { return !uiThread.Alive() || profile.isDisposed() },
+		func() destination.Staged { return stageFor(profile.stage, profile.releaseStaged, handle) },
+		func(staged destination.Staged) bool {
+			pending, ok := profile.destinations.Take(handle)
+			if ok {
+				profile.decideDownload(pending, staged.Path, staged.Err)
+			}
+			return ok
+		})
+}
+
+// webkitCancelDestinations cancels and releases, on the GTK thread, the
+// destination decisions p still holds, and refuses later ones (Dispose).
+func webkitCancelDestinations(p *webkitProfile) {
+	releaseDestinations.release(uiThread, func() {
+		for _, pending := range p.destinations.Close() {
+			C.ao_wk_download_decide(pending.ptr, nil)
+			C.ao_wk_download_unref(pending.ptr)
 		}
-	}()
+	})
+}
+
+// webkitPendingDownload is a download whose destination is being decided,
+// with what its start report names.
+type webkitPendingDownload struct {
+	ptr         unsafe.Pointer
+	page, popup uint64
+	handle      downloadID
+	url, name   string
+}
+
+// decideDownload completes download's destination decision on the GTK
+// thread: it is written to the staged file at path, or canceled before a
+// byte is written when stageErr says why there is none, the profile closed
+// or the download failed meanwhile. Its start is reported here, so it is
+// queued before anything WebKit reports of it.
+func (p *webkitProfile) decideDownload(download webkitPendingDownload, path string, stageErr error) {
+	start := p.downloadStart(webkitLookupPage(download.page), download.popup)
+	start.ID, start.URL, start.SuggestedName = download.handle, download.url, download.name
+	start.EndReported = p.ends.endReported(download.handle)
+	handle := download.handle
+	if stageErr == nil && p.isDisposed() {
+		// Its session goes on this thread after this turn (Dispose).
+		stageErr = errStagedProfileClosed
+	}
+	var staged *C.char
+	if stageErr == nil {
+		staged = C.CString(path)
+		defer C.free(unsafe.Pointer(staged))
+	}
+	switch {
+	case C.ao_wk_download_decide(download.ptr, staged) == 0:
+		if stageErr == nil {
+			stageErr = errDownloadFailedUndecided
+		}
+	case stageErr == nil && !p.registerDownload(handle, download.ptr):
+		C.ao_wk_download_cancel(download.ptr)
+		stageErr = errStagedProfileClosed
+	}
+	if stageErr != nil {
+		// Canceled before a byte was written; the row says why.
+		p.engine.downloadEvents.Go(func() {
+			if p.engine.events.DownloadStarted(start) == downloadAdmitted {
+				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadFailed, Error: stageErr.Error()})
+			}
+			webkitReleaseDownload(download.ptr)
+		})
+		return
+	}
+	p.engine.downloadEvents.Go(func() {
+		if p.engine.events.DownloadStarted(start) != downloadAdmitted {
+			if err := p.CancelDownload(handle); err != nil {
+				log.Printf("browser: cancel refused download %s: %v", handle, err)
+			}
+		}
+	})
 }
 
 //export aoWebKitDownloadProgress
-func aoWebKitDownloadProgress(downloadID C.uint64_t, received C.double, state C.int, path *C.char) {
-	filePath := webkitTakeString(path)
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, state C.int, path, failure *C.char) {
+	filePath, reason := webkitTakeString(path), webkitTakeString(failure)
+	handle := downloadHandle(uint64(downloadID))
 	// The profile that started the download owns the whole of its progress, so
 	// a report arriving after that profile is disposed is a lookup miss rather
 	// than an event routed at a torn-down workspace.
@@ -342,25 +447,33 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received C.double, state C.
 	if profile == nil {
 		return
 	}
-	progress := downloadProgress{ID: handle, Received: float64(received), State: downloadInProgress, FilePath: filePath}
+	progress := downloadProgress{ID: handle, Received: float64(received), Total: float64(total), State: downloadInProgress, FilePath: filePath, Error: reason}
 	switch int(state) {
 	case 1:
 		progress.State = downloadCompleted
 	case 2:
 		progress.State = downloadCanceled
+	case 3:
+		progress.State = downloadFailed
 	}
+	// Off the GTK thread, after the start and in the order WebKit reported
+	// them (downloadEvents).
 	if progress.State != downloadInProgress {
-		// Released off the GTK thread, in order, before the event goes out:
-		// releasing dispatches BACK to the GTK thread, which would queue behind
-		// the signal handler this export is running inside and freeze the UI
-		// for a full gtkCallTimeout on every finished download.
-		go func() {
+		// The end is the Manager's to settle from here, also for a page that
+		// leaves before it is delivered (downloadStart.EndReported).
+		profile.ends.received(handle)
+		// Released before the event goes out: releasing dispatches BACK to the
+		// GTK thread, which would queue behind the signal handler this export
+		// is running inside and freeze the UI for a full nativeCallTimeout on
+		// every finished download.
+		profile.engine.downloadEvents.Go(func() {
+			defer profile.ends.reported(handle)
 			profile.releaseDownload(handle)
 			profile.engine.events.DownloadProgress(progress)
-		}()
+		})
 		return
 	}
-	go profile.engine.events.DownloadProgress(progress)
+	profile.engine.downloadEvents.Go(func() { profile.engine.events.DownloadProgress(progress) })
 }
 
 func webkitLookupPage(id uint64) *webkitPage {
@@ -386,79 +499,95 @@ func webkitLookupProfile(id uint64) *webkitProfile {
 // added beneath it. The SPA survives the reparent without a reload.
 func webkitAttachHost(window unsafe.Pointer) error {
 	ok := false
-	// The glue copies both strings. A dispatch that did not run in time may
-	// still run, so they are freed only after it did.
+	// The glue copies both strings, and a withdrawn call never reads them.
 	script, world := C.CString(webkitFindFrameScript), C.CString(webkitFindWorld)
-	if !gtkDo(func() {
+	defer C.free(unsafe.Pointer(script))
+	defer C.free(unsafe.Pointer(world))
+	if uiThread.Run(func() {
 		ok = C.ao_wk_host_attach(window) == 1
 		C.ao_wk_set_find_frame_script(script, world)
-	}) {
+	}) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
-	C.free(unsafe.Pointer(script))
-	C.free(unsafe.Pointer(world))
 	if !ok {
 		return fmt.Errorf("browser: the desktop window has no webview to host the browser pane beside")
 	}
 	return nil
 }
 
-func webkitParkView(view unsafe.Pointer, slot int) {
-	gtkDo(func() { C.ao_wk_host_park(view, C.int(slot)) })
+// webkitParkView parks a new view in the host, or answers that the GTK
+// thread did not take it in time, after which it never parks it.
+func webkitParkView(view unsafe.Pointer) error {
+	if uiThread.Run(func() { C.ao_wk_host_park(view) }) == uicall.Withdrawn {
+		return errGTKUnavailable
+	}
+	return nil
 }
 
 // webkitPresentView shows the view at its placement: the fitted rect, its
 // clip, and the scale the page is drawn at. The page's own size was set by
-// SetViewport and is not touched here.
+// SetViewport and is not touched here. A placement with no overlay pixel
+// left to show hides the view, as webkitHideView does.
 func webkitPresentView(view webkitView, placement PanePlacement) error {
-	rect := placement.Rect
-	return view.do(func(view unsafe.Pointer) {
-		C.ao_wk_host_present(view, C.double(rect.X), C.double(rect.Y),
-			C.double(rect.Width), C.double(rect.Height),
-			C.double(rect.ClipX), C.double(rect.ClipY),
-			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
-			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
-			C.double(placement.Scale))
-	})
-}
-
-// webkitSetViewBackground paints the pane's own surface color underneath the
-// page, so a strip the clip rect has just exposed matches the pane instead of
-// flashing WebKit's default white.
-func webkitSetViewBackground(view webkitView, color webkitRGB) error {
-	return view.do(func(view unsafe.Pointer) {
-		C.ao_wk_view_set_background(view, C.double(color.R), C.double(color.G), C.double(color.B))
-	})
-}
-
-// webkitHideView parks the view. A view that held keyboard focus gives it to
-// the SPA's webview; the error says when that handoff failed.
-func webkitHideView(view webkitView, slot int) error {
 	released := 0
-	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_host_hide(view, C.int(slot))) }); err != nil {
+	if err := view.do(func(view unsafe.Pointer) {
+		var overlayW, overlayH C.int
+		if C.ao_wk_overlay_size(&overlayW, &overlayH) == 0 {
+			return
+		}
+		layout, scale, ok := overlayPaneLayout(placement, int(overlayW), int(overlayH))
+		if !ok {
+			released = int(C.ao_wk_host_hide(view))
+			return
+		}
+		C.ao_wk_host_present(view, C.int(layout.Clip.Left), C.int(layout.Clip.Top),
+			C.int(layout.Clip.Right), C.int(layout.Clip.Bottom),
+			C.int(layout.OffsetX), C.int(layout.OffsetY), C.double(scale))
+	}); err != nil {
 		return err
 	}
 	return focusReleaseError(released)
 }
 
-// Every C string below is allocated INSIDE its dispatch closure and freed
-// there. A dispatch that misses its deadline still runs afterwards, so a
-// string allocated out here and freed on return would be read after free.
-func webkitNewSession(dataDir, cacheDir, cookieFile, downloadDir string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
+// webkitSetViewBackground paints the page's base (pageBase) underneath the
+// page: white under a document, the pane's color under a blank tab. color
+// is packed 0xRRGGBB (nativePaneColor); GdkRGBA takes each channel in 0..1.
+func webkitSetViewBackground(view webkitView, color uint32) error {
+	red := float64((color>>16)&0xff) / 255
+	green := float64((color>>8)&0xff) / 255
+	blue := float64(color&0xff) / 255
+	return view.do(func(view unsafe.Pointer) {
+		C.ao_wk_view_set_background(view, C.double(red), C.double(green), C.double(blue))
+	})
+}
+
+// webkitHideView parks the view. A view that held keyboard focus gives it to
+// the SPA's webview; the error says when that handoff failed.
+func webkitHideView(view webkitView) error {
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_host_hide(view)) }); err != nil {
+		return err
+	}
+	return focusReleaseError(released)
+}
+
+// webkitNewSession makes profile profileID's session on the GTK thread. A
+// session it made is the caller's to free (webkitFreeSession); a withdrawn
+// call made none.
+func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
 	var session unsafe.Pointer
 	flag := C.int(0)
 	if ephemeral {
 		flag = 1
 	}
-	if !gtkDo(func() {
+	if uiThread.Run(func() {
 		cData, cCache := C.CString(dataDir), C.CString(cacheDir)
-		cCookie, cDownload := C.CString(cookieFile), C.CString(downloadDir)
-		session = C.ao_wk_session_new(cData, cCache, cCookie, cDownload, flag, C.uint64_t(profileID))
+		cCookie := C.CString(cookieFile)
+		session = C.ao_wk_session_new(cData, cCache, cCookie, flag, C.uint64_t(profileID))
 		C.free(unsafe.Pointer(cData))
 		C.free(unsafe.Pointer(cCache))
 		C.free(unsafe.Pointer(cCookie))
-		C.free(unsafe.Pointer(cDownload))
-	}) {
+	}) == uicall.Withdrawn {
 		return nil, errGTKUnavailable
 	}
 	if session == nil {
@@ -468,18 +597,30 @@ func webkitNewSession(dataDir, cacheDir, cookieFile, downloadDir string, ephemer
 }
 
 func webkitFreeSession(session unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_session_free(session) })
+	releaseSiteData.release(uiThread, func() { C.ao_wk_session_free(session) })
 }
 
-func webkitNewView(session unsafe.Pointer, pageID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
+// webkitNewView builds a page's view in profile profileID's session on the
+// GTK thread (withProfileOnUI): Dispose frees the session there after it
+// unregisters the profile, so a session found there is not freed until the
+// view holds it.
+func webkitNewView(profileID, pageID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
-	if !gtkDo(func() {
-		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
-		view = C.ao_wk_view_new(session, C.uint64_t(pageID), cScript, cHandler)
-		C.free(unsafe.Pointer(cScript))
-		C.free(unsafe.Pointer(cHandler))
-	}) {
+	disposed := false
+	// Withdrawn unless it ran: a view built after the caller gave up would
+	// belong to no page.
+	if uiThread.Run(func() {
+		disposed = !withProfileOnUI(profileID, func(p *webkitProfile) {
+			cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
+			view = C.ao_wk_view_new(p.session, C.uint64_t(pageID), cScript, cHandler)
+			C.free(unsafe.Pointer(cScript))
+			C.free(unsafe.Pointer(cHandler))
+		})
+	}) == uicall.Withdrawn {
 		return nil, errGTKUnavailable
+	}
+	if disposed {
+		return nil, errProfileClosedBeforeView
 	}
 	if view == nil {
 		return nil, fmt.Errorf("browser: create page view")
@@ -487,13 +628,29 @@ func webkitNewView(session unsafe.Pointer, pageID uint64, userScript, consoleHan
 	return view, nil
 }
 
+// withProfileOnUI runs fn with profile id on the GTK thread, where the
+// caller runs it, unless the profile is unregistered or disposed, and
+// answers whether fn ran. A caller carries the profile's id, never a
+// native pointer it looked up elsewhere.
+func withProfileOnUI(id uint64, fn func(p *webkitProfile)) bool {
+	p := webkitLookupProfile(id)
+	if p == nil || p.isDisposed() {
+		return false
+	}
+	fn(p)
+	return true
+}
+
+// webkitAdoptView makes a held popup's view page pageID's, or answers that
+// the GTK thread did not take it in time, after which it never does: the
+// caller closes the view.
 func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHandler string) error {
-	if !gtkDo(func() {
+	if uiThread.Run(func() {
 		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
 		C.ao_wk_view_adopt(view, C.uint64_t(pageID), cScript, cHandler)
 		C.free(unsafe.Pointer(cScript))
 		C.free(unsafe.Pointer(cHandler))
-	}) {
+	}) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
 	return nil
@@ -502,11 +659,33 @@ func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHand
 // webkitCloseView closes the view, giving keyboard focus it held to the SPA's
 // webview. No caller can act on a failed handoff, so it is logged here.
 func webkitCloseView(view unsafe.Pointer) {
-	released := 0
-	gtkDo(func() { released = int(C.ao_wk_view_close(view)) })
-	if err := focusReleaseError(released); err != nil {
+	if err := webkitCloseViewErr(view); err != nil {
 		log.Printf("browser: close a page: %v", err)
 	}
+}
+
+// webkitCloseViewErr closes the view on the GTK thread and answers how its
+// focus handoff ended. A close that timed out answers errGTKUnavailable,
+// and still runs; its answer is read only from the closure that ran (a
+// buffered completion).
+func webkitCloseViewErr(view unsafe.Pointer) error {
+	released := make(chan int, 1)
+	if !uiThread.Release(func() { released <- int(C.ao_wk_view_close(view)) }) {
+		return errGTKUnavailable
+	}
+	return focusReleaseError(<-released)
+}
+
+// webkitCloseViewSettled closes the view on the GTK thread and answers how
+// its focus handoff ended once the close ran, however long the thread
+// takes (uicall.Thread.Settle): errGTKUnavailable only when the loop went
+// away first. A discard's receipt runs it (heldPopups.discard).
+func webkitCloseViewSettled(view unsafe.Pointer) error {
+	var code C.int
+	if !uiThread.Settle(func() { code = C.ao_wk_view_close(view) }) {
+		return errGTKUnavailable
+	}
+	return focusReleaseError(int(code))
 }
 
 func webkitOpenInspector(view webkitView) error {
@@ -525,32 +704,26 @@ func webkitLoadURI(view webkitView, uri string) error {
 	})
 }
 
-// The history action codes the C side takes.
-const (
-	webkitHistoryBack    = 0
-	webkitHistoryForward = 1
-	webkitHistoryReload  = 2
-	webkitHistoryStop    = 3
-)
-
-func webkitHistory(view webkitView, action int) error {
-	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(action)) })
+// webkitHistory takes one history step; the C side numbers the steps as
+// nativeHistoryStep does.
+func webkitHistory(view webkitView, step nativeHistoryStep) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(step)) })
 }
 
-func webkitCanGo(view webkitView, forward bool) bool {
+func webkitCanGo(view webkitView, forward bool) (bool, error) {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
-	return answer
+	err := view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
+	return answer, err
 }
 
-func webkitIsLoading(view webkitView) bool {
+func webkitIsLoading(view webkitView) (bool, error) {
 	loading := false
-	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
-	return loading
+	err := view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
+	return loading, err
 }
 
 // gtkEvaluate runs one async-function body in the page and returns its JSON
@@ -558,7 +731,7 @@ func webkitIsLoading(view webkitView) bool {
 // world. An undefined result is an empty answer, matching what CDP reports
 // for a void expression.
 func gtkEvaluate(ctx context.Context, view webkitView, world, body string) (string, error) {
-	if !gtkAlive() {
+	if !uiThread.Alive() {
 		return "", errGTKUnavailable
 	}
 	id, ch := webkitRegisterCall()
@@ -652,14 +825,20 @@ func (p *webkitPage) offerEscapes(offers []escapeOffer) ([]bool, error) {
 	return stopped, nil
 }
 
+// terminateWebProcess ends the page's web process, as a crash would
+// (ao_wk_view_terminate_web_process). For the native smoke.
+func (p *webkitPage) terminateWebProcess() error {
+	return p.liveView().do(func(view unsafe.Pointer) { C.ao_wk_view_terminate_web_process(view) })
+}
+
 // onKeyPress has every KeyChord question of the page's engine reported to
 // seen before it is answered, until the returned restore runs. It swaps the
 // hook on the GTK thread, which is the only reader. For the native smoke.
-func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (restore func() error, err error) {
-	var orig func(string, keybindings.Accelerator, KeyPress) bool
+func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, keyPress)) (restore func() error, err error) {
+	var orig func(ids.PageHandle, keybindings.Accelerator, keyPress) bool
 	err = p.liveView().do(func(unsafe.Pointer) {
 		orig = p.engine.events.KeyChord
-		p.engine.events.KeyChord = func(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
+		p.engine.events.KeyChord = func(handle ids.PageHandle, pressed keybindings.Accelerator, press keyPress) bool {
 			seen(pressed, press)
 			return orig(handle, pressed, press)
 		}
@@ -672,10 +851,36 @@ func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (r
 	}, nil
 }
 
+// webkitFocusPresentedView gives a presented page's view keyboard focus
+// while live holds. Both are checked on the GTK thread, where hides run,
+// immediately before the grab.
+func webkitFocusPresentedView(view webkitView, live func() bool) (focusResult, error) {
+	result := C.int(0)
+	withdrawn := false
+	err := view.do(func(view unsafe.Pointer) {
+		if !live() {
+			withdrawn = true
+			return
+		}
+		result = C.ao_wk_view_focus_presented(view)
+	})
+	switch {
+	case err != nil:
+		return focusNotPresented, err
+	case withdrawn:
+		return focusWithdrawn, nil
+	case result < 0:
+		return focusNotPresented, nil
+	case result == 0:
+		return focusNotPresented, fmt.Errorf("browser: the page's view did not take keyboard focus")
+	}
+	return focusMoved, nil
+}
+
 // webkitFocusApp hands keyboard focus to the SPA's webview.
 func webkitFocusApp() error {
 	ok := false
-	if !gtkDo(func() { ok = C.ao_wk_focus_app() == 1 }) {
+	if uiThread.Run(func() { ok = C.ao_wk_focus_app() == 1 }) == uicall.Withdrawn {
 		return errGTKUnavailable
 	}
 	if !ok {
@@ -785,10 +990,51 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 	}
 }
 
-func webkitCancelDownload(download unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_download_cancel(download) })
+// webkitCancelDownload cancels p's download id on the GTK thread
+// (withDownloadOnUI), where a released download's reference is dropped
+// after it leaves p.downloads (releaseDownload), so the one it finds is
+// still held through the cancel. One whose end WebKit reported there
+// (p.ends) has ended, its release still queued, and is not canceled.
+func webkitCancelDownload(p *webkitProfile, id downloadID) nativeCancel {
+	found := false
+	if uiThread.Run(func() {
+		found = !p.ends.pending(id) && withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wk_download_cancel(download) })
+	}) == uicall.Withdrawn {
+		return nativeCancelWithdrawn
+	}
+	if !found {
+		return nativeCancelEnded
+	}
+	return nativeCanceled
+}
+
+// withDownloadOnUI runs fn with p's download id on the GTK thread, where
+// the caller runs it, unless it was released, and answers whether fn ran.
+func withDownloadOnUI(p *webkitProfile, id downloadID, fn func(download unsafe.Pointer)) bool {
+	download := p.heldDownload(id)
+	if download == nil {
+		return false
+	}
+	fn(download)
+	return true
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_download_unref(download) })
+	releaseDownloadRef.release(uiThread, func() { C.ao_wk_download_unref(download) })
+}
+
+// webkitDownloadCounts is how many downloads WebKit started and how many it
+// finalized since the process began; each only grows. Their difference is
+// how many are alive: one the engine still holds, or WebKit does.
+func webkitDownloadCounts() (started, freed int) {
+	var s, f C.int
+	C.ao_wk_download_counts(&s, &f)
+	return int(s), int(f)
+}
+
+// webkitDownloadsAlive is how many downloads WebKit made are not finalized
+// yet (webkitDownloadCounts).
+func webkitDownloadsAlive() int {
+	started, freed := webkitDownloadCounts()
+	return started - freed
 }

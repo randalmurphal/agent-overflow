@@ -4,7 +4,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { listPanes, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { refreshThreads } from '../../stores/threads.svelte';
@@ -746,6 +746,26 @@ describe('<ThreadRow> keyboard activation', () => {
       setCompactLayoutForTest(false);
     }
   });
+
+  // A modified click opens the thread in a new pane; the same activation
+  // from the keyboard must too, not replace the pane's conversation.
+  for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+    it(`opens a new pane on ${modifier.ctrlKey ? 'Ctrl' : 'Cmd'}+Enter, leaving the current pane's thread`, async () => {
+      const thread = makeThread({ id: 'modified-row' });
+      installThreadSwitchMocks(thread);
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = createThreadPane({ paneId: 'main' });
+      registerPaneForTest('main', pane);
+      const view = render(ThreadRow, { props: { thread, pane } });
+      const row = view.getByTestId('thread-row');
+      row.focus();
+      await fireEvent.keyDown(row, { key: 'Enter', ...modifier });
+      await settle();
+      expect(pane.threadId).not.toBe('modified-row');
+      expect(listPanes().some((other) => other !== pane && other.threadId === 'modified-row')).toBe(true);
+    });
+  }
 
   it('opens nothing for a Space released after focus left, or for an Enter repeat', async () => {
     const thread = makeThread({ id: 'held-row' });

@@ -39,10 +39,11 @@ make harness                    # build + run at a per-checkout /tmp root (reuse
 bin/agent-overflow --harness --data-dir <scratch> [--mock-provider <path>] [--mock-forge <path>] [--scan-scope-pid <pid>] [--listen 127.0.0.1:0]
 ```
 
-`--harness` is the only way the harness surface exists: the `Harness`
-RPC receiver is registered on the transport exclusively by this boot
-path (`main_harness.go` → `bootTransportOptions.HarnessReceiver`), so
-no other mode has these methods on the wire at all.
+The harness surface exists only on the two isolated boot paths: the
+`Harness` RPC receiver is registered on the transport by `--harness`
+(`main_harness.go`) and by `--soak` (`main_soak.go`), both through
+`bootTransportOptions.HarnessReceiver`, so no other mode has these
+methods on the wire at all.
 
 Boot performs, in order (`prepareHarness`):
 
@@ -88,11 +89,7 @@ Boot performs, in order (`prepareHarness`):
    (`app_provider_home_test.go`) is what keeps that true: it fails on a
    bare `os.UserHomeDir()` in `app_*.go`, `internal/provider/`,
    `internal/claudeconfig` or `internal/codexconfig` outside a
-   reasoned allowlist. Before the seam, only the credential surface and
-   the import scan honoured the pin and eight other sites read `$HOME`
-   directly. (And before the pin existed at all, a keep-home run with a
-   reused data dir handed the boot prune a foreign keep-set aimed at the
-   real home, the 2026-07-29 incident class.)
+   reasoned allowlist.
 3. **Single-instance lock.** An OS-held advisory lock on
    `<dataDir>/harness.lock` (`flock` on unix, `LockFileEx` on Windows),
    taken before ANY write into the root and held for the process's
@@ -204,7 +201,10 @@ An isolated boot pins the browser Manager to the FAKE engine
 (`newIsolatedProviderApp` → `IsolationConfig.MockBrowserEngine`, spec
 `docs/specs/embedded-browser.md` §10). The companion pane's chrome, tab
 strip and host rect all render; nothing is behind them, and every tool
-needing real page content refuses by name. The pin is what keeps
+needing real page content refuses by name. A navigation to
+`https://download.invalid/<name>?bytes=<n>` is a download, held running
+with `&hold` or failed with `&fail` (`internal/browser/fake_downloads.go`),
+so the pane's downloads list can be driven. The pin is what keeps
 `make go-test`, `make e2e` and every unattended boot display-free.
 
 `AO_HARNESS_REAL_BROWSER=1` lifts it — the manual real-engine gate:
@@ -253,10 +253,9 @@ are not:
   `HarnessNotify` therefore SUCCEEDS and the send is observable on
   `notification:send`; presentation is the subscriber's job (the Windows
   launcher under `--soak`, nobody under a headless `--harness`, where the
-  sender logs one line and returns nil). It used to install a refusal
-  stub, which meant the e2e spec covering the notification pipe asserted
-  the stub's error string and never executed the emission at all.
-  `HarnessNotify` is no longer the only source: the event mapping taps
+  sender logs one line and returns nil), so the e2e spec covering the
+  notification pipe executes the real emission.
+  `HarnessNotify` is not the only source: the event mapping taps
   `emit`, so a mock-provider turn coming to rest raises a real
   `notification:send` on an isolated boot too. That is deliberate — the
   mapping and the device-tier preference gate are production code the
@@ -270,10 +269,8 @@ are not:
   see or set — a per-kind preference the spec never wrote, and the
   attended-screen rules, which read window focus. A Playwright page HAS
   focus, so the default `notifyQuietWhen` ("focused") would silence every
-  harness notification the moment a spec opened the app. Riding
-  `KindWorkflowAttention` because it had no toggle was the previous
-  version of this argument; it has one now, so the bypass is stated
-  rather than smuggled, and
+  harness notification the moment a spec opened the app. The bypass is
+  a named function rather than a kind without a toggle, and
   `TestOnlyTheHarnessBypassesTheNotificationGate` keeps its caller list
   at one. The MAPPED sends above still pass both gates in full, which is
   what keeps the gate itself production code under the harness.
@@ -282,9 +279,9 @@ are not:
   instead of `pprofserve`'s fixed `[::1]:6363`. Isolated boots are
   the one shape deliberately run N-at-a-time (a soak beside your own app,
   a harness per checkout), and the variable is usually INHERITED from a
-  debug shell rather than chosen, so the second instance's listener
-  used to fail to bind and log an error for a port nobody asked it to
-  claim. An explicit `host:port` is honoured verbatim.
+  debug shell rather than chosen, so a fixed port would make every
+  instance after the first fail to bind a port nobody asked it to claim.
+  An explicit `host:port` is honoured verbatim.
 - **Frontend assets.** `--harness` / `--soak` honour
   `FRONTEND_DEVSERVER_URL` even in a production-stamped binary (an
   isolated boot is already an explicit operator act). A shell that still
@@ -318,14 +315,14 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log), the instance's `clientId`, `soakAutopilot` (`"off"` / `"arming"` / `"armed"` / `"failed: <reason>"`, where the autopilot arms on a goroutine that starts *after* the instance is published as a soak, so without the latch a soak that never armed looks identical to a working one), and `assetsFreshness`: the boot's embedded-bundle verdict (`match` / `stale` / `unknown` / `dev-server`). The binary embeds `frontend/dist` at BUILD time, so a `vite build` followed by a not-rebuilt harness binary silently serves the previous bundle; boot compares the embed against the adjacent on-disk dist, warns loudly on `stale`, and `ao-harness health` flags it. |
 | `HarnessListMethods()` | Every method name reachable on the wire, sorted: the App's bindings and the Harness surface in one array of bare wire names. Lets a caller check an instance has the RPC it is about to call instead of discovering a version mismatch as an opaque `method_not_found`. |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus: the escape hatch for injecting one-off frames at the frontend. |
-| `HarnessBrowserPressKey(threadId, pageId, chord)` | Type one chord (`{key, ctrl, meta, alt, shift}`, `KeyboardEvent.key` spelling) into a browser page's NATIVE view: the page becomes first responder and the key event enters through the window's own dispatch, so the engine's chord gate (browser-tools.md § Keyboard) sees what a real keystroke would. Exists because OS-level input synthesis needs Accessibility trust a driver cannot assume. Real-engine boots only (`AO_HARNESS_REAL_BROWSER=1`); the fake and launcher-hosted engines refuse by name. |
+| `HarnessBrowserPressKey(threadId, pageId, chord)` | Type one chord (`{key, ctrl, meta, alt, shift}`, `KeyboardEvent.key` spelling) into a browser page's NATIVE view: the page becomes first responder and the key event enters through the window's own dispatch, so the engine's chord gate ([keyboard and focus](keyboard-focus.md#chords-in-the-page)) sees what a real keystroke would. Exists because OS-level input synthesis needs Accessibility trust a driver cannot assume. Real-engine boots only (`AO_HARNESS_REAL_BROWSER=1`); the fake and launcher-hosted engines refuse by name. |
 | `HarnessBrowserScroll(threadId, pageId, x, y)` | Scroll a real browser page through the production manager's bounded operation. This is the provider-free native-rendering diagnostic; fake-engine boots refuse it. |
 | `HarnessBrowserScreenshot(threadId, pageId)` | Capture a real browser page as viewport JPEG bytes (base64 on the JSON wire), so a scroll/render regression can retain exact before/after artifacts without OS screenshot or accessibility privileges. The call temporarily mounts an otherwise hidden page in a deterministic 900×600 CSS test rect (the native size follows the shell's CSS-to-client scale), then restores its prior active page and companion visibility. Fake-engine boots refuse it. |
 | `HarnessWindowState()` | Read the isolated native window's outer DIP bounds, maximize/fullscreen/minimize flags, and its screen's DIP + physical work areas. Windowed boots only; headless instances refuse by name. This is the geometry assertion surface on hosts where OS accessibility automation is unavailable. |
 | `HarnessWindowCommand(command)` | Drive one native action (`maximize`, `unmaximize`, `fullscreen`, `unfullscreen`, `minimize`, `unminimize`, `reveal`) or set one outer DIP `bounds` rect. Exactly one is required. `reveal` is the production bring-forward path (`uiwindow.Reveal`, what an OS-notification click and a second launch call), so "a maximized window stays maximized after a reveal" is a scriptable assertion rather than a click on a real notification. Animated transitions return before settling; poll `HarnessWindowState`. Windowed boots only. On macOS the webview runs rAF only while the window is frontmost, so `reveal` right before any timing-sensitive send: a spring that shows `active` with no writes and a trace ring that stops growing is a backgrounded window, not a frozen glide. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessStoreStatus()` | The database's migration state: `schemaVersion` applied against `buildSchemaVersion`, the deferred watermark against the last deferred version, `deferredPending`, and `deferredFailure` (null when none). The release upgrade check polls it after a migrated boot until the deferred phases finish. |
-| `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, since a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
+| `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, so a mistyped `treads:` fails instead of seeding nothing and returning success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
 | `HarnessReset()` | Blank slate without a reboot: pause the merged-PR worktree cleanup first (its poll and worker joined, their in-memory state dropped, resumed from nothing last, so a pass begun for one spec neither reads the forge into the next spec's invocation log nor acts on rows being deleted), set the global workflow pause and cancel every live run through the production cancel path, stop sessions (and again any session a stop's settled request woke its caller into, until none starts), settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows navigation stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows; the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), discard the event bus's retained history (a fresh loopback page replays `notification:activated` from zero, so an activation one spec sent would otherwise open, or toast the absence of, its target on the next spec's page), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations, the fake forge's fixture and invocation log, the Claude usage answers, the provider release feed's seed). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes, described in "Scoping a scenario" below). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
@@ -1242,10 +1239,10 @@ measurement window here (every bench workload and `profile`) therefore
 continues past `provider:turn_completed` until the reveal queue is empty,
 then takes its settle beat, then stops the meters.
 
-**Baselines taken before this change read shorter.** `duration.ms` in
-particular now covers the drain, so an old report compared against a new
-one shows a large "regression" on that metric that is purely the window
-moving. Re-take the baseline; do not tune to it.
+**Baselines from a build whose window ended at turn completion read
+shorter.** `duration.ms` in particular covers the drain, so such a report
+compared against a current one shows a large "regression" on that metric
+that is purely the window moving. Re-take the baseline; do not tune to it.
 
 The drain signal is deliberately NOT the bridge's settledness machinery.
 `perf start` / `perf stop` force-disarm the document-wide MutationObserver
@@ -1497,9 +1494,10 @@ accumulates under the paths `HarnessInfo` reports.
 
 ## Invariants
 
-- Harness RPCs exist on the wire **only** under `--harness`; keep new
-  harness methods on the `Harness` receiver (name-prefixed `Harness*`)
-  so they inherit the registration gate and `LocalOnly` marking.
+- Harness RPCs exist on the wire **only** under the isolated boots,
+  `--harness` and `--soak`; keep new harness methods on the `Harness`
+  receiver (name-prefixed `Harness*`) so they inherit the registration
+  gate and `LocalOnly` marking.
 - The harness never fabricates app state through side doors: projects and
   threads run through `CreateProject`/`CreateThread`, workflow runs through
   `WorkflowStartRun`, resets through `DeleteProjectWorkflowRecords` plus the

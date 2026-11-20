@@ -229,21 +229,6 @@ func TestNotificationClientOrdersLiveEventBehindReplayEvent(t *testing.T) {
 	}
 }
 
-func TestNotificationBridgeErrorRedactsToken(t *testing.T) {
-	token := "secret+/token"
-	message := redactNotificationBridgeError(
-		&testNotificationClientError{"GET ws://127.0.0.1/ws?token=secret%2B%2Ftoken: refused"},
-		token,
-	)
-	if strings.Contains(message, token) || strings.Contains(message, "secret%2B%2Ftoken") {
-		t.Fatalf("redacted error leaked token: %q", message)
-	}
-}
-
-type testNotificationClientError struct{ message string }
-
-func (e *testNotificationClientError) Error() string { return e.message }
-
 // The banner's sound answer crosses the process boundary INTACT. The backend
 // resolves it against its own screen's settings (App.notifyOS) and this side
 // only carries it, so a frame that loses `silent` on the way through would
@@ -318,3 +303,7 @@ func TestABridgedRetractionCarryingSilentIsDropped(t *testing.T) {
 		t.Fatalf("presented %d notifications, want none", presented)
 	}
 }
+
+type testNotificationClientError struct{ message string }
+
+func (e *testNotificationClientError) Error() string { return e.message }

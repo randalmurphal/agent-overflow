@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   airspaceIntersects,
+  airspaceRevision,
+  airspaceSurface,
   airspaceSurfaces,
   registerAirspaceSurface,
   resetAirspaceForTest,
@@ -65,5 +67,63 @@ describe('paneAirspace', () => {
   it('ignores zero-size surfaces even when their point lies inside the rect', () => {
     registerAirspaceSurface(surfaceAt(200, 200, 0, 0));
     expect(airspaceIntersects(paneRect)).toBe(false);
+  });
+
+  it('a surface inside which the subject sits does not occlude it', () => {
+    const overlay = surfaceAt(0, 0, 1000, 1000);
+    const inside = document.createElement('div');
+    overlay.append(inside);
+    registerAirspaceSurface(overlay);
+    expect(airspaceIntersects(paneRect, inside)).toBe(false);
+    expect(airspaceIntersects(paneRect, document.createElement('div'))).toBe(true);
+    expect(airspaceIntersects(paneRect)).toBe(true);
+  });
+
+  it('a surface that supplies its own rect occludes by that rect, not its box', () => {
+    let painted: { left: number; top: number; right: number; bottom: number } | null = {
+      left: 600, top: 100, right: 700, bottom: 200,
+    };
+    registerAirspaceSurface(surfaceAt(0, 0, 1000, 1000), { rect: () => painted });
+    expect(airspaceIntersects(paneRect)).toBe(false);
+    painted = { left: 450, top: 100, right: 700, bottom: 200 };
+    expect(airspaceIntersects(paneRect)).toBe(true);
+    painted = null;
+    expect(airspaceIntersects(paneRect)).toBe(false);
+  });
+
+  it('a layer occludes but is not an overlay, and releases cleanly', () => {
+    const layer = surfaceAt(0, 0, 1000, 1000);
+    const release = registerAirspaceSurface(layer, { overlay: false });
+    expect(airspaceSurfaces()).toEqual([]);
+    expect(airspaceIntersects(paneRect)).toBe(true);
+    release();
+    release();
+    expect(airspaceIntersects(paneRect)).toBe(false);
+  });
+
+  it('the action registers again when its kind changes, both ways, and only then', () => {
+    const el = surfaceAt(0, 0, 1000, 1000);
+    const action = airspaceSurface(el, { overlay: true });
+    expect(airspaceSurfaces()).toEqual([el]);
+    action.update({ overlay: false });
+    expect(airspaceSurfaces()).toEqual([]);
+    expect(airspaceIntersects(paneRect)).toBe(true);
+    const revision = airspaceRevision();
+    action.update({ overlay: false });
+    expect(airspaceRevision()).toBe(revision);
+    action.update({ overlay: true });
+    expect(airspaceSurfaces()).toEqual([el]);
+    action.destroy();
+    expect(airspaceSurfaces()).toEqual([]);
+    expect(airspaceIntersects(paneRect)).toBe(false);
+  });
+
+  it('releasing twice drops only its own registration of a shared element', () => {
+    const el = surfaceAt(0, 0, 10, 10);
+    const first = registerAirspaceSurface(el);
+    registerAirspaceSurface(el);
+    first();
+    first();
+    expect(airspaceSurfaces()).toEqual([el]);
   });
 });

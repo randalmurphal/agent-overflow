@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"unsafe"
 
+	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/uicall"
 	"agent-overflow/internal/keybindings"
 )
 
 // PressKey is engineKeyPress for the WKWebView engine (harness only).
-func (e *wkEngine) PressKey(handle string, chord keybindings.Accelerator) error {
+func (e *wkEngine) PressKey(handle ids.PageHandle, chord keybindings.Accelerator) error {
 	var page *wkPage
 	wkPageByID.Range(func(_, value any) bool {
 		if p := value.(*wkPage); p.handle == handle && p.engine == e {
@@ -32,9 +34,9 @@ func (e *wkEngine) PressKey(handle string, chord keybindings.Accelerator) error 
 	}
 	key := C.CString(chord.Key)
 	defer C.free(unsafe.Pointer(key))
-	if !wkDo(func() {
+	if uiThread.Run(func() {
 		C.ao_wkv_view_press_key(page.view, key, flag(chord.Ctrl), flag(chord.Meta), flag(chord.Alt), flag(chord.Shift))
-	}) {
+	}) == uicall.Withdrawn {
 		return errWKUnavailable
 	}
 	return nil

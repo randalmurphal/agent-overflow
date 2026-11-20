@@ -55,7 +55,7 @@ func assertRealPageOperations(t *testing.T, engine *headlessEngine) {
 	var mu sync.Mutex
 	var consoleLines []string
 	var downloads []downloadProgress
-	engine.events.DownloadStarted = func(downloadStart) bool { return true }
+	engine.events.DownloadStarted = func(downloadStart) downloadAdmission { return downloadAdmitted }
 	engine.events.DownloadProgress = func(progress downloadProgress) {
 		mu.Lock()
 		downloads = append(downloads, progress)
@@ -182,11 +182,11 @@ func assertRealPageOperations(t *testing.T, engine *headlessEngine) {
 		t.Fatalf("read the frame tree: %v", err)
 	}
 	child := tree.FrameTree.ChildFrames[0].Frame.ID
-	eventually("the child frame owned", func() bool { return p.OwnsFrame(string(child)) })
+	eventually("the child frame owned", func() bool { return p.OwnsFrame(frameID(child)) })
 	if _, err := chromedp.Run(ctx, chromedp.Evaluate[bool](`document.querySelector("#child").remove(), true`)); err != nil {
 		t.Fatalf("remove the child frame: %v", err)
 	}
-	eventually("the removed child frame released", func() bool { return !p.OwnsFrame(string(child)) })
+	eventually("the removed child frame released", func() bool { return !p.OwnsFrame(frameID(child)) })
 
 	if err := p.Scroll(ctx, "", 0, 500); err != nil {
 		t.Fatalf("scroll: %v", err)
