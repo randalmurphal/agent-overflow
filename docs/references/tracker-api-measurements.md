@@ -252,6 +252,10 @@ Other:
   the newest entry; where that entry was a link (6 issues), an attachment
   (1) or a worklog (33), `updated` was within a second of it in 6, 1 and
   32. A comment, a link, an attachment and a worklog each move `updated`.
+  Not measured, since it needs a write: whether deleting a comment or
+  removing a link moves it. A
+  [community report](https://community.atlassian.com/forums/Jira-questions/Changing-Links-without-changing-the-updated-date-when-deleting/qaq-p/2810120)
+  says removing a link does; no source found for a deleted comment.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list
