@@ -375,8 +375,10 @@ func (m *Manager) endFindTransitionLocked(ctx context.Context, p *managedPage) {
 	p.findBusy.Store(false)
 }
 
-// findPoint is a test seam: it runs at each point inside a transition where
-// an end could once land between a check and what follows it.
+// findPoint is a test seam: it runs at each point inside a transition
+// between a check and what follows it, where a test submits an end to prove
+// it lands after the action. No engine event can be timed to land there,
+// so the seam stays.
 func (m *Manager) findPoint(point string) {
 	if hook := m.findPointHook.Load(); hook != nil {
 		(*hook)(point)

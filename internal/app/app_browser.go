@@ -205,9 +205,9 @@ func (a *App) browserThreadKeepsPages(threadID appbrowser.ThreadID) (bool, error
 	return !thread.Archived, nil
 }
 
-// ClearBrowserSiteData closes active browser contexts before deleting their
-// encrypted checkpoints, preventing a later teardown from writing cleared
-// cookies back to disk.
+// ClearBrowserSiteData closes every browser page before clearing the
+// engines' profile data (Manager.ClearSiteData), so no open profile writes
+// cleared cookies back to disk.
 //
 //ao:scope terminal:operate
 //ao:route home

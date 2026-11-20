@@ -197,7 +197,7 @@ type workspaceAuthority struct {
 	downloadDir   string
 	downloadBytes *quota.Pool
 	// pool is the authority's hold on downloadBytes, released as it goes
-	// (forgetAuthorityLocked).
+	// (pruneAuthoritiesLocked, forgetAuthoritiesLocked).
 	pool *quota.PoolHold
 }
 

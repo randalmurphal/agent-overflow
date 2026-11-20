@@ -61,8 +61,9 @@ type CompanionEvent struct {
 	// Find rides a Kind "find" event: a page's search ended without its
 	// owner asking (navigation, a tab switch, a hidden pane, the page
 	// closing, another owner's start), so a find bar showing it closes.
-	// A Kind "escape" event names only ThreadID and PageID: a bare Escape
-	// was pressed in that page while a pane showed it, and the page kept it.
+	// A Kind "escape" event names only ThreadID, PageID and Mount, the pane
+	// mount showing the page: a bare Escape was pressed in that page while
+	// a pane showed it, and the page kept it.
 	// A Kind "teardown" event names ThreadID, PageID and Error: a page that
 	// already left the tab set failed to close or to release its profile.
 	Find *FindState `json:"find,omitempty"`
@@ -111,9 +112,10 @@ type FindState struct {
 	Seq uint64 `json:"seq"`
 	// Document is the epoch of the document the search started on.
 	Document uint64 `json:"document"`
-	// Session is the generation: it increases with every find action and
-	// end across the Manager, so an answer older than an end is
-	// recognizably stale.
+	// Session is the generation, from one counter across the Manager: a
+	// start, a stop and every end take a new one, and a step that succeeds
+	// keeps its search's, so an answer older than an end is recognizably
+	// stale.
 	Session uint64 `json:"session"`
 	// Foreign marks an answer for an action that changed nothing because
 	// the search it named is gone or another owner's; Mount and Seq then

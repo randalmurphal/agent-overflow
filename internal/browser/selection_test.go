@@ -154,8 +154,7 @@ func mustDeliver(t *testing.T, done <-chan error, what string) {
 	}
 }
 
-// The three sequences the review found, each ending on the user's last
-// selection.
+// Three delayed deliveries, each ending on the user's last selection.
 func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 	t.Run("a detached mount's delayed selection", func(t *testing.T) {
 		m, access, ids, oldMount := newSelectionManager(t)

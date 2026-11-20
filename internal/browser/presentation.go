@@ -7,9 +7,9 @@ package browser
 //
 // Where the pane SITS is the frontend's answer: the mounted pane reports its
 // host rect (SetPaneRect) and that rect rides along, so bounds always land
-// before the show. At most one pane per thread exists (a frontend invariant),
-// and a mounted pane without a usable rect yet keeps the view hidden rather
-// than flashing it at a stale place.
+// before the show. A thread may have several mounted panes; one of them
+// presents its page (presenterLocked), and a presenter without a usable
+// rect yet keeps the view hidden rather than flashing it at a stale place.
 //
 // An engine whose pages are not real windows implements no paneHost, so this
 // is a type assertion that fails and costs nothing on every deployment that

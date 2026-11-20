@@ -22,8 +22,7 @@ import (
 // detaching A, and engine failures (a start that fails, a stop that fails
 // once or always). TestFindOutstandingCallAcrossLaterActions also leaves one
 // call of A's outstanding, answered late or arriving late, across the next
-// one and two of A's actions; TestFindNamedSequences runs orders found by
-// review.
+// one and two of A's actions; TestFindNamedSequences runs named orders.
 //
 // Each provider is a port of browserFind.svelte.ts (findProvider): its
 // queue, sequences, drop rules, answer rules and stop retries. It sends what that provider would; every end the Manager
@@ -1161,8 +1160,8 @@ func TestFindOutstandingCallAcrossLaterActions(t *testing.T) {
 	checkFindScripts(t, "outstanding.json", scripts)
 }
 
-// An end submitted inside an action, at every point where one could once
-// land between a check and what follows it, is applied strictly after the
+// An end submitted inside an action, at every point between a check and
+// what follows it, is applied strictly after the
 // action: the action's answer is what it would be without the end, and the
 // end is newer than it.
 func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
@@ -1260,8 +1259,7 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 	checkFindScripts(t, "inside.json", scripts)
 }
 
-// Orders review found, each named: a stop made after a start the Manager
-// refused, or one dropped or left unanswered, ends the search shown before
+// Named orders: a stop made after a start the Manager refused, or one dropped or left unanswered, ends the search shown before
 // it; a stop's failure, its retry's among them, never changes what the bar
 // shows.
 func TestFindNamedSequences(t *testing.T) {
