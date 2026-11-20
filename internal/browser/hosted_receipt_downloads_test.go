@@ -513,6 +513,7 @@ func receiptRow(t *testing.T, state receiptState, kind receiptKind, action recei
 			holder = l.tabPage(access, p.list(t))
 			settle := func() {}
 			switch timing {
+			case processedBeforeListing, processedAfterAction:
 			case processedBeforeAction:
 				process()
 			case processedBeforeSettling:
