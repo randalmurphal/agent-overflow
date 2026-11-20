@@ -1371,46 +1371,39 @@ func (a *App) codexResendAfterInterrupt(
 // composer draft, and sweeps the failed send's pending state so the next
 // send lazy-starts fresh. It returns the close's failure.
 //
-// The event handler runs it on its own goroutine (see
-// sessionEventHandler) because the caller is the thread's event worker
-// and closing the session drains that worker's queue.
-// Two guards keep it from harming a user retry that races in:
+// The teardown runs whole under the thread action lock: lock, unregister
+// by token, restore the queue, close. Whoever holds the lock owns it. The
+// event handler's reaper runs it on its own goroutine (see
+// sessionEventHandler), since its caller is the thread's event worker and
+// the close drains that worker's queue; it waits for the lock, so a caller
+// already tearing the session down under the lock (ensureProvenSession)
+// does all of it and returns the close's result, and the reaper then finds
+// the token gone and does nothing. Holding the lock across the close cannot
+// deadlock: the event worker never waits on it.
 //
-//   - The token-guarded unregister means a retry that already replaced
-//     this session in the registry makes the teardown a no-op.
-//   - The triage epoch, captured BEFORE the unregister, covers the
-//     longer window after a successful unregister: a retry's start path
-//     calls MarkThreadActive (bumping the epoch) and then spawns for
-//     potentially seconds before re-registering, during which a
-//     registry check proves nothing. The queue restore and the triage
-//     cleanup both run only while the epoch is unchanged, so a live
-//     replacement is never re-stopped and never has its queue drained.
-//     (The epoch probe before the restore and the restore itself are
-//     adjacent calls, not one atomic section — but a reactivation
-//     squeezing between them would have to finish MarkThreadActive
-//     within microseconds of passing the probe AND have new queue
-//     state to lose, which requires a full spawn that takes orders of
-//     magnitude longer. CleanupThreadIfEpoch's sweep re-checks under
-//     the router lock, so the destructive path is strictly guarded.)
+// Two guards keep it from harming a start that replaces the session:
+//
+//   - The token-guarded unregister makes the teardown a no-op once a start
+//     replaced this session in the registry. A start that holds the action
+//     lock does that, or has not begun, before the teardown gets the lock.
+//   - The triage epoch, captured before the unregister, covers a start that
+//     does not take the action lock (a workflow takeover's restart): its
+//     MarkThreadActive bumps the epoch before it spawns, and the queue
+//     restore and the triage cleanup run only while the epoch is unchanged.
+//     CleanupThreadIfEpoch rechecks under the router lock.
 //
 // Not routed through teardownAndCloseSession: that helper's
 // unconditional CleanupThread is exactly what must not run here once a
 // replacement has claimed the thread.
 func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) error {
-	return a.teardownDeadPreInitSessionRestoring(threadID, sessionToken, a.restoreUnconfirmedQueueOnSessionDeath)
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	return a.teardownDeadPreInitSessionLocked(threadID, sessionToken)
 }
 
 // teardownDeadPreInitSessionLocked is teardownDeadPreInitSession for a
-// caller that holds the thread action lock, which the queue restore takes
-// otherwise. Nothing else in the teardown takes that lock: the close drains
-// the thread's event worker, which never waits on it.
+// caller that holds the thread action lock.
 func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) error {
-	return a.teardownDeadPreInitSessionRestoring(threadID, sessionToken, a.restoreUnconfirmedQueueLocked)
-}
-
-func (a *App) teardownDeadPreInitSessionRestoring(
-	threadID, sessionToken string, restore func(threadID string) []triage.UnconfirmedFlushItem,
-) error {
 	var epoch uint64
 	if a.triage != nil {
 		epoch = a.triage.ThreadEpoch(threadID)
@@ -1426,7 +1419,7 @@ func (a *App) teardownDeadPreInitSessionRestoring(
 		// without the restore the user's queued text would vanish.
 		var requeued []triage.UnconfirmedFlushItem
 		if a.triage.ThreadEpoch(threadID) == epoch {
-			requeued = restore(threadID)
+			requeued = a.restoreUnconfirmedQueueLocked(threadID)
 		}
 		if !a.triage.CleanupThreadIfEpoch(threadID, epoch) {
 			log.Printf("app: skipped triage cleanup for thread %s — a replacement session reactivated it mid-teardown", threadID)
@@ -1447,7 +1440,13 @@ func (a *App) teardownDeadPreInitSessionRestoring(
 			}
 		}
 	}
-	if err := a.closeProviderSession(threadID, sess); err != nil {
+	var err error
+	if a.closeProviderSessionFn != nil {
+		err = a.closeProviderSessionFn(threadID)
+	} else {
+		err = a.closeProviderSession(threadID, sess)
+	}
+	if err != nil {
 		return fmt.Errorf("teardown dead pre-init session for thread %s: %w", threadID, err)
 	}
 	return nil

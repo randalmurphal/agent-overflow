@@ -122,10 +122,10 @@ func (r *Runner) createPreparedWorkflowThread(spec ThreadSpec) (preparedWorkflow
 // ensureReusableWorkflowSession makes provider-context availability a fact,
 // not an inference from a non-empty database cursor or a registered session.
 // The provider proves it (SessionHost.EnsureProvenSession): a live process
-// by its start's outcome, or by an input it already took; a cold resume by
-// its start, Codex's synchronous thread/resume handshake or a Claude process
-// reporting that it loaded the session it resumed with a user message in
-// it. A provider's report that the conversation does not exist, holds no
+// by its start's outcome, or by its report that it took a prompt; a cold
+// resume by its start, Codex's synchronous thread/resume handshake or a
+// Claude process reporting that it loaded the session it resumed with a user
+// message in it. A provider's report that the conversation does not exist, holds no
 // user message or did not say makes the context unavailable, and so does a
 // thread with no live process and no cursor; every other failure is the
 // start's. The temporary schema is registered only for a start, and a

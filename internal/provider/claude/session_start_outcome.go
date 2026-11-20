@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"agent-overflow/internal/provider"
 )
@@ -26,8 +25,8 @@ var ErrConversationEmpty = errors.New("claude: the resumed conversation holds no
 // ErrContentUnproven means the CLI loaded the conversation `--resume` named
 // and did not say that it holds a user message: it refused get_context_usage,
 // answered without messageBreakdown or its userMessageTokens, answered
-// something unreadable, or took a command AO wrote before the count was read.
-// The wrapped message names which.
+// something unreadable, or took a command AO wrote before the count was read,
+// or a prompt write was in flight or failed. The wrapped message names which.
 var ErrContentUnproven = errors.New("claude: the resumed conversation's content is unproven")
 
 // IsConversationUnproven reports whether a start's outcome leaves no proven
@@ -54,11 +53,7 @@ type startOutcome struct {
 	// byInit says a `system/init` resolved the outcome. Written before done
 	// closes and read only after it has.
 	byInit bool
-	// prompted and commanded say an input was written to the process: a
-	// prompt (a person's, a queued or a workflow message), or a command AO
-	// issued on its own (provider.SendOptions.InternalCommand). Set before
-	// the write (noteInput).
-	prompted, commanded atomic.Bool
+	input  inputState
 	// resume is the session `--resume` names on a start that keeps that
 	// session; empty on a fresh start or a fork, which initialize on a session
 	// id of their own.
@@ -67,8 +62,37 @@ type startOutcome struct {
 	initialized bool
 }
 
+// inputState is what has been written to the process, as a start proof reads
+// it: prompts (a person's, a queued or a workflow message) by whether each
+// write is in flight, completed or failed, and commands AO issued on its own
+// (provider.SendOptions.InternalCommand). accepted closes at the first
+// `system/init` read after the first prompt write began, the CLI's report
+// that it took an input.
+type inputState struct {
+	mu              sync.Mutex
+	promptsInFlight int
+	promptWritten   bool
+	// promptFailed is the first failed prompt write. It stays: a write that
+	// failed may have reached stdin in part, and stdin is broken after it.
+	promptFailed error
+	commanded    bool
+	promptBegun  bool
+	accepted     chan struct{}
+	acceptedShut bool
+}
+
+// inputSnapshot is inputState read at one moment.
+type inputSnapshot struct {
+	promptsInFlight int
+	promptWritten   bool
+	promptFailed    error
+	commanded       bool
+	accepted        <-chan struct{}
+}
+
 func newStartOutcome(cfg Config) *startOutcome {
 	outcome := &startOutcome{done: make(chan struct{})}
+	outcome.input.accepted = make(chan struct{})
 	if !cfg.ForkSession {
 		outcome.resume = strings.TrimSpace(cfg.Resume)
 	}
@@ -87,15 +111,53 @@ func (o *startOutcome) resolveFrom(err error, byInit bool) {
 	})
 }
 
-// noteInput records that an input is about to be written to the process.
-func (o *startOutcome) noteInput(internalCommand bool) {
+// beginInput records an input about to be written to the process. It runs
+// before the write, since the CLI can read the line before the write
+// returns. The returned func records how a prompt's write ended.
+func (o *startOutcome) beginInput(internalCommand bool) func(error) {
 	if o == nil {
-		return
+		return func(error) {}
 	}
+	in := &o.input
+	in.mu.Lock()
+	defer in.mu.Unlock()
 	if internalCommand {
-		o.commanded.Store(true)
-	} else {
-		o.prompted.Store(true)
+		in.commanded = true
+		return func(error) {}
+	}
+	in.promptsInFlight++
+	in.promptBegun = true
+	return func(err error) {
+		in.mu.Lock()
+		defer in.mu.Unlock()
+		in.promptsInFlight--
+		switch {
+		case err != nil && in.promptFailed == nil:
+			in.promptFailed = err
+		case err == nil:
+			in.promptWritten = true
+		}
+	}
+}
+
+// noteInit records a `system/init` read from the process.
+func (o *startOutcome) noteInit() {
+	in := &o.input
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.promptBegun && !in.acceptedShut {
+		in.acceptedShut = true
+		close(in.accepted)
+	}
+}
+
+func (o *startOutcome) inputs() inputSnapshot {
+	in := &o.input
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return inputSnapshot{
+		promptsInFlight: in.promptsInFlight, promptWritten: in.promptWritten,
+		promptFailed: in.promptFailed, commanded: in.commanded, accepted: in.accepted,
 	}
 }
 
@@ -104,9 +166,16 @@ func (o *startOutcome) noteInput(internalCommand bool) {
 // init is the CLI failing its startup (for example a `--resume` naming a
 // conversation it does not hold): the frame is marked
 // provider.FailureReasonStartup, which is the one rule every consumer of a
-// failed start reads. Runs on the read loop only.
+// failed start reads. Every init is also an input taken (noteInit). Runs on
+// the read loop only.
 func (o *startOutcome) observe(evt provider.ProviderEvent) provider.ProviderEvent {
-	if o == nil || o.initialized {
+	if o == nil {
+		return evt
+	}
+	if evt.Kind == provider.EventInit {
+		o.noteInit()
+	}
+	if o.initialized {
 		return evt
 	}
 	switch evt.Kind {
@@ -184,16 +253,22 @@ func (o *startOutcome) exited(proc *provider.Process, closing bool) {
 		o.resolve(errors.New("claude: the session was closed before it initialized"))
 		return
 	}
-	reason := "claude: the process exited before it initialized"
-	if proc != nil {
-		if err := provider.WaitProcessExitErr(proc); err != nil {
-			reason += " (" + err.Error() + ")"
-		}
-		if tail := provider.SanitizeChildStderr(proc.StderrTail()); tail != "" {
-			reason += ": " + tail
-		}
+	o.resolve(errors.New("claude: the process exited before it initialized" + exitDetail(proc)))
+}
+
+// exitDetail is the exit status and stderr tail of a process that exited.
+func exitDetail(proc *provider.Process) string {
+	if proc == nil {
+		return ""
 	}
-	o.resolve(errors.New(reason))
+	var detail string
+	if err := provider.WaitProcessExitErr(proc); err != nil {
+		detail += " (" + err.Error() + ")"
+	}
+	if tail := provider.SanitizeChildStderr(proc.StderrTail()); tail != "" {
+		detail += ": " + tail
+	}
+	return detail
 }
 
 // AwaitStart waits until this process loaded the conversation it was started
@@ -213,16 +288,25 @@ func (o *startOutcome) exited(proc *provider.Process, closing bool) {
 // success or error, proves the load. The answer says nothing about which
 // session the CLI loaded.
 //
-// A loaded resume is then checked for content once per call
-// (resumedContent): only a nonzero user-message count proves it, a zero is
-// ErrConversationEmpty and any other answer ErrContentUnproven. The count is
-// the resumed conversation's only before the first input, so the check is
-// valid only then, and the caller holds every input off the process until
-// AwaitStart returns. A process that already took an input is proof on its
-// own and its content is not read: a prompt was written to it, or its start
-// resolved through an init, which the CLI writes only for an input. A command
-// AO wrote on its own (provider.SendOptions.InternalCommand) before the count
-// was read may be in it, which is ErrContentUnproven.
+// A loaded resume must then prove it holds a user message, by what was
+// written to its stdin, read at the call and again after any wait:
+//
+//   - A prompt write in flight or failed is ErrContentUnproven. A failure
+//     stays: the write may have reached stdin in part, and stdin is broken.
+//   - Once a prompt write completed, only the CLI's acceptance proves it: the
+//     first `system/init` read after the first prompt write began, which the
+//     CLI writes when it takes an input. AwaitStart waits for it; the process
+//     ending first is an error naming its exit.
+//   - A command AO wrote on its own (provider.SendOptions.InternalCommand)
+//     and no completed prompt is ErrContentUnproven: it may be in the count.
+//   - Nothing written: a start an init resolved is proven; otherwise the
+//     user-message count is read once (resumedContent). A nonzero count
+//     proves it, a zero is ErrConversationEmpty and any other answer
+//     ErrContentUnproven. An input written while the count was out decides
+//     instead, by the rules above.
+//
+// The count is the resumed conversation's only before the first input, so
+// the caller holds every input off the process until AwaitStart returns.
 //
 // The wait ends with ctx and has no budget of its own: the load can be
 // silent for as long as its SessionStart hooks run.
@@ -233,10 +317,66 @@ func (s *Session) AwaitStart(ctx context.Context) error {
 	if err := s.awaitLoad(ctx); err != nil || s.start.resume == "" {
 		return err
 	}
-	if s.start.byInit && !s.start.commanded.Load() {
+	if decided, err := s.inputProof(ctx); decided {
+		return err
+	}
+	if s.start.byInit {
 		return nil
 	}
-	return s.resumedContent(ctx)
+	counted := s.resumedContent(ctx)
+	if decided, err := s.inputProof(ctx); decided {
+		return err
+	}
+	return counted
+}
+
+// inputProof applies AwaitStart's rules for what was written to stdin. It
+// reports false when nothing was.
+func (s *Session) inputProof(ctx context.Context) (bool, error) {
+	for {
+		in := s.start.inputs()
+		switch {
+		case in.promptFailed != nil:
+			return true, fmt.Errorf("%w: a prompt write to the process failed: %w", ErrContentUnproven, in.promptFailed)
+		case in.promptsInFlight > 0:
+			return true, fmt.Errorf("%w: a prompt was being written to the process", ErrContentUnproven)
+		case in.promptWritten:
+			select {
+			case <-in.accepted:
+				return true, nil
+			default:
+			}
+			if err := s.awaitAcceptance(ctx, in.accepted); err != nil {
+				return true, err
+			}
+			// Accepted: read again, for a prompt written meanwhile.
+		case in.commanded:
+			return true, fmt.Errorf("%w: a command AO wrote before the count was read may be in it", ErrContentUnproven)
+		default:
+			return false, nil
+		}
+	}
+}
+
+// awaitAcceptance waits for the init that says the CLI took a prompt.
+func (s *Session) awaitAcceptance(ctx context.Context, accepted <-chan struct{}) error {
+	select {
+	case <-accepted:
+		return nil
+	case <-s.readDone:
+		// The read loop observes every frame before it ends.
+		select {
+		case <-accepted:
+			return nil
+		default:
+		}
+		if s.closing.Load() {
+			return errors.New("claude: the session was closed before the CLI took the prompt")
+		}
+		return errors.New("claude: the process exited before the CLI took the prompt" + exitDetail(s.proc))
+	case <-ctx.Done():
+		return fmt.Errorf("claude: wait for the CLI to take the prompt: %w", ctx.Err())
+	}
 }
 
 func (s *Session) awaitLoad(ctx context.Context) error {
@@ -262,11 +402,9 @@ func (s *Session) awaitLoad(ctx context.Context) error {
 // resumedContent reads get_context_usage once (claude-wire.md §Start outcome
 // before the first input) and proves the loaded resume only when its
 // messageBreakdown counts user-message tokens. Like the load, the wait has
-// no budget of its own: ctx bounds it.
+// no budget of its own: ctx bounds it. AwaitStart decides by an input
+// written while the request was out instead.
 func (s *Session) resumedContent(ctx context.Context) error {
-	if took, err := s.tookInput(); took {
-		return err
-	}
 	requestID, answer, err := s.writeControlRequest("get_context_usage", map[string]any{"subtype": "get_context_usage"})
 	if err != nil {
 		return fmt.Errorf("claude: read the resumed conversation's content: %w", err)
@@ -276,10 +414,6 @@ func (s *Session) resumedContent(ctx context.Context) error {
 	case res := <-answer:
 		if res == nil {
 			return errors.New("claude: the session closed before it reported the resumed conversation's content")
-		}
-		// An input written while the request was out may be in the count.
-		if took, err := s.tookInput(); took {
-			return err
 		}
 		if !res.ok {
 			return fmt.Errorf("%w: get_context_usage refused: %s", ErrContentUnproven, res.errMsg)
@@ -296,21 +430,6 @@ func (s *Session) resumedContent(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("claude: wait for the resumed conversation's content: %w", ctx.Err())
-	}
-}
-
-// tookInput reports whether an input was written to the process, and what
-// that means for the content check: nil for a prompt, which the process
-// took, so it is proof on its own; ErrContentUnproven for a command AO wrote
-// on its own, which may be in the count.
-func (s *Session) tookInput() (bool, error) {
-	switch {
-	case s.start.prompted.Load():
-		return true, nil
-	case s.start.commanded.Load():
-		return true, fmt.Errorf("%w: a command AO wrote before the count was read may be in it", ErrContentUnproven)
-	default:
-		return false, nil
 	}
 }
 

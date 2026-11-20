@@ -53,7 +53,8 @@ import (
 // beforeStart, starts one and proves that; started reports the second. The
 // proof is the provider's own report of how that process's start ended: a
 // Claude process that loaded the session it resumed and counts a user
-// message in it, or already took an input, or the failure that stopped it
+// message in it, or that reported taking a prompt written to it
+// (`claude.Session.AwaitStart`), or the failure that stopped it
 // first (`claude.IsConversationUnproven` when the conversation is gone,
 // empty or its content unproven). Codex proves the same thing inside the
 // start, with its synchronous `thread/resume`; a live claude-tui session is

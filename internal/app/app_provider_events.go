@@ -113,8 +113,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// Such a process serves no send and can linger alive: Claude does
 		// not exit after a failed --resume-session-at validation. Runs
 		// AFTER triage.Handle so the orphan error item is already
-		// persisted and visible. Goroutine because the teardown closes
-		// this session, and a close drains this worker's queue.
+		// persisted and visible. Goroutine because the teardown waits for
+		// the thread action lock and closes this session, and a close
+		// drains this worker's queue.
 		if provider.IsStartupFailure(evt) {
 			go func() {
 				if err := a.teardownDeadPreInitSession(threadID, sessionToken); err != nil {

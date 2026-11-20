@@ -5432,10 +5432,15 @@ an error answer, an answer without `messageBreakdown` or the count, and an
 unreadable one are `ErrContentUnproven`. The count is the resumed
 conversation's only before the first input, so the caller holds every input
 off the process until the proof returns (the App holds the thread action
-lock). A process that already took a prompt, or whose start an init
-resolved, is proof on its own and is not read. A command AO writes on its
-own (`/effort`, `/fast`, `/rename`) without that lock, before the count or
-while it is out, may be counted (not verified) and is `ErrContentUnproven`.
+lock). What was written to stdin decides before the count does: a prompt
+write in flight or failed is `ErrContentUnproven` (a failed write may have
+reached stdin in part); a completed prompt write is proven only by the
+CLI's acceptance, the first `system/init` read after the write began, and
+the process ending before it is an error; a start an init resolved with
+nothing written is proven without the count. A command AO writes on its
+own (`/effort`, `/fast`, `/rename`) without that lock, with no completed
+prompt, before the count or while it is out, may be counted (not verified)
+and is `ErrContentUnproven`. `AwaitStart`'s contract is the rule.
 Every wait is bounded only by its caller's context; the workflow runner's
 start deadline bounds it there.
 

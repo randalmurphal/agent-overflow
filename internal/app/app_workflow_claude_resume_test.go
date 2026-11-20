@@ -295,6 +295,15 @@ func (f *workflowResumeFixture) requireNothingLeft() {
 	if _, registered := f.runner.SessionSchemaForThread(f.thread.ID); registered {
 		f.t.Fatal("the temporary schema is still registered")
 	}
+	pid := f.mockPID()
+	waitFor(f.t, "the mock CLI to exit", func() bool {
+		return syscall.Kill(pid, 0) != nil
+	})
+}
+
+// mockPID is the pid the mock CLI recorded.
+func (f *workflowResumeFixture) mockPID() int {
+	f.t.Helper()
 	data, err := os.ReadFile(f.pidFile)
 	if err != nil {
 		f.t.Fatalf("read mock pid: %v", err)
@@ -303,9 +312,7 @@ func (f *workflowResumeFixture) requireNothingLeft() {
 	if err != nil {
 		f.t.Fatalf("parse mock pid: %v", err)
 	}
-	waitFor(f.t, "the mock CLI to exit", func() bool {
-		return syscall.Kill(pid, 0) != nil
-	})
+	return pid
 }
 
 func initLine(sessionID string) string {

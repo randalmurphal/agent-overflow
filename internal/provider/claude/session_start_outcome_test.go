@@ -340,9 +340,10 @@ done
 }
 
 // The count is the resumed conversation's only before the first input. A
-// process that took a prompt, or whose start an init resolved, is proof on
-// its own and its content is not read; a command AO wrote on its own, before
-// the count is read or while it is out, leaves the content unproven.
+// process whose start an init resolved, or that took a prompt and wrote the
+// init for it, is proven and its content is not read; a command AO wrote on
+// its own, before the count is read or while it is out, leaves the content
+// unproven.
 func TestAwaitStartReadsContentOnlyBeforeTheFirstInput(t *testing.T) {
 	start := func(t *testing.T, script string) *Session {
 		t.Helper()
@@ -381,6 +382,9 @@ func TestAwaitStartReadsContentOnlyBeforeTheFirstInput(t *testing.T) {
 			t.Fatal(err)
 		}
 		send(t, s, false)
+		if err := s.proc.WriteLine(outcomeInit(outcomeSession)); err != nil {
+			t.Fatal(err)
+		}
 		if err := awaitStartWithin(t, s); err != nil {
 			t.Fatalf("AwaitStart = %v, want the loaded process that took a prompt", err)
 		}
