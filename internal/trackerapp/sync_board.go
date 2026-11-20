@@ -39,7 +39,6 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 	if len(r.state.Cursor) > 0 {
 		cursor = r.state.Cursor
 	}
-	n := newRefs()
 	for pages := 0; ; pages++ {
 		if pages == deltaPages {
 			out.More = true
@@ -70,16 +69,15 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 			if err != nil {
 				return out, fmt.Errorf("trackerapp: store a page of board %s: %w", board, err)
 			}
-			ch := changesOf(stored)
-			n.add(page.Rows, ch)
-			out.Changes.add(ch)
+			r.markStructureDue(stored)
+			out.Changes.add(changesOf(stored))
 		}
 		cursor = page.Next
 		if !page.More {
 			break
 		}
 	}
-	return out, r.cascade(board, n, &out)
+	return out, r.cascade(board, &out)
 }
 
 // reconcile is the reconcile unit of board (SyncBoard).
@@ -109,13 +107,12 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	if limit := reconcileBatches * readBatch; len(missing) > limit {
 		missing, out.More = missing[:limit], true
 	}
-	n := newRefs()
-	ch, err = r.boardRows(board, missing, n)
+	ch, err = r.boardRows(board, missing)
 	out.Changes.add(ch)
 	if err != nil {
 		return out, err
 	}
-	return out, r.cascade(board, n, &out)
+	return out, r.cascade(board, &out)
 }
 
 // boardHeld makes sure the mirror holds board's structure, which the store

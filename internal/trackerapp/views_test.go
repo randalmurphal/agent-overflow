@@ -215,6 +215,60 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 	}
 }
 
+// A detail shows when its status began only when the mirror's time
+// describes that status and stay: a detail read before the delta and
+// history caught up shows it unknown, read through and from the mirror,
+// and so does a detail of another status read before a newer card was
+// stored (never current, so read through each time).
+func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		updated int64
+		status  tracker.StatusID
+		reads   int
+	}{
+		"another status":                  {updated: 1_799_000_100_000, status: "s2", reads: 1},
+		"the same status entered again":   {updated: 1_799_000_100_000, status: "s1", reads: 1},
+		"an older card of another status": {updated: 1_798_900_000_000, status: "s2", reads: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixture(t)
+			m.seedBoard(t)
+			began := time.UnixMilli(1_798_500_000_000).UTC()
+			m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+				var h tracker.History
+				for _, id := range q.Issues {
+					ih := tracker.IssueHistory{Issue: id, CompleteTo: m.now()}
+					if id == "10001" {
+						ih.Status = []tracker.StatusChange{{Change: tracker.Change{At: began}, From: "s2", To: "s1"}}
+					}
+					h.Issues = append(h.Issues, ih)
+				}
+				return h, nil
+			}
+			must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+			if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); v.Card.StatusSince != began.UnixMilli() {
+				t.Fatalf("the mirror's card shows its status since %d", v.Card.StatusSince)
+			}
+			m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+				c := card("10001", tc.updated)
+				c.Status = tc.status
+				return tracker.Detail{Card: c}, nil
+			}
+			for range 2 {
+				v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+				if err != nil || v.Card.StatusSince != 0 || v.Card.Updated != tc.updated {
+					t.Fatalf("detail after %d reads: status %s since %d, updated %d, %v", m.p.count("Detail"), v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, err)
+				}
+			}
+			if m.p.count("Detail") != tc.reads {
+				t.Fatalf("%d detail reads", m.p.count("Detail"))
+			}
+		})
+	}
+}
+
 // A card whose blob this version cannot read shows its columns and is
 // listed as stale.
 func TestAStaleCardShowsItsColumns(t *testing.T) {
@@ -234,7 +288,7 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	// The next read of the row replaces it.
 	m.p.set(func(p *scripted) { p.boardRows = boardOf(row("10002", 1_799_000_000_002, "b")) })
 	r := m.begun(t, m.scope())
-	must[Changes](t)(r.boardRows(testBoard, ids("10002"), nil))
+	must[Changes](t)(r.boardRows(testBoard, ids("10002")))
 	r.finish()
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10002")); v.Stale || v.Card.Title != "Issue 10002" {
 		t.Fatalf("issue after a read %+v", v)

@@ -148,10 +148,11 @@ func TestDeltaStartsOverWhenTheCursorIsRefused(t *testing.T) {
 	}
 }
 
-// A stored row naming a status the mirror lacks reads the structure
-// again, once a tick: the first tick's own structure read already
-// answers for it. A row read again unchanged does not cascade, nor one
-// naming only what a structure read left unexplained.
+// A stored row naming a status the mirror lacks reads the structure after
+// the page, even in the tick whose own first structure read came before
+// the page: that read could not mark the status unexplained. A row read
+// again unchanged does not cascade; a changed row naming a new sprint or
+// a new user does.
 func TestDeltaCascadesToTheStructure(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -161,31 +162,24 @@ func TestDeltaCascadesToTheStructure(t *testing.T) {
 		return tracker.RowPage{Rows: []tracker.Row{r}, Next: cursorAfter("10001")}, nil
 	}
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	if got := m.p.count("Structure"); got != 1 {
-		t.Fatalf("%d structure reads, want the first only", got)
+	if got := m.p.count("Structure"); got != 2 {
+		t.Fatalf("%d structure reads, want the first and one after the page", got)
 	}
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	if got := m.p.count("Structure"); got != 1 {
+	if got := m.p.count("Structure"); got != 2 {
 		t.Fatalf("an unchanged row cascaded: %d structure reads", got)
 	}
-	// A changed row naming a new sprint and a new user cascades again.
 	r.Card.Updated = r.Card.Updated.Add(time.Second)
 	r.Card.Status, r.Card.Assignee, r.Card.Sprints = "s1", "acc-user1", []tracker.SprintID{"9"}
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	if got := m.p.count("Structure"); got != 2 {
+	if got := m.p.count("Structure"); got != 3 {
 		t.Fatalf("a new sprint did not cascade: %d structure reads", got)
 	}
 	r.Card.Updated = r.Card.Updated.Add(time.Second)
 	r.Card.Sprints, r.Card.Assignee = []tracker.SprintID{"1"}, "acc-user9"
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	if got := m.p.count("Structure"); got != 3 {
+	if got := m.p.count("Structure"); got != 4 {
 		t.Fatalf("a new user did not cascade: %d structure reads", got)
-	}
-	r.Card.Updated = r.Card.Updated.Add(time.Second)
-	r.Card.Assignee, r.Card.Status, r.Card.Sprints = "acc-user1", "s9", []tracker.SprintID{"9"}
-	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	if got := m.p.count("Structure"); got != 3 {
-		t.Fatalf("a row naming what the mirror holds or a read left unexplained cascaded: %d structure reads", got)
 	}
 }
 

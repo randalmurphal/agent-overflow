@@ -35,10 +35,11 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 }
 
 // boardRows reads board's rows of issues and stores them; the issues the
-// board no longer lists lose their row. n, when not nil, gathers what the
-// stored rows name. The board's structure must be in the mirror
-// (store.ErrTrackerCacheNoBoard otherwise).
-func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, n *refs) (Changes, error) {
+// board no longer lists lose their row. A write the store finds due a
+// structure read marks the run's structure due (run.cascade). The board's
+// structure must be in the mirror (store.ErrTrackerCacheNoBoard
+// otherwise).
+func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (Changes, error) {
 	var out Changes
 	lifetime, err := r.lifetime(board)
 	if err != nil {
@@ -60,11 +61,8 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, n *refs
 		if err != nil {
 			return out, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
 		}
-		ch := changesOf(stored)
-		if n != nil {
-			n.add(rows.Rows, ch)
-		}
-		out.add(ch)
+		r.markStructureDue(stored)
+		out.add(changesOf(stored))
 	}
 	return out, nil
 }
@@ -187,91 +185,44 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	if err != nil {
 		return Changes{}, fmt.Errorf("trackerapp: store the structure of board %s: %w", board, err)
 	}
-	r.held = nil
 	if board == r.scope.Board {
-		r.structured, r.stored = true, true
+		r.stored, r.structureDue = true, false
 	}
 	return Changes{Structure: stored.Changed}, nil
+}
+
+// markStructureDue marks the run's structure due when a row write found
+// the board due a structure read (store MirrorChanges.StructureDue).
+func (r *run) markStructureDue(stored store.MirrorChanges) {
+	if stored.StructureDue {
+		r.structureDue = true
+	}
+}
+
+// cascade reads board's structure when it is due: the tick's sync state
+// said so, or a row write since the run's last structure read did, because
+// its rows name a status, user or sprint the mirror lacks that no complete
+// structure read left unexplained (store MirrorSync.StructureDueAt). A
+// failed read leaves it due in the store: the unit fails, and the next
+// tick reads it again.
+func (r *run) cascade(board tracker.BoardID, out *UnitResult) error {
+	if !r.structureDue {
+		return nil
+	}
+	ch, err := r.structure(board)
+	out.Changes.add(ch)
+	return err
 }
 
 // ensureStructure reads board's structure when the mirror does not hold
 // it, since the store refuses rows of a board it does not know.
 func (r *run) ensureStructure(board tracker.BoardID) (Changes, error) {
-	_, ok, err := r.board(board)
+	_, ok, err := r.s.store.GetMirrorBoard(r.root, string(board))
 	if err != nil {
-		return Changes{}, err
+		return Changes{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", board, err)
 	}
 	if ok {
 		return Changes{}, nil
 	}
 	return r.structure(board)
-}
-
-// lacking is what of n the mirror lacks: the statuses and users its
-// catalog does not hold and the sprints board's structure does not list.
-func (r *run) lacking(board tracker.BoardID, n *refs) (*refs, error) {
-	out := newRefs()
-	users, statuses := sortedKeys(n.users), sortedKeys(n.statuses)
-	for len(users)+len(statuses) > 0 {
-		u, st := users[:min(len(users), readBatch)], statuses[:min(len(statuses), readBatch)]
-		users, statuses = users[len(u):], statuses[len(st):]
-		c, err := r.s.store.GetMirrorCatalog(r.root, u, st)
-		if err != nil {
-			return nil, fmt.Errorf("trackerapp: read the mirror's catalog: %w", err)
-		}
-		for _, id := range u {
-			out.users[id] = true
-		}
-		for _, id := range st {
-			out.statuses[id] = true
-		}
-		for _, held := range c.Users {
-			delete(out.users, held.ID)
-		}
-		for _, held := range c.Statuses {
-			delete(out.statuses, held.ID)
-		}
-	}
-	if len(n.sprints) == 0 {
-		return out, nil
-	}
-	st, ok, err := r.board(board)
-	if err != nil {
-		return nil, err
-	}
-	held := make(map[string]bool, len(st.Sprints))
-	if ok {
-		for _, sp := range st.Sprints {
-			held[sp.ID] = true
-		}
-	}
-	for id := range n.sprints {
-		if !held[id] {
-			out.sprints[id] = true
-		}
-	}
-	return out, nil
-}
-
-// board is board's structure as the mirror holds it, read once a run
-// until the run stores a structure.
-func (r *run) board(board tracker.BoardID) (store.MirrorStructure, bool, error) {
-	if r.held != nil && r.held.board == board {
-		return r.held.st, r.held.ok, nil
-	}
-	st, ok, err := r.s.store.GetMirrorBoard(r.root, string(board))
-	if err != nil {
-		return store.MirrorStructure{}, false, fmt.Errorf("trackerapp: read board %s from the mirror: %w", board, err)
-	}
-	r.held = &heldBoard{board: board, st: st, ok: ok}
-	return st, ok, nil
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
 }

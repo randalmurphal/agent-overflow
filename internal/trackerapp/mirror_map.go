@@ -252,6 +252,13 @@ func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure,
 		},
 		Catalog: catalog,
 		ReadAt:  readAt,
+		// A structure read lists everything it reads to the end or fails:
+		// Jira's sprint listing has no limit (jira.SprintList.Complete is
+		// false only for a limited one) and Linear's cycles and users are
+		// paged to the end. So it is complete, and what the board's rows
+		// name that it leaves out is left out on purpose (a sprint closed
+		// before the window, a status the site does not list).
+		Complete: true,
 	}
 	for _, col := range st.Columns {
 		out.Columns = append(out.Columns, store.MirrorColumn{Name: col.Name, Statuses: idStrings(col.Statuses)})

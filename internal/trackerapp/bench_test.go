@@ -1,8 +1,14 @@
 package trackerapp
 
 import (
+	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	gotoken "go/token"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -212,15 +218,68 @@ func realisticDetail() tracker.Detail {
 }
 
 func BenchmarkDetailBlobDecode(b *testing.B) {
-	data, err := mirrorDetail(realisticDetail())
+	d := realisticDetail()
+	data, err := mirrorDetail(d)
 	if err != nil {
 		b.Fatal(err)
 	}
-	m := store.MirrorDetail{IssueID: "10001", Data: data}
+	m := store.MirrorDetail{IssueID: string(d.Card.ID), Data: data}
 	b.ReportAllocs()
 	for b.Loop() {
 		if _, ok := detailOf(m); !ok {
 			b.Fatal("a miss")
+		}
+	}
+}
+
+// benchmarks are the package's benchmarks, which the test suite runs once
+// each (TestBenchmarksRun).
+var benchmarks = map[string]func(*testing.B){
+	"BenchmarkMirrorRows100":         BenchmarkMirrorRows100,
+	"BenchmarkDeltaTick100Changed":   BenchmarkDeltaTick100Changed,
+	"BenchmarkDeltaTick100Unchanged": BenchmarkDeltaTick100Unchanged,
+	"BenchmarkBoardView500":          BenchmarkBoardView500,
+	"BenchmarkSectionPage100":        BenchmarkSectionPage100,
+	"BenchmarkCardBlobDecode":        BenchmarkCardBlobDecode,
+	"BenchmarkDetailBlobDecode":      BenchmarkDetailBlobDecode,
+}
+
+// Every benchmark of the package runs one iteration without failing, so a
+// benchmark broken by a change fails the suite instead of the next
+// measurement. The list is checked against the package's source.
+func TestBenchmarksRun(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := gotoken.NewFileSet()
+	for _, path := range files {
+		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Benchmark") && benchmarks[fn.Name.Name] == nil {
+				t.Errorf("%s (%s) is not in benchmarks", fn.Name.Name, path)
+			}
+		}
+	}
+	// One iteration a benchmark; the flag is the testing package's own and
+	// only benchmarks read it.
+	before := flag.Lookup("test.benchtime").Value.String()
+	if err := flag.Set("test.benchtime", "1x"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := flag.Set("test.benchtime", before); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, name := range slices.Sorted(maps.Keys(benchmarks)) {
+		// testing.Benchmark discards a failed benchmark's output and returns
+		// no iterations.
+		if r := testing.Benchmark(benchmarks[name]); r.N != 1 {
+			t.Errorf("%s ran %d iterations; run it with -bench to see why", name, r.N)
 		}
 	}
 }

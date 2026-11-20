@@ -63,9 +63,10 @@ type step struct {
 //     historyBatch issues a read and historyBatches reads a tick (More).
 //
 // Reconcile and delta read the board's structure first when the mirror
-// lacks it, and again, once a tick, when a row they store names a status,
-// user or sprint the mirror lacks that the last structure read did not
-// already leave unexplained (unexplained.go).
+// lacks it, and after their rows when it is due (run.cascade): the sync
+// state the tick read says so, or a row write since the tick's last
+// structure read found a status, user or sprint the mirror lacks that no
+// complete structure read marked unexplained. The store keeps both.
 func (s *Service) SyncBoard(ctx context.Context, scope Scope, due BoardDue, u Urgency) (Outcome, error) {
 	if err := scope.boardOnly(); err != nil {
 		return Outcome{}, err
@@ -216,15 +217,10 @@ func (r *run) record(done []step, began []int64, out Outcome) error {
 	return nil
 }
 
-// structureUnit is the structure unit: the read, then the references the
-// scope's last structure read left unexplained checked against it.
+// structureUnit is the structure unit: the read.
 func (r *run) structureUnit(board tracker.BoardID) (UnitResult, error) {
 	ch, err := r.structure(board)
-	out := UnitResult{Changes: ch}
-	if err != nil {
-		return out, err
-	}
-	return out, r.reexplain(board, newRefs())
+	return UnitResult{Changes: ch}, err
 }
 
 // lockKey names a lock a tick takes: a scope's, or with history set the

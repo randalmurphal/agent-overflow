@@ -235,6 +235,17 @@ func (s *fakeScenario) largeCosts(t *testing.T, scope Scope, edit func(), pins m
 		}
 	})
 	idle.stmtNames = map[string]int{"GetMirrorSync": 1, "RecordMirrorSyncAttempt": 1}
+	// Opening the board with its backlog and first column: the root, one
+	// snapshot of the structure, totals and pages (6+2 statements in the
+	// store), one catalog read naming the columns and cards, and the sync
+	// state. The fixtures' cards have no parents, so no parent read.
+	open := tc("board open", func(t *testing.T) {
+		v := must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionBacklog}, {Kind: SectionColumn, Column: 0}}))
+		if v.All.Rows != largeIssues || len(v.Sections) != 2 {
+			t.Fatalf("the board holds %d rows, %d sections", v.All.Rows, len(v.Sections))
+		}
+	})
+	open.stmtNames = map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardView": 1, "GetMirrorCatalog": 1, "GetMirrorSync": 1}
 	s.listBoards(scope.Connection, scope.Board)
 	s.measureTicks(t, []tickCost{
 		tc("first sync", func(t *testing.T) {
@@ -258,6 +269,7 @@ func (s *fakeScenario) largeCosts(t *testing.T, scope Scope, edit func(), pins m
 				t.Fatalf("the tick stored %d changed cards", len(out.Changes().Cards))
 			}
 		}),
+		open,
 	})
 }
 
@@ -291,7 +303,7 @@ func TestFakeJiraLargeBoardCosts(t *testing.T) {
 		edited = append(edited, tracker.IssueID(fmt.Sprint(20000+i*7)))
 	}
 	s.largeCosts(t, Scope{Connection: conn.ID, Board: "1"}, func() { s.editTitles(t, conn.ID, edited) }, map[string][2]int{
-		"first sync": {6, 9}, "history backfill": {8, 7}, "idle tick": {1, 2}, "10 changed rows": {1, 4},
+		"first sync": {6, 8}, "history backfill": {8, 7}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 4},
 	})
 }
 
@@ -315,6 +327,6 @@ func TestFakeLinearLargeBoardCosts(t *testing.T) {
 		edited = append(edited, tracker.IssueID(lid(1000+i*7)))
 	}
 	s.largeCosts(t, Scope{Connection: conn.ID, Board: tracker.BoardID(lid(10))}, func() { s.editTitles(t, conn.ID, edited) }, map[string][2]int{
-		"first sync": {10, 9}, "history backfill": {4, 7}, "idle tick": {1, 2}, "10 changed rows": {1, 4},
+		"first sync": {10, 8}, "history backfill": {4, 7}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 4},
 	})
 }

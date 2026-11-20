@@ -147,7 +147,7 @@ func (s *Service) Issue(id string, issue tracker.IssueID) (IssueView, error) {
 		return IssueView{}, fmt.Errorf("%w: issue %s", ErrNotMirrored, issue)
 	}
 	card, ok := shownOf(cards[0])
-	views, err := s.cardViews(root, []shownCard{card})
+	views, _, err := s.cardViews(root, []shownCard{card}, nil)
 	if err != nil {
 		return IssueView{}, err
 	}
@@ -168,10 +168,14 @@ func (s *Service) Issue(id string, issue tracker.IssueID) (IssueView, error) {
 }
 
 // cardViews is cards as views, their users, statuses and parents named
-// from the mirror, a store lookup's bound at a time. At most the pages of
-// one board view are asked for at once.
-func (s *Service) cardViews(root int64, cards []shownCard) ([]CardView, error) {
+// from the mirror, a store lookup's bound at a time, and the names it
+// read, which name also the statuses also. At most the pages of one board
+// view are asked for at once.
+func (s *Service) cardViews(root int64, cards []shownCard, also []string) ([]CardView, catalogNames, error) {
 	var users, statuses, parents idSet
+	for _, id := range also {
+		statuses.add(id)
+	}
 	for _, sc := range cards {
 		c := sc.card
 		users.add(string(c.Assignee))
@@ -180,13 +184,13 @@ func (s *Service) cardViews(root int64, cards []shownCard) ([]CardView, error) {
 	}
 	names, err := s.names(root, users.ids, statuses.ids)
 	if err != nil {
-		return nil, err
+		return nil, catalogNames{}, err
 	}
 	parentOf := make(map[string]tracker.Card, len(parents.ids))
 	for batch := range slices.Chunk(parents.ids, readBatch) {
 		parentCards, err := s.store.ListMirrorCards(root, batch)
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: read the parents of %d cards: %w", len(cards), err)
+			return nil, catalogNames{}, fmt.Errorf("trackerapp: read the parents of %d cards: %w", len(cards), err)
 		}
 		for _, m := range parentCards {
 			c, _ := cardOf(m)
@@ -204,7 +208,7 @@ func (s *Service) cardViews(root int64, cards []shownCard) ([]CardView, error) {
 		}
 		out[i] = v
 	}
-	return out, nil
+	return out, names, nil
 }
 
 func cardView(c tracker.Card, names catalogNames) CardView {

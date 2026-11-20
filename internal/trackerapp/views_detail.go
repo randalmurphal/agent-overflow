@@ -213,8 +213,9 @@ func (s *Service) currentDetail(root int64, issue tracker.IssueID) (tracker.Deta
 }
 
 // detailView is d as a view, its names from its own catalog and, for the
-// IDs that leaves out, the mirror's, with when its status began and its
-// parent's key and title from the mirror's cards. held is the mirror's
+// IDs that leaves out, the mirror's, with when its status began (only
+// when the mirror's card describes the version d shows, statusSinceOf) and
+// its parent's key and title from the mirror's cards. held is the mirror's
 // card of the issue when the caller has read it.
 func (s *Service) detailView(root int64, d tracker.Detail, held *store.MirrorCard) (DetailView, error) {
 	var users, statuses idSet
@@ -296,7 +297,7 @@ func (s *Service) detailCard(root int64, d tracker.Detail, held *store.MirrorCar
 	if held == nil {
 		want = append(want, string(d.Card.ID))
 	} else {
-		card.StatusSince = held.StatusSince
+		card.StatusSince = statusSinceOf(*held, d.Card)
 	}
 	if d.Card.Parent != "" {
 		card.Parent = &ParentView{ID: string(d.Card.Parent)}
@@ -312,13 +313,24 @@ func (s *Service) detailCard(root int64, d tracker.Detail, held *store.MirrorCar
 	for _, m := range cards {
 		switch m.IssueID {
 		case string(d.Card.ID):
-			card.StatusSince = m.StatusSince
+			card.StatusSince = statusSinceOf(m, d.Card)
 		case string(d.Card.Parent):
 			p, _ := cardOf(m)
 			card.Parent.Key, card.Parent.Title = p.Key, p.Title
 		}
 	}
 	return card, nil
+}
+
+// statusSinceOf is when c's status began, from m, the mirror's card of
+// the same issue, when m describes the version c shows: the same status
+// and not older. Otherwise it is unknown (0): the mirror's time belongs to
+// another status, or to an earlier stay in this one.
+func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
+	if m.StatusID != string(c.Status) || m.UpdatedAt < millis(c.Updated) {
+		return 0
+	}
+	return m.StatusSince
 }
 
 func fieldViews(fields []tracker.Field) []FieldView {

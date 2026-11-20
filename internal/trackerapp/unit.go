@@ -29,21 +29,19 @@ type run struct {
 	// calls counts the tracker calls the run made. A run that made none
 	// and did not fail leaves the connection's problem as it is.
 	calls int
-	// scope is the tick's scope; structured is set once the run has read
-	// the scope's board's structure, so a cascade reads it once a tick.
-	scope      Scope
-	structured bool
-	// held is the board structure the run last read from the mirror,
-	// until it stores one (run.board).
-	held *heldBoard
+	// scope is the tick's scope.
+	scope Scope
 	// state is the scope's sync state as the tick read it at its start
 	// (run.readState): the cursor and the board's lifetime every board
 	// write names come from it. stored reports that the mirror holds the
 	// board's structure, which a sync state found or a structure stored
-	// shows.
-	state  store.MirrorSync
-	stored bool
-	stop   func()
+	// shows. structureDue reports that the board's structure is to be read
+	// (run.cascade): the state said so, or a row write since the run's
+	// last structure read did.
+	state        store.MirrorSync
+	stored       bool
+	structureDue bool
+	stop         func()
 }
 
 // connHold is what ticks of a connection reuse until a change to it made
@@ -61,12 +59,6 @@ type connHold struct {
 // provider holds its Tempo connection's client, from outliving a change
 // to the Tempo connection.
 func (s *Service) forgetHolds() { clear(s.holds) }
-
-type heldBoard struct {
-	board tracker.BoardID
-	st    store.MirrorStructure
-	ok    bool
-}
 
 // callError marks a failed tracker call, so a unit tells the tracker's
 // failures, which are outcomes, from the store's, which are errors.
@@ -188,8 +180,9 @@ func (s *Service) rehold(id string, stale int64) (int64, error) {
 }
 
 // readState reads the scope's sync state, the tick's one read before its
-// tracker calls: the cursor, the board's lifetime and whether the store
-// shows the board. A root the store reports gone is looked up again once
+// tracker calls: the cursor, the board's lifetime, whether the store
+// shows the board and whether its structure is due a read. A root the
+// store reports gone is looked up again once
 // (rehold). A board scope whose board no project lists has no lifetime:
 // the tick ends.
 func (r *run) readState() error {
@@ -207,7 +200,7 @@ func (r *run) readState() error {
 	if board != "" && st.Lifetime == 0 {
 		return fmt.Errorf("%w: board %s of %s is not listed", store.ErrTrackerCacheUnlisted, board, r.row.ID)
 	}
-	r.state, r.stored = st, shown
+	r.state, r.stored, r.structureDue = st, shown, board != "" && st.StructureDueAt > 0
 	return nil
 }
 

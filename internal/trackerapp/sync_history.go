@@ -19,8 +19,11 @@ const (
 
 // history is the history unit (SyncBoard, SyncLinked). Due issues are the
 // connection's, not the scope's: the scope is where the outcome is
-// recorded. Each read names the boards the issues are on so their
-// estimate changes are read. An issue the tracker returns no history for
+// recorded. Each read names the boards the issues are on now, as the due
+// listing gives them, so their estimate changes are read, and the history
+// written names the revision of that board set (store
+// MirrorHistory.BoardsRev): an issue that gains a board is due again. An
+// issue the tracker returns no history for
 // (deleted or not visible) is stored with none known before the read, so
 // it is not due again until its card moves.
 func (r *run) history() (UnitResult, error) {
@@ -99,6 +102,9 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 		} else {
 			histories[i] = emptyHistory(id, read)
 		}
+		// The revision of the issue's boards the read was asked with: a
+		// history of an older revision does not cover a board added since.
+		histories[i].BoardsRev = due[i].BoardsRev
 	}
 	out.History, err = r.storeHistories(histories)
 	return out, err

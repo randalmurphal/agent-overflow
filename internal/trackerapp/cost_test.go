@@ -107,7 +107,7 @@ func TestUnitCosts(t *testing.T) {
 			tick(BoardDue{Delta: true})(t)
 		}, costOf{
 			map[string]int{"ChangedRows": 1},
-			with(map[string]int{"GetMirrorBoard": 1, "GetMirrorSync": 1, "WriteMirrorRowPage": 1, "GetMirrorCatalog": 1, "RecordMirrorSyncAttempt": 1}),
+			with(map[string]int{"GetMirrorBoard": 1, "WriteMirrorRowPage": 1, "RecordMirrorSyncAttempt": 1}),
 		}},
 		{"delta, the same page again", func(t *testing.T) {
 			before := must[Outcome](t)(m.svc.tickDelta(t.Context(), scope, Background))
@@ -127,7 +127,7 @@ func TestUnitCosts(t *testing.T) {
 			}
 		}, costOf{
 			map[string]int{"ChangedRows": 1},
-			with(map[string]int{"GetMirrorBoard": 1, "GetMirrorSync": 1, "WriteMirrorRowPage": 1, "GetMirrorCatalog": 1, "RecordMirrorSyncAttempt": 1}),
+			with(map[string]int{"WriteMirrorRowPage": 1, "RecordMirrorSyncAttempt": 1}),
 		}},
 		{"delta, more pages than its bound", func(t *testing.T) {
 			walk, known := pagedDelta(t, full...), map[string]bool{}
@@ -147,7 +147,7 @@ func TestUnitCosts(t *testing.T) {
 			}
 		}, costOf{
 			map[string]int{"ChangedRows": deltaPages},
-			with(map[string]int{"GetMirrorBoard": 1, "GetMirrorSync": 1, "WriteMirrorRowPage": deltaPages, "GetMirrorCatalog": 1, "RecordMirrorSyncAttempt": 1}),
+			with(map[string]int{"WriteMirrorRowPage": deltaPages, "RecordMirrorSyncAttempt": 1}),
 		}},
 		{"reconcile, 100 held", func(t *testing.T) {
 			m.p.set(func(p *scripted) {
@@ -179,7 +179,7 @@ func TestUnitCosts(t *testing.T) {
 			tick(BoardDue{Reconcile: true})(t)
 		}, costOf{
 			map[string]int{"BoardIssues": 1, "BoardRows": 2},
-			with(map[string]int{"GetMirrorBoard": 1, "ReconcileMirrorBoard": 1, "WriteMirrorRows": 2, "GetMirrorCatalog": 1, "RecordMirrorSyncAttempt": 1}),
+			with(map[string]int{"ReconcileMirrorBoard": 1, "WriteMirrorRows": 2, "RecordMirrorSyncAttempt": 1}),
 		}},
 	})
 }
@@ -281,7 +281,10 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			must[BoardView](t)(m.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
 		}, costOf{
 			map[string]int{},
-			map[string]int{"GetMirrorRoot": 1, "GetMirrorBoard": 1, "CountMirrorSections": 1, "GetMirrorSync": 1, "ListMirrorSection": 3, "GetMirrorCatalog": 2, "ListMirrorCards": 1},
+			// The structure, totals and pages in one snapshot (6+3 statements
+			// in the store), the names of the columns and cards in one
+			// catalog read, the parents in one card read.
+			map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardView": 1, "GetMirrorSync": 1, "GetMirrorCatalog": 1, "ListMirrorCards": 1},
 		}},
 		{"section page", func(t *testing.T) {
 			must[SectionPage](t)(m.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil))

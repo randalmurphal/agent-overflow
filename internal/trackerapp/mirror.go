@@ -13,8 +13,8 @@ import (
 // The mirror's sync and reads. A scope's tick (SyncBoard, SyncLinked) runs
 // the units it is asked for in a fixed order, one at a time, each a
 // bounded amount of work, and returns: it starts no goroutine and keeps
-// nothing after it returns but the references a structure read left
-// unexplained (unexplained.go). A tick captures the connection's mirror
+// nothing after it returns but the connection it held (Service.holds). A
+// tick captures the connection's mirror
 // root when it starts and names it in every write, so a tick that
 // outlives its mirror (the connection turned off, removed, or off and on
 // again) stores nothing and ends with Outcome.Ended. Ticks are safe to
@@ -53,7 +53,7 @@ type MirrorStore interface {
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string) ([]string, bool, error)
 	ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
-	CountMirrorSections(rootID int64, boardID string) (store.MirrorSectionCounts, error)
+	ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
 }
 
 var (

@@ -152,7 +152,10 @@ var (
 )
 
 // Board is the view of scope's board with the first page of each of
-// sections, at most maxViewSections. A board whose structure the mirror
+// sections, at most maxViewSections. The structure, the totals and the
+// pages are one state of the mirror (store ReadMirrorBoardView), so the
+// totals count the rows the pages show, and a page's Next continues that
+// state or fails with ErrStalePage. A board whose structure the mirror
 // does not hold fails with ErrNotMirrored.
 func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 	if err := scope.boardOnly(); err != nil {
@@ -174,20 +177,25 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 		return BoardView{}, err
 	}
 	defer s.leave()
-	v, err := s.boardStructure(root, scope.Board)
+	snap, ok, err := s.store.ReadMirrorBoardView(root, string(scope.Board), asked)
 	if err != nil {
-		return BoardView{}, err
+		return BoardView{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
+	}
+	if !ok {
+		return BoardView{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
 	}
 	pages := make([]SectionPage, len(asked))
 	cards := make([][]shownCard, len(asked))
-	for i, sec := range asked {
-		if pages[i], cards[i], err = s.readSection(root, scope.Board, sections[i], sec, store.MirrorRowKey{}); err != nil {
-			return BoardView{}, err
-		}
+	for i, page := range snap.Pages {
+		pages[i], cards[i] = sectionOf(sections[i], page)
 	}
-	// The cards of every page are named together: one catalog read and
-	// one read of their parents for the view, not one each per section.
-	views, err := s.cardViews(root, slices.Concat(cards...))
+	var statusIDs []string
+	for _, col := range snap.Structure.Columns {
+		statusIDs = append(statusIDs, col.Statuses...)
+	}
+	// The columns' statuses and the cards of every page are named together:
+	// one catalog read and one read of their parents for the view.
+	views, names, err := s.cardViews(root, slices.Concat(cards...), statusIDs)
 	if err != nil {
 		return BoardView{}, err
 	}
@@ -196,31 +204,22 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 			pages[i].Rows[j].Card, views = views[0], views[1:]
 		}
 	}
+	v := boardViewOf(snap.Structure, snap.Counts, names)
+	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board))
+	if err != nil {
+		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
+	}
+	v.Sync = SyncView{ReadAt: sync.ReadAt, ReconciledAt: sync.ReconciledAt}
+	if sync.Failure.Kind != "" {
+		v.Sync.Failure = &FailureView{Kind: sync.Failure.Kind, Message: sync.Failure.Message, At: sync.Failure.At}
+	}
 	v.Sections = pages
 	return v, nil
 }
 
-// boardStructure is the board view without its sections.
-func (s *Service) boardStructure(root int64, board tracker.BoardID) (BoardView, error) {
-	m, ok, err := s.store.GetMirrorBoard(root, string(board))
-	if err != nil {
-		return BoardView{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", board, err)
-	}
-	if !ok {
-		return BoardView{}, fmt.Errorf("%w: board %s", ErrNotMirrored, board)
-	}
-	counts, err := s.store.CountMirrorSections(root, string(board))
-	if err != nil {
-		return BoardView{}, fmt.Errorf("trackerapp: count the sections of board %s: %w", board, err)
-	}
-	var statusIDs []string
-	for _, col := range m.Columns {
-		statusIDs = append(statusIDs, col.Statuses...)
-	}
-	names, err := s.names(root, nil, statusIDs)
-	if err != nil {
-		return BoardView{}, err
-	}
+// boardViewOf is the board view of m with the totals counts, without its
+// sync state and sections; names names the columns' statuses.
+func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, names catalogNames) BoardView {
 	st := structureOf(m, tracker.Catalog{})
 	v := BoardView{
 		ID: string(st.Board.ID), Name: st.Board.Name, Project: string(st.Board.Project), PlansSprints: st.Board.Sprints,
@@ -243,15 +242,7 @@ func (s *Service) boardStructure(root int64, board tracker.BoardID) (BoardView, 
 			Start: millis(sp.Start), End: millis(sp.End), Completed: millis(sp.Completed), Total: totalOf(counts.Sprints[string(sp.ID)]),
 		})
 	}
-	sync, _, err := s.store.GetMirrorSync(root, string(board))
-	if err != nil {
-		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", board, err)
-	}
-	v.Sync = SyncView{ReadAt: sync.ReadAt, ReconciledAt: sync.ReconciledAt}
-	if sync.Failure.Kind != "" {
-		v.Sync.Failure = &FailureView{Kind: sync.Failure.Kind, Message: sync.Failure.Message, At: sync.Failure.At}
-	}
-	return v, nil
+	return v
 }
 
 // SectionRows is the page of scope's board's section after after; nil
@@ -281,11 +272,15 @@ func (s *Service) SectionRows(scope Scope, section Section, after *SectionCursor
 }
 
 func (s *Service) sectionPage(root int64, board tracker.BoardID, section Section, sec store.MirrorSection, after store.MirrorRowKey) (SectionPage, error) {
-	out, cards, err := s.readSection(root, board, section, sec, after)
-	if err != nil {
-		return SectionPage{}, err
+	page, err := s.store.ListMirrorSection(root, string(board), sec, after)
+	if errors.Is(err, store.ErrTrackerCacheStale) {
+		return SectionPage{}, fmt.Errorf("%w: board %s: %w", ErrStalePage, board, err)
 	}
-	views, err := s.cardViews(root, cards)
+	if err != nil {
+		return SectionPage{}, fmt.Errorf("trackerapp: read a section of board %s: %w", board, err)
+	}
+	out, cards := sectionOf(section, page)
+	views, _, err := s.cardViews(root, cards, nil)
 	if err != nil {
 		return SectionPage{}, err
 	}
@@ -295,16 +290,9 @@ func (s *Service) sectionPage(root int64, board tracker.BoardID, section Section
 	return out, nil
 }
 
-// readSection is the page of section after after with its cards, which
-// it leaves unnamed in the page's rows for the caller to name.
-func (s *Service) readSection(root int64, board tracker.BoardID, section Section, sec store.MirrorSection, after store.MirrorRowKey) (SectionPage, []shownCard, error) {
-	page, err := s.store.ListMirrorSection(root, string(board), sec, after)
-	if errors.Is(err, store.ErrTrackerCacheStale) {
-		return SectionPage{}, nil, fmt.Errorf("%w: board %s: %w", ErrStalePage, board, err)
-	}
-	if err != nil {
-		return SectionPage{}, nil, fmt.Errorf("trackerapp: read a section of board %s: %w", board, err)
-	}
+// sectionOf is page of section as a view with its cards, which it leaves
+// unnamed in the page's rows for the caller to name.
+func sectionOf(section Section, page store.MirrorSectionPage) (SectionPage, []shownCard) {
 	out := SectionPage{Section: section, Rows: make([]RowView, len(page.Rows))}
 	cards := make([]shownCard, len(page.Rows))
 	for i, m := range page.Rows {
@@ -318,5 +306,5 @@ func (s *Service) readSection(root int64, board tracker.BoardID, section Section
 	if page.More {
 		out.Next = &SectionCursor{Order: page.Next.OrderKey, Issue: page.Next.IssueID, Lifetime: page.Next.Lifetime, Revision: page.Next.Revision}
 	}
-	return out, cards, nil
+	return out, cards
 }

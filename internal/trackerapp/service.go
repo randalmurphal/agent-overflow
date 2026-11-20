@@ -102,12 +102,8 @@ type Service struct {
 	stopped  bool
 	inflight sync.WaitGroup
 	// locks are the scope and history locks of the ticks in flight
-	// (tick.go); unexplained the references each scope's last structure
-	// read left unexplained (unexplained.go), unexplainedUse their write
-	// counter.
-	locks          map[lockKey]*scopeLock
-	unexplained    map[Scope]*unexplainedSet
-	unexplainedUse uint64
+	// (tick.go).
+	locks map[lockKey]*scopeLock
 
 	// logf records what fails after the operation that caused it has
 	// succeeded: a mirror's drain. Tests replace it.
@@ -141,7 +137,7 @@ func New(deps Deps) (*Service, error) {
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
 		digestKey: key,
 		clients:   map[string]*clients{}, problems: map[string]Failure{},
-		locks: map[lockKey]*scopeLock{}, unexplained: map[Scope]*unexplainedSet{}, holds: map[string]*connHold{},
+		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		makeProvider: buildProvider,
 		logf:         log.Printf,
 	}, nil
@@ -169,7 +165,6 @@ func (s *Service) halt() map[string]*clients {
 	open := s.clients
 	s.clients = map[string]*clients{}
 	clear(s.problems)
-	clear(s.unexplained)
 	return open
 }
 
@@ -213,14 +208,12 @@ func (s *Service) use(row store.TrackerConnection) (*clients, error) {
 // which ends its calls in flight, and its problem is forgotten. A Jira
 // connection takes the Tempo connection that belongs to it along, since
 // a provider made while both were in use holds both clients; the Tempo
-// row is left as it is, and its next use builds a new client. The
-// connection's unexplained references go with it. It reports whether a
-// problem was forgotten. The caller holds opMu.
+// row is left as it is, and its next use builds a new client. It reports
+// whether a problem was forgotten. The caller holds opMu.
 func (s *Service) stopUsing(id string) bool {
 	s.mu.Lock()
 	_, had := s.problems[id]
 	delete(s.problems, id)
-	s.forgetUnexplainedLocked(id)
 	var closing []*clients
 	for cid, c := range s.clients {
 		if cid == id || c.parentID == id {
