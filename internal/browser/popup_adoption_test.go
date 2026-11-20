@@ -607,7 +607,7 @@ func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
 		t.Run(state.String(), func(t *testing.T) {
 			manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 			// Another tab keeps the jar open.
-			openPage(t, manager, access, "https://example.test/other")
+			mustOpen(t, manager, access, "https://example.test/other")
 			before := manager.artifactBytes.Used()
 			file := engineArtifact(t, manager, "dl-1")
 			if !popupDownload(manager, engine, "popup", "dl-1", opener) {
@@ -1046,7 +1046,7 @@ func TestAPopupBeingAdoptedHoldsItsProfile(t *testing.T) {
 func TestAPopupBeingAdoptedKeepsNoPrivateJarForANewTab(t *testing.T) {
 	manager, engine, access, _ := newAdoptionManager(t)
 	setJar(t, manager, access, JarPrivate)
-	first := openPage(t, manager, access, "https://example.test/private")
+	first := mustOpen(t, manager, access, "https://example.test/private")
 	old := pageJar(t, manager, first.ID)
 	manager.mu.Lock()
 	oldScope := manager.scopes[jarKey(old)]
@@ -1062,7 +1062,7 @@ func TestAPopupBeingAdoptedKeepsNoPrivateJarForANewTab(t *testing.T) {
 	if err := manager.ClosePage(t.Context(), access, PageID(first.ID)); err != nil {
 		t.Fatal(err)
 	}
-	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/next").ID)
+	next := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/next").ID)
 	if next == old {
 		t.Fatalf("a private tab opened while a popup of the closed one was adopted reuses its jar %q", old)
 	}

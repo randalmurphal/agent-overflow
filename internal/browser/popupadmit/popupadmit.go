@@ -433,11 +433,3 @@ func (h *history) put(k ids.PageHandle, a *admission) {
 		h.order = kept
 	}
 }
-
-// retained answers how many admissions are live and how many the history
-// keeps.
-func (r *Registry) retained() (live, kept int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.live), len(r.history.entries)
-}

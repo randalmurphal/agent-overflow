@@ -354,15 +354,6 @@ func canonical(t *testing.T, path string) string {
 	return resolved
 }
 
-func openPage(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
-	t.Helper()
-	info, err := m.Open(t.Context(), access, rawURL, OpenOptions{})
-	if err != nil {
-		t.Fatalf("open %s for %s: %v", rawURL, access.ThreadID(), err)
-	}
-	return info
-}
-
 func setJar(t *testing.T, m *Manager, access Access, kind string) {
 	t.Helper()
 	if err := m.SetJar(context.Background(), access, kind, JarSwitchConfirmed); err != nil {
@@ -379,7 +370,7 @@ func TestWorktreeJarIsTodaysWorkspaceProfile(t *testing.T) {
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "thread", proj.one)
-	openPage(t, manager, access, "https://example.test/")
+	mustOpen(t, manager, access, "https://example.test/")
 	workspace := canonical(t, proj.one)
 
 	if got := engine.created(); len(got) != 1 || got[0] != workspace {
@@ -411,8 +402,8 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	proj := newProject(t, "P")
 	a, b, c := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two), proj.access(manager, "c", proj.two)
 
-	pageA := openPage(t, manager, a, "https://example.test/a")
-	pageB := openPage(t, manager, b, "https://example.test/b")
+	pageA := mustOpen(t, manager, a, "https://example.test/a")
+	pageB := mustOpen(t, manager, b, "https://example.test/b")
 	if pageJar(t, manager, pageA.ID) == pageJar(t, manager, pageB.ID) {
 		t.Fatal("two worktrees share a jar with the default setting")
 	}
@@ -420,7 +411,7 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	setJar(t, manager, b, JarProject)
 	restoreTabs(t, manager, a)
 	restoreTabs(t, manager, b)
-	pageC := openPage(t, manager, c, "https://example.test/c")
+	pageC := mustOpen(t, manager, c, "https://example.test/c")
 
 	jarA, jarB := pageJar(t, manager, tabIDs(manager, a)[0]), pageJar(t, manager, tabIDs(manager, b)[0])
 	if jarA != "project:P" || jarB != jarA {
@@ -441,7 +432,7 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	other := newProject(t, "Q")
 	d := other.access(manager, "d", other.one)
 	setJar(t, manager, d, JarProject)
-	if got := pageJar(t, manager, openPage(t, manager, d, "https://example.test/d").ID); got != "project:Q" {
+	if got := pageJar(t, manager, mustOpen(t, manager, d, "https://example.test/d").ID); got != "project:Q" {
 		t.Fatalf("another project's thread opened in %q, want its own project jar", got)
 	}
 }
@@ -454,9 +445,9 @@ func TestThreadJarIsolatesThreadsOnOneWorktree(t *testing.T) {
 	a, b, c := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.one), proj.access(manager, "c", proj.one)
 	setJar(t, manager, a, JarThread)
 	setJar(t, manager, b, JarThread)
-	jarA := pageJar(t, manager, openPage(t, manager, a, "https://example.test/").ID)
-	jarB := pageJar(t, manager, openPage(t, manager, b, "https://example.test/").ID)
-	jarC := pageJar(t, manager, openPage(t, manager, c, "https://example.test/").ID)
+	jarA := pageJar(t, manager, mustOpen(t, manager, a, "https://example.test/").ID)
+	jarB := pageJar(t, manager, mustOpen(t, manager, b, "https://example.test/").ID)
+	jarC := pageJar(t, manager, mustOpen(t, manager, c, "https://example.test/").ID)
 	if jarA != "thread:a" || jarB != "thread:b" || jarC != canonical(t, proj.one) {
 		t.Fatalf("jars = %q, %q, %q; want each thread's own and the worktree's", jarA, jarB, jarC)
 	}
@@ -473,8 +464,8 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarPrivate)
-	first := openPage(t, manager, access, "https://example.test/1")
-	second := openPage(t, manager, access, "https://example.test/2")
+	first := mustOpen(t, manager, access, "https://example.test/1")
+	second := mustOpen(t, manager, access, "https://example.test/2")
 	jar := pageJar(t, manager, first.ID)
 	if !strings.HasPrefix(jar, "private:a:") || pageJar(t, manager, second.ID) != jar {
 		t.Fatalf("private pages opened in %q and %q, want one private jar", jar, pageJar(t, manager, second.ID))
@@ -490,7 +481,7 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 	if !engine.profile(jar).disposed.Load() {
 		t.Fatal("the private jar outlived its last page")
 	}
-	reopened := pageJar(t, manager, openPage(t, manager, access, "https://example.test/3").ID)
+	reopened := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/3").ID)
 	if reopened == jar || !strings.HasPrefix(reopened, "private:a:") {
 		t.Fatalf("a private page after the last one closed opened in %q, want a new private jar", reopened)
 	}
@@ -521,8 +512,8 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two)
 	setJar(t, manager, a, JarProject)
 	setJar(t, manager, b, JarProject)
-	pageA := openPage(t, manager, a, "https://example.test/a")
-	pageB := openPage(t, manager, b, "https://example.test/b")
+	pageA := mustOpen(t, manager, a, "https://example.test/a")
+	pageB := mustOpen(t, manager, b, "https://example.test/b")
 	if pageJar(t, manager, pageA.ID) != pageJar(t, manager, pageB.ID) {
 		t.Fatal("the two worktrees do not share the project jar")
 	}
@@ -594,7 +585,7 @@ func TestCapsBoundJarsWorkspacesAndSharedJars(t *testing.T) {
 		for i := range maxWorkspaceContexts {
 			access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
 			setJar(t, manager, access, JarThread)
-			openPage(t, manager, access, "https://example.test/")
+			mustOpen(t, manager, access, "https://example.test/")
 		}
 		access := proj.access(manager, "last", proj.one)
 		setJar(t, manager, access, JarThread)
@@ -609,7 +600,7 @@ func TestCapsBoundJarsWorkspacesAndSharedJars(t *testing.T) {
 			access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
 			setJar(t, manager, access, JarThread)
 			for range maxPagesPerThread {
-				openPage(t, manager, access, "https://example.test/")
+				mustOpen(t, manager, access, "https://example.test/")
 			}
 		}
 		access := proj.access(manager, "last", proj.one)
@@ -625,7 +616,7 @@ func TestCapsBoundJarsWorkspacesAndSharedJars(t *testing.T) {
 		for _, access := range threads {
 			setJar(t, manager, access, JarProject)
 			for range maxPagesPerThread {
-				openPage(t, manager, access, "https://example.test/")
+				mustOpen(t, manager, access, "https://example.test/")
 			}
 		}
 		access := proj.access(manager, "d", proj.two)
@@ -647,7 +638,7 @@ func TestClearSiteDataClearsEveryJarKind(t *testing.T) {
 	for i, kind := range kinds {
 		access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
 		setJar(t, manager, access, kind)
-		openPage(t, manager, access, "https://example.test/")
+		mustOpen(t, manager, access, "https://example.test/")
 	}
 	if err := os.MkdirAll(filepath.Join(dir, browserProfileDir, "leftover"), 0o700); err != nil {
 		t.Fatal(err)
@@ -689,7 +680,7 @@ func TestPersistOffKeepsEveryJarEphemeral(t *testing.T) {
 	for i, kind := range []string{JarWorktree, JarProject, JarThread, JarPrivate} {
 		access := proj.access(manager, fmt.Sprintf("t%d", i), proj.one)
 		setJar(t, manager, access, kind)
-		openPage(t, manager, access, "https://example.test/")
+		mustOpen(t, manager, access, "https://example.test/")
 	}
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -749,7 +740,7 @@ func TestJarSettingSurvivesARestart(t *testing.T) {
 		if got := restarted.CompanionState(access.Caller()).Jar; got != JarThread {
 			t.Fatalf("after a restart the jar is %q, want thread", got)
 		}
-		if got := pageJar(t, restarted, openPage(t, restarted, access, "https://example.test/").ID); got != "thread:a" {
+		if got := pageJar(t, restarted, mustOpen(t, restarted, access, "https://example.test/").ID); got != "thread:a" {
 			t.Fatalf("a page after the restart opened in %q, want the thread's jar", got)
 		}
 		page := tabIDs(restarted, access)[0]
@@ -767,8 +758,8 @@ func TestJarSettingSurvivesARestart(t *testing.T) {
 		proj := newProject(t, "P")
 		access := proj.access(manager, "a", proj.one)
 		setJar(t, manager, access, JarProject)
-		openPage(t, manager, access, "https://example.test/one")
-		openPage(t, manager, access, "https://example.test/two")
+		mustOpen(t, manager, access, "https://example.test/one")
+		mustOpen(t, manager, access, "https://example.test/two")
 		if err := manager.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -797,7 +788,7 @@ func TestJarSettingSurvivesARestart(t *testing.T) {
 		manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 		proj := newProject(t, "P")
 		access := proj.access(manager, "a", proj.one)
-		openPage(t, manager, access, "https://example.test/")
+		mustOpen(t, manager, access, "https://example.test/")
 		if err := manager.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -877,7 +868,7 @@ func TestClosingAThreadForgetsItsJar(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarThread)
-	openPage(t, manager, access, "https://example.test/")
+	mustOpen(t, manager, access, "https://example.test/")
 	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
@@ -896,11 +887,11 @@ func TestAPrivateJarEndsWithTheBrowser(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarPrivate)
-	before := pageJar(t, manager, openPage(t, manager, access, "https://example.test/").ID)
+	before := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/").ID)
 	if err := manager.ClearSiteData(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	after := pageJar(t, manager, openPage(t, manager, access, "https://example.test/").ID)
+	after := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/").ID)
 	if after == before {
 		t.Fatalf("a private page after the clear reopened the cleared jar %q", before)
 	}
@@ -914,7 +905,7 @@ func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarPrivate)
-	first := openPage(t, manager, access, "https://example.test/1")
+	first := mustOpen(t, manager, access, "https://example.test/1")
 	old := pageJar(t, manager, first.ID)
 	release := engine.holdClose()
 	defer release()
@@ -922,7 +913,7 @@ func TestAPrivateJarRetiresWhenItsLastTabCloses(t *testing.T) {
 	go func() { closed <- manager.ClosePage(context.Background(), access, PageID(first.ID)) }()
 	eventually(t, "the closed tab leaves the tab set", func() bool { return len(manager.CompanionState(access.Caller()).Pages) == 0 })
 
-	next := pageJar(t, manager, openPage(t, manager, access, "https://example.test/2").ID)
+	next := pageJar(t, manager, mustOpen(t, manager, access, "https://example.test/2").ID)
 	if next == old || !strings.HasPrefix(next, "private:a:") {
 		t.Fatalf("a private tab opened during the last one's teardown is in %q, want a new private jar", next)
 	}
@@ -970,7 +961,7 @@ func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.one)
-	first := openPage(t, manager, a, "https://example.test/a")
+	first := mustOpen(t, manager, a, "https://example.test/a")
 	setJar(t, manager, b, JarThread)
 	gate := make(chan struct{})
 	engine.mu.Lock()
@@ -1009,7 +1000,7 @@ func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
 	case err := <-failed:
 		t.Fatalf("create in the new jar: %v", err)
 	}
-	second := openPage(t, manager, a, "https://example.test/again")
+	second := mustOpen(t, manager, a, "https://example.test/again")
 	pb, _, err := manager.lookupOwnedPage(b, PageID(info.ID))
 	if err != nil {
 		t.Fatal(err)

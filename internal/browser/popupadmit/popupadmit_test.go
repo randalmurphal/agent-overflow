@@ -170,7 +170,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), want) {
 		t.Fatalf("after its parent's tab left and more turnover, the pending child's ancestors are %v, want %v", got, want)
 	}
-	if live, kept := r.retained(); live != 2 || kept != limit {
+	if live, kept := retained(r); live != 2 || kept != limit {
 		t.Fatalf("the registry keeps %d live and %d settled admissions, want 2 and %d", live, kept, limit)
 	}
 	r.Discard("child")
@@ -181,7 +181,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 	if got := r.Ancestors("child"); got.Known() {
 		t.Fatalf("past the history's limit, the child's ancestors are still %v", got)
 	}
-	if live, kept := r.retained(); live != 0 || kept != limit {
+	if live, kept := retained(r); live != 0 || kept != limit {
 		t.Fatalf("the registry keeps %d live and %d settled admissions, want 0 and %d", live, kept, limit)
 	}
 }
@@ -202,4 +202,12 @@ func TestAPopupOfAnEndedOpenerKeepsItsChain(t *testing.T) {
 	if got := r.Ancestors("late"); !got.Known() || !slices.Equal(got.Chain(), []ids.PageHandle{"parent", "tab"}) {
 		t.Fatalf("the late popup's ancestors are %v", got)
 	}
+}
+
+// retained answers how many admissions r has live and how many its history
+// keeps.
+func retained(r *Registry) (live, kept int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.live), len(r.history.entries)
 }

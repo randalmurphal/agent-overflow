@@ -1,7 +1,10 @@
 package browser
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -145,13 +148,20 @@ func TestAnEngineWithNoPaneReadsNoFavicon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var reads atomic.Int64
+	fake := p.driver.(*fakePage)
+	fake.mu.Lock()
+	fake.evaluate = func(context.Context, string, bool) (json.RawMessage, error) {
+		reads.Add(1)
+		return json.Marshal("")
+	}
+	fake.mu.Unlock()
 	manager.pageLoading(p, true, 1000)
 	manager.pageLoading(p, false, 1001)
-	p.metaMu.RLock()
-	reads := p.load.reads
-	p.metaMu.RUnlock()
-	if reads != 0 {
-		t.Fatalf("%d favicon reads on an engine with no pane", reads)
+	// A read runs off the caller (runFaviconReads): join it.
+	manager.lifeWork.Wait()
+	if n := reads.Load(); n != 0 {
+		t.Fatalf("%d favicon reads on an engine with no pane", n)
 	}
 }
 

@@ -46,8 +46,6 @@ type pageLoad struct {
 	// want is a read owed by a stopped load that no read has begun since;
 	// reading is a read running. One read runs per page at a time.
 	want, reading bool
-	// reads counts the reads begun.
-	reads uint64
 	// unpushed is set by a change to anything the thread's state push shows
 	// of the page (its info, loading or favicon) and cleared by the next push
 	// to every client (state_push.go).
@@ -132,7 +130,6 @@ func (m *Manager) runFaviconReads(p *managedPage) {
 func (m *Manager) readFaviconOnce(p *managedPage) bool {
 	p.metaMu.Lock()
 	p.load.want = false
-	p.load.reads++
 	reports := p.load.reports
 	p.metaMu.Unlock()
 	icon := m.readFavicon(p)

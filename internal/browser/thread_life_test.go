@@ -158,14 +158,14 @@ func TestAnOldThreadsCloseLeavesTheFreshLifetime(t *testing.T) {
 	dir := t.TempDir()
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	old := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
-	page := openPage(t, manager, old, addr("old"))
+	page := mustOpen(t, manager, old, addr("old"))
 	release := engine.holdCloseOf(t, string(livePage(t, manager, old, page.ID).driver.Handle()))
 	closed := async(func() error { return manager.CloseThread(context.Background(), old.ThreadID()) })
 	eventually(t, "the close detaches the old lifetime", func() bool { return lifetimeOf(manager, string(old.ThreadID())) != old.tb })
 
 	fresh := manager.Bind(old.Caller())
-	saved := openPage(t, manager, fresh, addr("saved"))
-	live := openPage(t, manager, fresh, addr("live"))
+	saved := mustOpen(t, manager, fresh, addr("saved"))
+	live := mustOpen(t, manager, fresh, addr("live"))
 	suspendTab(t, manager, fresh, saved.ID)
 	if err := manager.persistThreads([]ThreadID{fresh.ThreadID()}); err != nil {
 		t.Fatal(err)

@@ -18,7 +18,7 @@ import (
 func TestClearSiteDataHoldsNewPagesUntilBothClearsEnd(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	access := manager.Bind(Caller{ThreadID: "t", Workspace: t.TempDir()})
-	openPage(t, manager, access, "https://example.test/")
+	mustOpen(t, manager, access, "https://example.test/")
 
 	gate := make(chan struct{})
 	engine.mu.Lock()
@@ -56,7 +56,7 @@ func TestClearSiteDataHoldsNewPagesUntilBothClearsEnd(t *testing.T) {
 func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	access := manager.Bind(Caller{ThreadID: "t", Workspace: t.TempDir()})
-	page := openPage(t, manager, access, "https://example.test/old")
+	page := mustOpen(t, manager, access, "https://example.test/old")
 	handle := livePage(t, manager, access, page.ID).driver.Handle()
 
 	// An engine start in flight holds startMu, which the clear waits for

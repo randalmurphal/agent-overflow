@@ -141,7 +141,7 @@ func mustOpen(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
 	t.Helper()
 	info, err := m.Open(t.Context(), access, rawURL, OpenOptions{})
 	if err != nil {
-		t.Fatalf("open %s: %v", rawURL, err)
+		t.Fatalf("open %s for %s: %v", rawURL, access.ThreadID(), err)
 	}
 	return info
 }

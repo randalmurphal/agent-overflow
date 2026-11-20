@@ -36,7 +36,7 @@ func TestAnUnconfirmedSwitchWithALiveTabIsRefused(t *testing.T) {
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	live := openPage(t, manager, access, "https://example.test/live")
+	live := mustOpen(t, manager, access, "https://example.test/live")
 
 	writes := 0
 	manager.switchWritten = func() { writes++ }
@@ -67,7 +67,7 @@ func TestAnUnconfirmedSwitchWithNoLiveTabSwitches(t *testing.T) {
 	if err := manager.SetJar(context.Background(), access, JarPrivate, JarSwitchIfNoLiveTab); err != nil {
 		t.Fatalf("an unconfirmed switch with no tab: %v", err)
 	}
-	suspended := openPage(t, manager, access, "https://example.test/suspended")
+	suspended := mustOpen(t, manager, access, "https://example.test/suspended")
 	suspendTab(t, manager, access, suspended.ID)
 	if err := manager.SetJar(context.Background(), access, JarThread, JarSwitchIfNoLiveTab); err != nil {
 		t.Fatalf("an unconfirmed switch with only a suspended tab: %v", err)
@@ -101,14 +101,14 @@ func TestATabOpenedDuringAnUnconfirmedSwitchOpensAfterIt(t *testing.T) {
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	suspended := openPage(t, manager, access, "https://example.test/suspended")
+	suspended := mustOpen(t, manager, access, "https://example.test/suspended")
 	suspendTab(t, manager, access, suspended.ID)
 
 	opened := make(chan PageInfo, 1)
 	writes := 0
 	manager.switchWritten = func() {
 		writes++
-		go func() { opened <- openPage(t, manager, access, "https://example.test/live") }()
+		go func() { opened <- mustOpen(t, manager, access, "https://example.test/live") }()
 		// Time for the open to reach the gate, which it may not pass.
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -170,7 +170,7 @@ func TestASwitchMeetingTheManagersCloseLeavesTheOldJarSaved(t *testing.T) {
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	suspended := openPage(t, manager, access, "https://example.test/suspended")
+	suspended := mustOpen(t, manager, access, "https://example.test/suspended")
 	suspendTab(t, manager, access, suspended.ID)
 
 	closed := make(chan error, 1)
