@@ -138,8 +138,10 @@ var receiptStates = []receiptState{
 					t.Fatalf("close the tab being created: %v", err)
 				}
 				release()
-				receiveOn(t, opened, "the creation")
-				awaitAnswer(t, done, "the creation")
+				opened := receiveOn(t, opened, "the creation")
+				if err := awaitAnswer(t, done, "the creation"); err == nil && opened != "" {
+					t.Fatalf("a creation whose tab closed opened tab %s", opened)
+				}
 			},
 		}
 	}},
