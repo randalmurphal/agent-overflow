@@ -176,16 +176,6 @@ function threadIdForTarget(target: EventTarget | null): string {
   return target.closest<HTMLElement>('[data-thread-id]')?.dataset.threadId ?? '';
 }
 
-/**
- * Open a URL in a new tab of the thread's companion browser, which opens the
- * pane even when the thread had no tab. One `new` carrying the address, so
- * no other tab is ever navigated; a refusal reaches the pane's banner or a
- * toast (openBrowserTab).
- */
-async function openInCompanionBrowser(threadId: string, url: string): Promise<void> {
-  await openBrowserTab(threadId, { address: url });
-}
-
 function handleExternalLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented) return;
   if (event.button !== 0 && event.button !== 1) return;
@@ -241,7 +231,10 @@ function handleExternalLinkClick(event: MouseEvent): void {
   if (event.button === 0 && isModClick(event) && safeExternalURL(safeURL) !== null) {
     const threadId = threadIdForTarget(event.target);
     if (threadId && canPresentNativeBrowser(threadId)) {
-      void openInCompanionBrowser(threadId, safeURL);
+      // A new tab carrying the address, which opens the pane even when the
+      // thread had no tab and navigates no other tab; a refusal reaches the
+      // pane's banner or a toast.
+      void openBrowserTab(threadId, { address: safeURL });
       return;
     }
   }
