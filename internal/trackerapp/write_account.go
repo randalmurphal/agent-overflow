@@ -14,13 +14,18 @@ import (
 // A write's refresh keeps an account of every resource the write named.
 // Each resource leaves the account once, as one of:
 //
-//   - refreshed: a read covering it was made and stored;
+//   - refreshed: every read it owes was made and stored, or found it not
+//     shown; a card owes a rows read through each board the mirror shows
+//     it on, or the cards read when no board returns it, and every other
+//     resource owes one read;
 //   - not shown: the mirror does not show it, so there is nothing to read
 //     (a board no project lists or one retired during the refresh, an
 //     issue the mirror does not keep, a detail it neither holds nor has
 //     open);
-//   - stale: the read covering it failed, or the refresh stopped before
-//     making it (the write's context ended), with why.
+//   - stale: a read it owes failed, or the refresh stopped before making
+//     it (the write's context ended), with the first such failure; a
+//     later failed read it owed reports nothing more, and its tracker
+//     failure still settles the connection's problem.
 //
 // A refresh whose connection's mirror ended (the root detached) leaves
 // the rest in the account: the write answers Ended, which covers every
@@ -52,6 +57,9 @@ type refreshed struct {
 	// yet, and stale those it accounted for as stale.
 	open  map[tracker.Resource]bool
 	stale []staleRead
+	// callErr is the tracker's failure of the last read that failed, kept
+	// whether or not the resources it owed were already reported stale.
+	callErr error
 	// ended reports a mirror that ended during the refresh.
 	ended bool
 }
@@ -122,24 +130,22 @@ func compareResources(a, b tracker.Resource) int {
 }
 
 // lastCallError is the tracker's failure of the refresh's last failed
-// read; nil when none failed.
-func (f *refreshed) lastCallError() error {
-	for _, st := range slices.Backward(f.stale) {
-		if c, ok := errors.AsType[*callError](st.err); ok {
-			return c.err
-		}
-	}
-	return nil
-}
+// read, which settles the connection's problem; nil when none failed.
+func (f *refreshed) lastCallError() error { return f.callErr }
 
-// failedRead accounts for res, which a read that failed with err covered,
-// and returns why the refresh stops: the mirror ended (f.ended), or the
-// write's context did. It returns nil when the refresh goes on. A board
-// retired during its read is the caller's to sort first (retired).
+// failedRead accounts for res, the resources that owed the read that
+// failed with err, and returns why the refresh stops: the mirror ended
+// (f.ended), or the write's context did. It returns nil when the refresh
+// goes on. A resource already reported stale is not reported again; the
+// tracker's failure is kept for the problem either way. A board retired
+// during its read is the caller's to sort first (retired).
 func (r *run) failedRead(f *refreshed, err error, res ...tracker.Resource) error {
 	if errors.Is(err, store.ErrTrackerCacheGone) {
 		f.ended = true
 		return err
+	}
+	if c, ok := errors.AsType[*callError](err); ok {
+		f.callErr = c.err
 	}
 	f.fail(err, res...)
 	if r.ctx.Err() != nil {

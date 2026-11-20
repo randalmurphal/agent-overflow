@@ -173,51 +173,40 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 			f.covered(tracker.CardOf(id))
 		}
 	}
-	found := map[tracker.IssueID]bool{}
-	var failedVia []error
-	cardFailed := map[tracker.IssueID]int{}
+	// A card owes a read through every board it was asked on: it is
+	// refreshed only when each of them answered, and stale when any failed
+	// or was never made. A board retired meanwhile owes nothing.
+	returned := map[tracker.IssueID]bool{}
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
-		ch, read, err := r.boardRows(b, sortedUnique(asked[b]))
+		ids := sortedUnique(asked[b])
+		ch, read, err := r.boardRows(b, ids)
 		f.add(b, ch)
-		// A card is refreshed by the first row of it a read returns.
 		for _, id := range read {
-			found[id] = true
-			f.covered(tracker.CardOf(id))
+			returned[id] = true
 		}
 		switch {
 		case err == nil, retired(err):
-			// A retired board's rows are not shown; its cards are answered
-			// by another board or the cards read.
 			f.covered(rowResources(b, p.rows[b])...)
 		default:
-			if stop := r.failedRead(f, err, rowResources(b, p.rows[b])...); stop != nil {
+			owed := slices.Concat(rowResources(b, p.rows[b]), cardResources(ids))
+			if stop := r.failedRead(f, err, owed...); stop != nil {
 				return stop
-			}
-			failedVia = append(failedVia, err)
-			for _, id := range asked[b] {
-				if _, ok := cardFailed[id]; !ok {
-					cardFailed[id] = len(failedVia) - 1
-				}
 			}
 		}
 	}
-	// A kept card no read returned a row of is stale with the failure of a
-	// board it was asked through, or else (no board, answered missing on
-	// every board, or on boards retired meanwhile) read by itself.
+	// Every board a card still open was asked on answered. A card one of
+	// them returned is refreshed; a kept card none returned (on no board,
+	// answered missing on every board, or on boards retired meanwhile) is
+	// read by itself.
 	var unread []tracker.IssueID
-	failed := make([][]tracker.Resource, len(failedVia))
 	for _, id := range p.cards {
-		i, viaFailed := cardFailed[id]
 		switch {
-		case found[id], !kept[id]:
-		case viaFailed:
-			failed[i] = append(failed[i], tracker.CardOf(id))
+		case !f.open[tracker.CardOf(id)]:
+		case returned[id]:
+			f.covered(tracker.CardOf(id))
 		default:
 			unread = append(unread, id)
 		}
-	}
-	for i, err := range failedVia {
-		f.fail(err, failed[i]...)
 	}
 	if len(unread) == 0 {
 		return nil

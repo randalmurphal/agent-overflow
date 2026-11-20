@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/trackerapi"
@@ -37,14 +38,16 @@ type exitAt struct {
 // Every way a refresh can stop or lose a board, at every read: the
 // applied outcome stands, nothing panics, every resource the write named
 // is accounted for once (refreshed, not shown, or stale), the reads after
-// a failed one or a retired board still run, and what the refresh stored
-// before it stopped is published.
+// a failed one or a retired board still run, a failed read is the
+// connection's problem, and what the refresh stored before it stopped is
+// published.
 //
 // The write names board 1's structure, issue 10002's row on board 1,
-// issue 10001's card (on boards 1 and 2), the details of 10001 (an open
-// ticket) and 10002 (cached), and a day of worklogs. Its reads, in order:
-// Structure, BoardRows of board 1, BoardRows of board 2, Details,
-// Worklogs.
+// issue 10001's card, which owes a rows read through each of boards 1
+// and 2, the details of 10001 (an open ticket) and 10002 (cached), and a
+// day of worklogs. Its reads, in order: Structure, BoardRows of board 1,
+// BoardRows of board 2, Details, Worklogs. The card is stale when either
+// board's read fails or is never made, after the other succeeded.
 func TestEveryRefreshExitAccountsForEveryResource(t *testing.T) {
 	t.Parallel()
 	all := []string{"card/10001", "detail/10001", "detail/10002", "row/1/10002", "structure/1", "worklogs/acc-user1/2026-11-02"}
@@ -71,17 +74,17 @@ func TestEveryRefreshExitAccountsForEveryResource(t *testing.T) {
 		ended  bool
 	}{
 		{"structure fails", exitAt{"Structure", 0}, fail, []string{"structure/1"}, reads, true, false},
-		{"board 1 rows fail", exitAt{"BoardRows", 0}, fail, []string{"row/1/10002"}, reads, false, false},
-		{"board 2 rows fail", exitAt{"BoardRows", 1}, fail, nil, reads, true, false},
+		{"board 1 rows fail", exitAt{"BoardRows", 0}, fail, []string{"card/10001", "row/1/10002"}, reads, false, false},
+		{"board 2 rows fail", exitAt{"BoardRows", 1}, fail, []string{"card/10001"}, reads, true, false},
 		{"details fail", exitAt{"Details", 0}, fail, []string{"detail/10001", "detail/10002"}, reads, true, false},
 		{"worklogs fail", exitAt{"Worklogs", 0}, fail, []string{"worklogs/acc-user1/2026-11-02"}, reads, true, false},
 		{"cancelled during structure", exitAt{"Structure", 0}, cancelDuring, all, reads[:1], false, false},
 		{"cancelled during board 1 rows", exitAt{"BoardRows", 0}, cancelDuring, allBut("structure/1"), reads[:2], false, false},
-		{"cancelled during board 2 rows", exitAt{"BoardRows", 1}, cancelDuring, []string{"detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:3], true, false},
+		{"cancelled during board 2 rows", exitAt{"BoardRows", 1}, cancelDuring, []string{"card/10001", "detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:3], true, false},
 		{"cancelled during details", exitAt{"Details", 0}, cancelDuring, []string{"detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:4], true, false},
 		{"cancelled during worklogs", exitAt{"Worklogs", 0}, cancelDuring, []string{"worklogs/acc-user1/2026-11-02"}, reads, true, false},
 		{"cancelled before board 1 rows", exitAt{"Structure", 0}, cancelBefore, allBut("structure/1"), reads[:2], false, false},
-		{"cancelled before board 2 rows", exitAt{"BoardRows", 0}, cancelBefore, []string{"detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:3], true, false},
+		{"cancelled before board 2 rows", exitAt{"BoardRows", 0}, cancelBefore, []string{"card/10001", "detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:3], true, false},
 		{"cancelled before details", exitAt{"BoardRows", 1}, cancelBefore, []string{"detail/10001", "detail/10002", "worklogs/acc-user1/2026-11-02"}, reads[:4], true, false},
 		{"cancelled before worklogs", exitAt{"Details", 0}, cancelBefore, []string{"worklogs/acc-user1/2026-11-02"}, reads, true, false},
 		{"board 1 retired during its structure", exitAt{"Structure", 0}, retire, nil, []string{"Structure", "BoardRows", "Details", "Worklogs"}, false, false},
@@ -159,6 +162,11 @@ func TestEveryRefreshExitAccountsForEveryResource(t *testing.T) {
 					t.Errorf("stale %+v", st)
 				}
 			}
+			// A failed read settles the problem whatever read follows it; a
+			// cancelled write or a retired board settles nothing.
+			if want := map[bool]FailureKind{true: FailureTransient}[c.do == fail]; f.problem() != want {
+				t.Errorf("problem %q, want %q", f.problem(), want)
+			}
 			if c.board1 {
 				f.events.waitFor(t, "board 1's event of the stored row", func(b []BoardEvent, _ []IssueEvent, _ []error) bool {
 					return slices.ContainsFunc(b[nb:], func(e BoardEvent) bool { return slices.Contains(e.Changed, tracker.IssueID("10001")) })
@@ -203,5 +211,60 @@ func TestAnEditThatTakesAKeptIssueOffEveryBoard(t *testing.T) {
 	}
 	if got := f.rowIDs(testBoard); slices.Contains(got, "10001") {
 		t.Fatalf("board 1 still holds 10001: %v", got)
+	}
+}
+
+// A rank on board 1 names 10001's row there and its card, which board 2
+// shows too: board 1's read succeeding does not settle the card, so
+// board 2's failed read leaves it stale, board 2's order as it was, and
+// the failure the connection's problem.
+func TestARankReportsAFailedSiblingBoard(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.answer(tracker.Result{Parts: []tracker.Part{rankPart(testBoard, "10001", tracker.Applied())}})
+	f.state.set(testBoard, writeRow("10001", 1, "z"))
+	f.p.set(func(p *scripted) {
+		p.boardRows = func(b tracker.BoardID, asked []tracker.IssueID) (tracker.Rows, error) {
+			if b == "2" {
+				return tracker.Rows{}, &trackerapi.TransientError{Err: errors.New("reset")}
+			}
+			return f.state.boardRows(b, asked)
+		}
+	})
+	v, err := f.svc.Rank(t.Context(), f.conn.ID, RankRequest{Board: "1", Issues: []string{"10001"}, Prev: "10003"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resourceIDs(v); !slices.Equal(got, []string{"card/10001"}) || v.Stale[0].Failure.Kind != string(FailureTransient) {
+		t.Fatalf("stale %+v", v.Stale)
+	}
+	if f.orderOf(t, testBoard, "10001") != "z" || f.orderOf(t, "2", "10001") != "m" || f.problem() != FailureTransient {
+		t.Fatalf("orders %q %q, problem %q", f.orderOf(t, testBoard, "10001"), f.orderOf(t, "2", "10001"), f.problem())
+	}
+}
+
+// A resource two failed reads owed is reported once, with the first
+// failure, and the last failure is the connection's problem.
+func TestAResourceTwoFailedReadsOwedIsReportedOnce(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.answer(appliedEdit)
+	f.p.set(func(p *scripted) {
+		p.boardRows = func(b tracker.BoardID, _ []tracker.IssueID) (tracker.Rows, error) {
+			if b == "2" {
+				return tracker.Rows{}, &trackerapi.RateLimitedError{Tracker: "Jira", Until: time.UnixMilli(1_800_000_060_000)}
+			}
+			return tracker.Rows{}, &trackerapi.TransientError{Err: errors.New("reset")}
+		}
+	})
+	v, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resourceIDs(v); !slices.Equal(got, []string{"card/10001"}) || v.Stale[0].Failure.Kind != string(FailureTransient) {
+		t.Fatalf("stale %+v", v.Stale)
+	}
+	if f.problem() != FailureRateLimited {
+		t.Fatalf("problem %q", f.problem())
 	}
 }

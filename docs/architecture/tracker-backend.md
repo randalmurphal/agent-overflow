@@ -598,8 +598,14 @@ call; the path does the rest.
 
    The refresh keeps an account of every resource named
    (`write_account.go`): each ends refreshed, not shown (nothing to read),
-   or stale with why, exactly once. A failed read leaves its resources
-   stale and the other reads run. A board no longer listed or retired
+   or stale with why, exactly once. A resource owes every read that
+   covers it: a card a rows read through each board the mirror shows it
+   on (they share its rank and estimate), and the cards read when none
+   returns it. It is refreshed only when every read it owes answered,
+   and stale, with the first failure, when any of them failed or was
+   never made. A failed read leaves its resources stale and the other
+   reads run; the last failed read is the connection's problem, whether
+   or not its resources were already reported. A board no longer listed or retired
    during the refresh ends that board's reads alone. The write's context
    ending stops the refresh, and every resource not yet read is stale.
    The open tickets are settled only from a details read that was made.
