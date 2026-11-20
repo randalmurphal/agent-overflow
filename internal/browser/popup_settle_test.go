@@ -149,11 +149,12 @@ func (r *settleRow) parked() {
 // settlePoint drives a row from the popup's download to its settlement;
 // bytes are the download's received bytes as its settlement finds them;
 // closes is set for the browser's close, which a departing opener has no
-// place in.
+// place in, and late for a download that starts after the popup's fate.
 type settlePoint struct {
 	name   string
 	bytes  int64
 	closes bool
+	late   bool
 	run    func(r *settleRow)
 }
 
@@ -197,7 +198,7 @@ var settlePoints = []settlePoint{
 		r.afterEnd()
 		r.manager.resolveParked("popup", nil)
 	}},
-	{name: "started after the popup's fate", bytes: 0, run: func(r *settleRow) {
+	{name: "started after the popup's fate", bytes: 0, late: true, run: func(r *settleRow) {
 		r.beforeEnd()
 		r.receivedEnd()
 		r.manager.resolveParked("popup", nil)
@@ -224,7 +225,12 @@ type settledRow struct {
 	bytes int64
 }
 
-func wantSettled(state settleOpener, point settlePoint) settledRow {
+func wantSettled(saving downloadSaving, state settleOpener, point settlePoint) settledRow {
+	if saving == downloadsAsArtifacts && point.late && state == openerThreadClosed {
+		// Its jar closed with the thread, and with it the directory AO
+		// would keep the file in: nobody owns a download starting now.
+		return settledRow{}
+	}
 	switch state {
 	case openerLive:
 		if point.closes {
@@ -256,7 +262,7 @@ func TestAParkedDownloadSettlesInTheOneLogItsSettlementChose(t *testing.T) {
 					r := &settleRow{t: t, manager: manager, engine: engine, access: access, opener: opener, holder: listedPage(t, manager, opener), state: state}
 					point.run(r)
 					r.settled()
-					want := wantSettled(state, point)
+					want := wantSettled(mode.saving, state, point)
 					var got settledRow
 					for _, row := range r.holder.downloads.list() {
 						if row.ID == "dl-1" {

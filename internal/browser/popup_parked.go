@@ -429,13 +429,23 @@ func (m *Manager) listParked(owner parkedOwner, d *parkedDownload) (discard down
 		held.release()
 	}
 	m.publishDownloads(listed)
+	return m.settleCarried(owner, d.start.ID)
+}
+
+// settleCarried settles the row of download id that was just listed in
+// owner's log as owner's leave settled its others, when owner is a
+// carrier (departLocked): a row whose end its engine received waits for
+// it, and any other is canceled, which discard is the discard of. A row
+// in a listed page is left as it is.
+func (m *Manager) settleCarried(owner parkedOwner, id downloadID) (discard downloadDiscard, canceled bool) {
 	if !owner.carried {
 		return downloadDiscard{}, false
 	}
+	p := owner.page
 	m.mu.Lock()
-	held = p.downloads.hold()
+	held := p.downloads.hold()
 	var note downloadNote
-	if row := held.entry(d.start.ID); row != nil && !row.phase.ended() {
+	if row := held.entry(id); row != nil && !row.phase.ended() {
 		note, discard, canceled = m.departLocked(p, row, owner.carrier.reason)
 	}
 	held.release()
@@ -447,33 +457,36 @@ func (m *Manager) listParked(owner parkedOwner, d *parkedDownload) (discard down
 }
 
 // admitLate admits a download popup event.Popup starts after its fate,
-// fate: listed at once where that fate puts it, in the page chosen with
-// its log held (holdParkedOwner). In a carrier's log it settles as that
-// leave settled its others, which needs no reservation (listParked). In a
-// listed page it is admitted as any download starting there is, and a
-// reservation its workspace refuses is a row that says so (listStart). It
-// answers downloadUnowned when no page takes it.
+// fate: at once, in the page that fate puts it in, chosen with its log
+// held (holdParkedOwner), as any download starting in that page is
+// admitted (listStart). On an engine whose downloads are AO's that is
+// with a reservation of the page's workspace, a refusal a row that says
+// so, and only while the download's jar is open, since its directory is
+// where the file is kept: with the jar gone it answers downloadUnowned,
+// as it does when no page takes the download, and its engine ends it and
+// removes its file. A row in a carrier's log then settles as that leave
+// settled its others (settleCarried): canceled, unless its engine
+// received its end, which the row then waits for and keeps.
 func (m *Manager) admitLate(event downloadStart, fate popupFate) downloadAdmission {
 	m.mu.Lock()
 	scope := m.profileScopeLocked(event.Profile)
 	m.mu.Unlock()
+	if scope == nil && m.downloadsToArtifacts() {
+		return downloadUnowned
+	}
 	file := m.downloadFileOf(scope, event.ID)
 	owner, ok := m.holdParkedOwner(event.Popup, fate, true)
 	if !ok {
 		return downloadUnowned
 	}
-	if owner.carried {
-		d := &parkedDownload{start: event, scope: scope, file: file}
-		if discard, canceled := m.listParked(owner, d); canceled {
-			m.stopRefused(d, discard)
-		}
-		return downloadAdmitted
-	}
-	note, admitted := m.listStart(owner.page, owner.held, event, file)
+	note, admitted := m.listStart(owner.page, owner.held, event, file, downloadSource(owner.page, event))
 	owner.held.release()
 	m.publishDownloads(note)
 	if !admitted {
 		return downloadRefused
+	}
+	if discard, canceled := m.settleCarried(owner, event.ID); canceled {
+		m.stopRefused(&parkedDownload{start: event, scope: scope}, discard)
 	}
 	return downloadAdmitted
 }

@@ -46,6 +46,8 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 // log ended) or, on an engine whose downloads are AO's, p's workspace
 // refuses the reservation, which the row then says.
 func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile) downloadAdmission {
+	// The page's address as the download starts, before any wait.
+	source := downloadSource(p, event)
 	if m.downloadAdmitting != nil {
 		m.downloadAdmitting()
 	}
@@ -55,7 +57,7 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 		held.release()
 		return downloadRefused
 	}
-	note, admitted := m.listStart(p, held, event, file)
+	note, admitted := m.listStart(p, held, event, file, source)
 	held.release()
 	m.publishDownloads(note)
 	if !admitted {
@@ -65,12 +67,13 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 }
 
 // listStart adds the row of the download starting with event to p's log,
-// which the caller holds and found admitting, with file, the file its
-// engine writes it into. It answers the note the caller publishes once it
-// let the log go, and whether the download was admitted: on an engine
-// whose downloads are AO's, a reservation p's workspace refuses lists the
-// row canceled, saying why.
-func (m *Manager) listStart(p *managedPage, held *downloadLogHold, event downloadStart, file downloadFile) (downloadNote, bool) {
+// which the caller holds, with file, the file its engine writes it into,
+// and source, the address it started from (downloadSource), read before
+// any wait. It answers the note the caller publishes once it let the log
+// go, and whether the download was admitted: on an engine whose downloads
+// are AO's, a reservation p's workspace refuses lists the row canceled,
+// saying why.
+func (m *Manager) listStart(p *managedPage, held *downloadLogHold, event downloadStart, file downloadFile, source string) (downloadNote, bool) {
 	entry := m.downloadEntry(event)
 	switch {
 	case m.downloadsToArtifacts():
@@ -88,7 +91,7 @@ func (m *Manager) listStart(p *managedPage, held *downloadLogHold, event downloa
 	default:
 		entry.source = file
 	}
-	note := m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, event))
+	note := m.noteDownloadStartLocked(p, held.add(entry), source)
 	return note, entry.State != downloadStateCanceled
 }
 
