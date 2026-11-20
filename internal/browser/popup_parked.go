@@ -43,6 +43,38 @@ import (
 // Its engine settles a running one as it would any: on WebView2 the
 // launcher cancels it with the popup's page and the engine ends it
 // (hosted_popups.go); headless Chromium and WebKit let it finish.
+//
+// An engine that processes a popup's reports after receiving them (the
+// hosted engine's report lanes) can have received the popup's close while
+// its nearest listed opener was live and that opener leave before the
+// close is processed. The opener's leave carries the popup's downloads
+// then, as it would had the close come first: those the engine has not
+// had admitted it lists itself (receivingDriver), and those parked here
+// are listed at the popup's fate in the left page's log, as its leave
+// would have (popupCarrier).
+
+// popupCarrier is the leave of the page that carries a popup's downloads:
+// the page, and why it left.
+type popupCarrier struct {
+	page   *managedPage
+	reason string
+}
+
+// carriersLocked is the record of popup carriers, the newest orderSlack.
+// The caller holds m.mu.
+func (m *Manager) carriersLocked() *boundedMap[ids.PageHandle, popupCarrier] {
+	if m.carriers == nil {
+		m.carriers = newBoundedMap[ids.PageHandle, popupCarrier](orderSlack)
+	}
+	return m.carriers
+}
+
+// takeCarrier answers and forgets the carrier of popup handle.
+func (m *Manager) takeCarrier(handle ids.PageHandle) (popupCarrier, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.carriersLocked().take(handle)
+}
 
 // parkedPopup holds the downloads a popup started before its fate.
 type parkedPopup struct {
@@ -233,8 +265,9 @@ func (m *Manager) openerAuthorityLocked(handles []ids.PageHandle) *workspaceAuth
 
 // resolveParked records the fate of popup handle: listed as p, or, with p
 // nil, not listed, opened by openers besides those its downloads named.
-// The downloads it started before are listed then: in p, or in the tab of
-// its nearest listed opener. A download's start and newest progress are
+// The downloads it started before are listed then: in p, in the leave
+// that carries them (popupCarrier), or in the tab of its nearest listed
+// opener. A download's start and newest progress are
 // applied in m.parkMu, so a later progress waits for them and lands after.
 func (m *Manager) resolveParked(handle ids.PageHandle, p *managedPage, openers ...ids.PageHandle) {
 	m.parkMu.Lock()
@@ -259,7 +292,16 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 		fate.openers = mergeOpeners(fate.openers, popup.openers)
 	}
 	m.fates().put(handle, fate)
+	carrier, carried := m.takeCarrier(handle)
 	if popup == nil {
+		return
+	}
+	if carried && fate.listed == "" {
+		for _, d := range popup.downloads {
+			if discard, canceled := m.listCarried(carrier, d); canceled {
+				m.stopRefused(d, discard)
+			}
+		}
 		return
 	}
 	target := m.fateTarget(handle, fate)
@@ -286,13 +328,52 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 // (stopParked), and is discarded, its file removed before its reservation
 // settles. The caller holds m.parkMu.
 func (m *Manager) refuseParked(d *parkedDownload) {
-	discard := d.discard()
+	m.stopRefused(d, d.discard())
+}
+
+// stopRefused stops parked download d once (stopParked) and finishes
+// discard, what of its file and reservation AO ended. The caller holds
+// m.parkMu.
+func (m *Manager) stopRefused(d *parkedDownload, discard downloadDiscard) {
 	if d.stop() {
 		m.stopParked(d, discard)
 		return
 	}
 	// Stopped before: its engine was asked to cancel it then.
 	go m.finishDiscard(discard)
+}
+
+// listCarried lists d, a parked download of a popup that c carries, in c's
+// page's ended log as c's leave would have had the popup's end come first:
+// with its newest progress, and settled then as that leave settles a row
+// still running (departLocked). It answers the discard of a row it
+// canceled, whose engine the caller has stop it. The caller holds m.parkMu.
+func (m *Manager) listCarried(c popupCarrier, d *parkedDownload) (discard downloadDiscard, canceled bool) {
+	p := c.page
+	m.mu.Lock()
+	held := p.downloads.hold()
+	entry := m.downloadEntry(d.start)
+	entry.reservation = quota.Take(&d.reservation)
+	entry.source, d.file = d.file, downloadFile{}
+	listed := m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, d.start))
+	held.release()
+	m.mu.Unlock()
+	m.publishDownloads(listed)
+	if d.newest != nil {
+		m.applyToRow(p, nil, *d.newest)
+	}
+	m.mu.Lock()
+	held = p.downloads.hold()
+	var note downloadNote
+	if row := held.entry(d.start.ID); row != nil && !row.phase.ended() {
+		note, discard, canceled = m.departLocked(p, row, c.reason)
+	}
+	held.release()
+	m.mu.Unlock()
+	if canceled {
+		m.publishDownloads(note)
+	}
+	return discard, canceled
 }
 
 // stopParked has the engine cancel a parked download still running, and
@@ -353,12 +434,22 @@ func (m *Manager) dropParked() []downloadDiscard {
 	var discards []downloadDiscard
 	for handle, popup := range m.parked {
 		popup.timer.Stop()
+		carrier, carried := m.takeCarrier(handle)
 		for _, d := range popup.downloads {
+			if carried {
+				if discard, canceled := m.listCarried(carrier, d); canceled {
+					discards = append(discards, discard)
+				}
+				continue
+			}
 			log.Printf("browser: download %s of popup %s is listed in no tab: the browser closed", d.start.ID, handle)
 			discards = append(discards, d.discard())
 		}
 	}
 	m.parked, m.parkedIDs, m.popupFates = nil, nil, nil
+	m.mu.Lock()
+	m.carriers = nil
+	m.mu.Unlock()
 	return discards
 }
 

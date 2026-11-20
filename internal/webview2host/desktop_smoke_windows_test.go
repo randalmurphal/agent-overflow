@@ -12,6 +12,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"agent-overflow/internal/procutil"
 )
 
 // A real-WebView2 smoke runs on a desktop of its own, so nothing it or
@@ -110,14 +112,11 @@ func runOnPrivateDesktop() (int, error) {
 		return 0, fmt.Errorf("CreateJobObject: %w", err)
 	}
 	defer func() { _ = windows.CloseHandle(job) }()
-	// The limits are on the heap, where they stay put, and kept alive past
-	// the call, which receives them only as an integer.
 	limits := new(windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(limits)), uint32(unsafe.Sizeof(*limits))); err != nil {
+	if err := procutil.SetJobInformation(job, windows.JobObjectExtendedLimitInformation, limits); err != nil {
 		return 0, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
-	runtime.KeepAlive(limits)
 
 	exe, err := os.Executable()
 	if err != nil {

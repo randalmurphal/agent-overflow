@@ -135,11 +135,14 @@ func placePage(b paneBounds, sx, sy float64, writes pageWrites) (appliedPlacemen
 }
 
 // shownView is what the host has applied to a page: where both its native
-// objects stand, and whether its clip is shown. Each field changes only
-// after the native call that makes it true succeeded.
+// objects stand, whether its clip is shown, and whether the raise of the
+// show that made it so failed, which leaves it shown but perhaps under the
+// SPA. Each field changes only by the native call it records: visible as
+// the show or hide succeeded, whatever the raise did.
 type shownView struct {
-	placement appliedPlacement
-	visible   bool
+	placement   appliedPlacement
+	visible     bool
+	raiseFailed bool
 }
 
 // focusDecision answers what the host does with a page's pending focus
@@ -153,7 +156,7 @@ type shownView struct {
 // and answers whether the user's request still stands.
 func focusDecision(shown shownView, launcherForeground bool, take func() bool) focusOutcome {
 	switch {
-	case !shown.visible || !shown.placement.known:
+	case !shown.visible || shown.raiseFailed || !shown.placement.known:
 		return focusNotShown
 	case !launcherForeground:
 		return focusNotForeground
@@ -181,7 +184,8 @@ type presentStep struct {
 // the one it wants. A page at no known place is moved whatever the bounds.
 // raise asks for a show even when the page is already shown: a backend show
 // re-raises the page above the SPA, which Wails' renderer recovery can
-// recreate on top of it. A step that can make a page eligible for its
+// recreate on top of it; so does a shown page whose last raise failed. A
+// step that can make a page eligible for its
 // pending focus intent asks for it: a show, and a move that gives a page
 // already shown a known place again. The host records each part only as
 // its native call succeeds (Host.present).
@@ -191,7 +195,7 @@ func nextPresentStep(shown shownView, want paneView, raise bool) presentStep {
 		step.move, step.bounds = true, want.bounds
 	}
 	switch {
-	case want.visible && (!shown.visible || raise):
+	case want.visible && (!shown.visible || shown.raiseFailed || raise):
 		step.show = true
 	case !want.visible && shown.visible:
 		step.hide = true

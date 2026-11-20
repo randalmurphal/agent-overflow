@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"agent-overflow/internal/procutil"
 )
 
 // installHarnessBoundary puts the Windows launcher in the one Job Object
@@ -32,8 +32,6 @@ func installHarnessBoundary(limit uint64) (err error) {
 	if err != nil {
 		return fmt.Errorf("CreateJobObject: %w", err)
 	}
-	// The limits are on the heap, where they stay put, and kept alive past
-	// the call, which receives them only as an integer.
 	info := &windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 			LimitFlags: windows.JOB_OBJECT_LIMIT_JOB_MEMORY |
@@ -42,15 +40,9 @@ func installHarnessBoundary(limit uint64) (err error) {
 		},
 		JobMemoryLimit: uintptr(limit),
 	}
-	if _, err := windows.SetInformationJobObject(
-		job,
-		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(info)),
-		uint32(unsafe.Sizeof(*info)),
-	); err != nil {
+	if err := procutil.SetJobInformation(job, windows.JobObjectExtendedLimitInformation, info); err != nil {
 		return closeJobAfter(job, fmt.Errorf("SetInformationJobObject(memory): %w", err))
 	}
-	runtime.KeepAlive(info)
 	process, err := windows.OpenProcess(
 		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
 		false,

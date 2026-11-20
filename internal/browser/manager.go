@@ -194,6 +194,11 @@ type Manager struct {
 	// engine received and has yet to deliver, by download, until that end
 	// settles the row (pageLeftLocked). Guarded by mu.
 	endPending map[downloadID]*managedPage
+	// carriers is the leave that carries the downloads of each of the
+	// newest popups never listed whose end its engine received while the
+	// leaving page was their nearest listed opener (popupCarrier). Guarded
+	// by mu.
+	carriers *boundedMap[ids.PageHandle, popupCarrier]
 	// downloadPushInterval overrides downloadPushInterval when set (tests).
 	downloadPushInterval time.Duration
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.

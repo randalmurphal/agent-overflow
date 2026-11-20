@@ -160,7 +160,9 @@ func (h *Host) present(page *hostPage, raise bool) {
 }
 
 // showPage shows the page's clip container and raises it. The host's view
-// says shown only once that succeeded.
+// says shown once the show succeeded, and records whether the raise did:
+// a page shown whose raise failed is hidden by the next hide and shown and
+// raised again by the next show (nextPresentStep).
 func (h *Host) showPage(page *hostPage) {
 	if err := page.controller.putIsVisible(true); err != nil {
 		h.config.Logf("browser host: page %s show: %v", page.id, err)
@@ -176,15 +178,15 @@ func (h *Host) showPage(page *hostPage) {
 			return
 		}
 	}
+	page.shown.visible = true
 	// Every backend show re-raises: Wails' own recovery path can recreate
 	// the SPA controller, which would land it above the pane again, and a
-	// raise is cheap. A failed raise leaves the page hidden in the host's
-	// view, so the next present shows and raises it again.
-	if err := raiseChild(page.raiseTarget()); err != nil {
+	// raise is cheap.
+	err := raiseChild(page.raiseTarget())
+	page.shown.raiseFailed = err != nil
+	if err != nil {
 		h.config.Logf("browser host: page %s show: %v", page.id, err)
-		return
 	}
-	page.shown.visible = true
 }
 
 // hidePage hides the page's clip container. Hiding is the CONTAINER's: the
@@ -208,7 +210,7 @@ func (h *Host) hidePage(page *hostPage) {
 		h.config.Logf("browser host: page %s hide: %v", page.id, err)
 		return
 	}
-	page.shown.visible = false
+	page.shown.visible, page.shown.raiseFailed = false, false
 	h.releaseFocus(page, held)
 }
 

@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -201,4 +203,37 @@ func TestListDistros_PathMiss(t *testing.T) {
 		}
 	}
 	_ = got
+}
+
+// A launch whose bootstrap never comes kills its child and reaps it: the
+// child's exit is published, so exec's watch of the cancellable context
+// and the child's handles end with the launch, and the kill's exit status
+// is not reported as a failure of its own.
+func TestAFailedLaunchReapsItsChild(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var child *exec.Cmd
+	_, _, err = Launch(ctx, LaunchOptions{
+		Distro:           "test",
+		BinaryPath:       "/test/agent-overflow",
+		BootstrapTimeout: 200 * time.Millisecond,
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			child = exec.CommandContext(ctx, executable, "-test.run=^TestLauncherLifetimeChild$")
+			child.Env = append(os.Environ(), "AO_TEST_LAUNCHER_LIFETIME=running")
+			return child
+		},
+	})
+	if err == nil {
+		t.Fatal("a launch whose child never bootstrapped succeeded")
+	}
+	if strings.Contains(err.Error(), "reap") || strings.Contains(err.Error(), "kill") {
+		t.Fatalf("the abandoned child's expected end was reported: %v", err)
+	}
+	if child == nil || child.ProcessState == nil {
+		t.Fatalf("the failed launch (%v) left its child unreaped", err)
+	}
 }

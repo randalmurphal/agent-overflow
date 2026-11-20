@@ -298,8 +298,15 @@ func (m *Manager) pendingClosed(tb *threadBrowser) {
 
 // abandonPage closes a page openPageLocked created that will not be
 // registered, ends its reservation, and disposes the scope if that left it
-// empty.
+// empty. What the page downloaded while it loaded settles first, as a
+// closed tab's does (downloadsLeftLocked), while its engine page still
+// answers for what it received.
 func (m *Manager) abandonPage(scope *jarScope, p *managedPage) error {
+	m.mu.Lock()
+	ended := m.downloadsLeftLocked(scope, p, "page closed")
+	m.mu.Unlock()
+	m.publishDownloads(ended.notes...)
+	m.stopEndedDownloads(ended)
 	p.driver.Close()
 	m.mu.Lock()
 	// Never listed, so a popup its engine page opened is not adopted

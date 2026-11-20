@@ -170,7 +170,7 @@ func heldPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork, re
 		case <-ctx.Done():
 		}
 		if w.kind == acceptedClose {
-			_, finish := pages.retire(w.page)
+			_, finish := pages.retire(w.page, pageClosedReason)
 			finish()
 		}
 	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})

@@ -248,8 +248,11 @@ func (e *hostedEngine) setBounds(handle ids.PageHandle, placement PanePlacement)
 	return true
 }
 
-// OpenPageDevTools sends the devtools directive; a directive the pane host
-// cannot take fails the request.
+// OpenPageDevTools sends the devtools directive, and answers only whether
+// it was sent: the launcher opens the window when the directive arrives
+// and logs a failure there, which no report carries back, so nil means
+// requested, not opened. A directive the pane host cannot take fails the
+// request.
 func (e *hostedEngine) OpenPageDevTools(handle ids.PageHandle) error {
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: string(handle)}) {
 		return fmt.Errorf("browser: open devtools: the pane host refused the request")

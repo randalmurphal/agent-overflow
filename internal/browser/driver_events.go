@@ -70,6 +70,11 @@ type downloadStart struct {
 	// page's row, which such a row cannot do, so a staging engine leaves
 	// this nil and its page's leave cancels the download.
 	EndReported func() bool
+	// NewestCounts, nil on an engine that delivers a download's progress
+	// as it learns it, answers the bytes received and the total of the
+	// newest progress the engine has received for the download, delivered
+	// or not: a row its page's leave cancels keeps them (pageLeftLocked).
+	NewestCounts func() (received, total int64)
 }
 
 // downloadAdmission is the Manager's answer to a download's start

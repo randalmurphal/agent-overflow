@@ -9,14 +9,13 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"runtime"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 
 	"agent-overflow/internal/platform"
+	"agent-overflow/internal/procutil"
 )
 
 func resolveCommand(opts LaunchOptions) CommandRunner {
@@ -111,8 +110,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		}
 	}
 
-	// abandon ends a launch that failed: the started child is killed and
-	// the job closed, and a cleanup that fails joins cause.
+	// abandon ends a launch that failed: the started child is killed, the
+	// job closed and the child reaped (reapAbandoned), and a cleanup that
+	// fails joins cause.
 	abandon := func(cause error, started bool) error {
 		errs := []error{cause}
 		if started {
@@ -123,6 +123,11 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		if platform != nil {
 			if err := platform.close(); err != nil {
 				errs = append(errs, fmt.Errorf("close job object: %w", err))
+			}
+		}
+		if started {
+			if err := reapAbandoned(cmd, childExitConfirmWindow); err != nil {
+				errs = append(errs, err)
 			}
 		}
 		return errors.Join(errs...)
@@ -299,6 +304,29 @@ type jobObjectLauncher struct {
 	handle windows.Handle
 }
 
+// reapAbandoned waits within the bound for cmd, a child a failed launch
+// killed, and releases what its run holds: its process handle, its pipes,
+// which ends their readers, and exec's watch of its context. Its kill is
+// its expected end, as an exit status or the context's interruption; any
+// other result of the wait, or a child still running past the bound, is
+// the error. One still running is reaped when it exits.
+func reapAbandoned(cmd *exec.Cmd, within time.Duration) error {
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case err := <-waited:
+		var exit *exec.ExitError
+		if err == nil || errors.As(err, &exit) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return fmt.Errorf("reap wsl.exe: %w", err)
+	case <-timer.C:
+		return fmt.Errorf("reap wsl.exe: still running %v after its kill", within)
+	}
+}
+
 func newPlatformLauncher() (platformLauncher, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -320,29 +348,19 @@ func newPlatformLauncher() (platformLauncher, error) {
 	// managed by the Host Compute Service (HCS), not by our job:
 	// killing wsl.exe signals HCS to tear down the session regardless
 	// of whether helper processes broke away.
-	//
-	// The limits are on the heap, where they stay put, and kept alive past
-	// the call, which receives them only as an integer.
 	info := &windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
 				windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 		},
 	}
-	if _, err := windows.SetInformationJobObject(
-		job,
-		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(info)),
-		uint32(unsafe.Sizeof(*info)),
-	); err != nil {
+	if err := procutil.SetJobInformation(job, windows.JobObjectExtendedLimitInformation, info); err != nil {
 		err = fmt.Errorf("SetInformationJobObject: %w", err)
 		if closeErr := windows.CloseHandle(job); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("CloseHandle job: %w", closeErr))
 		}
 		return nil, err
 	}
-	runtime.KeepAlive(info)
-
 	return &jobObjectLauncher{handle: job}, nil
 }
 

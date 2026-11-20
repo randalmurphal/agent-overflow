@@ -133,10 +133,10 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 			progress = append(progress, s)
 		}
 	}
-	if !slices.Equal(progress, []string{"dl-2 inProgress 1", "dl-2 inProgress 50", "dl-2 pageGone 0"}) {
-		t.Fatalf("dl-2's progress reached the Manager as %v, want its first, its newest, and its end with its page", progress)
+	if !slices.Equal(progress, []string{"dl-2 inProgress 1", "dl-2 inProgress 50", "dl-2 pageGone 50"}) {
+		t.Fatalf("dl-2's progress reached the Manager as %v, want its first, its newest, and its end with its page at the newest counts", progress)
 	}
-	if ended := slices.Index(got, "dl-2 pageGone 0"); ended > closed {
+	if ended := slices.Index(got, "dl-2 pageGone 50"); ended > closed {
 		t.Fatalf("the Manager heard %v, want page-b's running download ended before its close", got)
 	}
 }
