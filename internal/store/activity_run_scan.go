@@ -74,7 +74,7 @@ type activityScanRow struct {
 	// from the three file-change sources.
 	DisplayRows int
 	// AgentMessage is true for a user_text row an agent wrote rather than
-	// the person (agentMessageRowExpr), which an open run absorbs.
+	// the person (agentMessageRowExpr), which is a run member on sight.
 	AgentMessage bool
 }
 

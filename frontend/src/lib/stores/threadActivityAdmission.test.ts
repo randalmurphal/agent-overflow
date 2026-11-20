@@ -31,6 +31,24 @@ it.each(['assistant_text', 'user_text'] as const)('opens a live singleton arrivi
   } finally { pane.clear(); }
 });
 
+it('opens a live lone agent message the way it opens a live tool row', async () => {
+  getSettings().activityRunDefault = 'collapsed';
+  const pane = await buildPane(makeThread());
+  try {
+    pane.applyProviderItemUpserts([
+      makeItem({
+        id: 'reply', itemIndex: 1, kind: 'user_text', role: 'user', status: 'completed', summary: 'All green.',
+        meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', kind: 'wake' } }),
+      }),
+      makeItem({ id: 'after', itemIndex: 2, kind: 'assistant_text', status: 'completed', summary: 'thanks' }),
+    ]);
+    expect(runs(pane)).toHaveLength(1);
+    expect(runs(pane)[0].collapsed).toBe(false);
+    pane.activityRuns.releaseOpenedLive([runs(pane)[0].runId]);
+    expect(runs(pane)[0].collapsed).toBe(true);
+  } finally { pane.clear(); }
+});
+
 it('preserves manual collapse when more live work joins the run', async () => {
   getSettings().activityRunDefault = 'collapsed';
   const pane = await buildPane(makeThread());

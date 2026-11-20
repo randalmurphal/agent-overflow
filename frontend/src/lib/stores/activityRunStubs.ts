@@ -11,9 +11,11 @@
 // the physical row count, and the header's inputs — and nothing else: no
 // reactivity, no fetching, no rendering.
 //
-// Keyed by the run's `firstItemId`, which is stable for the life of the
-// window: runs grow only at their newer end (new rows land at the write
-// head; head-healed prompts are prose), so the first member never moves.
+// Keyed by the run's `firstItemId`. Runs grow at their newer end (new rows
+// land at the write head); an agent message placed at the head of its turn
+// can join a run ahead of its first member, and the record's next members
+// call is then refused as stale, which reloads the window
+// (docs/architecture/timeline-window-pages.md §1).
 
 import type { Item } from '../types/models';
 import type {

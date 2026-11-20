@@ -18,8 +18,9 @@ import (
 // seedRunThread writes one turn of visible top-level rows from a compact
 // spec: "p" is a prose row, "t" a tool call, "r" a still-running tool
 // call, "k" a thinking row, "n" a notification, "a" the abandoned-blocks
-// record, "c" the completion of the row before it. Ids are the spec letter
-// plus the row index, so a failure names the row that broke.
+// record, "c" the completion of the row before it, "m" an agent message (a
+// spawned thread's reply), "u" the person's message. Ids are the spec
+// letter plus the row index, so a failure names the row that broke.
 func seedRunThread(t *testing.T, s *Store, threadID, spec string) []string {
 	t.Helper()
 	if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
@@ -54,6 +55,11 @@ func seedRunThread(t *testing.T, s *Store, threadID, spec string) []string {
 				t.Fatalf("seed letter c needs a row before it")
 			}
 			item.Kind, item.ToolName, item.CompletionOf = "tool_completion", "Bash", ids[i-1]
+		case 'm':
+			item.Kind, item.Role = "user_text", "user"
+			item.Meta = `{"origin":"agent-thread","originThread":{"threadId":"t-review","title":"Review","kind":"wake","token":"tok-1"}}`
+		case 'u':
+			item.Kind, item.Role = "user_text", "user"
 		default:
 			t.Fatalf("unknown seed letter %q", letter)
 		}
@@ -372,6 +378,87 @@ func TestAbandonedBlocksRecordJoinsTheRunItFollows(t *testing.T) {
 		}
 		if got := pageItemIDs(page); !reflect.DeepEqual(got, ids) {
 			t.Errorf("%s: shipped %v, want %v", tc.spec, got, ids)
+		}
+	}
+}
+
+// TestAgentMessagesPageAsRunMembers: an agent message is a run member on
+// sight wherever it sits, and every walk agrees: a page read backward from
+// the tail, forward from before the first row, and centered on the
+// message itself, and the members read of a run the message opens.
+func TestAgentMessagesPageAsRunMembers(t *testing.T) {
+	type run struct {
+		first, last string
+		members     int
+	}
+	for _, tc := range []struct {
+		spec string
+		want []run
+	}{
+		{spec: "pmp", want: []run{{"m1", "m1", 1}}},
+		{spec: "pmtp", want: []run{{"m1", "t2", 2}}},
+		{spec: "umtp", want: []run{{"m1", "t2", 2}}},
+		{spec: "mtp", want: []run{{"m0", "t1", 2}}},
+		{spec: "pm", want: []run{{"m1", "m1", 1}}},
+		{spec: "pmmp", want: []run{{"m1", "m2", 2}}},
+		{spec: "ptumtp", want: []run{{"t1", "t1", 1}, {"m3", "t4", 2}}},
+		{spec: "ptmtp", want: []run{{"t1", "t3", 3}}},
+		{spec: "pmnp", want: []run{{"m1", "n2", 2}}},
+		{spec: "pmptp", want: []run{{"m1", "m1", 1}, {"t3", "t3", 1}}},
+	} {
+		s := newTestStore(t)
+		ids := seedRunThread(t, s, "t", tc.spec)
+		runsOf := func(page PagedItems) []run {
+			got := []run{}
+			for _, stub := range page.Runs {
+				got = append(got, run{stub.FirstItemID, stub.LastItemID, stub.MemberCount})
+			}
+			return got
+		}
+		tail := TimelineCursor{TurnIndex: 0, ItemIndex: len(ids), ItemID: "after-tail"}
+		older, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 50, 10, TimelineSelection{})
+		if err != nil {
+			t.Fatalf("%s: older page: %v", tc.spec, err)
+		}
+		if got := runsOf(older); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: older page runs = %v, want %v", tc.spec, got, tc.want)
+		}
+		assertPageAccounts(t, s, "t", older, ids)
+
+		head := TimelineCursor{TurnIndex: 0, ItemIndex: -1, ItemID: "before-head"}
+		newer, err := s.ListItemsAfterCursor(context.Background(), "t", head, 50, 10, TimelineSelection{})
+		if err != nil {
+			t.Fatalf("%s: newer page: %v", tc.spec, err)
+		}
+		if got := runsOf(newer); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: newer page runs = %v, want %v", tc.spec, got, tc.want)
+		}
+		assertPageAccounts(t, s, "t", newer, ids)
+
+		for _, id := range ids {
+			if id[0] != 'm' {
+				continue
+			}
+			around, err := s.ListThreadSliceAround(context.Background(), "t", id, 50, 10, TimelineSelection{})
+			if err != nil {
+				t.Fatalf("%s: slice around %s: %v", tc.spec, id, err)
+			}
+			if got := runsOf(around); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("%s: slice around %s runs = %v, want %v", tc.spec, id, got, tc.want)
+			}
+		}
+
+		for _, want := range tc.want {
+			members, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
+				RunFirstItemID: want.first, Direction: ActivityRunMembersBefore,
+			})
+			if err != nil {
+				t.Fatalf("%s: members of %s: %v", tc.spec, want.first, err)
+			}
+			if members.Stub.MemberCount != want.members || members.Stub.LastItemID != want.last {
+				t.Errorf("%s: members of %s = %d ending %s, want %d ending %s", tc.spec, want.first,
+					members.Stub.MemberCount, members.Stub.LastItemID, want.members, want.last)
+			}
 		}
 	}
 }

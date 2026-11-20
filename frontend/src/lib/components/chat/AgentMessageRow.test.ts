@@ -416,9 +416,9 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
   });
 });
 
-// An agent message that lands with an activity run open before it joins that
-// run (utils/activityRunGrouping.ts): it renders inside the run's clip, folds
-// with it, and stays readable and operable there.
+// An agent message is an activity-run member (utils/activityRunSpans.ts): it
+// renders inside the run's clip, folds with it, and stays readable and
+// operable there; alone, the collapsed run's header names it.
 describe('<AgentMessageRow> inside an activity run', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -449,6 +449,69 @@ describe('<AgentMessageRow> inside an activity run', () => {
     expect(view.getByTestId('activity-run-header-counts').textContent).toBe('2 Bash, 1 agent message, 1 thinking');
     // Folded with the run: no standalone agent row anywhere in the timeline.
     expect(view.queryByTestId('agent-message-row')).toBeNull();
+  });
+
+  /** The person asks, the worker's reply opens the next turn, prose answers it. */
+  function loneReply(): Item[] {
+    const reply = agentRow(text('reply'), { origin: 'agent-thread', originThread: withFacts('reply', { threadId: 't-work', title: 'Worker', kind: 'wake' }) });
+    return [
+      makeItem({ id: 'ask', itemIndex: 0, kind: 'user_text', role: 'user', summary: 'have a worker look' }),
+      { ...reply, turnIndex: 1, itemIndex: 0 },
+      makeItem({ id: 'done', turnIndex: 1, itemIndex: 1, kind: 'assistant_text', summary: 'Nothing to fix.' }),
+    ];
+  }
+
+  it('a lone reply is a run of one whose collapsed header names its kind, sender and first line', async () => {
+    const pane = await buildPane(makeThread(), loneReply());
+    const view = render(MessageTimeline, { props: { pane } });
+
+    await vi.waitFor(() => expect(view.getAllByTestId('activity-run')).toHaveLength(1));
+    const run = view.getByTestId('activity-run');
+    expect(run.dataset.collapsed).toBe('true');
+    expect(view.queryByTestId('agent-message-row')).toBeNull();
+    const header = view.getByTestId('activity-run-header');
+    expect(view.queryByTestId('activity-run-header-counts')).toBeNull();
+    expect(view.getByTestId('activity-run-header-message-kind').textContent).toBe('Reply');
+    expect(view.getByTestId('activity-run-header-message-sender').textContent).toBe('Worker');
+    expect(view.getByTestId('activity-run-header-message-first-line').textContent).toBe('All green.');
+    expect(header.getAttribute('aria-label')).toBe('Expand Reply from Worker');
+
+    // Opened, the header counts it like any run and the row carries the message.
+    await fireEvent.click(header);
+    const row = await vi.waitFor(() => view.getByTestId('agent-message-row'));
+    expect(view.getByTestId('activity-run-clip').contains(row)).toBe(true);
+    expect(view.getByTestId('activity-run-header-counts').textContent).toBe('1 agent message');
+    expect(view.queryByTestId('activity-run-header-message')).toBeNull();
+    expect(header.getAttribute('aria-label')).toBe('Collapse 1 activity row');
+  });
+
+  it('a lone reply from another computer names that computer in its collapsed header, as its row does', async () => {
+    const reply = agentRow(text('late reply with age, computer and a standing agent'), {
+      origin: 'agent-thread',
+      originThread: withFacts('late reply with age, computer and a standing agent', { computerId: 'gone', computerName: 'desk', threadId: 't-work', title: 'Worker', kind: 'wake' }),
+    });
+    const [ask, , done] = loneReply();
+    const pane = await buildPane(makeThread(), [ask, { ...reply, turnIndex: 1, itemIndex: 0 }, done]);
+    const view = render(MessageTimeline, { props: { pane } });
+
+    await vi.waitFor(() => expect(view.getByTestId('activity-run').dataset.collapsed).toBe('true'));
+    expect(view.getByTestId('activity-run-header-message-sender').textContent).toBe('Worker on desk');
+    expect(view.getByTestId('activity-run-header').getAttribute('aria-label')).toBe('Expand Reply from Worker on desk');
+    await fireEvent.click(view.getByTestId('activity-run-header'));
+    const row = await vi.waitFor(() => view.getByTestId('agent-message-row'));
+    expect(row.querySelector('[data-testid="agent-message-sender"]')?.textContent).toBe('Worker on desk');
+  });
+
+  it('a jump to a reply inside a collapsed run opens the run on it', async () => {
+    const pane = await buildPane(makeThread(), loneReply());
+    const view = render(MessageTimeline, { props: { pane } });
+    await vi.waitFor(() => expect(view.getByTestId('activity-run').dataset.collapsed).toBe('true'));
+
+    pane.requestScrollToItem('msg-1');
+
+    await vi.waitFor(() => expect(view.getByTestId('activity-run').dataset.collapsed).toBe('false'));
+    const row = await vi.waitFor(() => view.getByTestId('agent-message-row'));
+    expect(row.closest('[data-item-id]')?.getAttribute('data-item-id')).toBe('msg-1');
   });
 
   it('expanded, the reply shows its label, sender and text, and its sender opens', async () => {

@@ -26,7 +26,6 @@
 // Session-only: the archive is per pane and dies with it. The durable layer
 // is the `activityRunDefault` setting.
 
-import { timelineNodeHasRail } from '../utils/timelineRail';
 import { compareItemsByTimelinePosition } from './threadItems';
 import { createActivityRunLookup } from './activityRunLookup';
 import { activityRunLoadedItems, type RunWindowBounds } from './activityRunLoadedItems';
@@ -42,8 +41,8 @@ import type {
 } from '../utils/activityRunGrouping';
 import {
   groupActivityRunSpans,
-  isActivityRailRow,
   isActivityRunAbsorbedRow,
+  isActivityRunMemberRow,
   type ActivityRunSpan,
 } from '../utils/activityRunSpans';
 import {
@@ -94,12 +93,12 @@ function firstIndexAfter(rows: readonly Item[], cursor: RunCoordinate): number {
 }
 
 /**
- * Whether a windowed row continues a run it follows: a rail row, or a
- * bell or agent message the run absorbs (`isActivityRunAbsorbedRow`). Any
- * other row ends it.
+ * Whether a windowed row continues a run it follows: a member
+ * (`isActivityRunMemberRow`), or a bell the run absorbs
+ * (`isActivityRunAbsorbedRow`). Any other row ends it.
  */
 function continuesRun(item: Item): boolean {
-  return isActivityRailRow(item) || isActivityRunAbsorbedRow(item);
+  return isActivityRunMemberRow(item) || isActivityRunAbsorbedRow(item);
 }
 
 /** Where a record's run starts: its stub's first member. */
@@ -151,8 +150,8 @@ function coversUnshipped(
  * gained since, while the stub counts members after the pane's span. The
  * pane holds none of the members between that span and the row, so
  * admitting it would place it next to members it does not follow. A run
- * grows through rail rows and the bells it absorbs, and any other row
- * ends it, so the row is a member unless a row that ends the run lies
+ * grows through its members and the bells it absorbs (`continuesRun`), and
+ * any other row ends it, so the row is a member unless a row that ends the run lies
  * between the edge and it: in `held`, the window in timeline order, or
  * anywhere in `batch`, rows the window has not admitted yet.
  */
@@ -1191,7 +1190,7 @@ export function createThreadActivityRuns(
   // (a page's stubs folded, a members answer, a cut's shed rows, a live
   // append that re-points a held run): the node's counts and the header's
   // facts derive from it and no row moves for a `limit: 0` refresh. A live
-  // rail row reaching the verified tail bumps it once (`noteLiveAppend`).
+  // member reaching the verified tail bumps it once (`noteLiveAppend`).
   // Every run header reads it, so a sync or cut that changes no record
   // leaves it alone. Scroll snapshots are excluded on purpose: they move
   // every inner scroll frame and nothing on the node reads them.
@@ -1574,7 +1573,7 @@ export function createThreadActivityRuns(
     for (const item of items) {
       if (item.threadId !== options.threadId()
         || (previousTail && compareItemsByTimelinePosition(item, previousTail) <= 0)
-        || !timelineNodeHasRail({ kind: 'leaf', item }, item)) continue;
+        || !isActivityRunMemberRow(item)) continue;
       pendingLiveMembers.add(item.id);
       changed = true;
     }

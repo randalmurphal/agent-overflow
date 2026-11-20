@@ -1747,11 +1747,13 @@ The timeline renders such a row folded, in the register of a tool row
 (`AgentMessageRow.svelte`): an icon and a gutter label for the kind,
 then one header line naming the sender (with `on <computer>` when
 remote, a button opening its thread in a pane when this client reaches
-it), a standing agent's role line, and the message's first line. A row
-that lands right after an activity run's member joins that run, as a
-notification does: it renders inside the run, folds with it, and the
-run's header counts it as an agent message; after prose or the person's
-message it stands alone
+it), a standing agent's role line, and the message's first line. Such a
+row is an activity-run member exactly as a tool row is, wherever it
+lands: it renders inside a run and folds with it, a tool row or another
+agent message beside it shares that run, and alone it is a run of one
+whose collapsed header shows the row's kind, sender and first line. The
+run's header counts it as an agent message; the person's messages and
+assistant prose end a run
 ([activity runs](../architecture/activity-runs.md#shape)). It
 renders from the row's facts, never from its text. Every read and push
 of the row (`itemwire.Project`, a meta patch) serves its meta as

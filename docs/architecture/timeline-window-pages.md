@@ -32,17 +32,21 @@ cannot drift.
 
 A row is a **rail row** when `kind` is `tool_call`, `tool_completion`,
 `terminal_interaction` or `thinking` and its payload kind is not
-`proposed_plan`. A run is a maximal consecutive stretch of rows that are
-rail rows, or absorbed rows with a run member immediately before them: a
-`notification`, or an agent message (a `user_text` row an agent wrote, not
-the person; `agentMessageRowExpr`, the reading of the client's
-`isAgentMessageItem`). Any other row ends the run. Payload kind is only
-known after the payload join, so classification happens in Go over a
-narrow scan, never in SQL alone.
+`proposed_plan`. A row is a **member** when it is a rail row or an agent
+message (a `user_text` row an agent wrote, not the person;
+`agentMessageRowExpr`, the reading of the client's `isAgentMessageItem`).
+A run is a maximal consecutive stretch of rows that are members, or
+`notification` rows with a run member immediately before them (absorbed
+bells). Any other row ends the run. Payload kind is only known after the
+payload join, so classification happens in Go over a narrow scan, never in
+SQL alone.
 
-Runs are identified by `firstItemId`. Runs grow only at their newer end
-(new rows land at the write head; head-healed prompts are prose), so the
-first member is stable for the life of the window.
+Runs are identified by `firstItemId`. New rows land at the write head, so
+a run grows at its newer end. The one row that can land ahead of a run's
+first member is an agent message placed at the head of its turn, which
+joins the run there; the old `firstItemId` then no longer starts a run,
+`ListActivityRunMembers` refuses it as stale, and the pane reloads its
+window (§3).
 
 ### Transcript selection
 
@@ -328,8 +332,8 @@ Rules:
   outside its loaded span is not inserted; it marks the stub dirty, and
   the pane refreshes it (`ListActivityRunMembers` with `Limit` 0,
   debounced per run). A run also grows past the newer edge its stub read:
-  while the stub counts members after the loaded span, a pushed rail row
-  or absorbed row past that edge is a new member unless a row that ends a run
+  while the stub counts members after the loaded span, a pushed member
+  or bell past that edge is a new member unless a row that ends a run
   lies between the edge and it, among the rows the pane holds and the
   rows of the same batch. It is refused the same way; prose there ends
   the run and appends. A page stub for a run the pane already holds whose

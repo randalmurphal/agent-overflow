@@ -143,8 +143,8 @@ describe('itemTimelineStructureChanged', () => {
     ).toBe(false);
   });
 
-  // An agent message joins the activity run open before it and the person's
-  // message ends it, so a user row turning from one into the other changes
+  // An agent message is an activity-run member and the person's message
+  // ends a run, so a user row turning from one into the other changes
   // which top-level rows exist. A meta patch that leaves it an agent's
   // (its facts served again) does not.
   it("a user row's agent-or-person bit is structure, its other meta is not", () => {

@@ -2,7 +2,7 @@
 
 An **activity run** is one maximal stretch of consecutive activity rows:
 tool calls, completions, terminal interactions, thinking, and the group cards
-that sit on the same rail, plus the notifications and agent messages that
+that sit on the same rail, and agent messages, plus the notifications that
 land inside such a stretch. It renders as a single timeline row that scrolls
 in place and collapses to one line.
 
@@ -43,47 +43,51 @@ size priors, paging, window anchoring, restore, diagnostics, row-UI pruning,
 no second array and no index skew.
 
 Membership is `timelineNodeHasRail` verbatim, `RAIL_EXEMPT_PAYLOAD_KINDS`
-(`proposed_plan`) included. Rail continuity and run continuity are the same
-property, which is what makes the rail coherent as the run's collapse
-control. Because the predicate reads live item state, a late-arriving
-`payloadKind` can **split** a run mid-stream; the registry's membership rule
-below is what keeps state attached across that.
+(`proposed_plan`) included, plus agent messages (`isActivityRunMemberRow`
+in `utils/activityRunSpans.ts`). Rail continuity and run continuity are the
+same property for the rail kinds, which is what makes the rail coherent as
+the run's collapse control. Because the predicate reads live item state, a
+late-arriving `payloadKind` can **split** a run mid-stream; the registry's
+membership rule below is what keeps state attached across that.
 
-One absorption rides on top of the predicate: a `notification` leaf or an
-agent message leaf with a run member before it joins the open run
-(`isActivityRunAbsorbedRow` in `utils/activityRunSpans.ts`, applied by
-`isAbsorbedRow` in `activityRunGrouping.ts`). An agent message is a
-`user_text` row the timeline renders as an agent message rather than as the
-person's message (`isAgentMessageItem`): another thread's reply or request,
-a wake, a reminder, a loop or a watch, a provider agent's message. Both
-land at the current write head, which during agent work is inside the live
-run: bells at `backgroundCompletionTurnIndex`, agent messages at the turn
-they open or are steered into. Before absorption each one cut the run
-there, minting a fresh tail id and remounting its rows from a one-row
-unfaded clip (2026-08-22 for Monitor pings), and a spawned thread's reply
-split one stretch of the agent's work into two runs. A trailing absorbed
-row stays absorbed so settling never pops it out; one with no member before
-it (after prose, after the person's message, or opening the window) renders
-standalone. Whether an agent message that opens a turn while the thread was
-idle joins is the same rule: the node before it decides, not turn state.
-The person's own messages are never absorbed and end a run. The header
-line counts absorbed agent messages as `N agent message(s)` and bells as
+An agent message is a `user_text` row the timeline renders as an agent
+message rather than as the person's message (`isAgentMessageItem`):
+another thread's reply or request, a wake, a reminder, a loop or a watch, a
+provider agent's message. It is the thread tools' traffic, so it is a member
+exactly as a tool row is, wherever it lands: alone (after prose, after the
+person's message, opening or closing the window) it is a run of one, a
+member on either side shares its run, and two in a row are one run. It does
+not sit on the rail. The person's own messages end a run.
+
+One absorption rides on top of the predicate: a `notification` leaf with a
+run member before it joins the open run (`isActivityRunAbsorbedRow`,
+applied by `isAbsorbedRow` in `activityRunGrouping.ts`). Bells land at the
+current write head (`backgroundCompletionTurnIndex`), which during a turn
+is inside the live run; breaking there minted a fresh tail id on every
+Monitor ping and remounted its rows from a one-row unfaded clip. A trailing
+bell stays absorbed so settling never pops it out; one with no member
+before it (after prose, or opening the window) renders standalone.
+
+The header line counts agent messages as `N agent message(s)` and bells as
 `N notification(s)`, ranked in that order after tools and before thinking.
 The agent messages share one term rather than one per row label (`Reply`,
 `Alarm`) because a history page counts the members it does not ship by row
 kind (`ActivityRunGroupKey`), and both halves of a half-loaded run's header
-must agree. The store applies the same rule (`activityScanRow.isAbsorbed`,
-with `agentMessageRowExpr` the SQL reading of `isAgentMessageItem`), held
-to the client by the shared activity-run vectors.
+must agree. A collapsed run whose only member is an agent message names it
+instead, as its row's folded line does: kind label, sender and first line
+(`loneAgentMessageId`, `ActivityRunHeader.svelte`). The store applies the
+same membership (`activityScanRow.isMember` and `isAbsorbed`, with
+`agentMessageRowExpr` the SQL reading of `isAgentMessageItem`), held to the
+client by the shared activity-run vectors.
 
 So a run can hold rows of more than one provider turn. Two things read
 turns around a run and stay correct: the response divider and pill
 (`timelineRows.ts`) sit on prose after a run and key on that prose's turn,
 and the edit-and-resend dim (`pendingCutRows.ts`) compares a run by its
 first member. A Codex cut drops the anchor's whole turn, so a run that
-absorbed the agent message opening a steered anchor's turn straddles the
-cut; that run dims its doomed members and its header itself rather than
-all or none of it.
+holds the agent message opening a steered anchor's turn and the work before
+it straddles the cut; that run dims its doomed members and its header
+itself rather than all or none of it.
 
 That is also why rail participation, and whether a user row is an agent's,
 are part of `itemTimelineStructureKey` (`utils/timelineStructure.ts`): a row
@@ -167,7 +171,8 @@ projection pass. The registry is the only thing that carries a run across
 passes, and identity is the load-bearing part.
 
 No member id is stable: lazy older-paging extends a run backward (new first
-member) and the live-window prune trims its head, the second happening
+member), so does an agent message placed ahead of a run's first member,
+and the live-window prune trims its head, the last happening
 mid-stream on exactly the long runs this feature exists to bound. Keying on
 any member would remount the row and recreate its scroll controller mid-turn.
 So the registry mints a `runId` once and migrates it by membership: an entry
@@ -1137,7 +1142,7 @@ them through `stores/activityRunPrefs.svelte.ts`; the UI is
 ## Verification
 
 Unit (`pnpm test`): `activityRunGrouping.test.ts` (boundary rules, the
-`proposed_plan` exemption splitting a run, bell and agent message
+`proposed_plan` exemption splitting a run, agent messages as members, bell
 absorption, composition with
 read/subagent/wait groups, identity migration across backfill / prune /
 split / merge, window resolution in row space),
@@ -1145,7 +1150,7 @@ split / merge, window resolution in row space),
 membership and stub vectors),
 `activityRunSummary.test.ts` (count aggregation, failure, running label),
 `AgentMessageRow.test.ts` (an agent message inside a run, collapsed and
-expanded), `editResendFlow.test.ts` (the dim of a run a cut goes through),
+expanded, a lone one's header, a jump to one), `editResendFlow.test.ts` (the dim of a run a cut goes through),
 `activityRunWindow.test.ts` (row lookup, focus window, grow/clamp, reveal),
 `activityRunClip.test.ts` (which bodies lift the cap),
 `threadActivityRuns.svelte.test.ts` (overrides, snapshots, the mount window

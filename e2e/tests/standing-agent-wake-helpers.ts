@@ -188,7 +188,7 @@ export async function wakeBubble(page: Page, title: string, badge: string, conta
   const rows = page
     .locator(`[data-testid="agent-message-row"][data-agent-message-kind="${kind}"]`)
     .filter({ has: page.getByTestId('agent-message-sender').getByText(sender, { exact: true }) });
-  await expect(rows.first()).toBeVisible();
+  await openRunsFor(page, rows.first());
   // Folded rows show only their first line: open each until the one
   // holding the text is found.
   for (const toggle of await rows.getByTestId('agent-message-toggle').all()) {
@@ -201,6 +201,21 @@ export async function wakeBubble(page: Page, title: string, badge: string, conta
   // The template line written for the agent is the header's to say.
   await expect(row).not.toContainText(DATA_NOTICE);
   return row;
+}
+
+/**
+ * Opens the open thread's collapsed activity runs until `target` shows. A
+ * wake or completion is an agent message, and agent messages are run
+ * members.
+ */
+export async function openRunsFor(page: Page, target: Locator): Promise<void> {
+  const runs = page.getByTestId('activity-run');
+  await expect(async () => {
+    for (const run of await runs.all()) {
+      if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
+    }
+    await expect(target).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 30_000 });
 }
 
 /**

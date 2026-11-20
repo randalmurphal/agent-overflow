@@ -462,7 +462,9 @@ test('a standing agent on the other computer is named on its wake as a local one
   // Both wakes are agent rows in the caller's timeline
   // (docs/specs/agent-thread-tools.md, "How agent messages appear"), each
   // naming its standing agent's role, the remote one its computer. Two
-  // wakes the provider joined are one row with a part each.
+  // wakes the provider joined are one row with a part each. The rows sit
+  // inside activity runs.
+  await home.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
   await home.open(page);
   await page.getByTestId('thread-row-title').filter({ hasText: 'Wake role caller' }).first().click();
   const rows = page.getByTestId('agent-message-row');
@@ -2292,7 +2294,9 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   const sidebarRow = (title: string) =>
     page.getByTestId('thread-row-title').filter({ hasText: title }).first();
 
-  // The destination's first message says which computer asked for it.
+  // The destination's first message says which computer asked for it. The
+  // agent rows sit inside activity runs.
+  await Promise.all([home, remote].map((app) => app.rpc('UpdateSettings', { activityRunDefault: 'expanded' })));
   await remote.open(page);
   await sidebarRow('Chip work').click();
   await expect(page.getByTestId('agent-message-sender').first()).toHaveText(

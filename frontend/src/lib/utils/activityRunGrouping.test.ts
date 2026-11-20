@@ -242,9 +242,10 @@ describe('run boundaries', () => {
   });
 
   // A message the app wrote into the thread for an agent (a spawned
-  // thread's reply, a wake, a reminder) joins the open run the way a bell
-  // does: the agent's work before and after it is one stretch.
-  describe('agent message absorption', () => {
+  // thread's reply, a request, a wake, a reminder) is a run member on
+  // sight, like a tool row: it belongs with the thread tools whose traffic
+  // it carries, wherever it lands.
+  describe('agent messages are run members', () => {
     const replyMeta = (title: string) => JSON.stringify({
       origin: 'agent-thread',
       originThread: { threadId: 't-review', title, kind: 'wake', token: 'tok-1' },
@@ -268,7 +269,92 @@ describe('run boundaries', () => {
       expect(run(nodes, 1).memberItemIds).toEqual(['spawn', 'bash', 'reply', 'think', 't2']);
     });
 
-    it('keeps the run id across the reply arriving mid-run', () => {
+    it('a lone reply between prose is a one-member run', () => {
+      const nodes = project([prose('p0'), reply('reply'), prose('p1')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['leaf', 'activity_run', 'leaf']);
+      expect(run(nodes, 1).memberItemIds).toEqual(['reply']);
+    });
+
+    it('a reply then a tool row are one run', () => {
+      const nodes = project([reply('reply'), tool('t1', 'Bash')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run']);
+      expect(run(nodes, 0).memberItemIds).toEqual(['reply', 't1']);
+    });
+
+    it('prose, a reply, a tool row: the reply opens the run', () => {
+      const nodes = project([prose('p0'), reply('reply'), tool('t1', 'Bash')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['leaf', 'activity_run']);
+      expect(run(nodes, 1).memberItemIds).toEqual(['reply', 't1']);
+    });
+
+    it("the person's message, a reply, a tool row: the reply opens the run", () => {
+      const nodes = project([tool('t1', 'Bash'), person('u1'), reply('reply'), tool('t2', 'Bash')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
+      expect(run(nodes, 2).memberItemIds).toEqual(['reply', 't2']);
+    });
+
+    it('a window that starts with a reply starts with its run', () => {
+      const nodes = project([reply('reply'), prose('p0')], { windowReachesTail: false });
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf']);
+      expect(run(nodes, 0).memberItemIds).toEqual(['reply']);
+    });
+
+    it("the person's message between tool rows still splits the run", () => {
+      const nodes = project([tool('t1', 'Bash'), person('u1'), tool('t2', 'Bash')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
+    });
+
+    it('assistant prose after a reply ends its run', () => {
+      const nodes = project([reply('reply'), prose('p0'), tool('t1', 'Bash')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
+      expect(run(nodes, 0).memberItemIds).toEqual(['reply']);
+    });
+
+    it('two replies in a row are one run, alone or among tool rows', () => {
+      const alone = project([prose('p0'), reply('r1'), reply('r2', 'Other review'), prose('p1')]);
+      expect(alone.map((n) => n.kind)).toEqual(['leaf', 'activity_run', 'leaf']);
+      expect(run(alone, 1).memberItemIds).toEqual(['r1', 'r2']);
+
+      const among = project([tool('t1', 'Bash'), reply('r1'), reply('r2', 'Other review'), tool('t2', 'Bash')]);
+      expect(among.map((n) => n.kind)).toEqual(['activity_run']);
+      expect(run(among, 0).memberItemIds).toEqual(['t1', 'r1', 'r2', 't2']);
+    });
+
+    it('a trailing reply stays in the run', () => {
+      const nodes = project([tool('t1', 'Bash'), reply('reply')]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run']);
+      expect(run(nodes, 0).memberItemIds).toEqual(['t1', 'reply']);
+    });
+
+    it('a reply and a bell mix in one run, and a bell after a lone reply joins it', () => {
+      const mixed = project([
+        tool('t1', 'Bash'),
+        leaf({ id: 'bell', kind: 'notification' }),
+        reply('reply'),
+        tool('t2', 'Bash'),
+      ]);
+      expect(run(mixed, 0).memberItemIds).toEqual(['t1', 'bell', 'reply', 't2']);
+
+      const afterReply = project([prose('p0'), reply('reply'), leaf({ id: 'bell2', kind: 'notification' })]);
+      expect(afterReply.map((n) => n.kind)).toEqual(['leaf', 'activity_run']);
+      expect(run(afterReply, 1).memberItemIds).toEqual(['reply', 'bell2']);
+    });
+
+    it('a withheld reply keeps the tail run live', () => {
+      const nodes = project([tool('t1', 'Bash')], { withheld: [reply('reply')] });
+
+      expect(run(nodes, 0).live).toBe(true);
+    });
+
+    it('keeps the run id across a reply arriving mid-run', () => {
       const reg = identity();
       const before = project([tool('t1', 'Bash'), leaf({ id: 'k1', kind: 'thinking' })], { identity: reg });
       const runId = run(before, 0).runId;
@@ -282,75 +368,50 @@ describe('run boundaries', () => {
       expect(run(after, 0).runId).toBe(runId);
     });
 
-    it('a reply with no rail member before it stands alone', () => {
-      const nodes = project([prose('p0'), reply('reply'), tool('t1', 'Bash')]);
+    it('keeps the run id as a run grows at either edge', () => {
+      const reg = identity();
+      const lone = project([prose('p0'), reply('reply')], { identity: reg });
+      const runId = run(lone, 1).runId;
 
-      expect(nodes.map((n) => n.kind)).toEqual(['leaf', 'leaf', 'activity_run']);
-      expect(run(nodes, 2).memberItemIds).toEqual(['t1']);
-    });
+      // The work the reply opened lands after it.
+      const grown = project([prose('p0'), reply('reply'), tool('t1', 'Bash')], { identity: reg });
+      expect(run(grown, 1).runId).toBe(runId);
 
-    it('a reply opening the window stands alone', () => {
-      const nodes = project([reply('reply'), tool('t1', 'Bash')]);
-
-      expect(nodes.map((n) => n.kind)).toEqual(['leaf', 'activity_run']);
-    });
-
-    it("the person's message between tool rows still splits the run", () => {
-      const nodes = project([tool('t1', 'Bash'), person('u1'), tool('t2', 'Bash')]);
-
-      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
-    });
-
-    it("a reply directly after the person's message stands alone", () => {
-      const nodes = project([tool('t1', 'Bash'), person('u1'), reply('reply'), tool('t2', 'Bash')]);
-
-      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'leaf', 'activity_run']);
-      expect(run(nodes, 3).memberItemIds).toEqual(['t2']);
-    });
-
-    it('two replies in a row inside a run both join it', () => {
-      const nodes = project([tool('t1', 'Bash'), reply('r1'), reply('r2', 'Other review'), tool('t2', 'Bash')]);
-
-      expect(nodes.map((n) => n.kind)).toEqual(['activity_run']);
-      expect(run(nodes, 0).memberItemIds).toEqual(['t1', 'r1', 'r2', 't2']);
-    });
-
-    it('a trailing reply stays absorbed', () => {
-      const nodes = project([tool('t1', 'Bash'), reply('reply')]);
-
-      expect(nodes.map((n) => n.kind)).toEqual(['activity_run']);
-      expect(run(nodes, 0).memberItemIds).toEqual(['t1', 'reply']);
-    });
-
-    it('a reply and a bell mix in one run', () => {
-      const nodes = project([
-        tool('t1', 'Bash'),
-        leaf({ id: 'bell', kind: 'notification' }),
-        reply('reply'),
-        tool('t2', 'Bash'),
-      ]);
-
-      expect(run(nodes, 0).memberItemIds).toEqual(['t1', 'bell', 'reply', 't2']);
-    });
-
-    it('a withheld reply keeps the tail run live', () => {
-      const nodes = project([tool('t1', 'Bash')], { withheld: [reply('reply')] });
-
-      expect(run(nodes, 0).live).toBe(true);
+      // A message placed ahead of the run's first member joins at the older edge.
+      const older = project([prose('p0'), reply('r0', 'Earlier'), reply('reply'), tool('t1', 'Bash')], { identity: reg });
+      expect(older.map((n) => n.kind)).toEqual(['leaf', 'activity_run']);
+      expect(run(older, 1).memberItemIds).toEqual(['r0', 'reply', 't1']);
+      expect(run(older, 1).runId).toBe(runId);
     });
 
     it.each([
-      ['a wake', { origin: 'agent-wake', originWake: { kind: 'loop', label: 'nightly' } }],
+      ['a spawn prompt', { origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'spawn', token: 'tok-s' } }],
+      ['a request', { origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'send', token: 'tok-r' } }],
+      ['a question', { origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'ask', token: 'tok-q' } }],
+      ['a reply', { origin: 'agent-thread', originThread: { threadId: 't-review', title: 'Review', kind: 'wake', token: 'tok-1' } }],
+      ['a row written before thread kinds', { origin: 'agent-thread', originThread: { threadId: 't-review', title: 'Review' } }],
+      ['a loop fire', { origin: 'agent-wake', originWake: { kind: 'loop', label: 'nightly' } }],
+      ['a watch fire', { origin: 'agent-wake', originWake: { kind: 'watch', label: 'ci' } }],
+      ['an outside send', { origin: 'agent-wake', originWake: { kind: 'send' } }],
+      ['a worker question', { origin: 'agent-wake', originWake: { kind: 'question', threadId: 't-worker' } }],
+      ['a remote job completion', { origin: 'agent-wake', originWake: { kind: 'completion', label: 'build', computer: 'box' } }],
+      ['a workflow wake', { origin: 'agent-wake', originWake: { kind: 'workflow', label: 'review' } }],
+      ['an assistant opening', { origin: 'agent-wake', originWake: { kind: 'assistant' } }],
       ['a Claude peer session', { origin: 'peer-session', cross_session_from_name: 'other' }],
       ['a Codex collab agent', { wire_only: true, agent_message: { sender: '/root/worker', messageType: 'MESSAGE' } }],
-    ])('%s joins the run like a reply', (_label, meta) => {
-      const nodes = project([
-        tool('t1', 'Bash'),
-        leaf({ id: 'm', kind: 'user_text', role: 'user', meta: JSON.stringify(meta) }),
-        tool('t2', 'Bash'),
-      ]);
+    ])('%s is a run member alone and beside tool rows', (_label, meta) => {
+      const message = () => leaf({ id: 'm', kind: 'user_text', role: 'user', meta: JSON.stringify(meta) });
 
-      expect(nodes.map((n) => n.kind)).toEqual(['activity_run']);
+      const alone = project([prose('p0'), message(), prose('p1')]);
+      expect(alone.map((n) => n.kind)).toEqual(['leaf', 'activity_run', 'leaf']);
+      expect(run(alone, 1).memberItemIds).toEqual(['m']);
+
+      const opening = project([person('u0'), message(), tool('t1', 'Bash')]);
+      expect(opening.map((n) => n.kind)).toEqual(['leaf', 'activity_run']);
+      expect(run(opening, 1).memberItemIds).toEqual(['m', 't1']);
+
+      const between = project([tool('t1', 'Bash'), message(), tool('t2', 'Bash')]);
+      expect(between.map((n) => n.kind)).toEqual(['activity_run']);
     });
 
     it("a joined row that holds the person's composer message is the person's and splits the run", () => {
@@ -366,6 +427,25 @@ describe('run boundaries', () => {
       ]);
 
       expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
+    });
+
+    // The thread tools' own calls are tool rows: members in every state.
+    it.each(['running', 'completed', 'errored'] as const)('a thread tool call that is %s is a run member', (status) => {
+      const threadTool = (id: string, name: string) => tool(id, `MCP/${name}`, {
+        status,
+        meta: JSON.stringify({ mcp: { server: 'ao-thread-tools', tool: name } }),
+      });
+      const nodes = project([
+        prose('p0'),
+        threadTool('spawn', 'thread_spawn'),
+        threadTool('send', 'thread_send'),
+        threadTool('ask', 'thread_ask'),
+        threadTool('replied', 'thread_reply'),
+        prose('p1'),
+      ]);
+
+      expect(nodes.map((n) => n.kind)).toEqual(['leaf', 'activity_run', 'leaf']);
+      expect(run(nodes, 1).memberItemIds).toEqual(['spawn', 'send', 'ask', 'replied']);
     });
   });
 

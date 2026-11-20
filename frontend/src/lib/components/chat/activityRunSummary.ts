@@ -49,6 +49,12 @@ export interface ActivityRunSummary {
   hasFailure: boolean;
   /** Tool name of the newest still-running member, or null. */
   runningLabel: string | null;
+  /**
+   * The id of the run's only member when that member is a loaded agent
+   * message, or null. A collapsed run of one message names it in its
+   * header instead of counting it (`ActivityRunHeader`).
+   */
+  loneAgentMessageId: string | null;
 }
 
 interface ActivityRunPresentation {
@@ -83,9 +89,9 @@ const NOTIFICATION_PRESENTATION: ActivityRunPresentation = {
   isThinking: false,
 };
 
-// Agent messages absorbed into a run (`isActivityRunAbsorbedRow`): another
-// thread's reply, a wake, a reminder, a loop or a watch that landed mid-run.
-// The only user_text a run holds, since the person's own messages end runs.
+// Agent messages, which are run members (`isActivityRunMemberRow`): another
+// thread's reply or request, a wake, a reminder, a loop or a watch. The only
+// user_text a run holds, since the person's own messages end runs.
 // One bucket, not one per row label (`Reply`, `Alarm`, ...): the server
 // counts the members a history page does not ship by row kind
 // (`ActivityRunGroupKey`), which cannot tell those apart, and both halves of
@@ -367,5 +373,10 @@ export function activityRunSummary(
     else if (entry.key === AGENT_MESSAGE_PRESENTATION.key) entry.label = 'agent messages';
   }
 
-  return { counts: { entries, total }, hasFailure, runningLabel };
+  let loneAgentMessageId: string | null = null;
+  if (total === 1 && entries.length === 1 && entries[0].key === AGENT_MESSAGE_PRESENTATION.key) {
+    loneAgentMessageId = items.find((item) => item.kind === 'user_text')?.id ?? null;
+  }
+
+  return { counts: { entries, total }, hasFailure, runningLabel, loneAgentMessageId };
 }

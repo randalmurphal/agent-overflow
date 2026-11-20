@@ -784,7 +784,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       for (const groupKey of subagentGroupKeysFor(itemId)) {
         if (subagentGroupExpanded.has(groupKey)) return true;
       }
-      // An agent message a run absorbed: the reader opened its body.
+      // An agent message inside a run: the reader opened its body.
       if (messageUi.isExpanded(itemId)) return true;
       const files = diffCardExpandedOverrides.get(itemId);
       if (files) {

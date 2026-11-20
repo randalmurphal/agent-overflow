@@ -34,6 +34,11 @@ import {
 } from './standing-agent-wake-helpers.js';
 import { runAsyncQuestionAnsweredBySpawner, runAsyncQuestionHandedBack } from './standing-agent-worker-async-questions-flow.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 /**
  * Captures a sidebar row's status dot under the pointer. The dot's label is
  * its title and accessible name, as it is for Working; headless Chromium

@@ -251,6 +251,53 @@ func TestListActivityRunMembersRefusesAStaleRun(t *testing.T) {
 	})
 }
 
+// TestAgentMessageAheadOfARunMovesItsFirstMember: an agent message placed
+// at the head of a turn, ahead of the run its turn's work already began,
+// joins that run at its older edge. The run now starts at the message, so
+// the old first member no longer names it and the call is refused as stale,
+// which is the refusal a client answers by reloading its window.
+func TestAgentMessageAheadOfARunMovesItsFirstMember(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	write := func(item Item) {
+		t.Helper()
+		item.ThreadID, item.Status, item.Summary = "t", "completed", item.ID
+		item.CreatedAt = int64(item.TurnIndex*10 + item.ItemIndex + 2)
+		if err := insertCarded(s, item); err != nil {
+			t.Fatalf("insert %s: %v", item.ID, err)
+		}
+	}
+	write(Item{ID: "p0", TurnIndex: 0, ItemIndex: 0, Kind: "assistant_text", Role: "assistant"})
+	write(Item{ID: "t1", TurnIndex: 1, ItemIndex: 0, Kind: "tool_call", Role: "assistant", ToolName: "Bash"})
+	write(Item{ID: "t2", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", ToolName: "Bash"})
+	members := func(first string) (ActivityRunMembers, error) {
+		return s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
+			RunFirstItemID: first, Direction: ActivityRunMembersBefore,
+		})
+	}
+	if got, err := members("t1"); err != nil || got.Stub.MemberCount != 2 {
+		t.Fatalf("run t1 before the message = %+v, %v; want 2 members", got.Stub, err)
+	}
+
+	write(Item{
+		ID: "m1", TurnIndex: 1, ItemIndex: -1, Kind: "user_text", Role: "user",
+		Meta: `{"origin":"agent-thread","originThread":{"threadId":"t-review","title":"Review","kind":"wake","token":"tok-1"}}`,
+	})
+	if _, err := members("t1"); !errors.Is(err, ErrActivityRunStale) {
+		t.Fatalf("run t1 after the message: err = %v, want ErrActivityRunStale", err)
+	}
+	got, err := members("m1")
+	if err != nil {
+		t.Fatalf("run m1: %v", err)
+	}
+	if got.Stub.FirstItemID != "m1" || got.Stub.LastItemID != "t2" || got.Stub.MemberCount != 3 {
+		t.Errorf("run m1 = %s..%s with %d members, want m1..t2 with 3",
+			got.Stub.FirstItemID, got.Stub.LastItemID, got.Stub.MemberCount)
+	}
+}
+
 // TestHeldWindowFoldsRunStubs is the §5 round trip: a client that holds a
 // page's shipped rows and folds its stubs describes the same range the
 // server re-derives, so a reopen after an unrelated write costs no page —

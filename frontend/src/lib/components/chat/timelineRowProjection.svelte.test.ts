@@ -295,6 +295,11 @@ describe('quiet queue reservations', () => {
 // provider's echo; the person's own still waits in the preview. Its Zone 2
 // entry still lasts until the echo, which is what keeps the thread reading as
 // working meanwhile.
+function runOrLeafId(node: TimelineNode): string {
+  if (node.kind === 'leaf') return node.item.id;
+  return node.kind === 'activity_run' ? `run:${node.memberItemIds.join(',')}` : node.kind;
+}
+
 it('shows a dispatched agent message at once and keeps its entry until the echo', async () => {
   const { markItemsFlushed, getFlushedForThread, clearForThread } = await import('../../stores/sendQueue.svelte');
   const agent = makeItem({ id: 'user:0:flush:wake', kind: 'user_text', role: 'user', itemIndex: 1,
@@ -307,14 +312,15 @@ it('shows a dispatched agent message at once and keeps its entry until the echo'
   ]);
   const view = mountProjection(pane);
   try {
-    expect(view.nodes.map((node) => (node.kind === 'leaf' ? node.item.id : node.kind))).toEqual([agent.id]);
+    // An agent message is an activity-run member, so it shows as a run of one.
+    expect(view.nodes.map(runOrLeafId)).toEqual([`run:${agent.id}`]);
     pane.syncRenderedFlushRows();
     expect(getFlushedForThread(pane.threadId!)).toHaveLength(2);
     pane.applyProviderItemUpserts([{ ...agent, threadId: pane.threadId!,
       meta: '{"provider_item_id":"echo-1","origin":"agent-thread","originThread":{"threadId":"t-w","kind":"wake"}}' }]);
     flushSync();
     expect(getFlushedForThread(pane.threadId!).map((entry) => entry.userItemId)).toEqual([person.id]);
-    expect(view.nodes.map((node) => (node.kind === 'leaf' ? node.item.id : node.kind))).toEqual([agent.id]);
+    expect(view.nodes.map(runOrLeafId)).toEqual([`run:${agent.id}`]);
   } finally {
     view.dispose();
     clearForThread(pane.threadId!);

@@ -61,7 +61,7 @@ describe('counts', () => {
     ]);
   });
 
-  it('counts absorbed agent messages after tools and before notifications and thinking', () => {
+  it('counts agent messages after tools and before notifications and thinking', () => {
     const agent = (id: string) => {
       seq += 1;
       return makeItem({
@@ -455,6 +455,41 @@ describe('attention state', () => {
       counts: { entries: [], total: 0 },
       hasFailure: false,
       runningLabel: null,
+      loneAgentMessageId: null,
     });
+  });
+});
+
+describe('a run of one agent message', () => {
+  const agent = (id: string, itemIndex: number) => makeItem({
+    id,
+    itemIndex,
+    kind: 'user_text',
+    role: 'user',
+    meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', kind: 'wake' } }),
+  });
+
+  it('names the message when it is the only member and loaded', () => {
+    expect(activityRunSummary([agent('r1', 1)], 'claude').loneAgentMessageId).toBe('r1');
+  });
+
+  it('names none beside another member, for two messages, or when the page did not ship it', () => {
+    const bash = makeItem({ id: 'b', itemIndex: 2, kind: 'tool_call', toolName: 'Bash' });
+    expect(activityRunSummary([agent('r1', 1), bash], 'claude').loneAgentMessageId).toBeNull();
+    expect(activityRunSummary([agent('r1', 1), agent('r2', 2)], 'claude').loneAgentMessageId).toBeNull();
+    expect(activityRunSummary([], 'claude', {
+      memberCount: 1,
+      unshippedBefore: 1,
+      unshippedAfter: 0,
+      unshippedGroups: [{ kind: 'user_text', toolName: '', mcp: '', rows: 1 }],
+      unshippedPairedLaunchIds: [],
+      shippedSupersededLaunchIds: [],
+      unshippedFailed: false,
+      runningBefore: null,
+      runningAfter: null,
+      shed: [],
+      loadedFirstItemId: '',
+      loadedLastItemId: '',
+    }).loneAgentMessageId).toBeNull();
   });
 });

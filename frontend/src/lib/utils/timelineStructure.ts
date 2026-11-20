@@ -17,7 +17,7 @@ import { hasForkedSkillMeta } from './subagentLaunch';
 // run membership (the exempt-or-not BIT of payloadKind — a payload
 // attaching mid-stream must not read as structure; leaving the rail
 // happens at most once, when a card-style payload lands — and whether a
-// user row is an agent's, which an open activity run absorbs).
+// user row is an agent's, which makes it an activity-run member).
 //
 // Written as field-wise comparisons with early exit, NOT as two built key
 // strings: this runs per streamed upsert, and building two joined keys —
@@ -54,8 +54,8 @@ export function itemTimelineStructureChanged(previous: Item | undefined, next: I
   const kind = next.kind;
   const metaChanged = (previous.meta ?? '') !== (next.meta ?? '');
 
-  // Whether the row is an agent's is run membership: an agent message joins
-  // the activity run open before it, the person's message ends it.
+  // Whether the row is an agent's is run membership: an agent message is a
+  // member, the person's message ends a run.
   if (kind === 'user_text' && metaChanged
     && (userMessageIdentity(previous) !== userMessageIdentity(next)
       || isPendingFlushRow(previous) !== isPendingFlushRow(next)

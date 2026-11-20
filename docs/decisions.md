@@ -502,9 +502,9 @@ Mechanism in
   agent message stay user-role on the wire and
   `user_text` rows in the store, and render as a folded agent row naming
   the sender, never as the user bubble; their footer is shown as facts,
-  never raw. Such a row that lands right after activity joins that
-  activity run like a notification, so the agent's work around it stays
-  one run; the person's messages end a run (ruling 2026-11-19). They are not navigator ticks, composer recall or send-queue
+  never raw. Such a row is the thread tools' traffic and an activity-run
+  member as a tool row is, wherever it lands, alone a run of one; the
+  person's messages end a run (ruling 2026-11-19). They are not navigator ticks, composer recall or send-queue
   preview entries, and the thread tools label them `agent` with their
   sender. A Claude join holding the person's composer message stays the
   person's, and so do a workflow phase prompt, which is a phase thread's

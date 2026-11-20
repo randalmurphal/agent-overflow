@@ -13,11 +13,12 @@ import (
 // edges, these shipped rows, these stubs".
 //
 // The membership rule is asymmetric, which is what the two walkers here
-// are about. A rail row is a member on sight. A notification or an agent
-// message (activityScanRow.isAbsorbed) is a member only when the row
-// IMMEDIATELY BEFORE it is one, so walking backward means holding a chain
-// of undecided absorbed rows until a rail row admits them or a prose row
-// refuses them, while walking forward can decide every row as it arrives.
+// are about. A rail row or an agent message (activityScanRow.isMember) is
+// a member on sight. A notification (activityScanRow.isAbsorbed) is a
+// member only when the row IMMEDIATELY BEFORE it is one, so walking
+// backward means holding a chain of undecided notifications until a member
+// admits them or a prose row refuses them, while walking forward can decide
+// every row as it arrives.
 
 // pageUnit is one unit of a page with the members this page ships.
 type pageUnit struct {
@@ -123,7 +124,7 @@ func errRunTooLong(threadID string, first activityScanRow) error {
 // position. ok=false means the walk reached the start of history.
 //
 // A run is accumulated newest-first: each round looks past a chain of
-// undecided absorbed rows (activityScanRow.isAbsorbed) for a rail row, and
+// undecided notifications (activityScanRow.isAbsorbed) for a member, and
 // admits the whole chain only when it finds one. A chain that ends at prose
 // or at the start of history is not absorbed, and the first of those rows
 // is a unit of its own.
@@ -144,7 +145,7 @@ func nextOlderUnit(w *activityScanWalk) (pageUnit, bool, error) {
 			if !ok {
 				break
 			}
-			if row.isRailRow() {
+			if row.isMember() {
 				admit = true
 				break
 			}
@@ -185,7 +186,7 @@ func nextOlderUnit(w *activityScanWalk) (pageUnit, bool, error) {
 
 // nextNewerUnit consumes the unit immediately newer than the walk's
 // position. `prevIsMember` is whether the row before the walk's first row
-// is a run member, which is the only thing a leading absorbed row's
+// is a run member, which is the only thing a leading notification's
 // membership depends on.
 func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, error) {
 	first, ok, err := w.peekAt(0)
@@ -193,7 +194,7 @@ func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, erro
 		return pageUnit{}, false, err
 	}
 	w.take(1)
-	if !first.isRailRow() && !(prevIsMember && first.isAbsorbed()) {
+	if !first.isMember() && !(prevIsMember && first.isAbsorbed()) {
 		return pageUnit{rows: []activityScanRow{first}}, true, nil
 	}
 	unit := pageUnit{rows: []activityScanRow{first}, run: true}
@@ -203,10 +204,9 @@ func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, erro
 	return unit, true, nil
 }
 
-// absorbNewerMembers extends a run forward over the walk: every rail row
-// joins, and so does every absorbed row (a notification or an agent
-// message), because one whose predecessor is a member is absorbed and stays
-// absorbed once prose settles the run.
+// absorbNewerMembers extends a run forward over the walk: every member
+// joins, and so does every notification, because one whose predecessor is
+// a member is absorbed and stays absorbed once prose settles the run.
 func absorbNewerMembers(w *activityScanWalk, unit *pageUnit) error {
 	for {
 		row, ok, err := w.peekAt(0)
@@ -216,7 +216,7 @@ func absorbNewerMembers(w *activityScanWalk, unit *pageUnit) error {
 		if !ok {
 			return nil
 		}
-		if !row.isRailRow() && !row.isAbsorbed() {
+		if !row.isMember() && !row.isAbsorbed() {
 			return nil
 		}
 		unit.rows = append(unit.rows, row)
@@ -274,7 +274,7 @@ func firstNewerUnit(
 	if err != nil || !ok {
 		return pageUnit{}, nil, false, err
 	}
-	if !first.isRailRow() && !first.isAbsorbed() {
+	if !first.isMember() && !first.isAbsorbed() {
 		newer.take(1)
 		return pageUnit{rows: []activityScanRow{first}}, newer, true, nil
 	}

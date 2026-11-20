@@ -4,6 +4,11 @@
 import { test } from './fixtures.js';
 import { runAsyncQuestionAnsweredBySpawner, runAsyncQuestionHandedBack } from './standing-agent-worker-async-questions-flow.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 test(`an owned Codex worker's async question goes to its lead, which answers it, on a phone`, async ({ harness, page }) => {
   test.setTimeout(120_000);
   await runAsyncQuestionAnsweredBySpawner(harness, page, 'compact', 'claude');

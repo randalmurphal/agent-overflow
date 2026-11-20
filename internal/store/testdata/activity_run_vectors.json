@@ -1,5 +1,5 @@
 {
-  "note": "Shared activity-run vectors. Each case is a sequence of visible top-level rows in timeline order. `runs` is the maximal-run classification of docs/architecture/timeline-window-pages.md §1: a row is a member when it is a rail row (kind tool_call, tool_completion, terminal_interaction or thinking, payload kind not proposed_plan) or a notification or an agent message (a user_text row an agent wrote, not the person: its meta `origin` is agent-thread, agent-wake or peer-session without `expandComposerCommands`, or it carries `agent_message.sender`) with a member immediately before it. Each run's `stubs` state §4's aggregate for one shipped span: `shippedIds` are the members a page shipped, in order, and the remaining fields are what the server's ActivityRunStub and the client's own classification of the same rows must both produce. `unshippedGroups` is sorted by (kind, toolName, mcp) and `unshippedPairedLaunchIds` by id. Shared by internal/store/activity_runs.go and frontend/src/lib/utils/activityRunGrouping.ts with components/chat/activityRunSummary.ts; the two copies of this file must stay byte-identical.",
+  "note": "Shared activity-run vectors. Each case is a sequence of visible top-level rows in timeline order. `runs` is the maximal-run classification of docs/architecture/timeline-window-pages.md §1: a row is a member when it is a rail row (kind tool_call, tool_completion, terminal_interaction or thinking, payload kind not proposed_plan) or an agent message (a user_text row an agent wrote, not the person: its meta `origin` is agent-thread, agent-wake or peer-session without `expandComposerCommands`, or it carries `agent_message.sender`), or a notification with a member immediately before it. Each run's `stubs` state §4's aggregate for one shipped span: `shippedIds` are the members a page shipped, in order, and the remaining fields are what the server's ActivityRunStub and the client's own classification of the same rows must both produce. `unshippedGroups` is sorted by (kind, toolName, mcp) and `unshippedPairedLaunchIds` by id. Shared by internal/store/activity_runs.go and frontend/src/lib/utils/activityRunGrouping.ts with components/chat/activityRunSummary.ts; the two copies of this file must stay byte-identical.",
   "cases": [
     {
       "name": "a proposed plan breaks the run",
@@ -1485,8 +1485,8 @@
       ]
     },
     {
-      "name": "an agent message joins the run it follows",
-      "why": "A message the app wrote into the thread for an agent (another thread's reply, a wake, a Claude peer session's or a Codex collab agent's message) lands at the write head like a notification: with a member before it, it joins that run, so the work before and after it is one run, and the header counts it by its row kind. After prose or the person's own message it stands alone. A row that holds the person's composer message is the person's and ends the run.",
+      "name": "agent messages are run members",
+      "why": "A message the app wrote into the thread for an agent (another thread's reply, a wake, a Claude peer session's or a Codex collab agent's message) is a run member on sight, like a tool row: a member before or after it shares its run, after prose or the person's own message it opens one, and the header counts it by its row kind. A row that holds the person's composer message is the person's and ends the run.",
       "items": [
         {
           "id": "u1",
@@ -1752,18 +1752,20 @@
           ]
         },
         {
-          "firstItemId": "t3",
+          "firstItemId": "r2",
           "lastItemId": "t3",
           "memberIds": [
+            "r2",
             "t3"
           ],
           "stubs": [
             {
               "shippedIds": [
+                "r2",
                 "t3"
               ],
-              "memberCount": 1,
-              "loadedFirstItemId": "t3",
+              "memberCount": 2,
+              "loadedFirstItemId": "r2",
               "loadedLastItemId": "t3",
               "unshippedBefore": 0,
               "unshippedAfter": 0,
@@ -1773,13 +1775,37 @@
               "unshippedFailed": false,
               "runningBefore": null,
               "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "t3"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "t3",
+              "loadedLastItemId": "t3",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
             }
           ]
         },
         {
-          "firstItemId": "t4",
+          "firstItemId": "r3",
           "lastItemId": "r5",
           "memberIds": [
+            "r3",
             "t4",
             "r4",
             "r5"
@@ -1787,12 +1813,13 @@
           "stubs": [
             {
               "shippedIds": [
+                "r3",
                 "t4",
                 "r4",
                 "r5"
               ],
-              "memberCount": 3,
-              "loadedFirstItemId": "t4",
+              "memberCount": 4,
+              "loadedFirstItemId": "r3",
               "loadedLastItemId": "r5",
               "unshippedBefore": 0,
               "unshippedAfter": 0,
@@ -1805,19 +1832,55 @@
             },
             {
               "shippedIds": [
-                "t4"
+                "r3"
               ],
-              "memberCount": 3,
-              "loadedFirstItemId": "t4",
-              "loadedLastItemId": "t4",
+              "memberCount": 4,
+              "loadedFirstItemId": "r3",
+              "loadedLastItemId": "r3",
               "unshippedBefore": 0,
-              "unshippedAfter": 2,
+              "unshippedAfter": 3,
               "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
                 {
                   "kind": "user_text",
                   "toolName": "",
                   "mcp": "",
                   "rows": 2
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "r4",
+                "r5"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "r4",
+              "loadedLastItemId": "r5",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
                 }
               ],
               "unshippedPairedLaunchIds": [],
@@ -1848,6 +1911,592 @@
               "unshippedPairedLaunchIds": [],
               "shippedSupersededLaunchIds": [],
               "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a lone agent message is a run of one",
+      "why": "With prose or the person's message on both sides, an agent message is still a run: one member, its own stub, counted as an agent message. Two in a row are one run.",
+      "items": [
+        {
+          "id": "a1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"wake\",\"token\":\"tok-1\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a2",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "u1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r2",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"kind\":\"loop\",\"label\":\"nightly\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r3",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"wake\",\"token\":\"tok-1\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "u2",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "r1",
+          "lastItemId": "r1",
+          "memberIds": [
+            "r1"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "r1"
+              ],
+              "memberCount": 1,
+              "loadedFirstItemId": "r1",
+              "loadedLastItemId": "r1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "r2",
+          "lastItemId": "r3",
+          "memberIds": [
+            "r2",
+            "r3"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "r2",
+                "r3"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "r2",
+              "loadedLastItemId": "r3",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "r3"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "r3",
+              "loadedLastItemId": "r3",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [],
+              "memberCount": 2,
+              "loadedFirstItemId": "",
+              "loadedLastItemId": "",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 2
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "an agent message opening the window opens its run",
+      "why": "The first visible row is an agent message: it starts the run the tool rows after it continue, and a bell after it joins that run.",
+      "items": [
+        {
+          "id": "r1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"wake\",\"token\":\"tok-1\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "n1",
+          "kind": "notification",
+          "toolName": "background",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r2",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"wire_only\":true,\"agent_message\":{\"sender\":\"/root/worker\",\"messageType\":\"MESSAGE\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "n2",
+          "kind": "notification",
+          "toolName": "background",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "r1",
+          "lastItemId": "n1",
+          "memberIds": [
+            "r1",
+            "t1",
+            "n1"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "r1",
+                "t1",
+                "n1"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "r1",
+              "loadedLastItemId": "n1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "t1",
+                "n1"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "t1",
+              "loadedLastItemId": "n1",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "n1"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "n1",
+              "loadedLastItemId": "n1",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "r2",
+          "lastItemId": "n2",
+          "memberIds": [
+            "r2",
+            "n2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "r2",
+                "n2"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "r2",
+              "loadedLastItemId": "n2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "n2"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "n2",
+              "loadedLastItemId": "n2",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "thread tool calls are members in every state",
+      "why": "The thread tools' own calls are tool rows whether running, answered or errored, and the replies and requests they carry join them; the header names a failed call and the running one on the side it sits.",
+      "items": [
+        {
+          "id": "a1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "s1",
+          "kind": "tool_call",
+          "toolName": "MCP/thread_spawn",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"mcp\":{\"server\":\"ao-thread-tools\",\"tool\":\"thread_spawn\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "q1",
+          "kind": "tool_call",
+          "toolName": "MCP/thread_ask",
+          "status": "errored",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"mcp\":{\"server\":\"ao-thread-tools\",\"tool\":\"thread_ask\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"wake\",\"token\":\"tok-1\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "p1",
+          "kind": "tool_call",
+          "toolName": "MCP/thread_reply",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"mcp\":{\"server\":\"ao-thread-tools\",\"tool\":\"thread_reply\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "w1",
+          "kind": "tool_call",
+          "toolName": "MCP/thread_send",
+          "status": "running",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"mcp\":{\"server\":\"ao-thread-tools\",\"tool\":\"thread_send\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a2",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "s1",
+          "lastItemId": "w1",
+          "memberIds": [
+            "s1",
+            "q1",
+            "r1",
+            "p1",
+            "w1"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "s1",
+                "q1",
+                "r1",
+                "p1",
+                "w1"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "s1",
+              "loadedLastItemId": "w1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "r1",
+                "p1"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "r1",
+              "loadedLastItemId": "p1",
+              "unshippedBefore": 2,
+              "unshippedAfter": 1,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/thread_ask",
+                  "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_ask\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/thread_send",
+                  "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_send\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/thread_spawn",
+                  "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_spawn\"}",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": true,
+              "runningBefore": null,
+              "runningAfter": {
+                "kind": "tool_call",
+                "toolName": "MCP/thread_send",
+                "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_send\"}"
+              }
+            },
+            {
+              "shippedIds": [
+                "w1"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "w1",
+              "loadedLastItemId": "w1",
+              "unshippedBefore": 4,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/thread_ask",
+                  "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_ask\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/thread_reply",
+                  "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_reply\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/thread_spawn",
+                  "mcp": "{\"server\":\"ao-thread-tools\",\"tool\":\"thread_spawn\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": true,
               "runningBefore": null,
               "runningAfter": null
             }
