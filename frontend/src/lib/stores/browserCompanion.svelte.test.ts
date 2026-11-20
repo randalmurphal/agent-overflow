@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserCompanionAct } from './browserActions';
+import { browserActionCountMountsForTest, browserCompanionAct } from './browserActions';
 import { browserAction } from './browserActionWire';
 import {
   applyBrowserCompanionState,
@@ -730,5 +730,45 @@ describe('browser state kept per surface', () => {
     answers[1]();
     await second;
     expect(browserThreadState('thread-a')?.seq).toBe(3);
+  });
+  // The reviewer's sequence: an action's answer outlives the window's
+  // observation of its thread. Left and shown again, the thread is observed
+  // afresh, and the old answer is not its state: the next read asks.
+  it('admits no action answer from before the thread left and came back, and reads it again', async () => {
+    let reply: (state: unknown) => void = () => {};
+    setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => state('thread-a', 7)));
+    show('thread-a');
+    const acted = browserCompanionAct('thread-a', browserAction.hide());
+    show();
+    applyBrowserCompanionState(state('thread-a', 6));
+    show('thread-a');
+    reply(state('thread-a', 4));
+    await acted;
+    expect(browserThreadState('thread-a')).toBeNull();
+    expect(browserThreadSnapshot('thread-a').status).toBe('unknown');
+    await readBrowserCompanionState('thread-a');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(browserThreadState('thread-a')?.seq).toBe(7);
+  });
+
+  // A download toast's action names a thread no surface shows: it keeps
+  // nothing for it.
+  it('keeps no action count for an action on a thread with no pane', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => state('thread-gone', 2)));
+    show('thread-other');
+    await browserCompanionAct('thread-gone', browserAction.hide());
+    expect(browserActionCountMountsForTest()).toEqual([]);
+    expect(browserStateThreadsForTest()).toEqual([]);
+  });
+
+  it('ends a pane\'s action count with its mount', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => state('thread-a', 2)));
+    show('thread-a');
+    const attachment = await attachBrowserPaneForTest('thread-a', 'mount-a');
+    await browserCompanionAct('thread-a', browserAction.hide());
+    expect(browserActionCountMountsForTest()).toEqual(['mount-a']);
+    attachment.release();
+    await vi.waitFor(() => expect(browserActionCountMountsForTest()).toEqual([]));
   });
 });

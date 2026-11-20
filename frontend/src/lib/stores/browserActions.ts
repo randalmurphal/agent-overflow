@@ -8,8 +8,10 @@ import {
   browserSourcePaneShown,
   canPresentNativeBrowser,
   canUseNativeBrowser,
+  isCurrentBrowserPane,
   noteBrowserPaneError,
   observeBrowserCompanion,
+  type BrowserMountId,
   type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
 import {
@@ -38,13 +40,20 @@ import { addErrorToast, getToasts } from './toast.svelte';
 // banner and no other; an action with no pane in hand (browserCompanionAct)
 // carries the banner of the pane attached when it is sent, if any.
 
-// Chrome actions started per thread, so a focus refusal that arrives after a
-// newer action knows it is older than that action's banner.
-const browserActionCounts = new Map<string, number>();
+// Chrome actions started per attached mount, the banner they clear and
+// write, so a focus refusal that arrives after a newer action knows it is
+// older than that action's banner. An action with no pane to show it in
+// counts nowhere, and a mount's count ends with the mount.
+const browserActionCounts = new Map<BrowserMountId, number>();
 
-/** How many chrome actions have started for the thread. */
-export function browserActionsStarted(threadId: string): number {
-  return browserActionCounts.get(threadId) ?? 0;
+/** How many chrome actions have started with `pane`'s banner. */
+export function browserActionsStarted(pane: BrowserPaneAttachment): number {
+  return browserActionCounts.get(pane.mount) ?? 0;
+}
+
+/** Test hook: the mounts an action count is kept for. */
+export function browserActionCountMountsForTest(): string[] {
+  return [...browserActionCounts.keys()];
 }
 
 /** A refused browser action: its banner text and the error behind it. */
@@ -65,13 +74,14 @@ interface ActionResult {
  * for the user, which the caller asks instead.
  */
 async function runAction(
-  threadId: string,
   sink: BrowserPaneAttachment | null,
   send: () => Promise<BrowserActionAnswer>,
   question: (err: unknown) => boolean = () => false,
 ): Promise<ActionResult> {
-  browserActionCounts.set(threadId, browserActionsStarted(threadId) + 1);
-  if (sink) noteBrowserPaneError(sink, '');
+  if (sink && isCurrentBrowserPane(sink)) {
+    browserActionCounts.set(sink.mount, browserActionsStarted(sink) + 1);
+    noteBrowserPaneError(sink, '');
+  }
   const answer = await send();
   switch (answer.kind) {
     case 'answered':
@@ -99,7 +109,7 @@ function unhandledAnswer(answer: never): never {
  * refusal in its banner. Null on success.
  */
 export async function actInPane(pane: BrowserPaneAttachment, action: BrowserAction): Promise<BrowserActionFailure | null> {
-  return (await runAction(pane.threadId, pane, () => sendFromPane(pane, action))).failure;
+  return (await runAction(pane, () => sendFromPane(pane, action))).failure;
 }
 
 /**
@@ -115,7 +125,7 @@ export async function browserCompanionAct(threadId: string, action: ThreadAction
 
 /** browserCompanionAct, answering the state as well. */
 function actForThread(threadId: string, action: ThreadAction): Promise<ActionResult> {
-  return runAction(threadId, browserPaneAttachment(threadId), () => sendForThread(threadId, action));
+  return runAction(browserPaneAttachment(threadId), () => sendForThread(threadId, action));
 }
 
 /** What a cookie jar switch answered. */
@@ -152,7 +162,7 @@ function jarPaneGone(err: unknown): boolean {
  */
 export async function setBrowserJar(pane: BrowserPaneAttachment, jar: BrowserJar, confirmed: boolean): Promise<JarSwitchAnswer> {
   const question = (err: unknown) => jarUnconfirmed(err) || jarPaneGone(err);
-  const { failure } = await runAction(pane.threadId, pane, () => sendFromPane(pane, browserAction.jar(jar, confirmed)), question);
+  const { failure } = await runAction(pane, () => sendFromPane(pane, browserAction.jar(jar, confirmed)), question);
   if (!failure) return { kind: 'switched' };
   if (jarUnconfirmed(failure.cause)) return { kind: 'needs-confirmation' };
   if (jarPaneGone(failure.cause)) {
@@ -199,7 +209,7 @@ async function openTab(
   send: () => Promise<BrowserActionAnswer>,
 ): Promise<BrowserActionFailure | null> {
   const request = options.focusAddress ? armAddressFocus(threadId) : 0;
-  const { failure, state } = await runAction(threadId, sink, send);
+  const { failure, state } = await runAction(sink, send);
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
@@ -383,8 +393,8 @@ async function showBrowserFromHeader(threadId: string): Promise<void> {
 }
 
 observeBrowserCompanion({
-  threadReleased: (threadId) => {
-    browserActionCounts.delete(threadId);
+  mountEnded: (mount) => {
+    browserActionCounts.delete(mount);
   },
   resetForTest: () => {
     browserActionCounts.clear();

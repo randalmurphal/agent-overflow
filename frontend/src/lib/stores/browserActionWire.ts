@@ -8,7 +8,7 @@ import {
 } from './bindings';
 import {
   admitBrowserState,
-  browserStateGeneration,
+  browserStateStamp,
   isCurrentBrowserPane,
   nativeBrowserRefusal,
   observeBrowserCompanion,
@@ -283,10 +283,10 @@ async function send(origin: ActionOrigin, action: BrowserAction | PageFocusReque
   if (refusal) return { kind: 'refused', error: refusal.message, cause: refusal };
   if (origin.kind === 'pane' && !isCurrentBrowserPane(origin.pane)) return { kind: 'pane-gone' };
   const taken = origin.kind === 'pane' && ordered(action) ? takePlace(origin.pane.mount) : null;
-  const generation = browserStateGeneration();
+  const stamp = browserStateStamp(threadId);
   try {
     const state = await BrowserCompanionDo(threadId, wireAction(action, origin, taken?.place ?? null));
-    admitBrowserState(state, generation);
+    admitBrowserState(state, stamp);
     return { kind: 'answered', state };
   } catch (err) {
     return { kind: 'refused', error: errString(err), cause: err };
