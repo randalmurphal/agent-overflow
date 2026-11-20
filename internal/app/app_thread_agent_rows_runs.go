@@ -286,47 +286,64 @@ func workBy(opts sendMessageOptions) (by string, nudges bool) {
 }
 
 // beginWork is the run boundary of a message that is about to start work on
-// threadID, from by (workBy): the runs its rest already ended are recorded
-// ended first (endRunsBeforeWork), and on an owned worker whose spawner has
-// no run open on it, a message of the person's or another thread's is a
-// nudge, whose work is a run of the spawner's of its own
-// (store.StartNudgeRun). The caller passes done whether it placed the
-// message: until then no rest ends a run on the thread, and a nudge whose
-// message was not placed records no run. An error is returned before
-// anything is recorded, and the caller fails with it.
-func (a *App) beginWork(ctx context.Context, threadID, by string, nudges bool) (done func(placed bool), err error) {
+// threadID: the runs its rest already ended are recorded ended first
+// (endRunsBeforeWork), and until done no rest ends a run on the thread, so
+// the nudge run its message may start (beginNudge) counts the work it
+// starts. An error is returned before anything is recorded, and the caller
+// fails with it.
+func (a *App) beginWork(ctx context.Context, threadID string) (done func(), err error) {
 	if err := a.endRunsBeforeWork(ctx, threadID); err != nil {
 		return nil, err
 	}
 	release := a.workStarts.hold(threadID)
-	token := ""
-	if nudges {
-		token = newThreadRequestToken()
-		started, err := a.store.StartNudgeRun(token, threadID, by)
-		if err != nil {
-			release()
-			return nil, err
-		}
-		if !started {
-			token = ""
-		}
-	}
-	return func(placed bool) {
-		if token != "" && !placed {
-			if err := a.store.DropNudgeRun(token); err != nil {
-				// The run stays recorded and ends, empty, at the worker's rest.
-				log.Printf("thread tools: %v", err)
-			}
-		}
+	return func() {
 		release()
-		if token != "" {
-			a.noteRunsMayBeOpen()
-		}
 		// A rest pass that found the thread held here skipped it, and the
 		// thread may have rested meanwhile: a quick turn can end before its
 		// message's send returns, and nothing else may come to read it.
 		a.noteRestWaitsMayChange()
 	}, nil
+}
+
+// pendingNudge is where the run of a message that may be a nudge starts, read
+// when the message is admitted (beginNudge).
+type pendingNudge struct {
+	threadID, by string
+	start        store.NudgeStart
+	reaches      bool
+}
+
+// beginNudge reads where the run of a message sent with opts to threadID
+// starts, under the send's admission and its thread's action lock, inside
+// its beginWork. nudges is false for a message the app writes, a wake or an
+// answer, which starts no run of anyone's (workBy).
+func (a *App) beginNudge(threadID string, opts sendMessageOptions) (pendingNudge, error) {
+	by, nudges := workBy(opts)
+	if !nudges {
+		return pendingNudge{}, nil
+	}
+	start, reaches, err := a.store.ReadNudgeStart(threadID)
+	if err != nil {
+		return pendingNudge{}, err
+	}
+	return pendingNudge{threadID: threadID, by: by, start: start, reaches: reaches}, nil
+}
+
+// accepted records the nudge run of a message accepted as new work, by the
+// worker's placement and runs now: on an owned worker whose spawner has no
+// run open on it, a message of the person's or another thread's is a nudge,
+// whose work is a run of the spawner's of its own (store.StartNudgeRun). A
+// message that is not accepted, or a repeated frame of one already
+// accepted, never comes here. The message is the caller's either way, so a
+// failed write is logged: the worker's work then counts in no run.
+func (n pendingNudge) accepted(a *App) {
+	if !n.reaches {
+		return
+	}
+	// The store's change hook asks the rest pass to read the run it records.
+	if _, err := a.store.StartNudgeRun(newThreadRequestToken(), n.threadID, n.by, n.start); err != nil {
+		log.Printf("thread tools: record the nudge run of an accepted message: %v", err)
+	}
 }
 
 // endRunsBeforeWork ends the runs on threadID that its rest has already

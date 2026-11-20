@@ -6,7 +6,8 @@ import "testing"
 // rest to it, whose spawner is not archived and is not the sender: the row
 // is a settled, unowed send of the spawner's with its own run open, which
 // thread_status does not list and a later request of the spawner's joins.
-// DropNudgeRun removes one nobody joined; a sidebar row ends an open one.
+// Its base is the worker's figures when the message was admitted
+// (ReadNudgeStart); a sidebar row ends an open one.
 func TestANudgeRunIsRecordedOnlyForAnOwnedWorkerAtRest(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -19,11 +20,7 @@ func TestANudgeRunIsRecordedOnlyForAnOwnedWorkerAtRest(t *testing.T) {
 	}
 	start := func(token, by string) bool {
 		t.Helper()
-		started, err := s.StartNudgeRun(token, "w", by)
-		if err != nil {
-			t.Fatalf("StartNudgeRun(%s): %v", token, err)
-		}
-		return started
+		return startNudge(t, s, token, by)
 	}
 	if start("during-spawn", "") {
 		t.Fatal("a nudge during the spawn's run recorded a run of its own")
@@ -49,20 +46,20 @@ func TestANudgeRunIsRecordedOnlyForAnOwnedWorkerAtRest(t *testing.T) {
 	}
 	mustExec(t, s.db, `UPDATE threads SET archived = 0 WHERE id = 'lead'`)
 
-	if !start("dropped", "") {
-		t.Fatal("the nudge recorded no run")
+	admitted, reaches, err := s.ReadNudgeStart("w")
+	if err != nil || !reaches {
+		t.Fatalf("ReadNudgeStart = %+v, %v, %v", admitted, reaches, err)
 	}
-	if err := s.DropNudgeRun("dropped"); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := s.GetThreadRequest("dropped"); err != nil || found {
-		t.Fatalf("the dropped nudge is found %v, %v", found, err)
-	}
-
-	if !start("nudge", "") {
-		t.Fatal("the nudge recorded no run")
+	// The worker works between the message's admission and its acceptance.
+	mustExec(t, s.db, `INSERT INTO thread_tallies (thread_id, tool_calls, tokens, turn_ms) VALUES ('w', 7, 70, 700)
+		ON CONFLICT(thread_id) DO UPDATE SET tool_calls = 7, tokens = 70, turn_ms = 700`)
+	if started, err := s.StartNudgeRun("nudge", "w", "", admitted); err != nil || !started {
+		t.Fatalf("StartNudgeRun = %v, %v; want the nudge's run recorded", started, err)
 	}
 	row := rawThreadRequest(t, s, "nudge")
+	if row.RunBase == nil || *row.RunBase != admitted.Base || row.CreatedAt != admitted.At {
+		t.Fatalf("nudge run from %+v at %d; want it from the admission's %+v at %d", row.RunBase, row.CreatedAt, admitted.Base, admitted.At)
+	}
 	if !row.Nudge || row.CallerThreadID != "lead" || row.Kind != ThreadRequestSend || row.State != ThreadRequestFinished ||
 		row.SettledAt == 0 || row.Notify || !row.RunOpen() || row.RunToken != "nudge" {
 		t.Fatalf("nudge %+v; want a settled, unowed send of the spawner's with its own run open", row)
@@ -78,12 +75,6 @@ func TestANudgeRunIsRecordedOnlyForAnOwnedWorkerAtRest(t *testing.T) {
 	}
 	if got := rawThreadRequest(t, s, "joined").RunToken; got != "nudge" {
 		t.Fatalf("the spawner's send during the nudge's run is in run %q; want the nudge's", got)
-	}
-	if err := s.DropNudgeRun("nudge"); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := s.GetThreadRequest("nudge"); err != nil || !found {
-		t.Fatalf("the nudge a send joined is found %v, %v; want it kept", found, err)
 	}
 
 	if _, err := s.SetThreadPlacement([]string{"w"}, PlacementStandalone); err != nil {
@@ -111,8 +102,8 @@ func TestGroupingAnOwnedWorkerEndsItsNudgeRun(t *testing.T) {
 	if _, err := s.SetThreadPlacement([]string{"w"}, PlacementOwned); err != nil {
 		t.Fatal(err)
 	}
-	if started, err := s.StartNudgeRun("nudge", "w", ""); err != nil || !started {
-		t.Fatalf("StartNudgeRun = %v, %v", started, err)
+	if !startNudge(t, s, "nudge", "") {
+		t.Fatal("the nudge recorded no run")
 	}
 	thread, err := s.GetThread("w")
 	if err != nil {
@@ -127,5 +118,33 @@ func TestGroupingAnOwnedWorkerEndsItsNudgeRun(t *testing.T) {
 	}
 	if !rawThreadRequest(t, s, "nudge").RunEnded() {
 		t.Fatal("grouping the worker left the nudge's run open")
+	}
+}
+
+// startNudge records the nudge run of a message to w by by admitted and
+// accepted now, reporting whether it is one.
+func startNudge(t *testing.T, s *Store, token, by string) bool {
+	t.Helper()
+	start, reaches, err := s.ReadNudgeStart("w")
+	if err != nil {
+		t.Fatalf("ReadNudgeStart: %v", err)
+	}
+	if !reaches {
+		t.Fatal("ReadNudgeStart: no spawn reaches w")
+	}
+	started, err := s.StartNudgeRun(token, "w", by, start)
+	if err != nil {
+		t.Fatalf("StartNudgeRun(%s): %v", token, err)
+	}
+	return started
+}
+
+// A message to a thread no spawn reaches has no nudge run to start.
+func TestAThreadNoSpawnReachesHasNoNudgeStart(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "plain")
+	if _, reaches, err := s.ReadNudgeStart("plain"); err != nil || reaches {
+		t.Fatalf("ReadNudgeStart = %v, %v; want no spawn reaching it", reaches, err)
 	}
 }

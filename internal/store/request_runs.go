@@ -216,43 +216,71 @@ func endRunsTx(tx *sql.Tx, where string, figures [3]string, args ...any) (_ []en
 // spawner's sub-agent always, so the work it starts is a run of the
 // spawner's row (docs/specs/standing-agents.md, "Owned workers"). The run
 // is recorded on a row of its own, `nudge` = 1: a send of the spawner's to
-// the worker that nobody made, settled `finished` when written, owed
-// nothing and delivering nothing (notify 0), its base the worker's tally
-// then. It ends at the worker's rest as any settled request's run does, or
+// the worker that nobody made, written once the message is accepted and
+// settled `finished` when written, owed nothing and delivering nothing
+// (notify 0), its base the worker's tally when the message was admitted
+// (ReadNudgeStart). It ends at the worker's rest as any settled request's run does, or
 // when the worker gets a sidebar row (endNudgeRunsTx). A request of the
 // spawner's made while it is open joins it, as any request joins its
 // caller's open run on the worker.
 
+// NudgeStart is where the run of a message that may be a nudge starts: when
+// it was admitted and what its worker had done over its life then.
+type NudgeStart struct {
+	At   int64
+	Base RunFigures
+}
+
+// ReadNudgeStart reads where the run of a message to threadID starts, for
+// StartNudgeRun once the message is accepted, when a spawn here or a paired
+// computer's spawn link reaches threadID; whether the message is a nudge is
+// read then. Any other thread, the common case, reports false.
+func (s *Store) ReadNudgeStart(threadID string) (NudgeStart, bool, error) {
+	start := NudgeStart{At: nowMillis()}
+	tally := tallyFiguresSQL("?1", "?2")
+	err := s.reader().QueryRow(`SELECT `+tally[0]+`, `+tally[1]+`, `+tally[2]+`
+		 WHERE EXISTS (SELECT 1 FROM thread_requests AS link INDEXED BY idx_thread_requests_spawn_link
+		                WHERE `+agentSpawnLinkSQL("link")+` AND link.target_thread_id = ?1)
+		    OR EXISTS (SELECT 1 FROM thread_request_receipts AS link INDEXED BY idx_thread_request_receipts_spawn_link
+		                WHERE link.spawn_link = 1 AND link.target_thread_id IS NOT NULL AND link.target_thread_id = ?1)`,
+		threadID, start.At).Scan(&start.Base.ToolCalls, &start.Base.Tokens, &start.Base.TurnMs)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NudgeStart{}, false, nil
+	}
+	if err != nil {
+		return NudgeStart{}, false, fmt.Errorf("store: read where a message to %s starts its run: %w", threadID, err)
+	}
+	return start, true, nil
+}
+
 // StartNudgeRun records the run a nudge of threadID by byThreadID (empty
-// for the person) starts, as token, when threadID is an owned worker whose
-// spawner here is not archived, is not byThreadID, and has no run open on
-// it: the nudge then joins that run. A worker a paired computer's spawn
-// owns has its nudge run recorded on that spawn's link by the same rule
+// for the person) starts, as token from start (ReadNudgeStart), once its
+// message is accepted, when threadID is an owned worker whose spawner here
+// is not archived, is not byThreadID, and has no run open on it: the nudge
+// then joins that run. A worker a paired computer's spawn owns has its
+// nudge run recorded on that spawn's link by the same rule
 // (startPeerNudgeRun). It reports whether it recorded one. A message that
-// is no nudge, the common case, costs one read and no write.
-func (s *Store) StartNudgeRun(token, threadID, byThreadID string) (bool, error) {
+// is no nudge costs one read and no write.
+func (s *Store) StartNudgeRun(token, threadID, byThreadID string, start NudgeStart) (bool, error) {
 	var nudges, peer bool
 	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 `+nudgeLinkSQL("?1", "?2")+`),
 		    EXISTS (SELECT 1 `+peerNudgeLinkSQL("?1", "?2")+`)`, threadID, byThreadID).Scan(&nudges, &peer); err != nil {
 		return false, fmt.Errorf("store: read whether a message to %s is a nudge: %w", threadID, err)
 	}
 	if peer {
-		return s.startPeerNudgeRun(token, threadID, byThreadID)
+		return s.startPeerNudgeRun(token, threadID, byThreadID, start)
 	}
 	if !nudges {
 		return false, nil
 	}
-	now := nowMillis()
-	tally := tallyFiguresSQL("?2", "?3")
 	// The write states the read's terms again, so a change between them
 	// records nothing.
 	rows, err := s.db.Query(`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, target_computer_id, target_thread_id, notify, state, answer_kind,
 		    created_at, updated_at, settled_at, run_base_tool_calls, run_base_tokens, run_base_turn_ms, run_token, nudge)
-		 SELECT ?1, link.caller_thread_id, 'send', '', ?2, 0, 'finished', '', ?3, ?3, ?3,
-		        `+tally[0]+`, `+tally[1]+`, `+tally[2]+`, ?1, 1
+		 SELECT ?1, link.caller_thread_id, 'send', '', ?2, 0, 'finished', '', ?3, ?3, ?3, ?5, ?6, ?7, ?1, 1
 		 `+nudgeLinkSQL("?2", "?4")+`
-		 RETURNING caller_thread_id`, token, threadID, now, byThreadID)
+		 RETURNING caller_thread_id`, token, threadID, start.At, byThreadID, start.Base.ToolCalls, start.Base.Tokens, start.Base.TurnMs)
 	if err != nil {
 		return false, fmt.Errorf("store: record the run a nudge of %s starts: %w", threadID, err)
 	}
@@ -280,36 +308,6 @@ func nudgeLinkSQL(thread, by string) string {
 		   CROSS JOIN threads AS sp ON sp.id = link.caller_thread_id
 		  WHERE ` + agentSpawnLinkSQL("link") + ` AND link.target_thread_id = ` + thread + ` AND w.placement = 'owned'
 		    AND sp.archived = 0 AND link.caller_thread_id <> ` + by + ` AND NOT ` + spawnActiveSQL("link")
-}
-
-// DropNudgeRun deletes the run StartNudgeRun recorded as token, for a
-// nudge that started no work, unless a request of the spawner's joined it
-// since. A nudge run on a paired computer's link is cleared from it
-// (dropPeerNudgeRun).
-func (s *Store) DropNudgeRun(token string) error {
-	if err := s.dropPeerNudgeRun(token); err != nil {
-		return err
-	}
-	rows, err := s.db.Query(`DELETE FROM thread_requests
-		 WHERE token = ?1 AND nudge = 1 AND run_tool_calls IS NULL
-		   AND NOT EXISTS (SELECT 1 FROM thread_requests j INDEXED BY idx_thread_requests_run_token
-		                    WHERE j.run_token = ?1 AND j.token <> ?1)
-		 RETURNING caller_thread_id`, token)
-	if err != nil {
-		return fmt.Errorf("store: drop the nudge run %s: %w", token, err)
-	}
-	var caller string
-	dropped := rows.Next()
-	if dropped {
-		err = rows.Scan(&caller)
-	}
-	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
-		return fmt.Errorf("store: drop the nudge run %s: %w", token, err)
-	}
-	if dropped {
-		s.noteThreadRequestChanged(ThreadRequestChange{Token: token, CallerThreadID: caller})
-	}
-	return nil
 }
 
 // endNudgeRunsTx ends the open nudge runs on threadID now, whatever its

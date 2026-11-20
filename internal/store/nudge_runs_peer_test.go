@@ -67,11 +67,7 @@ func TestAPeerSpawnsLinkRecordsANudgeOfItsWorker(t *testing.T) {
 	peerRestedWorker(t, s)
 	start := func(token, by string) bool {
 		t.Helper()
-		started, err := s.StartNudgeRun(token, "w", by)
-		if err != nil {
-			t.Fatalf("StartNudgeRun(%s): %v", token, err)
-		}
-		return started
+		return startNudge(t, s, token, by)
 	}
 	if start("by-spawner", "lead-link") {
 		t.Fatal("the spawner's own message recorded a nudge")
@@ -94,8 +90,14 @@ func TestAPeerSpawnsLinkRecordsANudgeOfItsWorker(t *testing.T) {
 		t.Fatalf("the link reports nudge %+v before any", nudge)
 	}
 
-	if !start("nudge", "") {
-		t.Fatal("the person's message recorded no nudge run")
+	admitted, reaches, err := s.ReadNudgeStart("w")
+	if err != nil || !reaches {
+		t.Fatalf("ReadNudgeStart = %+v, %v, %v", admitted, reaches, err)
+	}
+	// The worker works between the message's admission and its acceptance.
+	mustExec(t, s.db, `UPDATE thread_tallies SET tool_calls = 9 WHERE thread_id = 'w'`)
+	if started, err := s.StartNudgeRun("nudge", "w", "", admitted); err != nil || !started {
+		t.Fatalf("StartNudgeRun = %v, %v; want the person's message's nudge run", started, err)
 	}
 	nudge := peerNudge(t, s)
 	if nudge == nil || nudge.Token != "nudge" || nudge.End != nil || nudge.StartedAt == 0 ||
@@ -117,13 +119,6 @@ func TestAPeerSpawnsLinkRecordsANudgeOfItsWorker(t *testing.T) {
 	if listed, err := s.ListThreadRequestReceiptsForThread("w"); err != nil || len(listed) != 1 {
 		t.Fatalf("receipts %+v, %v; want the link alone, a nudge being no request", listed, err)
 	}
-
-	if err := s.DropNudgeRun("nudge"); err != nil {
-		t.Fatal(err)
-	}
-	if nudge := peerNudge(t, s); nudge != nil {
-		t.Fatalf("the dropped nudge is still reported: %+v", nudge)
-	}
 }
 
 // A link's nudge run ends at its worker's rest, with the worker's figures
@@ -132,8 +127,8 @@ func TestAPeerNudgeRunEndsAtItsWorkersRest(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	peerRestedWorker(t, s)
-	if started, err := s.StartNudgeRun("nudge", "w", ""); err != nil || !started {
-		t.Fatalf("StartNudgeRun = %v, %v", started, err)
+	if !startNudge(t, s, "nudge", "") {
+		t.Fatal("the nudge recorded no run")
 	}
 	mustExec(t, s.db, `UPDATE thread_tallies SET tool_calls = 5, tokens = 90, turn_ms = 700 WHERE thread_id = 'w'`)
 	rest := &RestGuard{Roots: []string{"w"}, AtRest: func(SubtreeRest) []string { return []string{"w"} }}
@@ -185,8 +180,8 @@ func TestAPeerNudgeRunEndsWithTheWorkersOwnership(t *testing.T) {
 			t.Parallel()
 			s := newTestStore(t)
 			peerRestedWorker(t, s)
-			if started, err := s.StartNudgeRun("nudge", "w", ""); err != nil || !started {
-				t.Fatalf("StartNudgeRun = %v, %v", started, err)
+			if !startNudge(t, s, "nudge", "") {
+				t.Fatal("the nudge recorded no run")
 			}
 			mustExec(t, s.db, `UPDATE thread_tallies SET tool_calls = 4 WHERE thread_id = 'w'`)
 			c.end(t, s)

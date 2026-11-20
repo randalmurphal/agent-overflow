@@ -84,17 +84,17 @@ func peerNudgeLinkSQL(thread, by string) string {
 }
 
 // startPeerNudgeRun records on the link of threadID the run a nudge by
-// byThreadID starts, as token, when peerNudgeLinkSQL holds, its base the
-// worker's figures over its life now. It reports whether it recorded one.
-func (s *Store) startPeerNudgeRun(token, threadID, byThreadID string) (bool, error) {
-	tally := tallyFiguresSQL("?2", "?3")
+// byThreadID starts, as token from start, when peerNudgeLinkSQL holds. It
+// reports whether it recorded one.
+func (s *Store) startPeerNudgeRun(token, threadID, byThreadID string, start NudgeStart) (bool, error) {
 	var link string
 	err := s.db.QueryRow(`UPDATE thread_request_receipts
 		    SET nudge_token = ?1, nudge_open = 1, nudge_started_at = ?3,
-		        nudge_base_tool_calls = `+tally[0]+`, nudge_base_tokens = `+tally[1]+`, nudge_base_turn_ms = `+tally[2]+`,
-		        nudge_tool_calls = NULL, nudge_tokens = NULL, nudge_turn_ms = NULL, updated_at = ?3
+		        nudge_base_tool_calls = ?5, nudge_base_tokens = ?6, nudge_base_turn_ms = ?7,
+		        nudge_tool_calls = NULL, nudge_tokens = NULL, nudge_turn_ms = NULL, updated_at = ?8
 		  WHERE token = (SELECT link.token `+peerNudgeLinkSQL("?2", "?4")+`)
-		 RETURNING token`, token, threadID, nowMillis(), byThreadID).Scan(&link)
+		 RETURNING token`, token, threadID, start.At, byThreadID,
+		start.Base.ToolCalls, start.Base.Tokens, start.Base.TurnMs, nowMillis()).Scan(&link)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -104,25 +104,6 @@ func (s *Store) startPeerNudgeRun(token, threadID, byThreadID string) (bool, err
 	// The link's owner reads it again (ActivityOwners).
 	s.noteThreadRequestChanged(ThreadRequestChange{Token: link})
 	return true, nil
-}
-
-// dropPeerNudgeRun clears the nudge run token from its link, for a nudge
-// that started no work: the link then keeps no nudge.
-func (s *Store) dropPeerNudgeRun(token string) error {
-	var link string
-	err := s.db.QueryRow(`UPDATE thread_request_receipts
-		    SET nudge_token = NULL, nudge_open = NULL, nudge_started_at = NULL,
-		        nudge_base_tool_calls = NULL, nudge_base_tokens = NULL, nudge_base_turn_ms = NULL
-		  WHERE spawn_link = 1 AND nudge_token = ?1 AND nudge_open = 1
-		 RETURNING token`, token).Scan(&link)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("store: drop the nudge run %s from its link: %w", token, err)
-	}
-	s.noteThreadRequestChanged(ThreadRequestChange{Token: link})
-	return nil
 }
 
 // endReceiptNudgesTx ends the open nudge runs of the links where matches,

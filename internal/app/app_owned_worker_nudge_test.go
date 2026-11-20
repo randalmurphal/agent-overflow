@@ -24,6 +24,13 @@ import (
 func (f *requestFixture) restedWorker(t *testing.T, token, placement string) store.Thread {
 	t.Helper()
 	worker := f.plainThread(t)
+	f.restAsWorker(t, token, worker, placement)
+	return worker
+}
+
+// restAsWorker makes worker restedWorker's worker, spawned as token.
+func (f *requestFixture) restAsWorker(t *testing.T, token string, worker store.Thread, placement string) {
+	t.Helper()
 	f.acceptAgentRequest(t, token, f.caller.ID, store.ThreadRequestSpawn, worker.ID)
 	if _, err := f.app.store.SetThreadPlacement([]string{worker.ID}, placement); err != nil {
 		t.Fatal(err)
@@ -36,7 +43,6 @@ func (f *requestFixture) restedWorker(t *testing.T, token, placement string) sto
 	if ended := f.awaitRunEnded(t, token); ended.RunTotal.ToolCalls != 2 || ended.RunTotal.Tokens != 60 {
 		t.Fatalf("spawn's run %+v; want its two calls and 60 tokens", ended.RunTotal)
 	}
-	return worker
 }
 
 // nudge has by send the worker a message.

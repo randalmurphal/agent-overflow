@@ -764,10 +764,12 @@ Ruling 36, as built:
   is. An owned worker is its spawner's sub-agent in every run:
   - A message the person or any thread but its spawner sends it while no
     run of the spawner's is open on it is a nudge
-    (`beginWork`, `store.StartNudgeRun`). Its work is a run of the
-    spawner's of its own, recorded on a row of the spawner's
-    (`thread_requests.nudge`): a settled send nobody made, owed nothing,
-    its base the worker's tally then. It is the worker's one active
+    (`pendingNudge`, `store.StartNudgeRun`), read when the message is
+    accepted as new work: a message that fails or a repeated frame of one
+    already accepted is none. Its work is a run of the spawner's of its
+    own, recorded on a row of the spawner's (`thread_requests.nudge`): a
+    settled send nobody made, owed nothing, its base the worker's tally
+    when the message was admitted. It is the worker's one active
     Agents row, kind `nudge`, counting only that run, and holds the
     spawner as any run of its does. It ends at the worker's rest, and
     nothing is delivered to the spawner and nothing starts it; Past keeps
