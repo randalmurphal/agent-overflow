@@ -9,8 +9,8 @@ server advertises an empty tool list and never starts the engine. This keeps
 the off-state cheap while allowing a live provider to rediscover the tools
 without restarting its process.
 
-A deployment with no engine — a remote `--connect` backend, `go test`, a serve
-host with no Chromium installed on it — registers no server at all, so a
+A deployment with no engine (a remote `--connect` backend, `go test`, a serve
+host with no Chromium installed on it) registers no server at all, so a
 session there is offered no browser tools rather than tools that could only
 refuse. Serve mode with a Chromium installed HAS an engine, headless and
 windowless; see "Serve mode drives a headless Chromium" below.
@@ -33,7 +33,7 @@ the one it wants is not on `PATH`. It must be an absolute path, it is ignored
 by every deployment whose engine is the platform's own, and it never causes a
 download.
 
-Browser pages start hidden — parked out of the window's layout rather than
+Browser pages start hidden: parked out of the window's layout rather than
 opened anywhere the user can see. An agent explicitly presents a page with
 `browser_visibility`; AO then opens an ephemeral browser companion beside that
 thread and the engine positions that exact page's real view over the pane's
@@ -43,13 +43,13 @@ tab set; no separate browser window or duplicate browsing session is opened.
 The Browser settings panel also exposes a destructive **Clear site data**
 action. It closes every page first, so a later teardown cannot write the
 cleared state back, then clears BOTH places site data can live: the AO-owned
-profile directory, and — on a deployment whose engine keeps its data
-somewhere AO cannot reach by path — the engine's own store. On Windows/WSL
+profile directory, and, on a deployment whose engine keeps its data
+somewhere AO cannot reach by path, the engine's own store. On Windows/WSL
 that store is the launcher's WebView2 user-data folder on the far side of
 the WSL boundary, so the backend asks the launcher to release its browser
 environment and delete the folder, and waits for the answer; on macOS it is
 WebKit's own data-store directory. The button clears real state on every
-platform, and a failure is reported rather than swallowed — never a silent
+platform, and a failure is reported rather than swallowed, never a silent
 per-platform no-op.
 
 ## Ownership and lifecycle
@@ -59,7 +59,7 @@ per-platform no-op.
 - One isolated profile per cookie jar with at least one active browser page.
   Each thread's browser chooses its jar from the address row's cookie jar
   menu: `worktree` (default; the threads on a canonical workspace share login
-  state, in the profile they used before jars), `project` (the project's
+  state, in a profile keyed on the workspace path), `project` (the project's
   threads that choose it share one, in any worktree; keyed on the project id
   the app passes in `Access`), `thread` (this browser only, kept between
   sessions) or `private` (always ephemeral: never part of a persistent
@@ -189,13 +189,13 @@ per-platform no-op.
   (`selection.go`, `internal/browser/turnorder`), though the transport runs
   each call on its own goroutine. Every pane action that selects a tab
   (`activate`, `step`, `show-browser`, and the `new`, `reopen`, `duplicate`
-  and `download-open` that select the tab they open) and every close
-  (`close`, `close-others`, `close-right`) carries the pane's
+  and `download-open` that select the tab they open), every close
+  (`close`, `close-others`, `close-right`) and a tab move (`move`) carries the pane's
   mount and a number the client takes when the user acts: an epoch and a
   sequence in it, consecutive from 1. The client starts a mount's next
   epoch with the first command it sends while none of the mount's is
   unanswered, so nothing of an older epoch is still meant to act; a
-  re-attach is a new mount and starts again. A close must carry them; a
+  re-attach is a new mount and starts again. A close or move must carry them; a
   selection made with no pane mounted (the
   chat header's show, a download opened from its toast) carries none,
   and the backend refuses an action that does not match its kind
@@ -377,10 +377,12 @@ behave as a desktop browser's:
   6rem. Below a 32rem row (36rem under compact) the page's size label, cookie
   jar, open file, show in folder and devtools move into a More menu.
 - Focusing the address selects it; a second click places the caret. Enter
-  (plain or with Shift) navigates; Escape puts the page's address back and
-  moves focus to the page area. DOM focus only: the native page takes
-  keyboard focus from a click, as § Keyboard says. Switching tabs replaces
-  an edit with the new tab's address.
+  (plain or with Shift) navigates; Escape puts the page's address back.
+  Enter, Escape and taking a suggestion leave the address for the page
+  (`leaveAddress` in `BrowserPane.svelte`): the page area takes DOM focus
+  and the page gets the keyboard through a focus intent (see
+  [Keyboard and focus](keyboard-focus.md#focus-intents)). Switching tabs
+  replaces an edit with the new tab's address.
 - Typing in the address opens a suggestion list
   (`BrowserAddressSuggestions.svelte`, matching in `browserAddressMatch.ts`):
   the thread's other open tabs (taking one switches to it), the dev servers
@@ -505,8 +507,9 @@ behave as a desktop browser's:
   never ends; the launcher reads the download's state first, so one that
   ended unreported ends as it did. In WebView2 that dropped download and
   its resume are one, so the cancel ends the resume's row too if it still
-  runs. A download that really finishes after the five seconds is listed
-  canceled, and its file stays in the Downloads folder, listed nowhere. A
+  runs. A download still running at the five seconds is no longer followed
+  and is listed failed with that reason; if it really finishes later, its
+  file stays in the Downloads folder and no row can open it. A
   cancel WebView2 refuses is answered with the refusal: the row stays
   running with the reason under it, the cancel is withdrawn so its later
   end reads as its own, and the user can cancel again. Every later report
@@ -546,306 +549,23 @@ behave as a desktop browser's:
   commands that send are not available (`browserPaneUnattached`): the
   palette does not offer them, and their chords stay the pane's and do
   nothing.
-- The desktop and Windows launcher windows bind `mod+r` to reloading the app
-  before the SPA sees the key. While the browser pane is focused and the
-  effective keybindings run a command for `mod+r` there, the SPA asks over
-  the webview's raw message channel for the chord. The window then hands it
-  over, and the SPA replays it as a keydown through the keybinding
-  dispatcher, as it does a chord claimed in the page. The chord is asked
-  for whether or not the pane has attached, and one the pane still
-  reserves does nothing when nothing runs it; a chord handed over after the
-  pane stopped reserving it goes back and reloads the app
-  (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
-  `mod+shift+r` always reloads the app. The `--connect` window hosts no
-  native page and keeps the plain binding.
+- The app reload chord, `mod+r`, is handed to the pane while it is
+  focused and a command runs for it there
+  ([keyboard and focus](keyboard-focus.md#the-app-reload-chord)).
 
 ## Keyboard
 
-The page is a native view beside the SPA's, and the window has one keyboard
-focus. Once the user clicks into page content every key goes to the engine,
-so AO's chords have to be taken back at the engine:
-
-- The App reduces the effective keybindings to an `AcceleratorSet`
-  (`internal/keybindings/accelerator.go`, the Go mirror of the frontend chord
-  grammar with `mod` resolved per platform) at startup and after every
-  keybindings write. Only chords with ctrl, meta, or alt are in it: bare and
-  shift-only keys are typing and always reach the page.
-- Each engine gates key events on it before its document sees them: the
-  WKWebView subclass's `performKeyEquivalent:`/`keyDown:` (only while the page
-  view is first responder), a capture-phase `GtkEventControllerKey` on the
-  WebKitGTK view, and WebView2's `AcceleratorKeyPressed` in the launcher, which
-  matches in its own process against the set the backend ships in an
-  `accelerators` directive and answers with an `accelerator` report.
-- A bound chord is swallowed by the engine and hands keyboard focus to the
-  app's webview inside the key event, before the next key and before the
-  chord is routed: the Manager does it for every chord it claims
-  (`keyChord`, through `engineAppFocus` on WebKitGTK and WKWebView), and the
-  launcher does it where it claims for WebView2 (`acceleratorPressed`,
-  focusing its window, whose WebView2 controller takes the focus), only
-  while that window is in the foreground. A chord AO does not claim, and a
-  bare Escape, leave focus in the page. No command focuses anything for
-  this; the command puts DOM focus where it wants it (the find bar's input,
-  the palette), and the keys typed next reach it.
-- A page that is not visible never holds keyboard focus. Each way a pane
-  stops showing a page (a tab switch, the pane closing, a compact screen
-  change, the companion hidden) is the engine's hide of that page, and the
-  hide, like the close of a page, gives focus the page held to the app's
-  webview through the same code as a claimed chord's handoff
-  (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
-  `releaseFocus`). Showing a page takes no focus.
-- The pane hands the keyboard to the page the way a browser does after the
-  address bar's Enter or Escape, as a focus intent: a transient request
-  that one page take the keyboard, named by the pane mount and a number per
-  mount (`focus_intent.go`, `focusBrowserPage` in the frontend store, host
-  window only). Being presented, visible or in the foreground makes a page
-  eligible; none of them overrides the user's next focus choice. The store
-  withdraws the intent on a focus or pointer press outside the page area
-  (the composer, the address bar again), a newer deferred focus anywhere in
-  the window (`utils/focusIntent.ts`, which a terminal's focus once it
-  mounts also registers with), another active tab, or the pane
-  unmounting, whatever the arm's answer was and however long it took,
-  posting the withdrawal to the Windows launcher directly
-  (`ao:pane-focus:`, beside the pane geometry) and sending
-  `focus-page-withdraw`. The `focus-page` action arms it in
-  `Manager.FocusCompanionPage`, which applies it only while the mount
-  presents the named page, waiting through a restore or a layout until the
-  presentation pass shows it (`applyFocusIntent`, never `ShowPage`), and
-  drops it once withdrawn, superseded, its tab closed or ten seconds old
-  (`FocusIntentMaxAge`). The engine checks the page is shown and the intent
-  live where its hides run, immediately before moving focus:
-  `ao_wk_view_focus_presented` grabs GTK focus on the WebKitGTK view,
-  `ao_wkv_view_focus_presented` makes the WKWebView first responder, and the
-  launcher applies a `focus` directive with
-  `ICoreWebView2Controller::MoveFocus` (programmatic) only while it shows
-  the page, its window is in the foreground and it has not heard the intent
-  withdrawn or replaced (`focusDecision`, `FocusIntents`), so AO never takes
-  the OS focus from another application; a directive for a page its own
-  presentation hides waits and is applied once at the page's next show,
-  under the same checks and the same age bound. Nothing undoes a focus that
-  landed, so one can still land in the instant between the user's choice
-  elsewhere and the withdrawal reaching where focus is applied: one loopback
-  RPC from the SPA to the backend on Linux and macOS, one WebView2 web
-  message from the SPA to the launcher on Windows. The outcome
-  reaches the pane as a Kind `focus` event naming the intent; a refusal
-  (the launcher's `focus-failed` report) takes the pane's action banner
-  unless the intent is no longer the latest or a newer action's banner is
-  up.
-- Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
-  refuses any other connection; see transport.md, the host-window cookie):
-  the native view lives in that window. A browser tab on the host offers
-  and opens no pane, as a connected browser does. Both openers, a state
-  push (which the header button's show and new tab produce) and the reconcile on a thread
-  mount, go through `openBrowserCompanion`, which asks
-  `canUseNativeBrowser`; a mod-clicked link asks it before minting a
-  page, and no layout restore or companion stash reopens a browser pane.
-  It holds only while the thread's owner is the home computer and no
-  other computer claims the same ownership epoch (`resolveThreadBackend`),
-  and a user action asks it again as it is sent, after any wait.
-  A thread's pages are presented in one mount, its earliest attached live
-  one (`presenterLocked`), until that mount detaches; the presentation,
-  the pages' size, and the routed chord and Escape all name it.
-- The chord then reaches the frontend as an `accelerator` event on
-  `browser:companion-state`, carrying the BOUND spelling (Shift glyph
-  variants are normalized by the match) and the presenting mount
-  (`mount`). Every host client receives the event, and only the one holding
-  that mount replays it; a chord in a page no pane shows is dropped. An
-  `escape` event carries the mount too, and closes only that client's find
-  bar. The client (`browserPageChords.ts`) acts in that mount's pane or
-  nowhere: when a pane promoted over it, or a compact screen that no longer
-  shows it, means the keyboard's commands would not reach it, the chord is
-  dropped rather than resolved against another pane. Otherwise it focuses
-  the thread's
-  browser companion and replays the chord as a window keydown, so `when`
-  gates, rebinds and the palette all behave as if the SPA had been focused.
-  A bound chord whose `when` fails there is a no-op — the page never gets it
-  back, which is the price of answering synchronously. The replay leaves
-  DOM focus where the SPA last had it, so a surface the chord opens returns
-  focus there when it closes: focus stays in the app, and the page gets it
-  back from a click.
-- A bare Escape is never AO's in the page: WebKitGTK and WKWebView offer it
-  to the gate, which always lets it through, and while a pane shows the
-  page the Manager announces each press as an `escape` event (thread and
-  page id) on `browser:companion-state` for the pane's find (see Find),
-  except a key held down (WKWebView's `isARepeat`; on GTK 4, which reports
-  no repeat, a press while the view has not seen its release or lost
-  focus) and a press during an input method composition (the view's
-  preedit on GTK, the responder's `hasMarkedText` on macOS). The native
-  code only gathers those facts; `pageEscapeAnnounced` decides. An Escape
-  with a modifier is an ordinary chord.
+How AO's chords reach the app from inside a native page, which page holds
+keyboard focus, focus intents and the page's Escape are in
+[Browser pane keyboard and focus](keyboard-focus.md).
 
 ## Find
 
 mod+f in the browser pane finds in the page the pane shows, through the
-engine's own find-in-page. The pane registers a find provider only while the
-shown page's engine has find (`findMode` on the companion state), so the
-chord falls through elsewhere. A chord pressed inside the page arrives through
-the accelerator path above. Whether AO's bar is open is the pane-find
-store's alone; the backend holds only what the engine holds.
-
-- The Manager holds the page's search (`internal/browser/find.go`,
-  `BrowserCompanionFind`): whether one runs, its query and current match,
-  and its owner (`start`, `next`, `previous`, `stop`). `start` runs only on
-  the active page of a shown companion, from a mounted pane. A search ends
-  when the page commits another document, stops being the shown active
-  page, is suspended or closes, when the owning pane mount goes (unmounted,
-  or its connection closed), or when the browser closes; that end is a
-  `find` event on `browser:companion-state`, the bar showing the search
-  closes, and the engine's search is stopped with it. `stop` never
-  restores a suspended page and answers for a gone page as for no search.
-- A search's owner is a pane mount and a sequence (`seq` on
-  `BrowserFindAction` and `FindState`). Every `start` (each search of a
-  bar's query, each open of the engine's own find in "engine" mode) takes
-  the next number of one frontend counter, and the Manager refuses a start
-  whose sequence is not above every start it took from that mount. A step
-  names the exact sequence it steps. A `stop` names the highest sequence
-  the provider issued when it made the stop, and ends the mount's search,
-  on whichever of the thread's pages it runs, exactly when that search's
-  sequence is at or below it: a stop never ends a later search, and one
-  made after a start that was refused, dropped or never answered ends the
-  search the mount held before. Every answer and end carries the owner
-  with the page (id and incarnation), the document the search started on
-  and a generation (`FindState`). A `start` replaces the page's search;
-  another mount's search replaced so hears its end, and the engine's search
-  is replaced rather than stopped. A step whose search is not the page's,
-  or a `stop` that finds none at or below its bound, changes nothing, and
-  its answer is marked `foreign` and names the search's real owner, "" for
-  none, so the provider never takes it as an acknowledgement. Generations come from one
-  counter across the Manager, so their order holds across a suspend and
-  restore, and an end is always newer than the answers of the search it
-  ends.
-- Every find transition of a page is serialized on the page lock
-  (`managedPage.mu`, which every engine call already takes) and holds it
-  from its checks through its engine calls to the state it publishes:
-  `start`, step, `stop`, every end and the engine's cleanup. An action's
-  10 s deadline starts before it waits for the lock, and an action whose
-  deadline passed, or whose context ended at server shutdown, while it
-  waited is refused before it publishes anything; every engine call under
-  the lock is bounded by the transition's deadline, and a stop that times
-  out stays owed. `BrowserCompanionFind` is not caller-bound: a `start`
-  still running when its connection closes finishes, and the connection's
-  cleanup, which runs after the transport joins its handlers, detaches the
-  mount (`DetachPane`), which ends that search and stops the engine's. An end raised where waiting is not allowed (the
-  engine's UI thread, a presentation change, a mount detaching, a page
-  closing outside its lock) is submitted to the page without blocking and
-  applied by the next transition, or by a transition of its own when none
-  runs, which `Manager.Close` joins after refusing new ones. Each
-  transition applies what was submitted before it first and what was
-  submitted during it last, so an end lands strictly before or strictly
-  after an action. A presentation end rereads what is shown when it is
-  applied. Ends submitted while a long page operation (a screenshot) holds
-  the lock wait for it: for that long the search outlives the document or
-  the presentation, and nothing else is out of step. An action
-  revalidates its page under the lock before any driver call, so one that
-  waited out a close never reaches the closed driver, and WebKitGTK and
-  WKWebView also refuse any operation on a page whose lifetime ended
-  before it reaches the view.
-- Whether the engine holds a search (highlights, a match selection, its own
-  bar) is tracked apart from the logical session: every `FindStart` sets
-  it and only a `FindStop` that succeeded clears it, including after a
-  failed start or step. A search the engine holds that no session wants is
-  state every transition settles first and last, retrying a stop that
-  failed before, whoever owns the search; a `stop` reports each failure of
-  that stop. A page that holds neither a search nor an owed engine stop is
-  the only one a presentation change skips (`findSession.settled`).
-- A new document is each engine's commit signal, so a reload ends the
-  search and a same-document navigation (a fragment, the History API)
-  keeps it: WebKitGTK `load-changed` with `WEBKIT_LOAD_COMMITTED`,
-  WKWebView `webView:didCommitNavigation:`, and CDP `Page.frameNavigated`
-  for the main frame (hosted WebView2 and headless Chromium), each reported
-  through `pageHooks.DocumentCommitted`. The hook runs where the engine
-  reports the commit (the UI thread for WebKitGTK and WKWebView) and only
-  stamps the page's next document epoch; the engine submits the end it
-  returns in the same callback, without waiting, and that end ends only a
-  search started on an earlier document, so a late end never ends a
-  search started after the commit. A CDP commit is stamped when its event
-  reaches Go, so a search answered first on the new document is ended (the
-  bar closes), never left showing the old document's results.
-- Escape closes AO's find bar through `find.close` when the SPA has
-  keyboard focus. A bare Escape pressed in the page is always the page's
-  (see Keyboard); while a pane shows the page, the Manager announces it as
-  an `escape` event on `browser:companion-state`, and the pane closes its
-  bar on that event if the bar is open for the page it shows.
-- The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`)
-  turns each reader action into an intent (start with its query, step,
-  stop) carried with its page, mount and sequence to its answer, and runs
-  them one at a time, in order, on its own queue; its header holds the
-  state table. It sends `start` on a debounced non-empty query, and when
-  the query empties, the bar closes or the pane unmounts it sends `stop`
-  through the newest sequence it issued, unless a stop was made since,
-  without tracking which search the backend holds. A queued start is
-  dropped when the query changes. The bar shows one sequence: an answer or
-  failure changes what it shows only for that sequence, and an end or a
-  foreign answer for it closes the bar. A failed start or step of the
-  shown sequence is that search's result: the bar shows its error until
-  the next query or the bar's close; in engine mode, which has no bar, a
-  toast reports it. Every failed start or step is
-  followed by a stop through its sequence. A queued stop is removed only
-  by running. A stop that fails never changes what the bar shows; the
-  pane shows a find cleanup error, in its own entry apart from browser
-  action errors, until a stop through it or further is answered or the
-  pane unmounts. It is sent again on the provider's own timer, at most
-  three times in all, until it or a later stop through it is answered or
-  the pane unmounts, whose mount detach ends the search. A
-  stop that never succeeds leaves the page's highlights until the next
-  start, a navigation, a page switch or the pane unmounting, each of which
-  ends the engine's search. The Go find tables run each sequence against a
-  port of the provider, including starts the Manager refuses, calls left
-  outstanding across later reader actions, the stop retries and named
-  orders from review, and record each provider's view of it, checking
-  after every sequence that a bar shows a count, a current match and
-  enabled stepping exactly when the Manager holds a search for its mount
-  at the sequence it shows, with that search's count; the frontend replays
-  those scripts, the bar's final display included,
-  against the real provider and pane-find store
-  (`frontend/src/test/fixtures/browserFind/`, regenerated with
-  `AO_UPDATE_FIND_SCRIPTS=1` on the tables in `find_pairs_test.go`).
-- WebKitGTK (`findMode` "bar") drives the shared find bar through
-  `WebKitFindController`: a case-insensitive, wrapping search that counts up
-  to 1000 matches (past that the count shows as `1000+` and the position as
-  unknown), `search_next`/`search_previous` for Enter and Shift+Enter, and
-  `search_finish` on stop, which clears only the highlights, so a stop also
-  drops the selection that marks the match, as WKWebView does. The engine
-  reports no match index, so the Manager counts the steps.
-- WKWebView ("bar") uses `findString:withConfiguration:completionHandler:`.
-  It reports only whether a match was found, so the bar shows "Found" or "No
-  results" without numbers. A search starts from the selection, so a start
-  drops the selection first, and a stop drops the selection that marks the
-  match. On both engines that clearing (`webkitClearSelectionScript`) runs
-  in an isolated script world (`webkitFindWorld`), so a page's own
-  `getSelection` or `removeAllRanges` never reaches it, over the page and
-  each same-origin frame on its own, and any failure there fails the stop,
-  which stays owed. Frames are not enumerated, since `window.frames` misses
-  an iframe in a shadow root: `webkitFindFrameScript`, installed in every
-  frame at document start in the same world, announces each frame to its
-  parent, which keeps its own direct children (bounded, deduplicated,
-  pruned when used). The stop then posts a clear to each announced child of
-  the top frame, and a frame obeys a clear only from its parent, clearing
-  itself and passing it on to its own children, so a clear only travels
-  down and no frame can clear the page above or beside it; the top frame
-  obeys none. The listener is a capture-phase listener added before any page
-  script, so a page cannot swallow the message first, and the page never
-  sees the find's messages. A document regenerated with `document.open`
-  runs the script again in the same window; each run replaces its listener
-  and announces again, so the window keeps one listener and its children.
-  The console capture also runs again: it wraps the console's methods only
-  on its first run in a window, since the console and its wrappers outlive
-  `document.open`, and each run re-adds only its error and
-  unhandledrejection listeners. Nothing waits for a frame, so a frame cannot
-  fail the stop, and a frame that runs no script (sandboxed without
-  `allow-scripts`) keeps its selection. WebView2's own find bar has no
-  selection housekeeping of AO's to fix.
-- Hosted WebView2 ("engine") opens the engine's own find bar
-  (`ICoreWebView2Find` with the default dialog left on), seeded with the
-  SPA's selection or else the page's, and moves keyboard focus into the page.
-  The engine's bar counts, steps and closes itself; AO's bar is not shown.
-  `ICoreWebView2Find` has no close event, so AO never models that bar as
-  open: the pane's find does not read as open, `find.close` does not apply,
-  and the launcher's `claimChord` never takes an unmodified key, so Escape
-  goes to the engine and the page. mod+f again seeds and opens the bar. The
-  Manager's search ends as above and stops the engine's find, which does
-  nothing once the user closed the bar. A runtime without the API is
-  reported at page create (`find-unavailable`) and the page has no find.
-- Headless Chromium has no find: serve mode has no pane to find in.
+engine's own find-in-page; hosted WebView2 opens the engine's own find bar,
+and headless Chromium has no find. The Manager's search sessions, their
+owners and ends, and each engine's find are in
+[Pane find](pane-find.md#browser-pane-find).
 
 ## Tool surface
 
@@ -938,8 +658,8 @@ blocks dangerous navigation schemes, and never exposes a debugging
 endpoint outside the local controller process. Asset bundles go only to
 AO-owned directories with file/count/byte caps.
 
-A finished download ends up where any browser on the machine that runs the
-page's engine puts it: that user's Downloads folder (`downloadSaving` in
+On a desktop engine a finished download ends up where any browser on the
+machine that runs the page's engine puts it: that user's Downloads folder (`downloadSaving` in
 `internal/browser/driver_events.go`). There is no setting.
 
 - Launcher-hosted WebView2: WebView2's default, the Windows user's
@@ -999,19 +719,22 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   removed. Nothing that deletes a thread, clears site data, turns the
   browser off or prunes artifacts deletes a file in the Downloads
   folder.
-- Headless Chromium in serve mode alone keeps downloads as AO artifacts:
-  under the download's id in the jar's AO directory, moved on finishing
-  to the workspace's under a sanitized unique name, capped at 512 MiB
-  each and 2 GiB reserved per live workspace, whichever jars its pages
-  are in. Downloads and asset bundles share a 4 GiB per-process artifact
-  quota. Files older than seven days are pruned on the next artifact
-  use, while newer files are never silently evicted to make quota room.
-  The workspace's finished downloads are in a directory no earlier release
-  wrote; the files an earlier release kept beside its running downloads
-  are never opened in a tab, as they never were, and go with the
+- Headless Chromium in serve mode alone keeps downloads as AO artifacts.
+  Each browser process writes into a directory of its own inside the
+  jar's `downloading` directory (`headless_download_room.go`), removed
+  with everything left in it once the process exits. A finished download
+  is moved out under its id, then into the workspace's `finished`
+  directory under a sanitized unique name. Downloads are capped at
+  512 MiB each and 2 GiB reserved per live workspace, whichever jars its
+  pages are in. Downloads and asset bundles share a 4 GiB artifact quota
+  per backend process. Files older than seven days are pruned at the
+  process's first artifact use, while newer files are never silently
+  evicted to make quota room. Under the artifact root, `browser_open_file`
+  opens only a file AO moved into a workspace's `finished` directory
+  (`authorizeFile`); any other file there never opens and goes with the
   seven-day prune.
 
-A download that begins in a page no thread owns is cancelled.
+A download that begins in a page no thread owns is canceled.
 
 ## Codex browser parity boundary
 
@@ -1026,8 +749,9 @@ The method-by-method map and its validation owners are recorded in
 
 Intentional ownership differences are not missing parity: AO lists only the
 managed pages owned by the calling provider thread, keeps one isolated virtual
-clipboard per tab instead of modifying the OS clipboard, and writes inbound
-files to bounded AO artifact directories. Raw CDP, arbitrary profiles/browser
+clipboard per tab instead of modifying the OS clipboard, saves a desktop
+engine's downloads to the user's Downloads folder, and writes asset bundles
+and headless Chromium's downloads to bounded AO artifact directories. Raw CDP, arbitrary profiles/browser
 contexts, permission grants, unbounded network bodies/traces, and control of an
 external user browser are not part of the Codex skill API and remain excluded.
 
@@ -1057,18 +781,18 @@ real view behind the pane's host rect.
 
 A windowed macOS desktop drives WKWebView subviews of the app's own NSWindow
 on the same terms. The tool contract, the bounds, and the JavaScript every
-operation is expressed as are shared with the Linux engine — both are WebKit —
+operation is expressed as are shared with the Linux engine (both are WebKit),
 so the differences are only where the platform itself differs:
 
 - **Site data is WebKit's directory, not AO's.** macOS exposes no documented
   way to place a `WKWebsiteDataStore` in a chosen path. On macOS 14+ each
   persistent jar gets its own store keyed by a digest of the jar (a worktree
-  jar's is the workspace root's, as before jars); on macOS 13 there is no
+  jar's key is the workspace path); on macOS 13 there is no
   per-jar persistent store at all, so the site-data setting has no effect
   there and every jar is in-memory-only.
 - **Clearing site data is WebKit's removal, not a directory delete.** Because
   WebKit owns where those stores live, Clear site data asks it to remove every
-  data store AO created — all of them, and only them: the app's own SPA webview
+  data store AO created, all of them and only them: the app's own SPA webview
   uses the unidentified default store, which is never one of them. A Mac with
   no persistent stores to remove, including every macOS 13 one, clears
   successfully with nothing to do.
@@ -1080,7 +804,7 @@ so the differences are only where the platform itself differs:
   one image pixel per CSS pixel so clip rects mean the same thing they do on
   the CDP driver.
 - **`beforeunload` proceeds.** WKWebView exposes no public delegate for it, so
-  a requested navigation continues — the same outcome the other engines reach
+  a requested navigation continues, the same outcome the other engines reach
   by accepting the dialog.
 - **Context menus need no suppression.** A hidden page is clipped out of the
   window and receives no mouse input, so the real site menu appears on the
@@ -1134,7 +858,7 @@ and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A
 backend with no window cannot host a view, so it launches its own browser
 instead: one process per jar profile, started by that profile's first
 page and stopped with it, sandbox on. The tool surface is again identical, for
-the same reason the WSL one is — the operations are the same CDP calls. What
+the same reason the WSL one is: the operations are the same CDP calls. What
 is absent is the PANE, which is window chrome: an agent on a serve host gets
 the tools, and nobody gets a view of them. Selection is an explicit request
 that only the serve boot makes, never an inference from the absence of a
@@ -1155,8 +879,8 @@ leaves behind is deleted by the next engine start's sweep
 the profile's process would keep it in memory; serve mode has no pane to
 choose a jar from, so that is not built.
 
-Every OTHER windowless run — `--connect`, `go test`, and any desktop whose OS
-is too old for its native engine — has **no browser engine and no browser
+Every OTHER windowless run (`--connect`, `go test`, and any desktop whose OS
+is too old for its native engine) has **no browser engine and no browser
 tools**, as does a serve host with no Chromium on it. There is no fallback
 browser to launch, and a browser tool call on such a deployment answers one
 sentence saying browser tools are not available there. The hello frame carries
@@ -1164,7 +888,7 @@ the same answer as `browser` in its capability list, so a client can tell "no
 browser on that machine" from "turned off in Settings". The mocked
 boot modes (`--harness`, `--soak`) are the one exception: they pin a fake engine
 so the companion pane's chrome, tab strip, and host rect render with nothing
-behind them. That pin is default-on and lifted by one manual gate —
+behind them. That pin is default-on and lifted by one manual gate:
 `AO_HARNESS_REAL_BROWSER=1` on an ATTENDED isolated boot (never a soak
 autopilot), which turns `make harness-window` / `make harness-wsl` into
 the real-engine rig described in `docs/specs/embedded-browser.md` §10.

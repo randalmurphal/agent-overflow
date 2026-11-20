@@ -167,13 +167,17 @@ func userDirsValue(value, home string) (string, error) {
 // a run directory.
 const maxNameVariants = 1000
 
-// linkDownload is os.Link and renameDownload renameNoReplace: test seams
+// linkDownload is linkFile and renameDownload renameNoReplace: test seams
 // for a file appearing at a name as it is taken, and for a filesystem
 // without hard links.
 var (
-	linkDownload   = os.Link
+	linkDownload   = linkFile
 	renameDownload = renameNoReplace
 )
+
+// errNoHeldLink is placeHeld's answer where it cannot link the held source:
+// placeNoReplace then places by name.
+var errNoHeldLink = errors.New("browser: the held file cannot be linked here")
 
 // errNoReplaceRename is renameNoReplace's answer where the platform has no
 // rename that refuses to replace.
@@ -216,20 +220,30 @@ type placeSource struct {
 // placeNoReplace gives the regular file source the first name in dir that
 // nobody holds, of name(0), name(1), ..., and answers its path and
 // source's identity, the one identity the caller trusts: never what a name
-// answers afterwards. The file takes a private name beside source first
+// answers afterwards. It never replaces a file: it hard-links, or, on a
+// filesystem that refuses hard links, renames with a rename that refuses
+// to replace; either way a name that is taken (EEXIST) moves on to the
+// next, so two placements at once never take one name. The public name is
+// checked to hold source's file: one that holds anything else, swapped in
+// at it or reached through a directory moved meanwhile, fails the
+// placement and stays as it is, since it may not be AO's. A link leaves
+// source's own name for the caller to remove. where names dir in an error.
+//
+// On Linux it links the open, checked source file itself (placeHeld), so
+// the public name holds the bytes it checked. Elsewhere, and on Linux
+// where /proc is missing or the filesystem refuses hard links, it places
+// by name: the file takes a private name beside source first
 // (placingName), where the recovery of source's owner removes it if the
 // placement never finishes, and only once that name is checked, in the
-// held directory, to hold source's file does it take a public one. A file
-// swapped in at source meanwhile is refused with nothing public made, and
-// its private name undone. The public name is checked to hold source's
-// file too: one that holds anything else, swapped in at it or reached
-// through a directory moved meanwhile, fails the placement and stays as it
-// is, since it may not be AO's. It never replaces a file: it hard-links,
-// or, on a filesystem that refuses hard links, renames with a rename that
-// refuses to replace; either way a name that is taken (EEXIST) moves on to
-// the next, so two placements at once never take one name. A link leaves
-// source's own name for the caller to remove. where names dir in an error.
+// held directory, to hold source's file does it take a public one; a file
+// swapped in at source before that is refused with nothing public made.
+// The limit by name: a file swapped in at the private name after its check
+// takes the public name, and the public check then fails the placement
+// and leaves that file there.
 func placeNoReplace(source placeSource, dir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
+	if path, file, err := placeHeld(source, dir, where, name); !errors.Is(err, errNoHeldLink) {
+		return path, file, err
+	}
 	place := placement{source: source, move: linkDownload, linking: true, where: where}
 	private, err := place.private()
 	if err != nil {
