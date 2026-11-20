@@ -965,7 +965,9 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			manager.artifactInitMu.Lock()
 			manager.artifactReady = false
 			manager.artifactInitMu.Unlock()
-			manager.prepareArtifacts()
+			if err := manager.prepareArtifacts(); err != nil {
+				t.Fatal(err)
+			}
 			_, statErr := os.Stat(item.path)
 			if pruned := errors.Is(statErr, os.ErrNotExist); pruned != artifacts {
 				t.Fatalf("an old download was pruned: %v (%v)", pruned, statErr)
@@ -1083,7 +1085,9 @@ func TestForgettingBrowsingLeavesTheDownloadsFolderAlone(t *testing.T) {
 				manager.artifactInitMu.Lock()
 				manager.artifactReady = false
 				manager.artifactInitMu.Unlock()
-				manager.prepareArtifacts()
+				if err := manager.prepareArtifacts(); err != nil {
+					t.Fatal(err)
+				}
 			}},
 			{"clear the list", func(t *testing.T, manager *Manager, access Access) {
 				if err := manager.ClearThreadDownloads(access); err != nil {

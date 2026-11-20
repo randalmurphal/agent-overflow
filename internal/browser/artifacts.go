@@ -1,7 +1,10 @@
 package browser
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,19 +18,30 @@ const (
 	maxArtifactScanEntries = 100_000
 )
 
-func (m *Manager) prepareArtifacts() {
+// prepareArtifacts measures, once per Manager, what the artifact root
+// holds into the artifact quota, removing the artifacts older than
+// artifactMaxAge as it goes. A scan it cannot finish answers the error and
+// measures nothing, so every reservation is refused with the reason until
+// a later call measures it all. An expired artifact it cannot remove stays
+// charged and is logged; one gone meanwhile is not charged.
+func (m *Manager) prepareArtifacts() error {
 	m.artifactInitMu.Lock()
 	defer m.artifactInitMu.Unlock()
 	if m.artifactReady {
-		return
+		return nil
 	}
-	_ = os.MkdirAll(m.artifactRoot, 0o700)
+	if err := os.MkdirAll(m.artifactRoot, 0o700); err != nil {
+		return fmt.Errorf("browser: create the artifact folder: %w", err)
+	}
 	cutoff := time.Now().Add(-artifactMaxAge)
 	var total int64
 	entries := 0
-	_ = filepath.WalkDir(m.artifactRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
+	err := filepath.WalkDir(m.artifactRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, fs.ErrNotExist) {
 			return nil
+		}
+		if walkErr != nil {
+			return walkErr
 		}
 		entries++
 		if entries > maxArtifactScanEntries {
@@ -37,27 +51,41 @@ func (m *Manager) prepareArtifacts() {
 			return nil
 		}
 		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 		if info.ModTime().Before(cutoff) {
-			if os.Remove(path) == nil {
+			err := os.Remove(path)
+			if err == nil || errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
+			log.Printf("browser: remove the expired artifact %s: %v; its %d bytes stay charged", path, err, info.Size())
 		}
 		total += info.Size()
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("browser: measure the artifact folder %s: %w", m.artifactRoot, err)
+	}
 	if entries > maxArtifactScanEntries {
 		total = maxArtifactRootBytes
 	}
 	m.artifactBytes.SetUsed(total)
 	m.artifactReady = true
+	return nil
 }
 
 // reserveArtifacts holds bytes of the artifact quota, measured on first use
 // (prepareArtifacts), and of any pools besides it, all or none.
 func (m *Manager) reserveArtifacts(bytes int64, pools ...*quota.Pool) (*quota.Reservation, error) {
-	m.prepareArtifacts()
+	if err := m.prepareArtifacts(); err != nil {
+		return nil, err
+	}
 	return quota.Reserve(bytes, append(pools, m.artifactBytes)...)
 }
