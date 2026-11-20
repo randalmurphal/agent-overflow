@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -201,11 +202,19 @@ func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 var openingMadeDir = func(path string) {}
 
 // openMadeDir opens the directory name its caller just made in parent, in
-// dir, and answers it with its identity: read through parent right after
-// the Mkdir, and the directory opened is refused unless it is that one, so
-// a directory put at the name meanwhile is never held. One it does not
-// hold is removed only while the name still holds the directory made, and
-// only empty (abandonMadeDir); every failure is in the answer.
+// dir, and answers it with its identity. Its identity cannot be read in
+// one step with the Mkdir, so two things are checked. The directory opened
+// must be the one its name held when read through parent right after the
+// Mkdir: one put at the name after that read is never held, and is removed
+// only while the name still holds the directory read, and only empty
+// (abandonMadeDir). And the directory opened must be empty, read through
+// the handle: a directory put at the name before that first read cannot
+// be told from the one made, so the one property checked of it is that it
+// holds nothing; one holding anything is refused and left as it is. What
+// is not detected is an empty directory put at the name before the first
+// read: it is held as the one made, and whatever its holder later removes
+// from it is only what was put in it after it was held. Every failure is
+// in the answer.
 func openMadeDir(parent *os.Root, dir, name string) (*os.Root, os.FileInfo, error) {
 	path := filepath.Join(dir, name)
 	made, madeErr := parent.Lstat(name)
@@ -215,14 +224,37 @@ func openMadeDir(parent *os.Root, dir, name string) (*os.Root, os.FileInfo, erro
 		return nil, nil, errors.Join(fmt.Errorf("browser: open %s: %w", path, err), abandonMadeDir(path, made, madeErr))
 	}
 	opened, err := root.Stat(".")
-	if err == nil && madeErr == nil && os.SameFile(opened, made) {
-		return root, made, nil
+	if err != nil || madeErr != nil || !os.SameFile(opened, made) {
+		failure := fmt.Errorf("browser: %s was replaced as it was made, so it is not used", path)
+		if err != nil {
+			failure = fmt.Errorf("browser: read %s: %w", path, err)
+		}
+		return nil, nil, errors.Join(failure, root.Close(), abandonMadeDir(path, made, madeErr))
 	}
-	failure := fmt.Errorf("browser: %s was replaced as it was made, so it is not used", path)
+	if err := madeDirEmpty(root, path); err != nil {
+		return nil, nil, errors.Join(err, root.Close())
+	}
+	return root, made, nil
+}
+
+// madeDirEmpty answers nil when the directory root holds is empty, and
+// otherwise why it is not used.
+func madeDirEmpty(root *os.Root, path string) error {
+	held, err := root.Open(".")
 	if err != nil {
-		failure = fmt.Errorf("browser: read %s: %w", path, err)
+		return fmt.Errorf("browser: read %s: %w", path, err)
 	}
-	return nil, nil, errors.Join(failure, root.Close(), abandonMadeDir(path, made, madeErr))
+	entries, err := held.ReadDir(1)
+	closeErr := held.Close()
+	switch {
+	case len(entries) > 0:
+		return fmt.Errorf("browser: %s held %s as it was made, so it is not used", path, entries[0].Name())
+	case err != nil && !errors.Is(err, io.EOF):
+		return errors.Join(fmt.Errorf("browser: read %s: %w", path, err), closeErr)
+	case closeErr != nil:
+		return fmt.Errorf("browser: read %s: %w", path, closeErr)
+	}
+	return nil
 }
 
 // abandonMadeDir removes the directory a caller made at path and does not

@@ -230,7 +230,10 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if opts.Allow == nil {
 		return nil, errors.New("browser: a navigation policy is required for a browser profile")
 	}
-	p := &headlessProfile{engine: e, handle: profileHandle(jarDirName(opts.Jar)), downloadDir: opts.DownloadDir, allow: opts.Allow}
+	if opts.DownloadDir == "" || opts.OpenDownloadDir == nil {
+		return nil, errors.New("browser: headless Chromium keeps its downloads as artifacts, so its profile needs their directory")
+	}
+	p := &headlessProfile{engine: e, handle: profileHandle(jarDirName(opts.Jar)), downloadDir: opts.DownloadDir, openDownloadDir: opts.OpenDownloadDir, allow: opts.Allow}
 	if !opts.Ephemeral {
 		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, string(p.handle), "chromium")
 	} else {

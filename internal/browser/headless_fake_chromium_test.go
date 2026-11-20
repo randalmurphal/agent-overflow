@@ -244,8 +244,9 @@ func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
 
 func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string, persist bool) *headlessProfile {
 	t.Helper()
+	downloads := filepath.Join(t.TempDir(), "downloads")
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Jar: jarKey(workspace), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
+		Jar: jarKey(workspace), DownloadDir: downloads, OpenDownloadDir: openDirByName(downloads), Ephemeral: !persist,
 		Allow: func([]frameID, string) (bool, bool) { return true, true },
 	})
 	if err != nil {

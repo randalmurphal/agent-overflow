@@ -170,7 +170,7 @@ func headlessUnownedRig(t *testing.T, wait time.Duration, lifetime context.Conte
 		DownloadProgress: func(downloadProgress) {},
 	})
 	p.engine.ownerWait = wait
-	room, err := openDownloadRoom(t.TempDir(), t.Logf)
+	room, err := openRoomIn(t.TempDir(), t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -377,11 +377,13 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 // authorizeFile opens.
 func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := ""
+	var openDownloadDir func() (*os.Root, error)
 	if m.downloadsToArtifacts() {
 		downloadDir = filepath.Join(m.artifactRoot, jarDownloadingDir, jarDirName(jar.key))
 		if err := m.makeArtifactDir(downloadDir); err != nil {
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}
+		openDownloadDir = func() (*os.Root, error) { return m.openArtifactDir(downloadDir) }
 	}
 	var stage func(downloadID) (string, error)
 	var releaseStaged func(downloadID)
@@ -394,7 +396,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 		creating: make(map[*managedPage]struct{}),
 	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
-		Jar: jar.key, DownloadDir: downloadDir, StageDownload: stage, ReleaseStaged: releaseStaged, Ephemeral: jar.ephemeral,
+		Jar: jar.key, DownloadDir: downloadDir, OpenDownloadDir: openDownloadDir, StageDownload: stage, ReleaseStaged: releaseStaged, Ephemeral: jar.ephemeral,
 		Allow: func(owners []frameID, rawURL string) (bool, bool) { return m.jarAllows(scope, owners, rawURL) },
 	})
 	if err != nil {

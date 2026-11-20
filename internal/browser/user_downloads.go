@@ -167,12 +167,14 @@ func userDirsValue(value, home string) (string, error) {
 // a run directory.
 const maxNameVariants = 1000
 
-// linkDownload is linkFile and renameDownload renameNoReplace: test seams
-// for a file appearing at a name as it is taken, and for a filesystem
-// without hard links.
+// linkDownload is linkFile, renameDownload renameNoReplace and
+// placeHeldFile placeHeld: test seams for a file appearing at a name as it
+// is taken, for a filesystem without hard links, and for a system where the
+// held file cannot be linked, whose placement is by name.
 var (
 	linkDownload   = linkFile
 	renameDownload = renameNoReplace
+	placeHeldFile  = placeHeld
 )
 
 // errNoHeldLink is placeHeld's answer where it cannot link the held source:
@@ -261,13 +263,16 @@ func placeNoReplace(source placeSource, dir, where string, name func(i int) stri
 // source's owner removes it if the placement never finishes, and only once
 // that name is checked, in the held directory, to hold source's file does
 // it take a public one; a file swapped in at source before that is refused
-// with nothing public made. The limits by name: a file swapped in at the
-// private name after its check takes the public name, and so does a
-// directory put at dir's path in place of the held one; the public check
-// in the held directory then fails the placement and leaves that file
-// there.
+// with nothing public made. The limit by name: the public name is made
+// from the private one by path and checked afterwards, in the held
+// directory. A file swapped in at the private name after its check is
+// linked to the public name, and a directory put at dir's path in place of
+// the held one takes the public name instead. Either way the check fails
+// the placement, so the caller's row fails and grants no file, and what
+// was linked stays at the name it took, which AO does not remove, as it
+// may not be AO's.
 func placeNoReplaceIn(source placeSource, dir placeDir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
-	if path, file, err := placeHeld(source, dir, where, name); !errors.Is(err, errNoHeldLink) {
+	if path, file, err := placeHeldFile(source, dir, where, name); !errors.Is(err, errNoHeldLink) {
 		return path, file, err
 	}
 	place := placement{source: source, move: linkDownload, linking: true, where: where}

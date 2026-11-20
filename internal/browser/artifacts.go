@@ -23,11 +23,13 @@ const (
 // through the held directory (artifactsIn, openArtifactDir): what is
 // measured is where the Manager writes, whatever the root's name, or a
 // directory's in it, names later. A link in it leaving it is followed by
-// nothing that goes through it. Headless Chromium and its download room
-// (headless_download_room.go) alone work in it by name: Chromium writes a
-// running download into its jar's directory by that directory's path, and
-// the Manager reads the finished file only through the held root, to link
-// it into a workspace's directory there (placeArtifact).
+// nothing that goes through it. A path handed out in it, to a caller or
+// to Chromium, is checked to reach what is held when it is handed out
+// (nameReaches). Headless Chromium alone writes in it by name: a running
+// download into its room, made through the held root, by the path checked
+// at its launch (openDownloadRoom), and the Manager reads the finished
+// file only through the held root, to link it into a workspace's
+// directory there (placeArtifact).
 
 // errArtifactsClosed refuses artifact work once the Manager has closed.
 var errArtifactsClosed = errors.New("browser: the artifact folder is closed")
@@ -193,6 +195,37 @@ func (m *Manager) makeArtifactDir(dir string) error {
 	}
 	if err := root.MkdirAll(rel, 0o700); err != nil {
 		return fmt.Errorf("browser: create %s: %w", dir, err)
+	}
+	return nil
+}
+
+// removeArtifactDir removes dir, a directory inside the artifact root, and
+// everything in it, through the held root.
+func (m *Manager) removeArtifactDir(dir string) error {
+	root, rel, err := m.artifactsIn(dir)
+	if err != nil {
+		return err
+	}
+	if err := root.RemoveAll(rel); err != nil {
+		return fmt.Errorf("browser: remove %s: %w", dir, err)
+	}
+	return nil
+}
+
+// nameReaches answers nil when path, a name AO hands to a caller or to
+// Chromium for a file or folder it holds, reaches held, that file or
+// folder as read through its handle; otherwise why it does not, so the
+// name is not handed out. A name that reaches another file or folder
+// would send its reader to something AO neither wrote nor measures: the
+// artifact folder's name, or a folder's in it, was moved since it was
+// held.
+func nameReaches(path string, held os.FileInfo) error {
+	named, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("browser: %s no longer reaches what AO wrote there: %w", path, err)
+	}
+	if !os.SameFile(named, held) {
+		return fmt.Errorf("browser: %s names another file or folder than the one AO wrote there, so it is not handed out", path)
 	}
 	return nil
 }

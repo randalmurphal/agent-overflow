@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -27,7 +28,11 @@ type headlessProfile struct {
 	// persists, and that emptiness is what stops a persisted workspace's
 	// logins from being deleted.
 	ephemeralRoot string
-	downloadDir   string
+	// downloadDir is the jar's download directory, and openDownloadDir
+	// opens it through the Manager's held artifact root
+	// (profileOptions.OpenDownloadDir).
+	downloadDir     string
+	openDownloadDir func() (*os.Root, error)
 	// allow is the jar's navigation policy (profileOptions.Allow), which
 	// connect enables browser-wide.
 	allow func(owners []frameID, rawURL string) (allowed, resolved bool)
