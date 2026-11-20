@@ -59,28 +59,59 @@ func (a *App) startRegisteredSessionTakingLock(ctx context.Context, threadID str
 	return a.startRegisteredSession(ctx, threadID)
 }
 
-// startSessionProvingResume starts the thread's session through
-// startSessionTakingLock's door, then waits for the provider to report how
-// the start of the session it registered ended (sessionruntime.Entry.
-// AwaitStart). The wait holds no app lock and reads nothing from the
-// provider's transcript. ctx bounds it; the workflow runner's start
-// deadline is what bounds it there (internal/workflowhost/start_watchdog.go).
-// A start it cannot prove is torn down as a dead pre-init session, so it
-// leaves no session registered; a close that fails is returned instead of
-// the start's outcome, since a process may outlive it.
-func (a *App) startSessionProvingResume(ctx context.Context, threadID string) error {
-	started, err := a.startRegisteredSessionTakingLock(ctx, threadID)
+// ensureProvenSession leaves the thread with a session whose provider proved
+// it holds the conversation the thread continues, or with none. Under the
+// thread action lock it proves the session registered for the thread, or,
+// when none is, calls beforeStart, starts one and proves the session that
+// start registered. It reports whether it started the session. A
+// beforeStart error is returned as it is and nothing is started.
+//
+// The proof is the provider's report of how that process's start ended
+// (sessionruntime.Entry.AwaitStart); nothing is read from the provider's
+// transcript. The lock is held until the proof returns, so no send, steer,
+// revert's resend or queued flush, each of which takes the lock, reaches the
+// process first: Claude's content check is valid only before the first
+// input. The commands AO writes on its own (live config, peer rename) do not
+// take the lock, and the provider reports one that lands first as content
+// unproven. A claude-tui session reports no start outcome and is accepted
+// while it lives. ctx bounds the wait for the lock and the proof; the workflow
+// runner's start deadline is what bounds them there
+// (internal/workflowhost/start_watchdog.go).
+//
+// A session it cannot prove is torn down as a dead pre-init session, under
+// the same lock, so it leaves no session registered and its queued messages
+// go back to the composer before a flush can send them; a close that fails
+// is returned instead of the proof's outcome, since a process may outlive it.
+func (a *App) ensureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (bool, error) {
+	if a.shuttingDown.Load() {
+		return false, ErrShuttingDown
+	}
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("prove the session of thread %s: %w", threadID, err)
 	}
-	outcome := started.AwaitStart(ctx)
+	defer unlock()
+	proving, registered := a.sessionManager().get(threadID)
+	if registered && proving.ClaudeTUI != nil {
+		return false, nil
+	}
+	if !registered {
+		if err := beforeStart(); err != nil {
+			return false, err
+		}
+		proving, err = a.startRegisteredSession(ctx, threadID)
+		if err != nil {
+			return false, err
+		}
+	}
+	outcome := proving.AwaitStart(ctx)
 	if outcome == nil {
-		return nil
+		return !registered, nil
 	}
-	if err := a.teardownDeadPreInitSession(threadID, started.Token); err != nil {
-		return fmt.Errorf("start of thread %s failed (%v), and %w", threadID, outcome, err)
+	if err := a.teardownDeadPreInitSessionLocked(threadID, proving.Token); err != nil {
+		return false, fmt.Errorf("start of thread %s failed (%v), and %w", threadID, outcome, err)
 	}
-	return outcome
+	return false, outcome
 }
 
 // buildSessionOptions composes the provider-agnostic SessionOptions bundle
@@ -1332,7 +1363,7 @@ func (a *App) codexResendAfterInterrupt(
 // it initialized: the provider reported a startup failure
 // (provider.IsStartupFailure; for example a fork start's resume cursor is
 // unusable, or the conversation to resume is gone), or a caller that
-// waited on the start could not prove it (startSessionProvingResume). It
+// waited on the start could not prove it (ensureProvenSession). It
 // cannot serve sends and could otherwise linger alive forever: Claude
 // does not exit after a failed --resume-session-at validation. The orphan
 // error item persisted by triage is the user-facing surface; this
@@ -1366,6 +1397,20 @@ func (a *App) codexResendAfterInterrupt(
 // unconditional CleanupThread is exactly what must not run here once a
 // replacement has claimed the thread.
 func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) error {
+	return a.teardownDeadPreInitSessionRestoring(threadID, sessionToken, a.restoreUnconfirmedQueueOnSessionDeath)
+}
+
+// teardownDeadPreInitSessionLocked is teardownDeadPreInitSession for a
+// caller that holds the thread action lock, which the queue restore takes
+// otherwise. Nothing else in the teardown takes that lock: the close drains
+// the thread's event worker, which never waits on it.
+func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) error {
+	return a.teardownDeadPreInitSessionRestoring(threadID, sessionToken, a.restoreUnconfirmedQueueLocked)
+}
+
+func (a *App) teardownDeadPreInitSessionRestoring(
+	threadID, sessionToken string, restore func(threadID string) []triage.UnconfirmedFlushItem,
+) error {
 	var epoch uint64
 	if a.triage != nil {
 		epoch = a.triage.ThreadEpoch(threadID)
@@ -1381,7 +1426,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) error {
 		// without the restore the user's queued text would vanish.
 		var requeued []triage.UnconfirmedFlushItem
 		if a.triage.ThreadEpoch(threadID) == epoch {
-			requeued = a.restoreUnconfirmedQueueOnSessionDeath(threadID)
+			requeued = restore(threadID)
 		}
 		if !a.triage.CleanupThreadIfEpoch(threadID, epoch) {
 			log.Printf("app: skipped triage cleanup for thread %s — a replacement session reactivated it mid-teardown", threadID)

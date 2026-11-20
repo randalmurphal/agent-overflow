@@ -550,10 +550,12 @@ targets):
   stays the default on purpose: review edges re-enter cold, and starters set
   `continue` on the fix edge, where losing "what I just tried" is the
   measured ping-pong cost. If the prior thread is gone (crash, deletion),
-  the round runs cold with a recorded note. If the cursor exists but the provider's
-  start reports that conversation gone or empty, the unsent warm attempt is superseded and the same new
-  round is reconstructed cold, preserving its complete prompt, route override,
-  guidance, and degradation note. A degraded reuse is never a park.
+  the round runs cold with a recorded note. If the cursor exists but the
+  provider's start cannot prove the conversation is there (it reports it gone
+  or empty, or does not say it holds a user message), the unsent warm attempt
+  is superseded and the same new round is reconstructed cold, preserving its
+  complete prompt, route override, guidance, and degradation note; the
+  superseded attempt's error names the cause. A degraded reuse is never a park.
   Which mode actually ran is visible in provenance: two
   attempts sharing a thread id *is* the record, rendered as
   `session: "continued"` on `run_status`.

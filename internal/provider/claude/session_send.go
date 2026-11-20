@@ -94,6 +94,10 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if err != nil {
 		return fmt.Errorf("claude: marshal user message: %w", err)
 	}
+	// Before the write: the CLI can read the line before WriteLine returns,
+	// and a start proof must not read the content count after it
+	// (AwaitStart).
+	s.start.noteInput(opts.InternalCommand)
 	if err := s.proc.WriteLine(data); err != nil {
 		// The uuid never reached stdin, so no command_lifecycle bracket will
 		// ever arrive to consume it. Leaving it in the ledger would leak one

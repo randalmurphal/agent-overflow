@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -283,19 +284,23 @@ func TestAwaitStartEndsWithItsContext(t *testing.T) {
 	}
 }
 
-// A loaded resume is unavailable only when get_context_usage counts zero
-// user-message tokens. An answer that cannot say so keeps the load.
+// A loaded resume is proven only when get_context_usage counts user-message
+// tokens. Zero is an empty conversation; every other answer leaves the
+// content unproven and names why.
 func TestAwaitStartChecksTheResumedConversationHoldsAUserMessage(t *testing.T) {
 	cases := map[string]struct {
 		answer string
-		empty  bool
+		// want is the sentinel the outcome wraps, nil for a proven start.
+		want  error
+		cause string
 	}{
-		"no user message":   {answer: contextUsageAnswer("0"), empty: true},
+		"no user message":   {answer: contextUsageAnswer("0"), want: ErrConversationEmpty, cause: "0 user-message tokens"},
 		"a user message":    {answer: contextUsageAnswer("4")},
-		"no breakdown":      {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"totalTokens":100}}}`},
-		"breakdown no user": {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"assistantMessageTokens":12}}}}`},
-		"malformed":         {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"userMessageTokens":"zero"}}}}`},
-		"refused":           {answer: `{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"Unsupported control request subtype: get_context_usage"}}`},
+		"negative count":    {answer: contextUsageAnswer("-4"), want: ErrContentUnproven, cause: "-4 user-message tokens"},
+		"no breakdown":      {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"totalTokens":100}}}`, want: ErrContentUnproven, cause: "no messageBreakdown"},
+		"breakdown no user": {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"assistantMessageTokens":12}}}}`, want: ErrContentUnproven, cause: "no userMessageTokens"},
+		"malformed":         {answer: `{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"userMessageTokens":"zero"}}}}`, want: ErrContentUnproven, cause: "unreadable"},
+		"refused":           {answer: `{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"Unsupported control request subtype: get_context_usage"}}`, want: ErrContentUnproven, cause: "refused: Unsupported control request subtype: get_context_usage"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -304,11 +309,118 @@ func TestAwaitStartChecksTheResumedConversationHoldsAUserMessage(t *testing.T) {
 				t.Fatal(err)
 			}
 			err := awaitStartWithin(t, s)
-			if tc.empty != errors.Is(err, ErrConversationEmpty) || tc.empty != IsConversationUnavailable(err) || (!tc.empty && err != nil) {
-				t.Fatalf("AwaitStart = %v, want empty %v", err, tc.empty)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("AwaitStart = %v, want the content proven", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) || !IsConversationUnproven(err) || !strings.Contains(err.Error(), tc.cause) {
+				t.Fatalf("AwaitStart = %v, want %v naming %q", err, tc.want, tc.cause)
 			}
 		})
 	}
+}
+
+// heldContentCLI answers every control request at once except
+// get_context_usage, which it answers with a user message only after it has
+// read another input. It creates marker when it reads that request.
+func heldContentCLI(marker string) string {
+	return `#!/bin/sh
+held=""
+while IFS= read -r line; do
+	reqid=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+	case "$line" in
+	*'"subtype":"get_context_usage"'*) held=$reqid; : > '` + marker + `' ;;
+	*'"type":"control_request"'*) printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid" ;;
+	*) [ -n "$held" ] && printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"messageBreakdown":{"userMessageTokens":8}}}}\n' "$held"; held="" ;;
+	esac
+done
+`
+}
+
+// The count is the resumed conversation's only before the first input. A
+// process that took a prompt, or whose start an init resolved, is proof on
+// its own and its content is not read; a command AO wrote on its own, before
+// the count is read or while it is out, leaves the content unproven.
+func TestAwaitStartReadsContentOnlyBeforeTheFirstInput(t *testing.T) {
+	start := func(t *testing.T, script string) *Session {
+		t.Helper()
+		s, err := NewSession(context.Background(), testThread, Config{
+			Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Resume: outcomeSession,
+			Binary: mockexec.Write(t, t.TempDir()+"/mock-claude", script),
+		}, func(provider.ProviderEvent) {})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	send := func(t *testing.T, s *Session, internal bool) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.Send(ctx, "/effort high", provider.SendOptions{InternalCommand: internal}); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+	}
+
+	t.Run("init", func(t *testing.T) {
+		// get_context_usage is never answered: a check would not return.
+		s := startEchoSessionAnswering(t, Config{Resume: outcomeSession}, func(provider.ProviderEvent) {}, "")
+		if err := s.proc.WriteLine(outcomeInit(outcomeSession)); err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitStartWithin(t, s); err != nil {
+			t.Fatalf("AwaitStart = %v, want the init's outcome", err)
+		}
+	})
+	t.Run("prompt", func(t *testing.T) {
+		s := startEchoSessionAnswering(t, Config{Resume: outcomeSession}, func(provider.ProviderEvent) {}, "")
+		if err := s.proc.WriteLine([]byte("answer:")); err != nil {
+			t.Fatal(err)
+		}
+		send(t, s, false)
+		if err := awaitStartWithin(t, s); err != nil {
+			t.Fatalf("AwaitStart = %v, want the loaded process that took a prompt", err)
+		}
+	})
+	t.Run("command before the count", func(t *testing.T) {
+		s := startEchoSessionAnswering(t, Config{Resume: outcomeSession}, func(provider.ProviderEvent) {}, contextUsageAnswer("8"))
+		send(t, s, true)
+		if err := s.proc.WriteLine(outcomeInit(outcomeSession)); err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitStartWithin(t, s); !errors.Is(err, ErrContentUnproven) {
+			t.Fatalf("AwaitStart = %v, want the content unproven", err)
+		}
+	})
+	t.Run("command while the count is out", func(t *testing.T) {
+		marker := t.TempDir() + "/asked"
+		s := start(t, heldContentCLI(marker))
+		done := make(chan error, 1)
+		go func() { done <- awaitStartWithin(t, s) }()
+		deadline := time.Now().Add(10 * time.Second)
+		for _, err := os.Stat(marker); err != nil; _, err = os.Stat(marker) {
+			if time.Now().After(deadline) {
+				t.Fatal("the content was never asked for")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		send(t, s, true)
+		if err := <-done; !errors.Is(err, ErrContentUnproven) {
+			t.Fatalf("AwaitStart = %v, want the content unproven", err)
+		}
+	})
+	t.Run("nothing written", func(t *testing.T) {
+		marker := t.TempDir() + "/asked"
+		s := start(t, heldContentCLI(marker))
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		if err := s.AwaitStart(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("AwaitStart = %v, want it waiting on the count", err)
+		}
+	})
 }
 
 // The content check waits on ctx alone, and a fresh start or a fork is not
@@ -320,7 +432,7 @@ func TestAwaitStartContentCheckEndsWithItsContextAndSkipsAFreshStart(t *testing.
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if err := s.AwaitStart(ctx); !errors.Is(err, context.DeadlineExceeded) || IsConversationUnavailable(err) {
+	if err := s.AwaitStart(ctx); !errors.Is(err, context.DeadlineExceeded) || IsConversationUnproven(err) {
 		t.Fatalf("AwaitStart = %v, want its context's end", err)
 	}
 

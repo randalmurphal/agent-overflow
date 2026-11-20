@@ -120,35 +120,42 @@ func (r *Runner) createPreparedWorkflowThread(spec ThreadSpec) (preparedWorkflow
 }
 
 // ensureReusableWorkflowSession makes provider-context availability a fact,
-// not an inference from a non-empty database cursor. A live process is proof
-// on its own. A cold resume is proven by the provider's own start: Codex's
-// synchronous thread/resume handshake, or a Claude process reporting that it
-// loaded the session it resumed. Only a provider's report that the
-// conversation does not exist, or holds no user message, makes the context
-// unavailable; every other failure is the start's.
-// A failed proof leaves no temporary schema behind, and the host stops the
-// session its start registered.
+// not an inference from a non-empty database cursor or a registered session.
+// The provider proves it (SessionHost.EnsureProvenSession): a live process
+// by its start's outcome, or by an input it already took; a cold resume by
+// its start, Codex's synchronous thread/resume handshake or a Claude process
+// reporting that it loaded the session it resumed with a user message in
+// it. A provider's report that the conversation does not exist, holds no
+// user message or did not say makes the context unavailable, and so does a
+// thread with no live process and no cursor; every other failure is the
+// start's. The temporary schema is registered only for a start, and a
+// failed proof leaves none behind; the host stops the session it proved.
 func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
-	if r.host.SessionActive(thread.ID) {
-		return false, nil
-	}
-	if thread.ResolvedSessionRef() == "" {
-		return false, errors.Join(engine.ErrProviderContextUnavailable,
-			fmt.Errorf("workflow runner: thread %q has neither a live provider process nor a durable session cursor", thread.ID))
-	}
-	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("workflow runner: startup cancelled: %w", err)
-	}
-	if err := r.registerTemporarySchema(thread.ID, schema); err != nil {
-		return false, err
-	}
-	err := r.host.StartSessionProvingResume(ctx, thread.ID)
+	var beforeStartErr error
+	registered := false
+	started, err := r.host.EnsureProvenSession(ctx, thread.ID, func() error {
+		switch {
+		case thread.ResolvedSessionRef() == "":
+			beforeStartErr = errors.Join(engine.ErrProviderContextUnavailable,
+				fmt.Errorf("workflow runner: thread %q has neither a live provider process nor a durable session cursor", thread.ID))
+		case ctx.Err() != nil:
+			beforeStartErr = fmt.Errorf("workflow runner: startup cancelled: %w", ctx.Err())
+		default:
+			beforeStartErr = r.registerTemporarySchema(thread.ID, schema)
+			registered = beforeStartErr == nil
+		}
+		return beforeStartErr
+	})
 	if err == nil {
-		return true, nil
+		return started, nil
 	}
-	r.removeTemporarySchema(thread.ID)
+	if registered {
+		r.removeTemporarySchema(thread.ID)
+	}
 	switch {
-	case claude.IsConversationUnavailable(err) || codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows):
+	case beforeStartErr != nil:
+		return false, beforeStartErr
+	case claude.IsConversationUnproven(err) || codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows):
 		return false, errors.Join(engine.ErrProviderContextUnavailable, err)
 	case ctx.Err() != nil:
 		return false, fmt.Errorf("workflow runner: startup cancelled: %w", err)

@@ -35,9 +35,11 @@ re-forked (or re-pinned) on the next restart.
   strips orphaned server-side tool calls from each request, so the start
   never fails over a leaf AO chose
   ([claude-wire.md](../references/claude-wire.md#session-jsonl-active-branch-semantics---resume----resume-session-at)).
-  A caller that must know the resume loaded before its first send (a
-  workflow continuation) waits on the start's outcome, which the CLI
-  reports itself
+  A caller that must know the resume loaded a conversation with a user
+  message before its first send (a workflow continuation) waits on the
+  start's outcome, which the CLI reports itself, holding every input off
+  the process until it returns; an outcome that does not prove the
+  conversation is torn down
   ([claude-wire.md](../references/claude-wire.md#start-outcome-before-the-first-input)).
   If `PendingForkRef` is
   populated it replaces `Resume` and the `ForkSession` flag is set,

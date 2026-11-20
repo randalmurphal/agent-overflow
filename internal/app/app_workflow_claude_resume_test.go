@@ -106,8 +106,21 @@ type resumeCLI struct {
 	// its resume load returns; a CLI still loading answers none.
 	loaded bool
 	// contextUsage is the get_context_usage answer's payload: a conversation
-	// holding a user message when empty, and never answered when "hold".
+	// holding a user message when empty, never answered when "hold", and
+	// answered as an error when "refuse".
 	contextUsage string
+	// conversationUsers, when set, makes get_context_usage count the
+	// conversation's user messages as the CLI does: this many resumed ones
+	// plus every user input read before the request, 4 tokens each.
+	conversationUsers *int
+	// gated holds every control answer until the fixture's gate file exists.
+	gated bool
+	// onProbe is printed when the CLI reads an mcp_status request, before
+	// its answer.
+	onProbe string
+	// initOnInput answers a user input with an init on the resumed session
+	// and a successful result.
+	initOnInput bool
 }
 
 const resumeContextUsage = `{"totalTokens":100,"maxTokens":200000,"messageBreakdown":{"toolCallTokens":23,"toolResultTokens":68,"attachmentTokens":0,"assistantMessageTokens":12,"userMessageTokens":4}}`
@@ -129,24 +142,123 @@ func (f *workflowResumeFixture) useCLI(cli resumeCLI) {
 		if usage == "" {
 			usage = resumeContextUsage
 		}
-		answer := `printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":%s}}\n' "$reqid" `
+		// answer <request id> <subtype> <payload>, held until the gate opens
+		// when the CLI is gated.
+		b.WriteString("answer() {\n")
+		answer := `printf '{"type":"control_response","response":{"subtype":"%s","request_id":"%s",%s}}\n' "$2" "$1" "$3"`
+		if cli.gated {
+			b.WriteString("  ( while [ ! -f " + stringsx.ShellQuote(f.gateFile()) + " ]; do sleep 0.02; done; " + answer + " ) &\n")
+		} else {
+			b.WriteString("  " + answer + "\n")
+		}
+		b.WriteString("}\n")
+		b.WriteString("users=0\n")
 		b.WriteString("while IFS= read -r line; do\n")
 		b.WriteString("  printf '%s\\n' \"$line\" >> " + stringsx.ShellQuote(f.stdinLog) + "\n")
 		if cli.loaded {
 			b.WriteString("  reqid=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n")
 			b.WriteString("  case \"$line\" in\n")
-			if usage != "hold" {
-				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) " + answer + stringsx.ShellQuote(usage) + " ;;\n")
-			} else {
-				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) ;;\n")
+			b.WriteString("  *'\"type\":\"user\"'*) users=$((users+1))")
+			if cli.initOnInput {
+				b.WriteString("; printf '%s\\n' " + stringsx.ShellQuote(initLine(workflowResumeSession)) +
+					"; printf '%s\\n' " + stringsx.ShellQuote(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"done","session_id":"`+workflowResumeSession+`"}`))
 			}
-			b.WriteString("  *'\"type\":\"control_request\"'*) " + answer + "'{}' ;;\n")
+			b.WriteString(" ;;\n")
+			switch {
+			case cli.conversationUsers != nil:
+				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) answer \"$reqid\" success " +
+					"\"\\\"response\\\":{\\\"totalTokens\\\":100,\\\"messageBreakdown\\\":{\\\"assistantMessageTokens\\\":12,\\\"userMessageTokens\\\":$(( (" +
+					strconv.Itoa(*cli.conversationUsers) + " + users) * 4 ))}}\" ;;\n")
+			case usage == "hold":
+				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) ;;\n")
+			case usage == "refuse":
+				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) answer \"$reqid\" error " +
+					stringsx.ShellQuote(`"error":"Unsupported control request subtype: get_context_usage"`) + " ;;\n")
+			default:
+				b.WriteString("  *'\"subtype\":\"get_context_usage\"'*) answer \"$reqid\" success " +
+					stringsx.ShellQuote(`"response":`+usage) + " ;;\n")
+			}
+			b.WriteString("  *'\"subtype\":\"mcp_status\"'*) ")
+			if cli.onProbe != "" {
+				b.WriteString("printf '%s\\n' " + stringsx.ShellQuote(cli.onProbe) + "; ")
+			}
+			b.WriteString("answer \"$reqid\" success '\"response\":{}' ;;\n")
+			b.WriteString("  *'\"type\":\"control_request\"'*) answer \"$reqid\" success '\"response\":{}' ;;\n")
 			b.WriteString("  esac\n")
 		}
 		b.WriteString("done\n")
 	}
 	binary := mockexec.Write(f.t, filepath.Join(f.t.TempDir(), "claude-resume.sh"), b.String())
 	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// gateFile is the file whose creation releases a gated CLI's answers.
+func (f *workflowResumeFixture) gateFile() string {
+	return f.stdinLog + ".gate"
+}
+
+func (f *workflowResumeFixture) openGate() {
+	f.t.Helper()
+	if err := os.WriteFile(f.gateFile(), nil, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// stdinLines is what the CLI has read so far.
+func (f *workflowResumeFixture) stdinLines() []string {
+	data, _ := os.ReadFile(f.stdinLog)
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// stdinIndex is the position of the first line the CLI read containing
+// part, or -1.
+func (f *workflowResumeFixture) stdinIndex(part string) int {
+	for i, line := range f.stdinLines() {
+		if strings.Contains(line, part) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (f *workflowResumeFixture) waitStdin(part string) {
+	f.t.Helper()
+	waitFor(f.t, "the CLI to read "+part, func() bool { return f.stdinIndex(part) >= 0 })
+}
+
+// registerSessionOutsideTheRunner starts the thread's session through the
+// App's start door, as a reconnect or a person's send does, without the
+// runner, and returns with the session registered.
+func (f *workflowResumeFixture) registerSessionOutsideTheRunner(sendFirst string) {
+	f.t.Helper()
+	// A workflow thread starts only with its phase schema registered; the
+	// start this stands for is not the runner's.
+	f.setMode("")
+	if err := f.app.startSessionTakingLock(f.t.Context(), f.thread.ID); err != nil {
+		f.t.Fatalf("start the session outside the runner: %v", err)
+	}
+	if sendFirst != "" {
+		if err := f.app.sendMessage(f.thread.ID, sendFirst, nil); err != nil {
+			f.t.Fatalf("send before the continuation: %v", err)
+		}
+		f.waitStdin(sendFirst)
+	}
+	f.setMode("workflow")
+	if _, ok := f.app.sessionManager().get(f.thread.ID); !ok {
+		f.t.Fatal("no session registered outside the runner")
+	}
+}
+
+func (f *workflowResumeFixture) setMode(mode string) {
+	f.t.Helper()
+	thread, err := f.app.store.GetThread(f.thread.ID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	thread.Mode = mode
+	if err := f.app.store.UpdateThread(thread); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -336,26 +448,40 @@ func TestWorkflowContinuationCancelledWhileClaudeLoads(t *testing.T) {
 				t.Fatalf("cancelled start = %v, want the cancellation", err)
 			}
 			f.requireNothingLeft()
+			// The proof held the thread; a cancelled one lets it go.
+			lockCtx, cancelLock := context.WithTimeout(t.Context(), 5*time.Second)
+			unlock, err := f.app.threadLocks().LockCtx(lockCtx, f.thread.ID)
+			cancelLock()
+			if err != nil {
+				t.Fatalf("the thread action lock after a cancelled proof: %v", err)
+			}
+			unlock()
 		})
 	}
 }
 
-// A resume that loads a conversation with no user message (system and
-// attachment rows only, or a chain the CLI's filters emptied) is unavailable
-// and leaves nothing behind, so the workflow rebuilds the round. Any user
-// content, or an answer that cannot say, keeps the resumed session.
+// A resume is reused only when the CLI counts a user message in the
+// conversation it loaded. One with none (system and attachment rows only, or
+// a chain the CLI's filters emptied), and an answer that cannot say, are
+// unavailable and leave nothing behind, so the workflow rebuilds the round;
+// the error names why.
 func TestWorkflowContinuationRefusesAClaudeConversationWithNoUserMessage(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct {
-		usage       string
-		unavailable bool
+		usage string
+		// cause is in the error of an unavailable context; empty when the
+		// session is kept.
+		cause string
 	}{
 		"no user message": {
-			usage:       `{"totalTokens":73,"maxTokens":200000,"messageBreakdown":{"toolCallTokens":0,"toolResultTokens":0,"attachmentTokens":61,"assistantMessageTokens":12,"userMessageTokens":0}}`,
-			unavailable: true,
+			usage: `{"totalTokens":73,"maxTokens":200000,"messageBreakdown":{"toolCallTokens":0,"toolResultTokens":0,"attachmentTokens":61,"assistantMessageTokens":12,"userMessageTokens":0}}`,
+			cause: "0 user-message tokens",
 		},
 		"a user message": {usage: resumeContextUsage},
-		"malformed":      {usage: `{"messageBreakdown":{"userMessageTokens":"none"}}`},
+		"malformed":      {usage: `{"messageBreakdown":{"userMessageTokens":"none"}}`, cause: "unreadable"},
+		"refused":        {usage: "refuse", cause: "Unsupported control request subtype: get_context_usage"},
+		"no breakdown":   {usage: `{"totalTokens":100,"maxTokens":200000}`, cause: "no messageBreakdown"},
+		"no count":       {usage: `{"messageBreakdown":{"assistantMessageTokens":12}}`, cause: "no userMessageTokens"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -364,9 +490,9 @@ func TestWorkflowContinuationRefusesAClaudeConversationWithNoUserMessage(t *test
 			f.useCLI(resumeCLI{loaded: true, contextUsage: tc.usage})
 
 			err := f.start(t.Context())
-			if tc.unavailable {
-				if !errors.Is(err, engine.ErrProviderContextUnavailable) {
-					t.Fatalf("continuation start = %v, want the provider context unavailable", err)
+			if tc.cause != "" {
+				if !errors.Is(err, engine.ErrProviderContextUnavailable) || !strings.Contains(err.Error(), tc.cause) {
+					t.Fatalf("continuation start = %v, want the provider context unavailable naming %q", err, tc.cause)
 				}
 				f.requireNothingLeft()
 				return

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"agent-overflow/internal/provider"
 )
@@ -23,11 +23,18 @@ var ErrSessionNotFound = errors.New("claude: the conversation to resume does not
 // no history.
 var ErrConversationEmpty = errors.New("claude: the resumed conversation holds no user message")
 
-// IsConversationUnavailable reports whether a start's outcome proves there is
-// no conversation to continue: the CLI holds none under the id, or the one it
-// loaded holds no user message.
-func IsConversationUnavailable(err error) bool {
-	return errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrConversationEmpty)
+// ErrContentUnproven means the CLI loaded the conversation `--resume` named
+// and did not say that it holds a user message: it refused get_context_usage,
+// answered without messageBreakdown or its userMessageTokens, answered
+// something unreadable, or took a command AO wrote before the count was read.
+// The wrapped message names which.
+var ErrContentUnproven = errors.New("claude: the resumed conversation's content is unproven")
+
+// IsConversationUnproven reports whether a start's outcome leaves no proven
+// conversation to continue: the CLI holds none under the id, the one it
+// loaded holds no user message, or it did not say whether it holds one.
+func IsConversationUnproven(err error) bool {
+	return errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrConversationEmpty) || errors.Is(err, ErrContentUnproven)
 }
 
 // ErrResumedOtherSession means the CLI initialized on a session other than
@@ -44,6 +51,14 @@ type startOutcome struct {
 	done chan struct{}
 	once sync.Once
 	err  error
+	// byInit says a `system/init` resolved the outcome. Written before done
+	// closes and read only after it has.
+	byInit bool
+	// prompted and commanded say an input was written to the process: a
+	// prompt (a person's, a queued or a workflow message), or a command AO
+	// issued on its own (provider.SendOptions.InternalCommand). Set before
+	// the write (noteInput).
+	prompted, commanded atomic.Bool
 	// resume is the session `--resume` names on a start that keeps that
 	// session; empty on a fresh start or a fork, which initialize on a session
 	// id of their own.
@@ -61,10 +76,27 @@ func newStartOutcome(cfg Config) *startOutcome {
 }
 
 func (o *startOutcome) resolve(err error) {
+	o.resolveFrom(err, false)
+}
+
+func (o *startOutcome) resolveFrom(err error, byInit bool) {
 	o.once.Do(func() {
 		o.err = err
+		o.byInit = byInit
 		close(o.done)
 	})
+}
+
+// noteInput records that an input is about to be written to the process.
+func (o *startOutcome) noteInput(internalCommand bool) {
+	if o == nil {
+		return
+	}
+	if internalCommand {
+		o.commanded.Store(true)
+	} else {
+		o.prompted.Store(true)
+	}
 }
 
 // observe resolves the outcome from one parsed frame and returns the frame to
@@ -80,7 +112,7 @@ func (o *startOutcome) observe(evt provider.ProviderEvent) provider.ProviderEven
 	switch evt.Kind {
 	case provider.EventInit:
 		o.initialized = true
-		o.resolve(o.initError(evt))
+		o.resolveFrom(o.initError(evt), true)
 	case provider.EventTurnComplete:
 		wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
 		if !ok || wire == nil || wire.ErrorMessage == "" {
@@ -171,8 +203,7 @@ func (o *startOutcome) exited(proc *provider.Process, closing bool) {
 // conversation does not exist, ErrResumedOtherSession for an init on another
 // session, and an error naming the cause when the process failed to start,
 // exited or was closed first. An outcome reached before the call is returned
-// at once. A resume that loaded is then checked for content once per call
-// (resumedContent), which can return ErrConversationEmpty.
+// at once.
 //
 // A print-mode CLI writes its first init only for its first input, so the
 // proof before any send is a `mcp_status` control request: the CLI answers
@@ -182,6 +213,17 @@ func (o *startOutcome) exited(proc *provider.Process, closing bool) {
 // success or error, proves the load. The answer says nothing about which
 // session the CLI loaded.
 //
+// A loaded resume is then checked for content once per call
+// (resumedContent): only a nonzero user-message count proves it, a zero is
+// ErrConversationEmpty and any other answer ErrContentUnproven. The count is
+// the resumed conversation's only before the first input, so the check is
+// valid only then, and the caller holds every input off the process until
+// AwaitStart returns. A process that already took an input is proof on its
+// own and its content is not read: a prompt was written to it, or its start
+// resolved through an init, which the CLI writes only for an input. A command
+// AO wrote on its own (provider.SendOptions.InternalCommand) before the count
+// was read may be in it, which is ErrContentUnproven.
+//
 // The wait ends with ctx and has no budget of its own: the load can be
 // silent for as long as its SessionStart hooks run.
 func (s *Session) AwaitStart(ctx context.Context) error {
@@ -190,6 +232,9 @@ func (s *Session) AwaitStart(ctx context.Context) error {
 	}
 	if err := s.awaitLoad(ctx); err != nil || s.start.resume == "" {
 		return err
+	}
+	if s.start.byInit && !s.start.commanded.Load() {
+		return nil
 	}
 	return s.resumedContent(ctx)
 }
@@ -214,15 +259,14 @@ func (s *Session) awaitLoad(ctx context.Context) error {
 	}
 }
 
-// resumedContent reads get_context_usage once and refuses a loaded resume
-// whose messageBreakdown counts zero user-message tokens (claude-wire.md
-// §Start outcome before the first input). Only that count refuses. An error
-// answer (a CLI without the subtype answers "Unsupported control request
-// subtype"), an answer without the count (messageBreakdown is optional in
-// the 2.1.88 schema) and a malformed one keep the proven load, since none of
-// them says the conversation is empty. Like the load, the wait has no budget
-// of its own: ctx bounds it.
+// resumedContent reads get_context_usage once (claude-wire.md §Start outcome
+// before the first input) and proves the loaded resume only when its
+// messageBreakdown counts user-message tokens. Like the load, the wait has
+// no budget of its own: ctx bounds it.
 func (s *Session) resumedContent(ctx context.Context) error {
+	if took, err := s.tookInput(); took {
+		return err
+	}
 	requestID, answer, err := s.writeControlRequest("get_context_usage", map[string]any{"subtype": "get_context_usage"})
 	if err != nil {
 		return fmt.Errorf("claude: read the resumed conversation's content: %w", err)
@@ -233,17 +277,21 @@ func (s *Session) resumedContent(ctx context.Context) error {
 		if res == nil {
 			return errors.New("claude: the session closed before it reported the resumed conversation's content")
 		}
+		// An input written while the request was out may be in the count.
+		if took, err := s.tookInput(); took {
+			return err
+		}
 		if !res.ok {
-			log.Printf("claude: thread %s: get_context_usage refused (%s); keeping the loaded resume", s.threadID, res.errMsg)
-			return nil
+			return fmt.Errorf("%w: get_context_usage refused: %s", ErrContentUnproven, res.errMsg)
 		}
 		tokens, err := userMessageTokens(res.payload)
-		if err != nil {
-			log.Printf("claude: thread %s: %v; keeping the loaded resume", s.threadID, err)
-			return nil
-		}
-		if tokens != nil && *tokens == 0 {
+		switch {
+		case err != nil:
+			return fmt.Errorf("%w: %v", ErrContentUnproven, err)
+		case tokens == 0:
 			return fmt.Errorf("%w: get_context_usage counts 0 user-message tokens", ErrConversationEmpty)
+		case tokens < 0:
+			return fmt.Errorf("%w: get_context_usage counts %d user-message tokens", ErrContentUnproven, tokens)
 		}
 		return nil
 	case <-ctx.Done():
@@ -251,19 +299,38 @@ func (s *Session) resumedContent(ctx context.Context) error {
 	}
 }
 
+// tookInput reports whether an input was written to the process, and what
+// that means for the content check: nil for a prompt, which the process
+// took, so it is proof on its own; ErrContentUnproven for a command AO wrote
+// on its own, which may be in the count.
+func (s *Session) tookInput() (bool, error) {
+	switch {
+	case s.start.prompted.Load():
+		return true, nil
+	case s.start.commanded.Load():
+		return true, fmt.Errorf("%w: a command AO wrote before the count was read may be in it", ErrContentUnproven)
+	default:
+		return false, nil
+	}
+}
+
 // userMessageTokens reads messageBreakdown.userMessageTokens from a
-// get_context_usage payload; nil when the answer does not carry it.
-func userMessageTokens(payload json.RawMessage) (*int, error) {
+// get_context_usage payload. An answer without it is an error naming what is
+// missing.
+func userMessageTokens(payload json.RawMessage) (int, error) {
 	var decoded struct {
 		MessageBreakdown *struct {
 			UserMessageTokens *int `json:"userMessageTokens"`
 		} `json:"messageBreakdown"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return nil, fmt.Errorf("get_context_usage answer unreadable: %w", err)
+		return 0, fmt.Errorf("get_context_usage answer unreadable: %w", err)
 	}
 	if decoded.MessageBreakdown == nil {
-		return nil, nil
+		return 0, errors.New("get_context_usage answered with no messageBreakdown")
 	}
-	return decoded.MessageBreakdown.UserMessageTokens, nil
+	if decoded.MessageBreakdown.UserMessageTokens == nil {
+		return 0, errors.New("get_context_usage messageBreakdown has no userMessageTokens")
+	}
+	return *decoded.MessageBreakdown.UserMessageTokens, nil
 }

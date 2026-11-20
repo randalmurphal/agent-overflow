@@ -18,8 +18,9 @@ import (
 )
 
 // A cold resume is proven by the provider's start alone. Only the provider's
-// report that the conversation is gone makes the context unavailable; any
-// other failure is the start's own. Neither keeps the temporary schema.
+// report that the conversation is gone, empty or of unproven content makes
+// the context unavailable, and the error names it; any other failure is the
+// start's own. Neither keeps the temporary schema.
 func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -28,6 +29,12 @@ func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 		unavailable bool
 		cancelled   bool
 	}{
+		{
+			name: "claude content unproven", provider: string(provider.Claude), unavailable: true,
+			start: func(context.Context, string) error {
+				return fmt.Errorf("%w: get_context_usage refused: Unsupported control request subtype: get_context_usage", claude.ErrContentUnproven)
+			},
+		},
 		{
 			name: "claude has no such conversation", provider: string(provider.Claude), unavailable: true,
 			start: func(context.Context, string) error {
@@ -85,13 +92,24 @@ func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 					return tc.start(ctx, threadID)
 				}
 			}
-			runner := newTestRunner(t, &fakeHost{startSessionProvingResume: start}, nil, nil)
+			var schemaAtStart json.RawMessage
+			var runner *Runner
+			runner = newTestRunner(t, &fakeHost{startSessionTakingLock: func(ctx context.Context, threadID string) error {
+				schemaAtStart = runner.schemaForThread(threadID)
+				return start(ctx, threadID)
+			}}, nil, nil)
 
 			started, err := runner.ensureReusableWorkflowSession(
 				ctx, thread, json.RawMessage(`{"type":"object"}`),
 			)
 			if started || err == nil || errors.Is(err, engine.ErrProviderContextUnavailable) != tc.unavailable {
 				t.Fatalf("availability = started %v, err %v; want unavailable %v", started, err, tc.unavailable)
+			}
+			if tc.unavailable && !strings.Contains(err.Error(), tc.start(t.Context(), thread.ID).Error()) {
+				t.Fatalf("unavailable = %v, want it to name the provider's report", err)
+			}
+			if len(schemaAtStart) == 0 {
+				t.Fatal("the start ran without the temporary schema")
 			}
 			if tc.cancelled && !strings.Contains(err.Error(), "startup cancelled") {
 				t.Fatalf("cancelled availability = %v, want a cancelled start", err)
@@ -129,6 +147,46 @@ func TestWorkflowContinuationAcceptsLiveContextBeforeCursorPersistence(t *testin
 	)
 	if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
 		t.Fatalf("cold cursor-less availability = started %v, err %v; want unavailable", started, err)
+	}
+}
+
+// A live session is proven too, not accepted because it is registered, and
+// its reuse registers no temporary schema: the runner did not start it.
+func TestWorkflowContinuationProvesALiveSession(t *testing.T) {
+	thread := store.Thread{
+		ID: "live-context-proven", Mode: "workflow",
+		Provider: string(provider.Claude), SessionRef: "provider-session",
+	}
+	var proofErr error
+	var schemaAtProof json.RawMessage
+	var runner *Runner
+	runner = newTestRunner(t, &fakeHost{
+		sessionActive: func(string) bool { return true },
+		startSessionTakingLock: func(context.Context, string) error {
+			return errors.New("a live session must not be started again")
+		},
+		proveSession: func(_ context.Context, threadID string, started bool) error {
+			if started {
+				return errors.New("the live session was not the one proven")
+			}
+			schemaAtProof = runner.schemaForThread(threadID)
+			return proofErr
+		},
+	}, nil, nil)
+	schema := json.RawMessage(`{"type":"object"}`)
+
+	started, err := runner.ensureReusableWorkflowSession(t.Context(), thread, schema)
+	if started || err != nil || len(schemaAtProof) != 0 {
+		t.Fatalf("live reuse = started %v, err %v, schema %s; want reuse with no schema", started, err, schemaAtProof)
+	}
+
+	proofErr = fmt.Errorf("%w: No conversation found with session ID: provider-session", claude.ErrSessionNotFound)
+	started, err = runner.ensureReusableWorkflowSession(t.Context(), thread, schema)
+	if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
+		t.Fatalf("unproven live session = started %v, err %v; want unavailable", started, err)
+	}
+	if registered := runner.schemaForThread(thread.ID); len(registered) != 0 {
+		t.Fatalf("an unproven live session left a schema: %s", registered)
 	}
 }
 

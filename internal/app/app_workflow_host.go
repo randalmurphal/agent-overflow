@@ -48,8 +48,8 @@ func (h workflowHostAdapter) StartSessionTakingLock(ctx context.Context, threadI
 	return h.app.startSessionTakingLock(ctx, threadID)
 }
 
-func (h workflowHostAdapter) StartSessionProvingResume(ctx context.Context, threadID string) error {
-	return h.app.startSessionProvingResume(ctx, threadID)
+func (h workflowHostAdapter) EnsureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (bool, error) {
+	return h.app.ensureProvenSession(ctx, threadID, beforeStart)
 }
 
 func (h workflowHostAdapter) StopSession(threadID string) error {

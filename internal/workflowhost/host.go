@@ -43,20 +43,26 @@ import (
 // restart's original all-exported wiring, not a design choice.
 //
 // `SessionActive` is a bare liveness question rather than the App's session
-// handle: both callers here discard the handle and read only the boolean, so
-// the seam asks exactly what the runner decides on.
+// handle: its caller, a takeover deciding whether a schema-attached process
+// is running, reads only the boolean.
 //
-// `StartSessionProvingResume` is `StartSessionTakingLock` followed by the
-// provider's own report of how that start ended: a Claude process that
-// loaded the session it resumed with a user message in it, or the failure
-// that stopped it first (`claude.IsConversationUnavailable` when the
-// conversation is gone or empty). A failed proof
-// stops the session that start registered. Codex proves the same thing inside
-// the start, with its synchronous `thread/resume`.
+// `EnsureProvenSession` leaves the thread with a session the provider proved
+// holds the conversation the thread continues, or with none. Under the
+// thread's action lock, held until the proof returns so no input reaches the
+// process first, it proves the session registered for the thread, or calls
+// beforeStart, starts one and proves that; started reports the second. The
+// proof is the provider's own report of how that process's start ended: a
+// Claude process that loaded the session it resumed and counts a user
+// message in it, or already took an input, or the failure that stopped it
+// first (`claude.IsConversationUnproven` when the conversation is gone,
+// empty or its content unproven). Codex proves the same thing inside the
+// start, with its synchronous `thread/resume`; a live claude-tui session is
+// accepted. A failed proof stops the session it proved. A beforeStart error
+// is returned as it is.
 type SessionHost interface {
 	StartSession(ctx context.Context, threadID string) error
 	StartSessionTakingLock(ctx context.Context, threadID string) error
-	StartSessionProvingResume(ctx context.Context, threadID string) error
+	EnsureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (started bool, err error)
 	StopSession(threadID string) error
 	SessionActive(threadID string) bool
 }

@@ -5425,12 +5425,19 @@ AO enforcement: `Session.AwaitStart` resolves from the read loop. A
 `result` is a startup failure, which the read loop marks
 `FailureReasonStartup` for the App to reap the session; only the two "not
 found" messages are `ErrSessionNotFound`. The frame decides, not the exit
-after it: the read loop drains stdout to EOF before it ends. A resume that
-loaded is then read once with `get_context_usage`, and zero
-`userMessageTokens` is `ErrConversationEmpty`. An error answer, an answer
-without the count and a malformed one keep the load, since none says the
-conversation is empty. Every wait is bounded only by its caller's context;
-the workflow runner's start deadline bounds it there.
+after it: the read loop drains stdout to EOF before it ends. A resume the
+probe answer proved is then read once with `get_context_usage`: only a
+nonzero `userMessageTokens` proves it, zero is `ErrConversationEmpty`, and
+an error answer, an answer without `messageBreakdown` or the count, and an
+unreadable one are `ErrContentUnproven`. The count is the resumed
+conversation's only before the first input, so the caller holds every input
+off the process until the proof returns (the App holds the thread action
+lock). A process that already took a prompt, or whose start an init
+resolved, is proof on its own and is not read. A command AO writes on its
+own (`/effort`, `/fast`, `/rename`) without that lock, before the count or
+while it is out, may be counted (not verified) and is `ErrContentUnproven`.
+Every wait is bounded only by its caller's context; the workflow runner's
+start deadline bounds it there.
 
 ---
 

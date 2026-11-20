@@ -40,15 +40,15 @@ import (
 type fakeHost struct {
 	startSession           func(context.Context, string) error
 	startSessionTakingLock func(context.Context, string) error
-	// startSessionProvingResume defaults to startSessionTakingLock: a start
-	// that succeeds is proven.
-	startSessionProvingResume func(context.Context, string) error
-	stopSession               func(string) error
-	sessionActive             func(string) bool
-	subscribe                 func(string, func(string, provider.ProviderEvent)) func()
-	send                      func(context.Context, string, string, json.RawMessage, func(DispatchIdentity)) error
-	createThread              func(ThreadSpec) (store.Thread, error)
-	assistantTexts            func(string) ([]string, error)
+	// proveSession is EnsureProvenSession's proof of the session it found
+	// or started; nil proves every session.
+	proveSession   func(ctx context.Context, threadID string, started bool) error
+	stopSession    func(string) error
+	sessionActive  func(string) bool
+	subscribe      func(string, func(string, provider.ProviderEvent)) func()
+	send           func(context.Context, string, string, json.RawMessage, func(DispatchIdentity)) error
+	createThread   func(ThreadSpec) (store.Thread, error)
+	assistantTexts func(string) ([]string, error)
 	// dataStore lets the default CreateWorkflowThread persist a real row, so a
 	// start that runs past thread creation has a thread id its own store can
 	// resolve. newTestRunner wires it to the runner's store.
@@ -81,11 +81,24 @@ func (h *fakeHost) StartSessionTakingLock(ctx context.Context, threadID string) 
 	return h.startSessionTakingLock(ctx, threadID)
 }
 
-func (h *fakeHost) StartSessionProvingResume(ctx context.Context, threadID string) error {
-	if h.startSessionProvingResume != nil {
-		return h.startSessionProvingResume(ctx, threadID)
+// EnsureProvenSession proves the live session SessionActive reports, or
+// calls beforeStart and starts one through StartSessionTakingLock.
+func (h *fakeHost) EnsureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (bool, error) {
+	started := !h.SessionActive(threadID)
+	if started {
+		if err := beforeStart(); err != nil {
+			return false, err
+		}
+		if err := h.StartSessionTakingLock(ctx, threadID); err != nil {
+			return false, err
+		}
 	}
-	return h.StartSessionTakingLock(ctx, threadID)
+	if h.proveSession != nil {
+		if err := h.proveSession(ctx, threadID, started); err != nil {
+			return false, err
+		}
+	}
+	return started, nil
 }
 
 func (h *fakeHost) StopSession(threadID string) error {
