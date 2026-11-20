@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -25,6 +26,19 @@ func (p historyGatePage) HistoryState(ctx context.Context) (bool, bool, error) {
 	p.reached <- "history " + p.handle
 	<-p.gate
 	return p.handledPage.HistoryState(ctx)
+}
+
+// failingSizePage is an adopted popup's fake page whose first sizing, a
+// setup step after its attach, runs report (the ends the engine reports
+// meanwhile) and then fails.
+type failingSizePage struct {
+	*handledPage
+	report func()
+}
+
+func (p failingSizePage) SetViewport(context.Context, int, int) error {
+	p.report()
+	return errors.New("the page's process went away")
 }
 
 // A close or crash an engine reports of a popup decides its tab at the
@@ -57,7 +71,7 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 		{"a crash, then a close", []string{"crash", "close"}, none, none, crashed},
 		{"a close, then a crash", []string{"close", "crash"}, none, none, none},
 	}
-	stages := []string{"during its attach", "during an attach that fails", "during its history read", "after its listing"}
+	stages := []string{"during its attach", "during an attach that fails", "during a sizing that fails", "during its history read", "after its listing"}
 	for _, stage := range stages {
 		for _, trace := range traces {
 			t.Run(stage+"/"+trace.name, func(t *testing.T) {
@@ -114,6 +128,14 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 					engine.awaitAttach(t, "popup")
 					report()
 					release()
+				case "during a sizing that fails":
+					// A setup step after the attach fails as an attach
+					// failure does: its admission decides.
+					want = trace.unattached
+					engine.wrap = func(driver pageDriver) pageDriver {
+						return failingSizePage{handledPage: driver.(*handledPage), report: report}
+					}
+					manager.popupOpened(engine.popup(opener, "popup"))
 				case "during its history read":
 					engine.wrap = func(driver pageDriver) pageDriver {
 						return historyGatePage{handledPage: driver.(*handledPage), reached: engine.reached, gate: history}

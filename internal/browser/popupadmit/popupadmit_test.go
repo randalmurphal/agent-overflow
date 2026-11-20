@@ -40,7 +40,7 @@ func TestCommitReadsWhatEndedThePopup(t *testing.T) {
 				}
 				commit, want := r.Commit, tc.want
 				if !attached {
-					commit, want = r.CommitUnattached, tc.unattached
+					commit, want = r.CommitFailed, tc.unattached
 				}
 				v := commit("p")
 				wantReason := tc.reason

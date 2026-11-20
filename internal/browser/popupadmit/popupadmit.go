@@ -9,10 +9,10 @@
 // or crash meanwhile, and the engine reports that by its handle (Observe)
 // whatever the Manager is doing with it. The Manager acts on a close or
 // crash only for a listed tab, so the observation waits on the popup's
-// admission until the listing's commit (Commit, or CommitUnattached when
-// its attach failed) reads it: a popup that closed is never listed, one
-// that only crashed is listed as the crashed tab it is. Every popup's
-// admission ends once, listed or ended (Commit, CommitUnattached, Discard),
+// admission until the listing's commit (Commit, or CommitFailed when a
+// step of its setup failed) reads it: a popup that closed is never listed,
+// one that only crashed is listed as the crashed tab it is. Every popup's
+// admission ends once, listed or ended (Commit, CommitFailed, Discard),
 // and a listed one ends when its tab leaves (Leave).
 //
 // A handle is an engine's page handle, unique for the engine's life: a
@@ -245,11 +245,11 @@ func (r *Registry) Commit(h ids.PageHandle) Verdict {
 	return Verdict{kind: List}
 }
 
-// CommitUnattached ends the admission of h whose page could not be
-// attached: a popup whose process ended first is still listed crashed, as
-// its crash would list it attached, unless it also closed; any other is
-// refused.
-func (r *Registry) CommitUnattached(h ids.PageHandle) Verdict {
+// CommitFailed ends the admission of h whose setup failed (its attach, or
+// any step after it): a popup whose process ended first is still listed
+// crashed, as its crash would list it set up, unless it also closed; any
+// other is refused.
+func (r *Registry) CommitFailed(h ids.PageHandle) Verdict {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.live[h]

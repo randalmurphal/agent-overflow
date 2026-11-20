@@ -134,8 +134,9 @@ Every engine reports a popup before anything else of it, and any page's
 close and crash as it observes them, holding none back: the Manager
 records each in the popup's admission (`popupadmit`) before it acts, and
 the listing's one commit decides the tab (a close refuses it, a crash
-alone lists it as a crashed tab from its first push, also when its attach
-then fails); a listed page's close and crash run in report order
+alone lists it as a crashed tab from its first push, also when a step of
+its setup then fails: every setup step's error comes back to that commit,
+`commitPopup` in `popup_listing.go`); a listed page's close and crash run in report order
 (`engine_pages.go`). An admission is kept while its popup is pending or
 listed or a popup of it is, so a download finds the nearest open
 ancestor however many popups come and go; only ended ones go to a bounded
