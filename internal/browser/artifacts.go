@@ -23,7 +23,10 @@ const (
 // artifactMaxAge as it goes. A scan it cannot finish answers the error and
 // measures nothing, so every reservation is refused with the reason until
 // a later call measures it all. An expired artifact it cannot remove stays
-// charged and is logged; one gone meanwhile is not charged.
+// charged and is logged; one gone meanwhile is not charged. Writes follow
+// a link where the scan would not, so a root that is a link, or a link to
+// a directory inside it, is refused: what the quota measures is where the
+// artifacts are written.
 func (m *Manager) prepareArtifacts() error {
 	m.artifactInitMu.Lock()
 	defer m.artifactInitMu.Unlock()
@@ -32,6 +35,11 @@ func (m *Manager) prepareArtifacts() error {
 	}
 	if err := os.MkdirAll(m.artifactRoot, 0o700); err != nil {
 		return fmt.Errorf("browser: create the artifact folder: %w", err)
+	}
+	if root, err := os.Lstat(m.artifactRoot); err != nil {
+		return fmt.Errorf("browser: the artifact folder: %w", err)
+	} else if !root.IsDir() {
+		return fmt.Errorf("browser: the artifact folder %s is a link, not a folder, so its size cannot be measured and nothing is kept there", m.artifactRoot)
 	}
 	cutoff := time.Now().Add(-artifactMaxAge)
 	var total int64
@@ -56,6 +64,11 @@ func (m *Manager) prepareArtifacts() error {
 		}
 		if err != nil {
 			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			if target, err := os.Stat(path); err == nil && target.IsDir() {
+				return fmt.Errorf("%s is a link to a folder, whose size the artifact quota cannot measure", path)
+			}
 		}
 		if !info.Mode().IsRegular() {
 			return nil

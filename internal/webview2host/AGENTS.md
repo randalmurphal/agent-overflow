@@ -1,193 +1,91 @@
 # Embedded WebView2 host
 
-This Windows package owns the secondary WebView2 used by the embedded browser
-pane: COM setup, child-window geometry, profile environments, and the CDP relay.
-The backend owns page intent and sends directives through the Windows launcher.
+This Windows package hosts the browser pane's pages in the Windows
+launcher: COM setup, child-window geometry, the pane's WebView2
+environment, popups, downloads and the CDP relay. The backend owns page
+intent and sends directives through the launcher
+([internal/wsllauncher](../wsllauncher/AGENTS.md)). The package comment
+says what builds off Windows. Behavior is in
+[browser-tools.md](../../docs/architecture/browser-tools.md) and
+[embedded-browser.md § 5](../../docs/specs/embedded-browser.md#5-windows-hosting-and-the-cdp-relay);
+the contracts of the symbols named below are their doc comments.
 
-## Contracts
+## Where to look
 
-Validate every directive before touching a window. Result-bearing create and
-clear-data operations always report success or failure. Other operations target
-an existing page and must not fabricate one after construction failure.
+| Change | Start here |
+|---|---|
+| Directives and reports on the wire | `directive.go`, `reportqueue.go`, `targetinfo.go` |
+| Page creation, close, directive application | `host_create_windows.go`, `host_close_windows.go`, `host_apply_windows.go` |
+| Environment and clear-data | `environment.go` (`paneEnvironment`), `host_windows.go`, `identifiers.go` |
+| Geometry, presentation, focus | `geometry.go`, `presenter.go`, `focusintent.go`, `internal/paneplace` |
+| Popups | `popup.go`, `popup_windows.go`, `popup_com_windows.go` |
+| Downloads | `download.go`, `downloadoutcome.go`, `download_windows.go`, `download_reconcile_windows.go`, `download_dialog_windows.go` |
+| COM objects and interfaces | `com_windows.go`, `comref_windows.go` |
+| CDP tunnel | `cdptunnel.go`, `tunnelstream.go`, `cdpframe.go`; [internal/cdprelay](../cdprelay/AGENTS.md) |
 
-A browser profile is an isolated WebView2 environment. Never share a user-data
-folder concurrently across runtime modes or workspaces. Clear-data closes the
-environment, removes the entire owned profile tree, recreates it, and reports
-only after completion. Validate every path component against symlinks and
-Windows reparse points before deletion.
+## Rules
 
-`clear-data` may race an asynchronous environment create. Preserve the
-generation contract in `paneEnvironment` (`environment.go`, cross-platform and
-unit-tested): clearing advances the generation, wakes old waiters, skips a
-start queued for the old generation, and forces a late completion to release
-its own COM references instead of adopting an environment rooted in the
-deleted profile. A create registers its page and requests its environment in
-one UI turn. After waiting, it starts the controller only if its page is
-still registered. While clear-data owns the profile, the host refuses page
-admissions and further clears. A closed host refuses clear-data.
+- Validate every directive before touching a window. Create and clear-data
+  always report success or failure; any other operation targets an
+  existing page and never fabricates one after a failed create.
+- The pane has one user-data folder per app mode, apart from the SPA's,
+  with each jar a named `CoreWebView2Profile` inside it. Never share a
+  folder across modes. The launcher validates and creates it, refusing
+  symlinked and reparse-point components (`prepareBrowserProfileStorage`);
+  this package only takes it (`Config.UserDataDir`).
+- Preserve the clear-data generation contract in `paneEnvironment`. While
+  clear-data owns the folder the host refuses page admissions and further
+  clears; a closed host refuses clear-data.
+- The launcher is the sole CDP dialer. Bind the relay to loopback, pair
+  the target with its page, close the relay with the controller, and never
+  expose WebView2's debug endpoint to the backend or the LAN.
+- The controller is a child of the launcher's HWND inside the clip
+  container; preserve sibling z-order. Hide only the container: an
+  invisible controller stops compositing, which freezes frames and hangs
+  CDP captures. A page's size and scale come from the backend's
+  device-metrics override, never from the controller's bounds, and its base
+  color only from `OpBackground`.
+- Only backend directives bind a page to a mount; the newer of the
+  directive and the local report places it (`pagePresentation.view`).
+  Moves go through `placePage`, and the host's shown or hidden state
+  changes only after the native call succeeded (`nextPresentStep`).
+- Keyboard focus enters a page only by `OpFocus`, under `focusDecision`;
+  AO never takes the OS focus from another application. The intent
+  protocol is in
+  [keyboard and focus](../../docs/architecture/keyboard-focus.md#focus-intents).
+- All COM and HWND mutations run on the launcher UI thread, which alone
+  owns the page registry (`admit`, `closeTaken`) in `Config.OnMain` turns;
+  later work goes through `Config.Post`. Never block on backend RPC there.
+  Reports keep their order, created before any later state.
+- A page whose required handlers (downloads, the download dialog, new
+  windows) cannot be subscribed, or whose dialog state cannot be read, is
+  not created.
+- Keep handwritten COM interfaces in ABI order with explicit HRESULT,
+  reference-count, UTF-16 ownership and callback-lifetime handling. A
+  Go-backed COM object follows `comref_windows.go`. Close the host before
+  its parent HWND and release in dependency order.
+- Every window a page opens is a launcher page, never a window of
+  WebView2's own; every `NewWindowRequested` is answered exactly once
+  (`settlePopup`). A popup's reports wait for its announcement
+  (`pageReport`).
+- The launcher takes every `DownloadStarting`. Every read of a download's
+  operation goes through `reconcileDownload`, and only its verdict
+  (`downloadoutcome.go`) makes a terminal snapshot. What the real runtime
+  does on a drop is recorded at `reconcileDownload`, `settleCancel` and in
+  `download_smoke_windows_test.go`.
 
-The launcher is the sole CDP dialer. Bind the relay to loopback, pair the target
-identifier with its page, and close the relay with the controller. Never expose
-WebView2's debug endpoint to the backend or LAN.
-
-The browser controller is a child of the launcher's HWND. Use the clip container
-and preserve sibling z-order. Convert frontend CSS pixels with the report's
-`devicePixelRatio`, falling back to the window's client size over the SPA
-viewport. Hide during invalid or zero-sized geometry. Hiding hides only the
-container and keeps the controller `IsVisible`; an invisible controller stops
-compositing, which freezes frames and hangs CDP captures. The page's size and
-scale come from the backend's device-metrics override, never from the
-controller's bounds. A page's base color arrives on its own directive
-(`OpBackground`), with or without bounds, and holds shown or hidden; bounds
-carry no color.
-
-The SPA also posts each pane geometry report to the launcher
-(`geometry.go`); `presenter.go` decides where a page shows. A page bound by
-its bounds directive to a mount with a local report is placed from that
-report with `paneplace.Fit` and shows only while the backend shows it and
-the report is visible, unless the directive's `Seq` (the SPA's number for
-the report the backend placed from) is newer than the report's; then, and
-without a local report, the directive's rect stands. A page is at a
-known place only once its controller, and its clip container where it has
-one, moved: `placePage` makes those writes for the bounds it is given and
-alone makes a known placement, after they succeeded. A move that fails
-hides it, its focus intent pending, until a later move succeeds; a move
-that places a page still shown again asks for that intent, as a show does
-(`nextPresentStep`). Shown or hidden is the host's
-view only once the native show or hide succeeded, on the clipped and the
-directly parented path alike, so a refused hide is retried by the next
-present. Only backend
-directives bind a page to a mount. Raw reports have their own validation:
-an empty clip on either axis is a hidden pane, not an error. The mailbox
-keeps the newest report per mount, drops older sequences, and has at most
-one UI-thread drain queued.
-
-Keyboard focus moves into a page only by `OpFocus`, and only while the host
-shows the page, the launcher window is the foreground window, and the SPA
-has not withdrawn the directive's focus intent (`focusDecision`,
-`focusintent.go`); AO never takes the OS focus from another application.
-The SPA posts each intent's arm and withdrawal to the launcher directly, so
-a withdrawal wins over a directive still crossing WSL. Delivery is not
-application: a directive for a page the launcher's own presentation hides
-stays pending, and the page's next show in the directive's mount applies
-it once (`present`); an applied intent delivered again moves nothing.
-
-All COM controller and HWND mutations run on the launcher UI thread. Completion
-handlers may arrive there, so never block on backend RPC inline. Serialize
-reports to preserve created before later states such as closed. The UI
-thread alone owns the page registry: membership, admission (`admit`, one
-check whose `MaxHostPages` counts every page) and teardown (`closeTaken`)
-run in `Config.OnMain` turns, which run inline on the UI thread; work for a
-later turn goes through `Config.Post`. A close a page asks for itself is
-posted and rereads the page's downloads and their states when it runs. A page whose
-required handlers (downloads, the download dialog, new windows) cannot be
-subscribed, or whose dialog state cannot be read, is not created.
-Creation is `host_create_windows.go`, close and teardown
-`host_close_windows.go`, directive application `host_apply_windows.go`.
-
-Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
-reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
-host before its parent HWND and release controllers, handlers, relay,
-environment, and COM references in dependency order. A Go object handed to
-WebView2 as a COM pointer counts its references and is rooted while any
-remain (`comref_windows.go`). Its creator releases the constructor's
-reference after the hand-off call, success or failure; a page detaches its
-callbacks when it goes, except controller-completed, whose completion closes
-a controller that outlived its page.
-
-Every window a page opens is a page of the launcher's, never a window of
-WebView2's own (`popup_windows.go`). `NewWindowRequested` is answered
-exactly once (`settlePopup`) on every path: with the new controller's view
-once it is up, or with no window when a bound (`MaxPendingPopups`,
-`MaxHostPages`), the opener's close, a failed create or the host's close
-comes first. A popup reaches the backend as `ReportPopup` under a page id
-the launcher mints, paired with the CDP target its view has after the
-deferral completes, and only after its opener's report; its other reports
-wait for that one (`pageReport`, `heldReports`: each kind of process
-failure once, up to `maxHeldProcessFailures`, and the newest snapshot per
-download). The launcher copies an address shortened to `MaxPopupURLBytes`
-and drops it at announcement. `popupCreateBound` discards a popup still
-waiting for a controller or target. A native controller create occupies
-one of `MaxPendingPopups` until its callback or synchronous failure,
-including after the window request was answered. A `ReportPopup` the
-launcher could not deliver closes the popup (`ReportUndelivered`), and
-with it its unannounced descendants. A middle, Ctrl or Shift click opens
-a popup whose target names no opener. A departing popup answers any open
-request. A departing unannounced popup reads its downloads' states, then
-ends those still running with `PopupGoneReason`. If its opener is a live unannounced popup, held
-snapshots pass to that opener, up to `maxHeldPopupDownloads`.
-Otherwise an unannounced popup with downloads is announced and closed
-with its held reports, after any departing opener it needs. A popup with
-nothing to report leaves no trace. A handler detached from its page still
-refuses a late request. A page's `WindowCloseRequested` closes it, once its
-downloads end if any run.
-
-A page's downloads are the launcher's (`download_windows.go`): it handles
-each `DownloadStarting`, so WebView2's dialog does not open for it, keeps the
-`DownloadOperation` and reports every change as the download's whole
-snapshot (`ReportDownload`, `download.go`), progress throttled, each
-numbered (`Seq`) in the order taken so the backend applies only newer
-ones. A directive naming a download (`OpCancelDownload`,
-`OpDownloadStatus`) reads the download's state first, so one whose state
-change never arrived ends then, and is answered with a snapshot marked
-`Answer`, which the
-backend never creates a row from: a running one's, an ended one's kept
-terminal snapshot under its own number (up to `MaxEndedDownloads` per page
-while the page lives), or `DownloadUnknown` for an id with no record. The
-launcher keeps a copy of at most `maxDownloadURIBytes` of a download's
-address, taken as it starts, and a digest of the whole address that a
-resume is matched by (`downloadAddress`, `resumeKey`); an address the
-runtime did not answer has no key, so it matches nothing. A report is bounded: the
-address is shortened, then the path left out, never the start or end. WebView2 resumes a dropped download as a new
-`DownloadStarting` whose operation carries the
-interruption's reason, while the dropped operation stays in progress with
-that reason and never ends. The resume is adopted only when exactly one
-running download from that address reads so (`resumedDownload`): it is set
-back to that download's file, and the operations it replaced are kept,
-detached, until the download ends, because releasing them stops the new
-one's reports. Otherwise it is a row of its own and nothing running is
-touched. The held snapshot cap applies only to new downloads. A cancel
-settles through WebView2's report or after `downloadCancelBound`
-(`settleCancel`), where a download still running stops being followed
-and one whose state cannot be read waits another bound. Every read of a
-download's operation goes through `reconcileDownload`, and its typed
-verdict (`downloadoutcome.go`) alone makes a terminal snapshot, an
-interrupted one naming its cause (`DownloadEnd`): WebView2's
-end only from a read that found one, and the launcher's own end of a
-download only for an explicit cause (the cancel bound, an unannounced
-popup's going). The backend numbers its cancel attempts
-(`Directive.Cancel`); a directive of either kind naming an attempt past
-the last taken makes it, and every later snapshot carries the last
-attempt's `CancelOutcome`, so a refusal rides every snapshot until an
-attempt is taken. A download
-ends, its handlers detached and every operation released, at its terminal
-state (an interrupted operation canceled first) or when its page goes
-(`retireDownloads`), which cancels it and reports nothing. What the real
-runtime does on a drop is recorded at `reconcileDownload`,
-`settleCancel` and in `download_smoke_windows_test.go`. WebView2 opens the
-dialog by itself over a popup's opener when the popup's first navigation
-is a download; every page closes its dialog as it opens
-(`download_dialog_windows.go`).
+## Tests
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
-Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
-`process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
-`crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
-`background_smoke_windows_test.go`, `popup_smoke_windows_test.go`,
-`policy_smoke_windows_test.go`),
-which need an installed runtime. From WSL, build them with
-`GOOS=windows go test -c` and run the binary with
-`WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the
-user's screen or takes their keyboard: the binary runs itself again on a
-desktop of its own, never switched to (`desktop_smoke_windows_test.go`),
-refuses to run the smokes when it cannot, and a smoke refuses to create a
-window from a thread whose desktop is the input desktop or `Default`,
-whatever the marker says, unless
+Windows tests (`*_smoke_windows_test.go`), which need an installed
+runtime. From WSL, build them with `GOOS=windows go test -c` and run the
+binary with `WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything
+on the user's screen or takes their keyboard: the binary runs itself
+again on a desktop of its own, never switched to
+(`desktop_smoke_windows_test.go`), and refuses to create a window on the
+input desktop or `Default` unless
 `AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. The popup and policy smokes
-watch the top-level windows (`window_watch_smoke_windows_test.go`) from
-setup through cleanup, from a baseline that includes the smoke window, and
-allow only WebView2 windows owned by the smoke window. That desktop is never the
-input desktop, so the focus smoke stands in the host's foreground answer
+allow only WebView2 windows owned by the smoke window
+(`window_watch_smoke_windows_test.go`). That desktop is never the input
+desktop, so the focus smoke stands in the host's foreground answer
 (`Host.foreground`).
-
-See [embedded browser specification](../../docs/specs/embedded-browser.md).

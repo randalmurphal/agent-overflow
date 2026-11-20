@@ -246,9 +246,9 @@ func TestADownloadPublishedAfterTheThreadClosedOffersNoAction(t *testing.T) {
 			close(linking)
 			<-linked
 		}
-		return os.Link(staged, candidate)
+		return linkFile(staged, candidate)
 	}
-	t.Cleanup(func() { linkDownload = os.Link })
+	t.Cleanup(func() { linkDownload = linkFile })
 	startDownload(t, manager, access, page, "late.txt", 10, "hold")
 	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	// The page's engine close waits, so the detached lifetime's teardown
