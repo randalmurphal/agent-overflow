@@ -192,9 +192,6 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id Down
 	if err != nil {
 		return info, err
 	}
-	if m.downloadOpening != nil {
-		m.downloadOpening()
-	}
 	opened, err := m.openFile(ctx, access, item.path, item.file, OpenOptions{PageID: PageID(info.ID)})
 	if err != nil {
 		return info, err

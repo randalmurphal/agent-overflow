@@ -8,15 +8,24 @@ import (
 	"agent-overflow/internal/browser/uicall"
 )
 
-// Each decision is taken once, by its completion or by the close, and a
-// set closed refuses a later hold.
+// Each decision is taken once, by its completion or by the close; an id
+// holds one open decision at a time, and a set closed refuses a later hold.
 func TestDecisionsAreTakenOnce(t *testing.T) {
 	s := NewDecisions[string, int]()
 	if !s.Hold("a", 1) || !s.Hold("b", 2) {
 		t.Fatal("an open set refused a decision")
 	}
+	if s.Hold("a", 9) {
+		t.Fatal("a second decision under an open id was held")
+	}
 	if d, ok := s.Take("a"); !ok || d != 1 {
-		t.Fatalf("take a = %d, %v", d, ok)
+		t.Fatalf("take a = %d, %v, want the first decision", d, ok)
+	}
+	if !s.Hold("a", 4) {
+		t.Fatal("an id whose decision was taken refused a new one")
+	}
+	if d, ok := s.Take("a"); !ok || d != 4 {
+		t.Fatalf("take a again = %d, %v", d, ok)
 	}
 	if _, ok := s.Take("a"); ok {
 		t.Fatal("a decision was taken twice")

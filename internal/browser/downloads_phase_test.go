@@ -29,6 +29,8 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 				t.Errorf("%v to %v answered %v", from, to, err)
 			} else if err != nil && (!errors.Is(err, errDownloadPhase) || entry.phase != from) {
 				t.Errorf("a refused %v to %v answered %v and left %v", from, to, err, entry.phase)
+			} else if err == nil && entry.phase != to {
+				t.Errorf("an allowed %v to %v left %v", from, to, entry.phase)
 			}
 		}
 	}
@@ -60,6 +62,28 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 	entry := DownloadInfo{ID: "dl", State: downloadStateRunning}
 	if err := entry.settle(downloadStateRunning); !errors.Is(err, errDownloadPhase) || entry.phase != rowRunning {
 		t.Errorf("a settle as running answered %v", err)
+	}
+}
+
+// A publish settles the row it began from only while that row is being
+// published, and answers why not otherwise: no row, or a row in another
+// phase.
+func TestAPublishFindsOnlyItsPublishingRow(t *testing.T) {
+	log := &pageDownloadLog{}
+	held := log.hold()
+	defer held.release()
+	if _, err := held.publishing("dl"); !errors.Is(err, errDownloadPhase) {
+		t.Fatalf("a publish of a row not in the log answered %v", err)
+	}
+	entry := held.add(DownloadInfo{ID: "dl", State: downloadStateRunning})
+	if _, err := held.publishing("dl"); !errors.Is(err, errDownloadPhase) {
+		t.Fatalf("a publish of a running row answered %v", err)
+	}
+	if err := entry.advance(rowPublishing); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := held.publishing("dl"); err != nil || got != entry {
+		t.Fatalf("a publish of its publishing row answered %p, %v, want %p", got, err, entry)
 	}
 }
 

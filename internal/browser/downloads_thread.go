@@ -25,7 +25,7 @@ import (
 const (
 	// maxThreadDownloads bounds the settled downloads the thread's list
 	// shows, the most recently settled. A running download is never
-	// dropped, and the quotas bound how many run.
+	// dropped; only artifact downloads have quotas bounding how many run.
 	maxThreadDownloads = 20
 	// maxResolvableDownloads bounds the settled downloads past the shown
 	// ones whose id still resolves (threadDownloadList.resolvable), so the
@@ -320,16 +320,21 @@ func (m *Manager) publishDownloads(notes ...downloadNote) {
 
 // downloadAnnouncement is the Kind "download" event of a note's settled
 // download, numbered among the thread's states (Seq) under m.mu: its
-// DownloadsGen is its list's generation when the list still resolves it
-// at that number, and zero when a clear or the thread's close dropped it
-// since, so a client never offers an action on it.
+// DownloadsGen is its list's generation when, at that number, tb is still
+// the thread's current lifetime and its list, of that generation, still
+// has the download; zero when the thread's close detached tb or a clear
+// or the bounds dropped the download since, so a client never offers an
+// action the thread cannot resolve.
 func (m *Manager) downloadAnnouncement(tb *threadBrowser, note downloadNote) CompanionEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stateSeq++
 	event := CompanionEvent{Kind: "download", ThreadID: string(tb.id), Download: note.announce, Seq: m.stateSeq}
+	if m.currentLocked(tb.id) != tb {
+		return event
+	}
 	m.downloadsMu.Lock()
-	if downloadGenLocked(tb) == note.gen {
+	if list := tb.downloads; list != nil && list.gen == note.gen && list.find(DownloadKey(note.announce.ID)) != nil {
 		event.DownloadsGen = note.gen
 	}
 	m.downloadsMu.Unlock()
@@ -394,9 +399,9 @@ func (m *Manager) forgetThreadDownloads(tb *threadBrowser) {
 const jarDownloadingDir = "downloading"
 
 // workspaceDownloadsDir is the artifact subtree of the workspaces' finished
-// downloads. No earlier release wrote to it: one wrote its engine's running
-// downloads, and the files it finished, into "downloads", whose files
-// authorizeFile never grants and the artifact prune removes with age.
+// downloads: it holds only files AO published there, apart from the
+// engine's running downloads (jarDownloadingDir), so authorizeFile grants
+// downloads from it and from no other artifact directory.
 const workspaceDownloadsDir = "finished"
 
 // workspaceDownloadDir is the directory a workspace's finished downloads

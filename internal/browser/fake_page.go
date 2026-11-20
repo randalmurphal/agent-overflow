@@ -88,6 +88,11 @@ func (p *fakePage) Close() {
 	first := !p.closed
 	p.closed = true
 	p.mu.Unlock()
+	if first {
+		if hook := p.profile.engine.beforePageClose; hook != nil {
+			hook()
+		}
+	}
 	p.cancel()
 	if !first {
 		return

@@ -134,7 +134,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			if event.FilePath != "" && filepath.Clean(event.FilePath) != source {
 				log.Printf("browser: download %s reported finished in %s, not its file %s; refused", event.ID, event.FilePath, source)
 				end, entry.Error = downloadStateFailed, "browser returned a download path other than the file it was given"
-			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
+			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
 				end, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
@@ -192,25 +192,36 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // placeArtifact moves a finished artifact download from the file its engine
 // wrote into dir under the first free variant of name, never replacing a
 // file: the downloads of a workspace's jars finish on their own engine
-// streams into one directory (placeNoReplace). A file over limit bytes on
-// disk is refused, whatever the engine reported.
-func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, error) {
-	info, err := os.Lstat(source)
+// streams into one directory (placeNoReplace). The file is taken as it is
+// in its directory, held open; its private name is made there, in the
+// artifact subtree the artifact prune removes with age. A file over
+// maxDownloadBytes on disk is refused, whatever the engine reported.
+func placeArtifact(source, dir, name string) (path string, file os.FileInfo, err error) {
+	held, err := os.OpenRoot(filepath.Dir(source))
+	if err != nil {
+		return "", nil, fmt.Errorf("browser: the downloaded file's folder: %w", err)
+	}
+	defer func() {
+		if closeErr := held.Close(); closeErr != nil {
+			log.Printf("browser: close the download folder %s: %v", filepath.Dir(source), closeErr)
+		}
+	}()
+	info, err := held.Lstat(filepath.Base(source))
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", source)
 	}
-	if info.Size() > limit {
-		return "", nil, fmt.Errorf("download exceeds %d bytes", limit)
+	if info.Size() > maxDownloadBytes {
+		return "", nil, fmt.Errorf("download exceeds %d bytes", maxDownloadBytes)
 	}
-	path, file, err := placeNoReplace(source, info, dir, "the download directory", artifactNames(name))
+	path, file, err = placeNoReplace(placeSource{path: source, info: info, dir: held}, dir, "the download directory", artifactNames(name))
 	if err != nil {
 		return "", nil, err
 	}
 	// A link leaves the engine's name for the file, which goes.
-	if err := os.Remove(source); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := held.Remove(filepath.Base(source)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("browser: remove the download's engine file %s: %v", source, err)
 	}
 	return path, file, nil
@@ -265,30 +276,28 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 	m.releaseStagedDownload(event.ID)
 
 	held = p.downloads.hold()
-	// A running entry is never trimmed, so it is still there.
-	entry = held.entry(event.ID)
-	if entry != nil {
-		// Its staged file is released, published or not.
-		entry.source = downloadFile{}
-		end := downloadStateCompleted
-		if err != nil {
-			end, entry.Error = downloadStateFailed, err.Error()
-		} else {
-			entry.Path, entry.file = path, file
-		}
-		if settleErr := entry.settle(end); settleErr != nil {
-			log.Printf("browser: %v", settleErr)
-		}
+	entry, lookupErr := held.publishing(event.ID)
+	if lookupErr != nil {
+		held.release()
+		m.endPublish()
+		log.Printf("browser: %v; its publish answered %q, %v", lookupErr, path, err)
+		return
 	}
-	var note downloadNote
-	if entry != nil {
-		note = m.noteDownloadLocked(p, entry)
+	// Its staged file is released, published or not.
+	entry.source = downloadFile{}
+	end := downloadStateCompleted
+	if err != nil {
+		end, entry.Error = downloadStateFailed, err.Error()
+	} else {
+		entry.Path, entry.file = path, file
 	}
+	if settleErr := entry.settle(end); settleErr != nil {
+		log.Printf("browser: %v", settleErr)
+	}
+	note := m.noteDownloadLocked(p, entry)
 	held.release()
 	m.endPublish()
-	if entry != nil {
-		m.publishDownloads(note)
-	}
+	m.publishDownloads(note)
 }
 
 // beginPublish and endPublish count the publishes in flight, which Close

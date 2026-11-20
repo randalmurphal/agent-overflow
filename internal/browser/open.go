@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -199,8 +200,11 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 	if m.engine.DownloadSaving() != downloadsSavedByEngine {
 		// Once per Manager: artifacts a download kept, here or in an earlier
 		// version that kept this engine's downloads as artifacts, go after
-		// artifactMaxAge.
-		m.prepareArtifacts()
+		// artifactMaxAge. A failed measure refuses only what reserves
+		// artifact bytes, which retries it.
+		if err := m.prepareArtifacts(); err != nil {
+			log.Print(err)
+		}
 	}
 	authorityDir := ""
 	if m.downloadsToArtifacts() {

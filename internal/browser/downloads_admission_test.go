@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -181,19 +182,6 @@ func headlessUnownedRig(t *testing.T, wait time.Duration, lifetime context.Conte
 	}
 }
 
-// awaitGone waits for path to be removed.
-func awaitGone(t *testing.T, path, what string) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(requestOwnerPoll) {
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: the download's file is still on disk", what)
-		}
-	}
-}
-
 // Headless Chromium offers an unowned start again for a bounded time, then
 // cancels it and removes the file it wrote once its end arrives; a
 // connection that ends first leaves it to the browser's stop. Neither path ever
@@ -213,7 +201,7 @@ func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testin
 			t.Fatal("the start was never canceled after the owner wait")
 		}
 		d.progress(cdpbrowser.EventDownloadProgress{GUID: "G1", State: cdpbrowser.DownloadProgressStateCanceled})
-		awaitGone(t, file, "after the canceled download's end")
+		awaitRemoved(t, file)
 		settled := offers()
 		if settled < 2 {
 			t.Fatalf("the start was offered %d times, want it offered again while it waited", settled)
@@ -248,4 +236,60 @@ func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testin
 			}
 		}
 	})
+}
+
+// An artifact folder that cannot be measured refuses every artifact
+// download with the reason, measures nothing, and is measured again by the
+// next reservation once it can be; one that cannot be created refuses the
+// same way.
+func TestAnArtifactFolderThatCannotBeMeasuredRefusesWithTheReason(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads an unreadable folder")
+	}
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	unreadable := filepath.Join(manager.artifactRoot, "unreadable")
+	if err := os.Mkdir(unreadable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unreadable, "kept.bin"), []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o700) })
+	manager.artifactInitMu.Lock()
+	manager.artifactReady = false
+	manager.artifactInitMu.Unlock()
+	frame := frameID(paneHandle(manager, access, page.ID))
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "refused", SuggestedName: "r.bin"}) != downloadRefused {
+		t.Fatal("a download was admitted against an artifact folder that was not measured")
+	}
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || !strings.Contains(got.Error, "measure the artifact folder") {
+		t.Fatalf("the refused download lists as %+v, want the reason", got)
+	}
+	if err := os.Chmod(unreadable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if manager.downloadStarted(downloadStart{Frame: frame, ID: "admitted", SuggestedName: "a.bin"}) != downloadAdmitted {
+		t.Fatal("a download was refused once the folder could be measured")
+	}
+	if got := manager.artifactBytes.Used(); got < 5+maxDownloadBytes {
+		t.Fatalf("the measure and the reservation charged %d bytes, want at least the kept file's 5 and the reservation", got)
+	}
+
+	blocked := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	t.Cleanup(func() {
+		if err := blocked.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	file := filepath.Join(t.TempDir(), "a file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked.artifactRoot = filepath.Join(file, "artifacts")
+	if _, err := blocked.reserveArtifacts(1); err == nil || !strings.Contains(err.Error(), "create the artifact folder") {
+		t.Fatalf("a reservation under an artifact folder that cannot be created answered %v", err)
+	}
 }

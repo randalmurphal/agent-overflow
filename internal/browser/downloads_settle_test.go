@@ -27,16 +27,6 @@ func settleRig(t *testing.T) (m *Manager, access Access, file string, workspaceB
 	return manager, access, file, workspaceBefore, artifactsBefore
 }
 
-func wantCharged(t *testing.T, m *Manager, access Access, workspace, artifacts int64) {
-	t.Helper()
-	if got := authorityOf(t, m, access).downloadBytes.Used(); got != workspace {
-		t.Errorf("the workspace holds %d download bytes, want %d", got, workspace)
-	}
-	if got := m.artifactBytes.Used(); got != artifacts {
-		t.Errorf("the artifact quota holds %d bytes, want %d", got, artifacts)
-	}
-}
-
 // A completion naming another file of the jar's directory than the one the
 // row has owned since its admission publishes nothing: the sibling's bytes
 // stay where they are and are no one's download, the row fails with the
@@ -65,7 +55,7 @@ func TestAnArtifactCompletionNamingAnotherFileIsRefused(t *testing.T) {
 	if len(finished) != 0 {
 		t.Fatalf("the workspace's finished downloads hold %v", finished)
 	}
-	wantCharged(t, manager, access, workspaceBefore, artifactsBefore)
+	awaitCharged(t, manager, authorityOf(t, manager, access), workspaceBefore, artifactsBefore)
 }
 
 // A finished download's file replaced while the tab it opens in is made is
@@ -81,7 +71,8 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			manager.downloadOpening = func() {
+			// Opening the download makes its tab first, then opens the file.
+			manager.engine.(*fakeEngine).beforeNewPage = func() {
 				replacement := item.path + ".new"
 				if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
 					t.Error(err)
@@ -152,12 +143,7 @@ func TestAParkedDownloadWhoseJarWentIsRemovedAtItsFate(t *testing.T) {
 	if popups, downloads := parkedState(manager); popups != 0 || downloads != 0 {
 		t.Fatalf("after its fate %d popups and %d downloads are parked", popups, downloads)
 	}
-	if got := authority.downloadBytes.Used(); got != workspace {
-		t.Errorf("after its fate the workspace holds %d bytes, want %d", got, workspace)
-	}
-	if got := manager.artifactBytes.Used(); got != artifacts {
-		t.Errorf("after its fate the artifact quota holds %d bytes, want %d", got, artifacts)
-	}
+	awaitCharged(t, manager, authority, workspace, artifacts)
 	if listed := threadDownloads(manager, access); len(listed) != 0 {
 		t.Fatalf("the thread lists %+v", listed)
 	}
@@ -169,7 +155,7 @@ func TestAFailedArtifactDownloadLeavesNoFile(t *testing.T) {
 	manager, access, file, workspace, artifacts := settleRig(t)
 	manager.downloadProgress(downloadProgress{ID: "dl-1", Received: 3, State: downloadFailed, Error: "the network went away"})
 	awaitRemoved(t, file)
-	wantCharged(t, manager, access, workspace, artifacts)
+	awaitCharged(t, manager, authorityOf(t, manager, access), workspace, artifacts)
 	if listed := threadDownloads(manager, access); len(listed) != 1 || listed[0].State != downloadStateFailed {
 		t.Fatalf("the thread lists %+v, want the failure", listed)
 	}
@@ -184,7 +170,7 @@ func TestAFinishedArtifactIsChargedItsSizeOnDisk(t *testing.T) {
 	if len(listed) != 1 || listed[0].State != downloadStateCompleted || listed[0].ReceivedBytes != int64(len("bytes")) {
 		t.Fatalf("the thread lists %+v, want it completed with its file's 5 bytes", listed)
 	}
-	wantCharged(t, manager, access, workspace+5, artifacts+5)
+	awaitCharged(t, manager, authorityOf(t, manager, access), workspace+5, artifacts+5)
 }
 
 // A finished file past the per-download cap on disk is not kept, though
@@ -200,5 +186,5 @@ func TestAFinishedArtifactOverTheCapOnDiskIsNotKept(t *testing.T) {
 	if len(listed) != 1 || listed[0].State != downloadStateFailed || listed[0].Error != fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes) {
 		t.Fatalf("the thread lists %+v, want it failed over the cap", listed)
 	}
-	wantCharged(t, manager, access, workspace, artifacts)
+	awaitCharged(t, manager, authorityOf(t, manager, access), workspace, artifacts)
 }

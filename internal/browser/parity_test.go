@@ -89,7 +89,9 @@ func TestArtifactQuotaPrunesOnlyExpiredFilesAndReservesAtomically(t *testing.T) 
 	if err := os.Chtimes(old, expired, expired); err != nil {
 		t.Fatal(err)
 	}
-	manager.prepareArtifacts()
+	if err := manager.prepareArtifacts(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatalf("expired artifact remains: %v", err)
 	}

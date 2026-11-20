@@ -35,13 +35,13 @@ func (p *Pool) Used() int64 { return p.used.Load() }
 // any reservation (a scan of the files it bounds).
 func (p *Pool) SetUsed(bytes int64) { p.used.Store(bytes) }
 
-// FullError is a reservation refused by the pool that had no room for it.
-type FullError struct {
-	Pool  string
-	Limit int64
+// fullError is a reservation refused by the pool that had no room for it.
+type fullError struct {
+	pool  string
+	limit int64
 }
 
-func (e *FullError) Error() string { return fmt.Sprintf("%s exceed %d bytes", e.Pool, e.Limit) }
+func (e *fullError) Error() string { return fmt.Sprintf("%s exceed %d bytes", e.pool, e.limit) }
 
 // take charges bytes when that stays within the limit. A refusal never
 // touches the counter, which other holders change concurrently.
@@ -65,7 +65,7 @@ type Reservation struct {
 }
 
 // Reserve holds amount of every pool, all or none, or answers the
-// *FullError of the first that has no room, or ErrReplaced for a registry's
+// *fullError of the first that has no room, or errReplaced for a registry's
 // pool it forgot and replaced. A reservation keeps each registry's pool
 // registered until it ends.
 func Reserve(amount int64, pools ...*Pool) (*Reservation, error) {
@@ -85,7 +85,7 @@ func Reserve(amount int64, pools ...*Pool) (*Reservation, error) {
 			for _, held := range pools {
 				held.unhold()
 			}
-			return nil, &FullError{Pool: pool.name, Limit: pool.limit}
+			return nil, &fullError{pool: pool.name, limit: pool.limit}
 		}
 	}
 	return &Reservation{pools: pools, amount: amount}, nil

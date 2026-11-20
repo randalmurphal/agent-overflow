@@ -47,13 +47,6 @@ func (r *Registry) Hold(key string) *PoolHold {
 	return &PoolHold{pool: pool}
 }
 
-// Len is how many keys have a pool.
-func (r *Registry) Len() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.pools)
-}
-
 // PoolHold keeps a key's pool registered until its one Release.
 type PoolHold struct {
 	pool     *Pool
@@ -73,10 +66,10 @@ func (h *PoolHold) Release() bool {
 	return true
 }
 
-// ErrReplaced refuses a reservation against a pool its registry forgot and
+// errReplaced refuses a reservation against a pool its registry forgot and
 // replaced with a new one for its key: the reservation would make the key's
 // second pool.
-var ErrReplaced = errors.New("quota: the pool was replaced")
+var errReplaced = errors.New("quota: the pool was replaced")
 
 // hold adds a holder to a registered pool, registering it again if its
 // registry forgot it and its key has no pool since. A pool of no registry
@@ -93,7 +86,7 @@ func (p *Pool) hold() error {
 	case nil:
 		reg.registry.pools[reg.key] = p
 	default:
-		return ErrReplaced
+		return errReplaced
 	}
 	reg.holders++
 	return nil
