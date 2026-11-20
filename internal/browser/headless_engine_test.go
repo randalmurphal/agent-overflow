@@ -63,8 +63,8 @@ func TestHeadlessEngineLaunchesOneChromiumPerProfile(t *testing.T) {
 		t.Fatal("two workspace profiles shared one Chromium process")
 	}
 
-	oneDir := filepath.Join(engine.configDir, browserProfileDir, string(one.handle), "chromium")
-	twoDir := filepath.Join(engine.configDir, browserProfileDir, string(two.handle), "chromium")
+	oneDir := filepath.Join(engine.configDir, browserProfileDir, jarDirName("/home/dev/one"), "chromium")
+	twoDir := filepath.Join(engine.configDir, browserProfileDir, jarDirName("/home/dev/two"), "chromium")
 	if oneDir == twoDir {
 		t.Fatal("two workspaces resolved to one user-data directory")
 	}
@@ -123,6 +123,24 @@ func TestChromiumArgsAreTheWholeLaunchLine(t *testing.T) {
 	}
 	if want := wantChromiumArgv("/data/chromium"); !slices.Equal(got, want) {
 		t.Fatalf("chromiumArgs = %q, want exactly %q", got, want)
+	}
+}
+
+// A jar's next profile, after the one before was disposed, keeps the jar's
+// site data directory and has a handle of its own: a report the disposed
+// profile's browser left names no open profile.
+func TestAHeadlessProfileOpenedAgainHasItsOwnHandle(t *testing.T) {
+	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
+	first := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	if err := first.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	if first.Handle() == second.Handle() {
+		t.Fatalf("both profiles report handle %q", first.Handle())
+	}
+	if first.userDataDir != second.userDataDir {
+		t.Fatalf("the jar's site data moved from %q to %q", first.userDataDir, second.userDataDir)
 	}
 }
 

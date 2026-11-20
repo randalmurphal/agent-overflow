@@ -50,6 +50,19 @@ func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, ids.Pa
 // downloads go where saving says, from the jar's creation on.
 func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *adoptionEngine, Access, ids.PageHandle) {
 	t.Helper()
+	manager, engine := newAdoptionBrowser(t, saving)
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+	page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, engine, access, driverHandle(manager, access, page.ID)
+}
+
+// newAdoptionBrowser is a manager on an adoptionEngine saving downloads
+// as saving, with no tab yet.
+func newAdoptionBrowser(t *testing.T, saving downloadSaving) (*Manager, *adoptionEngine) {
+	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
 	checkSelectionAtEnd(t, manager)
@@ -59,12 +72,7 @@ func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *a
 	}
 	engine.saving = saving
 	manager.engine = engine
-	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
-	page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return manager, engine, access, driverHandle(manager, access, page.ID)
+	return manager, engine
 }
 
 func (e *adoptionEngine) NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error) {

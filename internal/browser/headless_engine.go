@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/browser/ids"
@@ -97,6 +98,9 @@ type headlessEngine struct {
 	// which is what keeps a `go test` run off the machine's real temp
 	// directory (headless_ephemeral.go).
 	tempRoot string
+
+	// profileSeq numbers the profiles made, for their handles.
+	profileSeq atomic.Uint64
 
 	mu       sync.Mutex
 	started  bool
@@ -233,9 +237,14 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if opts.DownloadDir == "" || opts.OpenDownloadDir == nil {
 		return nil, errors.New("browser: headless Chromium keeps its downloads as artifacts, so its profile needs their directory")
 	}
-	p := &headlessProfile{engine: e, handle: profileHandle(jarDirName(opts.Jar)), downloadDir: opts.DownloadDir, openDownloadDir: opts.OpenDownloadDir, allow: opts.Allow}
+	// A profile is a browser of its own, so a jar's next profile is another
+	// in this engine's reports: a report of the one before names no open
+	// profile.
+	dir := jarDirName(opts.Jar)
+	handle := profileHandle(fmt.Sprintf("%s-%d", dir, e.profileSeq.Add(1)))
+	p := &headlessProfile{engine: e, handle: handle, downloadDir: opts.DownloadDir, openDownloadDir: opts.OpenDownloadDir, allow: opts.Allow}
 	if !opts.Ephemeral {
-		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, string(p.handle), "chromium")
+		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, dir, "chromium")
 	} else {
 		// An ephemeral session is a real Chromium profile on a directory
 		// nothing outlives (spec §4: browserPersistSiteData=false is an

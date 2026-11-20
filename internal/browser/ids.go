@@ -50,8 +50,11 @@ type jarKey string
 
 // profileHandle names one engine profile (engineProfile.Handle) in the
 // engine's reports: a popup's and a popup download's profile. An engine
-// derives it from its jar's key or numbers it; the hosted engine's is the
-// WebView2 profile name the launcher's directives carry.
+// whose profile is a browser or a session of its own numbers each profile
+// it makes, so a report of a profile disposed since names no open one,
+// whatever its jar opened next. The hosted engine's is the WebView2
+// profile name the launcher's directives carry, the one profile in the
+// launcher however often its jar is opened.
 type profileHandle string
 
 // downloadID is an engine's id for one download, unique among the engine's
