@@ -19,14 +19,14 @@ type attachHookProfile struct {
 
 func (p *attachHookProfile) AttachPage(ctx context.Context, _ ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	p.onAttach()
-	return p.fakeProfile.NewPage(ctx, hooks)
+	return p.NewPage(ctx, hooks)
 }
 
 // A popup whose opener closes while the engine attaches it, as when the
 // opener's thread is deleted, is not adopted by that thread.
 func TestPopupOfAClosedOpenerIsNotAdopted(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { closeManager(t, manager) })
 	workspace := t.TempDir()
 	opener := manager.Bind(Caller{ThreadID: "opener", Workspace: workspace})
 	page, err := manager.Open(t.Context(), opener, "https://example.test/", OpenOptions{})
@@ -103,7 +103,7 @@ func (p *closeHookPage) Close() {
 func newCloseHookManager(t *testing.T) (*Manager, *closeHookEngine) {
 	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { closeManager(t, manager) })
 	engine := &closeHookEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
 	return manager, engine
@@ -164,7 +164,7 @@ func TestAClosedPageIsNoLongerTheActivePage(t *testing.T) {
 	for _, closer := range lastPageClosers {
 		t.Run(closer.name, func(t *testing.T) {
 			manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-			t.Cleanup(func() { manager.Close() })
+			t.Cleanup(func() { closeManager(t, manager) })
 			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			first, err := manager.Open(t.Context(), access, "https://example.test/one", OpenOptions{})
 			if err != nil {
@@ -208,7 +208,7 @@ func (e *discardRecordingEngine) DiscardPage(_ context.Context, handle ids.PageH
 // page to close it. The fake profile fails every attach.
 func TestAPopupThatFailsToAttachIsDiscarded(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { closeManager(t, manager) })
 	engine := &discardRecordingEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
 	opener := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
@@ -265,7 +265,7 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 		}
 	}
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { closeManager(t, manager) })
 	engine := &policyRecordingEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: workspace, ProjectRoot: project})
@@ -326,7 +326,7 @@ func resolvedPolicy(t *testing.T, policy func([]frameID, string) (bool, bool)) f
 // owns as unowned; the engine cancels both.
 func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { closeManager(t, manager) })
 	manager.engine.(*fakeEngine).saving = downloadsAsArtifacts
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page, err := manager.NewPage(t.Context(), access)

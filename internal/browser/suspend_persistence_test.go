@@ -157,7 +157,7 @@ func TestClearingSiteDataAndDisablingForgetSuspendedPages(t *testing.T) {
 			t.Fatal(err)
 		}
 		disabled := NewManager(dir, Config{}, ManagerOptions{FakeEngine: true})
-		defer disabled.Close()
+		defer closeManager(t, disabled)
 		if _, err := os.Stat(disabled.recordDir); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("a disabled boot kept saved pages: %v", err)
 		}

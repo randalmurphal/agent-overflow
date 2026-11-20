@@ -173,6 +173,8 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			m.listPageLocked(scope, p)
 		case listCrashed:
 			rec.failure = failure
+		case refuseClosed, refuseFailed, refuseGone, retryStale:
+			// The record stays as it is.
 		}
 		m.mu.Unlock()
 		switch outcome {
@@ -188,6 +190,8 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		case retryStale:
 			m.abandonStale(scope, p, p)
 			continue
+		case listCrashed, refuseClosed, refuseFailed, refuseGone:
+			// The restore fails with the cause below.
 		}
 		var cause error
 		switch {

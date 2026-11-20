@@ -36,7 +36,7 @@ func (e *disposeCountingEngine) Start(ctx context.Context) error {
 func newDisposeCountingManager(t *testing.T) (*Manager, *disposeCountingEngine) {
 	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { closeManager(t, manager) })
 	engine := &disposeCountingEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
 	return manager, engine
@@ -403,7 +403,7 @@ func TestAnOpenWhoseProfileIsRefusedLeavesTheEngineToTheIdleClose(t *testing.T) 
 	for _, openedBefore := range []bool{false, true} {
 		t.Run(fmt.Sprintf("opened before=%v", openedBefore), func(t *testing.T) {
 			manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-			t.Cleanup(func() { manager.Close() })
+			t.Cleanup(func() { closeManager(t, manager) })
 			engine := &refusingProfileEngine{fakeEngine: newFakeEngine()}
 			manager.engine = engine
 			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})

@@ -43,7 +43,7 @@ func TestWindowlessDeploymentRefusesBrowserToolsBySentence(t *testing.T) {
 		t.Fatalf("browser tool error = %v, want the unavailable sentence", err)
 	}
 	// Teardown on a deployment that never had an engine must be silent.
-	manager.Close()
+	closeManager(t, manager)
 }
 
 // The fake engine carries the Manager's whole policy layer: pages exist, are
@@ -51,7 +51,7 @@ func TestWindowlessDeploymentRefusesBrowserToolsBySentence(t *testing.T) {
 // companion pane against (spec §10), so its liveness is a shipped property.
 func TestFakeEngineCarriesPageOwnershipAndNavigation(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	defer manager.Close()
+	defer closeManager(t, manager)
 	workspace := t.TempDir()
 	owner := manager.Bind(Caller{ThreadID: "owner", Workspace: workspace})
 	info, err := manager.Open(t.Context(), owner, "https://example.test/docs/guide", OpenOptions{})
@@ -86,7 +86,7 @@ func TestFakeEngineCarriesPageOwnershipAndNavigation(t *testing.T) {
 // history that forgot the previous page would make both dead ends.
 func TestFakeEngineHistoryWalksBackAndForward(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	defer manager.Close()
+	defer closeManager(t, manager)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	info, err := manager.Open(t.Context(), access, "https://example.test/first", OpenOptions{})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestPageInfoWithoutHistoryKeepsTheHistoryShown(t *testing.T) {
 // so a test that thinks it is driving a renderer fails loudly.
 func TestFakeEngineRefusesPageContentByName(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	defer manager.Close()
+	defer closeManager(t, manager)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	info, err := manager.Open(t.Context(), access, "https://example.test", OpenOptions{})
 	if err != nil {
@@ -216,7 +216,7 @@ func TestAuthorizeFileStaysWithinGrantedRoots(t *testing.T) {
 func TestClearSiteDataRemovesTheProfileTree(t *testing.T) {
 	configDir := t.TempDir()
 	manager := NewManager(configDir, Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	defer manager.Close()
+	defer closeManager(t, manager)
 	if err := os.MkdirAll(filepath.Join(manager.profileDir, "workspace"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -245,11 +245,19 @@ func TestBootPrunesTheEncryptedCheckpointsFromTheDeletedStateStore(t *testing.T)
 		t.Fatal(err)
 	}
 	manager := NewManager(configDir, Config{}, ManagerOptions{})
-	defer manager.Close()
+	defer closeManager(t, manager)
 	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
 		t.Fatalf("encrypted checkpoint directory survives boot: %v", err)
 	}
 	if _, err := os.Stat(keyFile); !os.IsNotExist(err) {
 		t.Fatalf("checkpoint key file survives boot: %v", err)
+	}
+}
+
+// closeManager closes m and fails the test if its close reports an error.
+func closeManager(t *testing.T, m *Manager) {
+	t.Helper()
+	if err := m.Close(); err != nil {
+		t.Errorf("close the browser manager: %v", err)
 	}
 }

@@ -157,6 +157,8 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	case listCrashed:
 		released = m.listCrashedPopupLocked(r.scope, p, handle, verdict.CrashReason())
 		listedCrashed, reserved = true, false
+	case refuseClosed, refuseFailed, refuseGone, retryStale:
+		// Not listed: closed or discarded below, its reservation ended.
 	}
 	m.mu.Unlock()
 	if listed == nil {

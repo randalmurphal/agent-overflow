@@ -79,6 +79,7 @@ func (m *Manager) unlistedOutcomeLocked(p *managedPage, current bool, verdict po
 			return refuseClosed
 		}
 		return refuseFailed
+	case popupadmit.List:
 	}
 	if !m.jarCurrentLocked(p) {
 		return retryStale
