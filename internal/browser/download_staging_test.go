@@ -252,3 +252,46 @@ func TestADownloadRoomReplacedAsItIsMadeIsNotHeld(t *testing.T) {
 	}
 	wantTheirsKept(t, swapped())
 }
+
+// fillAsMade puts a file of someone else's into each directory openMadeDir
+// makes, at its name, as a directory swapped in before its identity was
+// first read would hold, and answers the directories filled.
+func fillAsMade(t *testing.T) func() []string {
+	t.Helper()
+	var filled []string
+	openingMadeDir = func(path string) {
+		writeFiles(t, filepath.Join(path, "theirs"))
+		filled = append(filled, path)
+	}
+	t.Cleanup(func() { openingMadeDir = func(string) {} })
+	return func() []string { return filled }
+}
+
+// A directory found at the made name holding anything is not held, whether
+// it is the one made or one put there before its identity could be read,
+// which cannot be told apart: neither a staging run nor a download room
+// uses it, and what is in it stays.
+func TestADirectoryMadeHoldingAnythingIsNotHeld(t *testing.T) {
+	t.Run("staging run", func(t *testing.T) {
+		dir := t.TempDir()
+		staging, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filled := fillAsMade(t)
+		if _, err := startStagingRun(dir, staging); err == nil || !strings.Contains(err.Error(), "held theirs as it was made") {
+			t.Fatalf("a run directory holding a file was used: %v", err)
+		}
+		wantTheirsKept(t, filled())
+	})
+	t.Run("download room", func(t *testing.T) {
+		filled := fillAsMade(t)
+		if room, err := openDownloadRoom(t.TempDir(), t.Logf); err == nil || !strings.Contains(err.Error(), "held theirs as it was made") {
+			if err == nil {
+				room.close()
+			}
+			t.Fatalf("a room holding a file was used: %v", err)
+		}
+		wantTheirsKept(t, filled())
+	})
+}

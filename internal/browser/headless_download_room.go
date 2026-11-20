@@ -58,7 +58,8 @@ type downloadRoom struct {
 }
 
 // openDownloadRoom makes a new room in dir, made if it is missing, for one
-// browser process, and holds only the directory it made (openMadeDir).
+// browser process, and holds only the directory it made, found empty
+// (openMadeDir).
 func openDownloadRoom(dir string, logf func(string, ...any)) (*downloadRoom, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create the download directory: %w", err)
