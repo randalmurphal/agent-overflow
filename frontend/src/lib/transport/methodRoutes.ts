@@ -16,6 +16,7 @@ export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selecte
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2097968437: 'home', // AcceptOwnDeviceIntroduction
 	2629313140: 'home', // AddBackend
+	1508517752: 'selected', // AddTrackerConnection
 	1158138718: 'selected', // AgentRemoteCancel
 	925837602: 'selected', // AgentRemoteComputers
 	2421300190: 'selected', // AgentRemoteFetchArtifact
@@ -114,6 +115,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1579042384: 'selected', // EditOpenAIKeyFile
 	679416267: 'selected', // EditPR
 	1171217596: 'selected', // EditPRComment
+	1347598600: 'selected', // EditTrackerKeyFile
 	1594348919: 'selected', // FetchForgeAttachment
 	2178028847: 'selected', // FinishDictation
 	3774452621: 'selected', // FinishLiveDictation
@@ -331,6 +333,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4075510992: 'workspace', // OpenPRDiff
 	2660387675: 'selected', // OpenPRThread
 	2247958725: 'thread', // OpenTerminal
+	4215069807: 'selected', // OpenTrackerTokenPage
 	4078889536: 'thread', // OpenTurnEditsDiff
 	3558532873: 'workspace', // OpenWorkspaceDiff
 	3436727647: 'selected', // PairAgentComputer
@@ -388,10 +391,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2899196344: 'workspace', // RemoveOtherWorktree
 	3065006869: 'home', // RemoveOwnDevice
 	684418419: 'home', // RemoveProviderAccount
+	21628411: 'selected', // RemoveTrackerConnection
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
 	727416435: 'thread', // RenameThread
 	723690026: 'home', // RenameThreadGroup
+	611052833: 'selected', // RenameTrackerConnection
 	95139518: 'home', // RenewCanonicalDomainCert
 	2861245989: 'home', // ReorderProviderAccounts
 	1188796788: 'home', // RepairBackendAddress
@@ -466,6 +471,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	2294583674: 'home', // SetThreadPlacement
+	3921109066: 'selected', // SetTrackerConnectionEnabled
+	2967721565: 'selected', // SetTrackerConnectionTokenExpiry
 	3978807241: 'home', // SetWSLDistroPreference
 	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor
@@ -507,6 +514,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4150382574: 'selected', // ThreadToolRequestStatus
 	1018082581: 'selected', // ThreadToolResolve
 	515024442: 'selected', // ThreadToolWatch
+	1356803888: 'selected', // TrackerConnections
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2161888729: 'selected', // UnapprovePR
@@ -541,6 +549,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3875142865: 'thread', // UpdateThreadWorkspace
 	2139261008: 'home', // VerifyBrowserUnlock
 	3907724148: 'thread', // VerifyEditDiffs
+	1424176184: 'selected', // VerifyTrackerConnection
 	2431199839: 'home', // Version
 	777755931: 'thread', // WakeThreadWakeNow
 	2263729048: 'thread', // WatchBackgroundTaskOutput

@@ -69,6 +69,8 @@ const CAPABILITY_NOUNS: Record<Exclude<Scope, 'host' | 'session'>, string> = {
   'settings:read': 'reading settings',
   'settings:write': 'changing settings',
   'access:admin': 'managing devices and accounts',
+  'tracker:read': 'reading issue tracker connections',
+  'tracker:operate': 'changing issue tracker connections',
 };
 
 /** Where a grant comes from. One sentence, reused so it stays one sentence. */

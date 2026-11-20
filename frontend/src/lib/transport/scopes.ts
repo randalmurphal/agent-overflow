@@ -107,6 +107,8 @@ export type Scope =
   | 'settings:read'
   | 'settings:write'
   | 'access:admin'
+  | 'tracker:read'
+  | 'tracker:operate'
   | 'session'
   | 'host';
 
@@ -131,6 +133,7 @@ export const EXECUTE_SCOPES: readonly Scope[] = [
   'attachments:write',
   'settings:write',
   'access:admin',
+  'tracker:operate',
 ] as const;
 
 /** Every declared capability, in the spec table's order. */
@@ -147,6 +150,8 @@ export const SCOPES: readonly Scope[] = [
   'settings:read',
   'settings:write',
   'access:admin',
+  'tracker:read',
+  'tracker:operate',
   'session',
   'host',
 ] as const;

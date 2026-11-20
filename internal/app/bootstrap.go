@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/providerupdate/updatefake"
+	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 )
@@ -51,6 +52,11 @@ type IsolationConfig struct {
 	// forge CLI invocation fails with a named error instead of reaching
 	// the real CLI on PATH.
 	ForgeCLI string
+	// TrackerOrigin says where an isolated boot's tracker clients connect:
+	// a function from a connection's kind and site to a loopback fake.
+	// Isolation applies whether or not it is set: nil refuses every
+	// tracker connection before anything is sent.
+	TrackerOrigin trackerapp.Origin
 	// ScanScopePIDs are further processes whose trees dev-server discovery
 	// may look at (devscan.NewScoped). The scope always includes this
 	// backend's own tree, which holds the providers and terminals it
@@ -132,6 +138,10 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
+	a.trackerOriginOverride = config.TrackerOrigin
+	if a.trackerOriginOverride == nil {
+		a.trackerOriginOverride = refuseTrackerOrigin
+	}
 	a.prLookupRetryBase = config.PRLookupRetryBase
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true

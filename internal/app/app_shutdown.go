@@ -440,6 +440,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.git.ForgeAPI().Close()
 		record("close forge API transport", nil)
 	}
+	// The tracker service closes its clients, which ends their calls in
+	// flight, and joins its calls before the store closes.
+	if a.trackers != nil {
+		a.trackers.Stop()
+		record("stop tracker connections", nil)
+	}
 
 	// Step 6: close PTYs. Must happen after provider sessions because
 	// a provider close might emit terminal output events; terminating
