@@ -88,6 +88,12 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, ""); return err },
 		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
 		func() error {
+			_, _, err := s.ReadMirrorBoardPatch(root, "10", []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
+				{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}}, []string{"10001", "10002"})
+			return err
+		},
+		func() error { _, err := s.ListMirrorIssueBoards(root, []string{"10001", "10002"}); return err },
+		func() error {
 			_, _, err := s.ReadMirrorBoardView(root, "10", []MirrorSection{{Kind: MirrorSectionBacklog}})
 			return err
 		},
@@ -188,6 +194,8 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
 	{"WHERE i.history_dirty = 1", "SCAN i USING INDEX idx_tracker_cache_issues_history_dirty",
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
+	{"EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = ?1", "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
+		"the partial index holds only the issues due a history read, and the probe stops at the first one kept"},
 	{"UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?1 AND board_id IN (", "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's issues once, " +
 			"where an index by status would cost every card write"},

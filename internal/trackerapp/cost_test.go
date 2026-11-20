@@ -350,9 +350,9 @@ func TestMirroredDetailBuildsNoClient(t *testing.T) {
 	}
 	m.openDetail(t, "10001")
 	later := m.now().Add(time.Hour)
-	svc := must[*Service](t)(New(Deps{
+	svc := must[*Service](t)(New(testCallbacks(Deps{
 		Store: m.st, Changed: func() {}, CredentialsDir: m.creds, Origin: APIOrigin, Version: "1", Now: func() time.Time { return later }, Life: t.Context(),
-	}))
+	}, newEventLog())))
 	svc.makeProvider = func(store.TrackerConnection, *clients, *clients) (tracker.Provider, error) {
 		t.Error("a provider was built for the mirror's copy of a detail")
 		return m.p, nil

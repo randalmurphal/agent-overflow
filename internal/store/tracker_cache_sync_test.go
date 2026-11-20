@@ -213,7 +213,11 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
 		mustSyncWrite(t, step.name, changed, err, step.want)
 	}
-	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
+	var structureAt int64
+	if err := s.db.QueryRow(`SELECT read_at FROM tracker_cache_boards WHERE root_id = ? AND board_id = '10'`, root).Scan(&structureAt); err != nil || structureAt == 0 {
+		t.Fatalf("structure read at %d: %v", structureAt, err)
+	}
+	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
 	if got, ok, err := s.GetMirrorSync(root, "10"); err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v, %v\nwant %+v", got, ok, err, want)
 	}
@@ -239,7 +243,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	next := webPage("10")
 	next.ReadAt = 60
 	mustWriteRowPage(t, s, root, next, []byte("c2"))
-	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
+	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
 	if got, _, err := s.GetMirrorSync(root, "10"); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v\nwant %+v", got, err, want)
 	}
@@ -332,5 +336,44 @@ func TestGetMirrorSyncOfAGoneRoot(t *testing.T) {
 				t.Errorf("root %d board %q: %v; want ErrTrackerCacheGone", gone, board, err)
 			}
 		}
+	}
+}
+
+// The sync state says whether an issue the root keeps is due a history
+// read, in the same statement, for a board scope and the linked scope; an
+// issue due that nothing keeps any more is not.
+func TestMirrorSyncSaysWhetherHistoryIsDue(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	due := func(board string) bool {
+		t.Helper()
+		st, _, err := s.GetMirrorSync(root, board)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.HistoryDue
+	}
+	if due("10") || due("") {
+		t.Fatal("an empty mirror is due a history read")
+	}
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	if !due("10") || !due("") {
+		t.Fatal("an issue with no history is not due")
+	}
+	if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", 5)})); err != nil {
+		t.Fatal(err)
+	}
+	if due("10") {
+		t.Fatal("an issue whose history is final through its update is due")
+	}
+	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10002", 5, "a")})
+	if !due("10") {
+		t.Fatal("an issue due on another board of the root is not due")
+	}
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: []string{"10002"}, ReadAt: 9})); err != nil {
+		t.Fatal(err)
+	}
+	if due("10") {
+		t.Fatal("an issue nothing keeps is due")
 	}
 }

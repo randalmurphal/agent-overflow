@@ -51,6 +51,8 @@ func (s *Service) Add(c NewConnection) (Connection, error) {
 			return deleteErr != nil, errors.Join(fmt.Errorf("trackerapp: create the key file of %s: %w", row.ID, err), deleteErr)
 		}
 		out = s.view(row)
+		var exited []<-chan struct{}
+		s.followConnectionsLocked(&exited)
 		return true, nil
 	})
 	return out, err
@@ -81,11 +83,12 @@ func (s *Service) SetTokenExpiry(id string, expiresAt int64) (Connection, error)
 
 // SetEnabled turns connection id on or off. Off keeps the row and the key
 // file and stops using the connection: its client is closed, ending its
-// calls in flight, its problem is forgotten and its mirror is detached
-// with opMu held, so no tick begun before the change can write into the
-// mirror of a later turn on. The detached mirror is then drained with
-// opMu released (cleanup.go); a drain that fails is logged and the change
-// stands. A detach that fails returns the connection as turned off with
+// calls in flight, its problem is forgotten, its subscriptions end (their
+// pumps have exited when SetEnabled returns, and each one's subscribers
+// are told once) and its mirror is detached with opMu held, so no tick
+// begun before the change can write into the mirror of a later turn on.
+// The detached mirror is then drained with opMu released (cleanup.go); a
+// drain that fails is logged and the change stands. A detach that fails returns the connection as turned off with
 // an error: turning it off again retries. On builds the client again on
 // next use, and the next tick makes a new mirror.
 func (s *Service) SetEnabled(id string, enabled bool) (Connection, error) {
@@ -93,7 +96,8 @@ func (s *Service) SetEnabled(id string, enabled bool) (Connection, error) {
 		return Connection{}, err
 	}
 	defer s.leave()
-	out, changed, detached, err := s.setEnabled(id, enabled)
+	out, changed, detached, exited, err := s.setEnabled(id, enabled)
+	join(exited)
 	if changed {
 		s.changed()
 	}
@@ -103,24 +107,49 @@ func (s *Service) SetEnabled(id string, enabled bool) (Connection, error) {
 	return out, err
 }
 
-func (s *Service) setEnabled(id string, enabled bool) (_ Connection, changed, detached bool, _ error) {
+func (s *Service) setEnabled(id string, enabled bool) (_ Connection, changed, detached bool, exited []<-chan struct{}, _ error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	defer s.forgetHolds()
 	row, changed, err := s.store.SetTrackerConnectionEnabled(id, enabled)
 	if err != nil {
-		return Connection{}, false, false, s.writeError(id, "turn on or off", err)
+		return Connection{}, false, false, nil, s.writeError(id, "turn on or off", err)
 	}
 	if row.Enabled {
-		return s.view(row), changed, false, nil
+		s.followConnectionsLocked(&exited)
+		return s.view(row), changed, false, exited, nil
 	}
 	if s.stopUsing(id) {
 		changed = true
 	}
+	exited = s.endConnection(id)
+	s.followConnectionsLocked(&exited)
 	if err := s.detachMirror(id); err != nil {
-		return s.view(row), changed, false, fmt.Errorf("trackerapp: connection %s is turned off, but its mirror stays attached until it is turned off again: %w", id, err)
+		return s.view(row), changed, false, exited, fmt.Errorf("trackerapp: connection %s is turned off, but its mirror stays attached until it is turned off again: %w", id, err)
 	}
-	return s.view(row), changed, true, nil
+	return s.view(row), changed, true, exited, nil
+}
+
+// endConnection ends every subscription of connection id and returns
+// what to join (endConnectionLocked). The caller holds opMu.
+func (s *Service) endConnection(id string) []<-chan struct{} {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return s.endConnectionLocked(id)
+}
+
+// followConnectionsLocked starts or stops the linked loop after a change
+// to the connections, adding a loop it stopped to exited. A failure to
+// read the connections leaves the loop as it is, and is the loop's
+// failure: the change stands. The caller holds opMu.
+func (s *Service) followConnectionsLocked(exited *[]<-chan struct{}) {
+	done, err := s.syncLoopLocked()
+	if err != nil {
+		s.loopFailure(err)
+	}
+	if done != nil {
+		*exited = append(*exited, done)
+	}
 }
 
 // update applies one row write to connection id and returns the row.
@@ -146,7 +175,8 @@ func (s *Service) writeError(id, what string, err error) error {
 }
 
 // Remove stops using connection id and the Tempo connection that belongs
-// to it, removes their key files and then deletes their rows, which
+// to it, ends its subscriptions (as SetEnabled does when it turns one
+// off), removes their key files and then deletes their rows, which
 // detaches the mirror; the mirror is drained after (cleanup.go), and a
 // drain that fails is logged with the removal standing. A key file that
 // cannot be removed stops the removal with the rows kept, so a step that
@@ -154,6 +184,8 @@ func (s *Service) writeError(id, what string, err error) error {
 // row; removing again finishes it.
 func (s *Service) Remove(id string) error {
 	deleted := false
+	var exited []<-chan struct{}
+	defer func() { join(exited) }()
 	err := s.change(func() (bool, error) {
 		row, err := s.get(id)
 		if err != nil {
@@ -171,6 +203,7 @@ func (s *Service) Remove(id string) error {
 		}
 		for _, r := range removed {
 			s.stopUsing(r.ID)
+			exited = append(exited, s.endConnection(r.ID)...)
 		}
 		for _, r := range removed {
 			if err := s.keyFile(r).Remove(); err != nil {
@@ -183,6 +216,7 @@ func (s *Service) Remove(id string) error {
 			return true, fmt.Errorf("trackerapp: delete connection %s: %w", id, err)
 		}
 		deleted = true
+		s.followConnectionsLocked(&exited)
 		return true, nil
 	})
 	if deleted {

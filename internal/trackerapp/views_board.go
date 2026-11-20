@@ -127,9 +127,13 @@ type FailureView struct {
 
 // BoardView is a board as the pane opens it: its structure, the totals of
 // its sections (All its rows), its sync state and the first page of each
-// section asked for. Project is empty for a board of no one project.
+// section asked for, at the board's Lifetime and Revision (which a patch
+// moves forward, BoardPatch). Project is empty for a board of no one
+// project.
 type BoardView struct {
 	ID           string        `json:"id"`
+	Lifetime     int64         `json:"lifetime"`
+	Revision     int64         `json:"revision"`
 	Name         string        `json:"name"`
 	Project      string        `json:"project,omitempty"`
 	PlansSprints bool          `json:"plans_sprints"`
@@ -208,6 +212,7 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 		}
 	}
 	v := boardViewOf(snap.Structure, snap.Counts, names)
+	v.Lifetime, v.Revision = snap.Structure.Lifetime, snap.Counts.Revision
 	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board))
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)

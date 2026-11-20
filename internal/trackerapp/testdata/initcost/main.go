@@ -22,12 +22,17 @@ func main() {
 		return
 	}
 	svc, err := trackerapp.New(trackerapp.Deps{
-		Changed:        func() {},
-		CredentialsDir: os.Args[1],
-		Origin:         trackerapp.APIOrigin,
-		Version:        os.Args[1],
-		Now:            time.Now,
-		Life:           context.Background(),
+		Changed:         func() {},
+		CredentialsDir:  os.Args[1],
+		Origin:          trackerapp.APIOrigin,
+		Version:         os.Args[1],
+		Now:             time.Now,
+		Life:            context.Background(),
+		EmitBoard:       func(trackerapp.BoardEvent) {},
+		EmitIssue:       func(trackerapp.IssueEvent) {},
+		Settled:         func(context.Context) error { return nil },
+		ClientConnected: func() bool { return false },
+		LoopFailed:      func(error) {},
 	})
 	if err != nil {
 		os.Exit(1)

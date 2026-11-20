@@ -552,7 +552,7 @@ var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
 	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
-	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView",
+	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
 }
 
 // Every writer refuses a detached root, and a root that never existed,

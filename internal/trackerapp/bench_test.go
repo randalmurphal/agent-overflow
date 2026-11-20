@@ -56,10 +56,10 @@ func benchService(b *testing.B) (*Service, *scripted, Scope) {
 	b.Helper()
 	p := &scripted{t: b}
 	st := storetest.Clone(b)
-	svc, err := New(Deps{
+	svc, err := New(testCallbacks(Deps{
 		Store: st, Changed: func() {}, CredentialsDir: filepath.Join(b.TempDir(), keyfile.DirName),
 		Origin: APIOrigin, Version: "1", Now: time.Now, Life: b.Context(),
-	})
+	}, newEventLog()))
 	if err != nil {
 		b.Fatal(err)
 	}

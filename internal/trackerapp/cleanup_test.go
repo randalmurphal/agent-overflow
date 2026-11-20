@@ -123,10 +123,10 @@ type panicStore struct{ Store }
 // nothing at start.
 func TestNewTouchesNothing(t *testing.T) {
 	t.Parallel()
-	s, err := New(Deps{
+	s, err := New(testCallbacks(Deps{
 		Store: panicStore{}, Changed: func() {}, CredentialsDir: t.TempDir(), Origin: APIOrigin, Version: "1",
 		Now: time.Now, Life: t.Context(),
-	})
+	}, newEventLog()))
 	if err != nil {
 		t.Fatal(err)
 	}

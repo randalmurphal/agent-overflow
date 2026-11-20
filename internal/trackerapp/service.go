@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"log"
 	"sync"
 	"time"
@@ -13,9 +14,6 @@ import (
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
-	"agent-overflow/internal/tracker/jira"
-	"agent-overflow/internal/tracker/jiraprovider"
-	"agent-overflow/internal/tracker/linearprovider"
 )
 
 // Store is the tracker connection and mirror accessors the service uses.
@@ -29,9 +27,11 @@ type Store interface {
 	SetTrackerConnectionTokenExpiry(id string, expiresAt int64) (store.TrackerConnection, bool, error)
 	RecordTrackerConnectionVerification(id string, v store.TrackerVerification) (store.TrackerConnection, bool, error)
 	DeleteTrackerConnection(id string) ([]string, error)
+	ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error)
 }
 
-// Deps are the service's capabilities. Every field is required.
+// Deps are the service's capabilities. Every field is required but
+// Cadence.
 type Deps struct {
 	Store Store
 	// Changed is told after every change a list of connections would show
@@ -49,6 +49,24 @@ type Deps struct {
 	Now func() time.Time
 	// Life ends the calls the service makes when the app stops.
 	Life context.Context
+
+	// EmitBoard and EmitIssue deliver a subscription's events, in the order
+	// of their sequence numbers. They are called with the service's
+	// subscription lock held: they must not block or call the service.
+	EmitBoard func(BoardEvent)
+	EmitIssue func(IssueEvent)
+	// Settled waits until the first client's reads have settled, or ctx
+	// ends; the linked-issues loop waits for it before its first round.
+	Settled func(ctx context.Context) error
+	// ClientConnected reports whether a client is connected; the linked
+	// loop skips its rounds while none is.
+	ClientConnected func() bool
+	// LoopFailed is told each failure of the linked loop's work (a mirror
+	// cleanup, a linked-issues tick that failed outside the tracker),
+	// which the loop also logs and survives. It must not block.
+	LoopFailed func(error)
+	// Cadence is the sync intervals; its zero value is production's.
+	Cadence Cadence
 }
 
 var (
@@ -115,16 +133,38 @@ type Service struct {
 	// makeProvider builds the provider of a connection in use from its
 	// client; tests replace it with a scripted provider.
 	makeProvider func(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error)
+
+	emitBoard       func(BoardEvent)
+	emitIssue       func(IssueEvent)
+	settled         func(context.Context) error
+	clientConnected func() bool
+	loopFailed      func(error)
+	cadence         Cadence
+	// digestSeed keys the digests an open ticket keeps of the view it last
+	// published (ticketPump.digest).
+	digestSeed maphash.Seed
+
+	// subMu is the one lock of the subscriptions, their pumps and the
+	// linked loop (subscriptions.go). It is held for map and flag work and
+	// for the emit callbacks, never across a store or tracker call; opMu
+	// is taken before it, and mu is never held with it.
+	subMu sync.Mutex
+	subs  subscriptions
+	// workers joins every pump goroutine and the linked loop; Stop waits
+	// for it after stopping them.
+	workers sync.WaitGroup
 }
 
 // New makes the service. It refuses a missing dependency, and reads,
 // builds and starts nothing else: a client is built on a connection's
-// first use, and the drain of mirrors a turn off or removal left is the
-// app's call to FinishMirrorCleanup.
+// first use, a pump on a subscription's first handle, and the linked loop
+// after StartLinkedSync.
 func New(deps Deps) (*Service, error) {
 	switch {
 	case deps.Store == nil, deps.Changed == nil, deps.Origin == nil, deps.Now == nil, deps.Life == nil:
 		return nil, errors.New("trackerapp: Deps needs Store, Changed, Origin, Now and Life")
+	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil:
+		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected and LoopFailed")
 	case deps.CredentialsDir == "":
 		return nil, errors.New("trackerapp: Deps.CredentialsDir is required")
 	case deps.Version == "":
@@ -140,13 +180,19 @@ func New(deps Deps) (*Service, error) {
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		makeProvider: buildProvider,
 		logf:         log.Printf,
+		emitBoard:    deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
+		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, cadence: deps.Cadence.withDefaults(),
+		digestSeed: maphash.MakeSeed(),
 	}, nil
 }
 
-// Stop closes every client, which ends the tracker calls in flight, and
-// waits for the service's calls in flight to return. Every later call
-// fails with ErrStopped. Stop may be called more than once.
+// Stop stops every pump and the linked loop, which cancels their ticks in
+// flight, closes every client, which ends the tracker calls in flight, and
+// waits for the service's calls in flight, its pumps and its loop to
+// return. Subscribers are told nothing. Every later call fails with
+// ErrStopped. Stop may be called more than once.
 func (s *Service) Stop() {
+	s.haltSubscriptions()
 	for _, c := range s.halt() {
 		c.close()
 	}
@@ -154,6 +200,7 @@ func (s *Service) Stop() {
 	s.forgetHolds()
 	s.opMu.Unlock()
 	s.inflight.Wait()
+	s.workers.Wait()
 }
 
 // halt marks the service stopped, forgets every problem and takes every
@@ -386,114 +433,4 @@ func (s *Service) appliesLocked(id string, at stamp) (bool, error) {
 		return false, nil
 	}
 	return at.c == nil || at.gen > at.c.settled, nil
-}
-
-// Provider is the tracker of connection id, for a Jira or Linear
-// connection that is turned on. A Jira connection's provider logs time
-// through its Tempo connection when that one is turned on, and through
-// Jira's own worklogs otherwise, as the connections are at this call. It
-// fails for an unknown connection, one turned off and a Tempo connection.
-// The provider stays usable until its connection, or its Tempo
-// connection, stops being used; then its calls fail.
-func (s *Service) Provider(ctx context.Context, id string) (tracker.Provider, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := s.enter(); err != nil {
-		return nil, err
-	}
-	defer s.leave()
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	row, err := s.get(id)
-	if err != nil {
-		return nil, err
-	}
-	p, _, err := s.providerLocked(row)
-	return p, err
-}
-
-// providerLocked is the provider of connection row, with the client of
-// the connection itself that its calls are stamped on (begin). The caller
-// holds opMu and read row under it.
-func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider, *clients, error) {
-	if row.Kind == store.TrackerKindTempo {
-		return nil, nil, fmt.Errorf("%w: %s", ErrNoProvider, row.ID)
-	}
-	c, err := s.use(row)
-	if err != nil {
-		return nil, nil, err
-	}
-	var timeClients *clients
-	if row.Kind == store.TrackerKindJira {
-		timeRow, ok, err := s.tempoOf(row.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if ok && timeRow.Enabled {
-			if timeClients, err = s.use(timeRow); err != nil {
-				return nil, nil, fmt.Errorf("trackerapp: the Tempo connection of %s: %w", row.ID, err)
-			}
-		}
-	}
-	p, err := s.makeProvider(row, c, timeClients)
-	if err != nil {
-		return nil, nil, err
-	}
-	return p, c, nil
-}
-
-// buildProvider is the provider over c, the client of connection row, and
-// for a Jira connection tempo, its Tempo connection's client or nil.
-func buildProvider(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error) {
-	if row.Kind == store.TrackerKindLinear {
-		p, err := linearprovider.New(c.linear)
-		if err != nil {
-			return nil, err
-		}
-		return p, nil
-	}
-	opts := jiraprovider.Options{Jira: c.jira, Site: row.Site}
-	if tempo != nil {
-		opts.Tempo = tempo.tempo
-	}
-	p, err := jiraprovider.New(opts)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-// tempoOf reads the Tempo connection that belongs to Jira connection id.
-func (s *Service) tempoOf(id string) (store.TrackerConnection, bool, error) {
-	rows, err := s.store.ListTrackerConnections()
-	if err != nil {
-		return store.TrackerConnection{}, false, fmt.Errorf("trackerapp: list connections: %w", err)
-	}
-	for _, row := range rows {
-		if row.ParentID == id {
-			return row, true, nil
-		}
-	}
-	return store.TrackerConnection{}, false, nil
-}
-
-// jiraClient is the client of Jira connection id, for its Tempo
-// connection's issue lookups.
-func (s *Service) jiraClient(id string) (*jira.Client, error) {
-	if err := s.enter(); err != nil {
-		return nil, err
-	}
-	defer s.leave()
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	row, err := s.get(id)
-	if err != nil {
-		return nil, err
-	}
-	c, err := s.use(row)
-	if err != nil {
-		return nil, fmt.Errorf("trackerapp: the Jira connection %s: %w", id, err)
-	}
-	return c.jira, nil
 }

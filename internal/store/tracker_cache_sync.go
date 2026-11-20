@@ -278,12 +278,18 @@ type MirrorSyncFailure struct {
 // board, is the read of the structure that last changed the board's
 // estimate definition: the caller captures it with the cursor and names
 // it in each page of the walk (MirrorRowPage.EstimateResetAt), so a walk
-// begun under an earlier definition stores no cursor.
+// begun under an earlier definition stores no cursor. StructureReadAt, set
+// for a listed board, is when the stored structure's read began (zero:
+// none stored). HistoryDue, set for every scope, reports that an issue the
+// root keeps is due a history read (ListMirrorHistoryDue lists them), so a
+// caller deciding whether to run history reads nothing more.
 type MirrorSync struct {
 	Lifetime        int64
 	Sweep           int64
 	StructureDueAt  int64
 	EstimateResetAt int64
+	StructureReadAt int64
+	HistoryDue      bool
 	Cursor          []byte
 	ReadAt          int64
 	ReconciledAt    int64
@@ -292,11 +298,16 @@ type MirrorSync struct {
 
 // mirrorSyncStateSQL reads whether the root is live (NULL: no root), a
 // scope's sync state and, for a board listed through a live root and not
-// retired, the board's lifetime, due state (mirrorBoard.structureDueAt)
-// and estimate reset.
+// retired, the board's lifetime, due state (mirrorBoard.structureDueAt),
+// estimate reset and structure read, and whether a kept issue is due a
+// history read: the first entry of idx_tracker_cache_issues_history_due
+// that the keep rule admits, so a root with none due probes an empty
+// index range.
 var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep, 0),
 	  coalesce(bl.lifetime, 0), coalesce((SELECT iif(max(p.named_at) >= bl.read_at, max(p.named_at), 0) FROM tracker_cache_board_unexplained p
-	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0), coalesce(bl.estimate_reset_at, 0),
+	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0), coalesce(bl.estimate_reset_at, 0), coalesce(bl.read_at, 0),
+	  EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = ?1
+	    AND (hd.history_to < hd.updated_at OR hd.history_boards_rev < hd.boards_rev) AND ` + mirrorIssueKept("hd.root_id", "hd.issue_id") + `),
 	  s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0),
 	  coalesce(s.reconciled_at, 0), coalesce(s.failed_at, 0), coalesce(s.failure_kind, ''), coalesce(s.failure_message, '')
 	FROM (SELECT 1)
@@ -317,7 +328,8 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string) (MirrorSync, bool, e
 	var st MirrorSync
 	var live sql.NullBool
 	var ok bool
-	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID).Scan(&live, &st.Sweep, &st.Lifetime, &st.StructureDueAt, &st.EstimateResetAt, &ok,
+	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID).Scan(&live, &st.Sweep, &st.Lifetime, &st.StructureDueAt, &st.EstimateResetAt,
+		&st.StructureReadAt, &st.HistoryDue, &ok,
 		&st.Cursor, &st.ReadAt, &st.ReconciledAt, &st.Failure.At, &st.Failure.Kind, &st.Failure.Message)
 	if err == nil && !live.Bool {
 		err = ErrTrackerCacheGone
@@ -326,7 +338,8 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string) (MirrorSync, bool, e
 		return MirrorSync{}, false, fmt.Errorf("store: read tracker mirror %d sync of board %q: %w", rootID, boardID, err)
 	}
 	if !ok {
-		return MirrorSync{Lifetime: st.Lifetime, Sweep: st.Sweep, StructureDueAt: st.StructureDueAt, EstimateResetAt: st.EstimateResetAt}, false, nil
+		return MirrorSync{Lifetime: st.Lifetime, Sweep: st.Sweep, StructureDueAt: st.StructureDueAt, EstimateResetAt: st.EstimateResetAt,
+			StructureReadAt: st.StructureReadAt, HistoryDue: st.HistoryDue}, false, nil
 	}
 	return st, true, nil
 }

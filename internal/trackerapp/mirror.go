@@ -54,6 +54,8 @@ type MirrorStore interface {
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string) ([]string, bool, error)
 	ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
 	ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
+	ReadMirrorBoardPatch(rootID int64, boardID string, sections []store.MirrorSection, issueIDs []string) (store.MirrorBoardPatch, bool, error)
+	ListMirrorIssueBoards(rootID int64, issueIDs []string) ([]store.MirrorIssueBoard, error)
 }
 
 var (

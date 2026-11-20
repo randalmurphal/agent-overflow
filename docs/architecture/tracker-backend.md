@@ -439,11 +439,22 @@ and writes share:
   statement (`GetMirrorSync`; `ErrTrackerCacheGone` sends it back to
   `GetOrCreateMirrorRoot`) and writes one row, the read time the board's
   "last synced" shows.
-- **Cadence.** A board polls every 45 seconds while a client shows it and
-  not at all otherwise. A failed read retries on the doubling delay the
-  pull request pumps use; a rate limit waits for its release. Linked issues
-  poll every five minutes while any client is connected, and wait for the
-  first client's reads to settle at boot.
+- **Cadence** (`trackerapp.Cadence`). A board reads its delta, and an open
+  ticket its detail, every 10 seconds on Jira and every 45 seconds on
+  Linear while a client shows it: Jira's token traffic has no hourly
+  quota, and Linear allows 2,500 requests per user an hour. A board makes
+  no read while every handle hides it. The tick that falls due also runs
+  the reconcile every 10 minutes, the structure every 30 minutes or while
+  the board is structure-due, and the history while an issue's is due
+  (`MirrorSync.HistoryDue`). A board never read runs all four. An open
+  ticket also reads at once when another read stored a changed card of
+  it. A failed read retries on the doubling delay the pull
+  request pumps use; a rate limit waits for its release. One loop for the
+  service, running while a Jira or Linear connection is on, waits for the
+  first client's reads to settle, then every five minutes while a client
+  is connected syncs each connection's linked issues (cards and history)
+  and finishes the mirror cleanup. The cleanup also runs once right after
+  the settle.
 - **Requests are background** unless a person is waiting on them, so a
   rate limit fails a tick at once and holds the interactive budget for the
   person.
@@ -451,11 +462,29 @@ and writes share:
   setup, forbidden, tracker) and a caller-safe sentence. The last rows stay
   on screen.
 
-A board pump has handles, visibility votes, a pause while every handle is
-hidden, and a request path for a person's refresh. That mechanism is
-`internal/pump`, with the request type as a parameter and its lock supplied
-by the owner. The pull request pumps use the same package, so there is one
-implementation.
+Each subscribed board and each open ticket has one pump: one goroutine and
+one timer for all its handles, plus a retry timer while its reads fail. A
+hidden pump's timer is not re-armed, so it makes no request and no store
+call until it is shown again, and then it runs the tick it missed. A tick
+that reports More runs again at once. Handles, visibility votes, the pause
+and the request path for a person's refresh are `internal/pump`, with the
+request type as a parameter and its lock supplied by the owner. The pull
+request pumps use the same package, so there is one implementation.
+
+Idle ticks write only read times, and send no event:
+
+| Tick that finds nothing changed | Requests | Store calls | Statements | Rows written |
+|---|---|---|---|---|
+| Shown board | 1 | 2 | 3 | 1 |
+| Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 10 | 3 |
+| Open Jira ticket | 1 | 6 | 13 | 1 |
+| Open Linear ticket | 1 | 4 | 6 | 1 |
+
+A changed row is redelivered by the delta's overlap of one minute
+(`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
+redelivery row's cost. The trackerapp cost tests pin the requests and
+store calls. The store's `TestIdleTickStatements` pins the statements and
+row writes.
 
 ## Writes
 
@@ -495,14 +524,91 @@ Bound methods take a leading context and carry a scope and a route.
   other method routes `selected`, and the client pins calls on a
   subscription to the computer that answered the subscribe.
 - A subscription is a handle released through the connection's cleanup.
-- Events: `tracker:connections_updated`, `tracker:board_updated` (changed
-  cards, removed IDs, a sequence number, the pump's failure) and
-  `tracker:issue_updated` for an open ticket. Each has a channel policy
-  with the read scope.
+- Events: `tracker:connections_updated`, `tracker:board_updated`
+  (`trackerapp.BoardEvent`) and `tracker:issue_updated` for an open ticket
+  (`trackerapp.IssueEvent`). Each has a channel policy with the read scope.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
 remaining cards are read by page.
+
+### Subscriptions
+
+The bound methods wrap these `trackerapp.Service` methods:
+
+- `SubscribeBoard(projectID, scope, sections)` answers from the mirror
+  alone, before any tracker call: a handle, a sequence number, the view of
+  the sections or "not loaded", and the poll interval. It is refused for a
+  board the project does not list, a connection turned off, removed or
+  Tempo, and past 64 board handles.
+- `SubscribeTicket(connection, issue)` answers the same way with the
+  ticket's detail when the mirror or the ticket's pump holds one; at most
+  64 ticket handles.
+- `SetSubscriptionVisible`, `RefreshSubscription` and `ReleaseSubscription`
+  take any handle. A refresh is a person's read: a board's four units or a
+  ticket's detail, interactive. It fails with `ErrSubscriptionEnded` when
+  the subscription ends first.
+- `TicketDetail(handle)` is the ticket as its subscribers were last told.
+- `BoardPatch(scope, sections, issues)` is the patch read below.
+- `StartLinkedSync` arms the linked-issues loop; the app calls it from its
+  unattended-work boot step. `New` starts nothing.
+
+Events go to `Deps.EmitBoard` and `Deps.EmitIssue`, and the loop's
+failures go to `Deps.LoopFailed`. `Deps.Settled` and `Deps.ClientConnected`
+gate the loop. `Stop` stops and joins every pump and the loop.
+`SetEnabled(false)` and `Remove` end the connection's subscriptions before
+they return, and each subscriber is told once (`Ended`).
+
+- **Board event:** the scope, a sequence number, the changed and removed
+  IDs, `ReadAgain`, the sync view (last read, last reconcile, failure) and
+  `Ended`. Past 100 IDs it carries none, with `Truncated` and `ReadAgain`
+  set. `ReadAgain` is set when the board's structure or the connection's
+  users and statuses changed, since that moves rows no ID names.
+- **Issue event:** the connection, the open issue whose view changed, a
+  sequence number, the ticket pump's failure and `Ended`.
+- **Sequence.** One sequence numbers every answer and event of the
+  service. A subscribe takes its number before it reads the mirror. An
+  event takes its number after its write committed, and is sent under the
+  same lock. An event numbered at or below an answer is in that answer.
+  One numbered above may be too, and applying it is harmless.
+- **Event rate.** A tick that changed nothing sends nothing, so an idle
+  shown board sends no event. The last read time is not sent: while no
+  failure is reported, the board was read within the poll interval the
+  answer carries. A failure is sent when it starts, changes and clears.
+
+Every tick's changes and every open ticket's read pass through one change
+funnel (`trackerapp/funnel.go`):
+
+- The tick's own board gets its changed rows and cards and its removed
+  rows.
+- Every other subscribed board of the connection gets the changed cards
+  and histories of the issues it has a row of. These come from one indexed
+  read (`ListMirrorIssueBoards`), made only when such a board is
+  subscribed.
+- An open ticket whose card changed reads at once.
+
+### The patch read
+
+A client patches the sections it holds instead of reading them again.
+`BoardPatch` (store `ReadMirrorBoardPatch`) reads, in one snapshot, the
+board's lifetime and revision, every section total, and for each section
+asked the named issues' rows that are members of it now, with their names.
+Membership comes from the same rule fragments that `ListMirrorSection`
+pages by. The client's rule:
+
+1. Remove each ID of the event from every section held.
+2. Insert each returned row at its (order, issue) place when that place is
+   not after the section's cursor, or when the section is loaded whole.
+3. Take the totals.
+4. Carry the lifetime and revision into every cursor.
+
+The reference implementation is `applyPatch` in
+`trackerapp/patch_model_test.go`. A randomized test checks it against a
+full read of the board. A one-row change of a realistic board, with three
+sections held, costs a 166-byte event and a 1,461-byte patch as JSON. The
+patch read is two store calls and eight statements. Tests pin all of these
+numbers. The full read is only for the first paint, a reconnect and
+`ReadAgain`.
 
 ## Agent tools
 

@@ -71,7 +71,25 @@ func (s *Service) SyncBoard(ctx context.Context, scope Scope, due BoardDue, u Ur
 	if err := scope.boardOnly(); err != nil {
 		return Outcome{}, err
 	}
-	b := scope.Board
+	steps := boardSteps(scope.Board, due)
+	if len(steps) == 0 {
+		return Outcome{Ran: []UnitResult{}}, nil
+	}
+	return s.tick(ctx, scope, u, func(*run) []step { return steps }, nil)
+}
+
+// syncBoardPlanned is SyncBoard with the units chosen by due from the
+// tick's sync state once the tick has read it, so choosing them reads
+// nothing more; origin is the pump that runs it.
+func (s *Service) syncBoardPlanned(ctx context.Context, scope Scope, u Urgency, due func(*run) BoardDue, origin *tickOrigin) (Outcome, error) {
+	if err := scope.boardOnly(); err != nil {
+		return Outcome{}, err
+	}
+	return s.tick(ctx, scope, u, func(r *run) []step { return boardSteps(scope.Board, due(r)) }, origin)
+}
+
+// boardSteps are the steps of the units due names on board b.
+func boardSteps(b tracker.BoardID, due BoardDue) []step {
 	var steps []step
 	if due.Structure {
 		steps = append(steps, step{unit: UnitStructure, body: func(r *run) (UnitResult, error) { return r.structureUnit(b) }})
@@ -86,7 +104,7 @@ func (s *Service) SyncBoard(ctx context.Context, scope Scope, due BoardDue, u Ur
 	if due.History {
 		steps = append(steps, step{unit: UnitHistory, body: (*run).history, history: true})
 	}
-	return s.tick(ctx, scope, u, steps)
+	return steps
 }
 
 // SyncLinked runs the units due names on connection id's linked-issues
@@ -111,16 +129,20 @@ func (s *Service) SyncLinked(ctx context.Context, id string, due LinkedDue, u Ur
 	if due.History {
 		steps = append(steps, step{unit: UnitHistory, body: (*run).history, history: true})
 	}
-	return s.tick(ctx, Scope{Connection: id}, u, steps)
+	if len(steps) == 0 {
+		return Outcome{Ran: []UnitResult{}}, nil
+	}
+	return s.tick(ctx, Scope{Connection: id}, u, func(*run) []step { return steps }, nil)
 }
 
-// tick runs steps on scope under its lock and one hold of its
-// connection, then settles and records the outcome once.
-func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, steps []step) (Outcome, error) {
-	out := Outcome{Ran: []UnitResult{}}
-	if len(steps) == 0 {
-		return out, nil
-	}
+// tick runs the steps plan chooses on scope under its lock and one hold
+// of its connection, then settles and records the outcome once. plan runs
+// after the tick read the scope's sync state; a plan with no step ends
+// the tick there. What the tick stored passes through the change funnel
+// (publish) before it returns, whatever its outcome; origin is the pump
+// that runs it, nil for any other caller.
+func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*run) []step, origin *tickOrigin) (out Outcome, err error) {
+	out = Outcome{Ran: []UnitResult{}}
 	unlock, err := s.lock(ctx, lockKey{scope: scope})
 	if err != nil {
 		return out, err
@@ -134,11 +156,16 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, steps []step
 		return out, err
 	}
 	defer r.finish()
+	defer func() { s.publish(r.root, scope, out.Changes(), origin) }()
 	r.scope = scope
 	if err := r.readState(); errors.Is(err, errEnded) || endsMirror(err) {
 		return ended(out), nil
 	} else if err != nil {
 		return out, err
+	}
+	steps := plan(r)
+	if len(steps) == 0 {
+		return out, nil
 	}
 	done := 0
 	// began is when each unit of out.Ran began, the time it records.
@@ -168,11 +195,40 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, steps []step
 	if err := r.settleCalls(callErr); err != nil {
 		return out, err
 	}
-	err = r.record(steps[:done], began, out)
+	a, err := r.record(steps[:done], began, out)
 	if endsMirror(err) {
 		return ended(out), nil
 	}
+	if err == nil && origin != nil {
+		origin.sync, origin.recorded = syncAfter(r.state, a), true
+	}
 	return out, err
+}
+
+// tickOrigin is the pump a tick runs for, which emits what the tick
+// changed of its own scope together with its failure, and what the
+// tick's record left of the scope's sync state.
+type tickOrigin struct {
+	board  *boardPump
+	ticket *ticketPump
+	// sync is the scope's sync view after the tick's record, set when
+	// recorded.
+	sync     SyncView
+	recorded bool
+}
+
+// syncAfter is the sync view of a scope whose state was st after a record
+// of a, as the store applies it: times only move forward, a success clears
+// a failure no later than it, and a's failure is the scope's.
+func syncAfter(st store.MirrorSync, a store.MirrorSyncAttempt) SyncView {
+	v := SyncView{ReadAt: max(st.ReadAt, a.ReadAt), ReconciledAt: max(st.ReconciledAt, a.ReconciledAt)}
+	switch f := st.Failure; {
+	case a.Failure.At > 0:
+		v.Failure = &FailureView{Kind: a.Failure.Kind, Message: a.Failure.Message, At: a.Failure.At}
+	case f.Kind != "" && f.At > max(a.ReadAt, a.ReconciledAt):
+		v.Failure = &FailureView{Kind: f.Kind, Message: f.Message, At: f.At}
+	}
+	return v
 }
 
 // runStep runs one unit, under the connection's history lock when it
@@ -194,7 +250,7 @@ func (r *run) runStep(st step) (UnitResult, error) {
 // at the time its unit began, so a failure is never older than a success
 // it follows. A tick with nothing to record writes nothing, and the store
 // writes nothing when the attempt changes nothing.
-func (r *run) record(done []step, began []int64, out Outcome) error {
+func (r *run) record(done []step, began []int64, out Outcome) (store.MirrorSyncAttempt, error) {
 	a := store.MirrorSyncAttempt{Lifetime: r.state.Lifetime}
 	for i, st := range done {
 		switch {
@@ -209,12 +265,12 @@ func (r *run) record(done []step, began []int64, out Outcome) error {
 		a.Failure = store.MirrorSyncFailure{At: began[len(out.Ran)-1], Kind: string(out.Failure.Kind), Message: out.Failure.Message}
 	}
 	if a.ReadAt == 0 && a.ReconciledAt == 0 && a.Failure.At == 0 {
-		return nil
+		return a, nil
 	}
 	if _, err := r.s.store.RecordMirrorSyncAttempt(r.root, string(r.scope.Board), a); err != nil {
-		return fmt.Errorf("trackerapp: record the sync outcome of %s board %q: %w", r.row.ID, r.scope.Board, err)
+		return a, fmt.Errorf("trackerapp: record the sync outcome of %s board %q: %w", r.row.ID, r.scope.Board, err)
 	}
-	return nil
+	return a, nil
 }
 
 // structureUnit is the structure unit: the read.

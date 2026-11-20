@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // scripted is a tracker.Provider whose reads the test scripts one
@@ -30,16 +31,62 @@ type scripted struct {
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
 	// caps are the tracker's capabilities; none unless a test sets them.
 	caps tracker.Capabilities
+	// note is closed and replaced on every call (waitCall).
+	note chan struct{}
+	// interactive holds, for each call of calls, whether a person waited
+	// on it.
+	interactive []bool
+	// block, when set, runs before each scripted call and fails it with
+	// its error: a test holds a call in flight with it.
+	block func(ctx context.Context, name string) error
+}
+
+// wait runs p's block, if any, for a call of name.
+func (p *scripted) wait(ctx context.Context, name string) error {
+	p.mu.Lock()
+	block := p.block
+	p.mu.Unlock()
+	if block == nil {
+		return nil
+	}
+	return block(ctx, name)
+}
+
+// interactiveCalls is, for each call made, whether it was interactive.
+func (p *scripted) interactiveCalls() []bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.interactive)
+}
+
+// waitCall waits for p's next call, or a second, whichever comes first;
+// the caller re-checks what it waits for.
+func (p *scripted) waitCall() {
+	p.mu.Lock()
+	if p.note == nil {
+		p.note = make(chan struct{})
+	}
+	ch := p.note
+	p.mu.Unlock()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+	}
 }
 
 var errUnscripted = errors.New("test: unscripted provider call")
 
 // called records a call of name and reports whether the test scripted
 // it; an unscripted call fails the test.
-func (p *scripted) called(name string, scripted func() bool) bool {
+func (p *scripted) called(ctx context.Context, name string, scripted func() bool) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, name)
+	p.interactive = append(p.interactive, trackerapi.IsInteractive(ctx))
+	if p.note != nil {
+		close(p.note)
+		p.note = nil
+	}
 	if !scripted() {
 		p.t.Errorf("unexpected provider call %s", name)
 		return false
@@ -93,9 +140,13 @@ func (p *scripted) ChangedRows(ctx context.Context, q tracker.DeltaQuery) (track
 	p.mu.Lock()
 	h := p.changedRows
 	p.mu.Unlock()
-	if !p.called("ChangedRows", func() bool { return h != nil }) {
+	if !p.called(ctx, "ChangedRows", func() bool { return h != nil }) {
 		var zero tracker.RowPage
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "ChangedRows"); err != nil {
+		var zero tracker.RowPage
+		return zero, err
 	}
 	return h(q)
 }
@@ -104,9 +155,13 @@ func (p *scripted) BoardIssues(ctx context.Context, b tracker.BoardID, window ti
 	p.mu.Lock()
 	h := p.boardIssues
 	p.mu.Unlock()
-	if !p.called("BoardIssues", func() bool { return h != nil }) {
+	if !p.called(ctx, "BoardIssues", func() bool { return h != nil }) {
 		var zero tracker.Listing
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "BoardIssues"); err != nil {
+		var zero tracker.Listing
+		return zero, err
 	}
 	return h(b, window)
 }
@@ -115,9 +170,13 @@ func (p *scripted) BoardRows(ctx context.Context, b tracker.BoardID, ids []track
 	p.mu.Lock()
 	h := p.boardRows
 	p.mu.Unlock()
-	if !p.called("BoardRows", func() bool { return h != nil }) {
+	if !p.called(ctx, "BoardRows", func() bool { return h != nil }) {
 		var zero tracker.Rows
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "BoardRows"); err != nil {
+		var zero tracker.Rows
+		return zero, err
 	}
 	return h(b, ids)
 }
@@ -126,9 +185,13 @@ func (p *scripted) Cards(ctx context.Context, ids []tracker.IssueID) (tracker.Ca
 	p.mu.Lock()
 	h := p.cards
 	p.mu.Unlock()
-	if !p.called("Cards", func() bool { return h != nil }) {
+	if !p.called(ctx, "Cards", func() bool { return h != nil }) {
 		var zero tracker.Cards
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "Cards"); err != nil {
+		var zero tracker.Cards
+		return zero, err
 	}
 	return h(ids)
 }
@@ -137,9 +200,13 @@ func (p *scripted) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	p.mu.Lock()
 	h := p.history
 	p.mu.Unlock()
-	if !p.called("History", func() bool { return h != nil }) {
+	if !p.called(ctx, "History", func() bool { return h != nil }) {
 		var zero tracker.History
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "History"); err != nil {
+		var zero tracker.History
+		return zero, err
 	}
 	return h(q)
 }
@@ -148,9 +215,13 @@ func (p *scripted) Detail(ctx context.Context, id tracker.IssueID) (tracker.Deta
 	p.mu.Lock()
 	h := p.detail
 	p.mu.Unlock()
-	if !p.called("Detail", func() bool { return h != nil }) {
+	if !p.called(ctx, "Detail", func() bool { return h != nil }) {
 		var zero tracker.Detail
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "Detail"); err != nil {
+		var zero tracker.Detail
+		return zero, err
 	}
 	return h(id)
 }
@@ -159,9 +230,13 @@ func (p *scripted) Structure(ctx context.Context, b tracker.BoardID, window time
 	p.mu.Lock()
 	h := p.structure
 	p.mu.Unlock()
-	if !p.called("Structure", func() bool { return h != nil }) {
+	if !p.called(ctx, "Structure", func() bool { return h != nil }) {
 		var zero tracker.Structure
 		return zero, errUnscripted
+	}
+	if err := p.wait(ctx, "Structure"); err != nil {
+		var zero tracker.Structure
+		return zero, err
 	}
 	return h(b, window)
 }
@@ -198,13 +273,20 @@ type mirrorFixture struct {
 	*fixture
 	conn Connection
 	p    *scripted
+	// version counts the tracker's states a test set (tracks).
+	version int
 }
 
 const testBoard tracker.BoardID = "1"
 
 func newMirrorFixture(t *testing.T) *mirrorFixture {
 	t.Helper()
-	f := newFixture(t)
+	return newMirrorFixtureOn(t, newFixture(t))
+}
+
+// newMirrorFixtureOn is a mirror fixture over f.
+func newMirrorFixtureOn(t *testing.T, f *fixture) *mirrorFixture {
+	t.Helper()
 	p := &scripted{t: t}
 	f.svc.makeProvider = func(store.TrackerConnection, *clients, *clients) (tracker.Provider, error) { return p, nil }
 	m := &mirrorFixture{fixture: f, conn: f.addJira(), p: p}

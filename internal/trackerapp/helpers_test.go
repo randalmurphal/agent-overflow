@@ -60,15 +60,32 @@ type fixture struct {
 	changes atomic.Int64
 	// origin, when set, replaces the fakes as the Origin.
 	origin func(kind, site string) (string, error)
+	// events records what the service emits and reports.
+	events *eventLog
 }
 
-func newFixture(t *testing.T) *fixture {
+// testCallbacks fills d's event, settle, client and loop callbacks: the
+// events go to log, the first reads have settled and a client is
+// connected unless log says otherwise.
+func testCallbacks(d Deps, log *eventLog) Deps {
+	d.EmitBoard = log.board
+	d.EmitIssue = log.issue
+	d.Settled = log.waitSettled
+	d.ClientConnected = func() bool { return !log.disconnected.Load() }
+	d.LoopFailed = log.loopFailed
+	return d
+}
+
+func newFixture(t *testing.T) *fixture { return newFixtureWith(t, Cadence{}) }
+
+// newFixtureWith is newFixture with the service's sync intervals cad.
+func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 	t.Helper()
-	f := &fixture{t: t, st: storetest.Clone(t), creds: filepath.Join(t.TempDir(), keyfile.DirName)}
+	f := &fixture{t: t, st: storetest.Clone(t), creds: filepath.Join(t.TempDir(), keyfile.DirName), events: newEventLog()}
 	f.jira = jiratest.NewServer(t)
 	f.tempo = tempotest.NewServer(t, tempoToken)
 	f.linear = lineartest.NewServer(t)
-	svc, err := New(Deps{
+	svc, err := New(testCallbacks(Deps{
 		Store:          f.st,
 		Changed:        func() { f.changes.Add(1) },
 		CredentialsDir: f.creds,
@@ -87,7 +104,8 @@ func newFixture(t *testing.T) *fixture {
 		Version: "1.2.3",
 		Now:     func() time.Time { return time.UnixMilli(1_800_000_000_000) },
 		Life:    t.Context(),
-	})
+		Cadence: cad,
+	}, f.events))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -76,15 +76,21 @@ const mirrorNotDoneSQL = `NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st
 // mirrorBacklogSQL holds for a row of b in the board's backlog.
 const mirrorBacklogSQL = `NOT ` + mirrorInOpenSprintSQL + ` AND ` + mirrorNotDoneSQL
 
+// The section rules: each holds for a row b (with its issue i) of board ?2
+// of root ?1 that is a member of the section, ?5 naming the sprint or the
+// column's position. Every read of a section's rows, by page or by ID,
+// states its rule with these.
+const (
+	mirrorSprintRuleSQL = `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+	  WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND m.sprint_id = ?5)`
+	mirrorColumnRuleSQL = `i.status_id IN (SELECT c.status_id FROM tracker_cache_board_column_statuses c
+	  WHERE c.root_id = ?1 AND c.board_id = ?2 AND c.position = ?5)`
+)
+
 var mirrorSectionSQL = map[MirrorSectionKind]string{
-	MirrorSectionSprint: mirrorSectionRowsSQL + `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
-	  WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND m.sprint_id = ?5)` +
-		mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
-	MirrorSectionBacklog: mirrorSectionRowsSQL + mirrorBacklogSQL +
-		mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
-	MirrorSectionColumn: mirrorSectionRowsSQL + `i.status_id IN (SELECT c.status_id FROM tracker_cache_board_column_statuses c
-	  WHERE c.root_id = ?1 AND c.board_id = ?2 AND c.position = ?5)` +
-		mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+	MirrorSectionSprint:  mirrorSectionRowsSQL + mirrorSprintRuleSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+	MirrorSectionBacklog: mirrorSectionRowsSQL + mirrorBacklogSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+	MirrorSectionColumn:  mirrorSectionRowsSQL + mirrorColumnRuleSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
 }
 
 // mirrorShownBoardSQL reads the lifetime, revision, estimate unit and
