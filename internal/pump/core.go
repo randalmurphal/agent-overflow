@@ -205,12 +205,22 @@ func (c *Core[R]) Request(ctx context.Context, body R) error {
 
 // Handle is one caller's reference on a core, from TakeLocked. It
 // remembers its own vote, so a repeated vote changes nothing, and it is
-// released once. Its methods run under the owner's lock.
+// released once. Its methods run under the owner's lock. A Handle is used
+// through the pointer TakeLocked returned and never copied: a copy would
+// hold its own vote and release, and count the one reference twice. go vet
+// refuses a copy (noCopy).
 type Handle[R any] struct {
+	_        noCopy
 	core     *Core[R]
 	visible  bool
 	released bool
 }
+
+// noCopy marks a type that go vet's copylocks check refuses to copy.
+type noCopy struct{}
+
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
 
 // VoteLocked records whether the handle's caller shows the pump. The core
 // pauses while every handle is hidden, and a vote that resumes it wakes
