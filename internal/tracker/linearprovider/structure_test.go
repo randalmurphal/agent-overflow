@@ -49,8 +49,8 @@ func TestIdentityProjectsBoards(t *testing.T) {
 	if lt, _ := p.LinkTypes(ctx); len(lt) != 3 || lt[0].Outward != "blocks" || lt[0].Inward != "is blocked by" {
 		t.Errorf("link types %+v", lt)
 	}
-	if p.Capabilities() != (tracker.Capabilities{}) || p.Time() != nil {
-		t.Error("Linear claims a capability or time tracking")
+	if p.Capabilities() != (tracker.Capabilities{HistorySettle: settleMargin}) || p.Time() != nil {
+		t.Error("Linear claims a capability or time tracking, or not its settle margin")
 	}
 	if _, err := New(nil); err == nil {
 		t.Error("New accepted no client")

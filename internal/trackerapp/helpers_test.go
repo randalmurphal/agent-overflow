@@ -62,6 +62,8 @@ type fixture struct {
 	origin func(kind, site string) (string, error)
 	// events records what the service emits and reports.
 	events *eventLog
+	// deps made svc; restart makes another service from them.
+	deps Deps
 }
 
 // testCallbacks fills d's event, settle, client and loop callbacks: the
@@ -85,7 +87,7 @@ func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 	f.jira = jiratest.NewServer(t)
 	f.tempo = tempotest.NewServer(t, tempoToken)
 	f.linear = lineartest.NewServer(t)
-	svc, err := New(testCallbacks(Deps{
+	f.deps = testCallbacks(Deps{
 		Store:          f.st,
 		Changed:        func() { f.changes.Add(1) },
 		CredentialsDir: f.creds,
@@ -105,7 +107,8 @@ func newFixtureWith(t *testing.T, cad Cadence) *fixture {
 		Now:     func() time.Time { return time.UnixMilli(1_800_000_000_000) },
 		Life:    t.Context(),
 		Cadence: cad,
-	}, f.events))
+	}, f.events)
+	svc, err := New(f.deps)
 	if err != nil {
 		t.Fatal(err)
 	}

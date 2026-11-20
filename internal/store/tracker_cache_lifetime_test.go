@@ -16,7 +16,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 	// Board 12 holds the newest lifetime, the one a reused ID would give again.
 	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10001", 5, "a"), webRow("10002", 5, "b")})
 	old := currentLifetime(s, root, "12")
-	if st, ok, err := s.GetMirrorSync(root, "12"); err != nil || st.Lifetime != old {
+	if st, ok, err := s.GetMirrorSync(root, "12", testNow); err != nil || st.Lifetime != old {
 		t.Fatalf("captured lifetime = %+v, %v, %v; want %d", st, ok, err, old)
 	}
 	column := MirrorSection{Kind: MirrorSectionColumn}
@@ -70,7 +70,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 	refused("synced afresh")
 	assertRows(t, s.db, `SELECT name FROM tracker_cache_boards WHERE board_id = '12'`, "WEB board")
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_issues WHERE issue_id = '10003'`, "0")
-	if st, _, err := s.GetMirrorSync(root, "12"); err != nil || st.Lifetime != next || st.Cursor != nil {
+	if st, _, err := s.GetMirrorSync(root, "12", testNow); err != nil || st.Lifetime != next || st.Cursor != nil {
 		t.Fatalf("sync of the new lifetime = %+v, %v", st, err)
 	}
 
@@ -81,7 +81,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_boards WHERE board_id = '12'`, "0")
-	if st, _, err := s.GetMirrorSync(root, "12"); err != nil || st.Lifetime != 0 {
+	if st, _, err := s.GetMirrorSync(root, "12", testNow); err != nil || st.Lifetime != 0 {
 		t.Fatalf("sync of an unlisted board = %+v, %v", st, err)
 	}
 	if _, err := s.ReconcileMirrorBoard(root, "12", 0, nil, true, 60); !errors.Is(err, ErrInvalidTrackerCache) {

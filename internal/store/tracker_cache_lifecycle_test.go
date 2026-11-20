@@ -33,9 +33,9 @@ func writeMirrorBoard(t *testing.T, s *Store, root int64, board string, rows []M
 	}
 }
 
-// statusHistory is n status changes of issue, final through n+1.
+// statusHistory is n status changes of issue, answered at n+1.
 func statusHistory(issue string, n int) MirrorHistory {
-	h := MirrorHistory{IssueID: issue, CompleteTo: int64(n + 1)}
+	h := MirrorHistory{IssueID: issue, AnsweredAt: int64(n + 1)}
 	for i := range n {
 		h.Changes = append(h.Changes, MirrorChange{Kind: MirrorChangeStatus, At: int64(i + 1), To: "3"})
 	}
@@ -161,7 +161,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	if counts, err := s.CountMirrorSections(root, "10"); err != nil || counts.All.Rows != 0 {
 		t.Errorf("retired board's counts = %+v, %v", counts, err)
 	}
-	if _, ok, err := s.GetMirrorSync(root, "10"); err != nil || ok {
+	if _, ok, err := s.GetMirrorSync(root, "10", testNow); err != nil || ok {
 		t.Errorf("retired board's sync state: %v, %v", ok, err)
 	}
 	if cards, err := s.ListMirrorCards(root, []string{"20000", "20001"}); err != nil || len(cards) != 1 || cards[0].IssueID != "20000" {
@@ -313,7 +313,11 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, n := range map[string]int{"10001": clearMirrorChunk, "10002": 400, "10003": 10} {
-		if _, err := replaceHistory(s, root, statusHistory(id, n)); err != nil {
+		// Answered just now and not final: a reset history is due at once,
+		// not after the wait.
+		h := statusHistory(id, n)
+		h.AnsweredAt, h.Wait = testNow, 60_000
+		if _, err := replaceHistory(s, root, h); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.ClearThreadTicket("link-" + id); err != nil {
@@ -326,8 +330,8 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		if pauses++; pauses != 2 {
 			return
 		}
-		assertRows(t, s.db, `SELECT count(*) || ':' || (SELECT history_to FROM tracker_cache_issues WHERE issue_id = '10001')
-			FROM tracker_cache_changes WHERE issue_id = '10001'`, "0:0")
+		assertRows(t, s.db, `SELECT count(*) || ':' || (SELECT history_from || history_for || history_answered_at || history_wait || status_since
+			FROM tracker_cache_issues WHERE issue_id = '10001') FROM tracker_cache_changes WHERE issue_id = '10001'`, "0:00000")
 		linkIssue(t, s, "relinked", "10001")
 	})
 	if err != nil {
@@ -337,9 +341,16 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		t.Fatalf("sweep deleted %d rows, at most %d in one transaction", total, most)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "10001")
-	if due, _, err := s.ListMirrorHistoryDue(root, ""); err != nil || !reflect.DeepEqual(due, []MirrorHistoryDue{{IssueID: "10001"}}) {
+	// The reset moved the receipt past the history's write: a history
+	// listed before the reset is superseded, one listed since is stored.
+	if due, _, err := s.ListMirrorHistoryDue(root, "", testNow); err != nil || !reflect.DeepEqual(due, []MirrorHistoryDue{{IssueID: "10001", UpdatedAt: 5, Receipt: 2}}) {
 		t.Fatalf("history due = %v, %v; want the issue kept again", due, err)
 	}
+	stale := listedAt(s, root, statusHistory("10001", 3), 1)
+	if results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}); err != nil || !results[0].Superseded {
+		t.Fatalf("a history listed before the reset = %+v, %v; want superseded", results, err)
+	}
+	mustReplaceHistory(t, s, root, statusHistory("10001", 3), MirrorWrite{Changed: true})
 }
 
 // A sweep reads a page of unkept issues at a time and its pages together
@@ -392,7 +403,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("reconcile")
-	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: large[0].Card.IssueID, CompleteTo: 1000}); err != nil {
+	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: large[0].Card.IssueID}); err != nil {
 		t.Fatal(err)
 	}
 	check("history replace")

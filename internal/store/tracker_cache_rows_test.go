@@ -9,7 +9,7 @@ import (
 
 func mustMirrorCursor(t *testing.T, s *Store, root int64, boardID string) []byte {
 	t.Helper()
-	st, ok, err := s.GetMirrorSync(root, boardID)
+	st, ok, err := s.GetMirrorSync(root, boardID, testNow)
 	if err != nil || !ok {
 		t.Fatalf("sync of board %s: %v, %v", boardID, ok, err)
 	}

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
@@ -49,8 +48,6 @@ type Provider struct {
 	jira   *jira.Client
 	origin string
 	time   tracker.TimeTracker
-	// now is replaced only by tests, before first use.
-	now func() time.Time
 }
 
 var (
@@ -69,7 +66,7 @@ func New(opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Provider{jira: opts.Jira, origin: origin, now: time.Now}
+	p := &Provider{jira: opts.Jira, origin: origin}
 	if opts.Tempo != nil {
 		p.time = &tempoTime{jira: opts.Jira, tempo: opts.Tempo}
 	} else {
@@ -93,7 +90,8 @@ func siteOrigin(s string) (string, error) {
 // worklog each move an issue's `updated`
 // (docs/references/tracker-api-measurements.md, Jira Cloud).
 func (p *Provider) Capabilities() tracker.Capabilities {
-	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, Attachments: true, DetailMovesUpdated: true}
+	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, Attachments: true,
+		DetailMovesUpdated: true, HistorySettle: historySettle}
 }
 
 // Time is Tempo's worklogs when the Provider was built with a Tempo

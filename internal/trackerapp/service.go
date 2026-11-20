@@ -96,7 +96,15 @@ type Service struct {
 	origin         Origin
 	version        string
 	now            func() time.Time
-	life           context.Context
+	// steady is the clock the history wait is measured on (store
+	// MirrorHistory.AnsweredAt): the wall clock when the service was made
+	// plus the monotonic time since, so a step of the wall clock while it
+	// runs moves no wait. steadyFrom is its reading then, in Unix ms: an
+	// answer stored at or after it arrived in this process, so the time
+	// since it is known to have elapsed. Tests replace both (useClock).
+	steady     func() time.Time
+	steadyFrom int64
+	life       context.Context
 	// digestKey keys the token digests the credential sources keep. It is
 	// random per service and never leaves it.
 	digestKey []byte
@@ -178,9 +186,13 @@ func New(deps Deps) (*Service, error) {
 	}
 	key := make([]byte, 32)
 	_, _ = rand.Read(key) // crypto/rand.Read never fails; it crashes instead
+	// time.Since reads the monotonic clock of mono, which deps.Now's value
+	// may not carry.
+	mono, wall := time.Now(), deps.Now()
 	return &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
+		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		digestKey: key,
 		clients:   map[string]*clients{}, problems: map[string]Failure{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},

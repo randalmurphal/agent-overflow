@@ -33,7 +33,7 @@ type MirrorStore interface {
 	DetachMirror(connectionID string) (bool, error)
 	FinishMirrorCleanup(pause store.ChunkPause) error
 
-	GetMirrorSync(rootID int64, boardID string) (store.MirrorSync, bool, error)
+	GetMirrorSync(rootID int64, boardID string, now int64) (store.MirrorSync, bool, error)
 	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (bool, error)
 
 	WriteMirrorRowPage(rootID int64, page store.MirrorRowPage, cursor []byte) (store.MirrorChanges, error)
@@ -42,7 +42,7 @@ type MirrorStore interface {
 	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt int64) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory) ([]store.MirrorHistoryResult, error)
-	ListMirrorHistoryDue(rootID int64, after string) ([]store.MirrorHistoryDue, bool, error)
+	ListMirrorHistoryDue(rootID int64, after string, now int64) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) ([]store.MirrorDetailWrite, error)
 	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error)
 

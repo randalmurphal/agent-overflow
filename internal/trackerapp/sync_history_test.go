@@ -14,7 +14,7 @@ import (
 // due are the issues whose history is due, the first page.
 func (m *mirrorFixture) due() []string {
 	m.t.Helper()
-	due, _, err := m.st.ListMirrorHistoryDue(m.root(), "")
+	due, _, err := m.st.ListMirrorHistoryDue(m.root(), "", m.svc.steady().UnixMilli())
 	if err != nil {
 		m.t.Fatal(err)
 	}

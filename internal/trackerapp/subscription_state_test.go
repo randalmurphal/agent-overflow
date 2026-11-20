@@ -31,11 +31,11 @@ func (s *failingStore) RecordMirrorSyncAttempt(root int64, board string, a store
 	return s.Store.RecordMirrorSyncAttempt(root, board, a)
 }
 
-func (s *failingStore) GetMirrorSync(root int64, board string) (store.MirrorSync, bool, error) {
+func (s *failingStore) GetMirrorSync(root int64, board string, now int64) (store.MirrorSync, bool, error) {
 	if board == "" && s.fail.Load() {
 		return store.MirrorSync{}, false, errStoreDown
 	}
-	return s.Store.GetMirrorSync(root, board)
+	return s.Store.GetMirrorSync(root, board, now)
 }
 
 // A failure outside the tracker is told to the subscribers as one they can

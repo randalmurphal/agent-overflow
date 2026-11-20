@@ -9,10 +9,11 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// mirrorHistory is h as the store holds it: its changes by kind, each
-// kind oldest first.
+// mirrorHistory is h's changes as the store holds them, each kind oldest
+// first. What the read was for and whether it is final are the caller's
+// (run.historyOf).
 func mirrorHistory(h tracker.IssueHistory) store.MirrorHistory {
-	out := store.MirrorHistory{IssueID: string(h.Issue), CompleteFrom: millis(h.CompleteFrom), CompleteTo: millis(h.CompleteTo)}
+	out := store.MirrorHistory{IssueID: string(h.Issue), CompleteFrom: millis(h.CompleteFrom)}
 	for _, c := range h.Status {
 		out.Changes = append(out.Changes, store.MirrorChange{
 			Kind: store.MirrorChangeStatus, At: millis(c.At), AuthorID: string(c.Author), From: string(c.From), To: string(c.To),
@@ -59,7 +60,7 @@ func copyNumber(n *float64) *float64 {
 // historyOf is the history m holds. A change of a kind this package does
 // not know is an error: the store refuses to write one.
 func historyOf(m store.MirrorHistory) (tracker.IssueHistory, error) {
-	h := tracker.IssueHistory{Issue: tracker.IssueID(m.IssueID), CompleteFrom: timeOf(m.CompleteFrom), CompleteTo: timeOf(m.CompleteTo)}
+	h := tracker.IssueHistory{Issue: tracker.IssueID(m.IssueID), CompleteFrom: timeOf(m.CompleteFrom)}
 	for _, c := range m.Changes {
 		ch := tracker.Change{At: timeOf(c.At), Author: tracker.UserID(c.AuthorID)}
 		switch c.Kind {
@@ -93,11 +94,12 @@ func sprintIDs(ids []string) []tracker.SprintID {
 
 // emptyHistory is what the mirror records for an issue a history read
 // asked for and the tracker did not return (deleted, or no longer
-// visible): no change is known before read, the time the read began in
-// Unix milliseconds, so no value before it is inferred, and the issue is
-// due again only when its card moves.
-func emptyHistory(issue tracker.IssueID, read int64) store.MirrorHistory {
-	return store.MirrorHistory{IssueID: string(issue), CompleteFrom: read, CompleteTo: read}
+// visible): no change is known before updatedAt, the issue's update time
+// in the mirror, so no value before it is inferred. The caller records it
+// final for that version, so the issue is due again only when its card
+// moves.
+func emptyHistory(issue tracker.IssueID, updatedAt int64) store.MirrorHistory {
+	return store.MirrorHistory{IssueID: string(issue), CompleteFrom: updatedAt}
 }
 
 // mirrorWorklog is w as the store holds it.

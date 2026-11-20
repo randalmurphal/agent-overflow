@@ -163,7 +163,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		var one int
 		return s.reader().QueryRow("SELECT 1").Scan(&one)
 	})
-	requireReadRuns(t, "a mirror lookup", func() error { _, _, err := s.GetMirrorSync(root, "10"); return err })
+	requireReadRuns(t, "a mirror lookup", func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err })
 	for _, release := range releases {
 		release()
 	}

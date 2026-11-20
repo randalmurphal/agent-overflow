@@ -138,7 +138,7 @@ func (r *run) againIfSwept(read func() error) error {
 	if !errors.Is(err, store.ErrTrackerCacheSwept) {
 		return err
 	}
-	st, _, err := r.s.store.GetMirrorSync(r.root, string(r.scope.Board))
+	st, _, err := r.s.store.GetMirrorSync(r.root, string(r.scope.Board), r.steadyAt())
 	if err != nil {
 		return fmt.Errorf("trackerapp: read the sweep of the mirror of %s again: %w", r.row.ID, err)
 	}

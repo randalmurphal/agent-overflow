@@ -126,21 +126,63 @@ func currentSweep(s *Store, root int64) int64 {
 	return sweep
 }
 
-// dueHistories names, in each history with no BoardsRev, the boards
-// revision its issue has now, as a caller captures it from
-// ListMirrorHistoryDue; an issue the mirror lacks has none.
+// testNow is the caller's steady clock in the tests' due reads, past
+// every answer the tests record (answeredHistory).
+const testNow = int64(1_000_000)
+
+// answeredHistory is h with no For read for update time 1 and with no
+// AnsweredAt answered at 1; with no Wait it is final.
+func answeredHistory(h MirrorHistory) MirrorHistory {
+	if h.For == 0 {
+		h.For = 1
+	}
+	if h.AnsweredAt == 0 {
+		h.AnsweredAt = 1
+	}
+	return h
+}
+
+// dueHistories completes each history as a caller does from
+// ListMirrorHistoryDue: each names its issue's receipt now, one with no
+// For is read for its issue's update time now and one with no BoardsRev
+// names its issue's boards revision now (an issue the mirror lacks has
+// none of them); the rest as answeredHistory.
 func dueHistories(s *Store, root int64, hs []MirrorHistory) []MirrorHistory {
 	out := slices.Clone(hs)
 	for i := range out {
-		if out[i].BoardsRev != 0 {
-			continue
-		}
-		err := s.db.QueryRow(`SELECT boards_rev FROM tracker_cache_issues WHERE root_id = ? AND issue_id = ?`, root, out[i].IssueID).Scan(&out[i].BoardsRev)
+		var updatedAt, boardsRev int64
+		err := s.db.QueryRow(`SELECT updated_at, boards_rev, history_receipt FROM tracker_cache_issues WHERE root_id = ? AND issue_id = ?`,
+			root, out[i].IssueID).Scan(&updatedAt, &boardsRev, &out[i].Receipt)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			panic(err)
 		}
+		if out[i].For == 0 {
+			out[i].For = updatedAt
+		}
+		if out[i].BoardsRev == 0 {
+			out[i].BoardsRev = boardsRev
+		}
+		out[i] = answeredHistory(out[i])
 	}
 	return out
+}
+
+// listedAt is h completed as dueHistories does, but naming receipt: a
+// history read listed at an earlier state of its issue.
+func listedAt(s *Store, root int64, h MirrorHistory, receipt int64) MirrorHistory {
+	out := dueHistories(s, root, []MirrorHistory{h})[0]
+	out.Receipt = receipt
+	return out
+}
+
+// receiptOf is issue's history receipt now.
+func receiptOf(t *testing.T, s *Store, root int64, issue string) int64 {
+	t.Helper()
+	var receipt int64
+	if err := s.db.QueryRow(`SELECT history_receipt FROM tracker_cache_issues WHERE root_id = ? AND issue_id = ?`, root, issue).Scan(&receipt); err != nil {
+		t.Fatal(err)
+	}
+	return receipt
 }
 
 // currentStructure, currentPage and currentAttempt name the board's
@@ -216,7 +258,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
 	mustExec(t, s.db, `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at) VALUES (?, '10', 3, '99', 0)`, root)
-	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", CompleteTo: 5, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
+	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
@@ -507,7 +549,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
-			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001", CompleteTo: 9}, {IssueID: "10009", CompleteTo: 9}}))
+			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}))
 			return err
 		},
 		"ReplaceMirrorHistories staged": func(root int64) error {

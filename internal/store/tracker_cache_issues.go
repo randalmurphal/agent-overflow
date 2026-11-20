@@ -126,7 +126,7 @@ var mirrorCardConflictSQL = `
 	    created_at = excluded.created_at, updated_at = excluded.updated_at, resolved_at = excluded.resolved_at,
 	    data = excluded.data, status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{
 	issue: "tracker_cache_issues.issue_id", status: "excluded.status_id", updatedAt: "excluded.updated_at",
-	createdAt: "excluded.created_at", from: "history_from", to: "history_to", gen: "history_gen"}) + `
+	createdAt: "excluded.created_at", from: "history_from", readFor: "history_for", wait: "history_wait", gen: "history_gen"}) + `
 	WHERE excluded.updated_at >= updated_at AND (issue_key IS NOT excluded.issue_key OR project_id IS NOT excluded.project_id
 	   OR type_id IS NOT excluded.type_id OR type_level IS NOT excluded.type_level OR status_id IS NOT excluded.status_id
 	   OR assignee_id IS NOT excluded.assignee_id OR priority_id IS NOT excluded.priority_id OR parent_id IS NOT excluded.parent_id

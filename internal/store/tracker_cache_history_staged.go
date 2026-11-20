@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -36,15 +37,21 @@ var (
 		  UNION ALL
 		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND gen > ?3)
 		LIMIT ` + fmt.Sprint(clearMirrorChunk) + `)`
-	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4, final
-	// through ?5 and read for boards revision ?6, the issue's history,
-	// deriving its status time from it.
-	mirrorHistorySwitchSQL = `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_to = ?5, history_boards_rev = ?6,
+	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4, read
+	// for update time ?5 and boards revision ?6, answered at ?7 with a wait
+	// of ?8, the issue's history, deriving its status time from it, when
+	// the issue's receipt is still ?9, and advances the receipt.
+	mirrorHistorySwitchSQL = `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_for = ?5, history_boards_rev = ?6,
+		history_answered_at = ?7, history_wait = ?8, history_receipt = ?9 + 1,
 		status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{issue: "tracker_cache_issues.issue_id",
 		status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
-		createdAt: "tracker_cache_issues.created_at", from: "?4", to: "?5", gen: "?3"}) + `
-		WHERE root_id = ?1 AND issue_id = ?2`
+		createdAt: "tracker_cache_issues.created_at", from: "?4", readFor: "?5", wait: "?8", gen: "?3"}) + `
+		WHERE root_id = ?1 AND issue_id = ?2 AND history_receipt = ?9`
 )
+
+// errStaleReceipt rolls back a staged history's switch when the issue's
+// receipt moved since the history was admitted.
+var errStaleReceipt = errors.New("store: the history's receipt went stale")
 
 // mirrorHistoryProbe is how a history compares with the stored one: the
 // changes the stored history holds otherwise (differs), those it lacks (at
@@ -92,11 +99,33 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 	if err != nil {
 		return err
 	}
-	if st, admitted, err = s.stagedHistoryState(rootID, in, result); err != nil || !admitted {
+	if st, admitted, err = s.stagedHistoryState(rootID, in, result); err != nil {
 		return err
 	}
+	if !admitted {
+		if !result.Superseded {
+			return nil
+		}
+		// Written between the admission and the mark: the mark is cleared.
+		return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, func() {})
+	}
 	result.Changed = true
-	if st.storedTo == 0 {
+	err = s.writeStagedHistory(rootID, in, st, action)
+	if !errors.Is(err, errStaleReceipt) {
+		return err
+	}
+	// Written meanwhile: what this history staged is deleted, leaving the
+	// issue's history as that write made it.
+	result.Changed, result.Superseded = false, true
+	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, func() {})
+}
+
+// writeStagedHistory writes in over the issue's stored history st, in
+// place or staged; a staged one fails with errStaleReceipt at the switch,
+// leaving its staged changes for the caller to delete, when the issue's
+// receipt moved since st was read.
+func (s *Store) writeStagedHistory(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, action string) error {
+	if st.storedFor == 0 {
 		// No history is stored, so none of it can be kept in place.
 		return s.stageMirrorHistory(rootID, in, st.gen, action)
 	}
@@ -111,8 +140,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 }
 
 // stagedHistoryState reads the issue's stored history and records in
-// result whether in is admitted: a kept issue and a history final through
-// no earlier time than the stored one.
+// result whether in is admitted: a kept issue whose receipt is in's.
 func (s *Store) stagedHistoryState(rootID int64, in mirrorHistoryInput, result *MirrorHistoryResult) (mirrorHistoryState, bool, error) {
 	listed, err := encodeMirrorJSON([]mirrorHistoryRow{in.row})
 	if err != nil {
@@ -180,14 +208,20 @@ func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 }
 
 // finishMirrorHistoryInPlace adds the missing changes of a history whose
-// stored changes it otherwise holds, writes its times and clears
-// history_dirty, in one transaction; what it writes is encoded before.
+// stored changes it otherwise holds, writes its times, advances the
+// issue's receipt and clears history_dirty, in one transaction; what it
+// writes is encoded before. It runs right after the admission that
+// followed the staging mark, with the cleanup's lock, so no write moved
+// the receipt since.
 func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, gen int64, missing []mirrorChangeRow, action string) error {
 	rows, err := encodeMirrorJSON(missing)
 	if err != nil {
 		return err
 	}
-	listed, err := encodeMirrorJSON([]mirrorHistoryRow{in.rowAt(gen)})
+	row := in.rowAt(gen)
+	// Called only for a history that differs from the stored one.
+	row.Changes = true
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{row})
 	if err != nil {
 		return err
 	}
@@ -229,8 +263,13 @@ func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 		}
 	}
 	err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.CompleteTo, in.h.BoardsRev); err != nil {
+		res, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.For, in.h.BoardsRev,
+			in.h.AnsweredAt, in.h.Wait, in.h.Receipt)
+		if err != nil {
 			return fmt.Errorf("make the staged history the issue's: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return errors.Join(errStaleReceipt, err)
 		}
 		return nil
 	})

@@ -58,7 +58,7 @@ func TestLinkedCardsReadsTheLinkedIssues(t *testing.T) {
 	if cards := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{"10001", "10005"})); len(cards) != 2 {
 		t.Fatalf("the mirror holds %+v", cards)
 	}
-	if st, _, _ := m.st.GetMirrorSync(m.root(), ""); st.ReadAt != m.now().UnixMilli() || st.Failure.Kind != "" {
+	if st, _, _ := m.st.GetMirrorSync(m.root(), "", m.svc.steady().UnixMilli()); st.ReadAt != m.now().UnixMilli() || st.Failure.Kind != "" {
 		t.Fatalf("linked sync state %+v", st)
 	}
 	m.p.set(func(p *scripted) {
@@ -70,7 +70,7 @@ func TestLinkedCardsReadsTheLinkedIssues(t *testing.T) {
 	if out.Failure == nil || out.Failure.Kind != FailureForbidden || m.problem() != FailureForbidden {
 		t.Fatalf("a failed cards tick %+v, problem %q", out, m.problem())
 	}
-	if st, _, _ := m.st.GetMirrorSync(m.root(), ""); st.Failure.Kind != store.MirrorFailureForbidden {
+	if st, _, _ := m.st.GetMirrorSync(m.root(), "", m.svc.steady().UnixMilli()); st.Failure.Kind != store.MirrorFailureForbidden {
 		t.Fatalf("linked sync state after the failure %+v", st)
 	}
 	if _, err := m.svc.tickCards(t.Context(), "", Background); !errors.Is(err, ErrInvalidRequest) {
@@ -104,7 +104,7 @@ func TestLinkedCardsReadEveryPageInOneTick(t *testing.T) {
 	if !slices.IsSorted(asked) || asked[0] != "40000" || asked[n-1] != tracker.IssueID(fmt.Sprintf("%05d", 40000+n-1)) {
 		t.Fatalf("asked from %v to %v", asked[0], asked[n-1])
 	}
-	if st, _, _ := m.st.GetMirrorSync(m.root(), ""); st.ReadAt != m.now().UnixMilli() {
+	if st, _, _ := m.st.GetMirrorSync(m.root(), "", m.svc.steady().UnixMilli()); st.ReadAt != m.now().UnixMilli() {
 		t.Fatalf("the walk recorded no read: %+v", st)
 	}
 }

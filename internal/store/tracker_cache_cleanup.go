@@ -328,8 +328,12 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 		if partial == "" {
 			return nil
 		}
-		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_from = 0, history_to = 0, status_since = 0
-			WHERE root_id = ?1 AND issue_id = ?2 AND (history_from <> 0 OR history_to <> 0 OR status_since <> 0)`, rootID, partial); err != nil {
+		// The reset advances the receipt, so a history read listed before it
+		// is superseded rather than written over the partial deletion.
+		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_from = 0, history_for = 0, history_answered_at = 0, history_wait = 0,
+			status_since = 0, history_receipt = history_receipt + 1 WHERE root_id = ?1 AND issue_id = ?2
+			AND (history_from, history_for, history_answered_at, history_wait, status_since) IS NOT (0, 0, 0, 0, 0)`,
+			rootID, partial); err != nil {
 			return fmt.Errorf("reset history of %s: %w", partial, err)
 		}
 		if _, err := tx.Exec(`DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2

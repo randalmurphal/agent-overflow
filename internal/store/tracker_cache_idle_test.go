@@ -13,7 +13,9 @@ import (
 // is the steady state. Each writes only read times: a board's read and
 // cursor, a redelivered row's read, an open detail's read (Linear). A
 // round's statements do not grow with its tickets; on Linear its row
-// writes are each ticket's read time.
+// writes are each ticket's read time. A board tick while an issue's
+// history waits until a read can be final for it is an idle tick: the sync
+// state reports no history due, so the tick runs no history unit.
 func TestIdleTickStatements(t *testing.T) {
 	s, _, root := newMirror(t)
 	seedFullMirror(t, s, root)
@@ -47,7 +49,7 @@ func TestIdleTickStatements(t *testing.T) {
 		}
 	}
 	syncState := func(board string) func() error {
-		return func() error { _, _, err := s.GetMirrorSync(root, board); return err }
+		return func() error { _, _, err := s.GetMirrorSync(root, board, testNow); return err }
 	}
 	record := func() error {
 		a := attempt
@@ -60,6 +62,7 @@ func TestIdleTickStatements(t *testing.T) {
 		run        func()
 		statements int
 		writes     map[string]int
+		before     func()
 	}
 	var rounds []idleTick
 	for _, n := range []int{1, 3, 10} {
@@ -75,19 +78,37 @@ func TestIdleTickStatements(t *testing.T) {
 				_, err := s.UpsertMirrorCards(root, sweep, cards, MirrorCatalog{}, at)
 				return err
 			})
-		}, 8, map[string]int{}}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
+		}, 8, map[string]int{}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("StoreMirrorDetails", func() error {
 				_, err := s.StoreMirrorDetails(root, sweep, docs(n), 0, at)
 				return err
 			})
-		}, 2 + 2*n, map[string]int{"tracker_cache_issue_details": n}})
+		}, 2 + 2*n, map[string]int{"tracker_cache_issue_details": n}, nil})
 	}
+	// The tick whose history waits runs last: it moves issue 10001's update
+	// time.
+	rounds = append(rounds, idleTick{"a shown board with an issue's history waiting", func() {
+		call("GetMirrorSync", syncState("10"))
+		call("RecordMirrorSyncAttempt", record)
+	}, 3, map[string]int{"tracker_cache_sync": 1}, func() {
+		// Updated at 6, its history read for that update answered at
+		// testNow and not final: due again a minute later.
+		mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 6, "a", "21")), nil)
+		mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10001", AnsweredAt: testNow, Wait: 60_000}, MirrorWrite{Changed: true})
+		st, _, err := s.GetMirrorSync(root, "10", testNow)
+		if err != nil || st.HistoryDue {
+			t.Fatalf("an issue inside its wait: sync state %+v, %v; want none due", st, err)
+		}
+		if st, _, err := s.GetMirrorSync(root, "10", testNow+60_000); err != nil || !st.HistoryDue {
+			t.Fatalf("an issue past its wait: sync state %+v, %v; want one due", st, err)
+		}
+	}})
 	for _, tick := range append([]idleTick{
 		{"a shown board", func() {
 			call("GetMirrorSync", syncState("10"))
 			call("RecordMirrorSyncAttempt", record)
-		}, 3, map[string]int{"tracker_cache_sync": 1}},
+		}, 3, map[string]int{"tracker_cache_sync": 1}, nil},
 		{"a shown board redelivered an identical row", func() {
 			call("GetMirrorSync", syncState("10"))
 			call("WriteMirrorRowPage", func() error {
@@ -97,8 +118,11 @@ func TestIdleTickStatements(t *testing.T) {
 				return err
 			})
 			call("RecordMirrorSyncAttempt", record)
-		}, 10, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_sync": 2}},
+		}, 10, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_sync": 2}, nil},
 	}, rounds...) {
+		if tick.before != nil {
+			tick.before()
+		}
 		var statements int
 		for range 2 {
 			at++

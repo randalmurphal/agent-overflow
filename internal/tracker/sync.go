@@ -113,10 +113,14 @@ type History struct {
 // creation: a value before that time is unknown, never inferred from the
 // absence of a change.
 //
-// They are final through CompleteTo, which a provider always sets: a
-// tracker may record a change some time after it is made, so a change made
-// after CompleteTo may be missing. A caller reads an issue's history again
-// while the issue's update time is later than the CompleteTo it holds.
+// They are final through CompleteTo, by the tracker's own clock: a tracker
+// may record a change some time after it is made, so a change made after
+// CompleteTo may be missing. A provider takes it as its
+// Capabilities.HistorySettle before the tracker's time on the answer that
+// carried them, and leaves it zero when the answer named no time: this
+// computer's clock never stands in for the tracker's. A caller that needs
+// a read final for an update without it reads once more, at least
+// HistorySettle after that answer arrived.
 type IssueHistory struct {
 	Issue        IssueID
 	CompleteFrom time.Time

@@ -21,11 +21,11 @@ type boardCounts struct {
 	reads, records map[string]int
 }
 
-func (c *boardCounts) GetMirrorSync(root int64, board string) (store.MirrorSync, bool, error) {
+func (c *boardCounts) GetMirrorSync(root int64, board string, now int64) (store.MirrorSync, bool, error) {
 	c.mu.Lock()
 	c.reads[board]++
 	c.mu.Unlock()
-	return c.Store.GetMirrorSync(root, board)
+	return c.Store.GetMirrorSync(root, board, now)
 }
 
 func (c *boardCounts) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {

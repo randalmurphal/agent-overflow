@@ -181,18 +181,20 @@ func (s *Service) rehold(id string, stale int64) (int64, error) {
 
 // readState reads the scope's sync state, the tick's one read before its
 // tracker calls: the cursor, the board's lifetime, whether the store
-// shows the board and whether its structure is due a read. A root the
-// store reports gone is looked up again once
-// (rehold). A board scope whose board no project lists has no lifetime:
-// the tick ends.
+// shows the board, whether its structure is due a read and whether an
+// issue's history is due one now. That last is how a pump learns that an
+// issue's wait for a final read is over, on its next tick, with no timer
+// and no statement of its own. A root the store reports gone is looked
+// up again once (rehold). A board scope whose board no project lists has
+// no lifetime: the tick ends.
 func (r *run) readState() error {
 	board := string(r.scope.Board)
-	st, shown, err := r.s.store.GetMirrorSync(r.root, board)
+	st, shown, err := r.s.store.GetMirrorSync(r.root, board, r.steadyAt())
 	if errors.Is(err, store.ErrTrackerCacheGone) {
 		if r.root, err = r.s.rehold(r.row.ID, r.root); err != nil {
 			return err
 		}
-		st, shown, err = r.s.store.GetMirrorSync(r.root, board)
+		st, shown, err = r.s.store.GetMirrorSync(r.root, board, r.steadyAt())
 	}
 	if err != nil {
 		return fmt.Errorf("trackerapp: read the sync state of %s board %q: %w", r.row.ID, board, err)
@@ -221,6 +223,10 @@ func (r *run) window() time.Time { return r.s.now().Add(-HistoryWindow) }
 // readAt is now as the store orders reads: the time a read begins, taken
 // before its request.
 func (r *run) readAt() int64 { return r.s.now().UnixMilli() }
+
+// steadyAt is now by the clock the history wait is measured on
+// (Service.steady), in Unix ms.
+func (r *run) steadyAt() int64 { return r.s.steady().UnixMilli() }
 
 // endsMirror reports a store error that ends the scope's sync rather than
 // failing it: the root detached, or the board no longer listed or

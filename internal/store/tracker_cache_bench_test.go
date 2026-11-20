@@ -79,7 +79,7 @@ func benchStructure(board int) MirrorStructure {
 }
 
 func benchHistory(id string, at int64, n int) MirrorHistory {
-	h := MirrorHistory{IssueID: id, CompleteTo: at + int64(n)}
+	h := MirrorHistory{IssueID: id, AnsweredAt: at + int64(n)}
 	for c := range n {
 		kind := MirrorChangeStatus
 		if c%2 == 1 {
@@ -87,7 +87,7 @@ func benchHistory(id string, at int64, n int) MirrorHistory {
 		}
 		h.Changes = append(h.Changes, MirrorChange{Kind: kind, At: at + int64(c), AuthorID: "acc-user1", From: strconv.Itoa(c%5 + 1), To: strconv.Itoa((c+1)%5 + 1)})
 	}
-	return h
+	return answeredHistory(h)
 }
 
 // buildBenchMirror writes the fixture through the store's own writers.
@@ -382,11 +382,11 @@ func BenchmarkMirrorReplaceHistory(b *testing.B) {
 // every issue of the fixture due.
 func BenchmarkMirrorHistoryDue(b *testing.B) {
 	s, root := openBenchMirror(b)
-	if _, err := s.db.Exec(`UPDATE tracker_cache_issues SET history_to = 0`); err != nil {
+	if _, err := s.db.Exec(`UPDATE tracker_cache_issues SET history_for = 0`); err != nil {
 		b.Fatal(err)
 	}
 	measureMirror(b, func(int) error {
-		_, _, err := s.ListMirrorHistoryDue(root, "")
+		_, _, err := s.ListMirrorHistoryDue(root, "", testNow)
 		return err
 	})
 }

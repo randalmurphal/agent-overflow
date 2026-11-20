@@ -113,9 +113,10 @@ func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit fu
 		{"delta, one changed issue", pin("delta one"), func(t *testing.T) { tickOK(t, s.svc, scope, BoardDue{Delta: true}) }},
 		{"history, one issue", pin("history one"), func(t *testing.T) { tickOK(t, s.svc, scope, BoardDue{History: true}) }},
 		// The provider reads history as final through the tracker's clock
-		// less a settling margin, so an issue edited within the margin stays
-		// due and each history tick reads it again until the margin passes.
-		{"history, again within the margin", pin("history one"), func(t *testing.T) { tickOK(t, s.svc, scope, BoardDue{History: true}) }},
+		// less a settling margin, so the issue edited within the margin is
+		// read once more only when a read can be final for its edit
+		// (TestHistoryIsReadTwicePerChange), never on the ticks between.
+		{"history, again within the margin", 0, func(t *testing.T) { tickOK(t, s.svc, scope, BoardDue{History: true}) }},
 		{"linked tick, nothing linked", 0, func(t *testing.T) {
 			if out, err := s.svc.SyncLinked(t.Context(), conn.ID, LinkedDue{Cards: true}, Background); err != nil || out.Failure != nil {
 				t.Fatalf("%+v, %v", out, err)

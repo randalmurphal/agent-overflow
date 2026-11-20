@@ -12,13 +12,13 @@ import (
 	"agent-overflow/internal/tracker/jira"
 )
 
-// historySettle is how long before a history read began its changes are
-// taken as final. Whether Jira records a change in its changelog at once
-// is not measured; Jira documents that a search can lag a recent update.
-// The time is Jira's own, the Date of its answer that carried the
-// changes, so a skew between this computer's clock and Jira's does not
-// enter it. A larger margin costs only a second read of an issue's
-// history.
+// historySettle is how long before a history read was answered its
+// changes are taken as final (Capabilities.HistorySettle). Whether Jira
+// records a change in its changelog at once is not measured; Jira
+// documents that a search can lag a recent update. The time is Jira's
+// own, the Date of its answer that carried the changes, so a skew between
+// this computer's clock and Jira's does not enter it. A larger margin
+// costs only a later second read of an issue's history.
 const historySettle = time.Minute
 
 // boardEstimate is one board's estimate field, whose changes are that
@@ -36,8 +36,8 @@ type boardEstimate struct {
 // History reads the status, assignee, sprint and estimate changes of the
 // issues q names with Jira's bulk changelog, which records every change
 // from an issue's creation, so CompleteFrom is zero, and each history is
-// final through historySettle before Jira answered: the Date of its first
-// changelog answer, or this computer's clock when Jira sent none.
+// final through historySettle before the Date of its first changelog
+// answer, or through no time when Jira sent none.
 // Estimate changes are read for each board q names through that board's
 // estimate field; two boards on one field each get the field's changes.
 //
@@ -82,12 +82,11 @@ func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	for i, id := range ids {
 		refs[i] = string(id)
 	}
-	local := p.now()
 	logs, err := p.jira.BulkChangelogs(ctx, jira.ChangelogQuery{Issues: refs, Fields: fields})
 	if err != nil {
 		return tracker.History{}, fmt.Errorf("jiraprovider: history: %w", err)
 	}
-	completeTo := local.Add(-historySettle)
+	var completeTo time.Time
 	if !logs.Date.IsZero() {
 		completeTo = logs.Date.Add(-historySettle)
 	}

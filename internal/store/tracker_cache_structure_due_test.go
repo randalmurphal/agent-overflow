@@ -8,7 +8,7 @@ import (
 // structureDue is board 10's MirrorSync.StructureDueAt.
 func structureDue(t *testing.T, s *Store, root int64) int64 {
 	t.Helper()
-	st, _, err := s.GetMirrorSync(root, "10")
+	st, _, err := s.GetMirrorSync(root, "10", testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

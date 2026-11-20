@@ -65,11 +65,11 @@ type goneStore struct {
 	gone atomic.Bool
 }
 
-func (s *goneStore) GetMirrorSync(root int64, board string) (store.MirrorSync, bool, error) {
+func (s *goneStore) GetMirrorSync(root int64, board string, now int64) (store.MirrorSync, bool, error) {
 	if s.gone.Load() {
 		return store.MirrorSync{}, false, store.ErrTrackerCacheGone
 	}
-	return s.Store.GetMirrorSync(root, board)
+	return s.Store.GetMirrorSync(root, board, now)
 }
 
 func (s *goneStore) GetOrCreateMirrorRoot(id string) (int64, bool, error) {

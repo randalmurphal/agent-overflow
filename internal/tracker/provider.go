@@ -41,6 +41,12 @@ type Capabilities struct {
 	// `updated`. Linear has none: a comment leaves `updatedAt` as it was.
 	// See docs/references/tracker-api-measurements.md.
 	DetailMovesUpdated bool
+	// HistorySettle is how long after an update the tracker may still be
+	// recording it in an issue's history: a history read is final for the
+	// update when its IssueHistory.CompleteTo is at or after the update,
+	// or when it began at least this long after an earlier answer for the
+	// same update arrived. The one copy of each provider's margin.
+	HistorySettle time.Duration
 }
 
 // FieldScope is where a field's values are asked for: an existing issue,

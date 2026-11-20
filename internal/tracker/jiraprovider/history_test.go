@@ -81,8 +81,6 @@ func TestHistory(t *testing.T) {
 		jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["10002","10003"],"fields":["status"]}`)
 		jiratest.Reply(200, page("", issue("10002", "WEB-2", "2026-11-01T09:00:00.000+0000", nil)))(w, r, b)
 	})
-	// This computer's clock is a day behind Jira's: CompleteTo is Jira's.
-	p.now = func() time.Time { return jiraAt.Add(-24 * time.Hour) }
 	h, err := p.History(t.Context(), tracker.HistoryQuery{Issues: []tracker.IssueID{"10001", "10002", "10003", "10001"}, Boards: []tracker.BoardID{"3", "4"}})
 	if err != nil {
 		t.Fatal(err)
@@ -131,19 +129,17 @@ func TestHistory(t *testing.T) {
 }
 
 // TestHistoryCompleteToIsJirasClock proves CompleteTo is historySettle
-// before the Date of Jira's changelog answer, whether this computer's
-// clock is ahead of Jira's or behind it, and historySettle before this
-// computer's clock when the read began only when Jira sends no Date.
+// before the Date of Jira's changelog answer, and zero when Jira sends no
+// Date: this computer's clock never stands in for Jira's. The margin is
+// the one the provider's capabilities name.
 func TestHistoryCompleteToIsJirasClock(t *testing.T) {
 	jiraAt := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	for name, tc := range map[string]struct {
-		local  time.Duration // this computer's clock minus Jira's
 		dated  bool
 		wantAt time.Time
 	}{
-		"local ahead":  {time.Hour, true, jiraAt.Add(-historySettle)},
-		"local behind": {-time.Hour, true, jiraAt.Add(-historySettle)},
-		"no Date":      {-time.Hour, false, jiraAt.Add(-time.Hour - historySettle)},
+		"dated":   {true, jiraAt.Add(-historySettle)},
+		"no Date": {false, time.Time{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, p := newSite(t)
@@ -156,13 +152,15 @@ func TestHistoryCompleteToIsJirasClock(t *testing.T) {
 					map[string]any{"issueId": "10001", "changeHistories": []any{changeEntry("100", "2026-11-02T09:00:00.000+0000", statusItem("10000", "10001"))}},
 				}}))(w, r, b)
 			})
-			p.now = func() time.Time { return jiraAt.Add(tc.local) }
 			h, err := p.History(t.Context(), tracker.HistoryQuery{Issues: []tracker.IssueID{"10001"}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(h.Issues) != 1 || !h.Issues[0].CompleteTo.Equal(tc.wantAt) {
 				t.Errorf("final through %v, want %v", h.Issues, tc.wantAt)
+			}
+			if settle := p.Capabilities().HistorySettle; settle != historySettle {
+				t.Errorf("capabilities name a settle margin of %v, want %v", settle, historySettle)
 			}
 		})
 	}

@@ -299,7 +299,6 @@ func newCostRunOf(t *testing.T, withTempo bool, edit func(*trackerfake.JiraSite)
 	if r.p, err = New(opts); err != nil {
 		t.Fatal(err)
 	}
-	r.p.now = clock.Now
 	t.Cleanup(func() {
 		for _, u := range e.Unhandled() {
 			t.Errorf("unhandled request %s %s: %s", u.Method, u.Path, u.Detail)

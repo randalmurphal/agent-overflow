@@ -37,7 +37,6 @@ func TestHistory(t *testing.T) {
 	served := local.Add(30 * time.Minute)
 	p, _ := newProvider(t, lineartest.Exchange{Op: "IssueHistories", Vars: historiesVars(issueID(1), issueID(2)),
 		Body: page(lineartest.IssueChangesJSON(issueID(1), web, created, entries, false, "")), HeaderFn: dateAt(served)})
-	p.now = func() time.Time { return local }
 	h, err := p.History(context.Background(), tracker.HistoryQuery{
 		Issues: []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2)), "WEB-3"},
 		Boards: []tracker.BoardID{web},

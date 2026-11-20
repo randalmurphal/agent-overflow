@@ -40,7 +40,7 @@ func (m *mirrorFixture) historyDue(t *testing.T) int {
 	t.Helper()
 	n := 0
 	for after := ""; ; {
-		due, more, err := m.st.ListMirrorHistoryDue(m.root(), after)
+		due, more, err := m.st.ListMirrorHistoryDue(m.root(), after, m.svc.steady().UnixMilli())
 		if err != nil {
 			t.Fatal(err)
 		}

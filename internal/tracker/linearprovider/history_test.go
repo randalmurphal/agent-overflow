@@ -21,23 +21,25 @@ func TestHistoryCompleteToByLinearClock(t *testing.T) {
 				t.Fatalf("history %+v %v", h, err)
 			}
 			if want := s.clock.Now().Add(-settleMargin); !h.Issues[0].CompleteTo.Equal(want) {
-				t.Errorf("complete to %v, want %v (Linear's clock %v)", h.Issues[0].CompleteTo, want, s.clock.Now())
+				t.Errorf("complete to %v, want %v (Linear's clock)", h.Issues[0].CompleteTo, want)
 			}
 		})
 	}
 }
 
-// An answer without a Date falls back to this computer's clock, read
-// before the request.
+// An answer without a Date is final through no time: this computer's
+// clock never stands in for Linear's. The margin is the one the
+// provider's capabilities name.
 func TestHistoryCompleteToWithoutDate(t *testing.T) {
 	t.Parallel()
 	ex := lineartest.Exchange{Op: "IssueHistories", Vars: historiesVars(issueID(1)), HeaderFn: noDate,
 		Body: page(lineartest.IssueChangesJSON(issueID(1), web, "2026-11-01T09:00:00.000Z", nil, false, ""))}
 	p, _ := newProvider(t, ex)
-	local := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
-	p.now = func() time.Time { return local }
 	h, err := p.History(t.Context(), tracker.HistoryQuery{Issues: []tracker.IssueID{tracker.IssueID(issueID(1))}})
-	if err != nil || len(h.Issues) != 1 || !h.Issues[0].CompleteTo.Equal(local.Add(-settleMargin)) {
+	if err != nil || len(h.Issues) != 1 || !h.Issues[0].CompleteTo.IsZero() {
 		t.Fatalf("history %+v %v", h, err)
+	}
+	if settle := p.Capabilities().HistorySettle; settle != settleMargin {
+		t.Errorf("capabilities name a settle margin of %v, want %v", settle, settleMargin)
 	}
 }

@@ -91,11 +91,21 @@ package store
 //   - tracker_cache_issues: status_since is when the card's status began,
 //     derived from the card and the stored history whenever either is
 //     written (mirrorStatusSinceSQL), zero when the history does not cover
-//     the card. history_from and history_to are the times the stored
-//     changes are complete from (zero: from creation) and final through
-//     (zero: none). boards_rev advances whenever the issue gains a board
-//     row or a row of it is read again after its board's estimate changed
-//     (estimate_reset_at), since estimate changes are read per board;
+//     the card. history_from is the time the stored changes are complete
+//     from (zero: from creation). history_for is the update time the read
+//     was made for (zero: none read), history_answered_at when its answer
+//     arrived by the reader's steady clock, and history_wait how long
+//     after that the issue is due again, zero when the read is final for
+//     history_for: an issue updated later than history_for is due at once,
+//     one waiting is due once its wait is over (mirrorHistoryDue), and the
+//     history covers the card when it is final for its update time.
+//     history_receipt counts the history writes admitted and the cleanup's
+//     resets: a write names the count its read was listed at and is
+//     superseded once it moved.
+//     boards_rev advances whenever the issue gains a
+//     board row or a row of it is read again after its board's estimate
+//     changed (estimate_reset_at), since estimate changes are read per
+//     board;
 //     history_boards_rev is the boards_rev the stored history was read
 //     for, so an issue is history-due while it is behind
 //     (idx_tracker_cache_issues_history_due). history_gen is the generation of changes that is the
@@ -255,7 +265,10 @@ CREATE TABLE tracker_cache_issues (
  resolved_at INTEGER NOT NULL DEFAULT 0 CHECK(resolved_at >= 0),
  status_since INTEGER NOT NULL DEFAULT 0 CHECK(status_since >= 0),
  history_from INTEGER NOT NULL DEFAULT 0 CHECK(history_from >= 0),
- history_to INTEGER NOT NULL DEFAULT 0 CHECK(history_to >= 0),
+ history_for INTEGER NOT NULL DEFAULT 0 CHECK(history_for >= 0),
+ history_answered_at INTEGER NOT NULL DEFAULT 0 CHECK(history_answered_at >= 0),
+ history_wait INTEGER NOT NULL DEFAULT 0 CHECK(history_wait >= 0),
+ history_receipt INTEGER NOT NULL DEFAULT 0 CHECK(history_receipt >= 0),
  history_gen INTEGER NOT NULL DEFAULT 0 CHECK(history_gen >= 0),
  history_dirty INTEGER NOT NULL DEFAULT 0 CHECK(history_dirty IN (0, 1)),
  boards_rev INTEGER NOT NULL DEFAULT 0 CHECK(boards_rev >= 0),
@@ -265,7 +278,7 @@ CREATE TABLE tracker_cache_issues (
  PRIMARY KEY (root_id, issue_id)
 );
 CREATE INDEX idx_tracker_cache_issues_history_due ON tracker_cache_issues(root_id, issue_id)
- WHERE history_to < updated_at OR history_boards_rev < boards_rev;
+ WHERE history_for < updated_at OR history_wait > 0 OR history_boards_rev < boards_rev;
 CREATE INDEX idx_tracker_cache_issues_boardless ON tracker_cache_issues(root_id, issue_id) WHERE board_rows = 0;
 CREATE INDEX idx_tracker_cache_issues_history_dirty ON tracker_cache_issues(root_id, issue_id) WHERE history_dirty = 1;
 CREATE INDEX idx_tracker_cache_issues_parent ON tracker_cache_issues(root_id, parent_id) WHERE parent_id <> '';

@@ -179,12 +179,14 @@ into its creation and records none of them
 ([measured](../references/tracker-api-measurements.md)). A provider returns
 an issue's changes with the time from which they are complete, and a value
 before that time is unknown, never inferred from the absence of a change.
-A tracker can also list a change some seconds after it is made, so a
-provider returns the time through which the changes are final, taken
-behind the tracker's own clock on the answer that carried them (this
-computer's clock only when the answer names none). `trackerapp` reads an
-issue's history again
-while the issue's update time is later than that.
+A tracker can also list a change some seconds after it is made, up to
+the provider's settle margin (`Capabilities.HistorySettle`), so a
+provider returns the time through which the changes are final: that
+margin behind the tracker's own clock on the answer that carried them,
+and no time when the answer names none, since this computer's clock
+says nothing about the tracker's. `trackerapp` reads the history of an
+issue whose update time moved at once, and once more when that read was
+not final for the update (see History under Sync).
 
 ## Connections and key files
 
@@ -439,12 +441,42 @@ and writes share:
   with More. A tick whose structure write reports a reset
   (`MirrorStructureWrite.EstimateResetAt`) walks from the window's start.
 - **History** is read whole for an issue new to the mirror and again for
-  an issue whose update time is later than the time its stored history is
-  final through, that gained a board row, or whose row was read again
-  after its board's estimate unit changed, limited to the four change
-  kinds. The caller sends `MirrorHistoryDue.BoardsRev` back as
-  `MirrorHistory.BoardsRev`; one ahead of the issue's is refused. It is
-  written in
+  an issue whose update time is later than the one its stored history was
+  read for, that gained a board row, or whose row was read again after
+  its board's estimate unit changed, limited to the four change kinds.
+  Each of these is due at once. A read is stored with the update time it
+  was read for (`MirrorHistory.For`, the listing's
+  `MirrorHistoryDue.UpdatedAt`), so a later update is a later version
+  whatever second it falls in. The read is final for that version when
+  its `CompleteTo` is at or after it (both the tracker's clock), when it
+  began at least the settle margin after this process received the
+  answer to a read for the same version (elapsed time), or when it
+  repeats a final read's version for a gained board. Trusting
+  `CompleteTo` assumes the tracker's Date and its update times come from
+  one clock, continuous to within the settle margin; a forward step of the
+  tracker's clock by more than the margin between an update and the read
+  makes a read final that has not settled. A read that is not final waits
+  the whole margin from its answer (`MirrorHistory.Wait`), then the issue
+  is due once more, so each change costs two reads at any poll interval,
+  and a first sync reads each issue once when the answers carry a Date and
+  twice when they do not (`mirrorHistoryDue`, one rule for the list and
+  `MirrorSync.HistoryDue`). The wait is measured on the service's steady
+  clock, the wall clock at its start plus the monotonic time since, so a
+  wall-clock step while it runs moves no wait. After a restart a stored
+  answer proves no elapsed time: an answer that looks to come after now
+  is due at once, and the read after an earlier process's answer is final
+  only by `CompleteTo`, so a restart during a wait costs at most one extra
+  read and never delays one past a margin. A board's tick learns the wait
+  is over from the sync state it reads anyway; it has no timer of its
+  own. An issue the tracker answers no history for is stored as empty and
+  final for its update time. The caller sends
+  `MirrorHistoryDue.BoardsRev` back as `MirrorHistory.BoardsRev`, one
+  ahead of the issue's refused, and `MirrorHistoryDue.Receipt` back as
+  `MirrorHistory.Receipt`: every history write that changes the issue,
+  and the cleanup's reset, advances the receipt, so a write is admitted
+  only against the state its read was listed from: of answers listed at
+  one receipt the first to land is stored and the rest are superseded,
+  whatever their times. It is written in
   batches of up to 50 issues (`ReplaceMirrorHistories`). A caller sends an
   issue's whole history in one call, however long; one over 500 changes is
   staged in transactions of at most 500 and made the issue's history in

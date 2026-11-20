@@ -375,7 +375,7 @@ var allIssues = []string{"10001", "10002", "10003", "10004", "10005", "10006", "
 // sync is the scope's sync state.
 func (m *mirrorFixture) sync(board tracker.BoardID) store.MirrorSync {
 	m.t.Helper()
-	st, _, err := m.st.GetMirrorSync(m.root(), string(board))
+	st, _, err := m.st.GetMirrorSync(m.root(), string(board), m.svc.steady().UnixMilli())
 	if err != nil {
 		m.t.Fatal(err)
 	}

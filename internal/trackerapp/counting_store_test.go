@@ -65,9 +65,9 @@ func (c *countingStore) FinishMirrorCleanup(pause store.ChunkPause) error {
 	return c.Store.FinishMirrorCleanup(pause)
 }
 
-func (c *countingStore) GetMirrorSync(root int64, board string) (store.MirrorSync, bool, error) {
+func (c *countingStore) GetMirrorSync(root int64, board string, now int64) (store.MirrorSync, bool, error) {
 	c.count("GetMirrorSync")
-	return c.Store.GetMirrorSync(root, board)
+	return c.Store.GetMirrorSync(root, board, now)
 }
 
 func (c *countingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
@@ -105,9 +105,9 @@ func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.Mir
 	return c.Store.ReplaceMirrorHistories(root, sweep, hs)
 }
 
-func (c *countingStore) ListMirrorHistoryDue(root int64, after string) ([]store.MirrorHistoryDue, bool, error) {
+func (c *countingStore) ListMirrorHistoryDue(root int64, after string, now int64) ([]store.MirrorHistoryDue, bool, error) {
 	c.count("ListMirrorHistoryDue")
-	return c.Store.ListMirrorHistoryDue(root, after)
+	return c.Store.ListMirrorHistoryDue(root, after, now)
 }
 
 func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) ([]store.MirrorDetailWrite, error) {

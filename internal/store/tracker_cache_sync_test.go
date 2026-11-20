@@ -218,7 +218,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		t.Fatalf("structure read at %d: %v", structureAt, err)
 	}
 	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
-	if got, ok, err := s.GetMirrorSync(root, "10"); err != nil || !ok || !reflect.DeepEqual(got, want) {
+	if got, ok, err := s.GetMirrorSync(root, "10", testNow); err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v, %v\nwant %+v", got, ok, err, want)
 	}
 
@@ -244,7 +244,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	next.ReadAt = 60
 	mustWriteRowPage(t, s, root, next, []byte("c2"))
 	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
-	if got, _, err := s.GetMirrorSync(root, "10"); err != nil || !reflect.DeepEqual(got, want) {
+	if got, _, err := s.GetMirrorSync(root, "10", testNow); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v\nwant %+v", got, err, want)
 	}
 
@@ -252,7 +252,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	// no project lists has none.
 	changed, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", read(40)))
 	mustSyncWrite(t, "linked scope read", changed, err, true)
-	if got, ok, err := s.GetMirrorSync(root, ""); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{Sweep: 1, ReadAt: 40}) {
+	if got, ok, err := s.GetMirrorSync(root, "", testNow); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{Sweep: 1, ReadAt: 40}) {
 		t.Fatalf("linked scope = %+v, %v, %v", got, ok, err)
 	}
 	if _, err := s.RecordMirrorSyncAttempt(root, "13", currentAttempt(s, root, "13", read(40))); !errors.Is(err, ErrTrackerCacheUnlisted) {
@@ -324,7 +324,7 @@ func TestGetMirrorSyncOfAGoneRoot(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	if _, ok, err := s.GetMirrorSync(root, "10"); err != nil || ok {
+	if _, ok, err := s.GetMirrorSync(root, "10", testNow); err != nil || ok {
 		t.Fatalf("a live root never synced: %v, %v", ok, err)
 	}
 	if _, err := s.DetachMirror(jira.ID); err != nil {
@@ -332,7 +332,7 @@ func TestGetMirrorSyncOfAGoneRoot(t *testing.T) {
 	}
 	for _, gone := range []int64{root, 9999} {
 		for _, board := range []string{"10", ""} {
-			if _, _, err := s.GetMirrorSync(gone, board); !errors.Is(err, ErrTrackerCacheGone) {
+			if _, _, err := s.GetMirrorSync(gone, board, testNow); !errors.Is(err, ErrTrackerCacheGone) {
 				t.Errorf("root %d board %q: %v; want ErrTrackerCacheGone", gone, board, err)
 			}
 		}
@@ -347,7 +347,7 @@ func TestMirrorSyncSaysWhetherHistoryIsDue(t *testing.T) {
 	s, _, root := newMirror(t)
 	due := func(board string) bool {
 		t.Helper()
-		st, _, err := s.GetMirrorSync(root, board)
+		st, _, err := s.GetMirrorSync(root, board, testNow)
 		if err != nil {
 			t.Fatal(err)
 		}

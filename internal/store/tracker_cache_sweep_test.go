@@ -12,7 +12,7 @@ import (
 // naming the sweep after it is stored.
 func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 	t.Parallel()
-	history := MirrorHistory{IssueID: "10001", CompleteTo: 9, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
+	history := MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
 	for _, kind := range []struct {
 		name   string
 		stored string
@@ -32,7 +32,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 		}},
 		{"staged history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
 			// The stage after the batch transaction, where a sweep can land.
-			in, err := newMirrorHistoryInput(statusHistory("10001", clearMirrorChunk+100))
+			in, err := newMirrorHistoryInput(answeredHistory(statusHistory("10001", clearMirrorChunk+100)))
 			if err != nil {
 				return err
 			}
@@ -127,9 +127,9 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 	if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5), webCard("10002", 5)}, MirrorCatalog{}, 1); err != nil {
 		t.Fatal(err)
 	}
-	mustExec(t, s.db, `CREATE TRIGGER test_sweep_between AFTER UPDATE OF history_to ON tracker_cache_issues WHEN NEW.issue_id = '10002'
+	mustExec(t, s.db, `CREATE TRIGGER test_sweep_between AFTER UPDATE OF history_for ON tracker_cache_issues WHEN NEW.issue_id = '10002'
 		BEGIN UPDATE tracker_cache_roots SET sweep = sweep + 1; END`)
-	short := MirrorHistory{IssueID: "10002", CompleteTo: 9, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
+	short := MirrorHistory{IssueID: "10002", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
 	long := statusHistory("10001", clearMirrorChunk+100)
 	if _, err := s.ReplaceMirrorHistories(root, read, dueHistories(s, root, []MirrorHistory{long, short})); !errors.Is(err, ErrTrackerCacheSwept) {
 		t.Fatalf("a staging after a sweep: %v; want it refused", err)

@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
@@ -27,11 +26,10 @@ import (
 var _ tracker.Provider = (*Provider)(nil)
 
 // Provider is one Linear workspace as a tracker.Provider. It holds only
-// the client, which its caller owns and closes, and the clock History
-// stamps CompleteTo with; it is safe for concurrent use.
+// the client, which its caller owns and closes; it is safe for concurrent
+// use.
 type Provider struct {
-	c   *linear.Client
-	now func() time.Time
+	c *linear.Client
 }
 
 // New is a Provider over c. The caller keeps ownership of c.
@@ -39,7 +37,7 @@ func New(c *linear.Client) (*Provider, error) {
 	if c == nil {
 		return nil, errors.New("linearprovider: a client is required")
 	}
-	return &Provider{c: c, now: time.Now}, nil
+	return &Provider{c: c}, nil
 }
 
 // Capabilities are none of the optional ones: Linear has no issue types,
@@ -47,7 +45,9 @@ func New(c *linear.Client) (*Provider, error) {
 // rather than files. Nor DetailMovesUpdated: a comment does not move an
 // issue's `updatedAt` (docs/references/tracker-api-measurements.md,
 // Linear).
-func (p *Provider) Capabilities() tracker.Capabilities { return tracker.Capabilities{} }
+func (p *Provider) Capabilities() tracker.Capabilities {
+	return tracker.Capabilities{HistorySettle: settleMargin}
+}
 
 // Time is nil: Linear has no time tracking.
 func (p *Provider) Time() tracker.TimeTracker { return nil }

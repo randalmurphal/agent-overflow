@@ -213,7 +213,7 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 	}
 	v := boardViewOf(snap.Structure, snap.Counts, names)
 	v.Lifetime, v.Revision = snap.Structure.Lifetime, snap.Counts.Revision
-	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board))
+	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board), s.steady().UnixMilli())
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}

@@ -33,7 +33,7 @@ func mirrorEstimates(t *testing.T, s *Store, root int64) string {
 // mirrorCursor is board 10's stored cursor, "none" for none.
 func mirrorCursor(t *testing.T, s *Store, root int64) string {
 	t.Helper()
-	st, _, err := s.GetMirrorSync(root, "10")
+	st, _, err := s.GetMirrorSync(root, "10", testNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,12 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 			got != "row 5 issue row 5 total 0" && step.unit == MirrorEstimateNone {
 			t.Errorf("%s: the row read again = %s", step.name, got)
 		}
-		due, _, err := s.ListMirrorHistoryDue(root, "")
+		// Its history is final through its unchanged update time: only the
+		// boards revision makes it due, in both reads of the rule.
+		if got := mirrorDue(t, s, root); got == "[]" {
+			t.Fatalf("%s: nothing due after the row was read again", step.name)
+		}
+		due, _, err := s.ListMirrorHistoryDue(root, "", testNow)
 		if err != nil || len(due) != 1 {
 			t.Fatalf("%s: due after the row was read again = %+v, %v", step.name, due, err)
 		}

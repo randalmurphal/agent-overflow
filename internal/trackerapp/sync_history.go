@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
@@ -25,12 +26,15 @@ const (
 // MirrorHistory.BoardsRev): an issue that gains a board is due again. An
 // issue the tracker returns no history for
 // (deleted or not visible) is stored with none known before the read, so
-// it is not due again until its card moves.
+// it is not due again until its card moves. Which issues are due is the
+// store's rule (store ListMirrorHistoryDue), on the steady clock: an issue
+// that changed is read at once and, when that read is not final for its
+// update (historyFinal), once more a settle margin after its answer.
 func (r *run) history() (UnitResult, error) {
 	var out UnitResult
-	after, reads := "", 0
+	after, reads, now := "", 0, r.steadyAt()
 	for {
-		due, more, err := r.s.store.ListMirrorHistoryDue(r.root, after)
+		due, more, err := r.s.store.ListMirrorHistoryDue(r.root, after, now)
 		if err != nil {
 			return out, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
 		}
@@ -73,12 +77,15 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 	}
 	slices.Sort(boards)
 	boards = slices.Compact(boards)
-	read := r.readAt()
+	read, began := r.readAt(), r.steadyAt()
 	r.calls++
 	h, err := r.p.History(r.ctx, tracker.HistoryQuery{Issues: issues, Boards: boards})
 	if err != nil {
 		return Changes{}, fmt.Errorf("trackerapp: read the history of %d issues: %w", len(issues), call(err))
 	}
+	// When the answers arrived, by the steady clock: a wait for a final
+	// read counts from it (store MirrorHistory.AnsweredAt).
+	answered, settle := r.steadyAt(), r.p.Capabilities().HistorySettle.Milliseconds()
 	var out Changes
 	if len(h.Users)+len(h.Statuses) > 0 {
 		catalog, err := mirrorCatalog(h.Catalog)
@@ -97,17 +104,52 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 	}
 	histories := make([]store.MirrorHistory, len(issues))
 	for i, id := range issues {
+		d := due[i]
+		final := true
 		if j, ok := byIssue[id]; ok {
 			histories[i] = mirrorHistory(h.Issues[j])
+			final = r.historyFinal(d, h.Issues[j].CompleteTo, began, settle)
 		} else {
-			histories[i] = emptyHistory(id, read)
+			histories[i] = emptyHistory(id, d.UpdatedAt)
+		}
+		histories[i].For, histories[i].AnsweredAt = d.UpdatedAt, answered
+		if !final {
+			histories[i].Wait = settle
 		}
 		// The revision of the issue's boards the read was asked with: a
 		// history of an older revision does not cover a board added since.
-		histories[i].BoardsRev = due[i].BoardsRev
+		// The receipt the read was listed with: an answer that arrives after
+		// a later one was stored is superseded.
+		histories[i].BoardsRev, histories[i].Receipt = d.BoardsRev, d.Receipt
 	}
 	out.History, err = r.storeHistories(histories)
 	return out, err
+}
+
+// historyFinal reports whether a read of d's history that began at began
+// (steady clock) with completeTo (the tracker's clock, zero for none) is
+// final for d's update time, the version it was read for. Each comparison
+// stays in one clock: completeTo with the update time, both the
+// tracker's; began with the answer to the read before for the same
+// version, both this process's steady clock. A read for the version a
+// final read was stored for (one asked again for a board the issue
+// gained) reads what had settled already. An answer stored by an earlier
+// process (before steadyFrom) proves no elapsed time, since the wall
+// clock may have stepped across the restart: the read after it is final
+// only by completeTo, so a restart during a wait costs at most one more
+// read. A provider with no settle margin waits no time either way.
+// Trusting completeTo assumes the tracker's Date and its update times
+// come from one clock, continuous to within the settle margin: a forward
+// step of the tracker's clock by more than the margin between an update
+// and the read makes a read final that has not settled.
+func (r *run) historyFinal(d store.MirrorHistoryDue, completeTo time.Time, began, settle int64) bool {
+	if millis(completeTo) >= d.UpdatedAt {
+		return true
+	}
+	if d.For != d.UpdatedAt {
+		return false
+	}
+	return d.Wait == 0 || (d.AnsweredAt >= r.s.steadyFrom && began-d.AnsweredAt >= settle)
 }
 
 // storeHistories stores hs, the whole history of each issue of one read,

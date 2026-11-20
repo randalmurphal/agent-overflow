@@ -7,9 +7,9 @@ import (
 )
 
 // longHistory is n status changes of issue, one a time unit from 1, the
-// last to the card's status "1"; final through n+extra.
+// last to the card's status "1"; answered at n+extra.
 func longHistory(issue string, n int, extra int64) MirrorHistory {
-	h := MirrorHistory{IssueID: issue, CompleteTo: int64(n) + extra}
+	h := MirrorHistory{IssueID: issue, AnsweredAt: int64(n) + extra}
 	for i := range n {
 		to := []string{"1", "3"}[(n-1-i)%2]
 		h.Changes = append(h.Changes, MirrorChange{Kind: MirrorChangeStatus, At: int64(i + 1), To: to})
@@ -18,13 +18,13 @@ func longHistory(issue string, n int, extra int64) MirrorHistory {
 }
 
 // mirrorHistoryShown is what a read sees of issue 10001's history: its
-// generation's change count, its final time and its status time, and
+// generation's change count, when its answer arrived and its status time, and
 // whether other generations or a staging mark are left.
 func mirrorHistoryShown(t *testing.T, s *Store) string {
 	t.Helper()
 	var shown string
 	err := s.db.QueryRow(`SELECT (SELECT count(*) FROM tracker_cache_changes c WHERE c.issue_id = i.issue_id AND c.gen = i.history_gen)
-		  || ' to ' || i.history_to || ' since ' || i.status_since
+		  || ' answered ' || i.history_answered_at || ' since ' || i.status_since
 		  || ' other ' || (SELECT count(*) FROM tracker_cache_changes c WHERE c.issue_id = i.issue_id AND c.gen <> i.history_gen)
 		  || ' dirty ' || i.history_dirty
 		FROM tracker_cache_issues i WHERE i.issue_id = '10001'`).Scan(&shown)
@@ -51,11 +51,11 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		statements, chunks int
 		shown              string
 	}{
-		{"new", longHistory("10001", n, 1), true, 31, n / clearMirrorChunk, "5000 to 5001 since 5000 other 0 dirty 0"},
-		{"identical", longHistory("10001", n, 1), false, 14, 0, "5000 to 5001 since 5000 other 0 dirty 0"},
-		{"appended", longHistory("10001", n+100, 1), true, 22, 1, "5100 to 5101 since 5100 other 0 dirty 0"},
-		{"shortened", longHistory("10001", 10, 6000), true, 34, 0, "10 to 6010 since 10 other 0 dirty 0"},
-		{"grown again", longHistory("10001", n, 7000), true, 34, 0, "5000 to 12000 since 5000 other 0 dirty 0"},
+		{"new", longHistory("10001", n, 1), true, 31, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
+		{"identical", longHistory("10001", n, 1), false, 14, 0, "5000 answered 5001 since 5000 other 0 dirty 0"},
+		{"appended", longHistory("10001", n+100, 1), true, 22, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
+		{"shortened", longHistory("10001", 10, 6000), true, 34, 0, "10 answered 6010 since 10 other 0 dirty 0"},
+		{"grown again", longHistory("10001", n, 7000), true, 34, 0, "5000 answered 12000 since 5000 other 0 dirty 0"},
 	} {
 		recorder.reset()
 		var results []MirrorHistoryResult
@@ -92,10 +92,10 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 		finish        func(s *Store, root int64) error
 	}{
 		{"before the switch", `BEFORE INSERT ON tracker_cache_changes WHEN NEW.gen = 3 AND NEW.seq = 3000`,
-			"10 to 6010 since 10 other 3000 dirty 1",
+			"10 answered 6010 since 10 other 3000 dirty 1",
 			func(s *Store, _ int64) error { return s.FinishMirrorCleanup(nil) }},
 		{"after the switch", `BEFORE DELETE ON tracker_cache_changes WHEN OLD.gen = 1 AND OLD.seq = 2000`,
-			"10 to 6010 since 10 other 3000 dirty 1",
+			"10 answered 6010 since 10 other 3000 dirty 1",
 			func(s *Store, root int64) error {
 				_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}))
 				return err
@@ -144,7 +144,7 @@ func TestMirrorHistoryProbeStopsAtTheFirstDifference(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	mustReplaceHistory(t, s, root, longHistory("10001", 11, 1), MirrorWrite{Changed: true})
-	in, err := newMirrorHistoryInput(longHistory("10001", 100000, 1))
+	in, err := newMirrorHistoryInput(answeredHistory(longHistory("10001", 100000, 1)))
 	if err != nil {
 		t.Fatal(err)
 	}

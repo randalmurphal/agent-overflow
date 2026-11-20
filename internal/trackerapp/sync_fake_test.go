@@ -228,7 +228,7 @@ func (s *fakeScenario) refusedCursorRestarts(t *testing.T, scope Scope) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, _, err := s.st.GetMirrorSync(root, string(scope.Board))
+	st, _, err := s.st.GetMirrorSync(root, string(scope.Board), s.svc.steady().UnixMilli())
 	if err != nil || len(st.Cursor) == 0 {
 		t.Fatalf("no cursor to age: %+v, %v", st, err)
 	}
@@ -248,7 +248,7 @@ func (s *fakeScenario) refusedCursorRestarts(t *testing.T, scope Scope) {
 	if total(routes) != 1 {
 		t.Fatalf("the restarted walk made %s", describe(routes))
 	}
-	st, _, err = s.st.GetMirrorSync(root, string(scope.Board))
+	st, _, err = s.st.GetMirrorSync(root, string(scope.Board), s.svc.steady().UnixMilli())
 	if err != nil || bytes.Equal(st.Cursor, older) || len(st.Cursor) == 0 {
 		t.Fatalf("the cursor after the restart %s, %v", st.Cursor, err)
 	}

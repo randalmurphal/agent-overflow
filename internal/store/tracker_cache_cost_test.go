@@ -72,9 +72,9 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
 	reads := []func() error{
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
-		func() error { _, _, err := s.GetMirrorSync(root, "10"); return err },
-		func() error { _, _, err := s.GetMirrorSync(root, ""); return err },
-		func() error { _, _, err := s.ListMirrorHistoryDue(root, ""); return err },
+		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
+		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },
+		func() error { _, _, err := s.ListMirrorHistoryDue(root, "", testNow); return err },
 		func() error { _, _, err := s.GetMirrorDetail(root, "10001"); return err },
 		func() error { _, err := s.ListMirrorDetailStates(root, []string{"10001", "10002"}); return err },
 		func() error {
@@ -259,6 +259,7 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 	}
 	for name, read := range map[string]struct{ query, index string }{
 		"history due":       {mirrorHistoryDueSQL, "idx_tracker_cache_issues_history_due (root_id=? AND issue_id>?)"},
+		"history due probe": {mirrorSyncStateSQL, "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)"},
 		"sweep candidates":  {mirrorSweepCandidatesSQL, "idx_tracker_cache_issues_boardless (root_id=? AND issue_id>?)"},
 		"cleanup probe":     {mirrorCleanupPendingSQL, "idx_tracker_cache_boards_retired"},
 		"listing check":     {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},

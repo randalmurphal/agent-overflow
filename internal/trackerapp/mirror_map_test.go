@@ -149,6 +149,9 @@ func TestHistoryAndWorklogRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The store keeps whether a read was final (run.historyOf), not the
+		// tracker's CompleteTo.
+		h.CompleteTo = time.Time{}
 		same(t, name+" history", got, h)
 	}
 	// A sprint change to no sprint stays a sprint change.
