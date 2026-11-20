@@ -82,23 +82,24 @@ func (m *Manager) releaseStagedDownload(id downloadID) {
 	}
 }
 
-// pageForFrame walks the registry the Manager owns and asks each driver whether
-// the frame is one of its own: a listed page's, or that of a page being
-// created or restored, which owns what its load downloads from its attach
-// on, its listing keeping it and its abandonment settling it
+// downloadOwnerLocked answers, with its jar, the first page that can own
+// a download and that owns answers true for: a listed page, or a page
+// being created or restored, which owns what its load downloads from its
+// attach on, its listing keeping it and its abandonment settling it
 // (abandonPage). A popup being adopted lists its downloads at its fate
-// (popup_parked.go). Ownership stays here; frame bookkeeping does not.
-func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// (popup_parked.go). A download's start (pageForFrame) and its later
+// reports (pageForDownload) find their page through it alone, so whatever
+// page admits a start receives what follows it. Ownership stays here;
+// frame bookkeeping does not. The caller holds m.mu.
+func (m *Manager) downloadOwnerLocked(owns func(*managedPage) bool) (*managedPage, *jarScope) {
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.driver.OwnsFrame(frame) {
+			if owns(p) {
 				return p, scope
 			}
 		}
 		for p := range scope.creating {
-			if p.driver != nil && !m.adoptingLocked(p) && p.driver.OwnsFrame(frame) {
+			if p.driver != nil && !m.adoptingLocked(p) && owns(p) {
 				return p, scope
 			}
 		}
@@ -106,17 +107,22 @@ func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
 	return nil, nil
 }
 
-// pageForDownload answers the listed page download id runs in, with its
-// jar, or the page that left with it waiting for its end, with no jar.
+// pageForFrame answers the page whose driver owns frame
+// (downloadOwnerLocked).
+func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.downloadOwnerLocked(func(p *managedPage) bool { return p.driver.OwnsFrame(frame) })
+}
+
+// pageForDownload answers the page whose log lists download id, with its
+// jar (downloadOwnerLocked), or the page that left with it waiting for its
+// end, with no jar.
 func (m *Manager) pageForDownload(id downloadID) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.downloads.has(id) {
-				return p, scope
-			}
-		}
+	if p, scope := m.downloadOwnerLocked(func(p *managedPage) bool { return p.downloads.has(id) }); p != nil {
+		return p, scope
 	}
 	return m.endPending[id], nil
 }
