@@ -147,19 +147,19 @@ func TestNativeEngineRealDownloadFailingBeforeItsFileIsFreed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
-	before := webkitDownloadsAlive()
+	// WebKit can start, fail and free the download between two reads, so
+	// the test reads the counts of starts and frees, which only grow.
+	startedBefore, freedBefore := webkitDownloadCounts()
 	if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), `document.getElementById("d").click(); true`, nil); err != nil {
 		t.Fatalf("start the download: %v", err)
 	}
-	started := false
 	for deadline := time.Now().Add(30 * time.Second); ; {
-		alive := webkitDownloadsAlive()
-		started = started || alive > before
-		if started && alive == before {
+		started, freed := webkitDownloadCounts()
+		if started > startedBefore && started-freed == startedBefore-freedBefore {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("downloads alive: %d before, %d now, started %v; want one started and freed", before, alive, started)
+			t.Fatalf("since the click WebKit started %d downloads and freed %d; want one started and freed", started-startedBefore, freed-freedBefore)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

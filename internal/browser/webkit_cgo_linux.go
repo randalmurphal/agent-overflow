@@ -1021,6 +1021,18 @@ func webkitReleaseDownload(download unsafe.Pointer) {
 	uiThread.Release(func() { C.ao_wk_download_unref(download) })
 }
 
+// webkitDownloadCounts is how many downloads WebKit started and how many it
+// finalized since the process began; each only grows. Their difference is
+// how many are alive: one the engine still holds, or WebKit does.
+func webkitDownloadCounts() (started, freed int) {
+	var s, f C.int
+	C.ao_wk_download_counts(&s, &f)
+	return int(s), int(f)
+}
+
 // webkitDownloadsAlive is how many downloads WebKit made are not finalized
-// yet: one the engine still holds, or WebKit does.
-func webkitDownloadsAlive() int { return int(C.ao_wk_downloads_alive()) }
+// yet (webkitDownloadCounts).
+func webkitDownloadsAlive() int {
+	started, freed := webkitDownloadCounts()
+	return started - freed
+}
