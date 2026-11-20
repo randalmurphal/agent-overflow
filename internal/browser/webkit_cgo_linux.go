@@ -172,7 +172,7 @@ func aoWebKitAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 		// The decision's reference is given up with its answer. A loop that
 		// is gone takes the page with it, so an unanswered decision dies
 		// with the process rather than blocking anything.
-		uiThread.Release(func() { C.ao_wk_policy_finish(decision, allow) })
+		releasePolicyAnswer.release(uiThread, func() { C.ao_wk_policy_finish(decision, allow) })
 	}()
 }
 
@@ -372,14 +372,12 @@ func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64
 // webkitCancelDestinations cancels and releases, on the GTK thread, the
 // destination decisions p still holds, and refuses later ones (Dispose).
 func webkitCancelDestinations(p *webkitProfile) {
-	if !uiThread.Release(func() {
+	releaseDestinations.release(uiThread, func() {
 		for _, pending := range p.destinations.Close() {
 			C.ao_wk_download_decide(pending.ptr, nil)
 			C.ao_wk_download_unref(pending.ptr)
 		}
-	}) {
-		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errGTKUnavailable)
-	}
+	})
 }
 
 // webkitPendingDownload is a download whose destination is being decided,
@@ -594,7 +592,7 @@ func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, prof
 }
 
 func webkitFreeSession(session unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wk_session_free(session) })
+	releaseSiteData.release(uiThread, func() { C.ao_wk_session_free(session) })
 }
 
 // webkitNewView builds a page's view in profile profileID's session on the
@@ -1016,7 +1014,7 @@ func withDownloadOnUI(p *webkitProfile, id downloadID, fn func(download unsafe.P
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wk_download_unref(download) })
+	releaseDownloadRef.release(uiThread, func() { C.ao_wk_download_unref(download) })
 }
 
 // webkitDownloadCounts is how many downloads WebKit started and how many it

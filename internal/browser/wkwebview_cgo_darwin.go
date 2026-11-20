@@ -193,7 +193,7 @@ func aoWKVAllow(pageID, _ C.uint64_t, decision unsafe.Pointer, uri *C.char, down
 		// The decision's block is given up with its answer. A loop that is
 		// gone takes the page with it, so an unanswered decision dies with the
 		// process rather than blocking anything.
-		uiThread.Release(func() { C.ao_wkv_policy_finish(decision, verdict) })
+		releasePolicyAnswer.release(uiThread, func() { C.ao_wkv_policy_finish(decision, verdict) })
 	}()
 }
 
@@ -390,14 +390,12 @@ func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t,
 // wkCancelDestinations cancels and releases, on the main thread, the
 // destination decisions p still holds, and refuses later ones (Dispose).
 func wkCancelDestinations(p *wkProfile) {
-	if !uiThread.Release(func() {
+	releaseDestinations.release(uiThread, func() {
 		for _, pending := range p.destinations.Close() {
 			C.ao_wkv_download_decide(pending.ptr, nil)
 			C.ao_wkv_download_release(pending.ptr)
 		}
-	}) {
-		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errWKUnavailable)
-	}
+	})
 }
 
 // wkPendingDownload is a download whose destination is being decided, with
@@ -629,7 +627,7 @@ func wkNewStore(identifier string, ephemeral bool) (unsafe.Pointer, error) {
 }
 
 func wkFreeStore(store unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wkv_store_free(store) })
+	releaseSiteData.release(uiThread, func() { C.ao_wkv_store_free(store) })
 }
 
 // wkClearSiteData removes every WKWebsiteDataStore this app has created, which
@@ -927,7 +925,7 @@ func withDownloadOnUI(p *wkProfile, id downloadID, fn func(download unsafe.Point
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wkv_download_release(download) })
+	releaseDownloadRef.release(uiThread, func() { C.ao_wkv_download_release(download) })
 }
 
 // wkSample is one sample of a running download's progress
