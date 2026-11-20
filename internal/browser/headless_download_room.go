@@ -15,11 +15,11 @@ import (
 type downloadFiles interface {
 	// discard removes the files Chromium writes download id under.
 	discard(id downloadID)
-	// handOver moves download id's finished file to where the Manager names
-	// it (downloadFileOf) and answers that path.
+	// handOver places download id's finished file where the Manager names
+	// it (downloadFileOf), never replacing a file, and answers that path.
 	handOver(id downloadID) (string, error)
-	// withdraw removes the file handOver moved out for download id, if it
-	// is still there: the Manager did not take it.
+	// withdraw removes the file handOver placed for download id, if it is
+	// still there: the Manager did not take it.
 	withdraw(id downloadID)
 	// empty removes everything but the files of keep, whose ends are being
 	// reported.
@@ -35,8 +35,8 @@ type downloadFiles interface {
 // in that directory whatever its name names meanwhile, and the room's own
 // entry goes only while that name is still the room, as held, and empty
 // (removeHeldDir). parent holds the profile's download directory, where a
-// download the Manager admitted that finishes is moved out to the name the
-// Manager gave it (handOver). Nothing else in the room is ever the
+// download the Manager admitted that finishes is placed under the name the
+// Manager gave it, never replacing a file (handOver). Nothing else in the room is ever the
 // Manager's, so whatever is left once the process has exited is removed
 // with the room (close), including a download whose start no handler
 // processed.
@@ -51,7 +51,7 @@ type downloadRoom struct {
 	held   os.FileInfo
 
 	// mu orders the room's file work against close, which lets the roots
-	// go. handed is each file handOver moved out, as moved.
+	// go. handed is each file handOver placed, as placed.
 	mu     sync.Mutex
 	closed bool
 	handed map[downloadID]os.FileInfo
@@ -113,8 +113,10 @@ func (r *downloadRoom) discard(id downloadID) {
 	}
 }
 
-// handOver moves the file out of the room only while the room's name is
-// still the room: a directory put at that name holds nothing of AO's.
+// handOver places the regular file the room holds under id's name in the
+// profile's download directory, never replacing a file there
+// (placeNoReplace), and only while the room's path still reaches that file,
+// as placing by name needs. The room's own name for it goes after.
 func (r *downloadRoom) handOver(id downloadID) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -125,21 +127,34 @@ func (r *downloadRoom) handOver(id downloadID) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if current, err := r.parent.Lstat(r.name); err != nil || !os.SameFile(r.held, current) {
-		return "", fmt.Errorf("browser: the browser's download directory %s was replaced", r.path())
-	}
-	if err := r.parent.Rename(filepath.Join(r.name, name), name); err != nil {
-		return "", fmt.Errorf("browser: move the finished download %s: %w", id, err)
-	}
-	moved, err := r.parent.Lstat(name)
+	held, err := r.room.Lstat(name)
 	if err != nil {
 		return "", fmt.Errorf("browser: read the finished download %s: %w", id, err)
 	}
-	r.handed[id] = moved
-	return filepath.Join(r.dir, name), nil
+	if !held.Mode().IsRegular() {
+		return "", fmt.Errorf("browser: the file of download %s is not a regular file", id)
+	}
+	source := filepath.Join(r.path(), name)
+	if current, err := os.Lstat(source); err != nil || !os.SameFile(held, current) {
+		return "", fmt.Errorf("browser: the browser's download directory %s was moved or replaced", r.path())
+	}
+	if _, err := r.parent.Lstat(name); err == nil {
+		return "", fmt.Errorf("browser: a file is already at %s, so download %s is not saved", filepath.Join(r.dir, name), id)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("browser: read %s: %w", filepath.Join(r.dir, name), err)
+	}
+	path, placed, err := placeNoReplace(placeSource{path: source, info: held, dir: r.room}, r.dir, "the download directory", func(int) string { return name })
+	if err != nil {
+		return "", err
+	}
+	if err := r.room.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		r.logf("browser: remove the room's name for download %s: %v", id, err)
+	}
+	r.handed[id] = placed
+	return path, nil
 }
 
-// withdraw removes the file handOver moved out only while its name still
+// withdraw removes the file handOver placed only while its name still
 // holds that file.
 func (r *downloadRoom) withdraw(id downloadID) {
 	r.mu.Lock()
