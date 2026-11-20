@@ -5,6 +5,7 @@ package browser
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"agent-overflow/internal/browser/destination"
 )
@@ -48,6 +49,49 @@ func stagedFile(stage func(downloadID) (string, error), id downloadID) (string, 
 // which its start and every report of it name.
 func downloadHandle(n uint64) downloadID {
 	return downloadID(fmt.Sprintf("dl-%d", n))
+}
+
+// nativeEnds are a profile's downloads whose end the UI thread received
+// and whose end report has not returned yet: from WebKit's terminal
+// callback, through the queued release and report (downloadEvents), to
+// that report's return. A download's start answers EndReported from it.
+type nativeEnds struct {
+	mu  sync.Mutex
+	ids map[downloadID]struct{}
+}
+
+// received marks id's end received, on the UI thread, before its report
+// is queued.
+func (e *nativeEnds) received(id downloadID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ids == nil {
+		e.ids = make(map[downloadID]struct{})
+	}
+	e.ids[id] = struct{}{}
+}
+
+// reported clears id's mark once its end report returned.
+func (e *nativeEnds) reported(id downloadID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.ids, id)
+}
+
+// pending is whether id's end was received and its report has not
+// returned. On the UI thread, where the mark is made, it is exact: a
+// cancel that finds it there has nothing to cancel, and WebKit is not
+// asked to cancel a download it finished.
+func (e *nativeEnds) pending(id downloadID) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.ids[id]
+	return ok
+}
+
+// endReported is a download start's EndReported for id.
+func (e *nativeEnds) endReported(id downloadID) func() bool {
+	return func() bool { return e.pending(id) }
 }
 
 // nativeCancel is how a native download's cancel on the UI thread ended.

@@ -19,6 +19,9 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 		// Its page left after its end was received, which settles it.
 		{rowRunning, rowEndPending}:                        true,
 		{rowCancelRequested, rowEndPendingCancelRequested}: true,
+		// A staged finish received before its page left is published.
+		{rowEndPending, rowPublishing}:                true,
+		{rowEndPendingCancelRequested, rowPublishing}: true,
 	}
 	for _, from := range phases {
 		for _, to := range phases {

@@ -240,8 +240,9 @@ func placeArtifact(source, dir, name string) (path string, file os.FileInfo, err
 // row stays running while the file moves, outside the page's lock: a page
 // that leaves meanwhile (pageLeftLocked) and a cancel
 // (CancelThreadDownload) leave it to this, its one settlement, and Close
-// waits for it (waitPublishes). The caller holds p's download log, which
-// this releases.
+// waits for it (waitPublishes). A finish received before p left reaches
+// here from the row's end pending, and publishes all the same. The caller
+// holds p's download log, which this releases.
 func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold, entry *DownloadInfo, event downloadProgress) {
 	// The staged file the row has owned since its admission (entry.source)
 	// is the one published.

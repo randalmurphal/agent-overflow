@@ -64,11 +64,10 @@ type downloadStart struct {
 	// EndReported, nil on an engine that delivers a download's end as it
 	// learns it, reports whether the engine has received the download's
 	// end and has yet to deliver it (the hosted engine's report lanes, the
-	// headless download tracker), which it does even past Stop: the
-	// Manager leaves such a row to that end when its page leaves
-	// (pageLeftLocked). A staged download's finish is published from its
-	// page's row, which such a row cannot do, so a staging engine leaves
-	// this nil and its page's leave cancels the download.
+	// headless download tracker, the WebKit engines from their UI thread's
+	// terminal callback), which it does even past Stop: the Manager leaves
+	// such a row to that end when its page leaves (pageLeftLocked), and a
+	// staged finish is then published by its report.
 	EndReported func() bool
 	// NewestCounts, nil on an engine that delivers a download's progress
 	// as it learns it, answers the bytes received and the total of the

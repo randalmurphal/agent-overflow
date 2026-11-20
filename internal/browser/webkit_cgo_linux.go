@@ -397,6 +397,7 @@ type webkitPendingDownload struct {
 func (p *webkitProfile) decideDownload(download webkitPendingDownload, path string, stageErr error) {
 	start := p.downloadStart(webkitLookupPage(download.page), download.popup)
 	start.ID, start.URL, start.SuggestedName = download.handle, download.url, download.name
+	start.EndReported = p.ends.endReported(download.handle)
 	handle := download.handle
 	if stageErr == nil && p.isDisposed() {
 		// Its session goes on this thread after this turn (Dispose).
@@ -458,11 +459,15 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, s
 	// Off the GTK thread, after the start and in the order WebKit reported
 	// them (downloadEvents).
 	if progress.State != downloadInProgress {
+		// The end is the Manager's to settle from here, also for a page that
+		// leaves before it is delivered (downloadStart.EndReported).
+		profile.ends.received(handle)
 		// Released before the event goes out: releasing dispatches BACK to the
 		// GTK thread, which would queue behind the signal handler this export
 		// is running inside and freeze the UI for a full nativeCallTimeout on
 		// every finished download.
 		profile.engine.downloadEvents.Go(func() {
+			defer profile.ends.reported(handle)
 			profile.releaseDownload(handle)
 			profile.engine.events.DownloadProgress(progress)
 		})
@@ -988,11 +993,12 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 // webkitCancelDownload cancels p's download id on the GTK thread
 // (withDownloadOnUI), where a released download's reference is dropped
 // after it leaves p.downloads (releaseDownload), so the one it finds is
-// still held through the cancel.
+// still held through the cancel. One whose end WebKit reported there
+// (p.ends) has ended, its release still queued, and is not canceled.
 func webkitCancelDownload(p *webkitProfile, id downloadID) nativeCancel {
 	found := false
 	if uiThread.Run(func() {
-		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wk_download_cancel(download) })
+		found = !p.ends.pending(id) && withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wk_download_cancel(download) })
 	}) == uicall.Withdrawn {
 		return nativeCancelWithdrawn
 	}

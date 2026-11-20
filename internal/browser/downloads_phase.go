@@ -10,8 +10,9 @@ import (
 // the engine's refusal or CancelDownload's failure moves back; a staged
 // download's finish moves it to publishing while its file moves into the
 // Downloads folder; its page's leaving moves one whose end its engine has
-// received to end pending, which that end settles; and its end settles it,
-// with State saying how. Only advance and settle write it.
+// received to end pending, which that end settles, a staged finish through
+// publishing; and its end settles it, with State saying how. Only advance
+// and settle write it.
 type downloadRowPhase int
 
 const (
@@ -24,7 +25,8 @@ const (
 	// (publishFinishedDownload), which settles it; it takes no report.
 	rowPublishing
 	// rowEndPending: its page left after its engine received its end
-	// (downloadStart.EndReported), which is on its way and settles it.
+	// (downloadStart.EndReported), which is on its way and settles it, a
+	// staged finish by its publish.
 	rowEndPending
 	// rowEndPendingCancelRequested: as rowEndPending, with the user's
 	// cancel with the engine.
@@ -85,8 +87,10 @@ func (e *DownloadInfo) takesReports() bool {
 // advance moves the row to the running phase to, and refuses with
 // errDownloadPhase a move its phase does not allow: a cancel is requested
 // only of a running row, withdrawn only while requested, a publish begins
-// only from a running row, a cancel pending or not, and so does an end
-// pending, kept with its cancel. A settle goes through settle.
+// from a row that takes reports, a cancel or an end pending or not, so a
+// staged finish received before its page left is published by its report;
+// an end pending begins only from a running row, kept with its cancel. A
+// settle goes through settle.
 func (e *DownloadInfo) advance(to downloadRowPhase) error {
 	allowed := false
 	switch to {
@@ -95,7 +99,7 @@ func (e *DownloadInfo) advance(to downloadRowPhase) error {
 	case rowRunning:
 		allowed = e.phase == rowCancelRequested
 	case rowPublishing:
-		allowed = e.phase == rowRunning || e.phase == rowCancelRequested
+		allowed = e.takesReports()
 	case rowEndPending:
 		allowed = e.phase == rowRunning
 	case rowEndPendingCancelRequested:

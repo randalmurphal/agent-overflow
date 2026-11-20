@@ -216,7 +216,8 @@ func (m *Manager) downloadsLeftLocked(scope *jarScope, p *managedPage, reason st
 
 // departLocked settles entry, a running row of p, as p leaves for reason:
 // one whose end its engine received and will deliver
-// (downloadStart.EndReported) waits for that end, and any other is
+// (downloadStart.EndReported) waits for that end, which publishes a staged
+// finish from its kept staged file, and any other is
 // canceled with reason and the newest counts its engine received
 // (downloadStart.NewestCounts). It answers the note and the discard of a
 // row it canceled. One being published settles when its file is in place
