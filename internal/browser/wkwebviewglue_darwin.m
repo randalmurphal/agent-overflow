@@ -1222,13 +1222,17 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
   if (controller != nil && console_handler != NULL) {
     NSString *name = [NSString stringWithUTF8String:console_handler];
     // A popup's configuration may already carry the opener's controller, and
-    // adding a handler name twice RAISES. Removing first would leave a window
-    // in which the opener's live page posts into nothing, so the duplicate is
-    // caught instead — the handler being added is the same shared object.
+    // adding a handler name twice raises NSInvalidArgumentException. Removing
+    // first would leave a window in which the opener's live page posts into
+    // nothing, so the duplicate is caught instead: the handler being added is
+    // the same shared object. Any other exception is logged.
     @try {
       [controller addScriptMessageHandler:ao_delegate() name:name];
-    } @catch (NSException *ignored) {
-      (void)ignored;
+    } @catch (NSException *refused) {
+      if (![[refused name] isEqualToString:NSInvalidArgumentException]) {
+        NSLog(@"browser: the console handler was not registered: %@: %@", [refused name],
+              [refused reason]);
+      }
     }
     // The same controller may already carry the opener's script; adding it
     // again would double every console entry the opener reports.
@@ -1315,13 +1319,18 @@ int ao_wkv_view_close(void *view) {
     [v setNavigationDelegate:nil];
     [v setUIDelegate:nil];
     // An observer left registered on a deallocating object is a hard crash, and
-    // a view that never reached ao_connect_view has none.
+    // a view that never reached ao_connect_view has none: removing one that is
+    // not registered raises NSRangeException, which is expected here. Any
+    // other exception is logged.
     @try {
       [v removeObserver:ao_delegate() forKeyPath:@"title" context:&kAOObserverContext];
       [v removeObserver:ao_delegate() forKeyPath:@"URL" context:&kAOObserverContext];
       [v removeObserver:ao_delegate() forKeyPath:@"loading" context:&kAOObserverContext];
-    } @catch (NSException *ignored) {
-      (void)ignored;
+    } @catch (NSException *refused) {
+      if (![[refused name] isEqualToString:NSRangeException]) {
+        NSLog(@"browser: the page's observers were not removed: %@: %@", [refused name],
+              [refused reason]);
+      }
     }
     objc_setAssociatedObject(v, &kAOPageIDKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [v release];

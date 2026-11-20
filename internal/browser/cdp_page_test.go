@@ -245,3 +245,26 @@ func TestCDPPageWatchesItsDocumentTitle(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// A navigation mark carries the page's loader, so a page whose frame tree
+// cannot be read answers that error rather than a mark without one.
+func TestCDPNavigationMarkReportsAnUnreadableFrameTree(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
+	defer cancel()
+	mark, err := page.NavigationMark(opCtx)
+	if err != nil || mark.URL != "https://example.test/" || mark.Loader != "L-1" {
+		t.Fatalf("a readable mark = %+v, %v", mark, err)
+	}
+	browser.failFrameTree.Store(true)
+	if mark, err := page.NavigationMark(opCtx); err == nil || !strings.Contains(err.Error(), "the frame tree is gone") {
+		t.Fatalf("an unreadable frame tree answered %+v, %v", mark, err)
+	}
+}

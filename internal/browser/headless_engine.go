@@ -253,8 +253,7 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 		p.userDataDir = filepath.Join(root, "chromium")
 	}
 	if err := os.MkdirAll(p.userDataDir, 0o700); err != nil {
-		p.removeEphemeralRoot()
-		return nil, fmt.Errorf("browser: create site data directory: %w", err)
+		return nil, errors.Join(fmt.Errorf("browser: create site data directory: %w", err), p.removeEphemeralRoot())
 	}
 	e.mu.Lock()
 	e.profiles[p] = struct{}{}

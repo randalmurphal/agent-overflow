@@ -98,8 +98,12 @@ func (p *cdpPage) NavigationMark(ctx context.Context) (navigationMark, error) {
 	if err != nil {
 		return mark, err
 	}
+	tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{})
+	if err != nil {
+		return navigationMark{}, fmt.Errorf("browser: read the page's frame tree: %w", err)
+	}
 	mark.URL = location
-	if tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{}); err == nil && tree.FrameTree != nil && tree.FrameTree.Frame != nil {
+	if tree.FrameTree != nil && tree.FrameTree.Frame != nil {
 		mark.Loader = string(tree.FrameTree.Frame.LoaderID)
 	}
 	return mark, nil

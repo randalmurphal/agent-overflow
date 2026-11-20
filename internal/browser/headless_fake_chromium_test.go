@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,8 +51,10 @@ type fakeChromium struct {
 	ignoreClose atomic.Bool
 	// onClose, when set, runs as Browser.close arrives.
 	onClose atomic.Pointer[func()]
-	// stallFrameTree leaves every Page.getFrameTree unanswered.
+	// stallFrameTree leaves every Page.getFrameTree unanswered, and
+	// failFrameTree answers it with an error.
 	stallFrameTree atomic.Bool
+	failFrameTree  atomic.Bool
 	// stallBrowserCalls leaves every Target.closeTarget and
 	// Browser.cancelDownload unanswered.
 	stallBrowserCalls atomic.Bool
@@ -86,6 +89,10 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 		case "Target.attachToTarget":
 			return map[string]any{"sessionId": fmt.Sprintf("S-%d", sessions.Add(1))}
 		case "Runtime.evaluate":
+			var params struct{ Expression string }
+			if err := json.Unmarshal(call.Params, &params); err == nil && params.Expression == "document.location.toString()" {
+				return map[string]any{"result": map[string]any{"type": "string", "value": "https://example.test/"}}
+			}
 			// chromedp asks the fresh target what `self` is, to find out
 			// whether it attached to a worker. A page answers Window.
 			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
@@ -96,6 +103,9 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 		case "Page.getFrameTree":
 			if browser.stallFrameTree.Load() {
 				return fakeCDPNoReply{}
+			}
+			if browser.failFrameTree.Load() {
+				return fakeCDPError{Code: -32000, Message: "the frame tree is gone"}
 			}
 			// A page whose frames attached before the attach, as a popup's
 			// made before its adoption did: a child and its child.
