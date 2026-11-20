@@ -374,7 +374,7 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 // placed false, with d untouched, when no page takes it. The caller holds
 // m.parkMu.
 func (m *Manager) placeParked(handle ids.PageHandle, fate popupFate, d *parkedDownload, live bool) (placed bool, discard downloadDiscard, canceled bool) {
-	owner, ok := m.holdParkedOwner(handle, fate, live)
+	owner, ok := m.holdParkedOwner(handle, fate, live, d.start)
 	if !ok {
 		return false, downloadDiscard{}, false
 	}
@@ -383,32 +383,37 @@ func (m *Manager) placeParked(handle ids.PageHandle, fate popupFate, d *parkedDo
 }
 
 // parkedOwner is the page a download of a popup with a fate is listed in,
-// with its jar while it is listed, its download log held, and, for a
-// carrier's page, the carrier.
+// with its jar while it is listed, its download log held, the download's
+// source as the page was chosen (downloadSource), and, for a carrier's
+// page, the carrier.
 type parkedOwner struct {
 	page    *managedPage
 	scope   *jarScope
 	held    *downloadLogHold
+	source  string
 	carrier popupCarrier
 	carried bool
 }
 
-// holdParkedOwner chooses the page a download of popup handle, whose fate
-// is fate, is listed in (parkedOwnerLocked) and takes that page's download
-// log in the same m.mu hold, the hold every page's departure ends its log
-// in: a page chosen while listed stays admitting until the log is let go.
-// It answers false when no page takes the download.
-func (m *Manager) holdParkedOwner(handle ids.PageHandle, fate popupFate, live bool) (parkedOwner, bool) {
+// holdParkedOwner chooses the page download start of popup handle, whose
+// fate is fate, is listed in (parkedOwnerLocked), reads the download's
+// source there, and takes that page's download log, all in one m.mu hold,
+// the hold every page's departure ends its log in: a page chosen while
+// listed stays admitting until the log is let go, and a navigation while
+// the log is waited for does not change the source. It answers false when
+// no page takes the download.
+func (m *Manager) holdParkedOwner(handle ids.PageHandle, fate popupFate, live bool, start downloadStart) (parkedOwner, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, scope, carrier, carried := m.parkedOwnerLocked(handle, fate, live)
 	if p == nil {
 		return parkedOwner{}, false
 	}
+	source := downloadSource(p, start)
 	if m.downloadAdmitting != nil {
 		m.downloadAdmitting()
 	}
-	return parkedOwner{page: p, scope: scope, held: p.downloads.hold(), carrier: carrier, carried: carried}, true
+	return parkedOwner{page: p, scope: scope, held: p.downloads.hold(), source: source, carrier: carrier, carried: carried}, true
 }
 
 // listParked adds d's row to owner's log, which it lets go: the row takes
@@ -422,7 +427,7 @@ func (m *Manager) listParked(owner parkedOwner, d *parkedDownload) (discard down
 	// Its bytes stay held, against the workspace they were taken from.
 	entry.reservation = quota.Take(&d.reservation)
 	entry.source, d.file = d.file, downloadFile{}
-	listed := m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, d.start))
+	listed := m.noteDownloadStartLocked(p, held.add(entry), owner.source)
 	if d.newest != nil {
 		m.applyHeldRow(p, owner.scope, held, *d.newest)
 	} else {
@@ -459,27 +464,35 @@ func (m *Manager) settleCarried(owner parkedOwner, id downloadID) (discard downl
 // admitLate admits a download popup event.Popup starts after its fate,
 // fate: at once, in the page that fate puts it in, chosen with its log
 // held (holdParkedOwner), as any download starting in that page is
-// admitted (listStart). On an engine whose downloads are AO's that is
-// with a reservation of the page's workspace, a refusal a row that says
-// so, and only while the download's jar is open, since its directory is
-// where the file is kept: with the jar gone it answers downloadUnowned,
-// as it does when no page takes the download, and its engine ends it and
-// removes its file. A row in a carrier's log then settles as that leave
-// settled its others (settleCarried): canceled, unless its engine
-// received its end, which the row then waits for and keeps.
+// admitted (listStart), and it answers downloadUnowned when no page takes
+// it. In a carrier's log the row then settles as that leave settled its
+// others (settleCarried). An engine whose downloads are AO's keeps a file
+// only for a listed page, in the download's open jar and against that
+// page's workspace: for a carrier it answers downloadRefused with a row
+// canceled as the leave canceled its others, and with the jar closed
+// downloadUnowned, and either way the engine ends the download and
+// removes its file.
 func (m *Manager) admitLate(event downloadStart, fate popupFate) downloadAdmission {
 	m.mu.Lock()
 	scope := m.profileScopeLocked(event.Profile)
 	m.mu.Unlock()
-	if scope == nil && m.downloadsToArtifacts() {
-		return downloadUnowned
-	}
-	file := m.downloadFileOf(scope, event.ID)
-	owner, ok := m.holdParkedOwner(event.Popup, fate, true)
+	owner, ok := m.holdParkedOwner(event.Popup, fate, true, event)
 	if !ok {
 		return downloadUnowned
 	}
-	note, admitted := m.listStart(owner.page, owner.held, event, file, downloadSource(owner.page, event))
+	if m.downloadsToArtifacts() {
+		switch {
+		case owner.carried:
+			note := m.listRefused(owner.page, owner.held, event, owner.carrier.reason, owner.source)
+			owner.held.release()
+			m.publishDownloads(note)
+			return downloadRefused
+		case scope == nil:
+			owner.held.release()
+			return downloadUnowned
+		}
+	}
+	note, admitted := m.listStart(owner.page, owner.held, event, m.downloadFileOf(scope, event.ID), owner.source)
 	owner.held.release()
 	m.publishDownloads(note)
 	if !admitted {

@@ -538,7 +538,9 @@ behave as a desktop browser's:
   whose window went before the launcher reported it is never a tab; its
   downloads are listed at its close. Under headless Chromium such a
   download holds the quota of the workspace of the nearest page that opened
-  it from its start, and one over it is refused then. With no opener listed
+  it from its start, and one over it is refused then. One a popup starts
+  after its fate, whose only owner is an opener that has left, is listed
+  there canceled and not kept. With no opener listed
   at its fate it is canceled, and the file AO keeps for it (headless
   Chromium's artifact, WebKit's staged file) is removed. Past 16 such downloads of a popup, or 64
   popups holding some, a download is refused and canceled. When a popup's first navigation is

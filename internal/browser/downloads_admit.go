@@ -79,11 +79,7 @@ func (m *Manager) listStart(p *managedPage, held *downloadLogHold, event downloa
 	case m.downloadsToArtifacts():
 		reservation, err := m.reserveDownload(p.authority)
 		if err != nil {
-			// Refused: its engine cancels it and removes its file.
-			if settleErr := entry.settle(downloadStateCanceled); settleErr != nil {
-				log.Printf("browser: %v", settleErr)
-			}
-			entry.Error = err.Error()
+			refuseEntry(&entry, err.Error())
 		} else {
 			entry.source = file
 		}
@@ -93,6 +89,25 @@ func (m *Manager) listStart(p *managedPage, held *downloadLogHold, event downloa
 	}
 	note := m.noteDownloadStartLocked(p, held.add(entry), source)
 	return note, entry.State != downloadStateCanceled
+}
+
+// listRefused adds the row of a download AO refuses as it starts, canceled
+// for reason, to p's log, which the caller holds, with source, the address
+// it started from, and answers the note the caller publishes once it let
+// the log go.
+func (m *Manager) listRefused(p *managedPage, held *downloadLogHold, event downloadStart, reason, source string) downloadNote {
+	entry := m.downloadEntry(event)
+	refuseEntry(&entry, reason)
+	return m.noteDownloadStartLocked(p, held.add(entry), source)
+}
+
+// refuseEntry settles the row of a download AO refuses as it starts:
+// canceled, for reason. Its engine cancels it and removes its file.
+func refuseEntry(entry *DownloadInfo, reason string) {
+	if err := entry.settle(downloadStateCanceled); err != nil {
+		log.Printf("browser: %v", err)
+	}
+	entry.Error = reason
 }
 
 // boundedStart is event with its address, display data from here, bounded

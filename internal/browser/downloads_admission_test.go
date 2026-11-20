@@ -122,6 +122,8 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 		wantDownloads(t, manager, opener, "a in_progress 0")
 		manager.resolveParked("orphaned", nil, "never-listed")
 		wantAdmission(t, "a popup that went, with no opener listed", startPopupDownload(manager, engine, "orphaned", "b"), downloadUnowned)
+		closedJar := manager.downloadStarted(downloadStart{Frame: "gone", ID: "j", Popup: "gone", Openers: []ids.PageHandle{opener}, Profile: "no-such-jar"})
+		wantAdmission(t, "a popup that went, of a jar that is not open", closedJar, downloadUnowned)
 		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 		wantAdmission(t, "a popup that went, past its opener's quota", startPopupDownload(manager, engine, "gone", "c", opener), downloadRefused)
 		// The refusal is a row in the opener's tab that says why, as a
