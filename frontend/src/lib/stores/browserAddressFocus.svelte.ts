@@ -50,7 +50,7 @@ const addressFocusIntents = createKeyedSignalRegistry<readonly string[] | null>(
 export function armAddressFocus(threadId: string, gesture: AddressFocusGesture): AddressFocusTicket {
   const held = requests.get(threadId) ?? [];
   requests.set(threadId, held);
-  let request = gesture === 'show' ? held.findLast((candidate) => candidate.converges && candidate.due > 0) : undefined;
+  let request = gesture === 'show' ? [...held].reverse().find((candidate) => candidate.converges && candidate.due > 0) : undefined;
   if (!request) {
     request = { due: 0, opened: [], wanted: false, converges: gesture === 'show' };
     held.push(request);
@@ -95,7 +95,9 @@ function withdraw(threadId: string, request: FocusRequest): void {
 }
 
 function withdrawAll(): void {
-  for (const [threadId, held] of [...requests]) {
+  // A Map visits every entry still present, so a thread publish forgets
+  // skips nothing.
+  for (const [threadId, held] of requests) {
     for (const request of held) request.wanted = false;
     publish(threadId);
   }
