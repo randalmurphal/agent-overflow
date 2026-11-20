@@ -310,7 +310,8 @@ func (p *fakeProfile) disposeDownloads() error {
 		case fakeHeld:
 			d.phase = fakeEnding
 			ended[id] = d
-		default:
+		case fakeCanceled, fakeEnding:
+			// Its run, or whoever took its end, reports it.
 			continue
 		}
 		p.held[id] = d
