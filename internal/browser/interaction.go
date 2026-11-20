@@ -317,8 +317,10 @@ func (e *navigatedNotReady) Unwrap() error { return e.err }
 // counted is a navigation whatever the engine's mark answers. The mark is
 // read only while the count has not moved, and the count again after it,
 // since a mark read can take the rest of the deadline, and once more as
-// the deadline ends the wait. A failed mark read is no evidence either
-// way: the wait reads again, and a wait that ends on one says so.
+// the deadline ends the wait. A wait for the commit alone ends on the
+// navigation, with no read of the page (navigationIsAll). A failed mark
+// read is no evidence either way: the wait reads again, and a wait that
+// ends on one says so.
 func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before pageNavigation, urlPattern, loadState string) (bool, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -332,6 +334,9 @@ func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before 
 			moved = committed() || err == nil && current.movedFrom(before)
 		}
 		if moved {
+			if navigationIsAll(urlPattern, loadState) {
+				return true, nil
+			}
 			if err := m.waitForPage(ctx, p, urlPattern, loadState); err != nil {
 				return true, &navigatedNotReady{loadState: loadState, urlPattern: urlPattern, err: err}
 			}
@@ -340,8 +345,12 @@ func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before 
 		select {
 		case <-ctx.Done():
 			if committed() {
-				// Committed since the last read, with no time left to
-				// see its load state.
+				// Committed since the last read: the whole of a wait
+				// for the commit alone, and otherwise a navigation with
+				// no time left to see its load state.
+				if navigationIsAll(urlPattern, loadState) {
+					return true, nil
+				}
 				return true, &navigatedNotReady{loadState: loadState, urlPattern: urlPattern, err: ctx.Err()}
 			}
 			if readErr != nil {
@@ -351,6 +360,14 @@ func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before 
 		case <-ticker.C:
 		}
 	}
+}
+
+// navigationIsAll reports whether a wait for a navigation with this
+// address pattern and load state asks for nothing beyond the navigation
+// itself: the load state "commit" at any address, which matchStatus
+// answers for any page.
+func navigationIsAll(urlPattern, loadState string) bool {
+	return strings.TrimSpace(urlPattern) == "" && strings.ToLower(strings.TrimSpace(loadState)) == "commit"
 }
 
 func globMatcher(pattern string) (*regexp.Regexp, error) {

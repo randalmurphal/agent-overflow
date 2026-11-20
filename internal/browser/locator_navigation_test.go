@@ -198,6 +198,39 @@ func TestACommitAsTheDeadlineEndsTheWaitIsANavigation(t *testing.T) {
 	}
 }
 
+// A wait for the commit alone asks for nothing beyond the navigation: a
+// commit as the deadline ends it is the whole answer, and so is one counted
+// while the page's state cannot be read.
+func TestAWaitForTheCommitAloneEndsOnTheNavigation(t *testing.T) {
+	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
+	t.Run("as the deadline ends the wait", func(t *testing.T) {
+		p := &managedPage{driver: &navigationDriver{first: here, later: here}}
+		before, err := readNavigation(t.Context(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := commitAtDeadline{Context: t.Context(), commit: func() { p.docEpoch.Add(1) }}
+		if navigated, err := (&Manager{}).waitForNavigation(ctx, p, before, "", " Commit "); !navigated || err != nil {
+			t.Fatalf("answered %v, %v; want the navigation", navigated, err)
+		}
+		if navigated, err := (&Manager{}).waitForNavigation(ctx, p, pageNavigation{mark: here, commits: p.docEpoch.Load()}, "**/b", "commit"); !navigated || err == nil {
+			t.Fatalf("with an address to reach it answered %v, %v; want the navigation, and the deadline", navigated, err)
+		}
+	})
+	t.Run("with the page's state unreadable", func(t *testing.T) {
+		// The driver has no page behind it: any read of its state panics.
+		p := &managedPage{driver: &navigationDriver{first: here, later: here}}
+		before, err := readNavigation(t.Context(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.docEpoch.Add(1)
+		if navigated, err := (&Manager{}).waitForNavigation(t.Context(), p, before, "", "commit"); !navigated || err != nil {
+			t.Fatalf("answered %v, %v; want the navigation", navigated, err)
+		}
+	})
+}
+
 // A click that expects a navigation and a download, navigates and starts
 // no download answers the navigation with the download wait's failure.
 func TestANavigationIsReportedWhenItsExpectedDownloadNeverSettles(t *testing.T) {

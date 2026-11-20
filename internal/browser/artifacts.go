@@ -200,28 +200,26 @@ func (m *Manager) makeArtifactDir(dir string) error {
 	return nil
 }
 
-// removeHeldArtifactDir removes what AO wrote in held, a directory inside
-// the artifact root that dir named as it was opened: everything in it,
-// through its handle, wherever its name was moved since, and then dir's
-// own entry, only while that name still holds this directory, now empty
-// (removeMadeIn). It answers emptied, whether nothing is left in the held
-// directory, and what failed; whatever took dir's name meanwhile stays.
-func (m *Manager) removeHeldArtifactDir(held *os.Root, dir string) (emptied bool, err error) {
-	self, err := held.Stat(".")
-	if err != nil {
-		return false, fmt.Errorf("browser: read %s: %w", dir, err)
-	}
-	list, err := held.Open(".")
-	if err != nil {
-		return false, fmt.Errorf("browser: read %s: %w", dir, err)
-	}
-	entries, readErr := list.ReadDir(-1)
-	errs := []error{readErr, list.Close()}
-	for _, entry := range entries {
-		errs = append(errs, held.RemoveAll(entry.Name()))
+// removeHeldArtifacts removes wrote, the files AO wrote in held, a
+// directory inside the artifact root that dir named as it was opened:
+// each through the directory's handle, wherever its name was moved since,
+// and nothing else in it. Then dir's own entry goes, only while that name
+// still holds this directory, and empty (removeMadeIn). It answers
+// removed, whether none of wrote is left, and what failed; anything else
+// in the directory, and whatever took dir's name meanwhile, stays.
+func (m *Manager) removeHeldArtifacts(held *os.Root, dir string, wrote []string) (removed bool, err error) {
+	var errs []error
+	for _, name := range wrote {
+		if err := held.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return false, fmt.Errorf("browser: remove what is in %s: %w", dir, err)
+		return false, fmt.Errorf("browser: remove what was written in %s: %w", dir, err)
+	}
+	self, err := held.Stat(".")
+	if err != nil {
+		return true, fmt.Errorf("browser: read %s: %w", dir, err)
 	}
 	root, rel, err := m.artifactsIn(dir)
 	if err != nil {

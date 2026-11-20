@@ -80,9 +80,10 @@ func TestAnArtifactRootRedirectedAfterItsScanChangesNothing(t *testing.T) {
 }
 
 // A bundle's own folder moved aside as it is written, with another folder
-// put at its name: the bundle is refused, what it wrote is removed where
-// it now is, through the folder held, its bytes are released, and the
-// folder that took its name keeps what is in it.
+// put at its name and another file put beside the bundle's: the bundle is
+// refused, the files it wrote are removed where they now are, through the
+// folder held, their bytes are released, and the file put beside them and
+// the folder that took the bundle's name keep what is in them.
 func TestABundleFolderMovedAsItIsWrittenIsRemovedWhereItIs(t *testing.T) {
 	m, engine := newLifecycleManager(t)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
@@ -106,6 +107,9 @@ func TestABundleFolderMovedAsItIsWrittenIsRemovedWhereItIs(t *testing.T) {
 		if err := os.WriteFile(theirs, []byte("not AO's"), 0o600); err != nil {
 			t.Error(err)
 		}
+		if err := os.WriteFile(filepath.Join(moved, "beside"), []byte("not AO's"), 0o600); err != nil {
+			t.Error(err)
+		}
 	}
 	engine.mu.Lock()
 	engine.wrapDriver = func(inner pageDriver) pageDriver {
@@ -122,8 +126,8 @@ func TestABundleFolderMovedAsItIsWrittenIsRemovedWhereItIs(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a bundle whose folder was moved answered %+v; want it refused", answered)
 	}
-	if entries, err := os.ReadDir(moved); err != nil || len(entries) != 0 {
-		t.Fatalf("the refused bundle left %v where its folder was moved: %v", entries, err)
+	if entries, err := os.ReadDir(moved); err != nil || len(entries) != 1 || entries[0].Name() != "beside" {
+		t.Fatalf("the refused bundle left %v where its folder was moved, want only the file put beside its own: %v", entries, err)
 	}
 	if got, err := os.ReadFile(theirs); err != nil || string(got) != "not AO's" {
 		t.Fatalf("the folder that took the bundle's name lost its file: %q, %v", got, err)

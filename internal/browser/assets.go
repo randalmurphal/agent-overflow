@@ -299,12 +299,17 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	bundle.ManifestPath = manifestPath
 	// Every path the bundle hands out must name the file written, in the
 	// folder held; when a name on the way to it was moved since it was
-	// held, the bundle is not kept, and what it wrote goes through the
-	// held folder itself, its bytes settled as kept unless they are gone.
+	// held, the bundle is not kept, and the files it wrote go through the
+	// held folder itself, their bytes settled as kept unless they are
+	// gone. A partial file that could not be removed stays settled.
 	if err := bundleNamesReach(held, bundle, manifestName); err != nil {
-		emptied, removeErr := m.removeHeldArtifactDir(held, dir)
-		if emptied {
-			settledBytes = 0
+		wrote := []string{manifestName}
+		for _, asset := range bundle.Assets {
+			wrote = append(wrote, filepath.Base(asset.Path))
+		}
+		removed, removeErr := m.removeHeldArtifacts(held, dir, wrote)
+		if removed {
+			settledBytes = stranded
 		}
 		return AssetBundle{}, errors.Join(err, removeErr)
 	}
