@@ -1,4 +1,4 @@
-package lineartest
+package linearschema
 
 import (
 	"bytes"

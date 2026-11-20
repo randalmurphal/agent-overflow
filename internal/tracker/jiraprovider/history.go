@@ -21,10 +21,15 @@ import (
 const historySettle = time.Minute
 
 // boardEstimate is one board's estimate field, whose changes are that
-// board's estimate changes.
+// board's estimate changes. Where a change holds the value depends on the
+// field (measured: docs/references/tracker-api-measurements.md): the time
+// estimate holds seconds in from and to, and a custom number field leaves
+// them null and holds the numbers in fromString and toString. text is
+// set for a field read from the text members.
 type boardEstimate struct {
 	board tracker.BoardID
 	field string
+	text  bool
 }
 
 // History reads the status, assignee, sprint and estimate changes of the
@@ -60,7 +65,8 @@ func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 			return tracker.History{}, err
 		}
 		if b.estimated() {
-			ests = append(ests, boardEstimate{board: id, field: b.cfg.Estimation.FieldID})
+			field := b.cfg.Estimation.FieldID
+			ests = append(ests, boardEstimate{board: id, field: field, text: field != timeEstimateField})
 			if !slices.Contains(fields, b.cfg.Estimation.FieldID) {
 				fields = append(fields, b.cfg.Estimation.FieldID)
 			}
@@ -167,11 +173,15 @@ func addChange(h *tracker.IssueHistory, ch tracker.Change, it jira.ChangeItem, s
 		if it.FieldID != e.field {
 			continue
 		}
-		from, err := estimateNumber(it.From)
+		fromText, toText := it.From, it.To
+		if e.text {
+			fromText, toText = it.FromText, it.ToText
+		}
+		from, err := estimateNumber(fromText)
 		if err != nil {
 			return err
 		}
-		to, err := estimateNumber(it.To)
+		to, err := estimateNumber(toText)
 		if err != nil {
 			return err
 		}

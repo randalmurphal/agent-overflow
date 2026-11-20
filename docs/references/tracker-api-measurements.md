@@ -144,6 +144,42 @@ Other:
   issue as a string `issueId`, with no key. The spec declares `created` a
   string and its example shows 10 digits. `GET /issue/{key}/changelog`
   gives `created` as an ISO 8601 string with milliseconds and an offset.
+- Measured on 2026-11-19, reads only, over changelogs expanded on
+  `GET /rest/api/3/search/jql`. Where a changelog item holds its values
+  depends on the field. A custom number field (story points): `from` and
+  `to` are null and the numbers are in `fromString` and `toString` (27 of
+  27 items); a first value has `fromString` null (22 of 22) and a cleared
+  one has `toString` as the empty string (1 of 1). `timeoriginalestimate` (`fieldtype` `jira`): `from` and `to`
+  hold seconds as digits, equal to `toString` (3 of 3). `Sprint`
+  (`fieldtype` `custom`): `from` and `to` hold sprint IDs separated by
+  ", ", and no sprint is the empty string, never null (58 of 58).
+  `status`: `to` is the status ID as digits (168 of 168). `assignee`:
+  `from` or `to` is set (70 of 70). No sprint is the empty string in
+  `fromString` and `toString` too (25 of 25). `Link`: no `fieldId`,
+  `fieldtype` `jira`, the other issue's key in `to` when added and in
+  `from` when removed, the other side null (96 items). `Rank`: a custom
+  field, `from`, `to` and `fromString` empty strings, text in `toString`
+  (32). `Attachment`: `fieldId` `attachment`, the attachment ID as digits
+  in `to` when added and in `from` when removed, the other side null
+  (101). A parent change: `field` `IssueParentAssociation`, no `fieldId`,
+  issue IDs as digits in `to`, and in `from` when there was a parent, else
+  null (17). `resolution`: `from` null, `to` the resolution ID as digits
+  (11). `labels`, `description` and `summary`: `from` and `to` null, the
+  text in `fromString` and `toString`; no labels before is the empty
+  string (21, 115, 13). `priority` and `issuetype`: IDs as digits in both
+  (9, 6). `timeestimate`: seconds as digits, `from` null when unset (511).
+  `Fix Version` (`fieldId` `fixVersions`) and `Component` (`components`):
+  the ID as digits on the side that has a value, null on the other.
+- Measured the same day. `GET /rest/api/3/search/jql` with no `ORDER BY`
+  returned 50 issues in neither ID nor creation order, either direction.
+  With `maxResults=5000` it returned 100 issues when `fields=summary` and
+  5000 when `fields=id`. `timetracking.originalEstimate` is written in
+  weeks, days and hours (`w`, `d`, `h` in 69 of 100 issues; whole hours as
+  `Nh`); no issue had a mixed hours and minutes estimate.
+- Measured the same day. A search for an issue key, a project
+  or an assignee that does not exist answered 200 with no issues and no
+  `warnings` member; the spec documents `warnings` as experimental and
+  possibly absent.
 - Measured on 2026-11-19, reads only, through `GET /rest/api/3/search/jql`.
   A date-time field takes epoch milliseconds as a bare number
   (`updated >= 1763590000000`) and compares at millisecond precision with
@@ -265,6 +301,14 @@ Source for schema facts: the
   canceled, duplicate).
 - Descriptions and comments are Markdown. Pull requests appear as
   `Attachment` records, and a client can create such links.
+- Measured on 2026-11-19, reads only. `issue(id:)` for an ID that does not
+  exist answers HTTP 200 with `data` null and one error, message
+  `Entity not found: Issue`, `extensions.code` `INPUT_ERROR`, path
+  `["issue"]`. `teams(first: 251)` answers HTTP 200 with `data` null and
+  one error, message `Argument Validation Error`, code `INVALID_INPUT`,
+  path `["teams"]`. `issueLabels(filter: {team: {id: {eq: <team>}}})`
+  returned none of the workspace's three labels, which belong to no team;
+  `filter: {team: {null: true}}` returned all three.
 
 ## Tempo
 

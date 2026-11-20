@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"agent-overflow/internal/tracker/linear/lineartest"
+	"agent-overflow/internal/tracker/linear/linearschema"
 )
 
 // The variable check refuses what the schema refuses, independently of
@@ -38,7 +38,7 @@ func TestVariableProblems(t *testing.T) {
 		{"not a day", opUpdateIssue, `{"id":"WEB-1","input":{"dueDate":"2026-12-01T00:00:00Z"}}`, "is not a TimelessDate"},
 		{"not a time", opUpdateIssue, `{"id":"WEB-1","input":{"snoozedUntilAt":"2026-12-01"}}`, "is not a DateTime"},
 	} {
-		got := strings.Join(lineartest.VariableProblems(tc.op.text, tc.op.name, json.RawMessage(tc.vars)), "; ")
+		got := strings.Join(linearschema.VariableProblems(tc.op.text, tc.op.name, json.RawMessage(tc.vars)), "; ")
 		if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%s: problems %q, want %q", tc.name, got, tc.want)
 		}

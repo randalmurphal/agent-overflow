@@ -6,7 +6,7 @@
 // Every GraphQL operation is a package-level document, sent with its
 // values as GraphQL variables and never formatted into the text. The
 // tests check each document against Linear's public schema
-// (lineartest/testdata/schema.graphql, refreshed by `make linear-schema`).
+// (linearschema/schema.graphql, refreshed by `make linear-schema`).
 //
 // The package owns no state beyond a Client, reads no environment and
 // logs nothing. It imports internal/tracker/trackerapi, which owns the

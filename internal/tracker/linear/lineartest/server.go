@@ -1,3 +1,13 @@
+// Package lineartest is the test support shared by the linear client's
+// tests and the tests of packages built on it: a loopback Linear GraphQL
+// server that checks every document and its variables against Linear's
+// public schema (package linearschema) and answers only the exchanges a
+// test scripts, JSON builders for invented answers, and a polled
+// workspace.
+//
+// It imports nothing from package linear, so the client's in-package
+// tests can use it; a test builds its own client on Server.URL with Key.
+// Only tests import it.
 package lineartest
 
 import (
@@ -10,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"agent-overflow/internal/tracker/linear/linearschema"
 )
 
 // Key is the invented personal key every test client sends; the server
@@ -148,11 +160,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		fail("body is not a GraphQL request: %v", err)
 		return
 	}
-	if problems := DocumentProblems(req.Query, req.OperationName); len(problems) > 0 {
+	if problems := linearschema.DocumentProblems(req.Query, req.OperationName); len(problems) > 0 {
 		fail("document %s: %s", req.OperationName, strings.Join(problems, "; "))
 		return
 	}
-	if problems := VariableProblems(req.Query, req.OperationName, req.Variables); len(problems) > 0 {
+	if problems := linearschema.VariableProblems(req.Query, req.OperationName, req.Variables); len(problems) > 0 {
 		fail("variables of %s: %s", req.OperationName, strings.Join(problems, "; "))
 		return
 	}

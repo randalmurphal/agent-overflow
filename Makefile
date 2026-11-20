@@ -41,7 +41,7 @@ forge-schemas:
 	go run ./internal/git/forgeschema/refresh
 
 # Refresh Linear's public GraphQL schema that internal/tracker/linear's
-# documents are checked against (lineartest/testdata/schema.graphql). It fetches
+# documents are checked against (linearschema/schema.graphql). It fetches
 # the published SDL on the host network with no key; review the diff,
 # then commit it. Tests never fetch it.
 linear-schema:

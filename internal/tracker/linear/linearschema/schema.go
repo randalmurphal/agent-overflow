@@ -1,13 +1,13 @@
-// Package lineartest is the test support shared by the linear client's
-// tests and the tests of packages built on it: a loopback Linear GraphQL
-// server that checks every document and its variables against Linear's
-// public schema and answers only the exchanges a test scripts, the schema
-// itself, JSON builders for invented answers, and a polled workspace.
+// Package linearschema owns Linear's public GraphQL schema
+// (schema.graphql, without descriptions, refreshed by `make
+// linear-schema`) and the checks of a request against it: a document's
+// validity and deprecated uses (DocumentProblems) and its variables
+// (VariableProblems). The linear client's tests, lineartest's server and
+// the harness's fake Linear use it.
 //
-// It imports nothing from package linear, so the client's in-package
-// tests can use it; a test builds its own client on Server.URL with Key.
-// Only tests import it.
-package lineartest
+// It imports neither testing, so non-test code can link it, nor package
+// linear, so the client's in-package tests can.
+package linearschema
 
 import (
 	_ "embed"
@@ -25,7 +25,7 @@ import (
 // Linear's public schema, without descriptions; `make linear-schema`
 // refreshes it.
 //
-//go:embed testdata/schema.graphql
+//go:embed schema.graphql
 var schemaSDL string
 
 var (

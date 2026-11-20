@@ -12,13 +12,45 @@ import (
 	"agent-overflow/internal/tracker/jira/jiratest"
 )
 
-// changeEntry is a bulk changelog entry by User 2 at created with items.
+// changeEntry is a bulk changelog entry by User 2 at created (a Jira
+// timestamp) with items. The bulk fetch sends created as epoch
+// milliseconds, a number (measured).
 func changeEntry(id, created string, items ...map[string]any) map[string]any {
-	return map[string]any{"id": id, "author": json.RawMessage(user2JSON), "created": created, "items": items}
+	at, err := time.Parse("2006-01-02T15:04:05.000-0700", created)
+	if err != nil {
+		panic(err)
+	}
+	return map[string]any{"id": id, "author": json.RawMessage(user2JSON), "created": at.UnixMilli(), "items": items}
 }
 
-func changeItem(field, from, to string) map[string]any {
-	return map[string]any{"field": field, "fieldId": field, "fieldtype": "jira", "from": from, "to": to}
+// The items below are in the shapes measured on a site
+// (docs/references/tracker-api-measurements.md, "Where a changelog item
+// holds its values depends on the field"); members the measurement does
+// not describe are left out.
+
+func statusItem(from, to string) map[string]any {
+	return map[string]any{"field": "status", "fieldId": "status", "fieldtype": "jira", "from": from, "to": to}
+}
+
+func assigneeItem(from, to any) map[string]any {
+	return map[string]any{"field": "assignee", "fieldId": "assignee", "fieldtype": "jira", "from": from, "to": to}
+}
+
+// sprintItem is a Sprint change; no sprint is the empty string.
+func sprintItem(from, to string) map[string]any {
+	return map[string]any{"field": "Sprint", "fieldId": "customfield_10020", "fieldtype": "custom", "from": from, "to": to}
+}
+
+// pointsItem is a custom number field's change: from and to null, the
+// numbers in the text members.
+func pointsItem(from, to string) map[string]any {
+	return map[string]any{"field": "Story points", "fieldId": "customfield_10016", "fieldtype": "custom", "from": nil, "fromString": from, "to": nil, "toString": to}
+}
+
+// timeItem is a time estimate change: seconds in from and to, equal to
+// the text members.
+func timeItem(from, to string) map[string]any {
+	return map[string]any{"field": "timeoriginalestimate", "fieldId": "timeoriginalestimate", "fieldtype": "jira", "from": from, "fromString": from, "to": to, "toString": to}
 }
 
 func TestHistory(t *testing.T) {
@@ -28,15 +60,15 @@ func TestHistory(t *testing.T) {
 		jiratest.Reply(200, mustJSON(map[string]any{"issueChangeLogs": []any{
 			map[string]any{"issueId": "10001", "changeHistories": []any{
 				changeEntry("100", "2026-11-02T09:00:00.000+0000",
-					changeItem("status", "10000", "10001"),
-					changeItem("assignee", "", "acc-user1"),
-					changeItem("customfield_10020", "", "7"),
-					changeItem("customfield_10016", "", "3"),
+					statusItem("10000", "10001"),
+					assigneeItem(nil, "acc-user1"),
+					sprintItem("", "7"),
+					pointsItem("3", "5"),
 				),
 				changeEntry("101", "2026-11-03T09:00:00.000+0000",
-					changeItem("customfield_10020", "7", "10, 8"),
-					changeItem("timeoriginalestimate", "3600", "7200"),
-					changeItem("customfield_10016", "3", ""),
+					sprintItem("7", "10, 8"),
+					timeItem("3600", "7200"),
+					pointsItem("5", "8"),
 				),
 			}},
 		}}))(w, r, b)
@@ -93,7 +125,7 @@ func TestHistory(t *testing.T) {
 	for _, e := range one.Estimate {
 		ests = append(ests, string(e.Board)+":"+num(e.From)+">"+num(e.To))
 	}
-	if want := []string{"3:>3", "4:3600>7200", "3:3>"}; !slices.Equal(ests, want) {
+	if want := []string{"3:3>5", "4:3600>7200", "3:5>8"}; !slices.Equal(ests, want) {
 		t.Errorf("estimates %v, want %v", ests, want)
 	}
 	if len(h.Users) != 1 || h.Users[0].ID != "acc-user2" {
@@ -117,7 +149,7 @@ func TestHistoryRefusals(t *testing.T) {
 		t.Errorf("a key: %v", err)
 	}
 	f.On("POST", changelogsPath, jiratest.Reply(200, mustJSON(map[string]any{"issueChangeLogs": []any{
-		map[string]any{"issueId": "10001", "changeHistories": []any{changeEntry("100", "2026-11-02T09:00:00.000+0000", changeItem("customfield_10020", "x", "7"))}},
+		map[string]any{"issueId": "10001", "changeHistories": []any{changeEntry("100", "2026-11-02T09:00:00.000+0000", sprintItem("x", "7"))}},
 	}})))
 	if _, err := p.History(t.Context(), tracker.HistoryQuery{Issues: []tracker.IssueID{"10001"}}); err == nil {
 		t.Error("a sprint change that does not read was taken")

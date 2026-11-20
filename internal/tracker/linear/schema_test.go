@@ -12,6 +12,7 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/parser"
 
+	"agent-overflow/internal/tracker/linear/linearschema"
 	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
@@ -36,7 +37,7 @@ func TestDocumentsMatchSchema(t *testing.T) {
 			t.Errorf("operation name %s is used twice", op.name)
 		}
 		names[op.name] = true
-		if p := lineartest.DocumentProblems(op.text, op.name); len(p) > 0 {
+		if p := linearschema.DocumentProblems(op.text, op.name); len(p) > 0 {
 			t.Errorf("%s: %s", op.name, strings.Join(p, "; "))
 			continue
 		}
@@ -62,7 +63,7 @@ func TestDocumentProblemsRefuses(t *testing.T) {
 		{"Other", `query Q { viewer { id } }`, `want exactly one operation named "Other"`},
 		{"Q", `query Q($id: String!) { issue(id: $id) { id } } query R { viewer { id } }`, "want exactly one operation"},
 	} {
-		got := strings.Join(lineartest.DocumentProblems(tc.doc, tc.name), "; ")
+		got := strings.Join(linearschema.DocumentProblems(tc.doc, tc.name), "; ")
 		if !strings.Contains(got, tc.want) {
 			t.Errorf("%s: problems %q, want %q", tc.doc, got, tc.want)
 		}

@@ -99,7 +99,11 @@ type Request struct {
   `Bearer(token)` and `Key(key)` (the bare key Linear takes). Every
   formatter prints it redacted. The client reads its `CredentialSource` at
   first use, keeps the credential, reads again after one 401 and zeroes the
-  bytes it replaces. `ForgetCredential` drops it for a caller that knows
+  bytes it replaces. When that read fails, the refused credential is
+  dropped, so nothing more is sent with it and the next call reads the
+  source again. A secret no longer than `<redacted>` is refused as too
+  short to be a token: it could not be told from ordinary answer text.
+  `ForgetCredential` drops it for a caller that knows
   the key file changed. `Close` zeroes it. Equal `CredentialMark` values
   mean two requests carried the credential from the same read of the
   source on the same client: a re-read that returns an equal credential
@@ -123,9 +127,9 @@ type Request struct {
   carried no credential, and `<redacted>` in place of the text once the
   client no longer holds the credential (a re-read replaced it,
   `ForgetCredential`, `Close`), since zeroed bytes cannot be found. An
-  answer whose body holds a string and whose credential was dropped before
-  the body could be checked is withheld: see `ErrCredentialChanged` under
-  Errors. An error from another package whose text repeats the credential
+  answer with a body whose credential was dropped before the body could
+  be checked is withheld, whatever the body holds: see
+  `ErrCredentialChanged` under Errors. An error from another package whose text repeats the credential
   is replaced by its scrubbed text. No error quotes a URL the tracker
   supplied beyond its scheme, host and path.
 - **Redirects.** The package follows redirects itself, for `GET` and
@@ -358,7 +362,7 @@ any request carries it, until `ForgetCredential`. A call that met the
 refusal was not sent. Every GraphQL document is a package
 variable made by `newQuery` or `newMutation`, which register it; a test
 fails on an operation built any other way. A test checks each registered
-document against Linear's public schema, embedded for tests and refreshed
+document against Linear's public schema, embedded in `linearschema` and refreshed
 by `make linear-schema` as the forge schemas are, and fails on a field the
 schema marks deprecated and on a document no test sends. The test server
 checks every request's variables against the schema as well.
@@ -418,5 +422,7 @@ purpose names one handler for unrouted requests
 Each client's test server is its own package (`jiratest`, `tempotest`,
 `lineartest`), used by the client's tests and by the tests of everything
 built on the client, so a provider is tested against the same server its
-client is. `lineartest` holds Linear's schema and checks every request's
-document and variables against it.
+client is. `linearschema` holds Linear's schema and the checks of a
+request's document and variables against it, with no dependency on
+`testing`, so the fake Linear in `internal/harness/trackerfake` runs the
+same checks; `lineartest`'s server runs them on every request.

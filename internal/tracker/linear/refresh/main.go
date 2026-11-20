@@ -1,4 +1,4 @@
-// refresh rewrites the Linear GraphQL schema that lineartest embeds and
+// refresh rewrites the Linear GraphQL schema that linearschema embeds and
 // the linear package's tests check every document against: Linear's
 // public SDL, written without descriptions and with its definitions
 // sorted by name, so a refresh diffs by what changed. Deprecation markers
@@ -39,7 +39,7 @@ const (
 
 func main() {
 	in := flag.String("in", "", "convert this saved SDL instead of fetching it")
-	out := flag.String("out", filepath.Join("internal", "tracker", "linear", "lineartest", "testdata", "schema.graphql"), "file to write")
+	out := flag.String("out", filepath.Join("internal", "tracker", "linear", "linearschema", "schema.graphql"), "file to write")
 	flag.Parse()
 	if err := run(context.Background(), *in, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "linear schema refresh:", err)
