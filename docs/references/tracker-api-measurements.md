@@ -260,6 +260,14 @@ Other:
   once. Not measured: whether removing a link moves it; a
   [community report](https://community.atlassian.com/forums/Jira-questions/Changing-Links-without-changing-the-updated-date-when-deleting/qaq-p/2810120)
   says it does.
+- Measured on 2026-11-20 on one throwaway issue, deleted after, on how
+  soon a list read shows a write. A new issue was returned by
+  `GET /rest/api/3/search/jql` 0.6 s after its create answered. After each
+  of five summary edits 4 s apart, the search and the board issue list
+  (`/rest/software/1.0/board/{id}/issue`), each asked for the issue with
+  `updated >=` its new update time, returned it between 0.5 and 2.1 s
+  after the edit answered. Those times include about 0.6 s of two
+  requests, so a list read showed an edit within about 2 seconds.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list
