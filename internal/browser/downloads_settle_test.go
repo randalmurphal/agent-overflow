@@ -152,11 +152,12 @@ func TestAParkedDownloadWhoseJarWentIsRemovedAtItsFate(t *testing.T) {
 	if popups, downloads := parkedState(manager); popups != 0 || downloads != 0 {
 		t.Fatalf("after its fate %d popups and %d downloads are parked", popups, downloads)
 	}
-	if got := authority.downloadBytes.Used(); got != workspace {
-		t.Errorf("after its fate the workspace holds %d bytes, want %d", got, workspace)
-	}
-	if got := manager.artifactBytes.Used(); got != artifacts {
-		t.Errorf("after its fate the artifact quota holds %d bytes, want %d", got, artifacts)
+	// The file goes before its reservation is settled (finishDiscard).
+	for deadline := time.Now().Add(5 * time.Second); authority.downloadBytes.Used() != workspace || manager.artifactBytes.Used() != artifacts; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("after its fate the workspace holds %d bytes and the artifact quota %d, want %d and %d",
+				authority.downloadBytes.Used(), manager.artifactBytes.Used(), workspace, artifacts)
+		}
 	}
 	if listed := threadDownloads(manager, access); len(listed) != 0 {
 		t.Fatalf("the thread lists %+v", listed)
