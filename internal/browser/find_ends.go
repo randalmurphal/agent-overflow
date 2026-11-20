@@ -48,7 +48,7 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 		case epoch != 0 && p.find.doc < epoch:
 			ends = true
 		case review:
-			ends = !m.pageShown(p.owner.id, p.id) || !m.mountOf(p.owner.id, p.find.owner)
+			ends = !m.pageShown(p.owner, p.id) || !m.mountOf(p.owner, p.find.owner)
 		}
 	}
 	var state FindState

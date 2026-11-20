@@ -66,7 +66,7 @@ func (m *Manager) emitEscape(handle ids.PageHandle) {
 		mount, _, _ = m.presenterLocked(p.owner)
 	}
 	m.mu.Unlock()
-	if p == nil || mount == "" || !m.pageShown(p.owner.id, p.id) {
+	if p == nil || mount == "" || !m.pageShown(p.owner, p.id) {
 		return
 	}
 	m.emit(CompanionEvent{Kind: "escape", ThreadID: string(p.owner.id), PageID: string(p.id), Mount: string(mount)})

@@ -95,6 +95,9 @@ const (
 // gone as for one with no search, still ending the mount's search on the
 // thread's other pages.
 func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, query string, mount MountID, seq uint64) (FindState, error) {
+	if err := access.bound(); err != nil {
+		return FindState{}, err
+	}
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case FindStart, FindNext, FindPrev, FindStop:
@@ -192,7 +195,7 @@ func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID Page
 		}
 	}
 	var errs []error
-	for _, p := range m.findStopPages(access.ThreadID, named, owner) {
+	for _, p := range m.findStopPages(access.tb, named, owner) {
 		finder, mode := pageFinder(p)
 		if mode == "" {
 			continue
@@ -220,8 +223,9 @@ func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID Page
 }
 
 // findStopPages are the pages a stop runs on: the named page, if it exists,
-// and every other live page of the thread whose search the stop ends.
-func (m *Manager) findStopPages(threadID ThreadID, named *managedPage, owner findOwner) []*managedPage {
+// and every other live page of the thread lifetime tb whose search the stop
+// ends.
+func (m *Manager) findStopPages(tb *threadBrowser, named *managedPage, owner findOwner) []*managedPage {
 	var pages []*managedPage
 	if named != nil {
 		pages = append(pages, named)
@@ -230,7 +234,7 @@ func (m *Manager) findStopPages(threadID ThreadID, named *managedPage, owner fin
 	var others []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner.id == threadID && p != named {
+			if p.owner == tb && p != named {
 				others = append(others, p)
 			}
 		}
@@ -260,33 +264,37 @@ func (m *Manager) pageLive(p *managedPage) bool {
 	return live == p
 }
 
-// pageShown reports whether pageID is the active page of the thread's shown
-// companion with a pane mounted to show it.
-func (m *Manager) pageShown(threadID ThreadID, pageID PageID) bool {
+// pageShown reports whether pageID is the active page of the thread
+// lifetime tb's shown companion with a pane of tb mounted to show it.
+func (m *Manager) pageShown(tb *threadBrowser, pageID PageID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session := m.currentSessionLocked(threadID)
-	return session.Visible && session.activePage() == pageID && m.paneMountedLocked(threadID)
+	return m.pageShownLocked(tb, pageID)
 }
 
-// paneMountedLocked reports whether a pane is mounted for the thread, painted
-// or not: an occluded pane still shows its find, and no pane shows none. The
-// caller holds m.mu.
-func (m *Manager) paneMountedLocked(threadID ThreadID) bool {
-	for _, mount := range m.panes {
-		if mount.threadID == threadID {
+// pageShownLocked is pageShown with m.mu held by the caller.
+func (m *Manager) pageShownLocked(tb *threadBrowser, pageID PageID) bool {
+	return tb != nil && tb.session.Visible && tb.session.activePage() == pageID && m.paneMountedLocked(tb)
+}
+
+// paneMountedLocked reports whether a pane of the thread lifetime tb is
+// mounted, painted or not: an occluded pane still shows its find, and no
+// pane shows none. The caller holds m.mu.
+func (m *Manager) paneMountedLocked(tb *threadBrowser) bool {
+	for id := range m.panes {
+		if _, ok := m.mountLocked(tb, id); ok {
 			return true
 		}
 	}
 	return false
 }
 
-// mountOf reports whether mount is a pane mount of the thread's.
-func (m *Manager) mountOf(threadID ThreadID, mount MountID) bool {
+// mountOf reports whether mount is a pane mount of the thread lifetime tb.
+func (m *Manager) mountOf(tb *threadBrowser, mount MountID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	pane, ok := m.panes[mount]
-	return ok && pane.threadID == threadID
+	_, ok := m.mountLocked(tb, mount)
+	return ok
 }
 
 var (
@@ -295,21 +303,21 @@ var (
 	errFindStale    = errors.New("browser: a find start's sequence must be above every start its pane mount made before")
 )
 
-// admitFindStart takes owner's start on the thread's page, or refuses it: the
-// mount must be the thread's, the start's sequence above every start the
-// mount made before, and the page the shown active one. A start it takes
-// raises the mount's sequence.
-func (m *Manager) admitFindStart(threadID ThreadID, pageID PageID, owner findOwner) error {
+// admitFindStart takes owner's start on a page of the thread lifetime tb,
+// or refuses it: the mount must be tb's (mountLocked), the start's sequence
+// above every start the mount made before, and the page tb's shown active
+// one. A start it takes raises the mount's sequence.
+func (m *Manager) admitFindStart(tb *threadBrowser, pageID PageID, owner findOwner) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	pane, ok := m.panes[owner.mount]
-	if !ok || pane.threadID != threadID {
+	pane, ok := m.mountLocked(tb, owner.mount)
+	if !ok {
 		return errFindNoMount
 	}
 	if owner.seq <= pane.findSeq {
 		return fmt.Errorf("%w: %d after %d", errFindStale, owner.seq, pane.findSeq)
 	}
-	if session := m.currentSessionLocked(threadID); !session.Visible || session.activePage() != pageID {
+	if !tb.session.Visible || tb.session.activePage() != pageID {
 		return errFindNotShown
 	}
 	pane.findSeq = owner.seq
@@ -351,7 +359,7 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	if mode == FindModeBar && query == "" {
 		return m.stopFindLocked(ctx, p, finder, owner)
 	}
-	if err := m.admitFindStart(access.ThreadID, p.id, owner); err != nil {
+	if err := m.admitFindStart(access.tb, p.id, owner); err != nil {
 		return FindState{}, err
 	}
 	m.findPoint("checked")

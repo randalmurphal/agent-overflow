@@ -96,7 +96,7 @@ func TestAClosedTabKeepsTheDownloadItsEngineReportedFinished(t *testing.T) {
 			if err := l.manager.CloseCompanionPage(t.Context(), access, PageID(tab)); err != nil {
 				t.Fatalf("close the tab: %v", err)
 			}
-			if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(page)]; listed {
+			if _, listed := l.tabs(string(access.ThreadID()))[ids.PageHandle(page)]; listed {
 				t.Fatal("the closed tab is still listed")
 			}
 			unblock()
@@ -181,7 +181,7 @@ func TestADiscardKeepsAPopupsReceivedCompletion(t *testing.T) {
 	unblock()
 	releaseAttach()
 	l.awaitDownloads(access, downloadStateCompleted, downloadStateCompleted)
-	if listed := l.engineDownloads(string(access.ThreadID)); listed["dl-opener"] != downloadStateCompleted || listed["dl-popup"] != downloadStateCompleted {
+	if listed := l.engineDownloads(string(access.ThreadID())); listed["dl-opener"] != downloadStateCompleted || listed["dl-popup"] != downloadStateCompleted {
 		t.Fatalf("the thread lists %v, want both completions", listed)
 	}
 	settleReports(t, l.engine, "")
@@ -282,7 +282,7 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 				deadline = time.Now().Add(hostedTestDeadline)
 			}
 			for {
-				if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(popupID)]; listed {
+				if _, listed := l.tabs(string(access.ThreadID()))[ids.PageHandle(popupID)]; listed {
 					t.Fatal("the Manager listed a popup whose close was received")
 				}
 				if gated == "history" {
@@ -300,9 +300,9 @@ func TestAPopupWhoseCloseWasReceivedIsNeverListed(t *testing.T) {
 			}
 			unblock()
 			l.awaitDownloads(access, downloadStateCompleted)
-			l.awaitTabGone(string(access.ThreadID), popupID)
+			l.awaitTabGone(string(access.ThreadID()), popupID)
 			settleReports(t, l.engine, "")
-			if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(popupID)]; listed {
+			if _, listed := l.tabs(string(access.ThreadID()))[ids.PageHandle(popupID)]; listed {
 				t.Fatal("the closed popup was listed")
 			}
 		})
@@ -334,17 +334,17 @@ func TestListedPopupsDoNotShareTheirOpenersLane(t *testing.T) {
 
 	sendDownload(t, l.engine, b, webview2host.DownloadReport{ID: "dl-b", Seq: 1, State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\b.bin`, Received: 5, Total: 10})
 	deadline := time.Now().Add(hostedTestDeadline)
-	for !slices.Equal(l.pageDownloads(string(access.ThreadID), b), []string{downloadStateRunning}) {
+	for !slices.Equal(l.pageDownloads(string(access.ThreadID()), b), []string{downloadStateRunning}) {
 		if time.Now().After(deadline) {
-			t.Fatalf("popup b's download waited behind popup a's conversion: b lists %v", l.pageDownloads(string(access.ThreadID), b))
+			t.Fatalf("popup b's download waited behind popup a's conversion: b lists %v", l.pageDownloads(string(access.ThreadID()), b))
 		}
 		time.Sleep(time.Millisecond)
 	}
 	l.report(b, webview2host.ReportClosed, "")
-	l.awaitTabGone(string(access.ThreadID), b)
+	l.awaitTabGone(string(access.ThreadID()), b)
 	unblock()
 	settleReports(t, l.engine, "")
-	if got := l.pageDownloads(string(access.ThreadID), a); !slices.Equal(got, []string{downloadStateCompleted}) {
+	if got := l.pageDownloads(string(access.ThreadID()), a); !slices.Equal(got, []string{downloadStateCompleted}) {
 		t.Fatalf("popup a lists %v", got)
 	}
 }
@@ -429,7 +429,7 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 			if running := l.engine.pages.running(); running != 0 {
 				t.Fatalf("the engine runs %d downloads of the gone popup", running)
 			}
-			listed := l.engineDownloads(string(access.ThreadID))
+			listed := l.engineDownloads(string(access.ThreadID()))
 			if _, started := listed["dl-b"]; started {
 				t.Fatalf("a download first reported after the popup's end was listed: %v", listed)
 			}
@@ -484,7 +484,7 @@ func TestAPageClosedBeforeItsBindIsNotListed(t *testing.T) {
 	case <-time.After(hostedTestDeadline):
 		t.Fatal("the create never returned")
 	}
-	if tabs := l.tabs(string(access.ThreadID)); len(tabs) != 0 {
+	if tabs := l.tabs(string(access.ThreadID())); len(tabs) != 0 {
 		t.Fatalf("the thread lists %d tabs, want none", len(tabs))
 	}
 	settleReports(t, l.engine, "")

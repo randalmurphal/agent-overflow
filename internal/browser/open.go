@@ -12,6 +12,9 @@ import (
 )
 
 func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts OpenOptions) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return PageInfo{}, fmt.Errorf("browser: invalid URL: %w", err)
@@ -26,6 +29,9 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 }
 
 func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	p, err := m.pageForOpen(ctx, access, "", false)
 	if err != nil {
 		return PageInfo{}, err
@@ -44,6 +50,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 }
 
 func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts OpenOptions) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	return m.openFile(ctx, access, path, nil, opts)
 }
 
@@ -96,26 +105,33 @@ func (m *Manager) openFile(ctx context.Context, access Access, path string, expe
 
 // navigate loads targetURL in the page opts names, or a new one. check, when
 // set, runs in the page's operation lock immediately before the load and
-// refuses it with its error.
+// refuses it with its error. A page opts holds (OpenOptions.tab) is loaded
+// only while it is still its tab's (heldLocked), checked there too.
 func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions, check func() error) (PageInfo, error) {
-	p, err := m.pageForOpen(ctx, access, opts.PageID, true)
-	if err != nil {
+	var p *managedPage
+	var err error
+	if opts.tab != nil {
+		p = opts.tab.p
+	} else if p, err = m.pageForOpen(ctx, access, opts.PageID, true); err != nil {
 		return PageInfo{}, err
 	}
 	if err := m.lockPageForOperation(ctx, p); err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, m.heldOr(access, opts, err)
 	}
 	defer p.mu.Unlock()
 	defer p.runUserNavigation(ctx)()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	if err := m.heldOr(access, opts, nil); err != nil {
+		return PageInfo{}, err
+	}
 	if check != nil {
 		if err := check(); err != nil {
 			return PageInfo{}, err
 		}
 	}
 	if err := p.driver.Navigate(opCtx, targetURL); err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, m.heldOr(access, opts, err)
 	}
 	p.touch()
 	info, _, err := m.readInfo(opCtx, p, pageListing{})
@@ -126,11 +142,26 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	return info, err
 }
 
+// heldOr answers why the page opts holds is no longer its tab's, or err
+// when it still is or opts holds none: an operation the page's close or
+// suspension ended answers the tab's change, not the cancel it caused.
+func (m *Manager) heldOr(access Access, opts OpenOptions, err error) error {
+	if opts.tab == nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if held := m.heldLocked(access, *opts.tab); held != nil {
+		return held
+	}
+	return err
+}
+
 // pageForOpen answers the page an open navigates: the requested one, or a new
 // page. A suspended page asked for by a caller about to navigate it is
 // restored blank (skipLoad), since loading its old address first is wasted.
 func (m *Manager) pageForOpen(ctx context.Context, access Access, requested PageID, skipLoad bool) (*managedPage, error) {
-	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
+	if strings.TrimSpace(access.Workspace()) == "" {
 		return nil, fmt.Errorf("browser: invalid caller scope")
 	}
 	if requested = requested.trim(); requested != "" {
@@ -276,14 +307,25 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 // newPage creates p's engine page in scope, laid out at its thread's
 // viewport.
 func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) error {
+	// What the engine reports ending before it answers is kept for the
+	// attach (creationWatch); the caller's startMu makes this the one
+	// creation in flight.
+	watch := &creationWatch{}
+	m.mu.Lock()
+	m.creationWatch = watch
+	m.mu.Unlock()
 	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p))
+	m.mu.Lock()
+	m.creationWatch = nil
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	// Under m.mu: the jar's policy resolves a request to the page being
-	// created (jarAllows) while it loads, before it is registered.
-	m.mu.Lock()
+	// created (jarAllows) while it loads, before it is registered, and a
+	// report of its end finds it from here (noteCreationEnd).
 	p.attach(driver)
+	p.unlistedEnd = watch.ends[driver.Handle()]
 	held, hasHeld := m.takeHeldInfoLocked(driver.Handle())
 	m.mu.Unlock()
 	m.applyHeldInfo(p, held, hasHeld)

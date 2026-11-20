@@ -277,7 +277,7 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 // keeps it.
 func TestAnArtifactDownloadNeverReplacesAFileTakingItsName(t *testing.T) {
 	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
-	workspace, err := canonicalRoot(access.Workspace)
+	workspace, err := canonicalRoot(access.Workspace())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestARunningArtifactDownloadIsNotOpenable(t *testing.T) {
 // open: only the finished files AO moved since are granted.
 func TestAnEarlierReleasesDownloadFileIsNotOpenable(t *testing.T) {
 	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
-	workspace, err := canonicalRoot(access.Workspace)
+	workspace, err := canonicalRoot(access.Workspace())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -988,7 +988,7 @@ func TestForgettingBrowsingLeavesTheDownloadsFolderAlone(t *testing.T) {
 			act  func(t *testing.T, manager *Manager, access Access)
 		}{
 			{"thread delete", func(t *testing.T, manager *Manager, access Access) {
-				if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+				if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 					t.Fatal(err)
 				}
 			}},
@@ -1135,7 +1135,7 @@ func TestAListedRowStaysOpenableWhateverOthersDownload(t *testing.T) {
 	startDownload(t, manager, access, page, "original.txt", 10)
 	original := threadDownloads(manager, access)[0]
 
-	busy := manager.Bind(Caller{ThreadID: "busy", Workspace: access.Workspace})
+	busy := manager.Bind(Caller{ThreadID: "busy", Workspace: access.Workspace()})
 	busyPage, err := manager.Open(t.Context(), busy, "https://example.test/files", OpenOptions{})
 	if err != nil {
 		t.Fatal(err)

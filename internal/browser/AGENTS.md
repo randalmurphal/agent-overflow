@@ -16,7 +16,10 @@ mode. Product behavior and authority are defined in
   suspends them (`suspend.go`), and shutdown saves them for the next boot
   (`page_records.go`); see browser-tools.md for the lifecycle. Every path that
   acts on a page by id goes through `resolvePage` so a suspended page
-  restores under the navigation policy. Showing the companion (`Visibility`)
+  restores under the navigation policy, and one that waits after it (the
+  structural gate, an engine call) acts on the incarnation it resolved or
+  created, never on the id again (`tabHold`, checked by `heldLocked` in
+  the hold that commits). Showing the companion (`Visibility`)
   only checks the tab exists; the pane's selection restores it.
 - One manager owns one engine. Profiles are per cookie jar, pages are per
   thread, and every operation rechecks thread ownership. Closing the last page
@@ -43,16 +46,23 @@ mode. Product behavior and authority are defined in
   `threadBrowser` per lifetime owns its session, browsing history, pane
   color and download list, and every tab names it as its owner. An action
   binds before its first wait (`Bind`, `BindThread`) and reaches only the
-  lifetime it bound; `CloseThread` detaches the lifetime in its first hold,
-  so a commit through it answers `ErrThreadClosed`, and closes only what it
-  detached. Look a lifetime up by thread id only for what shows the thread
-  as it is now (state, presentation, the saved copy).
+  lifetime it bound; `CloseThread` detaches the lifetime and moves every
+  tab of it to closing in one hold, so a commit through it answers
+  `ErrThreadClosed` and no page of it is usable, and the teardown that
+  follows is the lifetime's own (`thread_close.go`): the caller's context
+  bounds only its wait, and a retry and `Close` join it. Look a lifetime up
+  by thread id only for what shows the thread as it is now (state,
+  presentation, the saved copy).
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
   a pending tab, a popup being adopted reserves its page from admission to
   listing (`adoptPopup`), a closed page leaves the tab set before its engine
   teardown runs, and each keeps counting toward caps and holding the jar's
   profile until the engine is done. A native engine lists a page in its
-  profile, where `Dispose` finds it, only once its view is in place. A teardown that runs after its tab left
+  profile, where `Dispose` finds it, only once its view is in place. A
+  created or restored page whose engine reports its close or crash before
+  its listing, even before NewPage returns, is never listed live
+  (`creation_end.go`): a close fails it, a crash lists the crashed tab.
+  A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab

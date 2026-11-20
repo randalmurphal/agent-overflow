@@ -46,7 +46,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-base", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -168,7 +168,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-hidden-base", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -274,7 +274,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-held-base", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -380,7 +380,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-show-again", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})

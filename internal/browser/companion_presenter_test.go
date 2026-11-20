@@ -40,12 +40,12 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 			resized := func() {
 				t.Helper()
-				if got := <-applied; ThreadID(got) != access.ThreadID {
+				if got := <-applied; ThreadID(got) != access.ThreadID() {
 					t.Fatalf("viewport applied for %q", got)
 				}
 				// A pass that saw the page lag may owe the drain another
 				// pass; it settles before the next step.
-				awaitViewportIdle(t, manager, string(access.ThreadID))
+				awaitViewportIdle(t, manager, string(access.ThreadID()))
 				for len(applied) > 0 {
 					<-applied
 				}
@@ -80,7 +80,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 				mu.Lock()
 				placed, routed = nil, nil
 				mu.Unlock()
-				manager.syncPanePresentation(access.ThreadID)
+				manager.syncPanePresentation(access.ThreadID())
 				manager.emitAccelerator(ids.PageHandle(handle), bound)
 				manager.emitEscape(ids.PageHandle(handle))
 				mu.Lock()
@@ -129,7 +129,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			mu.Lock()
 			placed, routed = nil, nil
 			mu.Unlock()
-			manager.syncPanePresentation(access.ThreadID)
+			manager.syncPanePresentation(access.ThreadID())
 			manager.emitAccelerator(ids.PageHandle(handle), bound)
 			mu.Lock()
 			if len(placed) != 0 {

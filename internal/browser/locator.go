@@ -13,6 +13,9 @@ const maxLocatorBytes = 64 << 10
 const maxBrowserInputBytes = 1 << 20
 
 func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOptions) (LocatorResult, error) {
+	if err := access.bound(); err != nil {
+		return LocatorResult{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return LocatorResult{}, err

@@ -68,7 +68,7 @@ func TestFocusCompanionPageFocusesThePresentedPage(t *testing.T) {
 	if calls := focusCalls(w.e.recordingPaneHost); !slices.Equal(calls, []string{"focus:" + w.handle(w.a, w.aPage)}) {
 		t.Fatalf("focus requests %v, want thread a's presented page alone", calls)
 	}
-	want := CompanionEvent{Kind: "focus", ThreadID: string(w.a.ThreadID), Mount: string(w.aMount), FocusIntent: 1}
+	want := CompanionEvent{Kind: "focus", ThreadID: string(w.a.ThreadID()), Mount: string(w.aMount), FocusIntent: 1}
 	if got := events.all(); len(got) != 1 || got[0].Kind != want.Kind || got[0].ThreadID != want.ThreadID ||
 		got[0].Mount != want.Mount || got[0].FocusIntent != want.FocusIntent || got[0].Error != "" {
 		t.Fatalf("focus events %+v, want %+v", got, want)
@@ -278,10 +278,10 @@ func TestAFocusRequestWaitsForItsPageToBePresented(t *testing.T) {
 				if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
 					t.Fatalf("hide the companion: %v", err)
 				}
-				if err := w.m.SuspendThread(t.Context(), w.a.ThreadID); err != nil {
+				if err := w.m.SuspendThread(t.Context(), w.a.ThreadID()); err != nil {
 					t.Fatalf("suspend: %v", err)
 				}
-				if ids := suspendedIDs(w.m, string(w.a.ThreadID)); !slices.Contains(ids, w.aPage) {
+				if ids := suspendedIDs(w.m, string(w.a.ThreadID())); !slices.Contains(ids, w.aPage) {
 					t.Fatalf("suspended %v, want the page among them", ids)
 				}
 				if _, err := w.m.Visibility(t.Context(), w.a, &show, PageID(w.aPage)); err != nil {
@@ -528,7 +528,7 @@ func TestTheLaunchersFocusReportsReachTheIntentsPane(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	m.mu.Lock()
-	m.panes["mount1"] = paneMount{threadID: access.ThreadID, owner: access.tb, seq: 1}
+	m.panes["mount1"] = paneMount{owner: access.tb, seq: 1}
 	m.mu.Unlock()
 	page := &managedPage{id: "page1", owner: access.tb, driver: &fakePage{handle: "handle1"}}
 	m.mu.Lock()
@@ -559,7 +559,7 @@ func TestTheLaunchersFocusReportsReachTheIntentsPane(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("focus events %+v, want the failure and the focus", got)
 	}
-	if ThreadID(got[0].ThreadID) != access.ThreadID || got[0].Mount != "mount1" || got[0].FocusIntent != 2 || !strings.Contains(got[0].Error, "E_FAIL") {
+	if ThreadID(got[0].ThreadID) != access.ThreadID() || got[0].Mount != "mount1" || got[0].FocusIntent != 2 || !strings.Contains(got[0].Error, "E_FAIL") {
 		t.Fatalf("failure event %+v", got[0])
 	}
 	if got[1].Mount != "mount1" || got[1].FocusIntent != 3 || got[1].Error != "" {

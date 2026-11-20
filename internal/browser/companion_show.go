@@ -33,7 +33,10 @@ const (
 // show never names a page the user did not see. It answers the tab it
 // showed or opened.
 func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome, PageID, error) {
-	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
+	if err := access.bound(); err != nil {
+		return ShowPassed, "", err
+	}
+	if strings.TrimSpace(access.Workspace()) == "" {
 		return ShowPassed, "", fmt.Errorf("browser: invalid caller scope")
 	}
 	turn, err := m.selectionTurn(ctx, access)
@@ -67,8 +70,8 @@ func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome
 		tb.session.ActivePageID, tb.session.Visible = string(pageID), true
 		tb.session.UpdatedAt = time.Now()
 		m.mu.Unlock()
-		m.emitThreadState(access.ThreadID)
-		m.syncPanePresentation(access.ThreadID)
+		m.emitThreadState(access.ThreadID())
+		m.syncPanePresentation(access.ThreadID())
 		return ShowShown, pageID, nil
 	}
 	reserved, err := m.reserveTabLocked(ctx, access, turn, -1, nil)

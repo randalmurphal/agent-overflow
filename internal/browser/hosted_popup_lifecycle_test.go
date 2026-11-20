@@ -48,7 +48,7 @@ func TestAPopupsEndAtReceiptWaitsForNoDetach(t *testing.T) {
 				t.Fatal("the popup whose end was received was listed")
 			}
 			l.settledEngine()
-			if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(popupID)]; listed {
+			if _, listed := l.tabs(string(access.ThreadID()))[ids.PageHandle(popupID)]; listed {
 				t.Fatal("the popup whose end was received is a tab")
 			}
 		})
@@ -103,7 +103,7 @@ func TestAPopupSealedAtReceiptIsNeverListed(t *testing.T) {
 	l.engine.mu.Unlock()
 	locked = false
 	settleReports(t, l.engine, "")
-	if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(popupID)]; listed {
+	if _, listed := l.tabs(string(access.ThreadID()))[ids.PageHandle(popupID)]; listed {
 		t.Fatal("the closed popup is a tab")
 	}
 }

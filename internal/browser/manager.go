@@ -117,6 +117,9 @@ type Manager struct {
 	// releaseScopeLocked unregistered; the channel closes when it ends.
 	// Guarded by mu.
 	disposing map[jarKey]chan struct{}
+	// retiring holds the teardown of each thread lifetime CloseThread
+	// detached, until it has finished (thread_close.go). Guarded by mu.
+	retiring map[*threadBrowser]*threadTeardown
 	// lifeWork joins the page closes and profile disposals that run after
 	// their caller returned (goLife). Each is admitted under lifeGate unless
 	// lifeClosed, which Close sets under it before it waits.
@@ -223,6 +226,9 @@ type Manager struct {
 	popupFates *boundedMap[ids.PageHandle, popupFate]
 	// parkTimeout overrides popupParkTimeout when set (tests).
 	parkTimeout time.Duration
+	// creationWatch is the engine page creation in flight, nil for none
+	// (creation_end.go). Guarded by mu.
+	creationWatch *creationWatch
 	// heldInfo holds a CDP engine's newest report for each handle no page
 	// answers to yet (updatePageInfo). Bounded: a handle no page ever takes,
 	// a target closed before its adoption, ages out.

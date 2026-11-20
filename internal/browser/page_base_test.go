@@ -417,10 +417,10 @@ func TestAPaneColorIsItsThreads(t *testing.T) {
 	if got, n := log.of(paneHandle(manager, other, blank.ID)); n != 0 {
 		t.Fatalf("another thread's blank page was told %q", got)
 	}
-	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
-	if fresh := lifetimeOf(manager, string(access.ThreadID)); fresh != nil && fresh.paneColor != "" {
+	if fresh := lifetimeOf(manager, string(access.ThreadID())); fresh != nil && fresh.paneColor != "" {
 		t.Fatal("a closed thread's pane color is kept")
 	}
 }

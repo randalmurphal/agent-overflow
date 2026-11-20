@@ -64,11 +64,11 @@ func TestCompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
 	reportDownload(t, l.engine, popupID, snapshot("dl-2", webview2host.DownloadRunning, 10))
 	l.report(popupID, webview2host.ReportClosed, "")
 	l.awaitDownloads(access, downloadStateCanceled, downloadStateCompleted)
-	if got := l.pageDownloads(string(access.ThreadID), opener); !slices.Equal(got, []string{downloadStateCompleted, downloadStateCanceled}) {
+	if got := l.pageDownloads(string(access.ThreadID()), opener); !slices.Equal(got, []string{downloadStateCompleted, downloadStateCanceled}) {
 		t.Fatalf("the opener's tab lists %v", got)
 	}
 	release()
-	l.awaitTabGone(string(access.ThreadID), popupID)
+	l.awaitTabGone(string(access.ThreadID()), popupID)
 	l.settledEngine()
 }
 
@@ -97,7 +97,7 @@ func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
 	reportDownload(t, l.engine, popupID, snapshot("dl-2", webview2host.DownloadRunning, 10))
 	l.report(popupID, webview2host.ReportClosed, "")
 	l.awaitDownloads(access, downloadStateCanceled, downloadStateCompleted)
-	if got := l.pageDownloads(string(access.ThreadID), opener); !slices.Equal(got, []string{downloadStateCompleted, downloadStateCanceled}) {
+	if got := l.pageDownloads(string(access.ThreadID()), opener); !slices.Equal(got, []string{downloadStateCompleted, downloadStateCanceled}) {
 		t.Fatalf("the opener's tab lists %v", got)
 	}
 	select {
@@ -128,7 +128,7 @@ func TestHostedDownloadEndAfterTheTargetWentIsKept(t *testing.T) {
 			targetID := "T-" + page
 			if popup {
 				page, targetID = l.popup(page, "https://example.test/popup")
-				l.awaitTab(string(access.ThreadID), page, true)
+				l.awaitTab(string(access.ThreadID()), page, true)
 				l.settledEngine()
 			}
 			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
@@ -138,7 +138,7 @@ func TestHostedDownloadEndAfterTheTargetWentIsKept(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadCompleted, 100))
 			l.report(page, webview2host.ReportClosed, "")
-			l.awaitTabGone(string(access.ThreadID), page)
+			l.awaitTabGone(string(access.ThreadID()), page)
 			l.awaitDownloads(access, downloadStateCompleted)
 			l.engine.mu.Lock()
 			waiting := len(l.engine.closeFallbacks)
@@ -166,9 +166,9 @@ func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
 		l.report(popupID, webview2host.ReportClosed, "")
 		// The attach is still held: only its cancel ends the adoption,
 		// which discards the popup.
-		l.awaitTab(string(access.ThreadID), popupID, false)
+		l.awaitTab(string(access.ThreadID()), popupID, false)
 		l.awaitDownloads(access, downloadStateCanceled)
-		if got := l.pageDownloads(string(access.ThreadID), opener); !slices.Equal(got, []string{downloadStateCanceled}) {
+		if got := l.pageDownloads(string(access.ThreadID()), opener); !slices.Equal(got, []string{downloadStateCanceled}) {
 			t.Fatalf("the opener's tab lists %v", got)
 		}
 		l.settledEngine()
@@ -182,7 +182,7 @@ func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
 		defer release()
 		popupID, _ := l.popup(opener, "https://example.test/popup")
 		l.awaitAttach("PT-1")
-		l.awaitTab(string(access.ThreadID), popupID, false)
+		l.awaitTab(string(access.ThreadID()), popupID, false)
 		l.settledEngine()
 	})
 }
@@ -202,9 +202,9 @@ func TestTerminalDownloadSurvivesHeldReportBound(t *testing.T) {
 	}
 	reportDownload(t, l.engine, popupID, snapshot("dl-1", webview2host.DownloadCompleted, 100))
 	release()
-	l.awaitTab(string(access.ThreadID), popupID, true)
+	l.awaitTab(string(access.ThreadID()), popupID, true)
 	l.awaitDownloads(access, downloadStateCompleted)
-	if got := l.pageDownloads(string(access.ThreadID), popupID); !slices.Equal(got, []string{downloadStateCompleted}) {
+	if got := l.pageDownloads(string(access.ThreadID()), popupID); !slices.Equal(got, []string{downloadStateCompleted}) {
 		t.Fatalf("the popup's tab lists %v", got)
 	}
 	l.settledEngine()
@@ -226,10 +226,10 @@ func TestNestedHostedPopupBeforeParentListed(t *testing.T) {
 		t.Fatal("the child was closed while its opener was attached")
 	}
 	release()
-	l.awaitTab(string(access.ThreadID), parent, true)
-	l.awaitTab(string(access.ThreadID), child, true)
+	l.awaitTab(string(access.ThreadID()), parent, true)
+	l.awaitTab(string(access.ThreadID()), child, true)
 	l.awaitDownloads(access, downloadStateRunning)
-	if got := l.pageDownloads(string(access.ThreadID), child); !slices.Equal(got, []string{downloadStateRunning}) {
+	if got := l.pageDownloads(string(access.ThreadID()), child); !slices.Equal(got, []string{downloadStateRunning}) {
 		t.Fatalf("the child's tab lists %v", got)
 	}
 	l.settledEngine()
@@ -266,7 +266,7 @@ func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 			}
 			popup, _ := l.popup(opener, "https://example.test/popup")
 			if listed {
-				l.awaitTab(string(access.ThreadID), popup, true)
+				l.awaitTab(string(access.ThreadID()), popup, true)
 				l.settledEngine()
 			} else {
 				l.awaitAttach("PT-1")

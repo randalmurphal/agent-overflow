@@ -560,7 +560,7 @@ func TestCDPNavigateErrorMarksOnlyTheAbort(t *testing.T) {
 
 func TestStopCompanionLoadRefusesAnotherThreadsPageAndIgnoresATabWithNoPage(t *testing.T) {
 	m, access, pageID, _ := newNavigateFixture(t, false)
-	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
+	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()})
 	if err := m.StopCompanionLoad(t.Context(), other, PageID(pageID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("stop of another thread's page = %v", err)
 	}
@@ -569,7 +569,7 @@ func TestStopCompanionLoadRefusesAnotherThreadsPageAndIgnoresATabWithNoPage(t *t
 	}
 	// A suspended tab has no live page and nothing loading: no error, and
 	// nothing restores it.
-	if err := m.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
 	if err := m.StopCompanionLoad(t.Context(), access, PageID(pageID)); err != nil {

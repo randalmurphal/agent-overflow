@@ -358,7 +358,7 @@ func TestAPageOpenedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 			// Either close reports the closing thread's empty state between
 			// emptying the workspace and disposing its profile.
 			manager.SetEventSink(func(event CompanionEvent) {
-				if ThreadID(event.ThreadID) == closing.ThreadID && len(event.Pages) == 0 && reported.CompareAndSwap(false, true) {
+				if ThreadID(event.ThreadID) == closing.ThreadID() && len(event.Pages) == 0 && reported.CompareAndSwap(false, true) {
 					opened, openErr = manager.Open(context.Background(), other, "https://example.test/other", OpenOptions{})
 				}
 			})
@@ -669,7 +669,7 @@ func TestPopupOfAClosedOpenerIsNotAdopted(t *testing.T) {
 	for _, scope := range manager.scopes {
 		profile = scope.profile.(*fakeProfile)
 		scope.profile = &attachHookProfile{fakeProfile: profile, onAttach: func() {
-			if err := manager.CloseThread(context.Background(), opener.ThreadID); err != nil {
+			if err := manager.CloseThread(context.Background(), opener.ThreadID()); err != nil {
 				t.Errorf("close the opener's thread: %v", err)
 			}
 		}}
@@ -748,7 +748,7 @@ func TestCloseThreadClosesAPopupAdoptedWhileItRuns(t *testing.T) {
 	engine.onClose = func(string) {
 		manager.adoptPopup(enginePopup{Profile: engine.profile.Handle(), Opener: ids.PageHandle(openerHandle), Handle: "popup"})
 	}
-	if err := manager.CloseThread(context.Background(), opener.ThreadID); err != nil {
+	if err := manager.CloseThread(context.Background(), opener.ThreadID()); err != nil {
 		t.Fatalf("CloseThread: %v", err)
 	}
 	if pages := manager.ownedPages(opener.tb); len(pages) != 0 {
@@ -776,7 +776,7 @@ func TestCloseThreadCountsAPageTheEngineClosedAsClosed(t *testing.T) {
 			}
 		}
 	}
-	if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+	if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 		t.Fatalf("CloseThread: %v", err)
 	}
 	if pages := manager.ownedPages(access.tb); len(pages) != 0 {
@@ -805,11 +805,11 @@ func TestAClosedPageIsNoLongerTheActivePage(t *testing.T) {
 				t.Fatal(err)
 			}
 			closer.close(t, manager, access, second.ID)
-			if state := manager.threadState(access.ThreadID); state.ActivePageID != first.ID || !*state.Visible {
+			if state := manager.threadState(access.ThreadID()); state.ActivePageID != first.ID || !*state.Visible {
 				t.Fatalf("after closing the active page: active %q visible %v, want %q visible", state.ActivePageID, *state.Visible, first.ID)
 			}
 			closer.close(t, manager, access, first.ID)
-			if state := manager.threadState(access.ThreadID); state.ActivePageID != "" || *state.Visible {
+			if state := manager.threadState(access.ThreadID()); state.ActivePageID != "" || *state.Visible {
 				t.Fatalf("after closing the last page: active %q visible %v, want none hidden", state.ActivePageID, *state.Visible)
 			}
 		})

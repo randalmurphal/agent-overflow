@@ -81,19 +81,25 @@ var errSelectionPassed = errors.New("browser: the pane this tab action came from
 var ErrMountGone = errors.New("browser: the browser pane this was chosen in has closed")
 
 // BindMount binds an action to the thread lifetime pane mount attached to,
-// for an action the user gave consent to in that pane (a jar switch): it
-// reaches that lifetime and no later one. Once the thread's close detached
+// for an action the user gave consent to in that pane (a jar switch), and
+// then reads, through lookup, the Caller it acts as (BindThread). It
+// reaches that lifetime and no later one: once the thread's close detached
 // it, a commit through it answers ErrThreadClosed in the hold that checks
 // the rest of the action (Access.admitLocked). A mount the Manager does not
 // have, or another thread's, is refused with ErrMountGone.
-func (m *Manager) BindMount(threadID ThreadID, mount MountID) (ThreadBinding, error) {
+func (m *Manager) BindMount(threadID ThreadID, mount MountID, lookup func() (Caller, error)) (Access, error) {
+	threadID = threadID.trim()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	pane, ok := m.panes[mount.trim()]
-	if !ok || pane.owner == nil || pane.threadID != threadID.trim() {
-		return ThreadBinding{}, ErrMountGone
+	m.mu.Unlock()
+	if !ok || pane.owner == nil || pane.owner.id != threadID {
+		return Access{}, ErrMountGone
 	}
-	return ThreadBinding{tb: pane.owner}, nil
+	caller, err := callerOf(threadID, lookup)
+	if err != nil {
+		return Access{}, err
+	}
+	return Access{caller: caller, tb: pane.owner}, nil
 }
 
 // awaitTurn admits sel in its mount's order for access's lifetime. A mount
@@ -102,8 +108,8 @@ func (m *Manager) BindMount(threadID ThreadID, mount MountID) (ThreadBinding, er
 // the m.mu hold that acts and releases it when done.
 func (m *Manager) awaitTurn(ctx context.Context, access Access, sel Numbered) (*turnorder.Turn, error) {
 	m.mu.Lock()
-	mount, ok := m.panes[sel.mount]
-	if !ok || access.tb == nil || mount.owner != access.tb || access.tb.detached.Load() {
+	mount, ok := m.mountLocked(access.tb, sel.mount)
+	if !ok {
 		m.mu.Unlock()
 		return turnorder.PassedTurn(), nil
 	}

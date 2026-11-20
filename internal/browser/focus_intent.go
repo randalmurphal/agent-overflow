@@ -80,11 +80,11 @@ type mountFocus struct {
 	intent *pageFocusIntent
 }
 
-// mountFocusLocked answers a mounted pane's focus state, nil for a mount the
-// thread does not hold. The caller holds m.mu.
-func (m *Manager) mountFocusLocked(threadID ThreadID, mount MountID) *mountFocus {
-	pane, ok := m.panes[mount]
-	if !ok || pane.threadID != threadID {
+// mountFocusLocked answers a mounted pane's focus state, nil for a mount
+// the thread lifetime tb does not hold (mountLocked). The caller holds m.mu.
+func (m *Manager) mountFocusLocked(tb *threadBrowser, mount MountID) *mountFocus {
+	pane, ok := m.mountLocked(tb, mount)
+	if !ok {
 		return nil
 	}
 	if pane.focus == nil {
@@ -101,6 +101,9 @@ func (m *Manager) mountFocusLocked(threadID ThreadID, mount MountID) *mountFocus
 // native views does nothing. The outcome of a focus attempt arrives as a
 // Kind "focus" event (emitPageFocus).
 func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID, intent uint64) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	mount, pageID = mount.trim(), pageID.trim()
 	if mount == "" || pageID == "" || intent == 0 {
 		return errors.New("browser: a page focus needs its pane mount, page and intent")
@@ -109,7 +112,7 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 		return nil
 	}
 	m.mu.Lock()
-	focus := m.mountFocusLocked(access.ThreadID, mount)
+	focus := m.mountFocusLocked(access.tb, mount)
 	if focus == nil {
 		m.mu.Unlock()
 		return errors.New("browser: pane mount not found")
@@ -122,9 +125,9 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 	if focus.intent != nil {
 		focus.intent.withdrawn.Store(true)
 	}
-	focus.intent = &pageFocusIntent{thread: access.ThreadID, mount: mount, pageID: pageID, id: intent, armed: time.Now()}
+	focus.intent = &pageFocusIntent{thread: access.ThreadID(), mount: mount, pageID: pageID, id: intent, armed: time.Now()}
 	m.mu.Unlock()
-	m.applyFocusIntent(access.ThreadID)
+	m.applyFocusIntent(access.ThreadID())
 	return nil
 }
 
@@ -132,13 +135,16 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 // up to intent: the user made another focus choice. A mount that is gone has
 // nothing to withdraw.
 func (m *Manager) WithdrawCompanionPageFocus(access Access, mount MountID, intent uint64) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	mount = mount.trim()
 	if mount == "" || intent == 0 {
 		return errors.New("browser: a focus withdrawal needs its pane mount and intent")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	focus := m.mountFocusLocked(access.ThreadID, mount)
+	focus := m.mountFocusLocked(access.tb, mount)
 	if focus == nil {
 		return nil
 	}

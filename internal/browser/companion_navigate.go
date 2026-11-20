@@ -18,12 +18,20 @@ import (
 // host, or a search. A navigation the user stopped (StopCompanionLoad) while
 // it ran answers its own abort without an error; any other failure stands.
 func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID PageID, address string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
+	return m.navigateUserAddress(ctx, access, OpenOptions{PageID: pageID}, address)
+}
+
+// navigateUserAddress is NavigateCompanion of the page opts names.
+func (m *Manager) navigateUserAddress(ctx context.Context, access Access, opts OpenOptions, address string) (PageInfo, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return PageInfo{}, fmt.Errorf("browser: address is required")
 	}
 	nav := &userNavigation{}
-	info, err := m.navigateCompanion(context.WithValue(ctx, userNavigationKey{}, nav), access, pageID, address)
+	info, err := m.navigateCompanion(context.WithValue(ctx, userNavigationKey{}, nav), access, opts, address)
 	if errors.Is(err, errNavigationAborted) && nav.wasStopped() {
 		return info, nil
 	}
@@ -67,7 +75,7 @@ func (p *managedPage) runUserNavigation(ctx context.Context) func() {
 	}
 }
 
-func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID PageID, address string) (PageInfo, error) {
+func (m *Manager) navigateCompanion(ctx context.Context, access Access, opts OpenOptions, address string) (PageInfo, error) {
 	target, isFile, err := fileAddress(address)
 	if err != nil {
 		return PageInfo{}, err
@@ -79,14 +87,14 @@ func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID P
 				return PageInfo{}, err
 			}
 		}
-		return m.OpenFile(ctx, access, path, OpenOptions{PageID: pageID})
+		return m.OpenFile(ctx, access, path, opts)
 	}
 	if filepath.IsAbs(address) {
-		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
+		return m.OpenFile(ctx, access, address, opts)
 	}
-	workspaceFile := filepath.Join(access.Workspace, filepath.FromSlash(address))
+	workspaceFile := filepath.Join(access.Workspace(), filepath.FromSlash(address))
 	if info, err := os.Stat(workspaceFile); err == nil && info.Mode().IsRegular() {
-		return m.OpenFile(ctx, access, workspaceFile, OpenOptions{PageID: pageID})
+		return m.OpenFile(ctx, access, workspaceFile, opts)
 	}
 	lower := strings.ToLower(address)
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
@@ -103,7 +111,7 @@ func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID P
 			address = "https://" + address
 		}
 	}
-	return m.Open(ctx, access, address, OpenOptions{PageID: pageID})
+	return m.Open(ctx, access, address, opts)
 }
 
 // fileTarget is the file a typed address names: a path in the backend's own
@@ -188,6 +196,9 @@ func (m *Manager) backendPathForWindows(ctx context.Context, windowsPath string)
 // abort without an error (NavigateCompanion). A tab with no live page (being
 // created, suspended) has nothing loading.
 func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	p, _, err := m.lookupOwnedPage(access, pageID)
 	if errors.Is(err, errPageNotFound) && m.hasTab(access.tb, pageID) {

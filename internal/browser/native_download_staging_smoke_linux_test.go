@@ -41,7 +41,7 @@ func TestNativeEngineRealDownloadStagingLeavesTheGTKThreadFree(t *testing.T) {
 	})
 	access := manager.Bind(Caller{ThreadID: "native-smoke-download-staging", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -167,7 +167,7 @@ func TestNativeEngineRealProfileCloseEndsADownloadBeingStaged(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the download was never staged")
 	}
-	if err := manager.CloseThread(ctx, access.ThreadID); err != nil {
+	if err := manager.CloseThread(ctx, access.ThreadID()); err != nil {
 		t.Fatalf("close the thread's pages: %v", err)
 	}
 	for deadline := time.Now().Add(30 * time.Second); webkitDownloadsAlive() != before; {

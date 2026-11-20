@@ -81,7 +81,7 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 				var pushMu sync.Mutex
 				publishedLive := false
 				manager.SetEventSink(func(event CompanionEvent) {
-					if event.Kind != "state" || ThreadID(event.ThreadID) != access.ThreadID {
+					if event.Kind != "state" || ThreadID(event.ThreadID) != access.ThreadID() {
 						return
 					}
 					live := 0
@@ -210,7 +210,7 @@ func TestACrashedPopupOfAClosedThreadLeavesNoRecord(t *testing.T) {
 			// which would take the opener and refuse the listing on that
 			// ground, have not run yet.
 			manager.mu.Lock()
-			manager.detachLocked(access.ThreadID)
+			manager.detachLocked(access.ThreadID())
 			manager.mu.Unlock()
 			release()
 			awaitAdmission(t, manager, "popup")

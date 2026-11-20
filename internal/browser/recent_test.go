@@ -52,14 +52,14 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 	if _, err := m.NavigateCompanion(t.Context(), access, PageID(pageID), "example.test/b"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.OpenFile(t.Context(), access, filepath.Join(access.Workspace, "report.html"), OpenOptions{PageID: PageID(pageID)}); err != nil {
+	if _, err := m.OpenFile(t.Context(), access, filepath.Join(access.Workspace(), "report.html"), OpenOptions{PageID: PageID(pageID)}); err != nil {
 		t.Fatal(err)
 	}
 	// The address again moves it to the front instead of adding it twice.
 	if _, err := m.Open(t.Context(), access, "https://example.test/start", OpenOptions{PageID: PageID(pageID)}); err != nil {
 		t.Fatal(err)
 	}
-	report := "file://" + filepath.ToSlash(filepath.Join(access.Workspace, "report.html"))
+	report := "file://" + filepath.ToSlash(filepath.Join(access.Workspace(), "report.html"))
 	want := []string{"https://example.test/start", report, "https://example.test/b"}
 	if got := recentURLs(m, access); !reflect.DeepEqual(got, want) {
 		t.Fatalf("recent = %q, want %q", got, want)
@@ -99,7 +99,7 @@ func TestRecentAddressesRecordCommittedOpensNewestFirst(t *testing.T) {
 	}
 
 	// Another thread's list is its own.
-	if got := m.RecentAddresses(Caller{ThreadID: "other", Workspace: access.Workspace}); len(got) != 0 {
+	if got := m.RecentAddresses(Caller{ThreadID: "other", Workspace: access.Workspace()}); len(got) != 0 {
 		t.Fatalf("another thread sees %v", got)
 	}
 }
@@ -154,11 +154,11 @@ func TestRecentAddressesForgetOnJarSwitchAndKeepNothingPrivate(t *testing.T) {
 
 func TestRecentAddressesForgetOnClearSiteDataAndThreadClose(t *testing.T) {
 	m, access, _, _ := newNavigateFixture(t, false)
-	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
+	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()})
 	if _, err := m.Open(t.Context(), other, "https://example.test/other", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseThread(t.Context(), other.ThreadID); err != nil {
+	if err := m.CloseThread(t.Context(), other.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, other); len(got) != 0 {
@@ -196,7 +196,7 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 		return pushed[threadID]
 	}
 	reported := func() string { return m.CompanionState(access.Caller()).RecentGen }
-	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
+	other := m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()})
 	if _, err := m.Open(t.Context(), other, "https://example.test/other", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 	}{
 		{"jar switch", func() error { return m.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed) }, true},
 		{"jar switch back", func() error { return m.SetJar(context.Background(), access, JarWorktree, JarSwitchConfirmed) }, true},
-		{"another thread's close", func() error { return m.CloseThread(t.Context(), other.ThreadID) }, false},
+		{"another thread's close", func() error { return m.CloseThread(t.Context(), other.ThreadID()) }, false},
 		{"clear site data", func() error { return m.ClearSiteData(t.Context()) }, true},
 		{"disable", func() error { return m.Reconfigure(Config{Enabled: false}) }, true},
 	} {
@@ -228,8 +228,8 @@ func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
 		if after == before {
 			t.Fatalf("%s: the generation stayed %q", forget.name, after)
 		}
-		if forget.pushes && lastPushed(string(access.ThreadID)) != after {
-			t.Fatalf("%s: the last push carried %q, want %q", forget.name, lastPushed(string(access.ThreadID)), after)
+		if forget.pushes && lastPushed(string(access.ThreadID())) != after {
+			t.Fatalf("%s: the last push carried %q, want %q", forget.name, lastPushed(string(access.ThreadID())), after)
 		}
 	}
 }

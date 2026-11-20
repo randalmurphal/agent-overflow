@@ -97,8 +97,8 @@ type jarScope struct {
 }
 
 // jarForLocked maps a page of the thread lifetime tb, with its caller
-// access, and a jar kind to the jar the page opens in. access.Workspace is
-// canonical. A private jar without a live instance takes a new token here.
+// access, and a jar kind to the jar the page opens in: a thread's jar is
+// tb's thread's, whatever access names. access.Workspace is canonical. A private jar without a live instance takes a new token here.
 // The caller holds m.mu.
 func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (jarIdentity, error) {
 	jar := jarIdentity{kind: kind, ephemeral: !m.config.PersistSiteData}
@@ -111,13 +111,13 @@ func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (j
 		}
 		jar.key = jarKey("project:" + access.ProjectID)
 	case JarThread:
-		jar.key, jar.thread = jarKey("thread:"+string(access.ThreadID)), access.ThreadID
+		jar.key, jar.thread = jarKey("thread:"+string(tb.id)), tb.id
 	case JarPrivate:
 		if tb.session.privateJar == "" {
 			tb.session.privateJar = uuid.NewString()
 		}
-		jar.key = jarKey("private:" + string(access.ThreadID) + ":" + tb.session.privateJar)
-		jar.thread, jar.private, jar.owner, jar.ephemeral = access.ThreadID, tb.session.privateJar, tb, true
+		jar.key = jarKey("private:" + string(tb.id) + ":" + tb.session.privateJar)
+		jar.thread, jar.private, jar.owner, jar.ephemeral = tb.id, tb.session.privateJar, tb, true
 	default:
 		return jarIdentity{}, fmt.Errorf("browser: unknown cookie jar %q", kind)
 	}

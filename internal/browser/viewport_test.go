@@ -87,7 +87,7 @@ func (f *paneFollowFixture) awaitActiveAt(t *testing.T, w, h int) {
 	deadline := time.After(5 * time.Second)
 	for {
 		if pw, ph := f.pages[1].lastViewport(); pw == w && ph == h {
-			awaitViewportIdle(t, f.manager, string(f.access.ThreadID))
+			awaitViewportIdle(t, f.manager, string(f.access.ThreadID()))
 			return
 		}
 		select {
@@ -127,7 +127,7 @@ func (f *paneFollowFixture) awaitFollowIdle(t *testing.T) {
 func (f *paneFollowFixture) followScheduled() bool {
 	f.manager.mu.Lock()
 	defer f.manager.mu.Unlock()
-	st := f.manager.viewportSyncLocked(f.access.ThreadID)
+	st := f.manager.viewportSyncLocked(f.access.ThreadID())
 	return st.busy || st.dirty
 }
 

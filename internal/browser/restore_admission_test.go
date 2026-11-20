@@ -59,7 +59,7 @@ func (e *fileGateEngine) BackendFilePath(_ context.Context, rawURL string) (stri
 // a new tab.
 func openWorkspaceFile(t *testing.T, m *Manager, access Access) PageInfo {
 	t.Helper()
-	path := filepath.Join(access.Workspace, "index.html")
+	path := filepath.Join(access.Workspace(), "index.html")
 	if err := os.WriteFile(path, []byte("<title>page</title>"), 0o600); err != nil {
 		t.Fatal(err)
 	}

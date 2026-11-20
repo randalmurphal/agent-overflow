@@ -64,7 +64,7 @@ func TestASwitchAwayAndBackNeverShowsTheLeftTab(t *testing.T) {
 	if err := <-away; err != nil {
 		t.Fatalf("switch away: %v", err)
 	}
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 
 	calls := engine.take()
 	for _, handle := range shows(calls) {
@@ -73,7 +73,7 @@ func TestASwitchAwayAndBackNeverShowsTheLeftTab(t *testing.T) {
 		}
 	}
 	manager.mu.Lock()
-	presented := manager.presented[access.ThreadID]
+	presented := manager.presented[access.ThreadID()]
 	manager.mu.Unlock()
 	if presented != PageID(secondID) {
 		t.Fatalf("presented %q, want the selected tab %q (calls %v)", presented, secondID, calls)
@@ -113,7 +113,7 @@ func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 	if err := <-restored; err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 
 	calls := engine.take()
 	for _, handle := range shows(calls) {
@@ -125,7 +125,7 @@ func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 		t.Fatalf("the second tab did not restore: %v", err)
 	}
 	manager.mu.Lock()
-	presented := manager.presented[access.ThreadID]
+	presented := manager.presented[access.ThreadID()]
 	manager.mu.Unlock()
 	if presented != PageID(firstID) {
 		t.Fatalf("presented %q, want the selected tab %q (calls %v)", presented, firstID, calls)
@@ -145,7 +145,7 @@ func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 	if _, err := manager.Wait(t.Context(), access, PageID(firstID), "", 1); err != nil {
 		t.Fatalf("lay the first tab out: %v", err)
 	}
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 	firstHandle := paneHandle(manager, access, firstID)
 	engine.take()
 	held, release := holdPresentation(manager, firstID)
@@ -158,7 +158,7 @@ func TestAPageThatCrashedBeforeItsShowIsNotShown(t *testing.T) {
 	if err := <-switched; err != nil {
 		t.Fatalf("switch: %v", err)
 	}
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 	calls := engine.take()
 	for _, handle := range shows(calls) {
 		if handle == firstHandle {
@@ -184,7 +184,7 @@ func TestAFocusIntentNeverReachesATabASwitchLeft(t *testing.T) {
 	if _, err := manager.Wait(t.Context(), access, PageID(firstID), "", 1); err != nil {
 		t.Fatalf("lay the first tab out: %v", err)
 	}
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 	secondHandle := paneHandle(manager, access, secondID)
 	engine.take()
 	held, release := holdPresentation(manager, firstID)
@@ -199,7 +199,7 @@ func TestAFocusIntentNeverReachesATabASwitchLeft(t *testing.T) {
 	if err := <-switched; err != nil {
 		t.Fatalf("switch: %v", err)
 	}
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 	calls := engine.take()
 	for _, call := range calls {
 		if call == "focus:"+secondHandle {

@@ -191,7 +191,7 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 	access, pending, user := r.access, r.pending, r.user
 	defer pending.cancel()
 	defer close(pending.done)
-	tb, threadID := access.tb, access.ThreadID
+	tb, threadID := access.tb, access.ThreadID()
 	p := pending.p
 	m.emitThreadState(threadID)
 	if r.savedMoved {
@@ -218,6 +218,10 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 	var err error
 	var closed bool
 	var refused *admissionRefused
+	// ended is the page's end its engine reported before its listing, and
+	// released the jar that left with nothing in it.
+	var ended creationEnd
+	var released *jarScope
 	for {
 		m.startMu.Lock()
 		scope, err = m.openPageLocked(r.ctx, access.Caller(), p, admit)
@@ -233,6 +237,22 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 			return nil, lerr
 		}
 		closed = pending.closed
+		if err == nil && !closed && p.unlistedEnd.ended() {
+			// Its engine reported the page's end before this hold: a close
+			// fails the creation, a crash lists the crashed tab it is.
+			ended = p.unlistedEnd
+			delete(m.pending, p.id)
+			delete(scope.creating, p)
+			if !ended.closed {
+				m.listCrashedLocked(p, ended.crash)
+			}
+			if m.releaseScopeLocked(scope) {
+				released = scope
+			}
+			m.mu.Unlock()
+			m.startMu.Unlock()
+			break
+		}
 		if err == nil && !closed && !m.jarCurrentLocked(p) {
 			// The thread switched jars while the engine created the page in the
 			// old one: it is created again, under the same tab, in the new one.
@@ -259,6 +279,8 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 	}
 
 	switch {
+	case ended.ended():
+		return nil, m.endedBeforeListing(p, ended, released, user)
 	case err == nil && !closed:
 		// The tab leaves its creating state.
 		m.pageAdded(p)

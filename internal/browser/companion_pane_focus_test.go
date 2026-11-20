@@ -145,7 +145,7 @@ func newFocusWorld(t *testing.T) *focusWorld {
 	}{{w.a, w.aPage, &w.aMount}, {w.b, w.bPage, &w.bMount}} {
 		show := true
 		if _, err := m.Visibility(t.Context(), side.access, &show, PageID(side.page)); err != nil {
-			t.Fatalf("show %s: %v", side.access.ThreadID, err)
+			t.Fatalf("show %s: %v", side.access.ThreadID(), err)
 		}
 		*side.mount = MountID(attachSizedPane(t, m, e.recordingPaneHost, side.access))
 	}
@@ -249,8 +249,8 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			// out a tab the switch made active) is left to that pass's loop,
 			// which runs once more and reads the newest selection.
 			settle := func() {
-				awaitViewportIdle(t, w.m, string(w.a.ThreadID))
-				awaitViewportIdle(t, w.m, string(w.b.ThreadID))
+				awaitViewportIdle(t, w.m, string(w.a.ThreadID()))
+				awaitViewportIdle(t, w.m, string(w.b.ThreadID()))
 			}
 
 			tc.hide(t, w)

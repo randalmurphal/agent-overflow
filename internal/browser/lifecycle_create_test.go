@@ -240,7 +240,7 @@ func TestCloseThreadClosesCreatingAndFailedTabs(t *testing.T) {
 	if got := tabIDs(manager, access); len(got) != 2 {
 		t.Fatalf("tabs before the close = %v, want the failed and the creating one", got)
 	}
-	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	if got := tabIDs(manager, access); len(got) != 0 {
@@ -295,7 +295,7 @@ func TestSelectPresentsBeforePageWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	releaseNav := engine.hold(&engine.navGate)
@@ -322,7 +322,7 @@ func TestClosingATabWhileItRestores(t *testing.T) {
 	manager, engine := newLifecycleManager(t)
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/")
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	release := engine.hold(&engine.navGate)

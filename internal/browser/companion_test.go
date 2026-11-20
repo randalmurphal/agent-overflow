@@ -233,11 +233,11 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 	} {
 		wg.Go(func() {
 			if _, err := m.LabelPage(context.Background(), tc.access, tc.page.id, "preview"); err != nil {
-				t.Errorf("label %s: %v", tc.access.ThreadID, err)
+				t.Errorf("label %s: %v", tc.access.ThreadID(), err)
 				return
 			}
 			if _, err := m.Visibility(context.Background(), tc.access, &show, tc.page.id); err != nil {
-				t.Errorf("show %s: %v", tc.access.ThreadID, err)
+				t.Errorf("show %s: %v", tc.access.ThreadID(), err)
 			}
 		})
 	}
@@ -298,7 +298,7 @@ func TestStepCompanionPageMovesOneTabPerStepAndWraps(t *testing.T) {
 	if err := m.StepCompanionPage(t.Context(), access, 0); err == nil {
 		t.Fatal("a step of 0 was accepted")
 	}
-	if err := m.StepCompanionPage(t.Context(), m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), 1); err == nil {
+	if err := m.StepCompanionPage(t.Context(), m.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()}), 1); err == nil {
 		t.Fatal("a thread with no tabs stepped")
 	}
 }

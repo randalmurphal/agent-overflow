@@ -358,7 +358,7 @@ func openPage(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
 	t.Helper()
 	info, err := m.Open(t.Context(), access, rawURL, OpenOptions{})
 	if err != nil {
-		t.Fatalf("open %s for %s: %v", rawURL, access.ThreadID, err)
+		t.Fatalf("open %s for %s: %v", rawURL, access.ThreadID(), err)
 	}
 	return info
 }
@@ -366,7 +366,7 @@ func openPage(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
 func setJar(t *testing.T, m *Manager, access Access, kind string) {
 	t.Helper()
 	if err := m.SetJar(context.Background(), access, kind, JarSwitchConfirmed); err != nil {
-		t.Fatalf("set jar %s for %s: %v", kind, access.ThreadID, err)
+		t.Fatalf("set jar %s for %s: %v", kind, access.ThreadID(), err)
 	}
 }
 
@@ -878,7 +878,7 @@ func TestClosingAThreadForgetsItsJar(t *testing.T) {
 	access := proj.access(manager, "a", proj.one)
 	setJar(t, manager, access, JarThread)
 	openPage(t, manager, access, "https://example.test/")
-	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(manager.recordPath("a")); !os.IsNotExist(err) {

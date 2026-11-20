@@ -35,7 +35,7 @@ func TestNativeEngineRealWithdrawnOperationNeverRuns(t *testing.T) {
 	})
 	access := manager.Bind(Caller{ThreadID: "native-smoke-withdrawn", Workspace: resolvedTempDir(t)})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})

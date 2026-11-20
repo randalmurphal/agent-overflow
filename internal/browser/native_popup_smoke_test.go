@@ -25,7 +25,7 @@ func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-adopted-popup", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -70,7 +70,7 @@ func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-popup-child", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -129,7 +129,7 @@ func TestNativeEngineRealPopupThatClosesItselfIsNoTab(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-popup-closes", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})

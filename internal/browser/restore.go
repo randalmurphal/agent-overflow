@@ -63,7 +63,7 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID PageID,
 		m.mu.Unlock()
 		if started {
 			// The tab shows it is restoring (PageInfo.Restoring).
-			m.emitThreadState(access.ThreadID)
+			m.emitThreadState(access.ThreadID())
 		}
 		select {
 		case <-call.done:
@@ -146,15 +146,27 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		}
 
 		// The commit waits for a jar switch writing the thread's saved copy:
-		// a restore is a change of the tabs it captured.
+		// a restore is a change of the tabs it captured. It replaces the
+		// record it was admitted for and no other (tabHold).
 		if err := m.lockStructure(ctx, access.tb); err != nil {
 			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, err), m.abandonPage(scope, p))
 		}
 		closing := m.closed
-		refused := access.admitLocked()
-		current := !closing && refused == nil && m.suspended[rec.id] == rec
-		stale := current && !m.jarCurrentLocked(p)
-		if current && !stale {
+		held := m.heldLocked(access, tabHold{rec: rec})
+		refused := held
+		if errors.Is(held, errTabReplaced) {
+			refused = nil
+		}
+		current := !closing && held == nil
+		// Its engine reported the page's end before this hold: a close fails
+		// the restore, leaving the tab suspended, and a crash leaves it the
+		// crashed tab a listed page's crash does.
+		ended := p.unlistedEnd
+		if current && ended.crash != "" && !ended.closed {
+			rec.failure = ended.crash
+		}
+		stale := current && !ended.ended() && !m.jarCurrentLocked(p)
+		if current && !stale && !ended.ended() {
 			delete(scope.creating, p)
 			// The record's tab position may have moved while the page loaded.
 			p.tabOrder.Store(rec.tabOrder)
@@ -176,6 +188,15 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			// The page was closed or the browser turned off while it loaded.
 			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound), m.abandonPage(scope, p))
 		}
+		if ended.ended() {
+			cause := errClosedBeforeListing
+			if !ended.closed {
+				cause = errors.New("browser: " + ended.crash)
+				// The tab shows its failure.
+				m.emitThreadState(rec.owner.id)
+			}
+			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, cause), m.abandonPage(scope, p))
+		}
 		if stale {
 			m.abandonStale(scope, p, p)
 			continue
@@ -195,11 +216,8 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 // is bound to holds, rec is still its page's record and its thread has no
 // jar teardown pending. The caller holds m.mu.
 func (m *Manager) restoreAdmissionLocked(access Access, rec *suspendedPage) error {
-	if err := access.admitLocked(); err != nil {
+	if err := m.heldLocked(access, tabHold{rec: rec}); err != nil {
 		return err
-	}
-	if m.suspended[rec.id] != rec {
-		return errPageNotFound
 	}
 	if len(jarTeardownLocked(rec.owner)) > 0 {
 		return errJarTeardown

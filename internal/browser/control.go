@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,6 +17,9 @@ import (
 // presents it first; a suspended page then restores, a page that lags the
 // pane takes its size and is shown, and its info is read.
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID PageID) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	pageID = pageID.trim()
 	// An agent's selection keeps arrival order (selection.go).
 	if _, err := m.selectTab(access, turnorder.Unordered(), pageID); err != nil {
@@ -39,7 +43,7 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID PageID) 
 	if infoErr != nil {
 		return PageInfo{}, infoErr
 	}
-	m.publishPages(access.ThreadID)
+	m.publishPages(access.ThreadID())
 	return info, nil
 }
 
@@ -95,8 +99,8 @@ func (m *Manager) selectTabWhere(access Access, turn *turnorder.Turn, pick func(
 	if found.live != nil {
 		found.live.touch()
 	}
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
+	m.syncPanePresentation(access.ThreadID())
 	return pageID, nil
 }
 
@@ -117,6 +121,9 @@ func (m *Manager) labelHolderLocked(tb *threadBrowser, pageID PageID, label stri
 }
 
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, label string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	label = strings.TrimSpace(label)
 	if utf8.RuneCountInString(label) > maxPageLabelRunes {
 		return PageInfo{}, fmt.Errorf("browser: page label exceeds 80 characters")
@@ -124,25 +131,36 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 	if strings.IndexFunc(label, unicode.IsControl) >= 0 {
 		return PageInfo{}, fmt.Errorf("browser: page label cannot contain control characters")
 	}
-	p, _, err := m.resolvePage(ctx, access, pageID, false)
-	if err != nil {
-		return PageInfo{}, err
-	}
-	// A label is in the saved copy a jar switch writes.
-	if err := m.lockStructure(ctx, access.tb); err != nil {
-		return PageInfo{}, err
-	}
-	if holder := m.labelHolderLocked(access.tb, p.id, label); holder != "" {
+	// The label lands on the page the tab is when it commits, after any jar
+	// switch writing the saved copy that holds the label (lockHeld): a tab
+	// the switch suspended meanwhile is resolved, and restored, again.
+	for {
+		p, _, err := m.resolvePage(ctx, access, pageID, false)
+		if err != nil {
+			return PageInfo{}, err
+		}
+		err = m.lockHeld(ctx, access, tabHold{p: p})
+		if errors.Is(err, errTabReplaced) {
+			continue
+		}
+		if err != nil {
+			return PageInfo{}, err
+		}
+		if holder := m.labelHolderLocked(access.tb, p.id, label); holder != "" {
+			m.mu.Unlock()
+			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
+		}
+		info, _ := p.commitInfo(pageUpdate{Label: &label})
 		m.mu.Unlock()
-		return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
+		m.emitThreadState(access.ThreadID())
+		return info, nil
 	}
-	info, _ := p.commitInfo(pageUpdate{Label: &label})
-	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
-	return info, nil
 }
 
 func (m *Manager) NameSession(_ context.Context, access Access, name string) (SessionInfo, error) {
+	if err := access.bound(); err != nil {
+		return SessionInfo{}, err
+	}
 	name = strings.TrimSpace(name)
 	if utf8.RuneCountInString(name) > 120 {
 		return SessionInfo{}, fmt.Errorf("browser: session name exceeds 120 characters")
@@ -156,7 +174,7 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 	access.tb.session.UpdatedAt = time.Now()
 	info := access.tb.session
 	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
 	return info, nil
 }
 
@@ -165,6 +183,9 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 // cannot be restored still opens the companion, where its refusal shows and
 // the user can navigate or close it. Hiding touches no page.
 func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, pageID PageID) (SessionInfo, error) {
+	if err := access.bound(); err != nil {
+		return SessionInfo{}, err
+	}
 	pageID = pageID.trim()
 	if visible != nil && *visible {
 		if pageID == "" {
@@ -178,9 +199,6 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 				return SessionInfo{}, ambiguousPageError(tabs)
 			}
 		}
-		if !m.hasTab(access.tb, pageID) {
-			return SessionInfo{}, errPageNotFound
-		}
 	} else if pageID != "" {
 		return SessionInfo{}, fmt.Errorf("browser: page_id is only valid when visible is true")
 	}
@@ -192,6 +210,12 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 		return SessionInfo{}, err
 	}
 	tb := access.tb
+	// The tab shown is one the thread has in the hold that shows it: a
+	// close during the wait for a jar switch leaves nothing to show.
+	if visible != nil && *visible && !m.hasTabLocked(tb, pageID) {
+		m.mu.Unlock()
+		return SessionInfo{}, errPageNotFound
+	}
 	if visible != nil {
 		tb.session.Visible = *visible
 		if *visible {
@@ -202,8 +226,8 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 	info := tb.session
 	m.mu.Unlock()
 	if visible != nil {
-		m.emitThreadState(access.ThreadID)
-		m.syncPanePresentation(access.ThreadID)
+		m.emitThreadState(access.ThreadID())
+		m.syncPanePresentation(access.ThreadID())
 	}
 	return info, nil
 }
@@ -211,6 +235,9 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 // Pages lists the thread's pages, suspended ones included as they were saved:
 // listing is not a touch, so it restores nothing.
 func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(access.tb)
 	var activePageID PageID
@@ -240,7 +267,7 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 	}
 	// What the reads found, the tabs show.
-	m.publishPages(access.ThreadID)
+	m.publishPages(access.ThreadID())
 	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
 	return out, nil
 }

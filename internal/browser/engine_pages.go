@@ -36,6 +36,7 @@ func (m *Manager) popupOpened(popup enginePopup) {
 func (m *Manager) pageClosed(handle ids.PageHandle) {
 	m.pageEnds.report(handle, func() bool {
 		m.admissions.Observe(handle, popupadmit.Closed())
+		m.noteCreationEnd(handle, true, "")
 		return true
 	}, func() { m.removeClosedPage(handle) })
 }
@@ -59,6 +60,7 @@ type listingDriver interface {
 // closed; any other page is handled as a crashed tab (pageCrashed).
 func (m *Manager) pageCrashedReport(handle ids.PageHandle, reason string) {
 	m.pageEnds.report(handle, func() bool {
+		m.noteCreationEnd(handle, false, reason)
 		return m.admissions.Observe(handle, popupadmit.Crashed(reason)) == popupadmit.Unheld
 	}, func() { m.pageCrashed(handle, reason) })
 }

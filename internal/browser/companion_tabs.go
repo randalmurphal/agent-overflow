@@ -80,6 +80,9 @@ func reopenable(rawURL string) bool {
 // after it arrives as a "teardown" event. A tab still opening or restoring
 // closes at once. The tab can be reopened (ReopenClosedTab).
 func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	return m.closeUserTabs(ctx, access, func(tabs []threadTab) []PageID {
 		if slices.ContainsFunc(tabs, func(tab threadTab) bool { return tab.id == pageID }) {
@@ -157,6 +160,9 @@ func (s *closedTabs) push(tab closedTab) {
 // with ctx's numbered selection passed or its pane detached (selection.go),
 // or a tab refused, it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
@@ -176,7 +182,10 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 		m.reopenRead()
 	}
 	_, err = m.openUserTab(ctx, access, turn, claim.address, claim.label, claim.index, claim)
-	if errors.Is(err, errSelectionPassed) || errors.Is(err, errClaimVoid) {
+	if errors.Is(err, errSelectionPassed) || errors.Is(err, errClaimVoid) || errors.Is(err, errTabReplaced) {
+		// Nothing to report: the closed tab was forgotten, or the tab it
+		// opened was replaced before its address loaded, which then loads
+		// nowhere.
 		return nil
 	}
 	return err
@@ -189,6 +198,9 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 // no address to load. With ctx's numbered selection passed or its pane
 // detached (selection.go) it does nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
@@ -209,9 +221,10 @@ func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pag
 	if errors.Is(err, errSelectionPassed) {
 		return nil
 	}
-	if errors.Is(err, errClaimVoid) {
+	if errors.Is(err, errClaimVoid) || errors.Is(err, errTabReplaced) {
 		// The thread's browsing was forgotten (a clear, a jar switch) after
-		// the duplicate read its source: it has nothing to duplicate.
+		// the duplicate read its source, or its new tab was replaced before
+		// the source's address loaded: it has nothing to duplicate.
 		return errPageNotFound
 	}
 	return err
@@ -229,6 +242,9 @@ const (
 // its turn as CloseCompanionPage does and closes the tabs it finds then, in
 // that turn's hold; with pageID gone by then it closes nothing.
 func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID PageID, which string) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	if which != CloseOtherTabs && which != CloseTabsRight {
 		return fmt.Errorf("browser: unknown set of tabs to close %q", truncateUTF8(which, 32))
@@ -253,6 +269,9 @@ func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID 
 // live page reloads. A tab gone before the reload ran (Mod+R, then Mod+W)
 // is reloaded by nothing, and no other tab is.
 func (m *Manager) ReloadCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	m.mu.Lock()
 	rec := m.suspended[pageID]

@@ -813,7 +813,7 @@ func TestParkedDownloadsAreBounded(t *testing.T) {
 func TestParkedDownloadsWithNoListedOpenerAreCanceled(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManager(t)
 	// Another thread's page keeps the profile, which cancels.
-	if _, err := manager.Open(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), "https://example.test/", OpenOptions{}); err != nil {
+	if _, err := manager.Open(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()}), "https://example.test/", OpenOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	popupDownload(manager, engine, "popup", "dl-running", opener)
@@ -919,7 +919,7 @@ func TestAPopupListedWithAHeldReportIsPushedOnce(t *testing.T) {
 	var mu sync.Mutex
 	var pushed []CompanionEvent
 	manager.SetEventSink(func(event CompanionEvent) {
-		if ThreadID(event.ThreadID) == access.ThreadID && event.Kind == "state" {
+		if ThreadID(event.ThreadID) == access.ThreadID() && event.Kind == "state" {
 			mu.Lock()
 			pushed = append(pushed, event)
 			mu.Unlock()
@@ -948,7 +948,7 @@ func TestAPopupIsListedWithItsHistory(t *testing.T) {
 	var mu sync.Mutex
 	var pushed []CompanionEvent
 	manager.SetEventSink(func(event CompanionEvent) {
-		if ThreadID(event.ThreadID) == access.ThreadID && event.Kind == "state" {
+		if ThreadID(event.ThreadID) == access.ThreadID() && event.Kind == "state" {
 			mu.Lock()
 			pushed = append(pushed, event)
 			mu.Unlock()

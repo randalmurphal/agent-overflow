@@ -114,8 +114,8 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 	for _, s := range sides {
 		s.ownName, s.otherName = filepath.Base(s.own), filepath.Base(s.other)
 		t.Cleanup(func() {
-			if err := manager.CloseThread(context.Background(), s.access.ThreadID); err != nil {
-				t.Errorf("close %s: %v", s.access.ThreadID, err)
+			if err := manager.CloseThread(context.Background(), s.access.ThreadID()); err != nil {
+				t.Errorf("close %s: %v", s.access.ThreadID(), err)
 			}
 		})
 		if err := manager.SetJar(context.Background(), s.access, JarProject, JarSwitchConfirmed); err != nil {

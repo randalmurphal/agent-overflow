@@ -799,7 +799,7 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		e.mu.Lock()
 		actions, lastStop := e.actions[string(id)], e.lastStop[string(id)]
 		e.mu.Unlock()
-		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, id) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
+		if session.active && (!e.f.manager.pageShown(e.f.access.tb, id) || !e.f.manager.mountOf(e.f.access.tb, session.owner)) {
 			t.Errorf("%s: %s: a search of %s is left on a page not shown, or for a pane that is gone", name, page, e.labels[string(session.owner)])
 		}
 		if !session.active && (session.owner != "" || session.seq != 0) {
@@ -932,7 +932,7 @@ func findTableOps() []findTableOp {
 		other("switch away", func(t *testing.T, e *findTableEnv) { e.switchTo(t, e.other) }),
 		other("switch back", func(t *testing.T, e *findTableEnv) { e.switchTo(t, e.f.pageID) }),
 		other("suspend and restore", func(t *testing.T, e *findTableEnv) {
-			if err := e.f.manager.SuspendThread(t.Context(), e.f.access.ThreadID); err != nil {
+			if err := e.f.manager.SuspendThread(t.Context(), e.f.access.ThreadID()); err != nil {
 				t.Fatal(err)
 			}
 			e.switchTo(t, e.f.pageID)

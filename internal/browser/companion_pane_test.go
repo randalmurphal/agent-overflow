@@ -305,12 +305,12 @@ func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, 
 	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
-	if got := <-applied; ThreadID(got) != access.ThreadID {
-		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID)
+	if got := <-applied; ThreadID(got) != access.ThreadID() {
+		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID())
 	}
 	// The drain may owe another pass (a presentation pass that saw the page
 	// lag asks for one); a pass left running would race the caller's.
-	awaitViewportIdle(t, manager, string(access.ThreadID))
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
 	for len(applied) > 0 {
 		<-applied
 	}
@@ -363,7 +363,7 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		manager.syncPanePresentation(access.ThreadID)
+		manager.syncPanePresentation(access.ThreadID())
 	}()
 	<-entered
 	manager.DetachPane(MountID(mount))

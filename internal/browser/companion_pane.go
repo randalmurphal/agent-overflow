@@ -136,7 +136,6 @@ func overlayPaneLayout(placement PanePlacement, overlayW, overlayH int) (layout 
 // unit connection cleanup releases, so a dead UI can never leave a native view
 // painted over a window that no longer renders the pane under it.
 type paneMount struct {
-	threadID ThreadID
 	// owner is the thread lifetime the mount attached to: it presents that
 	// lifetime's pages and orders that lifetime's commands, and nothing
 	// after the lifetime's close (CloseThread ends its order).
@@ -154,6 +153,19 @@ type paneMount struct {
 	// order admits the numbered tab commands made in the mount in the
 	// user's order (selection.go).
 	order *turnorder.Order
+}
+
+// mountLocked answers the pane mount id when it is attached to the thread
+// lifetime tb and tb is still its thread's: the one admission of a mount
+// for every entry point that takes one (a find, a focus intent, a numbered
+// command), so a mount of a lifetime the thread's close retired reaches
+// nothing of a later one. The caller holds m.mu.
+func (m *Manager) mountLocked(tb *threadBrowser, id MountID) (paneMount, bool) {
+	mount, ok := m.panes[id]
+	if !ok || tb == nil || mount.owner != tb || tb.detached.Load() {
+		return paneMount{}, false
+	}
+	return mount, true
 }
 
 // AttachPane registers one mounted pane surface for a thread and answers the
@@ -178,7 +190,7 @@ func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
 		return CompanionSubscription{}, fmt.Errorf("browser: too many mounted browser panes")
 	}
 	m.paneSeq++
-	m.panes[id] = paneMount{threadID: caller.ThreadID, owner: tb, seq: m.paneSeq}
+	m.panes[id] = paneMount{owner: tb, seq: m.paneSeq}
 	m.mu.Unlock()
 	return CompanionSubscription{ID: string(id), State: state}, nil
 }
@@ -216,9 +228,9 @@ func (m *Manager) DetachPane(id MountID) {
 	}
 	if ok {
 		if resize {
-			m.scheduleViewport(mount.threadID)
+			m.scheduleViewport(mount.owner.id)
 		}
-		m.syncPanePresentation(mount.threadID)
+		m.syncPanePresentation(mount.owner.id)
 	}
 }
 
@@ -283,9 +295,9 @@ func (m *Manager) SetPaneRect(id MountID, rect PaneRect) error {
 		m.applyPageBase(p)
 	}
 	if resize {
-		m.scheduleViewport(mount.threadID)
+		m.scheduleViewport(mount.owner.id)
 	}
-	m.syncPanePresentation(mount.threadID)
+	m.syncPanePresentation(mount.owner.id)
 	return nil
 }
 
@@ -346,6 +358,9 @@ func (m *Manager) presentedPageLocked(tb *threadBrowser) PageID {
 // WKWebView (Safari's Develop menu is the inspector) and the fake engine
 // answer with an explained refusal rather than a silent no-op.
 func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	host, ok := m.engine.(paneDevTools)
 	if !ok {
 		return fmt.Errorf("browser: devtools are not available on this browser engine")
