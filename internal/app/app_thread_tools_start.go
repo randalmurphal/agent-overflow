@@ -246,6 +246,9 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if open, err := t.app.store.CallerRunOpen(caller.ThreadID, "", target.ID); err != nil {
 		return threadtools.RequestAck{}, err
 	} else if open {
+		if err := t.app.awaitRestRecovered(ctx); err != nil {
+			return threadtools.RequestAck{}, err
+		}
 		if err := t.app.endRunsAtRest(target.ID); err != nil {
 			return threadtools.RequestAck{}, err
 		}

@@ -1,9 +1,12 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
@@ -262,8 +265,8 @@ func workBy(opts sendMessageOptions) (by string, nudges bool) {
 // message: until then no rest ends a run on the thread, and a nudge whose
 // message was not placed records no run. An error is returned before
 // anything is recorded, and the caller fails with it.
-func (a *App) beginWork(threadID, by string, nudges bool) (done func(placed bool), err error) {
-	if err := a.endRunsBeforeWork(threadID); err != nil {
+func (a *App) beginWork(ctx context.Context, threadID, by string, nudges bool) (done func(placed bool), err error) {
+	if err := a.endRunsBeforeWork(ctx, threadID); err != nil {
 		return nil, err
 	}
 	release := a.workStarts.hold(threadID)
@@ -296,10 +299,12 @@ func (a *App) beginWork(threadID, by string, nudges bool) (done func(placed bool
 // endRunsBeforeWork ends the runs on threadID that its rest has already
 // ended and the rest pass has not yet recorded, before a message starts work
 // there: that work is a run of its own, the person's, another thread's or a
-// later request's, and never extends a run that ended. Its caller fails
-// with the error before it dispatches anything, since the work would
-// otherwise count in a run that ended.
-func (a *App) endRunsBeforeWork(threadID string) error {
+// later request's, and never extends a run that ended. While the boot has
+// not recovered what threads wait on, no rest is read, so it waits for that
+// first (awaitRestRecovered). Its caller fails with the error before it
+// dispatches anything, since the work would otherwise count in a run that
+// ended.
+func (a *App) endRunsBeforeWork(ctx context.Context, threadID string) error {
 	open, err := a.store.ThreadRunsEnding(threadID)
 	if err != nil {
 		return err
@@ -307,7 +312,47 @@ func (a *App) endRunsBeforeWork(threadID string) error {
 	if !open {
 		return nil
 	}
+	if err := a.awaitRestRecovered(ctx); err != nil {
+		return err
+	}
 	return a.endRunsAtRest(threadID)
+}
+
+// restRecoveryWait bounds how long a message waits for the boot's recovery
+// of rest (awaitRestRecovered): several of the sweep's retries of a failed
+// recovery read (restRecoveryRetry).
+const restRecoveryWait = 30 * time.Second
+
+// errRestRecovering fails a message whose run boundary waited out
+// restRecoveryWait: the boot has not yet read what its threads wait on, so
+// whether the thread's run ended cannot be decided.
+var errRestRecovering = errors.New("the app is still recovering what its agents were doing before it restarted; send again in a moment")
+
+// awaitRestRecovered returns once the boot's recovery of rest has lifted
+// its bar (recoverRestAtBoot), at once when none stands. It fails with
+// errRestRecovering after restRecoveryWait (a.restRecoveryWait in tests),
+// and with ctx's error when ctx ends first.
+func (a *App) awaitRestRecovered(ctx context.Context) error {
+	a.threadRequests.mu.Lock()
+	lifted := a.threadRequests.rest.lifted
+	a.threadRequests.mu.Unlock()
+	if lifted == nil {
+		return nil
+	}
+	wait := restRecoveryWait
+	if a.restRecoveryWaitOverride > 0 {
+		wait = a.restRecoveryWaitOverride
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-lifted:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errRestRecovering
+	}
 }
 
 // endRunsAtRest ends the runs of the settled requests to threadID if it is

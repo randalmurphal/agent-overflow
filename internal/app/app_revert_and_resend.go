@@ -125,7 +125,7 @@ func (a *App) RevertConversationAndResendMessage(
 	defer releaseAdmission()
 	// Work the replacement starts on a thread at rest is a run of its own,
 	// and on an owned worker its spawner's.
-	workDone, err := a.beginWork(threadID, "", true)
+	workDone, err := a.beginWork(ctx, threadID, "", true)
 	if err != nil {
 		return result, fmt.Errorf("revert and resend: %w", err)
 	}

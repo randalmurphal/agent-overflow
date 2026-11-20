@@ -480,7 +480,7 @@ func (a *App) sendMessageWithOptions(
 	// Work this message starts on a thread at rest is a run of its own, and
 	// on an owned worker the person's or another thread's is its spawner's.
 	by, nudges := workBy(opts)
-	workDone, err := a.beginWork(threadID, by, nudges)
+	workDone, err := a.beginWork(ctx, threadID, by, nudges)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}

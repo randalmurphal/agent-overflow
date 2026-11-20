@@ -42,6 +42,9 @@ type restPasses struct {
 	checking bool
 	again    bool
 	barred   bool
+	// lifted is closed when the bar lifts, for a message that must wait for
+	// it (awaitRestRecovered); nil while no bar stands.
+	lifted   chan struct{}
 	recovery restRecovery
 	// failed are the threads whose held requests' last read of rest failed,
 	// read again by the sweep's next pass (retryFailedRestReads).
@@ -563,6 +566,9 @@ func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.Threa
 func (a *App) barRestAtBoot() {
 	a.threadRequests.mu.Lock()
 	a.threadRequests.rest.barred = true
+	if a.threadRequests.rest.lifted == nil {
+		a.threadRequests.rest.lifted = make(chan struct{})
+	}
 	// A run the last process left open is read once rest is recovered.
 	a.threadRequests.rest.runsOpen = true
 	a.threadRequests.mu.Unlock()
@@ -653,6 +659,10 @@ func (a *App) retryRestRecovery() {
 	}
 	if done {
 		r.rest.barred, r.rest.again = false, false
+		if r.rest.lifted != nil {
+			close(r.rest.lifted)
+			r.rest.lifted = nil
+		}
 	}
 	r.mu.Unlock()
 	if done {

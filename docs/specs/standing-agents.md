@@ -1963,7 +1963,10 @@ closes up their spacing so the row holds at a phone width.
   first ends the runs its rest already ended; a send, an edit and resend
   or a thread tools request that cannot read or write that boundary, or
   read where its run starts on a paired computer, fails with the error
-  before anything is sent. A spawn's run is never reopened: once
+  before anything is sent. Until the boot has recovered what its threads
+  wait on, no rest is read, so a message that would end a run first waits
+  for that recovery, up to 30 seconds, and then fails asking the person to
+  send again; a thread tools call's wait ends with the call. A spawn's run is never reopened: once
   its thread rested, work anything else starts there (the person, another
   thread's send, its own wake) does not move the spawn out of Past. On an
   owned worker the person's or another thread's message is a nudge, a run

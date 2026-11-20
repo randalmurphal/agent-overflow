@@ -853,6 +853,9 @@ type App struct {
 	// its worker is at rest and then gives the worker work in that run holds
 	// the state the rest pass leaves only at the worker's next rest.
 	runEndsHeldForTest sync.Map
+	// restRecoveryWaitOverride, when positive, replaces restRecoveryWait,
+	// how long a message waits for the boot's recovery of rest.
+	restRecoveryWaitOverride time.Duration
 	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
 	// sleeps until the channel it returns for the delay asked sends
 	// (sweepSleep).
