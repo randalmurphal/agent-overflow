@@ -267,8 +267,26 @@ func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
 // one, or until limit items when limit is above zero; complete reports
 // that the last page was read with every item kept, and seen says when
 // and under which credential read Jira answered. A failure returns the
-// items read before it.
-func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, seen pagesSeen, err error) {
+// items read before it. The pages are one walk (walk.go).
+func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) ([]T, bool, pagesSeen, error) {
+	r, err := walk(ctx, func(ctx context.Context) (offsetRead[T], error) {
+		var r offsetRead[T]
+		var err error
+		r.out, r.complete, r.seen, err = offsetWalk[T](ctx, c, path, q, size, limit)
+		return r, err
+	})
+	return r.out, r.complete, r.seen, err
+}
+
+// offsetRead is what offsetPages returns, as one value for walk.
+type offsetRead[T any] struct {
+	out      []T
+	complete bool
+	seen     pagesSeen
+}
+
+// offsetWalk is one walk of offsetPages.
+func offsetWalk[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, seen pagesSeen, err error) {
 	for start := 0; ; {
 		q.Set("startAt", strconv.Itoa(start))
 		q.Set("maxResults", strconv.Itoa(size))
@@ -304,18 +322,15 @@ func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Value
 }
 
 // pagesSeen is what the answers of one paged read say about it: date is
-// the first answer's (answerDate), and mark the credential read every
-// answer was drawn under, zero when they differ.
+// the first answer's (answerDate), and mark the credential read the
+// answers were drawn under, which walk makes the same for all of them.
 type pagesSeen struct {
 	date time.Time
 	mark trackerapi.CredentialMark
 }
 
 func (p *pagesSeen) see(first bool, resp *trackerapi.Response) {
-	switch m := resp.CredentialMark(); {
-	case first:
-		p.date, p.mark = answerDate(resp), m
-	case m != p.mark:
-		p.mark = trackerapi.CredentialMark{}
+	if first {
+		p.date, p.mark = answerDate(resp), resp.CredentialMark()
 	}
 }

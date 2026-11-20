@@ -46,7 +46,7 @@ func (c *Client) DeletedWorklogs(ctx context.Context, since time.Time) (WorklogC
 // worklogChanges walks worklog/updated or worklog/deleted. Each page
 // that is not the last continues from its until, as Jira's nextPage
 // does; a page whose until does not move forward fails the walk rather
-// than loop.
+// than loop. The pages are one walk (walk.go).
 func (c *Client) worklogChanges(ctx context.Context, kind string, since time.Time) (WorklogChanges, error) {
 	out := WorklogChanges{Until: since}
 	if err := c.admit(ctx); err != nil {
@@ -55,6 +55,12 @@ func (c *Client) worklogChanges(ctx context.Context, kind string, since time.Tim
 	if since.Before(time.UnixMilli(0)) {
 		return out, notSent("%s worklogs since %s, before 1970", kind, since.Format(time.RFC3339))
 	}
+	return walk(ctx, func(ctx context.Context) (WorklogChanges, error) { return c.worklogChangeWalk(ctx, kind, since) })
+}
+
+// worklogChangeWalk is one walk of worklogChanges.
+func (c *Client) worklogChangeWalk(ctx context.Context, kind string, since time.Time) (WorklogChanges, error) {
+	out := WorklogChanges{Until: since}
 	from := since.UnixMilli()
 	for {
 		var page struct {
@@ -109,6 +115,16 @@ func (c *Client) WorklogsByID(ctx context.Context, ids []int64) (WorklogList, er
 		}
 		seen[id] = true
 	}
+	return walk(ctx, func(ctx context.Context) (WorklogList, error) { return c.worklogsByID(ctx, ids) })
+}
+
+// worklogsByID is one walk of WorklogsByID.
+func (c *Client) worklogsByID(ctx context.Context, ids []int64) (WorklogList, error) {
+	var out WorklogList
+	named := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		named[id] = true
+	}
 	for group := range slices.Chunk(ids, worklogListLimit) {
 		var page []worklogJSON
 		_, err := c.call(ctx, trackerapi.Request{
@@ -120,8 +136,8 @@ func (c *Client) WorklogsByID(ctx context.Context, ids []int64) (WorklogList, er
 		for _, j := range page {
 			w := j.worklog()
 			id, _ := strconv.ParseInt(w.ID, 10, 64)
-			if seen[id] {
-				seen[id] = false // each named worklog counts once
+			if named[id] {
+				named[id] = false // each named worklog counts once
 				out.Worklogs = append(out.Worklogs, w)
 			}
 		}

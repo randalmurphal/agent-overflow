@@ -165,12 +165,15 @@ func (c *Client) ListAllIssues(ctx context.Context, q ListQuery, limit int) (Sea
 
 func (c *Client) listAll(ctx context.Context, q ListQuery, limit int) (SearchResult, error) {
 	size := pageSize(q.MaxResults, 100, maxSearchPage)
-	return tokenPages("issue list", q.PageToken, limit, func(token string, room int) (SearchPage, error) {
-		q.PageToken, q.MaxResults = token, size
-		if room > 0 {
-			q.MaxResults = min(size, room)
-		}
-		return c.listPage(ctx, q)
+	first := q.PageToken
+	return walk(ctx, func(ctx context.Context) (SearchResult, error) {
+		return tokenPages("issue list", first, limit, func(token string, room int) (SearchPage, error) {
+			q.PageToken, q.MaxResults = token, size
+			if room > 0 {
+				q.MaxResults = min(size, room)
+			}
+			return c.listPage(ctx, q)
+		})
 	})
 }
 

@@ -298,7 +298,7 @@ func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueT
 	}
 	path := "issue/createmeta/" + url.PathEscape(project) + "/issuetypes"
 	var out []IssueType
-	err := createMetaPages(ctx, c, path, func(p createMetaPage) int {
+	err := createMetaPages(ctx, c, path, func() { out = nil }, func(p createMetaPage) int {
 		types := append(p.IssueTypes, p.IssueTypes2...)
 		for _, t := range types {
 			out = append(out, t.issueType())
@@ -324,7 +324,7 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 	}
 	path := "issue/createmeta/" + url.PathEscape(project) + "/issuetypes/" + url.PathEscape(issueTypeID)
 	var s Screen
-	err := createMetaPages(ctx, c, path, func(p createMetaPage) int {
+	err := createMetaPages(ctx, c, path, func() { s = Screen{} }, func(p createMetaPage) int {
 		fields := append(p.Fields, p.Results...)
 		for _, f := range fields {
 			s.Fields = append(s.Fields, f.meta(""))
@@ -337,9 +337,19 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 	return s, nil
 }
 
-// createMetaPages reads every page of path, handing each to take, which
-// returns how many items it held.
-func createMetaPages(ctx context.Context, c *Client, path string, take func(createMetaPage) int) error {
+// createMetaPages reads every page of path as one walk (walk.go),
+// handing each to take, which returns how many items it held; reset
+// drops what take kept before the walk starts again.
+func createMetaPages(ctx context.Context, c *Client, path string, reset func(), take func(createMetaPage) int) error {
+	_, err := walk(ctx, func(ctx context.Context) (struct{}, error) {
+		reset()
+		return struct{}{}, createMetaWalk(ctx, c, path, take)
+	})
+	return err
+}
+
+// createMetaWalk is one walk of createMetaPages.
+func createMetaWalk(ctx context.Context, c *Client, path string, take func(createMetaPage) int) error {
 	for start := 0; ; {
 		q := url.Values{"startAt": {strconv.Itoa(start)}, "maxResults": {strconv.Itoa(createMetaPageSize)}}
 		var page createMetaPage

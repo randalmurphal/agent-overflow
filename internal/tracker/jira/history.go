@@ -165,10 +165,15 @@ type BulkChangelog struct {
 // failure returns what was read with the error; a repeated page token or
 // an empty page that names a next one fails it rather than loop.
 func (c *Client) BulkChangelogs(ctx context.Context, q ChangelogQuery) (BulkChangelog, error) {
-	out := BulkChangelog{ByIssue: map[string][]ChangeEntry{}}
 	if err := c.admit(ctx); err != nil {
-		return out, err
+		return BulkChangelog{ByIssue: map[string][]ChangeEntry{}}, err
 	}
+	return walk(ctx, func(ctx context.Context) (BulkChangelog, error) { return c.bulkChangelogs(ctx, q) })
+}
+
+// bulkChangelogs is one walk of BulkChangelogs.
+func (c *Client) bulkChangelogs(ctx context.Context, q ChangelogQuery) (BulkChangelog, error) {
+	out := BulkChangelog{ByIssue: map[string][]ChangeEntry{}}
 	if len(q.Issues) == 0 {
 		return out, notSent("a changelog fetch needs issues")
 	}

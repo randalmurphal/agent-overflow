@@ -317,7 +317,22 @@ func (c *Client) resolveUser(ctx context.Context, who string) (User, error) {
 // comes back empty, or the end of Jira's window, when complete is false
 // because more users may match than it lists. A page that holds no user
 // not seen already fails the walk rather than repeat it.
-func (c *Client) usersMatching(ctx context.Context, query string) (found []User, complete bool, err error) {
+func (c *Client) usersMatching(ctx context.Context, query string) ([]User, bool, error) {
+	r, err := walk(ctx, func(ctx context.Context) (matched, error) {
+		found, complete, err := c.usersMatchingWalk(ctx, query)
+		return matched{found, complete}, err
+	})
+	return r.found, r.complete, err
+}
+
+// matched is what usersMatching returns, as one value for walk.
+type matched struct {
+	found    []User
+	complete bool
+}
+
+// usersMatchingWalk is one walk of usersMatching.
+func (c *Client) usersMatchingWalk(ctx context.Context, query string) (found []User, complete bool, err error) {
 	seen := map[string]bool{}
 	for start := 0; start < maxUserSearch; {
 		page, err := c.userSearch(ctx, url.Values{"query": {query}}, start, maxUserSearch-start)

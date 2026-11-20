@@ -267,6 +267,9 @@ func TestForgetDetachesTheCheckInFlight(t *testing.T) {
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
+	// The new check is held open until the test has read which check
+	// runs, so the read does not race the check's end.
+	releaseNew, openNew := newGate(t)
 	oldEntered := make(chan struct{})
 	var checks atomic.Int32
 	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
@@ -276,6 +279,7 @@ func TestForgetDetachesTheCheckInFlight(t *testing.T) {
 			jiratest.Reply(200, userOneJSON)(w, r, b)
 			return
 		}
+		<-releaseNew
 		jiratest.Reply(401, `{}`)(w, r, b)
 	})
 	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
@@ -301,6 +305,7 @@ func TestForgetDetachesTheCheckInFlight(t *testing.T) {
 	if joins.check(1) == joins.check(0) || running != joins.check(1) {
 		t.Fatal("a 404 after ForgetCredential joined or queued behind the old credential's check")
 	}
+	openNew()
 	if err := <-second; !isAuth(err) {
 		t.Errorf("the 404 after the forget: %v", err)
 	}

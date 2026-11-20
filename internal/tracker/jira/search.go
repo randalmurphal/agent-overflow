@@ -161,15 +161,18 @@ type SearchResult struct {
 // most limit issues when limit is above zero. A failure after some pages
 // returns their issues and warnings with the error; a token Jira hands
 // out twice, or an empty page that names a next one, fails the search
-// instead of looping.
+// instead of looping. The pages are one walk (walk.go).
 func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) (SearchResult, error) {
 	size := pageSize(q.MaxResults, 100, maxSearchPage)
-	return tokenPages("search", q.PageToken, limit, func(token string, room int) (SearchPage, error) {
-		q.PageToken, q.MaxResults = token, size
-		if room > 0 {
-			q.MaxResults = min(size, room)
-		}
-		return c.Search(ctx, q)
+	first := q.PageToken
+	return walk(ctx, func(ctx context.Context) (SearchResult, error) {
+		return tokenPages("search", first, limit, func(token string, room int) (SearchPage, error) {
+			q.PageToken, q.MaxResults = token, size
+			if room > 0 {
+				q.MaxResults = min(size, room)
+			}
+			return c.Search(ctx, q)
+		})
 	})
 }
 
@@ -265,6 +268,11 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 	if err := c.admit(ctx); err != nil {
 		return BulkResult{}, err
 	}
+	return walk(ctx, func(ctx context.Context) (BulkResult, error) { return c.bulkFetch(ctx, refs, fields) })
+}
+
+// bulkFetch is one walk of BulkFetch.
+func (c *Client) bulkFetch(ctx context.Context, refs, fields []string) (BulkResult, error) {
 	named := make(map[string]bool, len(refs))
 	distinct := make([]string, 0, len(refs))
 	for _, ref := range refs {

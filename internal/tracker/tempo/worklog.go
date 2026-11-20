@@ -163,7 +163,9 @@ func (q WorklogQuery) request() (trackerapi.Request, error) {
 // fn in Tempo's order. A caller that keeps only what it needs from each page
 // bounds its memory by one page. An error from fn ends the listing and
 // is returned as is; a failure on a later page comes after fn has seen
-// the earlier ones.
+// the earlier ones, and so does a page drawn under another credential
+// read than the first, which fails the listing with an error matching
+// trackerapi.ErrCredentialChanged (Worklogs reads again instead).
 func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Worklog) error) error {
 	if err := c.admit(); err != nil {
 		return err
@@ -197,10 +199,13 @@ func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Wor
 // since a part of the range would read as all of it; WorklogPages hands
 // over each page as it is read.
 func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error) {
-	var out []Worklog
-	err := c.WorklogPages(ctx, q, func(page []Worklog) error {
-		out = append(out, page...)
-		return nil
+	out, err := walk(ctx, func(ctx context.Context) ([]Worklog, error) {
+		var out []Worklog
+		err := c.WorklogPages(ctx, q, func(page []Worklog) error {
+			out = append(out, page...)
+			return nil
+		})
+		return out, err
 	})
 	if err != nil {
 		return nil, err

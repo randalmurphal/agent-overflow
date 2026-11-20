@@ -243,10 +243,20 @@ type costRun struct {
 
 func newCostRun(t *testing.T, withTempo bool) *costRun {
 	t.Helper()
+	return newCostRunOf(t, withTempo, nil)
+}
+
+// newCostRunOf is newCostRun on costFixture changed by edit, when not
+// nil.
+func newCostRunOf(t *testing.T, withTempo bool, edit func(*trackerfake.JiraSite)) *costRun {
+	t.Helper()
 	clock := &scenarioClock{now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
 	e := trackerfake.New(trackerfake.Options{Now: clock.Now})
 	t.Cleanup(e.Close)
 	site := costFixture(clock.Now())
+	if edit != nil {
+		edit(&site)
+	}
 	if !withTempo {
 		site.Tempo = nil
 	}

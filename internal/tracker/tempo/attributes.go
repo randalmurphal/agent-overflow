@@ -81,40 +81,45 @@ func (c *Client) Attributes(ctx context.Context) ([]Attribute, error) {
 // attributes is the cached list, shared: callers do not change it.
 func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 	v, err := c.site.attributes.get(ctx, c.http.CredentialMark, func(ctx context.Context) ([]Attribute, trackerapi.CredentialMark, error) {
-		var (
-			out     []Attribute
-			mark    trackerapi.CredentialMark
-			first   = true
-			options = 0
-		)
-		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(resp *trackerapi.Response, list []attributeJSON) error {
-			// The list is the credential's when every page was drawn
-			// under one read of it.
-			if m := resp.CredentialMark(); first {
-				mark, first = m, false
-			} else if m != mark {
-				mark = trackerapi.CredentialMark{}
-			}
-			for _, a := range list {
-				options += len(a.Values)
-				if len(out) >= maxAttributes || options > maxOptions {
-					return fmt.Errorf("the site has more than %d work attributes or %d options, the most this client holds", maxAttributes, maxOptions)
-				}
-				attr := Attribute{Key: a.Key, Name: a.Name, Type: AttributeType(a.Type), Required: a.Required}
-				for _, v := range a.Values {
-					attr.Options = append(attr.Options, Option{Value: v, Name: a.Names[v]})
-				}
-				attr.optionsText = optionNames(attr.Options)
-				out = append(out, attr)
-			}
-			return nil
-		})
-		return out, mark, err
+		r, err := walk(ctx, c.readAttributes)
+		return r.list, r.mark, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read work attributes: %w", err)
 	}
 	return v, nil
+}
+
+// attributeRead is one walk of the work attributes with the credential
+// read its pages were drawn under, one for all of them (walk).
+type attributeRead struct {
+	list []Attribute
+	mark trackerapi.CredentialMark
+}
+
+// readAttributes is one walk of the work attributes.
+func (c *Client) readAttributes(ctx context.Context) (attributeRead, error) {
+	var (
+		out     attributeRead
+		options = 0
+	)
+	err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(resp *trackerapi.Response, list []attributeJSON) error {
+		out.mark = resp.CredentialMark()
+		for _, a := range list {
+			options += len(a.Values)
+			if len(out.list) >= maxAttributes || options > maxOptions {
+				return fmt.Errorf("the site has more than %d work attributes or %d options, the most this client holds", maxAttributes, maxOptions)
+			}
+			attr := Attribute{Key: a.Key, Name: a.Name, Type: AttributeType(a.Type), Required: a.Required}
+			for _, v := range a.Values {
+				attr.Options = append(attr.Options, Option{Value: v, Name: a.Names[v]})
+			}
+			attr.optionsText = optionNames(attr.Options)
+			out.list = append(out.list, attr)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // Settings are the Tempo site settings a worklog's checks and a time
@@ -207,10 +212,13 @@ func (s *siteCache) shut() {
 // forgotten or replaced after a refusal retires it, whichever call drew
 // the answer that caused it (the token selects the Tempo tenant). An
 // answer of no credential read is never kept. Concurrent callers share one
-// read. The read runs on the first caller's context without its
-// cancellation, so a caller that gives up leaves without ending a read
-// others wait on; the transport's timeouts and Close still end it. A
-// failed read is not kept. The reads run on goroutines the cache owns;
+// read, and a caller takes what it read only while the transport holds
+// the credential read it was drawn under; otherwise the caller reads
+// again, so a caller that came after a change of credential never gets
+// what the previous credential read. The read runs on the first caller's
+// context without its cancellation, so a caller that gives up leaves
+// without ending a read others wait on; the transport's timeouts and
+// Close still end it. A failed read is not kept. The reads run on goroutines the cache owns;
 // Client.Close ends them through the transport and joins them.
 type cached[T any] struct {
 	mu       sync.Mutex
@@ -223,11 +231,12 @@ type cached[T any] struct {
 	closed   bool
 }
 
-// loading is one read in flight; v, err and kept are set before done
-// closes.
+// loading is one read in flight; v, mark, err and kept are set before
+// done closes. mark is the credential read v was drawn under.
 type loading[T any] struct {
 	done chan struct{}
 	v    T
+	mark trackerapi.CredentialMark
 	err  error
 	kept bool
 }
@@ -276,17 +285,18 @@ func (c *cached[T]) get(ctx context.Context, now func() trackerapi.CredentialMar
 		switch {
 		case l.err != nil:
 			return zero, l.err
-		case l.kept:
+		case l.kept && l.mark == now():
 			return l.v, nil
 		}
-		// Dropped while it was read: read again.
+		// Dropped while it was read, or drawn under a credential read the
+		// transport no longer holds: read again.
 	}
 }
 
 func (c *cached[T]) run(ctx context.Context, gen uint64, l *loading[T], load func(context.Context) (T, trackerapi.CredentialMark, error)) {
 	v, mark, err := load(ctx)
 	c.mu.Lock()
-	l.v, l.err = v, err
+	l.v, l.mark, l.err = v, mark, err
 	if c.inflight == l {
 		c.inflight = nil
 	}

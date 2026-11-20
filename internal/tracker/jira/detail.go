@@ -67,6 +67,12 @@ func (c *Client) IssueDetail(ctx context.Context, ref string) (IssueDetail, erro
 	if err != nil {
 		return IssueDetail{}, err
 	}
+	return walk(ctx, func(ctx context.Context) (IssueDetail, error) { return c.issueDetail(ctx, ref, path) })
+}
+
+// issueDetail is one walk of IssueDetail: the issue and the older
+// changelog are one account's.
+func (c *Client) issueDetail(ctx context.Context, ref, path string) (IssueDetail, error) {
 	var v detailJSON
 	q := url.Values{"fields": {detailFields}, "expand": {detailExpand}}
 	if err := c.get(ctx, path, q, &v); err != nil {

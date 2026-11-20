@@ -125,10 +125,15 @@ func (v FieldValue) Worklogs() (WorklogList, error) {
 // Worklogs reads an issue's worklogs page by page. A failure after some
 // pages returns them with the error.
 func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) (WorklogList, error) {
-	var out WorklogList
 	if err := c.admit(ctx); err != nil {
-		return out, err
+		return WorklogList{}, err
 	}
+	return walk(ctx, func(ctx context.Context) (WorklogList, error) { return c.worklogs(ctx, q) })
+}
+
+// worklogs is one walk of Worklogs.
+func (c *Client) worklogs(ctx context.Context, q WorklogQuery) (WorklogList, error) {
+	var out WorklogList
 	path, err := issuePath(q.Issue)
 	if err != nil {
 		return out, err
