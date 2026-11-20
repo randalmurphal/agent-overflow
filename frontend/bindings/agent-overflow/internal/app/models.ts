@@ -8466,7 +8466,8 @@ export class ThreadAgentRow {
     "callerThreadId": string;
 
     /**
-     * Kind is spawn, send or ask.
+     * Kind is spawn, send or ask, or nudge for the run of an owned worker
+     * the person's or another thread's message started (threadAgentKindNudge).
      */
     "kind": string;
 
