@@ -9,17 +9,19 @@ import (
 	"agent-overflow/internal/browser/turnorder"
 )
 
-// The order of the user's tab commands. A pane's selecting actions (a tab
-// chosen, a step, and the new, reopen, duplicate and download-open that
-// select the tab they open) and its closes (CloseCompanionPage,
-// CloseCompanionTabs) carry the pane's mount and a number the client gave
-// when the user acted (Numbered). Each mount admits its numbers through its
-// own turnorder.Order, whose package comment gives the rules. Here:
+// The order of the user's tab commands. Every command of a pane that reads
+// or changes the tab strip's selection, order or membership carries the
+// pane's mount and a number the client gave when the user acted (Numbered):
+// its selecting actions (a tab chosen, a step, and the new, reopen,
+// duplicate, download-open and show that select the tab they open), its
+// closes (CloseCompanionPage, CloseCompanionTabs) and its moves
+// (MoveCompanionPage). Each mount admits its numbers through its own
+// turnorder.Order, whose package comment gives the rules. Here:
 //
-//   - A selection's, an opening's or a close's turn ends in the m.mu hold
-//     that records the active tab, adds the tab or takes the closed tabs out
-//     of the tab set (Turn.Commit there), so page work, a restore or a
-//     navigation, never delays the next turn.
+//   - A selection's, an opening's, a close's or a move's turn ends in the
+//     m.mu hold that records the active tab, adds the tab, takes the closed
+//     tabs out of the tab set or reorders it (Turn.Commit there), so page
+//     work, a restore or a navigation, never delays the next turn.
 //   - Every one names its tab, or steps from what has arrived, so none
 //     depends on which tab was active when an earlier one was sent: a close
 //     names the tab the user was looking at when they acted and closes it
@@ -27,10 +29,10 @@ import (
 //     it, or of an older epoch, is refused with turnorder.ErrLost.
 //   - A number from a mount the Manager does not have (detached, never
 //     attached, another thread's, or another lifetime's of the thread) is
-//     Passed: a quiet success that selects, opens, closes and restores
-//     nothing. A detach ends the mount's Order, and so does the close of the
-//     thread lifetime the mount attached to (CloseThread), so an earlier
-//     lifetime's mount still registered commits nothing.
+//     Passed: a quiet success that selects, opens, closes, moves and
+//     restores nothing. A detach ends the mount's Order, and so does the
+//     close of the thread lifetime the mount attached to (CloseThread), so
+//     an earlier lifetime's mount still registered commits nothing.
 //
 // A selection with no number, an agent's browser_select_page, the chat
 // header's show, the pane's restore of the tab it shows
@@ -60,9 +62,10 @@ func (n Numbered) Mount() MountID { return n.mount }
 type selectionKey struct{}
 
 // WithSelection returns ctx carrying the user's numbered selection, which
-// every Manager call that selects a tab for the user reads
-// (ActivateCompanionPage, StepCompanionPage and the user's tab openings).
-// Without it a selection keeps arrival order.
+// every Manager call that selects, opens, closes or moves a tab for the
+// user reads (ActivateCompanionPage, StepCompanionPage, the user's tab
+// openings, closes and MoveCompanionPage). Without it a command keeps
+// arrival order.
 func WithSelection(ctx context.Context, sel Numbered) context.Context {
 	return context.WithValue(ctx, selectionKey{}, sel)
 }

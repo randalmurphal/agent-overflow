@@ -33,14 +33,14 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 		return ids
 	}
 
-	if err := m.MoveCompanionPage(access, "third", 0); err != nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "third", 0); err != nil {
 		t.Fatalf("move = %v", err)
 	}
 	if got := order(); got[0] != "third" || got[1] != "first" || got[2] != "second" {
 		t.Fatalf("order after front move = %v", got)
 	}
 	// An out-of-range index clamps to the end instead of failing.
-	if err := m.MoveCompanionPage(access, "third", 99); err != nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "third", 99); err != nil {
 		t.Fatalf("clamped move = %v", err)
 	}
 	if got := order(); got[2] != "third" {
@@ -55,7 +55,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 	if got := order(); got[3] != "late" {
 		t.Fatalf("order with late page = %v", got)
 	}
-	if err := m.MoveCompanionPage(access, "missing", 0); err == nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "missing", 0); err == nil {
 		t.Fatal("moving an unknown page did not fail")
 	}
 }

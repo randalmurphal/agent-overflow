@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -154,8 +155,8 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 }
 
 // The decoder accepts an action only with the fields its kind requires: a
-// named command names its tab, a close carries its pane's mount, epoch and
-// number, a selection all three or none, a jar switch its pane's mount
+// named command names its tab, a close or a move carries its pane's mount,
+// epoch and number, a selection all three or none, a jar switch its pane's mount
 // alone, and nothing else is numbered.
 func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 	t.Parallel()
@@ -171,6 +172,9 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1, Intent: 1}, false},
 		{BrowserCompanionAction{Kind: "close-others", PageID: "p", Mount: "m", Select: 2, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "close-right", PageID: "p"}, false},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Index: 1, Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Index: 1}, false},
+		{BrowserCompanionAction{Kind: "move", Index: 1, Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "reload", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "reload"}, false},
 		{BrowserCompanionAction{Kind: "reload", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
@@ -326,6 +330,15 @@ func attachPane(t *testing.T, app *App, threadID string) *paneNumbers {
 	return &paneNumbers{mount: mount.ID}
 }
 
+// pageIDs is the thread's tabs in strip order.
+func pageIDs(state appbrowser.CompanionEvent) []string {
+	ids := make([]string, 0, len(state.Pages))
+	for _, page := range state.Pages {
+		ids = append(ids, page.ID)
+	}
+	return ids
+}
+
 // next is action as the pane's next numbered command.
 func (p *paneNumbers) next(action BrowserCompanionAction) BrowserCompanionAction {
 	p.seq++
@@ -333,7 +346,7 @@ func (p *paneNumbers) next(action BrowserCompanionAction) BrowserCompanionAction
 	return action
 }
 
-// Every kind that selects or closes a tab carries its mount and number to
+// Every kind that selects, closes or moves a tab carries its mount and number to
 // the Manager, which admits each number once: a number
 // already admitted does nothing.
 func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
@@ -370,11 +383,12 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "close", PageID: second},
 		{Kind: "close-others", PageID: second},
 		{Kind: "close-right", PageID: first},
+		{Kind: "move", PageID: first, Index: 99},
 		{Kind: "show-browser"},
 	} {
 		late.Mount, late.Epoch, late.Select = pane.mount, 1, 2
 		state := do(late)
-		if state.ActivePageID != first || len(state.Pages) != len(before.Pages) || state.ClosedTabs != before.ClosedTabs {
+		if state.ActivePageID != first || !slices.Equal(pageIDs(state), pageIDs(before)) || state.ClosedTabs != before.ClosedTabs {
 			t.Fatalf("a passed %s changed the tabs: %+v", late.Kind, state)
 		}
 	}

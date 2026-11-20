@@ -23,6 +23,7 @@ import {
 } from '../test/sourceScan';
 import { findCompositorSourceFindings } from '../test/compositorSourceScan';
 import { findContextMenuPropagationFindings } from '../test/contextMenuSourceScan';
+import { NUMBERED_KINDS } from './stores/browserActionWire';
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -237,6 +238,43 @@ const BROWSER_BINDING_CHECKS: Record<string, string> = {
   ClearBrowserSiteData: "a settings action on the home computer's browser, for no thread or pane: its scope is the check",
   VerifyBrowserUnlock: "the connected browser's own unlock, not the thread's browser",
 };
+
+// Every kind of action the window sends on the thread's browser, whether it
+// takes a number in its pane mount's order, and why. A kind that reads or
+// changes the tab strip's selection, order or membership is numbered, so no
+// later one from the same pane overtakes it. A new kind is added here with
+// its choice; the test below fails until the wire (NUMBERED_KINDS) and the
+// backend's companionSpecs agree with it.
+const NUMBERED_WIRE_KINDS: Record<string, readonly [numbered: boolean, why: string]> = {
+  activate: [true, 'selects a tab'],
+  step: [true, 'selects the tab beside the active one in strip order'],
+  new: [true, 'adds a tab and selects it'],
+  reopen: [true, 'adds the last closed tab at its place and selects it'],
+  duplicate: [true, 'adds a tab beside the one it names and selects it'],
+  'download-open': [true, 'adds a tab showing the file and selects it'],
+  'show-browser': [true, 'opens a tab when the thread has none'],
+  close: [true, 'takes a tab out and picks the next active one'],
+  'close-others': [true, 'takes every other tab out'],
+  'close-right': [true, 'takes out the tabs after the one it names, in strip order'],
+  move: [true, 'reorders the strip'],
+  back: [false, 'acts on the page it names'],
+  forward: [false, 'acts on the page it names'],
+  reload: [false, 'acts on the page it names'],
+  stop: [false, 'acts on the page it names'],
+  navigate: [false, 'acts on the page it names'],
+  devtools: [false, 'acts on the page it names'],
+  restore: [false, 'restores the tab it names only while it is still the active one, and selects nothing'],
+  hide: [false, 'hides the pane and changes no tab'],
+  jar: [false, "bound to its pane's mount; suspends and restores the tabs where they are"],
+  'download-cancel': [false, 'acts on a download row'],
+  'download-reveal': [false, 'acts on a download row'],
+  'downloads-clear': [false, 'clears the download rows'],
+  'focus-page': [false, 'a focus intent of the page it names'],
+  'focus-page-withdraw': [false, 'withdraws a focus intent'],
+};
+
+// Kinds the backend accepts that the window never sends.
+const BACKEND_ONLY_WIRE_KINDS = new Set(['show']);
 
 // `stores/bindings.ts` is the typed wrapper the whole rule is phrased in terms
 // of: it imports every generated RPC by definition, so it cannot be an
@@ -571,6 +609,21 @@ describe('architecture', () => {
     for (const name of ['BrowserCompanionDo', 'BrowserCompanionRecentAddresses', 'BrowserCompanionRevealPageFile']) {
       expect(ENTITY_OWNED_BINDINGS[name]?.owner, name).toBe('lib/stores/browserActionWire.ts');
     }
+  });
+
+  it('numbers every wire kind that reads or changes the tab strip, on both sides', () => {
+    const decided = Object.fromEntries(Object.entries(NUMBERED_WIRE_KINDS).map(([kind, [numbered]]) => [kind, numbered]));
+    expect({ ...NUMBERED_KINDS }).toEqual(decided);
+    const specs = readFileSync(join(SRC_ROOT, '..', '..', 'internal', 'app', 'app_browser_companion_action.go'), 'utf8');
+    const backend = new Map(
+      [...specs.matchAll(/^\t+"([a-z-]+)":\s+\{kind: kind\w+[^}]*\}/gm)].map((match) => [
+        match[1],
+        /place: place(Numbered|IfFromPane)\b/.test(match[0]),
+      ]),
+    );
+    expect(backend.size).toBeGreaterThan(20);
+    for (const kind of BACKEND_ONLY_WIRE_KINDS) backend.delete(kind);
+    expect(Object.fromEntries(backend)).toEqual(decided);
   });
 
   it('keeps OpenInEditor behind its view-only gate', () => {
