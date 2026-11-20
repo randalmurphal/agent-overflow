@@ -10,7 +10,7 @@ import (
 
 // A hand-rolled ICoreWebView2EnvironmentOptions.
 //
-// This is the object go-webview2 could not pass (spike bug 2), and it is
+// This is the object go-webview2 cannot pass (com_windows.go), and it is
 // the only way --remote-debugging-port reaches the pane environment. The
 // loader calls the GETTERS only, so a minimal implementation is enough,
 // but two details are not optional:
@@ -20,7 +20,6 @@ import (
 //   - TargetCompatibleBrowserVersion must be a REAL version string. The
 //     loader validates it with CompareBrowserVersions, and an empty one
 //     makes CreateCoreWebView2EnvironmentWithOptions fail E_INVALIDARG.
-//     (Both measured in the 2026-08-31 spike.)
 //
 // Its reference count is real (comref_windows.go): the loader holds the
 // object for as long as it reads it.

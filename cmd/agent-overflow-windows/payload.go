@@ -182,7 +182,7 @@ func wslHomePath(ctx context.Context, distro string) (string, error) {
 //
 // --exec, never --: the -- form re-parses the joined argv through the
 // user's login shell, which mangles quoting and pre-expands `$`
-// references (wsllauncher.buildLaunchArgs has the incident note).
+// references (wsllauncher.buildLaunchArgs).
 // Callers that need shell semantics pass an explicit /bin/sh -c.
 //
 // HideWindow keeps wsl.exe from flashing a console window every time

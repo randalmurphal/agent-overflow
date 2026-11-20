@@ -24,9 +24,10 @@ import (
 )
 
 // The hosted engine is exercised against a fake directive sink and a fake
-// report source. Nothing here reaches a launcher, a WebView2, or a CDP
-// endpoint: the relay is a stub, and every failure path below is one the
-// engine must answer with an error rather than a hang.
+// report source. Nothing here reaches an external launcher, a WebView2
+// runtime, or a CDP endpoint outside the test: the relay is a stub, the
+// CDP browsers are in-process fakes, and every failure path below is one
+// the engine must answer with an error rather than a hang.
 
 const hostedTestDeadline = 3 * time.Second
 
@@ -1037,12 +1038,11 @@ func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
 	}
 }
 
-// The regression this pins: chromedp.Do on a target-less remote context
-// issues Target.createTarget, which Chrome quietly answers with a
-// throwaway tab and WebView2 refuses with `-32000 no browser is open` —
-// a WebView2 target exists only as a launcher-created controller, so the
-// browser-level dial must never create one (2026-08-31, the first live
-// pane attach). It must instead enable target discovery, which is the
+// chromedp.Do on a target-less remote context issues Target.createTarget,
+// which Chrome answers with a throwaway tab and WebView2 refuses with
+// `-32000 no browser is open`: a WebView2 target exists only as a
+// launcher-created controller, so the browser-level dial must never create
+// one. It must instead enable target discovery, which is the
 // only thing that feeds the engine's targetDestroyed backstop.
 func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T) {
 	wsURL, methods := fakeCDPBrowser(t)
@@ -1266,8 +1266,8 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 
 // A file the agent opens is on the WSL filesystem, but the renderer that
 // must load it is a Windows-side WebView2, so the URL has to carry the
-// Windows VIEW of the path (2026-08-31: file:///home/... navigated a live
-// pane to ERR_FILE_NOT_FOUND). The engine advertises that through
+// Windows view of the path: file:///home/... answers ERR_FILE_NOT_FOUND
+// there. The engine advertises that through
 // engineFileURL; losing the implementation would silently regress
 // browser_open_file to a URL no Windows renderer can read.
 var _ engineFileURL = (*hostedEngine)(nil)
@@ -1296,8 +1296,8 @@ func TestWindowsFileURLCarriesTheRendererView(t *testing.T) {
 
 // The interceptor and the companion address bar hand back renderer-form
 // file URLs; windowsPathFromFileURL must invert windowsFileURL exactly, or
-// the authority check blocks the navigation OpenFile just authorized
-// (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+// the authority check blocks the navigation OpenFile just authorized with
+// ERR_BLOCKED_BY_CLIENT.
 func TestWindowsPathFromFileURLInvertsTheRendererView(t *testing.T) {
 	for _, tc := range []struct {
 		name, rawURL, want string

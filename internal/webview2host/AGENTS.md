@@ -183,11 +183,10 @@ desktop of its own, never switched to (`desktop_smoke_windows_test.go`),
 refuses to run the smokes when it cannot, and a smoke refuses to create a
 window from a thread whose desktop is the input desktop or `Default`,
 whatever the marker says, unless
-`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. Each smoke watches the
-top-level windows (`window_watch_smoke_windows_test.go`): the baseline must
-include the smoke window. The popup and policy smokes check observations
-from setup through cleanup and allow only WebView2 windows owned by the
-smoke window. That desktop is never the
+`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. The popup and policy smokes
+watch the top-level windows (`window_watch_smoke_windows_test.go`) from
+setup through cleanup, from a baseline that includes the smoke window, and
+allow only WebView2 windows owned by the smoke window. That desktop is never the
 input desktop, so the focus smoke stands in the host's foreground answer
 (`Host.foreground`).
 

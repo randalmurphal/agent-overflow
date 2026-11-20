@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// The regression this guards is the one that cost most of the 2026-08-31
-// spike: a variable that is SET BUT EMPTY still overrides the API
+// A variable that is set but empty still overrides the API
 // argument, collapsing every environment onto one shared profile with no
 // error anywhere. A presence check written as `value != ""` would let it
 // through, so the test asserts the empty case specifically.

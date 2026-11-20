@@ -187,7 +187,7 @@ func (h *Host) showPage(page *hostPage) {
 // controller stays IsVisible so Chromium keeps compositing the page (rAF,
 // scroll state, and the frame a screenshot copies). IsVisible=false stops
 // all of that and evicts the surface, so a hidden page's first capture would
-// wait for a frame that never comes (spike 2026-09-14). Only the unclipped
+// wait for a frame that never comes. Only the unclipped
 // fallback, with no container to hide, has to hide the controller itself.
 // The host's view says hidden, and the keyboard focus the page held goes
 // back to the app, only once the hide succeeded; a failed one leaves the

@@ -10,10 +10,12 @@
 //  3. Drops the embedded Linux ELF backend into the chosen distro
 //     under ~/.local/bin/agent-overflow if the version on disk
 //     doesn't match what's bundled.
-//  4. Spawns wsl.exe -d <distro> -- ~/.local/bin/agent-overflow
-//     --listen 127.0.0.1:0 --print-url-fd 0 and pins the child to a
-//     Win32 Job Object so closing this process kills the WSL-side one.
-//  5. Reads the bootstrap line { port, token } back from the child.
+//  4. Spawns wsl.exe --cd ~ -d <distro> --exec ~/.local/bin/agent-overflow
+//     --print-url-fd 0 (wsllauncher.buildLaunchArgs) and pins the child
+//     to a Win32 Job Object so closing this process kills the WSL-side
+//     one.
+//  5. Reads the bootstrap line { port, token } back from the child's
+//     stdout.
 //  6. Points the Wails WebView2 window at a BARE
 //     http://localhost:<port>/?host=webview page URL and injects the
 //     one-time page ticket into the document it just loaded, so the
@@ -29,15 +31,6 @@
 // would repeat on every launch, so launchAndProbe relaunches once with
 // --reset-transport-port before giving up. The picker shows a clear
 // error only if the retry fails too.
-//
-// The launcher is split across this file and three siblings:
-//
-//   - config.go  — wsl.json read/write under %APPDATA%.
-//   - payload.go — embedded ELF install + WSL HOME resolution.
-//   - picker.go  — picker / loading / connectivity-error HTML serving.
-//
-// This file owns the entry point and the launcherApp method surface
-// (PickDistro, validateDistroName, launchAndShow, run).
 package main
 
 import (
@@ -611,10 +604,9 @@ type launcherApp struct {
 	backendUpdateArgs atomic.Pointer[[]string]
 
 	// backendURL holds the page URL launchAndShow pointed the WebView at.
-	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
-	// re-navigates with a credential instead of reloading the SPA's
-	// scrubbed URL. atomic.Pointer because the writer is launchAndShow
-	// (goroutine) and the reader is the Wails event loop.
+	// The reload keybinding (currentBackendURL) falls back to it when the
+	// backend cannot answer a fresh one. atomic.Pointer because the writer
+	// is launchAndShow (goroutine) and the reader is the Wails event loop.
 	backendURL     atomic.Pointer[string]
 	startupFailure atomic.Pointer[[]byte]
 	// loading is what /loading.json reports while the backend starts.
@@ -1196,8 +1188,8 @@ func (a *launcherApp) probeLaunchedBackend(ctx context.Context, bs *wsllauncher.
 // It asks the backend for a FRESH page URL first, because the boot URL
 // is a string the backend assembled for one navigation and a rebind (the
 // LAN toggle) moves the origin out from under it. The credential is not
-// on either URL — the reloaded document is ticketed by injection like
-// every other one — so the stored URL is a perfectly good fallback and a
+// on either URL (the reloaded document is ticketed by injection like
+// every other one), so the stored URL is a perfectly good fallback and a
 // blip costs a reload nothing. The request is one loopback GET against a
 // backend that is by definition serving.
 func (a *launcherApp) currentBackendURL() string {
@@ -1495,10 +1487,10 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// Without KeyBindings the WebView2 swallows zoom/reload/fullscreen
 	// and there's no menu bar to fall back on. `make dev-wsl` makes
 	// this the only window the user touches, so the missing bindings
-	// were the most user-visible symptom. BrowserWithReload reads
-	// a.backendURL on each reload so Ctrl+R re-navigates with the
-	// bootstrap token after the SPA scrubs it from window.location —
-	// see uikeys.BrowserWithReload.
+	// were the most user-visible symptom. BrowserWithReload asks
+	// currentBackendURL on each reload, so Ctrl+R navigates to the
+	// backend's current bare page URL, whose document is ticketed by
+	// injection like the first one.
 	//
 	// F12 devtools is gated on launcherMode because dev and prod ship
 	// the same .exe (only this ldflags string differs) and Wails
@@ -1759,15 +1751,10 @@ func wslSingleInstanceMode() string {
 // (displayBrowserArgs); the browser pane's environment takes the same
 // switches through ensureBrowserHost.
 //
-// Memory experiments tried and pulled back: --single-process (~290 MB
-// savings, but couples all rendering work onto one thread pool and
-// removes the renderer-crash recovery boundary), --enable-low-end-
-// device-mode (smaller raster workers + image caches; perceptible
-// decode-time regression on strong machines), and
-// --js-flags=--max-old-space-size=128 (V8 cap; combined with
-// single-process turns any future big-memory feature — large diffs,
-// terminal log dumps — into a whole-window crash). Revisit if memory
-// becomes a real constraint.
+// --single-process, --enable-low-end-device-mode and a V8 heap cap are
+// left out: the first removes the renderer-crash recovery boundary, the
+// second slows image decoding, and a heap cap turns a large diff or log
+// into a whole-window crash.
 func browserArgs(mode string, devTools, disableGPUVsync bool) []string {
 	args := []string{
 		"--disable-background-networking",
@@ -1946,10 +1933,9 @@ func launcherWebviewDataDir(mode string, applier bool) string {
 }
 
 // renderDiagnosticsDir is where the wails fork's render watchdog drops a
-// renderer minidump + breadcrumb the moment it declares a hang — BEFORE
+// renderer minidump and breadcrumb the moment it declares a hang, before
 // recovery reaps the wedged process tree, which is the only instant the
-// evidence exists (incident 2026-08-18: third renderer-hang episode with
-// zero artifact; Crashpad writes nothing for a hang). Always on, in every
+// evidence exists: Crashpad writes nothing for a hang. Always on, in every
 // mode: a production user's hang report is only fixable if the dump was
 // already taken when they hit it. The fork caps the directory at three
 // dumps, so it never needs tending. Empty (unresolvable %APPDATA%)

@@ -726,7 +726,7 @@ func TestAClosingPageCancelsAndReleasesItsDownloads(t *testing.T) {
 }
 
 // A canceled download WebView2 does not end (a dropped one, whose resume
-// went to a row of its own) ends canceled when the bound passes: one
+// went to a row of its own) ends untracked when the bound passes: one
 // terminal snapshot, its operation let go, and a state change after that
 // reaches nobody. A repeated cancel starts no second bound.
 func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {

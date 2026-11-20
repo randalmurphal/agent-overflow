@@ -45,8 +45,8 @@ import (
 
 const (
 	// hostCreateTimeout bounds the wait for a `created` report. The FIRST
-	// create additionally pays for a cold WebView2 environment, which the
-	// spike measured in seconds; past this the launcher is wedged or gone,
+	// create additionally pays for a cold WebView2 environment, which takes
+	// seconds; past this the launcher is wedged or gone,
 	// and the tool call must fail rather than hang.
 	hostCreateTimeout = 45 * time.Second
 	// hostAttachTimeout bounds establishing the CDP browser connection

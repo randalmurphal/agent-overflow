@@ -14,9 +14,8 @@
 // Input idle: force one memory-reducing GC in the renderer while the
 // window stays VISIBLE. Blink pools freed Oilpan pages and only
 // decommits them on a memory-reducing GC, which it triggers on page-hide
-// or OS memory pressure — neither ever fires here, so the renderer parks
-// at its high-water mark for hours (measured 2026-08-25: 5 idle hours
-// flat at ~293MB with ~20MB live; one forced GC returned 54MB). The WSL
+// or OS memory pressure. Neither fires here, so the renderer stays at its
+// high-water mark for hours while far less of it is live. The WSL
 // backend emits webview:trim once the frontend reports input idle and no
 // provider turn is open; trimRendererMemory answers it with CDP
 // HeapProfiler.collectGarbage over WebView2's DevTools bridge.

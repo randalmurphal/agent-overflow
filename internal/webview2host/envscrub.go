@@ -10,19 +10,16 @@ import (
 // override the corresponding CreateCoreWebView2EnvironmentWithOptions
 // arguments.
 //
-// This list is load-bearing, and the failure it prevents is silent. A
-// variable that is SET BUT EMPTY still counts as an override: with
-// WEBVIEW2_USER_DATA_FOLDER="" exported, EVERY environment in the process
-// collapses onto the default <exe>.WebView2\EBWebView folder, one browser
-// process, one shared profile — the pane reads the SPA's cookies and
-// localStorage, CreateCoreWebView2EnvironmentWithOptions still returns
-// S_OK, and the completion handler still reports hr=0. There is no error
-// anywhere. (Measured on this developer's machine during the 2026-08-31
-// spike, which exports all four empty or zero; it cost most of that
-// spike. Evidence: /tmp/spike-webview2-dual/VERDICTS.md item 2.)
+// The failure this list prevents is silent. A variable that is set but
+// empty still counts as an override: with WEBVIEW2_USER_DATA_FOLDER=""
+// exported, every environment in the process collapses onto the default
+// <exe>.WebView2\EBWebView folder, one browser process and one shared
+// profile, so the pane reads the SPA's cookies and localStorage, while
+// CreateCoreWebView2EnvironmentWithOptions returns S_OK and the completion
+// handler reports hr=0.
 //
 // The launcher inherits whatever the user's shell exports, so the scrub
-// runs in the launcher process before ANY environment is created — the
+// runs in the launcher process before any environment is created, the
 // SPA's included, since a collapsed folder is equally wrong from that
 // side.
 var EnvOverrideNames = []string{

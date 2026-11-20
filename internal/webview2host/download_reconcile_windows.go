@@ -147,10 +147,10 @@ func (h *Host) armCancelBound(d *hostDownload, bound uint64) {
 // ends, so its row would run for good. Measured on the real runtime: the
 // old operation and its resume are one download in WebView2, so the cancel
 // ends that resume too, at once and by WebView2's own report, and once the
-// resume finished the cancel and the release leave its file as it is. The
-// cost: a download that really finishes after the bound is listed
-// canceled, and its file stays in the Downloads folder, listed nowhere; its
-// late state change reaches no handler. bound is the cancel that started
+// resume finished the cancel and the release leave its file as it is. A
+// download that finishes after the bound is ended untracked, which the
+// pane lists as failed, and its file stays in the Downloads folder, listed
+// nowhere; its late state change reaches no handler. bound is the cancel that started
 // this bound: one whose cancel was refused since, or that a later cancel
 // restarted, is not settled by it.
 func (h *Host) settleCancel(d *hostDownload, bound uint64) {

@@ -69,8 +69,8 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	}))
 	// The dial must NOT go through chromedp.Do, because WebView2 answers
 	// its Target.createTarget with `-32000 no browser is open`: a WebView2
-	// target exists only as a launcher-created controller (the spike's
-	// "WebView2 has no /json/new"). dialCDPBrowser (cdp_page.go) is that
+	// target exists only as a launcher-created controller (WebView2 has no
+	// /json/new). dialCDPBrowser (cdp_page.go) is that
 	// target-less dial, shared with the headless engine, and it is also the
 	// only sender of the target discovery the targetDestroyed backstop
 	// reads.

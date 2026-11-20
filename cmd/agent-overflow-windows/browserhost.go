@@ -78,9 +78,9 @@ func prepareBrowserProfileStorage(mode string) (string, error) {
 }
 
 // handleBrowserHostDirective is NotificationClientConfig.HandleBrowserHost.
-// It runs on the bridge's per-directive goroutine, so blocking on the UI
-// thread here is expected; the first call additionally blocks on a cold
-// WebView2 environment create.
+// It runs on the bridge's lane for the directive's page, which takes the
+// page's directives one at a time, so blocking on the UI thread here is
+// expected; the first create also waits for the WebView2 environment.
 func (a *launcherApp) handleBrowserHostDirective(bs *wsllauncher.Bootstrap, directive webview2host.Directive) {
 	host, err := a.ensureBrowserHost(bs)
 	if err != nil {

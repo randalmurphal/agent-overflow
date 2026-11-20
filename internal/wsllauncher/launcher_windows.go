@@ -309,9 +309,9 @@ func newPlatformLauncher() (platformLauncher, error) {
 	// do NOT inherit the job. Without this, Windows-side processes
 	// spawned through WSL interop (browsers via rundll32, VS Code, etc.)
 	// inherit the job from wsl.exe and get killed when the launcher
-	// closes — even though they're standalone apps the user expects to
+	// closes, even though they're standalone apps the user expects to
 	// outlive us. The breakaway is safe because the WSL2 VM lifecycle is
-	// managed by the Host Compute Service (HCS), not by our job —
+	// managed by the Host Compute Service (HCS), not by our job:
 	// killing wsl.exe signals HCS to tear down the session regardless
 	// of whether helper processes broke away.
 	//

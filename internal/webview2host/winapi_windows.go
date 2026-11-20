@@ -192,9 +192,8 @@ func newChildWindow(before []uintptr, after []uintptr) uintptr {
 // Load-bearing, and invisible when missing: WebView2 inserts every new
 // controller window at the BOTTOM of the host's child z-order, so the
 // SPA's controller (created first, by Wails) paints over every pane
-// controller. The spike measured a fully visible pane as byte-identical
-// to no pane at all until this call ran. One call per controller, after
-// creation.
+// controller, and a fully visible pane draws nothing until this call
+// runs. One call per controller, after creation.
 func raiseChild(child uintptr) {
 	if child == 0 {
 		return

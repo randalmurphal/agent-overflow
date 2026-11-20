@@ -17,20 +17,12 @@ func Browser() map[string]func(application.Window) {
 // BrowserWithReload is Browser with an override for the reload paths.
 // reloadURL, when non-nil and non-empty, makes Ctrl+R / Ctrl+Shift+R
 // re-navigate to the returned URL instead of calling window.Reload().
+// The Windows launcher returns the backend's current page URL, which a
+// rebind moves to another origin, so a reload reaches the backend where
+// it serves now rather than the address the window first loaded.
 //
-// Why this exists: the SPA scrubs the bootstrap token from
-// window.location.search after the first /bootstrap.json fetch (see
-// frontend/src/lib/transport/wsClient.ts defaultBootstrap) so the
-// token doesn't sit in history / Referer / PerformanceResourceTiming.
-// Wails' Reload() reloads the *current* URL, which after the scrub no
-// longer carries `?t=`, and the second bootstrap fetch hits an empty
-// token and 404s. Re-navigating to the original URL with the token
-// still attached gives a clean reload without persisting the token in
-// JS-readable storage.
-//
-// reloadURL is called every reload (not captured at construction) so
-// the launcher's mutable URL — set after the WSL backend probes
-// successfully — can be picked up.
+// reloadURL is called on every reload, not captured at construction,
+// because the launcher has no URL until the WSL backend has booted.
 func BrowserWithReload(reloadURL func() string) map[string]func(application.Window) {
 	// Zoom is handled in the frontend via the fontSize setting
 	// (Ctrl/Cmd+Plus/Minus adjusts by 1px). The keybindings here
@@ -51,12 +43,10 @@ func BrowserWithReload(reloadURL func() string) map[string]func(application.Wind
 	forceReload := func(window application.Window) {
 		if reloadURL != nil {
 			if u := reloadURL(); u != "" {
-				// SetURL re-navigates rather than bypassing cache the
-				// way ForceReload does. The win is "reload survives
-				// the token scrub"; cache-bypass is the loss. Worth
-				// it — the SPA's content-hashed assets already
-				// invalidate per-build, so the cache-bust mostly
-				// matters for HMR which doesn't apply here anyway.
+				// SetURL re-navigates without the cache bypass
+				// ForceReload gives. The SPA's content-hashed assets
+				// already change per build, so the bypass matters only
+				// for HMR, which this window never serves.
 				window.SetURL(u)
 				return
 			}

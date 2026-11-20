@@ -238,7 +238,8 @@ const (
 )
 
 // New validates the configuration and allocates the CDP port. It creates
-// nothing: Start kicks the environment off on the UI thread.
+// nothing: the first page create starts the WebView2 environment on the UI
+// thread (paneEnvironment).
 func New(config Config) (*Host, error) {
 	if config.HostWindow == nil {
 		return nil, errors.New("browser host window resolver is required")

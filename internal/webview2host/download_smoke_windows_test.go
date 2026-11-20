@@ -19,7 +19,7 @@ import (
 )
 
 // The launcher owns a pane page's downloads (download_windows.go). This runs
-// that path on the real runtime, off screen under the window watcher, and
+// that path on the real runtime, on the smoke's own desktop, and
 // proves for downloads a page starts:
 //
 //   - each lands in the user's Downloads folder under its own name, a taken
@@ -302,7 +302,7 @@ func stallBesideAResumed(t *testing.T, s *downloadSmoke) (a, b, own *smokeDownlo
 }
 
 // cancelStalled cancels b, which WebView2 never ends, and asserts the
-// launcher ends it canceled once downloadCancelBound passes.
+// launcher ends it untracked once downloadCancelBound passes.
 func cancelStalled(t *testing.T, s *downloadSmoke, b *smokeDownload, others ...string) {
 	t.Helper()
 	canceled := time.Now()
@@ -353,7 +353,7 @@ func TestDownloadSmokeAStalledDownloadsCancelSettles(t *testing.T) {
 // In WebView2 a dropped download and its resume are one download: the
 // backend's cancel of b while its resume runs as a row of its own ends
 // that resume, canceled, at once, by WebView2's own report; b, which
-// WebView2 never ends, ends canceled after downloadCancelBound. a is left
+// WebView2 never ends, ends untracked after downloadCancelBound. a is left
 // alone and completes byte for byte.
 func TestDownloadSmokeAStalledDownloadsCancelEndsItsResume(t *testing.T) {
 	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {

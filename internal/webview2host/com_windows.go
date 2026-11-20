@@ -6,20 +6,17 @@
 // WebView2 bindings, but they live under github.com/wailsapp/wails/v3/
 // internal/ and Go's internal rule makes them unimportable from here. The
 // public github.com/jchv/go-webview2 has the pieces but its high-level
-// Chromium type carries the two bugs the 2026-08-31 spike found and
-// patched (/tmp/spike-webview2-dual/VERDICTS.md, "Patches applied"):
+// Chromium type has two defects this package cannot carry:
 //
 //  1. `int64(res) < 0` never detects a failed HRESULT on 64-bit, because
-//     0x80070057 widens to a POSITIVE int64. Every completion handler
-//     there fell through the guard and nil-dereferenced the controller
-//     instead of reporting the error, which is what turned a diagnosable
-//     ERROR_INVALID_STATE into a crash. Everything below tests HRESULTs
-//     as `uint32(hr) != 0`, and `hresult` is the one conversion.
-//  2. `environmentOptions` was hard-wired to 0, so
-//     AdditionalBrowserArguments — and therefore
-//     --remote-debugging-port, the entire point of the pane environment —
-//     was unreachable. Here the options object is a first-class argument
-//     (envoptions_windows.go).
+//     0x80070057 widens to a positive int64, so its completion handlers
+//     dereference a nil controller instead of reporting the error.
+//     Everything below tests HRESULTs as `uint32(hr) != 0`, and `hresult`
+//     is the one conversion.
+//  2. Its environment options are hard-wired to 0, so
+//     AdditionalBrowserArguments, and with it --remote-debugging-port,
+//     which the pane environment exists for, is unreachable. Here the
+//     options object is a first-class argument (envoptions_windows.go).
 //
 // Only the LOADER is reused, from github.com/jchv/go-webview2/
 // webviewloader: it locates or memory-loads WebView2Loader.dll, which is

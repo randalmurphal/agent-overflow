@@ -572,8 +572,7 @@ func reportAsync(t *testing.T, engine *hostedEngine, pageID string, report webvi
 
 // A completion that arrives while the download's start is being admitted
 // waits for the admission and then completes the row; a running snapshot
-// still on its way after it changes nothing. Before, it reached the Manager
-// ahead of the start, which dropped it, and the row stayed running.
+// still on its way after it changes nothing.
 func TestHostedEngineACompletionWaitsForItsStartsAdmission(t *testing.T) {
 	engine, sink, recorder := newDownloadHostedEngine(t)
 	engine.downloadQuiet = 10 * time.Millisecond
