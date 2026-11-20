@@ -728,13 +728,16 @@ export class ForgeFact {
     "oid"?: string;
 
     /**
-     * Size, Width, Height and MIME are an image blob's bytes, intrinsic
-     * pixels (zero for a format without them, such as svg) and sniffed
-     * type.
+     * Size, Width, Height and MIME are an image blob's bytes, natural
+     * pixels (zero when unknown) and sniffed type. Fluid marks an image
+     * with no natural size and a ratio (an svg with only a viewBox):
+     * Width and Height are then the ratio's terms, never pixels
+     * (attachment.DisplaySize).
      */
     "size"?: number;
     "width"?: number;
     "height"?: number;
+    "fluid"?: boolean;
     "mime"?: string;
 
     /**
@@ -750,6 +753,15 @@ export class ForgeFact {
      */
     "text"?: string;
     "path"?: string;
+
+    /**
+     * Labels is a labels: key's list, the project's labels and its
+     * ancestor groups' in the forge's order (by title), and Complete says
+     * it holds every one; past maxLabelListPages pages or
+     * maxLabelListBytes it is the labels read so far.
+     */
+    "labels"?: ForgeLabel[];
+    "complete"?: boolean;
 
     /** Creates a new ForgeFact instance. */
     constructor($$source: Partial<ForgeFact> = {}) {
@@ -767,7 +779,11 @@ export class ForgeFact {
      * Creates a new ForgeFact instance from a string or object.
      */
     static createFrom($$source: any = {}): ForgeFact {
+        const $$createField17_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("labels" in $$parsedSource) {
+            $$parsedSource["labels"] = $$createField17_0($$parsedSource["labels"]);
+        }
         return new ForgeFact($$parsedSource as Partial<ForgeFact>);
     }
 }
@@ -792,12 +808,40 @@ export class ForgeFacts {
      * Creates a new ForgeFacts instance from a string or object.
      */
     static createFrom($$source: any = {}): ForgeFacts {
-        const $$createField0_0 = $$createType12;
+        const $$createField0_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("facts" in $$parsedSource) {
             $$parsedSource["facts"] = $$createField0_0($$parsedSource["facts"]);
         }
         return new ForgeFacts($$parsedSource as Partial<ForgeFacts>);
+    }
+}
+
+/**
+ * ForgeLabel is one label of a labels: list: its title as the forge
+ * stores it and its colors as "#rrggbb" (empty when the forge's is not
+ * one).
+ */
+export class ForgeLabel {
+    "title": string;
+    "color"?: string;
+    "textColor"?: string;
+
+    /** Creates a new ForgeLabel instance. */
+    constructor($$source: Partial<ForgeLabel> = {}) {
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ForgeLabel instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ForgeLabel {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ForgeLabel($$parsedSource as Partial<ForgeLabel>);
     }
 }
 
@@ -1110,7 +1154,7 @@ export class MergeBlocker {
      * Creates a new MergeBlocker instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeBlocker {
-        const $$createField4_0 = $$createType14;
+        const $$createField4_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("changeRequests" in $$parsedSource) {
             $$parsedSource["changeRequests"] = $$createField4_0($$parsedSource["changeRequests"]);
@@ -1257,8 +1301,8 @@ export class MergeOptions {
      */
     static createFrom($$source: any = {}): MergeOptions {
         const $$createField0_0 = $$createType0;
-        const $$createField4_0 = $$createType16;
-        const $$createField16_0 = $$createType18;
+        const $$createField4_0 = $$createType18;
+        const $$createField16_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("methods" in $$parsedSource) {
             $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
@@ -1391,9 +1435,9 @@ export class MergeReadiness {
      * Creates a new MergeReadiness instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeReadiness {
-        const $$createField1_0 = $$createType20;
-        const $$createField2_0 = $$createType20;
-        const $$createField3_0 = $$createType21;
+        const $$createField1_0 = $$createType22;
+        const $$createField2_0 = $$createType22;
+        const $$createField3_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("blockers" in $$parsedSource) {
             $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
@@ -1450,7 +1494,7 @@ export class MergeRequest {
      * Creates a new MergeRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeRequest {
-        const $$createField4_0 = $$createType23;
+        const $$createField4_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("commitMessage" in $$parsedSource) {
             $$parsedSource["commitMessage"] = $$createField4_0($$parsedSource["commitMessage"]);
@@ -1488,8 +1532,8 @@ export class PRCandidates {
      * Creates a new PRCandidates instance from a string or object.
      */
     static createFrom($$source: any = {}): PRCandidates {
-        const $$createField0_0 = $$createType25;
-        const $$createField1_0 = $$createType27;
+        const $$createField0_0 = $$createType27;
+        const $$createField1_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("people" in $$parsedSource) {
             $$parsedSource["people"] = $$createField0_0($$parsedSource["people"]);
@@ -1641,12 +1685,12 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType29;
-        const $$createField18_0 = $$createType30;
-        const $$createField20_0 = $$createType32;
-        const $$createField21_0 = $$createType33;
-        const $$createField22_0 = $$createType34;
-        const $$createField26_0 = $$createType35;
+        const $$createField17_0 = $$createType31;
+        const $$createField18_0 = $$createType32;
+        const $$createField20_0 = $$createType34;
+        const $$createField21_0 = $$createType35;
+        const $$createField22_0 = $$createType36;
+        const $$createField26_0 = $$createType37;
         const $$createField27_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
@@ -1782,8 +1826,8 @@ export class PRLabelChange {
      * Creates a new PRLabelChange instance from a string or object.
      */
     static createFrom($$source: any = {}): PRLabelChange {
-        const $$createField0_0 = $$createType27;
-        const $$createField1_0 = $$createType27;
+        const $$createField0_0 = $$createType29;
+        const $$createField1_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("add" in $$parsedSource) {
             $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
@@ -1880,10 +1924,10 @@ export class PRManage {
      * Creates a new PRManage instance from a string or object.
      */
     static createFrom($$source: any = {}): PRManage {
-        const $$createField0_0 = $$createType37;
-        const $$createField1_0 = $$createType25;
-        const $$createField2_0 = $$createType27;
-        const $$createField3_0 = $$createType38;
+        const $$createField0_0 = $$createType39;
+        const $$createField1_0 = $$createType27;
+        const $$createField2_0 = $$createType29;
+        const $$createField3_0 = $$createType40;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("reviewers" in $$parsedSource) {
             $$parsedSource["reviewers"] = $$createField0_0($$parsedSource["reviewers"]);
@@ -2001,8 +2045,8 @@ export class PRPeopleChange {
      * Creates a new PRPeopleChange instance from a string or object.
      */
     static createFrom($$source: any = {}): PRPeopleChange {
-        const $$createField0_0 = $$createType25;
-        const $$createField1_0 = $$createType25;
+        const $$createField0_0 = $$createType27;
+        const $$createField1_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("add" in $$parsedSource) {
             $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
@@ -2422,9 +2466,9 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField7_0 = $$createType40;
-        const $$createField11_0 = $$createType42;
-        const $$createField12_0 = $$createType44;
+        const $$createField7_0 = $$createType42;
+        const $$createField11_0 = $$createType44;
+        const $$createField12_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField7_0($$parsedSource["replyTo"]);
@@ -2529,8 +2573,8 @@ export class ReviewLineComment {
      * Creates a new ReviewLineComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewLineComment {
-        const $$createField5_0 = $$createType46;
-        const $$createField6_0 = $$createType48;
+        const $$createField5_0 = $$createType48;
+        const $$createField6_0 = $$createType50;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("start" in $$parsedSource) {
             $$parsedSource["start"] = $$createField5_0($$parsedSource["start"]);
@@ -2684,7 +2728,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField11_0 = $$createType50;
+        const $$createField11_0 = $$createType52;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField11_0($$parsedSource["comments"]);
@@ -2799,7 +2843,7 @@ export class SuggestionApply {
      * Creates a new SuggestionApply instance from a string or object.
      */
     static createFrom($$source: any = {}): SuggestionApply {
-        const $$createField0_0 = $$createType51;
+        const $$createField0_0 = $$createType53;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("target" in $$parsedSource) {
             $$parsedSource["target"] = $$createField0_0($$parsedSource["target"]);
@@ -2820,44 +2864,46 @@ const $$createType7 = CIJob.createFrom;
 const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = CheckStatus.createFrom;
 const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = ForgeFact.createFrom;
+const $$createType11 = ForgeLabel.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = ChangeRequest.createFrom;
+const $$createType13 = ForgeFact.createFrom;
 const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = AutoMergeRequest.createFrom;
-const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = MergeQueue.createFrom;
+const $$createType15 = ChangeRequest.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = AutoMergeRequest.createFrom;
 const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = MergeBlocker.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = ApprovalCount.createFrom;
-const $$createType22 = MergeMessage.createFrom;
-const $$createType23 = $Create.Nullable($$createType22);
-const $$createType24 = PRPerson.createFrom;
-const $$createType25 = $Create.Array($$createType24);
-const $$createType26 = PRLabel.createFrom;
+const $$createType19 = MergeQueue.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = MergeBlocker.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = ApprovalCount.createFrom;
+const $$createType24 = MergeMessage.createFrom;
+const $$createType25 = $Create.Nullable($$createType24);
+const $$createType26 = PRPerson.createFrom;
 const $$createType27 = $Create.Array($$createType26);
-const $$createType28 = ReviewVerdict.createFrom;
+const $$createType28 = PRLabel.createFrom;
 const $$createType29 = $Create.Array($$createType28);
-const $$createType30 = CheckSummary.createFrom;
-const $$createType31 = PRDiffRefs.createFrom;
-const $$createType32 = $Create.Nullable($$createType31);
-const $$createType33 = MergeReadiness.createFrom;
-const $$createType34 = MergeOptions.createFrom;
-const $$createType35 = PRManage.createFrom;
-const $$createType36 = PRReviewer.createFrom;
-const $$createType37 = $Create.Array($$createType36);
-const $$createType38 = PRManageCan.createFrom;
-const $$createType39 = ReviewReplyTo.createFrom;
-const $$createType40 = $Create.Nullable($$createType39);
-const $$createType41 = CommentSuggestion.createFrom;
-const $$createType42 = $Create.Array($$createType41);
-const $$createType43 = CommentReaction.createFrom;
+const $$createType30 = ReviewVerdict.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = CheckSummary.createFrom;
+const $$createType33 = PRDiffRefs.createFrom;
+const $$createType34 = $Create.Nullable($$createType33);
+const $$createType35 = MergeReadiness.createFrom;
+const $$createType36 = MergeOptions.createFrom;
+const $$createType37 = PRManage.createFrom;
+const $$createType38 = PRReviewer.createFrom;
+const $$createType39 = $Create.Array($$createType38);
+const $$createType40 = PRManageCan.createFrom;
+const $$createType41 = ReviewReplyTo.createFrom;
+const $$createType42 = $Create.Nullable($$createType41);
+const $$createType43 = CommentSuggestion.createFrom;
 const $$createType44 = $Create.Array($$createType43);
-const $$createType45 = ReviewLineStart.createFrom;
-const $$createType46 = $Create.Nullable($$createType45);
-const $$createType47 = ReviewThreadReply.createFrom;
+const $$createType45 = CommentReaction.createFrom;
+const $$createType46 = $Create.Array($$createType45);
+const $$createType47 = ReviewLineStart.createFrom;
 const $$createType48 = $Create.Nullable($$createType47);
-const $$createType49 = ReviewComment.createFrom;
-const $$createType50 = $Create.Array($$createType49);
-const $$createType51 = CommentTarget.createFrom;
+const $$createType49 = ReviewThreadReply.createFrom;
+const $$createType50 = $Create.Nullable($$createType49);
+const $$createType51 = ReviewComment.createFrom;
+const $$createType52 = $Create.Array($$createType51);
+const $$createType53 = CommentTarget.createFrom;

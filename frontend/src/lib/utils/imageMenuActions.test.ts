@@ -737,6 +737,7 @@ describe('repository images', () => {
     oid: OID,
     width: 640,
     height: 480,
+    fluid: false,
     browserUrl: `https://github.com/acme/widget/blob/${'a'.repeat(40)}/docs/a%20shot.png`,
   };
   const HREF = buildRepositoryImageHref(CLAIM);

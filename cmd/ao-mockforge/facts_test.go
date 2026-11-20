@@ -58,6 +58,7 @@ func TestForgeFactsSendEveryDocument(t *testing.T) {
 		{gitlab, []string{"mr:grp/facts!1", "label:grp/facts~bug", "milestone:grp/facts%v1", "snippet:grp/facts$3"}, "glab graphql ForgeFacts4"},
 		{gitlab, append([]string{"user:alice", "user:grp", "epic:grp&1"}, refs(7)...), "glab graphql ForgeFacts16"},
 		{gitlab, refs(20), "glab graphql ForgeFacts32"},
+		{gitlab, []string{"labels:grp/facts"}, "glab graphql ForgeFactsLabels"},
 	} {
 		project := tc.pr.Project()
 		for i, key := range tc.keys {

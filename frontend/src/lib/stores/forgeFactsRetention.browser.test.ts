@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cdp } from 'vitest/browser';
-import { __forgeFactsHeldForTest, __resetForgeFactsForTest, __setResolveForgeFactsForTest, observePRFacts } from './forgeFacts.svelte';
+import { __forgeFactsHeldForTest, __resetForgeFactsForTest, __setResolveForgeFactsForTest, forgeFactReader, observePRFacts } from './forgeFacts.svelte';
 import { prKey, type PRRef } from '../utils/prReference';
+import { labelIndex, type ForgeFact } from '../utils/forgeFacts';
 import type { PRDetail, ReviewThread } from '../types/models';
 
 // What the facts store keeps alive of a PR's text. Each `pr:updated` frame
@@ -84,5 +85,45 @@ describe('forge facts retention', () => {
     // Measured 2.9 MB: the bodies' text is about 1.2 MB and the 250,000
     // references about 1 MB.
     expect(after - before).toBeLessThan(5 * 1024 * 1024);
+  });
+
+  it('holds a project\'s 1,000-label list once, however many of its PRs are open', async () => {
+    const LABELS = 'labels:group/widget';
+    const gitlab = (number: number): PRRef => ({ forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number });
+    // Each answer is the wire's own parse: a new object per call.
+    const wire = () => JSON.parse(JSON.stringify({
+      key: LABELS, status: 'found', complete: true,
+      labels: Array.from({ length: 1000 }, (_, i) => ({ title: `area::component-${i}`, color: `#${(0xd9534f + i).toString(16)}`, textColor: '#ffffff' })),
+    })) as ForgeFact;
+    __setResolveForgeFactsForTest(async (_backend, _workspace, _pr, _revision, keys) => ({ facts: keys.map((key) => (key === LABELS ? wire() : { key, status: 'unavailable' as const })) }));
+    const open = async (number: number) => {
+      observePRFacts(prKey(gitlab(number)), gitlab(number), JSON.parse(JSON.stringify({ detail: null, threads: [{ id: 't', comments: [{ id: `c${number}`, body: `PR ${number}: ~bug and ~docs` }] }] })) as Snapshot);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    // Warm the code paths.
+    await open(1);
+    __resetForgeFactsForTest();
+    __setResolveForgeFactsForTest(async (_backend, _workspace, _pr, _revision, keys) => ({ facts: keys.map((key) => (key === LABELS ? wire() : { key, status: 'unavailable' as const })) }));
+    const before = await liveHeap();
+    await open(1);
+    const one = (await liveHeap()) - before;
+    for (let number = 2; number <= 20; number++) await open(number);
+    const twenty = (await liveHeap()) - before;
+    console.info(`a 1,000-label list: ${one} bytes held by one PR, ${twenty} by twenty PRs of the project`);
+    // Measured: one PR holds about 89 KB, the list and its own
+    // bookkeeping; nineteen more add about 3.5 KB each of bookkeeping, not
+    // a list each (which would be about 1.6 MB).
+    expect(one).toBeGreaterThan(50_000);
+    expect(one).toBeLessThan(300_000);
+    expect(twenty - one).toBeLessThan(one);
+    const held = forgeFactReader(prKey(gitlab(1)))!.get(LABELS);
+    expect(held).toMatchObject({ status: 'found', complete: true });
+    for (let number = 2; number <= 20; number++) expect(forgeFactReader(prKey(gitlab(number)))!.get(LABELS)).toBe(held);
+    // Its title index, built once for every PR's lexes.
+    const indexed = await liveHeap();
+    expect(labelIndex(held as ForgeFact).size).toBe(1000);
+    const index = (await liveHeap()) - indexed;
+    console.info(`its title index: ${index} bytes`);
+    expect(index).toBeLessThan(one);
   });
 });

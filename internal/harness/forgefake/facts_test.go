@@ -140,6 +140,47 @@ func TestGitLabFactsRoutes(t *testing.T) {
 	}
 }
 
+// GitLab's label list answers the project's labels by title, 100 a page
+// by cursor, and a missing project as null.
+func TestGitLabLabelListRoute(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	labels := make([]Label, 150)
+	for i := range labels {
+		labels[i] = Label{Name: fmt.Sprintf("l%03d", 149-i), Color: "#000000"}
+	}
+	if _, err := e.Seed(Fixture{Repos: []Repo{{Forge: "gitlab", Project: "grp/app", Labels: labels}}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	type page struct {
+		nodes []any
+		next  bool
+		after any
+	}
+	read := func(project string, after any) (page, bool) {
+		out := glabGraphQL(t, srv, "ForgeFactsLabels", "query", map[string]any{"p": project, "after": after})
+		p := out["data"].(map[string]any)["project"]
+		if p == nil {
+			return page{}, false
+		}
+		conn := p.(map[string]any)["labels"].(map[string]any)
+		info := conn["pageInfo"].(map[string]any)
+		return page{nodes: conn["nodes"].([]any), next: info["hasNextPage"].(bool), after: info["endCursor"]}, true
+	}
+	first, ok := read("grp/app", nil)
+	if !ok || len(first.nodes) != 100 || !first.next || first.nodes[0].(map[string]any)["title"] != "l000" || first.nodes[0].(map[string]any)["textColor"] != "#ffffff" {
+		t.Fatalf("first page = %d nodes, next %v, first %v", len(first.nodes), first.next, first.nodes[0])
+	}
+	second, _ := read("grp/app", first.after)
+	if len(second.nodes) != 50 || second.next || second.nodes[49].(map[string]any)["title"] != "l149" {
+		t.Fatalf("second page = %d nodes, next %v", len(second.nodes), second.next)
+	}
+	if _, ok := read("gone/app", nil); ok {
+		t.Fatal("a missing project answered a project")
+	}
+}
+
 // A fixture refuses accounts and facts its forge cannot have.
 func TestFactsFixtureValidation(t *testing.T) {
 	t.Parallel()

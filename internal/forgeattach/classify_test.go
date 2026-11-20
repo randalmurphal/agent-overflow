@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
 	"strings"
 	"testing"
 )
@@ -24,19 +25,28 @@ func TestClassifyImage(t *testing.T) {
 	}
 }
 
-// An svg answers the size its root declares in plain pixels, so the pane
-// reserves its box; one sized by its container answers none.
-func TestClassifySVGSize(t *testing.T) {
+// An svg or avif answers how its <img> is sized, so the pane reserves its
+// box: an svg's root's size, or its viewBox ratio as fluid; an avif's
+// primary item's size.
+func TestClassifyDisplaySize(t *testing.T) {
+	avif, err := os.ReadFile("../attachment/testdata/solid-64x1.avif")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		doc  string
-		w, h int
+		name  string
+		data  []byte
+		mime  string
+		w, h  int
+		fluid bool
 	}{
-		{`<svg xmlns="http://www.w3.org/2000/svg" width="64px" height="32"></svg>`, 64, 32},
-		{`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 32"></svg>`, 0, 0},
+		{"sized svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="64px" height="32"></svg>`), "image/svg+xml", 64, 32, false},
+		{"fluid svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 32"></svg>`), "image/svg+xml", 2, 1, true},
+		{"avif", avif, "image/avif", 64, 1, false},
 	} {
-		classified, err := Classify([]byte(tc.doc), "diagram.svg")
-		if err != nil || classified.Kind != KindImage || classified.MimeType != "image/svg+xml" || classified.Width != tc.w || classified.Height != tc.h {
-			t.Errorf("Classify(%s) = %+v, %v; want a %dx%d svg image", tc.doc, classified, err, tc.w, tc.h)
+		classified, err := Classify(tc.data, "file")
+		if err != nil || classified.Kind != KindImage || classified.MimeType != tc.mime || classified.Width != tc.w || classified.Height != tc.h || classified.Fluid != tc.fluid {
+			t.Errorf("%s: Classify = %+v, %v; want a %dx%d (fluid %v) %s image", tc.name, classified, err, tc.w, tc.h, tc.fluid, tc.mime)
 		}
 	}
 }

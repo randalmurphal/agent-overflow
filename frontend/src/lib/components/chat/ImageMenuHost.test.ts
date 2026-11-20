@@ -386,6 +386,7 @@ describe('<ImageMenuHost>', () => {
       oid: 'c'.repeat(40),
       width: 400,
       height: 300,
+      fluid: false,
       browserUrl: `https://github.com/acme/widget/blob/${'a'.repeat(40)}/docs/diagram.png`,
     };
     const HREF = buildRepositoryImageHref(CLAIM);

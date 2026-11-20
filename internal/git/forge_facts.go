@@ -54,12 +54,15 @@ type ForgeFact struct {
 	TextColor string `json:"textColor,omitempty"`
 	// OID is an image's or a lines range's blob, or a commit's full id.
 	OID string `json:"oid,omitempty"`
-	// Size, Width, Height and MIME are an image blob's bytes, intrinsic
-	// pixels (zero for a format without them, such as svg) and sniffed
-	// type.
+	// Size, Width, Height and MIME are an image blob's bytes, natural
+	// pixels (zero when unknown) and sniffed type. Fluid marks an image
+	// with no natural size and a ratio (an svg with only a viewBox):
+	// Width and Height are then the ratio's terms, never pixels
+	// (attachment.DisplaySize).
 	Size   int64  `json:"size,omitempty"`
 	Width  int    `json:"width,omitempty"`
 	Height int    `json:"height,omitempty"`
+	Fluid  bool   `json:"fluid,omitempty"`
 	MIME   string `json:"mime,omitempty"`
 	// LFS marks an image path holding a Git LFS pointer whose object is not
 	// in the local LFS store; only OID is set beside it. A pointer whose
@@ -69,6 +72,21 @@ type ForgeFact struct {
 	// Path its repository path.
 	Text string `json:"text,omitempty"`
 	Path string `json:"path,omitempty"`
+	// Labels is a labels: key's list, the project's labels and its
+	// ancestor groups' in the forge's order (by title), and Complete says
+	// it holds every one; past maxLabelListPages pages or
+	// maxLabelListBytes it is the labels read so far.
+	Labels   []ForgeLabel `json:"labels,omitempty"`
+	Complete bool         `json:"complete,omitempty"`
+}
+
+// ForgeLabel is one label of a labels: list: its title as the forge
+// stores it and its colors as "#rrggbb" (empty when the forge's is not
+// one).
+type ForgeLabel struct {
+	Title     string `json:"title"`
+	Color     string `json:"color,omitempty"`
+	TextColor string `json:"textColor,omitempty"`
 }
 
 func unavailableFact(key string) ForgeFact { return ForgeFact{Key: key, Status: FactUnavailable} }
@@ -82,7 +100,7 @@ func factKind(key string) string {
 
 // The kinds the forge answers and the kinds the repository answers.
 var (
-	forgeFactKinds = map[string]bool{"ref": true, "mr": true, "user": true, "label": true, "milestone": true, "snippet": true, "epic": true}
+	forgeFactKinds = map[string]bool{"ref": true, "mr": true, "user": true, "label": true, "labels": true, "milestone": true, "snippet": true, "epic": true}
 	localFactKinds = map[string]bool{"commit": true, "image": true, "lines": true}
 )
 
@@ -248,6 +266,11 @@ func parseForgeFactKey(forge, key string) (forgeFactKey, string) {
 		status = numbered("&")
 	case "label":
 		status = titled("~")
+	case "labels":
+		if rest == "" {
+			return k, FactUnavailable
+		}
+		k.namespace = rest
 	case "milestone":
 		status = titled("%")
 	case "user":

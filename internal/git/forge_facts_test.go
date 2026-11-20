@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -31,6 +32,9 @@ type factsForge struct {
 	mu      sync.Mutex
 	gate    chan struct{}
 	arrived chan string
+	// seen counts GraphQL requests by operation, and failAt answers the
+	// one of an operation at that count with a GraphQL error and no data.
+	seen, failAt map[string]int
 }
 
 func newFactsForge(t testing.TB, fixture forgefake.Fixture) *factsForge {
@@ -39,7 +43,7 @@ func newFactsForge(t testing.TB, fixture forgefake.Fixture) *factsForge {
 	if _, err := engine.Seed(fixture); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
-	f := &factsForge{engine: engine, arrived: make(chan string, 64)}
+	f := &factsForge{engine: engine, arrived: make(chan string, 64), seen: map[string]int{}, failAt: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		forge := map[string]string{"/github/graphql": "github", "/gitlab/api/graphql": "gitlab"}[r.URL.Path]
 		if forge == "" {
@@ -57,7 +61,15 @@ func newFactsForge(t testing.TB, fixture forgefake.Fixture) *factsForge {
 		}
 		f.mu.Lock()
 		gate := f.gate
+		f.seen[payload.OperationName]++
+		fail := f.failAt[payload.OperationName] == f.seen[payload.OperationName]
 		f.mu.Unlock()
+		if fail {
+			// GitLab's answer to a query that failed while it ran.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"errors":[{"message":"Internal server error"}]}`))
+			return
+		}
 		if gate != nil {
 			f.arrived <- payload.OperationName
 			<-gate
@@ -234,7 +246,7 @@ func resolveFacts(t testing.TB, core *Core, pr PRReference, keys ...string) map[
 func expectFacts(t *testing.T, got map[string]ForgeFact, want ...ForgeFact) {
 	t.Helper()
 	for _, w := range want {
-		if g := got[w.Key]; g != w {
+		if g := got[w.Key]; !reflect.DeepEqual(g, w) {
 			t.Errorf("%s = %+v\nwant %+v", w.Key, g, w)
 		}
 	}
@@ -315,6 +327,175 @@ func TestGitLabForgeFactsAnswerEveryKind(t *testing.T) {
 	reqs := f.requests(t, 0)
 	if len(reqs) != 1 || reqs[0].Operation != "ForgeFacts32" || len(reqs[0].Used) != 19 {
 		t.Fatalf("requests = %+v, want one ForgeFacts32 with every key", reqs)
+	}
+}
+
+// labelsFixture is a GitLab project grp/app with n labels whose titles
+// are title(i), in reverse order of title.
+func labelsFixture(n int, title func(i int) string) forgefake.Fixture {
+	labels := make([]forgefake.Label, n)
+	for i := range labels {
+		labels[i] = forgefake.Label{Name: title(n - 1 - i), Color: "#ABC"}
+	}
+	return forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/app", Labels: labels}}}
+}
+
+func labelTitleOf(i int) string { return fmt.Sprintf("label %04d", i) }
+
+// labelListRequests counts the label list pages read since seq.
+func (f *factsForge) labelListRequests(since int) int {
+	n := 0
+	for _, inv := range f.engine.Invocations(since).Invocations {
+		if inv.Operation == "ForgeFactsLabels" {
+			n++
+		}
+	}
+	return n
+}
+
+// A labels: key answers the project's whole label list, read 100 a page
+// by cursor in the forge's order, complete when the last page says so;
+// past ten pages it answers the first 1,000, not complete. It is held in
+// the facts cache at a size that counts its labels, and a held list sends
+// nothing.
+func TestGitLabLabelListPagesToItsCap(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		labels, pages, held int
+		complete            bool
+	}{
+		{0, 1, 0, true},
+		{250, 3, 250, true},
+		{1000, 10, 1000, true},
+		{1050, 10, 1000, false},
+	} {
+		t.Run(fmt.Sprint(tc.labels), func(t *testing.T) {
+			t.Parallel()
+			f := newFactsForge(t, labelsFixture(tc.labels, labelTitleOf))
+			got := resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app")["labels:grp/app"]
+			if got.Status != FactFound || len(got.Labels) != tc.held || got.Complete != tc.complete {
+				t.Fatalf("list = %s with %d labels, complete %v; want found with %d, complete %v", got.Status, len(got.Labels), got.Complete, tc.held, tc.complete)
+			}
+			for i, label := range got.Labels {
+				if want := (ForgeLabel{Title: labelTitleOf(i), Color: "#aabbcc", TextColor: "#1f1e24"}); label != want {
+					t.Fatalf("label %d = %+v, want %+v", i, label, want)
+				}
+			}
+			if n := f.labelListRequests(0); n != tc.pages {
+				t.Fatalf("%d pages read, want %d", n, tc.pages)
+			}
+			entries, bytes := f.core.forges["gitlab"].(*gitlabForge).facts.held()
+			if want := factBytes(f.cacheKey(t, "labels:grp/app"), got); entries != 1 || bytes != want {
+				t.Fatalf("held %d entries, %d bytes; want 1 entry of %d bytes", entries, bytes, want)
+			}
+			if minimum := int64(tc.held * 64); bytes < minimum {
+				t.Fatalf("a list of %d labels counts %d bytes, under %d", tc.held, bytes, minimum)
+			}
+			since := f.seq()
+			resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app")
+			if n := f.labelListRequests(since); n != 0 {
+				t.Fatalf("a held list read %d pages again", n)
+			}
+		})
+	}
+}
+
+// cacheKey is the facts cache key of key for gitlabFactsPR under the
+// fake's login.
+func (f *factsForge) cacheKey(t *testing.T, key string) string {
+	t.Helper()
+	client, err := f.core.gitlabAPI(gitlabFactsPR.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, err := client.CredentialFingerprint(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gitlabFactsPR.Forge + "\x00" + gitlabFactsPR.Host + "\x00" + fp + "\x00" + key
+}
+
+// A list stops at maxLabelListBytes, not complete, so the worst list a
+// cache entry holds is bounded however long the titles; and the entry
+// fits the forge facts cache.
+func TestGitLabLabelListBoundsItsBytes(t *testing.T) {
+	t.Parallel()
+	long := func(i int) string { return fmt.Sprintf("%04d", i) + strings.Repeat("é", 250) }
+	f := newFactsForge(t, labelsFixture(1000, long))
+	got := resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app")["labels:grp/app"]
+	var bytes int64
+	for _, label := range got.Labels {
+		bytes += labelBytes(label)
+	}
+	if got.Status != FactFound || got.Complete || len(got.Labels) == 0 || bytes > maxLabelListBytes || bytes+labelBytes(got.Labels[0]) <= maxLabelListBytes {
+		t.Fatalf("a list of long titles = %d labels of %d bytes, complete %v; want it to stop within %d", len(got.Labels), bytes, got.Complete, maxLabelListBytes)
+	}
+	if entries, _ := f.core.forges["gitlab"].(*gitlabForge).facts.held(); entries != 1 {
+		t.Fatalf("the largest list is not held (%d entries)", entries)
+	}
+}
+
+// A project GitLab does not have is absent and held as absent; a page that
+// fails makes the whole list unavailable, nothing of it held, and the next
+// call reads it again from the first page.
+func TestGitLabLabelListAbsentAndFailedPage(t *testing.T) {
+	t.Parallel()
+	f := newFactsForge(t, labelsFixture(250, labelTitleOf))
+	got := resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/gone")
+	expectFacts(t, got, ForgeFact{Key: "labels:grp/gone", Status: FactAbsent})
+	since := f.seq()
+	resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/gone")
+	if n := f.labelListRequests(since); n != 0 {
+		t.Fatalf("an absent list was read again (%d pages) within its TTL", n)
+	}
+
+	f.mu.Lock()
+	f.failAt["ForgeFactsLabels"] = f.seen["ForgeFactsLabels"] + 2
+	f.mu.Unlock()
+	got = resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app", "ref:grp/app#1")
+	expectFacts(t, got, ForgeFact{Key: "labels:grp/app", Status: FactUnavailable}, ForgeFact{Key: "ref:grp/app#1", Status: FactAbsent})
+	forge := f.core.forges["gitlab"].(*gitlabForge)
+	if _, ok := forge.facts.get(f.cacheKey(t, "labels:grp/app"), f.core.nowFn()); ok {
+		t.Fatal("a list whose page failed is held")
+	}
+	since = f.seq()
+	got = resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app")
+	if n := f.labelListRequests(since); n != 3 || len(got["labels:grp/app"].Labels) != 250 {
+		t.Fatalf("after a failed page: %d pages, %d labels; want the whole list read again", n, len(got["labels:grp/app"].Labels))
+	}
+}
+
+// Concurrent calls naming one list share one read of it; a list key on
+// GitHub, or with no project, is unavailable without a request.
+func TestGitLabLabelListSharedAndRefused(t *testing.T) {
+	t.Parallel()
+	f := newFactsForge(t, labelsFixture(150, labelTitleOf))
+	joined := make(chan string, 8)
+	f.core.forges["gitlab"].(*gitlabForge).facts.onJoin = func(key string) { joined <- key }
+	release := f.hold()
+	defer release()
+	answers := make(chan map[string]ForgeFact, 2)
+	go func() { answers <- resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app") }()
+	<-f.arrived
+	go func() { answers <- resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app") }()
+	<-joined
+	release()
+	for range 2 {
+		if got := (<-answers)["labels:grp/app"]; len(got.Labels) != 150 || !got.Complete {
+			t.Fatalf("a shared list = %d labels, complete %v", len(got.Labels), got.Complete)
+		}
+	}
+	if n := f.labelListRequests(0); n != 2 {
+		t.Fatalf("two concurrent calls read %d pages, want the list's 2 once", n)
+	}
+
+	g := newFactsForge(t, githubFactsFixture())
+	expectFacts(t, resolveFacts(t, g.core, githubFactsPR, "labels:acme/app", "labels:"),
+		ForgeFact{Key: "labels:acme/app", Status: FactUnavailable}, ForgeFact{Key: "labels:", Status: FactUnavailable})
+	expectFacts(t, resolveFacts(t, f.core, gitlabFactsPR, "labels:", "labels:-bad"),
+		ForgeFact{Key: "labels:", Status: FactUnavailable}, ForgeFact{Key: "labels:-bad", Status: FactAbsent})
+	if n := len(g.engine.Invocations(0).Invocations); n != 0 {
+		t.Fatalf("refused list keys made %d requests", n)
 	}
 }
 
@@ -542,7 +723,7 @@ func TestResolveFactsArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []ForgeFact{{Key: "x:1", Status: FactUnavailable}, {Key: "", Status: FactUnavailable}, {Key: "x:1", Status: FactUnavailable}, {Key: "commit:zz", Status: FactUnavailable}}
-	if !slices.Equal(got.Facts, want) {
+	if !reflect.DeepEqual(got.Facts, want) {
 		t.Fatalf("facts = %+v", got.Facts)
 	}
 }

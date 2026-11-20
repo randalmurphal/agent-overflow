@@ -17,6 +17,7 @@ import {
   noteForgeFactsRevision,
   noteForgeFactsWorkspace,
   observePRFacts,
+  reloadForgeFacts,
   type ResolveForgeFactsCall,
 } from './forgeFacts.svelte';
 import { attachPR, applyPRUpdatedEvent } from './prReviewStore.svelte';
@@ -26,7 +27,7 @@ import { __addFactScanForTest, type FactScan } from '../utils/forgeReferenceExte
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { prKey, type PRRef } from '../utils/prReference';
 import type { PRDetail, ReviewComment, ReviewThread } from '../types/models';
-import { linesFactKey, type ForgeFact } from '../utils/forgeFacts';
+import { labelIndex, labelIndexCounters, linesFactKey, type ForgeFact } from '../utils/forgeFacts';
 import type { WorkspaceRef } from '../types/git';
 import * as diagnostics from '../utils/frontendErrorCapture';
 
@@ -93,7 +94,7 @@ describe('forge facts per applied snapshot', () => {
     expect(reader.get('ref:group/widget#1')).toBe('pending');
     expect(reader.get(`commit:${SHA}`)).toBe('pending');
     expect(calls).toHaveLength(1);
-    expect(new Set(calls[0].keys)).toEqual(new Set(['ref:group/widget#1', 'mr:group/widget!2', 'user:ana', `commit:${SHA}`, 'label:group/widget~bug']));
+    expect(new Set(calls[0].keys)).toEqual(new Set(['ref:group/widget#1', 'mr:group/widget!2', 'user:ana', `commit:${SHA}`, 'labels:group/widget']));
   });
 
   it('asks nothing again for N frames with the same bodies, and scans none of them', () => {
@@ -270,20 +271,18 @@ describe('answers', () => {
     calls[0].reject(new Error('gone'));
     await settle();
     expect(report).toHaveBeenCalledTimes(1);
-    expect(report.mock.calls[0][1]).toBe('ref 1, label 1; Error');
+    expect(report.mock.calls[0][1]).toBe('ref 1, labels 1; Error');
     report.mockRestore();
   });
 
   it('keeps a signature when an answer restates the same fact', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
     const calls = heldResolver();
     observePRFacts(KEY, REF, snapshot('#1'));
     calls[0].answer([found('ref:group/widget#1')]);
     await settle();
     const signature = forgeFactReader(KEY)!.signature('ref:group/widget#1');
     const version = __forgeFactsHeldForTest(KEY)!.version;
-    vi.setSystemTime(Date.now() + FACT_FRESH_MS + 1);
-    observePRFacts(KEY, REF, snapshot('#1 edited'));
+    reloadForgeFacts(KEY);
     expect(calls).toHaveLength(2);
     // Meanwhile the old answer stays in use.
     expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toMatchObject({ status: 'found' });
@@ -321,11 +320,11 @@ describe('answers', () => {
     expect(calls.map((call) => call.keys)).toEqual([['ref:group/widget#1'], ['ref:group/widget#1']]);
   });
 
-  it('asks again for a fact older than ten minutes, by the next frame that holds it', async () => {
+  it('asks again for an absent answer older than ten minutes, by the next frame that holds it', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const calls = heldResolver();
     observePRFacts(KEY, REF, snapshot('#1'));
-    calls[0].answer([found('ref:group/widget#1')]);
+    calls[0].answer([{ key: 'ref:group/widget#1', status: 'absent' }]);
     await settle();
     observePRFacts(KEY, REF, snapshot('#1', [comment('c1', 'x')]));
     expect(calls).toHaveLength(1);
@@ -375,6 +374,148 @@ describe('answers', () => {
   });
 });
 
+const LABELS = 'labels:group/widget';
+/** A label list answer as the wire gives it: a new object every time. */
+const list = (titles: string[], complete = true, color = '#d9534f'): ForgeFact =>
+  JSON.parse(JSON.stringify({ key: LABELS, status: 'found', complete, labels: titles.map((title) => ({ title, color, textColor: '#ffffff' })) })) as ForgeFact;
+
+describe('asking again', () => {
+  const MINUTE = 60 * 1000;
+
+  it('asks nothing by the clock for found answers, over an hour of frames', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot(`#1 !2 @ana ${SHA}`));
+    calls[0].answer(calls[0].keys.map((key) => found(key)));
+    await settle();
+    for (let minute = 1; minute <= 60; minute++) {
+      vi.setSystemTime(Date.now() + MINUTE);
+      observePRFacts(KEY, REF, snapshot(`#1 !2 @ana ${SHA}`, [comment('c1', `frame ${minute}`)]));
+      observePRFacts(KEY, REF, snapshot(`#1 !2 @ana ${SHA}`, [comment('c1', `frame ${minute}`)]));
+    }
+    expect(calls).toHaveLength(1);
+  });
+
+  it('asks again for an absent answer and the label list at ten minutes, once each time', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const calls = heldResolver();
+    const frame = (n: number) => observePRFacts(KEY, REF, snapshot('#1 #2 ~bug', [comment('c1', `frame ${n}`)]));
+    frame(0);
+    calls[0].answer([found('ref:group/widget#1'), { key: 'ref:group/widget#2', status: 'absent' }, list(['bug'])]);
+    await settle();
+    const start = Date.now();
+    vi.setSystemTime(start + FACT_FRESH_MS - 1);
+    frame(1);
+    expect(calls).toHaveLength(1);
+    vi.setSystemTime(start + FACT_FRESH_MS);
+    frame(2);
+    frame(3);
+    expect(calls.map((call) => call.keys)).toEqual([['ref:group/widget#1', 'ref:group/widget#2', LABELS], ['ref:group/widget#2', LABELS]]);
+    calls[1].answer([{ key: 'ref:group/widget#2', status: 'absent' }, list(['bug'])]);
+    await settle();
+    for (let minute = 1; minute < 10; minute++) {
+      vi.setSystemTime(Date.now() + MINUTE);
+      frame(10 + minute);
+    }
+    expect(calls).toHaveLength(2);
+    vi.setSystemTime(Date.now() + MINUTE);
+    frame(20);
+    expect(calls.map((call) => call.keys)).toHaveLength(3);
+    expect(calls[2].keys).toEqual(['ref:group/widget#2', LABELS]);
+  });
+
+  it('asks for every held key on a reload, in the fewest calls, and changes no signature when the answers are the same', async () => {
+    const calls = heldResolver();
+    const refs = (from: number) => Array.from({ length: 150 }, (_, i) => `#${from + i}`).join(' ');
+    observePRFacts(KEY, REF, snapshot(refs(1), [comment('c1', refs(151))]));
+    expect(calls).toHaveLength(2);
+    for (const call of calls) call.answer(call.keys.map((key) => found(key)));
+    await settle();
+    const reader = forgeFactReader(KEY)!;
+    const signatures = Array.from({ length: 300 }, (_, i) => reader.signature(`ref:group/widget#${i + 1}`));
+    const version = __forgeFactsHeldForTest(KEY)!.version;
+    reloadForgeFacts(KEY);
+    expect(calls.slice(2).map((call) => call.keys.length)).toEqual([FACTS_PER_CALL, 300 - FACTS_PER_CALL]);
+    // Meanwhile the held answers stay in use.
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toMatchObject({ status: 'found' });
+    for (const call of calls.slice(2)) call.answer(call.keys.map((key) => found(key)));
+    await settle();
+    expect(__forgeFactsHeldForTest(KEY)!.version).toBe(version);
+    expect(forgeFactReader(KEY)).toBe(reader);
+    expect(Array.from({ length: 300 }, (_, i) => reader.signature(`ref:group/widget#${i + 1}`))).toEqual(signatures);
+  });
+
+  it('asks once for a reload made twice while the first is out', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('#1 ~bug'));
+    calls[0].answer([found('ref:group/widget#1'), list(['bug'])]);
+    await settle();
+    reloadForgeFacts(KEY);
+    reloadForgeFacts(KEY);
+    expect(calls.map((call) => call.keys)).toEqual([['ref:group/widget#1', LABELS], ['ref:group/widget#1', LABELS]]);
+    calls[1].answer([found('ref:group/widget#1'), list(['bug'])]);
+    await settle();
+    reloadForgeFacts(KEY);
+    expect(calls).toHaveLength(3);
+  });
+});
+
+describe('the label list', () => {
+  it('is one key per body, however many labels it names', () => {
+    const calls = heldResolver();
+    const labels = Array.from({ length: 300 }, (_, i) => `~label${i}`).join(' ');
+    observePRFacts(KEY, REF, snapshot(`${labels} ~"two words" ~a::b`, [comment('c1', '~bug ~other')]));
+    expect(calls.map((call) => call.keys)).toEqual([[LABELS]]);
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 1, bodyKeys: 2 });
+  });
+
+  it('refreshed with the same labels keeps its answer object, signature and index', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('~bug'));
+    calls[0].answer([list(['bug', 'docs'])]);
+    await settle();
+    const held = forgeFactReader(KEY)!.get(LABELS) as ForgeFact;
+    labelIndex(held);
+    const builds = labelIndexCounters.builds;
+    const signature = forgeFactReader(KEY)!.signature(LABELS);
+    const version = __forgeFactsHeldForTest(KEY)!.version;
+    vi.setSystemTime(Date.now() + FACT_FRESH_MS);
+    observePRFacts(KEY, REF, snapshot('~bug', [comment('c1', 'a frame')]));
+    calls[1].answer([list(['bug', 'docs'])]);
+    await settle();
+    const reader = forgeFactReader(KEY)!;
+    expect(reader.get(LABELS)).toBe(held);
+    expect(reader.signature(LABELS)).toBe(signature);
+    expect(__forgeFactsHeldForTest(KEY)!.version).toBe(version);
+    labelIndex(reader.get(LABELS) as ForgeFact);
+    expect(labelIndexCounters.builds).toBe(builds);
+    // A list that changed is a new answer.
+    reloadForgeFacts(KEY);
+    calls[2].answer([list(['bug', 'docs'], true, '#00ff00')]);
+    await settle();
+    expect(forgeFactReader(KEY)!.signature(LABELS)).not.toBe(signature);
+  });
+
+  it('is one answer object for every open PR of the project', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('~bug'));
+    observePRFacts(OTHER, OTHER_REF, snapshot('~docs'));
+    calls[0].answer([list(['bug', 'docs'])]);
+    calls[1].answer([list(['bug', 'docs'])]);
+    await settle();
+    const mine = forgeFactReader(KEY)!.get(LABELS);
+    expect(mine).toMatchObject({ status: 'found' });
+    expect(forgeFactReader(OTHER)!.get(LABELS)).toBe(mine);
+    // One PR's newer list is its own until the other's matches it.
+    reloadForgeFacts(OTHER);
+    calls[2].answer([list(['bug', 'docs', 'new'])]);
+    await settle();
+    expect(forgeFactReader(OTHER)!.get(LABELS)).not.toBe(mine);
+    expect(forgeFactReader(KEY)!.get(LABELS)).toBe(mine);
+  });
+});
+
 describe('the text a PR holds', () => {
   const GH: PRRef = { forge: 'github', host: 'github.com', namespace: 'acme', repo: 'widget', number: 9 };
   const GH_KEY = prKey(GH);
@@ -412,13 +553,11 @@ describe('the text a PR holds', () => {
   });
 
   it('counts a refreshed answer once', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
     const calls = heldResolver();
     observePRFacts(GH_KEY, GH, snapshot(link('a.ts')));
     calls[0].answer([COMMIT_FACT, text('a.ts', 100)]);
     await settle();
-    vi.setSystemTime(Date.now() + FACT_FRESH_MS);
-    observePRFacts(GH_KEY, GH, snapshot(`${link('a.ts')} edited`));
+    reloadForgeFacts(GH_KEY);
     calls[1].answer([COMMIT_FACT, text('a.ts', 140)]);
     await settle();
     expect(__forgeFactsHeldForTest(GH_KEY)!.textChars).toBe(140);
@@ -558,7 +697,7 @@ describe('a computer without ResolveForgeFacts', () => {
     noteForgeFactsWorkspace(OTHER, WS);
     setBindingMock('ResolveForgeFacts', async () => null);
     observePRFacts(KEY, REF, snapshot('#1 and ~bug', [comment('c1', '@ana')]));
-    expect(forgeFactReader(KEY)!.get('label:group/widget~bug')).toBe('pending');
+    expect(forgeFactReader(KEY)!.get('labels:group/widget')).toBe('pending');
     await settle();
   }
 
@@ -567,7 +706,7 @@ describe('a computer without ResolveForgeFacts', () => {
     const raw = getBindingMock('ResolveForgeFacts');
     expect(raw).toHaveBeenCalledTimes(1);
     const reader = forgeFactReader(KEY)!;
-    for (const key of ['ref:group/widget#1', 'label:group/widget~bug', 'user:ana']) {
+    for (const key of ['ref:group/widget#1', 'labels:group/widget', 'user:ana']) {
       expect(reader.get(key)).toBeUndefined();
       expect(reader.signature(key)).toBe('');
     }
@@ -580,7 +719,7 @@ describe('a computer without ResolveForgeFacts', () => {
     expect(raw).toHaveBeenCalledTimes(1);
     expect(forgeFactsCounters).toMatchObject({ scans, calls, requestArrays });
     expect(forgeFactReader(KEY)!.get('ref:group/widget#2')).toBeUndefined();
-    expect(forgeFactReader(OTHER)!.get('label:group/widget~other')).toBeUndefined();
+    expect(forgeFactReader(OTHER)!.get('labels:group/widget')).toBeUndefined();
   });
 
   it('is asked again once its connection changes', async () => {

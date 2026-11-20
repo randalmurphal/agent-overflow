@@ -21,6 +21,7 @@ export {
     CommentTarget,
     ForgeFact,
     ForgeFacts,
+    ForgeLabel,
     GitActionResult,
     GitBranch,
     GitStatus,

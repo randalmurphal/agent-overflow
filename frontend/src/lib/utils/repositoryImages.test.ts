@@ -27,6 +27,7 @@ const claim = (overrides: Partial<RepositoryImageClaim> = {}): RepositoryImageCl
   oid: OID,
   width: 640,
   height: 480,
+  fluid: false,
   browserUrl: 'https://github.com/acme/widget/blob/x/docs/a.png',
   ...overrides,
 });
@@ -89,6 +90,20 @@ describe('the repository image cache', () => {
     land();
     await handle.value;
     handle.release();
+  });
+
+  it('answers a fluid image as its ratio, marked fluid, and an older computer\'s answer as before', async () => {
+    mockGitBlobImage(() => ({ width: 16, height: 9, fluid: true, blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }) }));
+    const fluid = acquireRepositoryImage(claim({ oid: OTHER_OID }), 0);
+    expect(await fluid.sized).toEqual({ width: 16, height: 9, fluid: true });
+    expect(await fluid.value).toMatchObject({ width: 16, height: 9, originalWidth: 16, originalHeight: 9, fluid: true });
+    fluid.release();
+    // No fluid field: a 0x0 svg, with no size to reserve.
+    mockGitBlobImage(() => ({ blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }) }));
+    const older = acquireRepositoryImage(claim(), 0);
+    expect(await older.sized).toBeUndefined();
+    expect((await older.value).fluid).toBeUndefined();
+    older.release();
   });
 
   it('counts its bytes and URL in the shared budget, keeps them while held and revokes them on eviction', async () => {

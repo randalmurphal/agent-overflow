@@ -9,11 +9,14 @@
 // changed since the last one, marks the keys nobody asked about `pending`
 // in the same task, so a body mounting in that frame already reads
 // `pending`, and asks for every key it needs in ONE `resolveForgeFacts`
-// call (chunks of 256). A frame also asks again for a key its bodies still
-// hold that answered `unavailable`, or whose answer is older than ten
-// minutes (the old answer stays in use meanwhile), once per frame, and an
-// unavailable one, or an image whose Git LFS object is not local, no
-// sooner than a minute after its answer. Local
+// call (chunks of 256). A found answer about one thing (an issue, a user,
+// a commit, an image, a per-title label) is never asked for again by the
+// clock: a frame asks again only for an answer that can change on its own,
+// an unavailable one or an image whose Git LFS object is not local a
+// minute after it, an absent one or a label list ten minutes after it
+// (`dueAgain`), once per frame, the old answer in use meanwhile. The
+// user's reload of the PR (`reloadForgeFacts`) asks again for everything
+// it holds, once. Local
 // kinds (commits) need the pane's workspace and loaded revision, which
 // arrive after the first frame: `noteForgeFactsRevision` asks for those
 // once when the revision becomes known or its head moves. Nothing here
@@ -33,6 +36,11 @@
 // under with the next one by signature, so only blocks that read a key
 // whose answer changed rebuild. The live map is copied on the first write
 // after a snapshot was handed out, at most once per frame or answer.
+//
+// A GitLab body's labels read one fact, the project's label list (at most
+// 1,000 labels, bounded by the backend). It is one of the PR's facts, and
+// the PRs of a project share one answer object for it (`sharedList`), so a
+// list and its title index are held once however many of them are open.
 //
 // Bounded: a PR holds at most `MAX_FACTS_PER_PR` facts (a key past it is
 // not asked for and renders by shape) and `MAX_FACT_TEXT_PER_PR` characters
@@ -67,6 +75,7 @@ import type { PRDetail, ReviewThread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import {
   factKind,
+  isLabelsFactKey,
   isLocalFactKey,
   NO_REVISION,
   REVISION_FACT_KEY,
@@ -93,7 +102,7 @@ export const FACTS_PER_CALL = 256;
 export const MAX_FACT_TEXT_PER_PR = 2 * 1024 * 1024;
 /** The facts of one PR held for readers alone at most (within `MAX_FACTS_PER_PR`). */
 export const MAX_READ_FACTS_PER_PR = 1024;
-/** An answer older than this is asked for again by the next frame holding it. */
+/** An absent answer or a label list older than this is asked for again by the next frame holding it. */
 export const FACT_FRESH_MS = 10 * 60 * 1000;
 /** An unavailable answer, or an image whose Git LFS object is not local, is asked for again no sooner than this after it. */
 export const FACT_RETRY_MS = 60 * 1000;
@@ -419,13 +428,20 @@ function textChars(state: ForgeFact | 'pending'): number {
   return typeof state === 'object' && typeof state.text === 'string' ? state.text.length : 0;
 }
 
-/** When `entry`'s answer is due to be asked for again; Infinity for one the text bound turned away. */
-function dueAgain(entry: Entry & { state: ForgeFact }): number {
+/**
+ * When the answer for `key` is due to be asked for again by the clock: an
+ * unavailable one, or an image whose Git LFS object is not local (a pull
+ * changes it, which the backend sees on its next look), a minute after it;
+ * an absent one, or a label list (a label or an issue can be made), ten
+ * minutes after it; a found thing never (only `reloadForgeFacts` asks
+ * again), nor one the text bound turned away.
+ */
+function dueAgain(key: string, entry: Entry & { state: ForgeFact }): number {
   if (entry.over) return Infinity;
-  // A Git LFS pointer whose object is not local changes with a pull, which
-  // the backend sees on its next look.
-  const soon = entry.state.status === 'unavailable' || entry.state.lfs === true;
-  return entry.at + (soon ? FACT_RETRY_MS : FACT_FRESH_MS);
+  const { status } = entry.state;
+  if (status === 'unavailable' || entry.state.lfs === true) return entry.at + FACT_RETRY_MS;
+  if (status === 'absent' || isLabelsFactKey(key)) return entry.at + FACT_FRESH_MS;
+  return Infinity;
 }
 
 /** Adds to `ask` the held keys due again, and sets when the next one is. */
@@ -434,7 +450,7 @@ function askAgain(pr: PRFacts, now: number, ask: string[] | null): string[] | nu
   const head = headOf(pr);
   for (const [key, entry] of pr.entries) {
     if (entry.request !== 0 || entry.state === 'pending') continue;
-    const again = dueAgain(entry as Entry & { state: ForgeFact });
+    const again = dueAgain(key, entry as Entry & { state: ForgeFact });
     if (now >= again) {
       entry.askedHead = head;
       (ask ??= newRequest()).push(key);
@@ -478,6 +494,26 @@ export function noteForgeFactsRevision(key: string, workspace: WorkspaceRef, rev
     }
   }
   if (marked) bump(pr);
+  if (ask) send(pr, ask);
+}
+
+/**
+ * The user reloaded the PR `key`: asks once again for every answer it
+ * holds, in the fewest calls. The held answers stay in use until theirs
+ * arrive, and one answered the same keeps its signature, so nothing
+ * rebuilds. A key already asked for, or still unanswered, is not asked
+ * twice, so a second reload while the first is out asks nothing.
+ */
+export function reloadForgeFacts(key: string): void {
+  const pr = prs.get(key);
+  if (!pr || lacking.has(pr.backend)) return;
+  const head = headOf(pr);
+  let ask: string[] | null = null;
+  for (const [factKey, entry] of pr.entries) {
+    if (entry.request !== 0 || entry.state === 'pending' || entry.over) continue;
+    entry.askedHead = head;
+    (ask ??= newRequest()).push(factKey);
+  }
   if (ask) send(pr, ask);
 }
 
@@ -557,6 +593,7 @@ function settle(pr: PRFacts, request: number, keys: readonly string[], facts: re
       continue;
     }
     pr.textChars += textChars(fact) - textChars(held);
+    if (fact.labels) fact = sharedList(pr, key, fact);
     writable(pr).set(key, { state: fact, sig: String(++signatures), at: now, request: 0, askedHead: entry.askedHead, ...(over ? { over: true as const } : {}) });
     changed = true;
   }
@@ -564,11 +601,26 @@ function settle(pr: PRFacts, request: number, keys: readonly string[], facts: re
   if (changed) bump(pr);
 }
 
+/**
+ * The answer object another PR holds for `key` when it reads as `fact`:
+ * every open PR of a project holds its one label list, and its index
+ * (`labelIndex`), once. Answers never change in place, so sharing one is
+ * safe; a PR that drops it leaves the others theirs.
+ */
+function sharedList(self: PRFacts, key: string, fact: ForgeFact): ForgeFact {
+  for (const other of prs.values()) {
+    if (other === self) continue;
+    const state = other.entries.get(key)?.state;
+    if (typeof state === 'object' && sameFact(state, fact)) return state;
+  }
+  return fact;
+}
+
 function nextDue(pr: PRFacts): number {
   let due = Infinity;
-  for (const entry of pr.entries.values()) {
+  for (const [key, entry] of pr.entries) {
     if (entry.request !== 0 || entry.state === 'pending') continue;
-    const again = dueAgain(entry as Entry & { state: ForgeFact });
+    const again = dueAgain(key, entry as Entry & { state: ForgeFact });
     if (again < due) due = again;
   }
   return due;

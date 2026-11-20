@@ -134,6 +134,7 @@ async function loadForgeAttachment(
     originalHeight: meta.originalHeight,
     originalBytes: meta.sizeBytes || blob.size,
     derived: meta.derived,
+    ...(meta.fluid === true ? { fluid: true } : {}),
   };
 }
 

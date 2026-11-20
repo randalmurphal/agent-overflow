@@ -22,12 +22,25 @@ export interface ForgeFact {
   size?: number;
   width?: number;
   height?: number;
+  /** `width` and `height` are a ratio's terms, not pixels (ImageSize.fluid). */
+  fluid?: boolean;
   mime?: string;
   lfs?: boolean;
   text?: string;
   path?: string;
+  /** A `labels:` list: the project's labels and its ancestor groups', in
+   * the forge's order, and whether that is every one of them. */
+  labels?: ForgeLabel[];
+  complete?: boolean;
   /** The frontend's own fact (`REVISION_FACT_KEY`), never on the wire. */
   revision?: FactRevision;
+}
+
+/** One label of a `labels:` list: its title and its `#rrggbb` colors. */
+export interface ForgeLabel {
+  title: string;
+  color?: string;
+  textColor?: string;
 }
 
 /**
@@ -71,6 +84,10 @@ export const refFactKey = (project: string, number: string): string => `ref:${pr
 export const mrFactKey = (project: string, number: string): string => `mr:${project}!${number}`;
 export const userFactKey = (name: string): string => `user:${name}`;
 export const labelFactKey = (project: string, title: string): string => `label:${project}~${title}`;
+/** A GitLab project's whole label list, which decides every `~label` of the project. */
+export const labelsFactKey = (project: string): string => `labels:${project}`;
+const LABELS_KIND = 'labels:';
+export const isLabelsFactKey = (key: string): boolean => key.startsWith(LABELS_KIND);
 export const milestoneFactKey = (project: string, title: string): string => `milestone:${project}%${title}`;
 export const snippetFactKey = (project: string, id: string): string => `snippet:${project}$${id}`;
 export const epicFactKey = (group: string, number: string): string => `epic:${group}&${number}`;
@@ -101,9 +118,44 @@ export function factAnswer(state: ForgeFactState): ForgeFact | null {
   return typeof state === 'object' && state !== null && state.status !== 'unavailable' ? state : null;
 }
 
-/** Whether two answers render alike: the same status and fields. */
+/** Whether two answers render alike: the same status and fields. A label
+ * list is compared label by label, in one pass and no allocation. */
 export function sameFact(a: ForgeFact, b: ForgeFact): boolean {
-  return a.status === b.status && a.url === b.url && a.title === b.title && a.kind === b.kind && a.state === b.state &&
+  return a === b || (a.status === b.status && a.url === b.url && a.title === b.title && a.kind === b.kind && a.state === b.state &&
     a.color === b.color && a.textColor === b.textColor && a.oid === b.oid && a.size === b.size && a.width === b.width &&
-    a.height === b.height && a.mime === b.mime && a.lfs === b.lfs && a.text === b.text && a.path === b.path;
+    a.height === b.height && a.fluid === b.fluid && a.mime === b.mime && a.lfs === b.lfs && a.text === b.text && a.path === b.path &&
+    a.complete === b.complete && sameLabels(a.labels, b.labels));
+}
+
+function sameLabels(a: readonly ForgeLabel[] | undefined, b: readonly ForgeLabel[] | undefined): boolean {
+  if (a === b) return true;
+  if ((a?.length ?? 0) !== (b?.length ?? 0)) return false;
+  if (!a || !b) return true;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.title !== y.title || x.color !== y.color || x.textColor !== y.textColor) return false;
+  }
+  return true;
+}
+
+/** Observability for tests: label indexes built. */
+export const labelIndexCounters = { builds: 0 };
+
+const labelIndexes = new WeakMap<ForgeFact, ReadonlyMap<string, ForgeLabel>>();
+
+/**
+ * A label list's labels by title, built once per answer object (an answer
+ * never changes in place) and dropped with it: a lex looks a title up
+ * without building anything. The forge's first label of a title wins, as
+ * `labels(title:)` answers its first node.
+ */
+export function labelIndex(list: ForgeFact): ReadonlyMap<string, ForgeLabel> {
+  const held = labelIndexes.get(list);
+  if (held) return held;
+  labelIndexCounters.builds++;
+  const byTitle = new Map<string, ForgeLabel>();
+  for (const label of list.labels ?? []) if (!byTitle.has(label.title)) byTitle.set(label.title, label);
+  labelIndexes.set(list, byTitle);
+  return byTitle;
 }

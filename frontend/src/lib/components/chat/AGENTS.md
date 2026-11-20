@@ -107,7 +107,10 @@ islands, footnote popovers, selection preservation, and streamed reveal.
   `ForgeAttachmentHost.svelte` and `RepositoryImageHost.svelte` only decide
   which source it gets. While its bytes load, an image whose box is known
   (authored size, then a fact's, then the mint answer's;
-  `utils/imageBox.ts`) shows `MarkdownImageBox.svelte` at the painted box.
+  `utils/imageBox.ts`) shows `MarkdownImageBox.svelte` at the painted box;
+  a fluid image (a ratio and no pixel size, `ImageSize.fluid`) shows a
+  blank `<img>` of that ratio, which the browser sizes as it will the
+  image.
 - An island whose text is drawn or fetched after the render (diagram, math,
   attachment chip) carries `data-find-skip` on its root, so find neither
   counts nor paints it; `markdownFindText.ts` projects the rest, parsing

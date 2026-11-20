@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -77,6 +78,16 @@ const (
 	fluidSVGDoc = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 12"></svg>`
 )
 
+// avifFixture is a real 8x3 AVIF (internal/attachment/testdata).
+func avifFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile("../attachment/testdata/solid-8x3.avif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 const lfsPointer = "version https://git-lfs.github.com/spec/v1\noid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\nsize 12345\n"
 
 // factsRepo is a repository whose base commit holds base.png and whose
@@ -96,6 +107,7 @@ func newFactsRepo(t *testing.T) factsRepo {
 	writeFactFile(t, repo, "docs/head.png", pngOf(t, 3, 2))
 	writeFactFile(t, repo, "docs/icon.svg", []byte(svgDoc))
 	writeFactFile(t, repo, "docs/fluid.svg", []byte(fluidSVGDoc))
+	writeFactFile(t, repo, "docs/photo.avif", avifFixture(t))
 	writeFactFile(t, repo, "docs/lfs.png", []byte(lfsPointer))
 	writeFactFile(t, repo, "docs/notes.txt", []byte("not an image\n"))
 	writeFactFile(t, repo, "code.go", []byte("package app\r\n\r\nfunc one() {}\nfunc two() {}\n"))
@@ -142,7 +154,7 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	head := r.head
 	keys := []string{
 		"image:head:docs/head.png", "image:base:docs/base.png", "image:" + head + ":docs/head.png",
-		"image:head:docs/icon.svg", "image:head:docs/fluid.svg", "image:head:docs/lfs.png", "image:head:docs/notes.txt",
+		"image:head:docs/icon.svg", "image:head:docs/fluid.svg", "image:head:docs/photo.avif", "image:head:docs/lfs.png", "image:head:docs/notes.txt",
 		"image:head:docs/missing.png", "image:base:docs/head.png", "image:head:docs",
 		"commit:" + head[:7], "commit:" + r.base, "commit:" + strings.Repeat("0", 12),
 		"lines:" + head + ":code.go:1-3", "lines:" + head + ":code.go:4-4", "lines:" + head + ":code.go:4-5",
@@ -151,15 +163,17 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	}
 	got := resolveLocal(t, core, r.dir, r.rev(), keys...)
 	headPNG, basePNG, lfs := r.blob(t, head, "docs/head.png"), r.blob(t, r.base, "docs/base.png"), r.blob(t, head, "docs/lfs.png")
-	svg, fluid := r.blob(t, head, "docs/icon.svg"), r.blob(t, head, "docs/fluid.svg")
+	svg, fluid, avif := r.blob(t, head, "docs/icon.svg"), r.blob(t, head, "docs/fluid.svg"), r.blob(t, head, "docs/photo.avif")
 	code := r.blob(t, head, "code.go")
 	want := []ForgeFact{
 		{Key: "image:head:docs/head.png", Status: FactFound, OID: headPNG, Size: int64(len(pngOf(t, 3, 2))), Width: 3, Height: 2, MIME: "image/png"},
 		{Key: "image:base:docs/base.png", Status: FactFound, OID: basePNG, Size: int64(len(pngOf(t, 5, 4))), Width: 5, Height: 4, MIME: "image/png"},
 		{Key: "image:" + head + ":docs/head.png", Status: FactFound, OID: headPNG, Size: int64(len(pngOf(t, 3, 2))), Width: 3, Height: 2, MIME: "image/png"},
-		// An svg's root's plain size is its box; a viewBox alone is none.
+		// An svg's root's size is its box; a viewBox alone is a fluid
+		// ratio. An avif's primary item's size is its box.
 		{Key: "image:head:docs/icon.svg", Status: FactFound, OID: svg, Size: int64(len(svgDoc)), Width: 10, Height: 12, MIME: "image/svg+xml"},
-		{Key: "image:head:docs/fluid.svg", Status: FactFound, OID: fluid, Size: int64(len(fluidSVGDoc)), MIME: "image/svg+xml"},
+		{Key: "image:head:docs/fluid.svg", Status: FactFound, OID: fluid, Size: int64(len(fluidSVGDoc)), Width: 5, Height: 6, Fluid: true, MIME: "image/svg+xml"},
+		{Key: "image:head:docs/photo.avif", Status: FactFound, OID: avif, Size: int64(len(avifFixture(t))), Width: 8, Height: 3, MIME: "image/avif"},
 		// A pointer whose object is not in the local LFS store.
 		{Key: "image:head:docs/lfs.png", Status: FactFound, OID: lfs, LFS: true},
 		{Key: "image:head:docs/notes.txt", Status: FactAbsent},
@@ -180,7 +194,7 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 		{Key: "image:" + strings.Repeat("e", 40) + ":docs/head.png", Status: FactUnavailable},
 	}
 	for _, w := range want {
-		if g := got[w.Key]; g != w {
+		if g := got[w.Key]; !reflect.DeepEqual(g, w) {
 			t.Errorf("%s = %+v\nwant %+v", w.Key, g, w)
 		}
 	}
@@ -188,7 +202,7 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	// One batch-check, one batch read, one header read per blob an image
 	// key names, one config read for the LFS pointer's store, and one
 	// ls-tree per commit with a path the batch-check called missing.
-	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", "ls-tree -z", "ls-tree -z"}; !slices.Equal(runs, want) {
+	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", "ls-tree -z", "ls-tree -z"}; !slices.Equal(runs, want) {
 		t.Fatalf("git runs = %q\nwant %q", runs, want)
 	}
 
@@ -199,7 +213,7 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 		if w.Status == FactUnavailable {
 			continue
 		}
-		if again[w.Key] != w {
+		if !reflect.DeepEqual(again[w.Key], w) {
 			t.Errorf("cached %s = %+v", w.Key, again[w.Key])
 		}
 	}
@@ -349,7 +363,13 @@ func TestBlobImageHeaderReadIsBounded(t *testing.T) {
 		jpeg = append(jpeg, 0xFF, 0xE1, 0xFF, 0xFF)
 		jpeg = append(jpeg, bytes.Repeat([]byte{0}, 0xFFFF-2)...)
 	}
+	// An avif and a fluid svg behind 6 MiB: read to their first
+	// factImageHead bytes, which hold an avif's meta and an svg's root.
+	bigAVIF := append(avifFixture(t), bytes.Repeat([]byte{0xAB}, 6<<20)...)
+	bigSVG := append([]byte(fluidSVGDoc), bytes.Repeat([]byte("<g/>"), 6<<18)...)
 	writeFactFile(t, repo, "big.png", big)
+	writeFactFile(t, repo, "big.avif", bigAVIF)
+	writeFactFile(t, repo, "big.svg", bigSVG)
 	writeFactFile(t, repo, "deep.jpg", jpeg)
 	testutil.RunGit(t, repo, "add", ".")
 	testutil.RunGit(t, repo, "commit", "-q", "-m", "images")
@@ -359,9 +379,13 @@ func TestBlobImageHeaderReadIsBounded(t *testing.T) {
 		size     int
 		maxRead  int64
 		wantDims [2]int
+		mime     string
+		fluid    bool
 	}{
-		{"big.png", len(big), 64 << 10, [2]int{7, 9}},
-		{"deep.jpg", len(jpeg), factImageHeaderMax, [2]int{}},
+		{"big.png", len(big), 64 << 10, [2]int{7, 9}, "image/png", false},
+		{"big.avif", len(bigAVIF), factImageHead, [2]int{8, 3}, "image/avif", false},
+		{"big.svg", len(bigSVG), factImageHead, [2]int{5, 6}, "image/svg+xml", true},
+		{"deep.jpg", len(jpeg), factImageHeaderMax, [2]int{}, "", false},
 	} {
 		oid := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "HEAD:"+tc.path))
 		image, _, n, err := core.readBlobImageCounted(t.Context(), repo, oid, int64(tc.size))
@@ -374,7 +398,7 @@ func TestBlobImageHeaderReadIsBounded(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || image.Width != tc.wantDims[0] || image.Height != tc.wantDims[1] || image.MIME != "image/png" {
+		if err != nil || image.Width != tc.wantDims[0] || image.Height != tc.wantDims[1] || image.MIME != tc.mime || image.Fluid != tc.fluid {
 			t.Errorf("%s = %+v, %v", tc.path, image, err)
 		}
 	}
@@ -401,6 +425,18 @@ func TestCoreBlobImage(t *testing.T) {
 	}
 	if runs := calls.take(); len(runs) != 2 {
 		t.Fatalf("two BlobImage calls ran %q, want one batch-check and one header read", runs)
+	}
+	for _, tc := range []struct {
+		path string
+		want BlobImage
+	}{
+		{"docs/fluid.svg", BlobImage{MIME: "image/svg+xml", Size: int64(len(fluidSVGDoc)), Width: 5, Height: 6, Fluid: true}},
+		{"docs/photo.avif", BlobImage{MIME: "image/avif", Size: int64(len(avifFixture(t))), Width: 8, Height: 3}},
+	} {
+		tc.want.OID = r.blob(t, r.head, tc.path)
+		if image, err := core.BlobImage(t.Context(), r.dir, tc.want.OID); err != nil || image != tc.want {
+			t.Fatalf("BlobImage(%s) = %+v, %v; want %+v", tc.path, image, err, tc.want)
+		}
 	}
 	if _, err := core.BlobImage(t.Context(), r.dir, "abc"); err == nil {
 		t.Fatal("an abbreviated id was read")
@@ -438,7 +474,7 @@ func TestResolveFactsMixedBatch(t *testing.T) {
 	if want := []string{FactFound, FactFound, FactFound, FactFound, FactFound, FactUnavailable, FactFound}; !slices.Equal(statuses, want) {
 		t.Fatalf("statuses = %q, want %q", statuses, want)
 	}
-	if got.Facts[1] != got.Facts[4] || got.Facts[1].Title != "Issue one" {
+	if !reflect.DeepEqual(got.Facts[1], got.Facts[4]) || got.Facts[1].Title != "Issue one" {
 		t.Fatalf("a repeated key answered %+v and %+v", got.Facts[1], got.Facts[4])
 	}
 	if reqs := f.requests(t, 0); len(reqs) != 1 {

@@ -1360,6 +1360,14 @@ svg[data-mermaid-svg] .labelBox {
   vertical-align: middle;
   border-radius: 0;
 }
+/* An image with no pixel size and no authored width or height
+   (`data-image-fill`, utils/imageBox.ts#fillsLine), and the box that
+   reserves it, sit in their line as a bare <img>: an inline-block wrapper
+   would shrink a ratio-only image to nothing. After the wrapper rule
+   above, at its specificity, so it wins. */
+.markdown-body.review-prose [data-image-fill] {
+  display: inline;
+}
 
 .markdown-body pre { position: relative; }
 /* Wrapper for the mounted <CopyButton> primitive. The button itself

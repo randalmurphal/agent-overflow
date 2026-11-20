@@ -29,7 +29,7 @@
   const claim = $derived(parseRepositoryImageHref(href));
   const source = $derived(claim?.state === 'found' ? repositoryMarkdownImageSource(claim, repositoryImageMenuTag(href)) : null);
   const size = $derived(imageSizeOf(token));
-  const intrinsic = $derived(claim && claim.width > 0 ? { width: claim.width, height: claim.height } : undefined);
+  const intrinsic = $derived(claim && claim.width > 0 ? { width: claim.width, height: claim.height, ...(claim.fluid ? { fluid: true } : {}) } : undefined);
   const linked = $derived(claimedInLink(token));
   const name = $derived(claim ? claim.path.slice(claim.path.lastIndexOf('/') + 1) : '');
   const alt = $derived(token.text || name);

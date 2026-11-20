@@ -31,9 +31,12 @@ const (
 // newForgeFactCache is a forge adapter's facts cache: keyed by forge,
 // host, login fingerprint and key, at most forgeFactCacheEntries entries
 // and forgeFactCacheBytes estimated bytes, least recently used evicted
-// first (factCache).
+// first (factCache). An entry may hold a label list as well as the
+// fields a single fact's 1/64 of the bytes allows.
 func newForgeFactCache() *factCache[ForgeFact] {
-	return newFactCache(forgeFactCacheEntries, forgeFactCacheBytes, factBytes)
+	cache := newFactCache(forgeFactCacheEntries, forgeFactCacheBytes, factBytes)
+	cache.maxEntryBytes = forgeFactCacheBytes/64 + maxLabelListBytes
+	return cache
 }
 
 // factSender reads keys from the forge: one fact per key in keys' order,

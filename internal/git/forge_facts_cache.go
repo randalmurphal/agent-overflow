@@ -12,13 +12,15 @@ import (
 // overlapping ones, share one read. It holds at most maxEntries entries
 // whose estimated sizes (size) total at most maxBytes, evicting the least
 // recently used first; an entry past its expiry is dropped when it is
-// next asked for or evicted. An entry larger than maxBytes/64 is never
-// held. A flight is held only while its owner reads it, so flights are
-// bounded by the keys of the calls in flight.
+// next asked for or evicted. An entry larger than maxEntryBytes
+// (maxBytes/64 unless the cache's maker sets it) is never held. A flight
+// is held only while its owner reads it, so flights are bounded by the
+// keys of the calls in flight.
 type factCache[V any] struct {
-	maxEntries int
-	maxBytes   int64
-	size       func(key string, value V) int64
+	maxEntries    int
+	maxBytes      int64
+	maxEntryBytes int64
+	size          func(key string, value V) int64
 
 	mu      sync.Mutex
 	lru     list.List // front is most recently used; values are *factEntry[V]
@@ -51,7 +53,7 @@ type factFlight[V any] struct {
 }
 
 func newFactCache[V any](maxEntries int, maxBytes int64, size func(string, V) int64) *factCache[V] {
-	return &factCache[V]{maxEntries: maxEntries, maxBytes: maxBytes, size: size}
+	return &factCache[V]{maxEntries: maxEntries, maxBytes: maxBytes, maxEntryBytes: maxBytes / 64, size: size}
 }
 
 // claim answers key's held value (hit), the flight another caller reads
@@ -108,7 +110,7 @@ func (c *factCache[V]) put(key string, value V, expires time.Time) {
 
 func (c *factCache[V]) putLocked(key string, value V, expires time.Time) {
 	bytes := c.size(key, value)
-	if bytes > c.maxBytes/64 {
+	if bytes > c.maxEntryBytes {
 		return
 	}
 	if element, ok := c.entries[key]; ok {
@@ -177,11 +179,22 @@ func (c *factCache[V]) removeLocked(element *list.Element) {
 	c.bytes -= entry.bytes
 }
 
-// factBytes estimates what a held fact costs: its strings and the
-// entry's fixed overhead (the list element, the map slot and the
-// struct).
+// factBytes estimates what a held fact costs: its strings, a label list's
+// labels and the entry's fixed overhead (the list element, the map slot
+// and the struct).
 func factBytes(key string, fact ForgeFact) int64 {
 	const overhead = 256
-	return int64(overhead + 2*len(key) + len(fact.URL) + len(fact.Title) + len(fact.Kind) + len(fact.State) +
+	bytes := int64(overhead + 2*len(key) + len(fact.URL) + len(fact.Title) + len(fact.Kind) + len(fact.State) +
 		len(fact.Color) + len(fact.TextColor) + len(fact.OID) + len(fact.MIME) + len(fact.Text) + len(fact.Path))
+	for _, label := range fact.Labels {
+		bytes += labelBytes(label)
+	}
+	return bytes
+}
+
+// labelBytes estimates one label of a list: its slot in the list (three
+// string headers, 48 bytes, with allocation rounding) and its strings.
+func labelBytes(label ForgeLabel) int64 {
+	const slot = 64
+	return int64(slot + len(label.Title) + len(label.Color) + len(label.TextColor))
 }

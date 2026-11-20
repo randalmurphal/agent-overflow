@@ -44,6 +44,13 @@ export interface ImageSize {
    */
   width: number;
   height: number;
+  /**
+   * The image has no pixel size, only a ratio (an svg with only a
+   * viewBox): `width` and `height` are the ratio's terms, never pixels,
+   * and the browser sizes the image from its container. Absent from a
+   * computer that predates it, whose answer for such an image is 0x0.
+   */
+  fluid?: boolean;
 }
 
 export interface MediaHandle<V extends MediaBytes> {
@@ -70,11 +77,13 @@ export interface MediaHandle<V extends MediaBytes> {
 export type MediaSizeSink = (size: ImageSize) => void;
 
 /** The size an image's `<img>` box takes from a mint answer: the
- * original's when known, else the served variant's (MarkdownImage.svelte). */
-export function paintedSize(answer: { width: number; height: number; originalWidth: number; originalHeight: number }): ImageSize {
-  return answer.originalWidth > 0 && answer.originalHeight > 0
+ * original's when known, else the served variant's (MarkdownImage.svelte);
+ * a fluid answer's ratio (it is served as itself) marked fluid. */
+export function paintedSize(answer: { width: number; height: number; originalWidth: number; originalHeight: number; fluid?: boolean }): ImageSize {
+  const size = answer.originalWidth > 0 && answer.originalHeight > 0
     ? { width: answer.originalWidth, height: answer.originalHeight }
     : { width: answer.width, height: answer.height };
+  return answer.fluid === true ? { ...size, fluid: true } : size;
 }
 
 /** Total decoded bytes the cache may pin at once. */
@@ -132,7 +141,7 @@ export function acquireMediaBlob<V extends MediaBytes>(
       discarded: false,
     };
     const answerSize = (known: ImageSize | undefined) => {
-      size?.(known && known.width > 0 && known.height > 0 ? { width: known.width, height: known.height } : undefined);
+      size?.(known && known.width > 0 && known.height > 0 ? (known.fluid ? { width: known.width, height: known.height, fluid: true } : { width: known.width, height: known.height }) : undefined);
       size = null;
     };
     created.value = load(answerSize).then(
@@ -237,7 +246,9 @@ export function __mediaBlobCacheKeysForTest(): string[] {
 
 /**
  * Records the size an <img> decoded for a value whose header the backend
- * could not read, so the next mount of the same bytes reserves the box.
+ * could not read, so the next mount of the same bytes reserves the box. A
+ * fluid value's terms are its answer: the decoded size of an image with
+ * no pixel size is the container's, not the image's.
  */
 export function rememberDecodedSize(size: ImageSize, img: HTMLImageElement): void {
   if (size.width > 0 && size.height > 0) return;

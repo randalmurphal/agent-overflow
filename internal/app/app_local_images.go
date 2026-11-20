@@ -20,10 +20,14 @@ type LocalImage struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	// OriginalWidth and OriginalHeight are the file's pixel size; 0 when
-	// unknown (ico, avif, an svg without a plain width and height).
+	// unknown (ico, an svg whose size depends on its fonts).
 	OriginalWidth  int   `json:"originalWidth"`
 	OriginalHeight int   `json:"originalHeight"`
 	OriginalBytes  int64 `json:"originalBytes"`
+	// Fluid marks an image with no pixel size and only a ratio (an svg with
+	// only a viewBox), served as itself: both sizes above are then the
+	// ratio's terms, never pixels.
+	Fluid bool `json:"fluid"`
 	// Derived is false when the served bytes are the file itself.
 	Derived bool `json:"derived"`
 }
@@ -62,6 +66,7 @@ func (a *App) GetLocalImage(path, workspacePath string, maxWidth int) (LocalImag
 		OriginalWidth:  resolved.OriginalWidth,
 		OriginalHeight: resolved.OriginalHeight,
 		OriginalBytes:  resolved.OriginalBytes,
+		Fluid:          resolved.Fluid,
 		Derived:        resolved.Derived,
 	}, nil
 }

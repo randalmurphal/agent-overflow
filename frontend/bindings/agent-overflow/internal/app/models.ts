@@ -2564,9 +2564,8 @@ export class ForgeAttachment {
 
     /**
      * Width and Height are the served image's pixel size, so the client
-     * reserves the box before the bytes decode; zero when unknown (ico,
-     * avif, an svg without a plain width and height) and for every other
-     * kind.
+     * reserves the box before the bytes decode; zero when unknown (ico, an
+     * svg whose size depends on its fonts) and for every other kind.
      */
     "width": number;
     "height": number;
@@ -2577,6 +2576,13 @@ export class ForgeAttachment {
      */
     "originalWidth": number;
     "originalHeight": number;
+
+    /**
+     * Fluid marks an image with no pixel size and only a ratio (an svg with
+     * only a viewBox), served as itself: both sizes above are then the
+     * ratio's terms, never pixels.
+     */
+    "fluid": boolean;
 
     /**
      * Derived is false when URL serves the attachment's own bytes.
@@ -2611,6 +2617,9 @@ export class ForgeAttachment {
         }
         if (!("originalHeight" in $$source)) {
             this["originalHeight"] = 0;
+        }
+        if (!("fluid" in $$source)) {
+            this["fluid"] = false;
         }
         if (!("derived" in $$source)) {
             this["derived"] = false;
@@ -3675,11 +3684,18 @@ export class LocalImage {
 
     /**
      * OriginalWidth and OriginalHeight are the file's pixel size; 0 when
-     * unknown (ico, avif, an svg without a plain width and height).
+     * unknown (ico, an svg whose size depends on its fonts).
      */
     "originalWidth": number;
     "originalHeight": number;
     "originalBytes": number;
+
+    /**
+     * Fluid marks an image with no pixel size and only a ratio (an svg with
+     * only a viewBox), served as itself: both sizes above are then the
+     * ratio's terms, never pixels.
+     */
+    "fluid": boolean;
 
     /**
      * Derived is false when the served bytes are the file itself.
@@ -3708,6 +3724,9 @@ export class LocalImage {
         }
         if (!("originalBytes" in $$source)) {
             this["originalBytes"] = 0;
+        }
+        if (!("fluid" in $$source)) {
+            this["fluid"] = false;
         }
         if (!("derived" in $$source)) {
             this["derived"] = false;

@@ -169,6 +169,7 @@ export function buildForgeRepositoryFiles(source: ForgeAttachmentSource): Extens
         oid: found?.oid ?? '',
         width: found?.width ?? 0,
         height: found?.height ?? 0,
+        fluid: found?.fluid === true,
         browserUrl,
       }),
     };

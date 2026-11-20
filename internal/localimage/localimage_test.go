@@ -322,13 +322,34 @@ func TestResolveServesTheFileWhenNoDerivativeApplies(t *testing.T) {
 	if _, data := readAll(t, s, got.ContentID); !bytes.Equal(data, svg) {
 		t.Fatalf("svg served %q", data)
 	}
-	// One sized only by its viewBox takes its container's size: unknown.
-	fluid, err := s.Resolve(viewBoxPath, workspace, 0)
-	if err != nil {
-		t.Fatalf("Resolve viewBox svg: %v", err)
+	// One sized only by its viewBox is fluid: its ratio's terms, at every
+	// tier, since it is served as itself.
+	for _, maxWidth := range []int{0, 320} {
+		fluid, err := s.Resolve(viewBoxPath, workspace, maxWidth)
+		if err != nil {
+			t.Fatalf("Resolve viewBox svg: %v", err)
+		}
+		if !fluid.Fluid || fluid.Derived || fluid.Width != 10 || fluid.Height != 1 || fluid.OriginalWidth != 10 || fluid.OriginalHeight != 1 {
+			t.Fatalf("viewBox svg at %d = %+v, want fluid 10:1", maxWidth, fluid)
+		}
 	}
-	if fluid.Width != 0 || fluid.Height != 0 || fluid.OriginalWidth != 0 || fluid.OriginalHeight != 0 {
-		t.Fatalf("viewBox svg = %+v, want an unknown size", fluid)
+	// An avif answers its header's size, served as itself.
+	avif, err := os.ReadFile("../attachment/testdata/solid-5x7.avif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	avifPath := writeFile(t, workspace, "photo.avif", avif)
+	for _, maxWidth := range []int{0, 320} {
+		got, err := s.Resolve(avifPath, workspace, maxWidth)
+		if err != nil {
+			t.Fatalf("Resolve avif: %v", err)
+		}
+		if got.Fluid || got.Derived || got.MimeType != "image/avif" || got.Width != 5 || got.Height != 7 || got.OriginalWidth != 5 || got.OriginalHeight != 7 {
+			t.Fatalf("avif at %d = %+v, want the 5x7 file itself", maxWidth, got)
+		}
+	}
+	if got.Fluid {
+		t.Fatalf("a sized svg answered fluid: %+v", got)
 	}
 	small, err := s.Resolve(smallPath, workspace, 320)
 	if err != nil {

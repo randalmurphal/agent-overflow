@@ -16,6 +16,13 @@
   // original's width from the attribute.
   // An authored `align` or `hspace` places the wrapper.
   //
+  // An image with no pixel size and no authored width or height (a fluid
+  // svg, or one an older computer answered 0x0) is laid out as a bare
+  // <img> (`fillsLine`, `data-image-fill`): a shrink-to-fit wrapper would
+  // size a ratio-only image to nothing. Its wrapper then spans the line in
+  // chat and is inline in review prose (app.css), and the image itself is
+  // centered and takes the placement and the focus ring.
+  //
   // Inside an author's link (`linked`, from the claim) the link is the
   // control: a click follows it, and the picture has no role, tab stop or
   // lightbox of its own.
@@ -59,7 +66,7 @@
   import { localImageFailureReason } from '../../../utils/localImageCache';
   import type { MarkdownImageSource, MarkdownImageVariant } from '../../../utils/markdownImageSource';
   import { rememberDecodedSize, type ImageSize as PixelSize, type MediaHandle } from '../../../utils/mediaBlobCache';
-  import { reservedImageBox } from '../../../utils/imageBox';
+  import { fillsLine, reservedImageBox } from '../../../utils/imageBox';
   import MarkdownImageBox from './MarkdownImageBox.svelte';
 
   let {
@@ -234,9 +241,10 @@
   }
 
   // The <img> box: the original's size when known, else the served size,
-  // else what an earlier mount decoded (rememberDecodedSize).
+  // else what an earlier mount decoded (rememberDecodedSize). A fluid
+  // image's terms are a ratio, no size: the browser sizes it.
   const box = $derived.by((): { width?: number; height?: number } => {
-    if (!image) return {};
+    if (!image || image.fluid) return {};
     if (image.originalWidth > 0 && image.originalHeight > 0) {
       return { width: image.originalWidth, height: image.originalHeight };
     }
@@ -251,6 +259,7 @@
     return box.width && box.height ? `${(height * box.width) / box.height}px` : 'auto';
   });
 
+  const fill = $derived(!box.width && fillsLine(size));
   const label = $derived(`Preview ${alt || source.filename}`);
   const reserved = $derived(reservedImageBox(size, intrinsic ?? minted));
 
@@ -282,8 +291,9 @@
           filename: source.filename,
           mimeType: value.mimeType,
           url: value.url,
-          width: value.originalWidth > 0 ? value.originalWidth : value.width,
-          height: value.originalHeight > 0 ? value.originalHeight : value.height,
+          // A fluid image's terms are no size: the lightbox reads its decode.
+          width: value.fluid ? 0 : value.originalWidth > 0 ? value.originalWidth : value.width,
+          height: value.fluid ? 0 : value.originalHeight > 0 ? value.originalHeight : value.height,
           originalBytes: value.originalBytes,
           original: value.derived ? source.original : undefined,
           menuTag: source.menuTag,
@@ -307,14 +317,17 @@
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_tabindex -->
   <span
     data-streamdown-image
+    data-image-fill={fill ? '' : undefined}
     class={[
-      'group relative my-4 mx-auto block w-fit max-w-full rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
+      fill
+        ? 'group relative my-4 block max-w-full rounded-lg focus-visible:outline-none'
+        : 'group relative my-4 mx-auto block w-fit max-w-full rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
       linked ? '' : 'cursor-zoom-in',
     ].join(' ')}
     style:width={size?.wrapper}
-    style:float={size?.float}
-    style:vertical-align={size?.verticalAlign}
-    style:margin-inline={size?.marginInline}
+    style:float={fill ? undefined : size?.float}
+    style:vertical-align={fill ? undefined : size?.verticalAlign}
+    style:margin-inline={fill ? undefined : size?.marginInline}
     role={linked ? undefined : 'button'}
     tabindex={linked ? undefined : 0}
     aria-label={linked ? undefined : label}
@@ -323,7 +336,7 @@
     {@attach watchBox}
   >
     <img
-      class="max-w-full rounded-lg"
+      class={fill ? 'mx-auto max-w-full rounded-lg group-focus-visible:ring-2 group-focus-visible:ring-accent/60' : 'max-w-full rounded-lg'}
       src={image.url}
       {alt}
       {title}
@@ -332,6 +345,9 @@
       style:width={size?.width ?? derivedWidth}
       style:height={size?.height}
       style:aspect-ratio={size?.aspectRatio}
+      style:float={fill ? size?.float : undefined}
+      style:vertical-align={fill ? size?.verticalAlign : undefined}
+      style:margin-inline={fill ? size?.marginInline : undefined}
       data-markdown-image-src={markdownImageSrc}
       {...source.menuTag}
       onload={handleLoad}

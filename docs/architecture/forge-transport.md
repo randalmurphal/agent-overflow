@@ -1068,9 +1068,10 @@ the local kinds run concurrently.
 |---|---|
 | `ref:<project>#<n>` | GitHub `issueOrPullRequest` (kind `issue` or `pull`); GitLab `issue` |
 | `mr:<project>!<n>`, `label:<project>~<title>`, `milestone:<project>%<title>`, `snippet:<project>$<id>`, `epic:<group>&<n>` | GitLab only (`unavailable` on GitHub): `mergeRequest`, `labels(title:, includeAncestorGroups: true)`, `milestones(title:, includeAncestors: true)`, `snippets(ids:)`, `group { workItem(iid:) }` |
+| `labels:<project>` | GitLab only: the project's whole label list with its ancestor groups' (`labels(includeAncestorGroups: true)`, the set and order by title `labels(title:)` searches), each label's `title`, `color` and `textColor` in `labels`, and `complete` when that is all of them; read 100 a page by cursor, at most 10 pages and 256 KiB of estimated label bytes (64 a label plus its strings), past which it is the labels read so far, not complete; a project GitLab answers null is `absent`, and any failed page makes the whole list `unavailable` |
 | `user:<name>` | GitHub `repositoryOwner` (kind `user` or `org`); GitLab `user`, else `group` (kind `group`) |
 | `commit:<hex>` | local: 7 to 64 lowercase hex naming exactly one local commit; missing or ambiguous is `unavailable` and not held |
-| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and header dimensions (an svg's root `width` and `height` when both are plain numbers or `px` within the pixel budget, else 0; 0 for ico, avif); a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`, decided on every call; a blob over 25 MiB is `unavailable` |
+| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and how an `<img>` of it is sized (`attachment.DisplaySize`): a raster's header dimensions, an avif's primary item `ispe` (rotated by `irot`; 0 with `clap`, for an image sequence, or past a 256 KiB `meta`), an svg's CSS default sizing from its root `width`, `height` and `viewBox` (absolute units to px, a missing side 300 or 150), or, for an svg with only a ratio, `fluid` with the ratio's smallest integer terms as `width` and `height`; 0 for ico, an svg sized by font or viewport units, and anything past the pixel budget; a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`, decided on every call; a blob over 25 MiB is `unavailable` |
 | `lines:<sha>:<path>:<start>-<end>` | local: at most 200 lines and 64 KiB of text from a blob of at most 2 MiB; binary or past the end is `absent` |
 
 A key that does not parse is `unavailable`; a project path or login the
@@ -1091,7 +1092,7 @@ logged once with its operation and no titles.
 
 | Call | GitHub | GitLab |
 |---|---|---|
-| Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys |
+| Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys, and beside them 1 `ForgeFactsLabels` per 100 labels of each `labels:` key (at most 10) |
 | Every forge key held | none | none |
 | Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob the blob image cache does not hold (stopped after at most 1 MiB, 4 at a time), 1 lstat per LFS pointer blob (an `image:` key through a pointer is never held) and a header read of its object when it is present and its header is not held, 1 `git config` for `lfs.storage` per workspace per 10 minutes when a key reaches a pointer, 1 `git ls-tree` per 200 paths or 64 KiB of paths of a commit whose path the batch-check called missing | same |
 | Every local key held | no git | no git |
@@ -1111,12 +1112,13 @@ pull` or prune shows on the next one.
 
 The caches (`factCache`, `forge_facts_cache.go`) are LRU, bounded by
 entries and estimated bytes (an entry over 1/64 of the bytes is never
-held), and share one read among concurrent calls for a key, in one call
-or overlapping ones:
+held; a forge facts entry may also hold a label list's 256 KiB), and
+share one read among concurrent calls for a key, in one call or
+overlapping ones:
 
 | Cache | Key | Bound | Held |
 |---|---|---|---|
-| Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's is not held; `ResetForgeCaches` clears it |
+| Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB; a label list counts its labels, so the worst one held is about 320 KiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's (or a call whose reads answered under two) is not held; `ResetForgeCaches` clears it |
 | Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed), except a found abbreviated `commit:` (a fetch can make it ambiguous), 10 minutes; an `image:` read through an LFS pointer (a pull or prune changes it) is never held |
 | Blob images, one per `Core` | blob id; an LFS object's sha256, size and file modification time; workspace path for its LFS store | 4096 entries, 2 MiB | a blob's header answer, or a pointer blob's parsed pointer, and a present LFS object's header answer, without expiry (content addressed); a workspace's LFS store directory, 10 minutes |
 
@@ -1127,8 +1129,9 @@ over the cap, an LFS pointer whose object is not local or no displayable
 image before any read. The review diff's image store holds the bytes
 under `blob\x00<oid>` (one `git cat-file blob` into a buffer of the
 blob's size, shared with the review diff's images of the same blob), a
-pointer's verified LFS object under `lfs\x00<sha256>` (the pointer
-blob's key stays the review diff's, which shows the pointer), and each
+pointer's verified LFS object under `lfs\x00<sha256>` (the key the
+review diff holds a pointer side's local object by, so the two share one
+copy; the pointer blob's own key holds nothing), and each
 derived tier under that key and the tier, all within that store's budget. A tier is looked up first, so
 a held derivative is served without its original; the original is read
 only to derive a tier not held. Concurrent calls share one read and one

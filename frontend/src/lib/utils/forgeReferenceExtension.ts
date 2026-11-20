@@ -18,6 +18,8 @@
 // never does). GitLab's label, milestone, snippet and epic references
 // (`~bug`, `%v1`, `$5`, `&1`) are also prose, so they show as the forge
 // shows them only once it is asked: a label is a chip, the others links.
+// Every label is decided by one fact, the project's label list
+// (`labelsFactKey`), looked up by title in an index built once per answer.
 // `project#1` for another project stays text. A path segment that is `.`
 // or `..` names no project, so a path holding one is not a reference.
 //
@@ -39,6 +41,8 @@ import {
   commitFactKey,
   epicFactKey,
   labelFactKey,
+  labelIndex,
+  labelsFactKey,
   milestoneFactKey,
   mrFactKey,
   refFactKey,
@@ -561,6 +565,11 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
   const factLink = factLinkOn(origin);
   const strike = markedStrikethrough.tokenizer;
 
+  const labelsKey = labelsFactKey(project);
+  // A label is decided by the project's label list: in it, a chip in its
+  // colors; not in a complete one, text; not in one cut short, by its own
+  // per-title fact, which the store asks for as a key no scan named. While
+  // the list is asked, the chip; the list unavailable or absent, text.
   const label = (lexer: Lexer, src: string): LabelChipToken | undefined => {
     const match = LABEL.exec(src);
     if (!match) return undefined;
@@ -568,22 +577,39 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
     if (title === '') return undefined;
     const raw = match[1] !== undefined ? match[0] : `~${title}`;
     if (match[1] === undefined && !endsAt(src, raw.length)) return undefined;
-    const fact = readFact<ForgeFact>(lexer, labelFactKey(project, title));
-    const found = typeof fact === 'object' && fact.status === 'found' ? fact : null;
-    if (!found && (fact !== 'pending' || (match[1] === undefined && proseNumber(title)))) return undefined;
+    const list = readFact<ForgeFact>(lexer, labelsKey);
+    let color: string | null = null;
+    let textColor: string | null = null;
+    let href: string | null = null;
+    if (typeof list === 'object' && list.status === 'found') {
+      const listed = labelIndex(list).get(title);
+      if (listed) {
+        color = listed.color ?? null;
+        textColor = listed.textColor ?? null;
+      }
+      else if (list.complete === true) return undefined;
+      else {
+        const fact = readFact<ForgeFact>(lexer, labelFactKey(project, title));
+        const found = typeof fact === 'object' && fact.status === 'found' ? fact : null;
+        if (!found && (fact !== 'pending' || (match[1] === undefined && proseNumber(title)))) return undefined;
+        color = found?.color ?? null;
+        textColor = found?.textColor ?? null;
+        href = found && factUrl(found, origin);
+      }
+    }
+    else if (list !== 'pending' || (match[1] === undefined && proseNumber(title))) return undefined;
     const cut = title.lastIndexOf('::');
     const scoped = cut > 0 && cut + 2 < title.length;
-    const shape = `${projectUrl}/-/issues?label_name=${encodeURIComponent(title)}`;
     return {
       type: 'labelChip',
       raw,
       text: scoped ? `${title.slice(0, cut)}${title.slice(cut + 2)}` : title,
       scope: scoped ? title.slice(0, cut) : null,
       name: scoped ? title.slice(cut + 2) : title,
-      href: (found && factUrl(found, origin)) ?? shape,
+      href: href ?? `${projectUrl}/-/issues?label_name=${encodeURIComponent(title)}`,
       title: null,
-      color: found?.color ?? null,
-      textColor: found?.textColor ?? null,
+      color,
+      textColor,
     };
   };
 
@@ -720,6 +746,7 @@ const scanReferences = (body: string, shapes: ForgeShapes, _revision: FactRevisi
   const { github, project, namespace } = shapes;
   let pathStart = 0;
   let hexStart = -1;
+  let labelsNamed = false;
   const length = body.length;
   for (let index = 0; index <= length; index++) {
     const code = index < length ? body.charCodeAt(index) : -1;
@@ -760,12 +787,14 @@ const scanReferences = (body: string, shapes: ForgeShapes, _revision: FactRevisi
       const match = at(GH_ISSUE_AT, body, index);
       if (match && !add(refFactKey(project, match[1]))) return;
     }
-    else if (!github && after && code === 126 /* ~ */) {
-      const label = (match: RegExpExecArray) => {
-        const title = labelTitle(match);
-        return title ? labelFactKey(project, title) : null;
+    else if (!github && after && code === 126 /* ~ */ && !labelsNamed) {
+      // Every label of the body reads the project's one list.
+      const label = (match: RegExpExecArray) => (labelTitle(match) ? labelsFactKey(project) : null);
+      const named: FactKeySink = (key) => {
+        labelsNamed = true;
+        return add(key);
       };
-      if (!addWord(body, index, LABEL_AT, LABEL, label, add)) return;
+      if (!addWord(body, index, LABEL_AT, LABEL, label, named)) return;
     }
     else if (!github && after && code === 37 /* % */) {
       const milestone = (match: RegExpExecArray) => {

@@ -8,7 +8,9 @@
 // forge, a path the head lacks is the unavailable chip); a GitHub permalink
 // to lines of the repository at the head commit shows those lines, numbered,
 // between the sentence's two halves. The pane asks the forge once for a
-// PR's references, and a later poll that changes nothing asks nothing.
+// PR's references, GitLab's labels by one read of the project's label list
+// beside them and none by title, and a later poll that changes nothing
+// asks nothing.
 // Unit and component coverage: forgeFacts.svelte.test.ts,
 // forgeFactReferences.test.ts, forgeRepositoryFiles.test.ts,
 // ChatMarkdown.forgeFacts.browser.test.ts,
@@ -48,7 +50,7 @@ function history(): PullHistory {
 /** The fake's answered facts requests, oldest first. */
 async function factsCalls(harness: Parameters<typeof forgeInvocations>[0]): Promise<ForgeHTTPInvocation[]> {
   return (await forgeInvocations(harness))
-    .filter((call): call is ForgeHTTPInvocation => call.via === 'http' && /graphql ForgeFacts\d+$/.test(String(call.route)) && call.status < 300);
+    .filter((call): call is ForgeHTTPInvocation => call.via === 'http' && /graphql ForgeFacts(\d+|Labels)$/.test(String(call.route)) && call.status < 300);
 }
 
 /** Wait for the pane's next read of the PR after `route`'s current count. */
@@ -193,8 +195,14 @@ test('GitLab: labels are chips in their colors; issues, merge requests, mileston
   await expect(shot).toBeVisible({ timeout: 30_000 });
   await expect.poll(() => shot.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(320);
 
-  expect((await factsCalls(harness)).length).toBe(1);
+  // One read of the references and one of the label list, which decides
+  // every label: no label is asked for by title.
+  const calls = await factsCalls(harness);
+  expect(calls.map((call) => call.route).sort()).toEqual(['glab graphql ForgeFacts16', 'glab graphql ForgeFactsLabels']);
+  const slots = calls.find((call) => call.route === 'glab graphql ForgeFacts16')!;
+  expect(Object.entries(slots.variables ?? {}).filter(([name, on]) => /^l\d+$/.test(name) && on === true)).toEqual([]);
+  expect(calls.find((call) => call.route === 'glab graphql ForgeFactsLabels')!.variables).toEqual({ p: project, after: null });
   await nextPoll(harness, 'glab api merge request');
-  expect((await factsCalls(harness)).length).toBe(1);
+  expect((await factsCalls(harness)).length).toBe(2);
   await expectEveryForgeCallHandled(harness);
 });

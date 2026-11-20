@@ -141,7 +141,7 @@ import {
   type PRRef,
 } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
-import { noteForgeFactsRevision } from './forgeFacts.svelte';
+import { noteForgeFactsRevision, reloadForgeFacts } from './forgeFacts.svelte';
 import {
   applyContextExpansion,
   expansionFetchRange,
@@ -3206,6 +3206,9 @@ export function createReviewPaneState(
   let explicitReadOwed = false;
   async function refreshPRThreads(opts?: { explicit?: boolean }): Promise<void> {
     if (scope !== 'pr' || !prRef) return;
+    // The reader's refresh (the Conversation's, or a reload of the diff)
+    // asks the forge again for every fact the PR's bodies hold.
+    if (opts?.explicit) reloadForgeFacts(computerPRKey(prRef));
     if (opts?.explicit && !explicitReadOwed) {
       explicitReadOwed = true;
       conversation.beginExplicitRead();

@@ -22,7 +22,7 @@ var (
 // ErrNotDisplayImage otherwise. The review pane's image reads and the
 // image facts classify a blob with it, so both agree on what is shown.
 func DisplayImageMIME(buf []byte) (string, error) {
-	mime, _, _, err := classifyDisplayImage(buf, bytes.NewReader(buf))
+	mime, _, err := classifyDisplayImage(buf, bytes.NewReader(buf))
 	return mime, err
 }
 
@@ -30,27 +30,28 @@ func DisplayImageMIME(buf []byte) (string, error) {
 // whole blob when it is shorter than gitdiff.MaxLFSPointerBytes, and at
 // least what the MIME sniff reads), and blob, a reader of the whole blob
 // from its first byte, which is read only as far as the image header:
-// the MIME type and the declared pixel size (an svg's from its root
-// element's plain width and height, attachment.SVGSize, else zero; zero
-// for ico and avif, whose header Go cannot read).
-func classifyDisplayImage(head []byte, blob io.Reader) (mime string, width, height int, err error) {
+// the MIME type and how an <img> of it is sized (an svg's from head,
+// attachment.SVGDisplaySize; an avif's from its meta box,
+// attachment.AVIFSize; unknown for ico).
+func classifyDisplayImage(head []byte, blob io.Reader) (mime string, size attachment.DisplaySize, err error) {
 	if gitdiff.IsLFSPointer(head) {
-		return "", 0, 0, ErrLFSPointer
+		return "", attachment.DisplaySize{}, ErrLFSPointer
 	}
 	mime, err = attachment.DetectDisplayImageMIME(head)
 	if err != nil {
-		return "", 0, 0, ErrNotDisplayImage
+		return "", attachment.DisplaySize{}, ErrNotDisplayImage
 	}
 	switch mime {
 	case "image/svg+xml":
-		width, height = attachment.SVGSize(head)
-		return mime, width, height, nil
-	case "image/x-icon", "image/vnd.microsoft.icon", "image/avif":
-		return mime, 0, 0, nil
+		return mime, attachment.SVGDisplaySize(head), nil
+	case "image/avif":
+		return mime, attachment.AVIFSize(blob), nil
+	case "image/x-icon", "image/vnd.microsoft.icon":
+		return mime, attachment.DisplaySize{}, nil
 	}
-	width, height, err = attachment.ImageDimensionsFrom(blob)
+	width, height, err := attachment.ImageDimensionsFrom(blob)
 	if err != nil {
-		return "", 0, 0, ErrNotDisplayImage
+		return "", attachment.DisplaySize{}, ErrNotDisplayImage
 	}
-	return mime, width, height, nil
+	return mime, attachment.DisplaySize{Width: width, Height: height}, nil
 }

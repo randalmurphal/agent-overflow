@@ -476,6 +476,245 @@ describe('the box before the bytes, from the mint', () => {
   });
 });
 
+// An svg with only a viewBox: no pixel size, a 16:9 ratio, which the
+// backend answers as fluid terms (attachment.SVGDisplaySize).
+const FLUID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360" fill="#2a6"/></svg>';
+const svgBlob = (doc = FLUID_SVG) => new Blob([doc], { type: 'image/svg+xml' });
+const svgFact = (key: string, extra: Partial<ForgeFact> = {}): ForgeFact => ({ key, status: 'found', oid: OID, width: 16, height: 9, fluid: true, mime: 'image/svg+xml', size: FLUID_SVG.length, ...extra });
+
+/** The element a known box reserves: the fluid ratio's `<img>`, or the sized fill. */
+const reservedOf = (root: ParentNode) => root.querySelector('[data-streamdown-image-box] > img, [data-streamdown-image-box] > [role="img"]');
+
+/** The painted svg, decoded: its bytes are a base64 `data:` URL (objectOrDataUrl). */
+async function paintedSvg(root: Element): Promise<HTMLImageElement> {
+  const selector = 'img[src^="data:image/svg+xml;base64,"]';
+  await waitFor(() => expect(root.querySelector(selector)).not.toBeNull(), { timeout: 3000 });
+  const img = root.querySelector<HTMLImageElement>(selector)!;
+  await img.decode();
+  await frame();
+  return img;
+}
+
+const ASSET = 'https://github.com/user-attachments/assets/4f0b0b1e-1111-2222-3333-444455556666';
+
+// Each context an image sits in, written around the src its host claims,
+// with the style a bare <img> takes from the authored attributes there.
+const FLUID_CONTEXTS: [string, (src: string) => string, string][] = [
+  ['its own paragraph', (src) => `Intro paragraph.\n\n![shot](${src})\n\nAfter paragraph.`, ''],
+  ['a sentence', (src) => `Intro paragraph.\n\nText ![shot](${src}) more.\n\nAfter paragraph.`, ''],
+  ['a list item', (src) => `Intro paragraph.\n\n- ![shot](${src})\n- second\n\nAfter paragraph.`, ''],
+  ['a blockquote', (src) => `Intro paragraph.\n\n> ![shot](${src})\n\nAfter paragraph.`, ''],
+  ['a table cell', (src) => `Intro paragraph.\n\n| a | b |\n| --- | --- |\n| ![shot](${src}) | x |\n\nAfter paragraph.`, ''],
+  ['an align float', (src) => `Intro paragraph.\n\n<p><img src="${src}" align="left" alt="shot"> Floated text.</p>\n\nAfter paragraph.`, 'float:left'],
+  ['a link', (src) => `Intro paragraph.\n\n[![shot](${src})](https://example.com/x)\n\nAfter paragraph.`, ''],
+  ['an authored width', (src) => `Intro paragraph.\n\n<img src="${src}" width="120" alt="shot">\n\nAfter paragraph.`, 'width:120px'],
+  ['an authored height', (src) => `Intro paragraph.\n\n<img src="${src}" height="45" alt="shot">\n\nAfter paragraph.`, 'height:45px'],
+  ['an authored percent width', (src) => `Intro paragraph.\n\n<img src="${src}" width="50%" alt="shot">\n\nAfter paragraph.`, 'width:50%'],
+  // Small enough in its cell for its line's alignment to place it.
+  ['an align top and hspace in a table cell', (src) => `Intro paragraph.\n\n<table><tr><td>a <img src="${src}" align="top" hspace="8" alt="shot"> b</td></tr></table>\n\nAfter paragraph.`, 'vertical-align:top;margin-inline:8px'],
+];
+
+type ImageHost = 'repository' | 'forge attachment' | 'local image';
+const IMAGE_HOSTS: ImageHost[] = ['repository', 'forge attachment', 'local image'];
+/** The contexts each host is written in: a local image is an agent's
+ * Markdown, which embeds no HTML, so it has no `align` or authored size. */
+const contextsOf = (kind: ImageHost) => (kind === 'local image' ? FLUID_CONTEXTS.filter(([, write]) => !write('x').includes('<img')) : FLUID_CONTEXTS);
+/** The loading chip of any host: an image's, or a forge attachment's before its kind is known. */
+const LOADING_CHIP = '[data-streamdown-image-loading], [data-forge-attachment-loading]';
+/** What the fact or mint answers: pixels, a fluid ratio, or, from an older computer, no size. */
+type SizeAnswer = { width: number; height: number; fluid?: boolean };
+
+/** Renders `write`'s body in `kind`'s host with its image's bytes `doc`,
+ * answered as `size`, and answers its root. The bytes wait for the
+ * returned `land`. */
+async function mountImage(kind: ImageHost, write: (src: string) => string, className: string, size: SizeAnswer, doc = FLUID_SVG): Promise<{ root: Element; land: () => void }> {
+  const blob = svgBlob(doc);
+  const fluid = size.fluid === undefined ? {} : { fluid: size.fluid };
+  const host = hostOf();
+  if (kind === 'repository') {
+    mockGitBlobImage(() => ({ blob, width: size.width, height: size.height, ...fluid }));
+    const land = holdTransfers();
+    const body = write('docs/a.svg');
+    applySnapshot(body);
+    await answer((key) =>
+      key.startsWith('image:')
+        ? { key, status: 'found', oid: OID, mime: 'image/svg+xml', size: doc.length, ...(size.width > 0 ? { width: size.width, height: size.height } : {}), ...fluid }
+        : factFor(key),
+    );
+    return { root: mount(body, host, className).root(), land };
+  }
+  if (kind === 'forge attachment') {
+    let ticket = 0;
+    const fetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes('/attachments/forge/') ? Promise.resolve(new Response(blob, { status: 200, headers: { 'Content-Type': 'image/svg+xml' } })) : fetch(input, init),
+    );
+    setBindingMock('FetchForgeAttachment', async () => ({
+      url: `/attachments/forge/tok${++ticket}?ticket=t`, mimeType: 'image/svg+xml', kind: 'image', sizeBytes: blob.size, filename: 'shot.svg',
+      width: size.width, height: size.height, originalWidth: size.width, originalHeight: size.height, derived: false, ...fluid,
+    }));
+    const land = holdTransfers();
+    render(ChatMarkdown, { target: host, props: { source: write(ASSET), pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: className }, context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => SOURCE]]) });
+    return { root: host.querySelector('.markdown-body')!, land };
+  }
+  mockLocalImage(() => ({ blob, width: size.width, height: size.height, ...fluid }));
+  const land = holdTransfers();
+  render(ChatMarkdown, { target: host, props: { source: write('shots/a.svg'), pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: className, workspacePath: '/workspace' } });
+  return { root: host.querySelector('.markdown-body')!, land };
+}
+
+/** `element`'s box from `container`'s corner. */
+function rectIn(element: Element, container: Element): Rect {
+  const at = rectOf(element);
+  const origin = rectOf(container);
+  return { x: at.x - origin.x, y: at.y - origin.y, width: at.width, height: at.height };
+}
+
+/** In a copy of `root`'s container, from its corner: the painted image's
+ * box, and the box a bare `<img style="max-width: 100%">` of its source
+ * takes in place of its wrapper, with `style` from its authored
+ * attributes. Chat's picture block keeps its margins: the bare <img> takes
+ * them there. */
+async function paintedAndBare(root: Element, style: string): Promise<{ painted: Rect; bare: Rect }> {
+  const clone = root.parentElement!.cloneNode(true) as HTMLElement;
+  document.body.appendChild(clone);
+  const wrapper = clone.querySelector('[data-streamdown-image]')!;
+  const copy = wrapper.querySelector('img')!;
+  await copy.decode();
+  const painted = rectIn(copy, clone);
+  const bare = document.createElement('img');
+  const margin = root.classList.contains('review-prose') ? '' : 'margin: 1rem auto; ';
+  bare.setAttribute('style', `max-width: 100%; ${margin}${style}`);
+  bare.src = copy.src;
+  wrapper.replaceWith(bare);
+  await bare.decode();
+  const rect = rectIn(bare, clone);
+  clone.remove();
+  return { painted, bare: rect };
+}
+
+// The classes an image's wrapper and <img> had before fluid images filled
+// their line. app.css keys every fill rule on `data-image-fill`, so an
+// image painted with these and without it lays out as it did.
+const SIZED_WRAPPER_CLASS = 'group relative my-4 mx-auto block w-fit max-w-full rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 cursor-zoom-in';
+const SIZED_IMAGE_CLASS = 'max-w-full rounded-lg';
+
+describe('a fluid svg', () => {
+  for (const kind of IMAGE_HOSTS) {
+    for (const className of ['review-prose', '']) {
+      it.each(contextsOf(kind))(`${kind}: in %s fills its line as a bare <img>, reserved from the box's first frame (class "${className}")`, async (name, write, style) => {
+        const { root, land } = await mountImage(kind, write, className, { width: 16, height: 9, fluid: true });
+        await waitFor(() => expect(reservedOf(root)?.tagName).toBe('IMG'));
+        // Measured in the frame the box mounts: the ratio's svg is parsed by then.
+        const atMount = rectOf(reservedOf(root)!);
+        await frame();
+        const reserved = rectOf(reservedOf(root)!);
+        expect(reserved).toEqual(atMount);
+        const below = rectOf(after(root)!);
+        land();
+        const img = await paintedSvg(root);
+        expect(rectOf(img)).toEqual(reserved);
+        expect(rectOf(after(root)!)).toEqual(below);
+        expect(reservedOf(root)).toBeNull();
+        const { painted, bare } = await paintedAndBare(root, style);
+        expect(painted).toEqual(bare);
+        // Unsized, it fills its line, except in a table cell, which shrinks
+        // to its content, which a ratio alone does not size, for a bare
+        // <img> as for this one.
+        if (!style && name !== 'a table cell') expect(bare.width).toBeGreaterThan(500);
+      });
+
+      it.each(contextsOf(kind))(`${kind}: in %s paints as a bare <img> when an older computer answers no size (class "${className}")`, async (_name, write, style) => {
+        const { root, land } = await mountImage(kind, write, className, { width: 0, height: 0 });
+        await waitFor(() => expect(root.querySelector(LOADING_CHIP)).not.toBeNull());
+        expect(root.querySelector('[data-streamdown-image-box]')).toBeNull();
+        land();
+        const img = await paintedSvg(root);
+        const { painted, bare } = await paintedAndBare(root, style);
+        expect(painted).toEqual(bare);
+        expect([painted.width, painted.height]).toEqual([rectOf(img).width, rectOf(img).height]);
+      });
+    }
+  }
+
+  for (const className of ['review-prose', '']) {
+    it.each(FLUID_CONTEXTS)(`leaves an image with a pixel size in %s as it was (class "${className}")`, async (name, write) => {
+      const doc = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50"/></svg>';
+      const { root, land } = await mountImage('repository', write, className, { width: 100, height: 50 }, doc);
+      expect(root.querySelector('[data-image-fill]')).toBeNull();
+      const reserved = rectOf(reservedOf(root)!);
+      land();
+      const img = await paintedSvg(root);
+      expect(root.querySelector('[data-image-fill]')).toBeNull();
+      // Inside a link the picture is no control: no zoom cursor.
+      const wrapperClass = name === 'a link' ? SIZED_WRAPPER_CLASS.replace(' cursor-zoom-in', '') : SIZED_WRAPPER_CLASS;
+      expect(img.closest('[data-streamdown-image]')!.className.trim()).toBe(wrapperClass);
+      expect(img.className).toBe(SIZED_IMAGE_CLASS);
+      expect(rectOf(img)).toEqual(reserved);
+      const sizes: Record<string, [number, number]> = { 'an authored width': [120, 60], 'an authored height': [90, 45], 'an authored percent width': [300, 150] };
+      expect([rectOf(img).width, rectOf(img).height]).toEqual(sizes[name] ?? [100, 50]);
+    });
+  }
+
+  // An older computer answers an svg with a size of its own 0x0 too. One
+  // shorter than its line shows where the line's alignment places it.
+  for (const className of ['review-prose', '']) {
+    it.each(FLUID_CONTEXTS)(`paints a sized svg an older computer did not size in %s as a bare <img> (class "${className}")`, async (_name, write, style) => {
+      const doc = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="6"><rect width="12" height="6"/></svg>';
+      const { root, land } = await mountImage('repository', write, className, { width: 0, height: 0 }, doc);
+      land();
+      const img = await paintedSvg(root);
+      const { painted, bare } = await paintedAndBare(root, style);
+      expect(painted).toEqual(bare);
+      expect([painted.width, painted.height]).toEqual([rectOf(img).width, rectOf(img).height]);
+    });
+  }
+
+  it('takes its height from the ratio under an authored width, and its width under an authored height', async () => {
+    for (const [body, size] of [
+      ['<img src="docs/a.svg" width="160" alt="shot">\n\nAfter paragraph.', [160, 90]],
+      ['<img src="docs/a.svg" height="45" alt="shot">\n\nAfter paragraph.', [80, 45]],
+    ] as const) {
+      freshFacts();
+      __resetMediaBlobCacheForTest();
+      document.body.innerHTML = '';
+      mockGitBlobImage(() => ({ blob: svgBlob(), width: 16, height: 9, fluid: true }));
+      const land = holdTransfers();
+      applySnapshot(body);
+      await answer((key) => svgFact(key));
+      const root = mount(body).root();
+      const reserved = rectOf(reservedOf(root)!);
+      expect([reserved.width, reserved.height]).toEqual(size);
+      land();
+      expect(rectOf(await paintedSvg(root))).toEqual(reserved);
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+// The sizes the backend answers an svg with one side or none (TestSVGDisplaySize),
+// painted at that size and reserved there before the bytes.
+describe('a sized svg', () => {
+  it.each([
+    ['only a width', '<svg xmlns="http://www.w3.org/2000/svg" width="100"><rect width="10" height="10"/></svg>', 100, 150],
+    ['only a height', '<svg xmlns="http://www.w3.org/2000/svg" height="80"><rect width="10" height="10"/></svg>', 300, 80],
+    ['no size and no viewBox', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>', 300, 150],
+  ])('with %s paints at the answered %ix%i', async (_name, doc, width, height) => {
+    mockGitBlobImage(() => ({ blob: svgBlob(doc), width, height }));
+    const land = holdTransfers();
+    const body = BODY.replace('docs/a.png', 'docs/a.svg');
+    applySnapshot(body);
+    await answer((key) => ({ key, status: 'found', oid: OID, width, height, mime: 'image/svg+xml', size: doc.length }));
+    const root = mount(body).root();
+    const reserved = rectOf(reservedOf(root)!);
+    expect([reserved.width, reserved.height]).toEqual([width, height]);
+    land();
+    const img = await paintedSvg(root);
+    expect(rectOf(img)).toEqual(reserved);
+    expect([img.naturalWidth, img.naturalHeight]).toEqual([width, height]);
+  });
+});
+
 describe('a permalink snippet', () => {
   const body = `Intro paragraph.\n\nSee ${PERMALINK} for it.\n\nAfter paragraph.`;
 

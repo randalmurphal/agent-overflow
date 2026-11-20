@@ -52,10 +52,14 @@ type Image struct {
 	Width  int
 	Height int
 	// OriginalWidth and OriginalHeight are the file's pixel size; zero
-	// when unknown (ico, avif, an svg without a plain width and height).
+	// when unknown.
 	OriginalWidth  int
 	OriginalHeight int
 	OriginalBytes  int64
+	// Fluid marks a file with no pixel size and only a ratio, served as
+	// itself: both sizes above are then the ratio's terms
+	// (attachment.DisplaySize).
+	Fluid bool
 	// Derived is false when the served bytes are the file itself.
 	Derived bool
 }
@@ -94,6 +98,8 @@ type source struct {
 	modTime time.Time
 	width   int
 	height  int
+	// fluid: width and height are a ratio's terms (attachment.DisplaySize).
+	fluid bool
 }
 
 // entry is what one content id serves: the file itself (source.path) when
@@ -341,7 +347,7 @@ func readSource(file *os.File, info fs.FileInfo, resolved string) (source, strin
 	if err != nil {
 		return source{}, "", nil, localImageError("not an image", err)
 	}
-	width, height, err := attachment.ValidateDisplayImage(data, mime)
+	size, err := attachment.ValidateDisplayImage(data, mime)
 	if err != nil {
 		return source{}, "", nil, decodeError(err)
 	}
@@ -349,13 +355,15 @@ func readSource(file *os.File, info fs.FileInfo, resolved string) (source, strin
 		path:    resolved,
 		size:    info.Size(),
 		modTime: info.ModTime(),
-		width:   width,
-		height:  height,
+		width:   size.Width,
+		height:  size.Height,
+		fluid:   size.Fluid,
 	}, mime, data, nil
 }
 
 func answer(held contentcache.Entry[entry]) Image {
 	e := held.Value
+	derived := e.file != "" || e.data != nil
 	return Image{
 		ContentID:      held.ID,
 		MimeType:       e.mime,
@@ -364,7 +372,8 @@ func answer(held contentcache.Entry[entry]) Image {
 		OriginalWidth:  e.source.width,
 		OriginalHeight: e.source.height,
 		OriginalBytes:  e.source.size,
-		Derived:        e.file != "" || e.data != nil,
+		Fluid:          e.source.fluid && !derived,
+		Derived:        derived,
 	}
 }
 

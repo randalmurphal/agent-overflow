@@ -1129,6 +1129,34 @@ describe('reviewPane store — PR scope', () => {
     disposeReviewStateForPane('pane-1', state);
   });
 
+  it("asks again for every fact the PR holds on the reader's refresh and reload, once each", async () => {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: PR_KEY,
+      detail: prDetailStub({ body: 'Fixes #1 in abc1234' }),
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    const resolve = setBindingMock('ResolveForgeFacts', async (_ws: WorkspaceRef, _pr: unknown, _rev: unknown, keys: string[]) => ({
+      facts: keys.map((key) => ({ key, status: 'found', url: 'https://github.com/owner/repo/issues/1' })),
+    }));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await flushPane();
+    const asked = () => resolve.mock.calls.map(([, , , keys]) => keys);
+    resolve.mockClear();
+    await state.refreshPRThreads({ explicit: true });
+    await flushPane();
+    expect(asked()).toEqual([['ref:owner/repo#1', 'commit:abc1234']]);
+    resolve.mockClear();
+    await state.reload({ userInitiated: true });
+    await flushPane();
+    expect(asked()).toEqual([['ref:owner/repo#1', 'commit:abc1234']]);
+    disposeReviewStateForPane('pane-1', state);
+  });
+
   it('pr:updated applies live on same head and flags stale on a moved head without touching the diff', async () => {
     installPRMocks();
     const state = reviewStateForPane('pane-1', prSubject());

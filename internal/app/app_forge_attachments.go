@@ -31,15 +31,18 @@ type ForgeAttachment struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	Filename  string `json:"filename"`
 	// Width and Height are the served image's pixel size, so the client
-	// reserves the box before the bytes decode; zero when unknown (ico,
-	// avif, an svg without a plain width and height) and for every other
-	// kind.
+	// reserves the box before the bytes decode; zero when unknown (ico, an
+	// svg whose size depends on its fonts) and for every other kind.
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	// OriginalWidth and OriginalHeight are the original image's pixel
 	// size, zero when unknown.
 	OriginalWidth  int `json:"originalWidth"`
 	OriginalHeight int `json:"originalHeight"`
+	// Fluid marks an image with no pixel size and only a ratio (an svg with
+	// only a viewBox), served as itself: both sizes above are then the
+	// ratio's terms, never pixels.
+	Fluid bool `json:"fluid"`
 	// Derived is false when URL serves the attachment's own bytes.
 	Derived bool `json:"derived"`
 }
@@ -81,6 +84,7 @@ func (a *App) FetchForgeAttachment(ctx context.Context, pr gitops.PRReference, h
 		Height:         served.Value.Height,
 		OriginalWidth:  original.Value.Width,
 		OriginalHeight: original.Value.Height,
+		Fluid:          served.Value.Fluid,
 		Derived:        served.ID != original.ID,
 	}, nil
 }
@@ -165,6 +169,7 @@ func (a *App) resolveForgeAttachment(ctx context.Context, pr gitops.PRReference,
 		Filename: filename,
 		Width:    classified.Width,
 		Height:   classified.Height,
+		Fluid:    classified.Fluid,
 	})
 }
 

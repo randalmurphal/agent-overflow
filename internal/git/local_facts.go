@@ -75,8 +75,9 @@ const (
 )
 
 // BlobImage is what a blob is as an image: its id and size, and its
-// sniffed type and declared pixel size when a browser displays it (Width
-// and Height zero for ico, avif and an svg without a plain size), or LFS
+// sniffed type and how an <img> of it is sized when a browser displays it
+// (attachment.DisplaySize: Width and Height its pixels, or, when Fluid,
+// only its ratio; zero when unknown), or LFS
 // for a Git LFS pointer whose object is not in the local LFS store. A
 // pointer whose object is local is that object's image: Size and the
 // header are the object's, OID stays the pointer blob's, and ReadImage
@@ -87,6 +88,7 @@ type BlobImage struct {
 	MIME   string
 	Width  int
 	Height int
+	Fluid  bool
 	LFS    bool
 	// pointer is set only on the blob image cache's record of a pointer
 	// blob whose object can be shown (a parsed pointer within
@@ -461,7 +463,7 @@ func imageFact(key string, image BlobImage) ForgeFact {
 	case image.LFS:
 		return ForgeFact{Key: key, Status: FactFound, OID: image.OID, LFS: true}
 	case image.Displayable():
-		return ForgeFact{Key: key, Status: FactFound, OID: image.OID, Size: image.Size, Width: image.Width, Height: image.Height, MIME: image.MIME}
+		return ForgeFact{Key: key, Status: FactFound, OID: image.OID, Size: image.Size, Width: image.Width, Height: image.Height, Fluid: image.Fluid, MIME: image.MIME}
 	}
 	return absentFact(key)
 }
@@ -650,10 +652,10 @@ func classifyImageReader(r *countingReader, size int64) (BlobImage, []byte, erro
 		return BlobImage{}, nil, headReadError{err}
 	}
 	image := BlobImage{Size: size}
-	mime, width, height, err := classifyDisplayImage(head, io.MultiReader(bytes.NewReader(head), io.LimitReader(r, factImageHeaderMax-int64(len(head)))))
+	mime, displaySize, err := classifyDisplayImage(head, io.MultiReader(bytes.NewReader(head), io.LimitReader(r, factImageHeaderMax-int64(len(head)))))
 	switch {
 	case err == nil:
-		image.MIME, image.Width, image.Height = mime, width, height
+		image.MIME, image.Width, image.Height, image.Fluid = mime, displaySize.Width, displaySize.Height, displaySize.Fluid
 	case errors.Is(err, ErrLFSPointer):
 		image.LFS = true
 	case errors.Is(err, ErrNotDisplayImage) && r.n < factImageHeaderMax:

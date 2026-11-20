@@ -111,6 +111,8 @@ export interface LocalImageReply {
   originalHeight?: number;
   originalBytes?: number;
   derived?: boolean;
+  /** Answered only when set, as a computer that predates it omits it. */
+  fluid?: boolean;
 }
 
 export type LocalImageHandler = (
@@ -166,6 +168,7 @@ function imageAnswer(reply: LocalImageReply) {
     originalHeight: reply.originalHeight ?? height,
     originalBytes: reply.originalBytes ?? blob.size,
     derived: reply.derived ?? false,
+    ...(reply.fluid === undefined ? {} : { fluid: reply.fluid }),
   };
 }
 

@@ -222,6 +222,13 @@ describe('a repository image by its fact', () => {
     expect(image.title).toBe(claim.browserUrl);
   });
 
+  it('carries a fluid fact\'s ratio as fluid, and a sized fact\'s size as pixels', () => {
+    for (const [fact, fluid] of [[imageFound(KEY, { width: 16, height: 9, fluid: true }), true], [imageFound(KEY, { width: 16, height: 9 }), false]] as const) {
+      const [image] = images(lexUnder('![shot](docs/a.png)', GITHUB, reader({ [KEY]: fact })));
+      expect(parseRepositoryImageHref(image.href)).toMatchObject({ width: 16, height: 9, fluid });
+    }
+  });
+
   it('keeps an authored title', () => {
     const [image] = images(lexUnder('![shot](docs/a.png "Mine")', GITHUB, reader({ [KEY]: imageFound(KEY) })));
     expect(image.title).toBe('Mine');

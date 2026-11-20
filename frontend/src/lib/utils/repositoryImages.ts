@@ -79,6 +79,7 @@ async function loadRepositoryImage(claim: RepositoryImageClaim, tier: number, si
     originalHeight: result.originalHeight,
     originalBytes: result.originalBytes,
     derived: result.derived,
+    ...(result.fluid === true ? { fluid: true } : {}),
   };
 }
 

@@ -126,6 +126,7 @@ async function loadLocalImage(
     originalHeight: result.originalHeight,
     originalBytes: result.originalBytes,
     derived: result.derived,
+    ...(result.fluid === true ? { fluid: true } : {}),
   };
 }
 

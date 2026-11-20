@@ -245,6 +245,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | GraphQL `MRNoteReactions(fullPath, iid, after?)` | ReadPR threads: every note (`gid://gitlab/DiffNote/N`, `Note/N` or `DiscussionNote/N`, system notes included) with its `awardEmoji`, 100 per page |
 | GitHub | GraphQL `ForgeFacts8`, `ForgeFacts32`, `ForgeFacts128` (per slot N: `oN`, `nN`, `xN`, `rN`, `uN`) | ResolveFacts: slot `rN` the repository's issue or pull by number (`__typename`, title, state, url; a missing repository or item null beside a `NOT_FOUND` at `["rN"]` or `["rN","issueOrPullRequest"]`), `uN` the host's account by login (`User` or `Organization`, null when none) |
 | GitLab | GraphQL `ForgeFacts4`, `ForgeFacts16`, `ForgeFacts32` (per slot N: `pN`, `nN`, `tN`, `sN` and the flags `qN`, `iN`, `mN`, `lN`, `msN`, `snN`, `uN`, `gN`, `eN`) | ResolveFacts: `kN` the project's issue, merge request, label (first by title), milestone (by title, a group one's `webPath` under its group) or snippet (by gid), each part only while its flag is set; `vN` the user by username; `wN` the group by path and its epic (`workItem`, state `OPEN` or `CLOSED`); a missing project, user, group or item is null, a missing label, milestone or snippet no node |
+| GitLab | GraphQL `ForgeFactsLabels(p, after)` | ResolveFacts `labels:` key: the project's `labels` by title (no group labels), 100 a page by cursor; a missing project is null |
 
 Unhandled (fail with their request): GitLab's discussion resolve PUT.
 A lost or cut-short answer is not

@@ -938,12 +938,14 @@ and anti-changes that live only here:
   per PR update, before a body mounts (a target the forge says does not
   exist is text, a found one carries its title; while the answer is out
   or could not be had the reference links by shape, so only shapes that
-  cannot be prose link), an image that names a file of the PR's own
+  cannot be prose link; a found answer is not asked for again until the
+  user reloads the PR), an image that names a file of the PR's own
   repository (a relative path, or a blob or raw URL at the head branch,
   the base branch or a commit) read from the local git objects at that
   commit and boxed at its final size from the first paint (a Git LFS
   pointer shows its object when the local LFS store has it; otherwise it
-  says so and links to the forge, and nothing is fetched), relative
+  says so and links to the forge, and nothing is fetched; an SVG with
+  only a ratio fills its line, as a browser lays it out), relative
   links resolved to the forge however the link is written, a numbered
   footnotes section, and heading
   anchors with `#name` jumps that stay inside the body clicked. GitHub:
@@ -953,7 +955,9 @@ and anti-changes that live only here:
   light or dark theme, and a bare permalink to lines of the PR's own
   repository at a full commit id shows those lines, read from the local
   git objects. GitLab: a label reference as a chip in the label's
-  colors, milestone, snippet and epic references,
+  colors, decided from the project's label list (its first 1,000
+  labels, read once per project; past that a title is looked up on its
+  own), milestone, snippet and epic references,
   the `{width=… height=…}` list, playable video and audio images,
   inline diff as a highlight, `>>>` quotes, front matter, `[~]` and table-cell tasks,
   description lists, JSON tables, titled alerts, `[[_TOC_]]`, and a

@@ -105,6 +105,10 @@ async function settled(): Promise<void> {
 }
 
 const found = (key: string, extra: Partial<ForgeFact> = {}): ForgeFact => ({ key, status: 'found', ...extra });
+const LABELS = 'labels:group/widget';
+/** The project's whole label list, every label in one color. */
+const labelList = (titles: string[]): ForgeFact =>
+  found(LABELS, { complete: true, labels: titles.map((title) => ({ title, color: '#d9534f', textColor: '#ffffff' })) });
 
 describe('a body no snapshot carries (a draft, an editor preview)', () => {
   it('gets the facts it reads: asked once when it mounts, a title when found, text when the forge has none', async () => {
@@ -282,9 +286,10 @@ describe('text inside HTML under the facts', () => {
     expect(chips()[2].className).toBe('md-label-chip md-label-chip-scoped');
     const before = rects(root, host.lastElementChild!);
     const boxes = chips().map((chip) => chip.getBoundingClientRect().toJSON());
-    await answer((keys) => keys.map((each) => found(each, { color: '#d9534f', textColor: '#ffffff', url: `${GL}/-/issues?label_name=x` })));
+    expect(calls.map((call) => call.keys)).toEqual([[LABELS]]);
+    await answer(() => [labelList(['bug', 'two words', 'type::bug'])]);
     await waitFor(() => expect(chips()[0].querySelector('.md-label-chip-key')?.getAttribute('style')).toContain('background-color'));
-    expect(chips()[0].getAttribute('href')).toBe(`${GL}/-/issues?label_name=x`);
+    expect(chips()[0].getAttribute('href')).toBe(`${GL}/-/issues?label_name=bug`);
     expect(rects(root, host.lastElementChild!)).toEqual(before);
     expect(chips().map((chip) => chip.getBoundingClientRect().toJSON())).toEqual(boxes);
   });
@@ -304,7 +309,7 @@ describe('a computer without ResolveForgeFacts', () => {
     const source: ForgeAttachmentSource = { ...GITLAB, pr: { ...GITLAB.pr, number: 9 } };
     const body = 'Refs #1 and @ana with ~bug and %v1.\n\n<div>HTML ~bug and #2</div>';
     const key = applySnapshot(source, body);
-    expect(forgeFactReader(key)!.get('label:group/widget~bug')).toBeUndefined();
+    expect(forgeFactReader(key)!.get(LABELS)).toBeUndefined();
     const host = hostOf(420);
     const root = mount(source, key, body, host);
     await waitFor(() => expect(root.querySelectorAll('a').length).toBeGreaterThan(0));
@@ -361,12 +366,37 @@ describe('geometry when facts arrive', () => {
     const { root, after } = await mountForGeometry();
     const before = rects(root, after);
     const chips = [...root.querySelectorAll('[data-streamdown-label-chip]')].map((chip) => chip.getBoundingClientRect().toJSON());
-    await answer((keys) => keys.map((key) => key.startsWith('label:')
-      ? found(key, { color: '#d9534f', textColor: '#ffffff', url: `${GL}/-/issues?label_name=x` })
+    await answer((keys) => keys.map((key) => key === LABELS
+      ? labelList(['bug', 'type::bug', 'two words', 'priority::high'])
       : found(key, { url: `${GL}/-/issues/1`, title: 'Title' })));
     await waitFor(() => expect(root.querySelector('[data-streamdown-label-chip] .md-label-chip-key')?.getAttribute('style')).toContain('background-color'));
     expect(rects(root, after)).toEqual(before);
     expect([...root.querySelectorAll('[data-streamdown-label-chip]')].map((chip) => chip.getBoundingClientRect().toJSON())).toEqual(chips);
+  });
+
+  it('paints a body in its final shape in its first frame while the label list is held, and moves nothing after', async () => {
+    const key = applySnapshot(GITLAB, 'The description has ~bug.');
+    await answer(() => [labelList(['bug', 'type::bug'])]);
+    const body = 'A real ~bug, a mistyped ~bgu and a scoped ~type::bug in a long line that wraps across the width of the pane so that any change of width shows up.\n\nTail.';
+    applySnapshot(GITLAB, 'The description has ~bug.', body);
+    expect(calls).toHaveLength(0);
+    const host = hostOf(420);
+    const root = mount(GITLAB, key, body, host);
+    const after = document.createElement('div');
+    after.textContent = 'after the body';
+    host.appendChild(after);
+    await tick();
+    const chips = () => [...root.querySelectorAll('[data-streamdown-label-chip]')];
+    const first = { chips: chips().map((chip) => [chip.textContent, chip.querySelector('.md-label-chip-key')?.getAttribute('style') ?? '']), text: root.textContent };
+    expect(first.chips).toEqual([['bug', expect.stringContaining('background-color')], ['typebug', expect.stringContaining('background-color')]]);
+    expect(first.text).toContain('a mistyped ~bgu and');
+    await document.fonts.ready;
+    const before = rects(root, after);
+    await settled();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(calls).toHaveLength(0);
+    expect(rects(root, after)).toEqual(before);
+    expect(chips().map((chip) => [chip.textContent, chip.querySelector('.md-label-chip-key')?.getAttribute('style') ?? ''])).toEqual(first.chips);
   });
 
   it('moves nothing from pending to absent for references', async () => {
@@ -394,12 +424,12 @@ describe('geometry when facts arrive', () => {
     after.textContent = 'after the body';
     host.appendChild(after);
     await waitFor(() => expect(root.textContent).toContain('~5 minutes, ~10ms per call and $3 a run'));
-    expect(forgeFactReader(key)!.get('label:group/widget~5')).toBe('pending');
+    expect(forgeFactReader(key)!.get(LABELS)).toBe('pending');
     expect(root.querySelector('[data-streamdown-label-chip], a')).toBeNull();
     await document.fonts.ready;
     const before = rects(root, after);
     await answer((keys) => keys.map((each) => ({ key: each, status: 'absent' as const })));
-    expect(forgeFactReader(key)!.get('label:group/widget~5')).toMatchObject({ status: 'absent' });
+    expect(forgeFactReader(key)!.get(LABELS)).toMatchObject({ status: 'absent' });
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     expect(root.querySelector('[data-streamdown-label-chip], a')).toBeNull();
     expect(root.textContent).toContain('~5 minutes, ~10ms per call and $3 a run');

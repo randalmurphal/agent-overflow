@@ -3,6 +3,7 @@ package forgefake
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -15,7 +16,8 @@ import (
 // handlers answer from the repositories' issues, pulls, labels, milestones
 // and snippets and the fixture's accounts on the request's host, as the
 // forges answer a missing node: GitHub a null beside a NOT_FOUND error at
-// its alias, GitLab a null or no node.
+// its alias, GitLab a null or no node. GitLab's ForgeFactsLabels reads a
+// project's whole label list, by cursor.
 
 // The slot counts the app's facts documents have.
 var (
@@ -162,6 +164,35 @@ func factOps(slots []int, vars []string, run func(slots int) func(e *Engine, c *
 func init() {
 	githubGraphQL = append(githubGraphQL, factOps(githubFactSlots, []string{"o", "n", "x", "r", "u"}, ghFacts)...)
 	gitlabGraphQL = append(gitlabGraphQL, factOps(gitlabFactSlots, []string{"p", "n", "t", "s", "q", "i", "m", "l", "ms", "sn", "u", "g", "e"}, glabFacts)...)
+	gitlabGraphQL = append(gitlabGraphQL, graphQLOp{kind: "query", name: "ForgeFactsLabels", required: []string{"p"}, optional: []string{"after"}, run: glabFactsLabels})
+}
+
+// gitlabLabelListPage is the page size of the label list document.
+const gitlabLabelListPage = 100
+
+// glabFactsLabels answers ForgeFactsLabels: the project's labels in
+// GitLab's order, by title (the fixture has no group labels), 100 a page
+// by cursor; a project not on the host is a null project.
+func glabFactsLabels(e *Engine, c *call, v graphQLVars) response {
+	path, err := v.str("p")
+	if err != nil {
+		return unhandled("GitLab label list: %v", err)
+	}
+	offset, err := v.cursor("after")
+	if err != nil {
+		return unhandled("GitLab label list: %v", err)
+	}
+	r := e.repoOn("gitlab", c.http.host, path)
+	if r == nil {
+		return graphQLData(map[string]any{"project": nil})
+	}
+	labels := slices.Clone(r.Labels)
+	slices.SortStableFunc(labels, func(a, b Label) int { return strings.Compare(a.Name, b.Name) })
+	nodes := make([]map[string]any, len(labels))
+	for i, label := range labels {
+		nodes[i] = map[string]any{"title": label.Name, "color": label.Color, "textColor": label.TextColor}
+	}
+	return graphQLData(map[string]any{"project": map[string]any{"labels": graphQLConnection(nodes, offset, gitlabLabelListPage)}})
 }
 
 // account is the fixture's account of forge on host by login, nil when

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -69,6 +70,10 @@ func newLFSRepo(t *testing.T) lfsRepo {
 	bad := strings.Repeat("c", 64)
 	writeLFSObject(t, r.store, bad, r.wrong)
 	pointer("wrong-hash.png", bad, int64(len(r.wrong)))
+	// A fluid svg: its fact carries the ratio as fluid.
+	fluid := []byte(fluidSVGDoc)
+	writeLFSObject(t, r.store, sha256Hex(fluid), fluid)
+	pointer("fluid.svg", sha256Hex(fluid), int64(len(fluid)))
 	// Not in the store.
 	pointer("absent.png", strings.Repeat("d", 64), 100)
 	// An object that is no image.
@@ -116,7 +121,7 @@ func TestLocalFactsServeLocalLFSObjects(t *testing.T) {
 	core := NewCore()
 	calls := countFactGit(core)
 	rev := PRRevision{HeadSHA: r.head}
-	paths := []string{"present.png", "wrong-size.png", "wrong-hash.png", "absent.png", "text.png", "over-cap.png", "link.png"}
+	paths := []string{"present.png", "fluid.svg", "wrong-size.png", "wrong-hash.png", "absent.png", "text.png", "over-cap.png", "link.png"}
 	var keys []string
 	for _, path := range paths {
 		keys = append(keys, "image:head:"+path)
@@ -127,6 +132,7 @@ func TestLocalFactsServeLocalLFSObjects(t *testing.T) {
 	}
 	for _, want := range []ForgeFact{
 		{Key: "image:head:present.png", Status: FactFound, OID: r.blob(t, "present.png"), Size: int64(len(r.png)), Width: 6, Height: 5, MIME: "image/png"},
+		{Key: "image:head:fluid.svg", Status: FactFound, OID: r.blob(t, "fluid.svg"), Size: int64(len(fluidSVGDoc)), Width: 5, Height: 6, Fluid: true, MIME: "image/svg+xml"},
 		lfs("wrong-size.png"),
 		// The header is read without the hash: found, its bytes refused.
 		{Key: "image:head:wrong-hash.png", Status: FactFound, OID: r.blob(t, "wrong-hash.png"), Size: int64(len(r.wrong)), Width: 9, Height: 4, MIME: "image/png"},
@@ -135,7 +141,7 @@ func TestLocalFactsServeLocalLFSObjects(t *testing.T) {
 		lfs("over-cap.png"),
 		lfs("link.png"),
 	} {
-		if got[want.Key] != want {
+		if !reflect.DeepEqual(got[want.Key], want) {
 			t.Errorf("%s = %+v\nwant %+v", want.Key, got[want.Key], want)
 		}
 	}
@@ -260,7 +266,7 @@ func TestLocalFactsLFSObjectIsLookedUpEveryTime(t *testing.T) {
 	found := ForgeFact{Key: key, Status: FactFound, OID: blob, Size: int64(len(pulled)), Width: 8, Height: 3, MIME: "image/png"}
 	lookup := func(step string, want ForgeFact) {
 		t.Helper()
-		if got := resolveLocal(t, core, r.dir, rev, key)[key]; got != want {
+		if got := resolveLocal(t, core, r.dir, rev, key)[key]; !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: fact = %+v\nwant %+v", step, got, want)
 		}
 		image, err := core.BlobImage(t.Context(), r.dir, blob)

@@ -23,9 +23,11 @@ export interface RepositoryImageClaim {
   path: string;
   /** The blob id; '' unless found. */
   oid: string;
-  /** Intrinsic pixel size; 0 when the format gives none (svg) or unknown. */
+  /** Intrinsic pixel size; 0 when unknown. */
   width: number;
   height: number;
+  /** No pixel size, only a ratio: `width` and `height` are its terms (ImageSize.fluid). */
+  fluid: boolean;
   /** The file's page on the forge; '' when unknown. */
   browserUrl: string;
 }
@@ -45,6 +47,7 @@ export function buildRepositoryImageHref(claim: RepositoryImageClaim): string {
   if (claim.width > 0 && claim.height > 0) {
     params.set('w', String(claim.width));
     params.set('h', String(claim.height));
+    if (claim.fluid) params.set('f', '1');
   }
   if (claim.browserUrl) params.set('web', claim.browserUrl);
   return `${REPOSITORY_IMAGE_HREF_PREFIX}${params.toString()}`;
@@ -85,6 +88,7 @@ export function parseRepositoryImageHref(href: string | null | undefined): Repos
     oid,
     width: width > 0 && height > 0 ? width : 0,
     height: width > 0 && height > 0 ? height : 0,
+    fluid: width > 0 && height > 0 && url.searchParams.get('f') === '1',
     browserUrl: get('web'),
   };
 }

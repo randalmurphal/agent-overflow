@@ -3,7 +3,7 @@ import { lex, parseBlocks, type Extension, type ForgeFactReader, type Token } fr
 import { createDocumentContextCache, createParseBlocksCache, documentContextOf } from '../markdown';
 import { chatMarkdownExtensions, chatMarkdownForgeOptions } from '../components/chat/markdown/chatMarkdownOptions';
 import { forgeFactKeys } from './forgeReferenceExtension';
-import { FACT_KEYS_PER_BODY, REVISION_FACT_KEY, type ForgeFact, type ForgeFactState } from './forgeFacts';
+import { FACT_KEYS_PER_BODY, REVISION_FACT_KEY, labelIndexCounters, type ForgeFact, type ForgeFactState } from './forgeFacts';
 import type { ForgeAttachmentSource } from './forgeAttachments';
 import { CORPUS, findCandidateCombinations, generatedMarkdown } from '../../test/fixtures/markdownFindCorpus';
 
@@ -105,11 +105,43 @@ describe('references by their facts', () => {
 });
 
 describe('GitLab labels, milestones, snippets and epics', () => {
+  const LABELS = 'labels:group/widget';
   const label = (title: string, extra: Partial<ForgeFact> = {}) => found(`label:group/widget~${title}`, { color: '#d9534f', textColor: '#ffffff', url: `${GL}/-/issues?label_name=${encodeURIComponent(title)}`, ...extra });
+  const list = (titles: string[], complete = true): ForgeFact =>
+    found(LABELS, { complete, labels: titles.map((title) => ({ title, color: '#d9534f', textColor: '#ffffff' })) });
 
-  it('shows a found label as a chip in its colors, linking to its issues', () => {
-    const facts = reader({ 'label:group/widget~bug': label('bug') });
+  it('shows a label in the list as a chip in its colors, linking to its issues', () => {
+    const facts = reader({ [LABELS]: list(['bug']) });
     expect(shown(lexUnder('a ~bug b', GITLAB, facts))).toEqual([{ type: 'labelChip', text: '|bug', href: `${GL}/-/issues?label_name=bug`, style: '#d9534f' }]);
+    expect([...facts.read]).toEqual([LABELS]);
+  });
+
+  it('leaves a label a complete list lacks as text, matching titles exactly', () => {
+    const facts = reader({ [LABELS]: list(['bug', 'Docs', 'two words']) });
+    expect(shown(lexUnder('~bug ~bugs ~docs ~Docs ~"two words" ~"two"', GITLAB, facts)).map((each) => each.text)).toEqual(['|bug', '|Docs', '|two words']);
+    expect([...facts.read]).toEqual([LABELS]);
+  });
+
+  it('decides a label a list cut short lacks by its own fact, asked as a read', () => {
+    const facts = reader({
+      [LABELS]: list(['bug'], false),
+      'label:group/widget~late': label('late', { color: '#00ff00' }),
+      'label:group/widget~gone': absent('label:group/widget~gone'),
+      'label:group/widget~asked': 'pending',
+    });
+    expect(shown(lexUnder('~bug ~late ~gone ~asked', GITLAB, facts))).toEqual([
+      { type: 'labelChip', text: '|bug', href: `${GL}/-/issues?label_name=bug`, style: '#d9534f' },
+      { type: 'labelChip', text: '|late', href: `${GL}/-/issues?label_name=late`, style: '#00ff00' },
+      { type: 'labelChip', text: '|asked', href: `${GL}/-/issues?label_name=asked`, style: null },
+    ]);
+    expect([...facts.read].sort()).toEqual([LABELS, 'label:group/widget~asked', 'label:group/widget~gone', 'label:group/widget~late'].sort());
+  });
+
+  it('builds a list\'s title index once, however many lexes read it', () => {
+    const facts = reader({ [LABELS]: list(Array.from({ length: 1000 }, (_, i) => `label${i}`)) });
+    const builds = labelIndexCounters.builds;
+    for (let i = 0; i < 20; i++) lexUnder(`~label${i} and ~label${999 - i}\n\nmore ~label${i * 3}`, GITLAB, facts);
+    expect(labelIndexCounters.builds).toBe(builds + 1);
   });
 
   it('splits a scoped label at its last `::`, quoted or not', () => {
@@ -121,9 +153,12 @@ describe('GitLab labels, milestones, snippets and epics', () => {
     ]);
   });
 
-  it.each([['absent'], ['unavailable'], ['undefined']] as const)('leaves a %s label as text', (state) => {
-    const value: ForgeFactState = state === 'absent' ? absent('x') : state === 'unavailable' ? unavailable('x') : undefined;
-    expect(shown(lexUnder('a ~bug b', GITLAB, reader({}, value)))).toEqual([]);
+  it.each([['absent'], ['unavailable'], ['undefined']] as const)('leaves a label as text when its list is %s', (state) => {
+    const value: ForgeFactState = state === 'absent' ? absent(LABELS) : state === 'unavailable' ? unavailable(LABELS) : undefined;
+    const facts = reader({}, value);
+    expect(shown(lexUnder('a ~bug b', GITLAB, facts))).toEqual([]);
+    // Nothing is asked per title.
+    expect([...facts.read]).toEqual([LABELS]);
   });
 
   it('leaves a tilde that strikes to the strikethrough', () => {
@@ -152,8 +187,11 @@ describe('GitLab labels, milestones, snippets and epics', () => {
   it('leaves a bare label that starts with a digit as text while it is asked, and chips it once found', () => {
     const source = 'takes ~5 minutes, ~10ms or ~2x, but ~"5 things" and ~v2';
     expect(shown(lexUnder(source, GITLAB, reader({}, 'pending'))).map((each) => each.text)).toEqual(['|5 things', '|v2']);
-    const facts = reader({ 'label:group/widget~5': label('5') }, 'pending');
+    const facts = reader({ [LABELS]: list(['5', '5 things', 'v2']) }, 'pending');
     expect(shown(lexUnder(source, GITLAB, facts)).map((each) => each.text)).toEqual(['|5', '|5 things', '|v2']);
+    // A list cut short asks the rest per title, as prose while asked.
+    const short = reader({ [LABELS]: list(['v2'], false) }, 'pending');
+    expect(shown(lexUnder(source, GITLAB, short)).map((each) => each.text)).toEqual(['|5 things', '|v2']);
   });
 
   it('reads none of them on GitHub', () => {
@@ -171,9 +209,15 @@ describe('forgeFactKeys', () => {
       'ref:acme/widget#12', 'ref:acme/widget#3', 'ref:other/repo#7', 'user:octo', `commit:${SHA}`,
     ]);
     expect(forgeFactKeys('!3 widget#4 group/sub/p!5 ~bug ~"a b" %v1.0. $7 &8 @ana.', GITLAB)).toEqual([
-      'mr:group/widget!3', 'ref:group/widget#4', 'mr:group/sub/p!5', 'label:group/widget~bug', 'label:group/widget~a b',
+      'mr:group/widget!3', 'ref:group/widget#4', 'mr:group/sub/p!5', 'labels:group/widget',
       'milestone:group/widget%v1.0', 'snippet:group/widget$7', 'epic:group&8', 'user:ana',
     ]);
+  });
+
+  it('names the label list once for a body of any number of labels, and none for one without', () => {
+    const many = Array.from({ length: 500 }, (_, i) => `~l${i}`).join(' ');
+    expect(forgeFactKeys(`${many} ~"a b" ~k::v`, GITLAB)).toEqual(['labels:group/widget']);
+    expect(forgeFactKeys('a ~ b, ~. and x~y', GITLAB)).toEqual([]);
   });
 
   it('asks for at most FACT_KEYS_PER_BODY keys per body', () => {
@@ -207,8 +251,12 @@ describe('forgeFactKeys', () => {
   const FUZZ = Array.from({ length: 800 }, () => Array.from({ length: 3 + Math.floor(next() * 8) }, () => PIECES[Math.floor(next() * PIECES.length)]).join(''));
   BODIES.push(...FUZZ);
 
+  // A found label list here is complete: a list cut short reads a title
+  // it lacks per title, a key no scan names by design (the store asks for
+  // a key a block reads, "The scan is a prefetch").
   it.each([['GitHub', GITHUB], ['GitLab', GITLAB]] as const)('names every key a lex reads on %s', (_name, source) => {
-    for (const rest of [undefined, 'pending' as const, found('any', { url: `${source.webBase}` })]) {
+    const labels = ['bug', 'two words', 'type::bug', 'b', 'f', 'k::v', 'x y'].map((title) => ({ title, color: '#d9534f' }));
+    for (const rest of [undefined, 'pending' as const, found('any', { url: `${source.webBase}`, complete: true, labels })]) {
       for (const body of BODIES) {
         const facts = reader({}, rest);
         lexUnder(body, source, facts);

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -28,6 +30,10 @@ import (
 // in user). Skipped fields are not counted, and a used slot costs at most
 // about seven, so the largest document is 32 slots; a refusal still
 // reads again in halves (gitlabFactsTooCostly).
+//
+// A labels: key is a project's whole label list, the one answer the
+// review pane decides every ~label of the project by: its own document,
+// read by cursor (readLabelList) beside the slots.
 
 // gitlabFactsQuery is the facts document with slots slots.
 func gitlabFactsQuery(slots int) forgeapi.Document {
@@ -150,7 +156,55 @@ func (f *gitlabForge) resolveFacts(ctx context.Context, pr PRReference, keys []f
 	return f.core.cachedForgeFacts(ctx, f.facts, client, pr, keys, f.sendFacts)
 }
 
+// sendFacts reads keys: each labels: key's list (readLabelList) and the
+// other keys' slots (sendSlotFacts) concurrently, one fact per key in
+// keys' order. The credential is the one every read answered with, or
+// gitlabMixedCredential when two differ, so nothing they read is held.
 func (f *gitlabForge) sendFacts(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string) {
+	out := make([]ForgeFact, len(keys))
+	var slotKeys []forgeFactKey
+	var slotAt, listAt []int
+	for i, k := range keys {
+		if k.kind == "labels" {
+			listAt = append(listAt, i)
+			continue
+		}
+		slotKeys, slotAt = append(slotKeys, k), append(slotAt, i)
+	}
+	credentials := make([]string, len(listAt)+1)
+	var wg sync.WaitGroup
+	for j, i := range listAt {
+		wg.Go(func() { out[i], credentials[j] = readLabelList(ctx, client, pr, keys[i]) })
+	}
+	if len(slotKeys) > 0 {
+		var facts []ForgeFact
+		facts, credentials[len(listAt)] = f.sendSlotFacts(ctx, client, pr, slotKeys)
+		for j, fact := range facts[:min(len(facts), len(slotAt))] {
+			out[slotAt[j]] = fact
+		}
+		for j := len(facts); j < len(slotAt); j++ {
+			out[slotAt[j]] = unavailableFact(slotKeys[j].key)
+		}
+	}
+	wg.Wait()
+	credential := ""
+	for _, each := range credentials {
+		switch {
+		case each == "" || each == credential:
+		case credential == "":
+			credential = each
+		default:
+			return out, gitlabMixedCredential
+		}
+	}
+	return out, credential
+}
+
+// gitlabMixedCredential is a sendFacts credential no login has: its reads
+// answered under two.
+const gitlabMixedCredential = "\x00mixed"
+
+func (f *gitlabForge) sendSlotFacts(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string) {
 	return sendFactSlots(ctx, pr, gitlabFactsQueries, keys, gitlabFactsTooCostly, func(ctx context.Context, doc forgeapi.Document, slots int, keys []forgeFactKey) ([]ForgeFact, *forgeapi.Response, error) {
 		var data map[string]json.RawMessage
 		resp, err := client.GraphQL(ctx, doc, gitlabFactVars(slots, keys), &data)
@@ -287,6 +341,90 @@ func gitlabFact(host string, answer factAnswer, i int, k forgeFactKey) ForgeFact
 		return found
 	}
 	return unavailableFact(k.key)
+}
+
+// gitlabLabelListQuery reads one page of a project's labels with its
+// ancestor groups', the set and order (by title) labels(title:) finds a
+// title in, archived labels left out by both.
+var gitlabLabelListQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query ForgeFactsLabels($p: ID!, $after: String) {
+  project(fullPath: $p) {
+    labels(includeAncestorGroups: true, first: 100, after: $after) {
+      nodes { title color textColor }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`)
+
+// The label list's bounds: at most maxLabelListPages pages of 100 labels,
+// and labels of at most maxLabelListBytes estimated bytes (labelBytes); a
+// project with more answers the labels read so far, not complete. The
+// bytes bound the worst list a cache entry holds: 1,000 labels of 255
+// four-byte characters would be over 1 MiB.
+const (
+	maxLabelListPages = 10
+	maxLabelListBytes = 256 << 10
+)
+
+type gitlabLabelPageRaw struct {
+	Project *struct {
+		Labels *struct {
+			Nodes []struct {
+				Title     string `json:"title"`
+				Color     string `json:"color"`
+				TextColor string `json:"textColor"`
+			} `json:"nodes"`
+			PageInfo struct {
+				HasNextPage bool    `json:"hasNextPage"`
+				EndCursor   *string `json:"endCursor"`
+			} `json:"pageInfo"`
+		} `json:"labels"`
+	} `json:"project"`
+}
+
+// readLabelList answers k, a labels: key, from its project's label list,
+// read page by page by cursor: found with the labels and whether that is
+// all of them, absent for a project GitLab answers null, unavailable when
+// any page fails (nothing read is answered). It answers the credential its
+// requests were read under.
+func readLabelList(ctx context.Context, client *forgeapi.Client, pr PRReference, k forgeFactKey) (ForgeFact, string) {
+	fact := ForgeFact{Key: k.key, Status: FactFound}
+	credential := ""
+	var after *string
+	bytes := int64(0)
+	for page := range maxLabelListPages {
+		var raw gitlabLabelPageRaw
+		resp, err := client.GraphQL(ctx, gitlabLabelListQuery, map[string]any{"p": k.namespace, "after": after}, &raw)
+		if resp != nil && resp.Credential != "" {
+			credential = resp.Credential
+		}
+		switch {
+		case err != nil:
+			log.Printf("forge facts: %s %s %s: a label list unavailable: %v", pr.Forge, pr.Host, gitlabLabelListQuery.Operation(), err)
+			return unavailableFact(k.key), credential
+		case raw.Project == nil && page == 0:
+			return absentFact(k.key), credential
+		case raw.Project == nil || raw.Project.Labels == nil:
+			log.Printf("forge facts: %s %s %s: a label list unavailable: page %d answered no labels", pr.Forge, pr.Host, gitlabLabelListQuery.Operation(), page+1)
+			return unavailableFact(k.key), credential
+		}
+		labels := raw.Project.Labels
+		for _, node := range labels.Nodes {
+			label := ForgeLabel{Title: factTitle(node.Title), Color: factColor(node.Color), TextColor: factColor(node.TextColor)}
+			if bytes += labelBytes(label); bytes > maxLabelListBytes {
+				return fact, credential
+			}
+			fact.Labels = append(fact.Labels, label)
+		}
+		if !labels.PageInfo.HasNextPage {
+			fact.Complete = true
+			return fact, credential
+		}
+		if labels.PageInfo.EndCursor == nil || *labels.PageInfo.EndCursor == "" {
+			return fact, credential
+		}
+		after = labels.PageInfo.EndCursor
+	}
+	return fact, credential
 }
 
 // factColor is a label color as "#rrggbb" (GitLab may answer "#RGB" or

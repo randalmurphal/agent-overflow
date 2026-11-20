@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/gitdiff"
 )
 
@@ -152,10 +153,29 @@ func (s *lfsStore) lfsBlobImage(record BlobImage) (BlobImage, error) {
 	answer := BlobImage{OID: record.OID, Size: size}
 	// An object that is itself a pointer is no image.
 	if object.Displayable() {
-		answer.MIME, answer.Width, answer.Height = object.MIME, object.Width, object.Height
+		answer.MIME, answer.Width, answer.Height, answer.Fluid = object.MIME, object.Width, object.Height, object.Fluid
 		answer.lfsPath, answer.lfsOID = path, oid
 	}
 	return answer, nil
+}
+
+// LFSPointerImage answers text, the bytes of a Git LFS pointer (a blob's
+// or a working-tree file's), as the image its object in cwd's local LFS
+// store is now, decided as BlobImage decides a pointer blob (one lstat,
+// and a header read of an object whose classification is not held): Size
+// and the header are the object's, and ReadImage reads and verifies it. A
+// pointer that does not parse, or names an object over
+// attachment.DisplayImageMaxBytes or one not present, answers LFS with
+// Size len(text); an object that is no image answers neither MIME nor LFS.
+func (c *Core) LFSPointerImage(ctx context.Context, cwd string, text []byte) (BlobImage, error) {
+	pointer, ok := gitdiff.ParseLFSPointer(text)
+	record := BlobImage{Size: int64(len(text)), pointer: pointer}
+	if !ok || pointer.Size > attachment.DisplayImageMaxBytes {
+		return BlobImage{Size: record.Size, LFS: true}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
+	defer cancel()
+	return c.lfsStore(ctx, cwd).lfsBlobImage(record)
 }
 
 // classifyLFSObject reads the header of the object at path, which info
@@ -177,7 +197,7 @@ func (c *Core) classifyLFSObject(path string, info fs.FileInfo, size int64) (obj
 	if err != nil {
 		return BlobImage{}, err
 	}
-	return BlobImage{MIME: image.MIME, Width: image.Width, Height: image.Height}, nil
+	return BlobImage{MIME: image.MIME, Width: image.Width, Height: image.Height, Fluid: image.Fluid}, nil
 }
 
 // statLFSObject answers the lstat of path when it is a regular file of
