@@ -57,7 +57,10 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 	to := time.Date(q.To.Year(), q.To.Month(), q.To.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
 	jql := "worklogAuthor = " + jira.QuoteJQL(author.AccountID) +
 		" AND worklogDate >= " + jira.QuoteJQL(from.AddDate(0, 0, -1).Format(time.DateOnly)) +
-		" AND worklogDate <= " + jira.QuoteJQL(to.Format(time.DateOnly))
+		" AND worklogDate <= " + jira.QuoteJQL(to.Format(time.DateOnly)) +
+		// Paged in an order that cannot change between pages: Jira returns
+		// an unordered search in no stable order (measured).
+		" ORDER BY id ASC"
 	res, err := t.jira.SearchAll(ctx, jira.SearchQuery{JQL: jql, Fields: []string{"status"}}, 0)
 	if err != nil {
 		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: %w", q.Author, err)

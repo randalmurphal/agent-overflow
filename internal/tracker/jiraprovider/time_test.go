@@ -70,7 +70,7 @@ func TestJiraWorklogs(t *testing.T) {
 			jiraWorklog("304", user1JSON, "2026-11-11T00:00:00.000-0500", 600, "Next day")+`]}`)(w, r, b)
 	})
 	f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if jql := bodyOf(t, b)["jql"]; jql != `worklogAuthor = "acc-user1" AND worklogDate >= "2026-11-09" AND worklogDate <= "2026-11-11"` {
+		if jql := bodyOf(t, b)["jql"]; jql != `worklogAuthor = "acc-user1" AND worklogDate >= "2026-11-09" AND worklogDate <= "2026-11-11" ORDER BY id ASC` {
 			t.Errorf("jql %v", jql)
 		}
 		jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil)))(w, r, b)
