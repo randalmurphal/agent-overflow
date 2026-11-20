@@ -25,11 +25,15 @@ var opViewer = newQuery("Viewer", "viewer", `query Viewer {
 }
 `+userFields)
 
-// Viewer returns the key's user and its workspace.
+// Viewer returns the key's user and its workspace. A bound client fails
+// with a *WrongWorkspaceError when the answer names another workspace.
 func (c *Client) Viewer(ctx context.Context) (*Viewer, error) {
 	var v Viewer
 	if _, err := c.call(ctx, opViewer, nil, &v); err != nil {
 		return nil, err
+	}
+	if c.bound != nil && !sameWorkspace(v.Organization.URLKey, c.bound.want) {
+		return nil, &WrongWorkspaceError{Want: c.bound.want, Got: v.Organization.URLKey}
 	}
 	return &v, nil
 }

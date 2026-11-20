@@ -66,12 +66,12 @@ func (c *Client) accounts(ctx context.Context, q AccountQuery) ([]Account, error
 	}{q.Statuses, q.Keys}
 	var out []Account
 	err := pages(ctx, c.http, trackerapi.Request{Method: "POST", Path: "4/accounts/search", Body: body, ReadOnly: true},
-		func(resp *trackerapi.Response, list []accountJSON) error {
+		func(_ *trackerapi.Response, list []accountJSON) error {
 			if len(out)+len(list) > maxAccounts {
 				return fmt.Errorf("more than %d accounts match, the most one listing holds", maxAccounts)
 			}
 			for _, a := range list {
-				out = append(out, Account{ID: a.ID, Key: resp.Scrub(a.Key), Name: resp.Scrub(a.Name), Status: AccountStatus(resp.Scrub(a.Status)), Global: a.Global})
+				out = append(out, Account{ID: a.ID, Key: a.Key, Name: a.Name, Status: AccountStatus(a.Status), Global: a.Global})
 			}
 			return nil
 		})

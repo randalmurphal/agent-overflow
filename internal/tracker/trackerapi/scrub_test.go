@@ -90,10 +90,12 @@ func TestQuotingErrorsNeverRepeatTheCredential(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), raw) || !strings.Contains(err.Error(), secret.Redacted) {
 		t.Errorf("malformed answer: %v, want the quoted credential scrubbed", err)
 	}
-	var out struct{ Key int8 } // overflowed, so the error quotes the number
+	// The credential as a bare number is replaced in the body before the
+	// decode, which then fails without the number to quote.
+	var out struct{ Key int8 }
 	_, err = c.JSON(t.Context(), Request{Path: "number"}, &out)
-	if err == nil || strings.Contains(err.Error(), raw) || !strings.Contains(err.Error(), secret.Redacted) {
-		t.Errorf("decode: %v, want the quoted credential scrubbed", err)
+	if err == nil || strings.Contains(err.Error(), raw) || out.Key != 0 {
+		t.Errorf("decode: %v %v, want a decode error without the credential", out, err)
 	}
 }
 
@@ -266,12 +268,17 @@ func TestErrorScrubAfterDecoding(t *testing.T) {
 
 	_, err := c.Do(t.Context(), Request{Method: http.MethodPost, Path: "graphql", Body: map[string]string{}})
 	status, ok := errors.AsType[*StatusError](err)
-	if !ok || status.Body != escaped || strings.Contains(status.Message, raw) {
-		t.Fatalf("400: %#v, want the escaped body as sent and the message scrubbed", err)
+	if !ok || status.Message != "bad "+secret.Redacted {
+		t.Fatalf("400: %#v, want the message scrubbed", err)
 	}
+	var fromBody struct{ Message string }
+	if err := json.Unmarshal([]byte(status.Body), &fromBody); err != nil || fromBody.Message != "bad "+secret.Redacted {
+		t.Fatalf("decoding the error body gave %q, %v; want the key scrubbed as it decodes", fromBody.Message, err)
+	}
+	// The text a caller decodes on its own, for the Scrub methods below.
 	var decoded struct{ Message string }
-	if err := json.Unmarshal([]byte(status.Body), &decoded); err != nil || !strings.Contains(decoded.Message, raw) {
-		t.Fatalf("decoding the body gave %q, %v; want the key restored", decoded.Message, err)
+	if err := json.Unmarshal([]byte(escaped), &decoded); err != nil || !strings.Contains(decoded.Message, raw) {
+		t.Fatalf("decoding the answer gave %q, %v; want the key restored", decoded.Message, err)
 	}
 	_, err = c.Do(t.Context(), Request{Path: "me"})
 	refusal, ok := errors.AsType[*AuthError](err)

@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -72,6 +73,9 @@ type Service struct {
 	version        string
 	now            func() time.Time
 	life           context.Context
+	// digestKey keys the token digests the credential sources keep. It is
+	// random per service and never leaves it.
+	digestKey []byte
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
@@ -102,10 +106,13 @@ func New(deps Deps) (*Service, error) {
 	case deps.Version == "":
 		return nil, errors.New("trackerapp: Deps.Version is required for the clients' User-Agent")
 	}
+	key := make([]byte, 32)
+	_, _ = rand.Read(key) // crypto/rand.Read never fails; it crashes instead
 	return &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
-		clients: map[string]*clients{}, problems: map[string]Failure{},
+		digestKey: key,
+		clients:   map[string]*clients{}, problems: map[string]Failure{},
 	}, nil
 }
 
@@ -162,16 +169,28 @@ func (s *Service) use(row store.TrackerConnection) (*clients, error) {
 }
 
 // stopUsing is where a connection stops being used: its client is closed,
-// which ends its calls in flight, and its problem is forgotten. It
-// reports whether a problem was forgotten. The caller holds opMu.
+// which ends its calls in flight, and its problem is forgotten. A Jira
+// connection takes the Tempo connection that belongs to it along, since
+// a provider made while both were in use holds both clients; the Tempo
+// row is left as it is, and its next use builds a new client. It reports
+// whether a problem was forgotten. The caller holds opMu.
 func (s *Service) stopUsing(id string) bool {
 	s.mu.Lock()
-	c := s.clients[id]
-	delete(s.clients, id)
 	_, had := s.problems[id]
 	delete(s.problems, id)
+	var closing []*clients
+	for cid, c := range s.clients {
+		if cid == id || c.parentID == id {
+			closing = append(closing, c)
+			delete(s.clients, cid)
+			if _, ok := s.problems[cid]; ok {
+				had = true
+				delete(s.problems, cid)
+			}
+		}
+	}
 	s.mu.Unlock()
-	if c != nil {
+	for _, c := range closing {
 		c.close()
 	}
 	return had
@@ -181,13 +200,6 @@ func (s *Service) isStopped() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stopped
-}
-
-// inUse reports whether c is still connection id's client.
-func (s *Service) inUse(id string, c *clients) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.clients[id] == c && c != nil
 }
 
 // get reads connection id, refusing a missing one with ErrNotFound.
@@ -216,8 +228,12 @@ type Connection struct {
 
 // view is row as Connection, its key file inspected now.
 func (s *Service) view(row store.TrackerConnection) Connection {
-	file := s.keyFile(row)
-	v := Connection{TrackerConnection: row, KeyFilePath: file.Path(), KeyFile: file.Inspect()}
+	return s.viewWith(row, s.keyFile(row).Inspect())
+}
+
+// viewWith is row as Connection with its key file in state file.
+func (s *Service) viewWith(row store.TrackerConnection, file keyfile.Status) Connection {
+	v := Connection{TrackerConnection: row, KeyFilePath: s.keyFilePath(row.ID), KeyFile: file}
 	s.mu.Lock()
 	if p, ok := s.problems[row.ID]; ok {
 		v.Problem = &p
@@ -226,9 +242,24 @@ func (s *Service) view(row store.TrackerConnection) Connection {
 	return v
 }
 
-// Connections lists every connection in the order they were made. Asking
-// for the key files' state drops the credential each client holds, so a
-// token replaced in its file is read again on the next call.
+// look is row as Connection from one read of its key file, which also
+// tells the connection's client, when it is in use, whether the token in
+// the file is still the one it was handed (clients.syncCredential).
+func (s *Service) look(row store.TrackerConnection) Connection {
+	token, err := s.keyFile(row).Read()
+	s.mu.Lock()
+	c := s.clients[row.ID]
+	s.mu.Unlock()
+	if c != nil {
+		c.syncCredential(token.Reveal())
+	}
+	token.Zero()
+	return s.viewWith(row, keyfile.StatusOf(err))
+}
+
+// Connections lists every connection in the order they were made. A
+// client whose token was replaced in its key file reads the file again on
+// its next call; no other client is touched.
 func (s *Service) Connections() ([]Connection, error) {
 	if err := s.enter(); err != nil {
 		return nil, err
@@ -238,16 +269,69 @@ func (s *Service) Connections() ([]Connection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("trackerapp: list connections: %w", err)
 	}
-	s.mu.Lock()
-	for _, c := range s.clients {
-		c.forgetCredential()
-	}
-	s.mu.Unlock()
 	out := make([]Connection, len(rows))
 	for i, row := range rows {
-		out[i] = s.view(row)
+		out[i] = s.look(row)
 	}
 	return out, nil
+}
+
+// stamp is when a call on a connection began: the client it was made with
+// and its place among the calls begun on that client, which orders the
+// call's outcome against theirs (settle). The zero stamp is a failure to
+// start using the connection at all.
+type stamp struct {
+	c   *clients
+	gen uint64
+}
+
+// begin stamps a call about to be made with c, the client of a
+// connection in use.
+func (s *Service) begin(c *clients) stamp {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c.gen++
+	return stamp{c: c, gen: c.gen}
+}
+
+// settle is the one place a connection's problem is set or cleared: the
+// outcome of the call on connection id, of kind, that began at at.
+// callErr nil is a success, which clears the problem; record, when not
+// nil, runs first and its error stops the settlement (a verification's
+// row write). A failure becomes the problem as ClassifyFailure sorts it.
+//
+// An outcome is applied unless its client is no longer the connection's
+// (the connection stopped being used, or Stop) or the outcome of a call
+// begun later on the same client was already applied. Otherwise settle
+// changes nothing and reports false, so an older outcome never replaces a
+// newer one, while calls that overlap still each apply theirs in turn.
+// A zero at applies only while the connection has no client. The caller
+// holds opMu, which serializes settlements and keeps the connection in
+// use during record.
+func (s *Service) settle(id, kind string, at stamp, callErr error, record func() error) (bool, error) {
+	s.mu.Lock()
+	// Stop empties clients, so a call Stop overtook finds no client.
+	current := s.clients[id] == at.c && (at.c == nil || at.gen > at.c.settled)
+	s.mu.Unlock()
+	if !current {
+		return false, nil
+	}
+	if callErr == nil && record != nil {
+		if err := record(); err != nil {
+			return false, err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if at.c != nil {
+		at.c.settled = at.gen
+	}
+	if callErr != nil {
+		s.problems[id] = ClassifyFailure(kind, callErr)
+	} else {
+		delete(s.problems, id)
+	}
+	return true, nil
 }
 
 // Provider is the tracker of connection id, for a Jira or Linear

@@ -3,7 +3,6 @@ package jira
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strconv"
 
@@ -108,10 +107,8 @@ func (c *Client) write(ctx context.Context, r trackerapi.Request, want writeAnsw
 	case !slices.Contains(want.body, resp.Status):
 		return written{}, &AnswerError{Message: "the answer's status " + strconv.Itoa(resp.Status) + " is not one this write documents, so whether it was applied is unknown"}
 	}
-	body, err := scrubbedBody(resp)
-	if err != nil {
-		return written{}, unknownAnswer(err)
-	}
+	// The transport scrubbed the body; one that is not JSON names nothing.
+	body := resp.Body
 	var w written
 	if json.Unmarshal(body, &w.top) != nil {
 		w.top = nil
@@ -126,12 +123,6 @@ func (c *Client) write(ctx context.Context, r trackerapi.Request, want writeAnsw
 		}
 	}
 	return w, nil
-}
-
-// unknownAnswer is err, an answer that could not be read at all, as a
-// write's unknown outcome.
-func unknownAnswer(err error) error {
-	return &AnswerError{Message: fmt.Sprintf("%v, so whether the write was applied is unknown", err)}
 }
 
 // outcomeOf is the error in err's chain that decides a write's outcome:

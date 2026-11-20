@@ -110,17 +110,24 @@ type Request struct {
   `BaseURL`. A redirect to another origin, and an absolute URL on another
   origin, are requested without it. Answer text in an error
   (`StatusError` `Body`, `Message` and `Fields`, `AuthError.Message`) has
-  the credential the request carried replaced by `<redacted>`. Answer
-  text is scrubbed after it is decoded, by whoever decodes it:
-  `Response.Scrub`, `StatusError.Scrub` and `AuthError.Scrub` remove that
-  credential from text a client decodes from a body or shows. They return
-  text unchanged when the request carried no credential, and `<redacted>`
-  in place of the text once the client no longer holds the credential (a
-  re-read replaced it, `ForgetCredential`, `Close`), since zeroed bytes
-  cannot be found. `StatusError.Body` is scrubbed as text only. An error
-  from another package whose text repeats the credential is replaced by its
-  scrubbed text. No error quotes a URL the tracker supplied beyond its
-  scheme, host and path.
+  the credential the request carried replaced by `<redacted>`. So does
+  `Response.Body`: the transport replaces the credential in every JSON
+  string, object keys included, as the string decodes, and as bytes in any
+  other body, and does not keep the answer as sent, so no client can decode
+  an answer that repeats its credential. `StatusError.Body` is scrubbed the
+  same way. A body that holds no form of the credential is returned as
+  read, without a copy. A streamed download is the file's bytes and is not
+  scrubbed. `Response.Scrub`, `StatusError.Scrub` and `AuthError.Scrub`
+  remove the credential from other text a client builds about an answer,
+  such as a decode error. They return text unchanged when the request
+  carried no credential, and `<redacted>` in place of the text once the
+  client no longer holds the credential (a re-read replaced it,
+  `ForgetCredential`, `Close`), since zeroed bytes cannot be found. An
+  answer whose body holds a string and whose credential was dropped before
+  the body could be checked is withheld: see `ErrCredentialChanged` under
+  Errors. An error from another package whose text repeats the credential
+  is replaced by its scrubbed text. No error quotes a URL the tracker
+  supplied beyond its scheme, host and path.
 - **Redirects.** The package follows redirects itself, for `GET` and
   `HEAD` only, at most ten requests. Every hop is admitted like a first
   request: the gate, the pacing, the allowed-URL rule and the origin rule.
@@ -196,6 +203,7 @@ type Dialect interface {
 | Any other status of 400 or above, or a 3xx answering a write | `*StatusError{Method, URL, Status, Message, Fields, Body, Location}`: the URL redacted, the body bounded to 4 KiB, `Fields` the per-field messages. A 404 matches `errors.Is(err, ErrNotFound)`. |
 | Timeout, reset, a body cut short | `*TransientError` wrapping the cause. A write's 4xx whose body is cut short stays the status's error, with the body that arrived. |
 | A body over its bound | `*BodyTooLargeError` |
+| A 2xx whose credential was dropped while its body was read, so the body cannot be checked for it | `ErrCredentialChanged`, returned with a `Response` that has the status, header and `CredentialMark` and no body. A write it answered has an unknown outcome. |
 
 Jira answers a request with bad credentials with a 404 on some paths. The
 Jira client, not the transport, turns such a 404 into an `*AuthError`; see
@@ -342,7 +350,12 @@ timesheet settings are reads.
 
 ## Linear
 
-One `linear.Client` per workspace. Every GraphQL document is a package
+One `linear.Client` per workspace. `Options.Workspace`, the workspace's URL
+key, binds it: each key the client reads (first use, after
+`ForgetCredential`, after a 401) is first asked which workspace it belongs
+to, and a key for another one is refused with `*WrongWorkspaceError` before
+any request carries it, until `ForgetCredential`. A call that met the
+refusal was not sent. Every GraphQL document is a package
 variable made by `newQuery` or `newMutation`, which register it; a test
 fails on an operation built any other way. A test checks each registered
 document against Linear's public schema, embedded for tests and refreshed

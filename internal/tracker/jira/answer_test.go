@@ -218,33 +218,3 @@ func TestUndefinedAudienceIsRefused(t *testing.T) {
 		}
 	}
 }
-
-func TestScrubbedBodyKeepsCleanAnswersAsSent(t *testing.T) {
-	f := jiratest.NewServer(t)
-	c := newTestClient(t, f)
-	const body = `{"z":1,"a":"<b>&","n":12345678901234567890}`
-	f.On("GET", "/rest/api/3/field", jiratest.Reply(200, `[]`))
-	resp, err := c.call(t.Context(), trackerapi.Request{Path: apiPath + "field"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body = []byte(body)
-	got, err := scrubbedBody(resp)
-	if err != nil || string(got) != body {
-		t.Errorf("a clean answer changed: %s %v", got, err)
-	}
-	resp.Body = []byte(`{"k":"` + testToken + `","n":12345678901234567890,"h":"<&>"}`)
-	got, err = scrubbedBody(resp)
-	var v map[string]any
-	if err != nil || json.Unmarshal(got, &v) != nil || strings.Contains(string(got), testToken) ||
-		!strings.Contains(string(got), "12345678901234567890") || v["h"] != "<&>" {
-		t.Errorf("scrubbed: %s %v", got, err)
-	}
-	// Once the credential the request carried is dropped, nothing can be
-	// checked for it, and the answer is refused rather than used.
-	resp.Body = []byte(`{"summary":"text"}`)
-	c.ForgetCredential()
-	if _, err := scrubbedBody(resp); !errors.Is(err, errCredentialChanged) {
-		t.Errorf("after the credential was dropped: %v", err)
-	}
-}

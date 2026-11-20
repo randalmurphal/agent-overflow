@@ -32,7 +32,11 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if err != nil {
 		return nil, err
 	}
-	return c.response(a), nil
+	// The answer went to dst as it arrived, a.body is empty and nothing is
+	// scrubbed: a download is the file's bytes, which the caller asked
+	// for, and holding it to search for the credential would undo the
+	// stream's bounded memory.
+	return c.response(k, a)
 }
 
 // prepareGet is prepareCall for a call that only takes a GET.

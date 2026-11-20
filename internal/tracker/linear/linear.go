@@ -16,6 +16,7 @@
 package linear
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -39,6 +40,11 @@ type Options struct {
 	Credentials trackerapi.CredentialSource
 	// Proxy picks the proxy for a request; nil connects directly.
 	Proxy func(*http.Request) (*url.URL, error)
+	// Workspace is the URL key of the workspace the client is for
+	// (linear.app/<key>). When set, no call is sent with a key until
+	// Linear has said, asked with that key, that it belongs to this
+	// workspace (workspace.go); empty binds the client to none.
+	Workspace string
 }
 
 // Client calls one Linear workspace. It is safe for concurrent use.
@@ -47,6 +53,8 @@ type Client struct {
 	http *trackerapi.Client
 	// endpoint is the redacted GraphQL URL, for errors built here.
 	endpoint string
+	// bound checks each key against Options.Workspace; nil when unbound.
+	bound *boundSource
 
 	mu    sync.Mutex
 	usage Usage // the most recent answer's budget headers
@@ -56,19 +64,54 @@ type Client struct {
 // what trackerapi.New refuses: a missing Version or Credentials, and a
 // BaseURL that is not https unless its host is a loopback IP address.
 func New(opts Options) (*Client, error) {
+	if opts.Workspace == "" {
+		return newClient(opts, nil)
+	}
+	if opts.Credentials == nil {
+		return nil, errors.New("linear: Options.Credentials is required")
+	}
+	c, err := newClient(opts, nil)
+	if err != nil {
+		return nil, err
+	}
+	// The client that checks a key answers to the same origin, records
+	// its answers' budget in c's Usage, and is bound to nothing.
+	check := opts
+	check.Workspace, check.Credentials = "", &candidate{}
+	checker, err := newClient(check, c.observeAnswer)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	c.bound.checker, c.bound.candidate = checker, check.Credentials.(*candidate)
+	return c, nil
+}
+
+// newClient builds a Client; observe, when set, records its answers'
+// budget headers in place of its own Usage. With opts.Workspace set, its
+// transport reads the key through a boundSource the caller completes.
+func newClient(opts Options, observe func(int, http.Header)) (*Client, error) {
 	base := opts.BaseURL
 	if base == "" {
 		base = DefaultBaseURL
 	}
 	c := &Client{endpoint: base}
+	if observe == nil {
+		observe = c.observeAnswer
+	}
+	source := opts.Credentials
+	if opts.Workspace != "" {
+		c.bound = &boundSource{want: opts.Workspace, inner: opts.Credentials}
+		source = c.bound
+	}
 	hc, err := trackerapi.New(trackerapi.Options{
 		Name:          "linear",
 		BaseURL:       base,
 		Version:       opts.Version,
-		Credentials:   opts.Credentials,
+		Credentials:   source,
 		Dialect:       dialect{},
 		Proxy:         opts.Proxy,
-		OnAnswer:      c.observeAnswer,
+		OnAnswer:      observe,
 		ReportHeaders: usageHeaders,
 	})
 	if err != nil {
@@ -85,11 +128,23 @@ func New(opts Options) (*Client, error) {
 // Close cancels the calls in flight and zeroes the held credential. Every
 // later call fails with a *trackerapi.NotSentError. Close may be called
 // more than once.
-func (c *Client) Close() { c.http.Close() }
+func (c *Client) Close() {
+	c.http.Close()
+	if c.bound != nil && c.bound.checker != nil {
+		c.bound.checker.Close()
+	}
+}
 
 // ForgetCredential drops the held key so the next call reads the
-// credential source again, for a caller that knows the key changed.
-func (c *Client) ForgetCredential() { c.http.ForgetCredential() }
+// credential source again, for a caller that knows the key changed. On a
+// bound client the key read next is checked again, even one refused as
+// another workspace's.
+func (c *Client) ForgetCredential() {
+	if c.bound != nil {
+		c.bound.forget()
+	}
+	c.http.ForgetCredential()
+}
 
 // Usage is the rate limit budget as of the most recent answer, whichever
 // call it answered and whether or not it succeeded: a 429 or another

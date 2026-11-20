@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/keyfile"
+	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -38,8 +39,12 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureSetup, "there is no Jira API token file"},
 		"a refused Tempo token": {"tempo", &trackerapi.AuthError{Tracker: "tempo", Status: 401},
 			FailureSetup, "check that the region"},
-		"another workspace": {"linear", &WrongWorkspaceError{Want: "example", Got: "other"},
-			FailureSetup, "belongs to the workspace other, not example"},
+		"another workspace": {"linear", &trackerapi.NotSentError{Err: &linear.WrongWorkspaceError{Want: "example", Got: "Other"}},
+			FailureSetup, "belongs to the workspace other, not example; make a key in example"},
+		"another workspace that is no URL key": {"linear", &linear.WrongWorkspaceError{Want: "example", Got: secret},
+			FailureSetup, "belongs to another workspace than example"},
+		"a credential replaced under the answer": {"linear", fmt.Errorf("linear: viewer: %w", trackerapi.ErrCredentialChanged),
+			FailureTransient, "as the token in the key file was being replaced; try again"},
 		"no client": {"jira", &ClientError{Kind: "jira", Err: errors.New("no fake tracker")},
 			FailureSetup, "cannot connect to Jira from this computer: no fake tracker"},
 		"a rate limit": {"jira", wrap(&trackerapi.RateLimitedError{Tracker: "jira", Status: 429, Until: until}),
@@ -73,15 +78,5 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 				t.Fatalf("the message %q quotes the error's text", got.Message)
 			}
 		})
-	}
-}
-
-// A workspace URL key Linear sends that is not shaped like one is not
-// quoted.
-func TestWrongWorkspaceNamesOnlyAURLKey(t *testing.T) {
-	t.Parallel()
-	got := (&WrongWorkspaceError{Want: "example"}).Error()
-	if !strings.Contains(got, "another workspace than example") {
-		t.Fatalf("message %q", got)
 	}
 }

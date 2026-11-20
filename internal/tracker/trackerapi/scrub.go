@@ -80,9 +80,9 @@ func (r *scrubRef) text(text string) string {
 
 // Scrub returns text with the credential this answer's request carried
 // replaced by secret.Redacted, in every form the transport removes from
-// its own errors. A caller passes it any text taken from the answer that
-// it places in an error or returns for display, such as an error list
-// inside a 200 body; the transport's own errors are already scrubbed.
+// its own errors. Body and the transport's own errors are already
+// scrubbed; a caller passes Scrub other text about the answer it places
+// in an error, such as a decode error's.
 //
 // A request off the base origin carried no credential, and text comes
 // back unchanged. Once the client no longer holds that credential (a
@@ -254,7 +254,8 @@ func (e *scrubbedError) Unwrap() []error { return e.matches }
 // answerText is the text of an error answer that an error carries: the
 // dialect's problem, scrubbed after the dialect returns it, and the body,
 // at most maxErrorBody bytes, scrubbed of the credential the request
-// carried. Every error built from an answer's text takes it from here.
+// carried as Response.Body is, so decoding it finds none either. Every
+// error built from an answer's text takes it from here.
 func (c *Client) answerText(a *answer) (Problem, string) {
 	s := c.scrubber(a.sent)
 	defer s.clear()
@@ -270,6 +271,11 @@ func (c *Client) answerText(a *answer) (Problem, string) {
 			fields[s.text(name)] = s.text(message)
 		}
 		problem.Fields = fields
+	}
+	// The body as a caller may decode it, then as text: a dropped
+	// credential leaves the error for s.text to withhold.
+	if scrubbed, err := s.body(body); err == nil {
+		body = scrubbed
 	}
 	text := s.text(string(body))
 	if len(text) > maxErrorBody {

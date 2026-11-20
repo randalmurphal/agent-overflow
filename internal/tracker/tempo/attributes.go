@@ -83,15 +83,15 @@ func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 	v, err := c.site.attributes.get(ctx, func(ctx context.Context) ([]Attribute, error) {
 		var out []Attribute
 		options := 0
-		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(resp *trackerapi.Response, list []attributeJSON) error {
+		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(_ *trackerapi.Response, list []attributeJSON) error {
 			for _, a := range list {
 				options += len(a.Values)
 				if len(out) >= maxAttributes || options > maxOptions {
 					return fmt.Errorf("the site has more than %d work attributes or %d options, the most this client holds", maxAttributes, maxOptions)
 				}
-				attr := Attribute{Key: resp.Scrub(a.Key), Name: resp.Scrub(a.Name), Type: AttributeType(resp.Scrub(a.Type)), Required: a.Required}
+				attr := Attribute{Key: a.Key, Name: a.Name, Type: AttributeType(a.Type), Required: a.Required}
 				for _, v := range a.Values {
-					attr.Options = append(attr.Options, Option{Value: resp.Scrub(v), Name: resp.Scrub(a.Names[v])})
+					attr.Options = append(attr.Options, Option{Value: v, Name: a.Names[v]})
 				}
 				attr.optionsText = optionNames(attr.Options)
 				out = append(out, attr)
@@ -150,13 +150,13 @@ func (c *Client) Settings(ctx context.Context) (Settings, error) {
 func (c *Client) settings(ctx context.Context) (Settings, error) {
 	v, err := c.site.settings.get(ctx, func(ctx context.Context) (Settings, error) {
 		var raw settingsJSON
-		resp, err := c.http.JSON(ctx, trackerapi.Request{Path: "4/globalconfiguration"}, &raw)
+		_, err := c.http.JSON(ctx, trackerapi.Request{Path: "4/globalconfiguration"}, &raw)
 		if err != nil {
 			return Settings{}, err
 		}
 		s := Settings{
 			InactiveAccountsAllowed:   raw.AllowLoggingOnClosedAccount,
-			ApprovalPeriod:            resp.Scrub(raw.ApprovalPeriod),
+			ApprovalPeriod:            raw.ApprovalPeriod,
 			WeekStart:                 time.Monday,
 			DescriptionRequired:       raw.DescriptionOptional != nil && !*raw.DescriptionOptional,
 			RemainingEstimateRequired: raw.RemainingEstimateOptional != nil && !*raw.RemainingEstimateOptional,

@@ -80,23 +80,23 @@ type attributeValueJSON struct {
 }
 
 // worklog reads w, refusing a record whose dates or times do not parse.
-// resp is the answer w came in: every string the record keeps, and the
-// text of an error, is scrubbed of the credential the request carried.
+// resp is the answer w came in, whose body the transport scrubbed of the
+// credential the request carried; the text of an error is scrubbed too.
 func (w worklogJSON) worklog(resp *trackerapi.Response) (Worklog, error) {
-	out, err := w.read(resp.Scrub)
+	out, err := w.read()
 	if err != nil {
 		return Worklog{}, unreadable(resp, err)
 	}
 	return out, nil
 }
 
-func (w worklogJSON) read(scrub func(string) string) (Worklog, error) {
+func (w worklogJSON) read() (Worklog, error) {
 	out := Worklog{
 		ID:          w.ID,
 		Issue:       Issue{ID: w.Issue.ID},
-		Author:      scrub(w.Author.AccountID),
+		Author:      w.Author.AccountID,
 		Spent:       duration(w.Spent),
-		Description: scrub(w.Description),
+		Description: w.Description,
 	}
 	if w.Billable != nil {
 		b := duration(*w.Billable)
@@ -126,7 +126,7 @@ func (w worklogJSON) read(scrub func(string) string) (Worklog, error) {
 	if len(w.Attributes.Values) > 0 {
 		out.Attributes = make([]AttributeValue, len(w.Attributes.Values))
 		for i, v := range w.Attributes.Values {
-			out.Attributes[i] = AttributeValue{Key: scrub(v.Key), Value: scrub(v.Value)}
+			out.Attributes[i] = AttributeValue(v)
 		}
 	}
 	return out, nil

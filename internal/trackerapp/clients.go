@@ -2,9 +2,13 @@ package trackerapp
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
@@ -24,6 +28,15 @@ type clients struct {
 	jira   *jira.Client
 	tempo  *tempo.Client
 	linear *linear.Client
+	// source is the client's credential source.
+	source *keyFileSource
+	// parentID is the Jira connection a Tempo connection belongs to: when
+	// that one stops being used, so does this one.
+	parentID string
+	// gen counts the calls begun on the client (Service.begin); settled is
+	// the gen of the call whose outcome was applied last (Service.settle).
+	// Guarded by Service.mu.
+	gen, settled uint64
 }
 
 func (c *clients) forgetCredential() {
@@ -35,6 +48,25 @@ func (c *clients) forgetCredential() {
 	case c.linear != nil:
 		c.linear.ForgetCredential()
 	}
+}
+
+// syncCredential compares the token one read of the key file found
+// (token nil when the read failed, which matches no token) with the token
+// the client was last handed, and makes the client read the file again
+// only when they differ. A list, a key file open or a verification
+// thereby picks up a replaced token without disturbing calls in flight
+// when nothing changed.
+func (c *clients) syncCredential(token []byte) {
+	c.source.mu.Lock()
+	defer c.source.mu.Unlock()
+	if c.source.handed == nil {
+		return // the client holds no credential, or one already dropped
+	}
+	if hmac.Equal(c.source.handed, c.source.digest(token)) {
+		return
+	}
+	c.source.handed = nil
+	c.forgetCredential()
 }
 
 func (c *clients) close() {
@@ -58,22 +90,44 @@ func (s *Service) keyFile(row store.TrackerConnection) keyfile.File {
 }
 
 // keyFileSource is the trackerapi.CredentialSource of one connection: its
-// key file, read on each call and presented as its tracker takes it.
+// key file, read each time the client asks and presented as its tracker
+// takes it.
 type keyFileSource struct {
 	file keyfile.File
 	kind string
 	// account is the Jira account email Basic authentication carries.
 	account string
+	// key is the service's per-process HMAC key the digests are made with.
+	key []byte
+
+	mu sync.Mutex
+	// handed is the keyed digest of the token last handed to the client,
+	// nil before the first and after the client was made to drop it. Never
+	// the token, and never logged.
+	handed []byte
+	// reads counts the file reads the client asked for, for tests.
+	reads atomic.Int64
 }
 
-func (k keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential, error) {
+// digest is token's keyed digest. The caller holds mu.
+func (k *keyFileSource) digest(token []byte) []byte {
+	m := hmac.New(sha256.New, k.key)
+	_, _ = m.Write(token) // a hash.Hash never fails a write
+	return m.Sum(nil)
+}
+
+func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	k.reads.Add(1)
 	token, err := k.file.Read()
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}
+	k.mu.Lock()
+	k.handed = k.digest(token.Reveal())
+	k.mu.Unlock()
 	switch k.kind {
 	case store.TrackerKindJira:
 		return trackerapi.Basic(k.account, token), nil
@@ -90,8 +144,8 @@ func (s *Service) buildClients(row store.TrackerConnection) (*clients, error) {
 	if err != nil {
 		return nil, &ClientError{Kind: row.Kind, Err: err}
 	}
-	source := keyFileSource{file: s.keyFile(row), kind: row.Kind, account: row.Account}
-	var c clients
+	source := &keyFileSource{file: s.keyFile(row), kind: row.Kind, account: row.Account, key: s.digestKey}
+	c := clients{source: source, parentID: row.ParentID}
 	switch row.Kind {
 	case store.TrackerKindJira:
 		c.jira, err = jira.New(jira.Options{BaseURL: origin, Version: s.version, Credentials: source, Proxy: http.ProxyFromEnvironment})
@@ -101,7 +155,12 @@ func (s *Service) buildClients(row store.TrackerConnection) (*clients, error) {
 			Issues: parentIssues{s: s, parentID: row.ParentID},
 		})
 	case store.TrackerKindLinear:
-		c.linear, err = linear.New(linear.Options{BaseURL: origin, Version: s.version, Credentials: source, Proxy: http.ProxyFromEnvironment})
+		// Bound to the connection's workspace: no request carries a key
+		// Linear places in another one.
+		c.linear, err = linear.New(linear.Options{
+			BaseURL: origin, Version: s.version, Credentials: source, Proxy: http.ProxyFromEnvironment,
+			Workspace: row.Site,
+		})
 	default:
 		err = fmt.Errorf("unknown tracker kind %q", row.Kind)
 	}

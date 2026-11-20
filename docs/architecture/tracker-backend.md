@@ -175,15 +175,26 @@ to the computer and are rows in `tracker_connections`.
   read through `internal/keyfile`. The site, the email and the region are
   not secret and are columns.
 - `trackerapp` gives each client a `trackerapi.CredentialSource` that reads
-  the key file. The client reads it at first use and after one 401. When
-  the key file's status is asked for or the user saves it,
-  `trackerapp` calls `ForgetCredential`, so a replaced token is picked up
-  without a restart.
+  the key file. The client reads it at first use and after one 401. The
+  source keeps a keyed digest of the token it last read, never the token.
+  A list, a key file open and a verification each read the file once,
+  compare it with that digest and call `ForgetCredential` only when the
+  token changed or the file stopped giving one, so a replaced token is
+  picked up without a restart and a list never disturbs a call in flight.
+- A connection's problem is the outcome of the latest call whose outcome
+  was applied: every call is stamped when it begins, and one function
+  applies an outcome unless a call begun later on the same client already
+  applied its own. A failure that arrives late cannot replace a newer
+  success.
 - Adding a connection creates the row and the empty key file, opens the
   tracker's token page and the key file on that computer, then verifies:
   one identity call to the tracker. The row records who the token belongs
-  to and when it was verified. A Linear key is refused when its workspace
-  is not the connection's. No tracker reports when a token expires, so the
+  to and when it was verified. A Linear client is bound to the
+  connection's workspace: every key it reads is checked before any request
+  carries it, and a key for another workspace fails every read and write.
+  Tempo's API has no read that names the Jira site a token belongs to, so
+  a Tempo token from another site is not detected. No tracker reports when
+  a token expires, so the
   expiry is the date the user enters from the token page, and it is the
   only source of the warning before a token lapses. A status call returns
   the file's state, the last verification and the last failure, never the
@@ -200,7 +211,9 @@ to the computer and are rows in `tracker_connections`.
   the schema, its mirror, with the Tempo connection that belongs to it. A
   failure part way leaves a row with no key file, never a key file with no
   row. Turning a connection off keeps the row and the key
-  file, stops its pumps, closes its clients and clears its mirror.
+  file, stops its pumps, closes its clients and clears its mirror. A Jira
+  connection turned off also closes the client of the Tempo connection
+  that belongs to it, whose row stays as it is.
 - Work in flight cannot write into a mirror that was cleared. A mirror is
   one `tracker_cache_roots` row with its own ID, and every mirror row
   references that ID. Each read or write captures the root ID when it
@@ -221,7 +234,7 @@ Durable records, restored and kept like other application records:
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project and connection; both cascade. |
-| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
+| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. A fork starts with its source's link. A conversation moved or copied to another computer carries its link in the transfer header, and the receiving side replaces whatever link it held for that thread, so a move away and back never brings an old link back; a receiver too old to read the field drops the link. |
 
 The rest of a project's tracker setup (status groups, pinned fields and
 sections, card marks, Start work defaults, draft settings, what agents may

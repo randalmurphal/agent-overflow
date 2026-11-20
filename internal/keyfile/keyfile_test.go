@@ -20,6 +20,40 @@ func writeKeyFile(t *testing.T, file File, contents string) {
 	}
 }
 
+// StatusOf gives the state of the read that returned the error, as
+// Inspect would for the same file.
+func TestStatusOfIsTheStateOfOneRead(t *testing.T) {
+	t.Parallel()
+	label := Label{Service: "Example", Kind: APIToken}
+	root := t.TempDir()
+	file := func(name, contents string) File {
+		f := New(filepath.Join(root, DirName, name), label)
+		if contents != "" {
+			writeKeyFile(t, f, contents)
+		}
+		return f
+	}
+	for _, tc := range []struct {
+		file File
+		want Status
+	}{
+		{file("present", "tok-1\n"), Status{State: StatePresent}},
+		{file("missing", ""), Status{State: StateMissing}},
+		{file("empty", " \n"), Status{State: StateEmpty}},
+		{file("two", "tok-1 tok-2"), Status{State: StateRefused, Problem: "it holds more than one token; leave only the token in it"}},
+	} {
+		key, err := tc.file.Read()
+		key.Zero()
+		if got := StatusOf(err); got != tc.want || tc.file.Inspect() != tc.want {
+			t.Errorf("%s: StatusOf = %+v, Inspect = %+v; want %+v", filepath.Base(tc.file.Path()), got, tc.file.Inspect(), tc.want)
+		}
+	}
+	other := errors.New("read the Example API token file: input/output error")
+	if got := StatusOf(other); got != (Status{State: StateRefused, Problem: other.Error()}) {
+		t.Errorf("StatusOf(another error) = %+v", got)
+	}
+}
+
 // Every message names the file by its own label, and errors.Is tells the
 // labels apart while the package sentinels match them all.
 func TestMessagesFollowTheLabel(t *testing.T) {

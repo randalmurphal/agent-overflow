@@ -200,6 +200,11 @@ func (c *Client) startCheck(ctx context.Context, f *signInCheck) {
 
 func (c *Client) runSignInCheck(ctx context.Context, f *signInCheck) {
 	resp, err := c.api.Do(ctx, trackerapi.Request{Path: myselfPath})
+	if errors.Is(err, trackerapi.ErrCredentialChanged) {
+		// The check reads the status and mark, never the body the
+		// transport withheld: the credential was accepted.
+		err = nil
+	}
 	var mark trackerapi.CredentialMark
 	if err == nil {
 		mark = resp.CredentialMark()

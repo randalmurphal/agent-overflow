@@ -221,10 +221,16 @@ type Status struct {
 // and zeroes it before returning.
 func (f File) Inspect() Status {
 	key, err := f.Read()
+	key.Zero()
+	return StatusOf(err)
+}
+
+// StatusOf is the state of a key file whose Read returned err, for a
+// caller that reads the secret and needs the state of the same read.
+func StatusOf(err error) Status {
 	var refusal *RefusedError
 	switch {
 	case err == nil:
-		key.Zero()
 		return Status{State: StatePresent}
 	case errors.Is(err, ErrMissing):
 		return Status{State: StateMissing}

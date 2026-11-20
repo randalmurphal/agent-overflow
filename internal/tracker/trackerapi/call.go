@@ -16,8 +16,9 @@ import (
 const errorReadLimit = 64 << 10
 
 // Do sends r and returns the answer read whole. A non-nil error comes
-// with a nil Response; the error types follow the table in
-// docs/architecture/tracker-clients.md#errors.
+// with a nil Response, except ErrCredentialChanged, which comes with the
+// answer's status, header and CredentialMark and no body; the error
+// types follow the table in docs/architecture/tracker-clients.md#errors.
 func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	k, err := c.prepareCall(r)
 	if err != nil {
@@ -28,7 +29,7 @@ func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.response(a), nil
+	return c.response(k, a)
 }
 
 // JSON is Do decoding the answer into out, unless out is nil or the
@@ -44,11 +45,14 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 	if err != nil {
 		return nil, err
 	}
-	resp := c.response(a)
+	resp, err := c.response(k, a)
+	if err != nil {
+		return resp, err
+	}
 	if out == nil || a.status == http.StatusNoContent {
 		return resp, nil
 	}
-	if err := json.Unmarshal(a.body, out); err != nil {
+	if err := json.Unmarshal(resp.Body, out); err != nil {
 		return resp, fmt.Errorf("%s: decode the answer: %w", c.where(k.method, a.url), c.cause(a.sent, err))
 	}
 	return resp, nil
@@ -80,10 +84,24 @@ type answer struct {
 	sent    sentWith
 }
 
-// response is the Response a caller gets for a. Body is nil for Stream,
-// which reads none into a.
-func (c *Client) response(a *answer) *Response {
-	return &Response{Status: a.status, Header: a.header, Body: a.body, scrub: c.scrubRef(a.sent)}
+// response is the Response a caller gets for a, its body scrubbed of the
+// credential the request carried. Body is nil for Stream, which reads
+// none into a. An answer whose credential was dropped before its body
+// could be checked fails with ErrCredentialChanged and the Response
+// without its body; for a write the outcome is then unknown.
+func (c *Client) response(k *call, a *answer) (*Response, error) {
+	s := c.scrubber(a.sent)
+	defer s.clear()
+	body, err := s.body(a.body)
+	if err != nil || len(body) > 0 && &body[0] != &a.body[0] {
+		// The answer as sent may repeat the credential: nothing keeps it.
+		clear(a.body)
+	}
+	resp := &Response{Status: a.status, Header: a.header, Body: body, scrub: c.scrubRef(a.sent)}
+	if err != nil {
+		return resp, fmt.Errorf("%s: %w", c.where(k.method, a.url), err)
+	}
+	return resp, nil
 }
 
 // receiver reads a successful answer (below 400 and not a refused login)

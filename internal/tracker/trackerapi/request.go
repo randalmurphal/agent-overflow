@@ -65,7 +65,12 @@ type Request struct {
 type Response struct {
 	Status int
 	Header http.Header
-	// Body is the whole answer for Do and JSON; nil for Stream.
+	// Body is the whole answer for Do and JSON, with the credential the
+	// request carried replaced by secret.Redacted in every JSON string,
+	// object keys included, as it decodes, and as bytes elsewhere: the
+	// answer as sent is not kept, so no caller can decode one that repeats
+	// the credential. Nil with ErrCredentialChanged, and for Stream, which
+	// writes the answer to its destination as it arrives.
 	Body []byte
 	// scrub is what Scrub removes; nil when the request carried no
 	// credential.

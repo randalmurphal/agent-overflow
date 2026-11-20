@@ -9,6 +9,14 @@ import (
 // Data wraps fields as a GraphQL answer's data.
 func Data(fields string) string { return `{"data":{` + fields + `}}` }
 
+// ViewerAnswer is the answer to Viewer for User 1 of the workspace whose
+// URL key is urlKey.
+func ViewerAnswer(urlKey string) string {
+	return Data(`"viewer":{"id":"user-1","name":"User 1","displayName":"user1","email":"user1@example.com","avatarUrl":null,` +
+		`"active":true,"admin":false,"guest":false,"app":false,"isMe":true},` +
+		`"organization":{"id":"org-` + urlKey + `","name":"Example","urlKey":"` + urlKey + `"}`)
+}
+
 // PageJSON is a connection's JSON, aliased as page.
 func PageJSON(nodes []string, hasNext bool, cursor string) string {
 	return `"page":` + ConnectionJSON(nodes, hasNext, cursor)

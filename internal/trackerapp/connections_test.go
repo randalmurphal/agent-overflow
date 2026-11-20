@@ -205,7 +205,7 @@ func TestRemoveTwice(t *testing.T) {
 	f := newFixture(t)
 	conn := f.addLinear()
 	f.writeToken(conn, linearKey)
-	f.linear.Expect(lineartestViewer("example"))
+	f.linear.Expect(linearCheck(linearKey, "example"), lineartestViewer("example"))
 	f.verify(conn.ID)
 	if err := f.svc.Remove(conn.ID); err != nil {
 		t.Fatal(err)

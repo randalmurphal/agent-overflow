@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
+	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker/jiraprovider"
 	"agent-overflow/internal/tracker/trackerapi"
@@ -16,18 +16,19 @@ import (
 // transport's own read bound (45 seconds) is longer.
 const verifyBound = 20 * time.Second
 
-// Verify drops connection id's held credential, reads its key file again
-// and makes one identity call to the tracker: who the token belongs to
-// for Jira and Linear, and Tempo's settings, which need a valid token and
-// name nobody. A Linear key for another workspace than the connection's
-// is refused with the workspace it belongs to.
+// Verify reads connection id's key file, so its client uses a token
+// replaced there, and makes one identity call to the tracker: who the
+// token belongs to for Jira and Linear, and Tempo's settings, which need
+// a valid token and name nobody. The Linear client refuses a key for
+// another workspace than the connection's, naming the one it belongs to.
 //
 // Success records the verification and clears the connection's problem.
 // A failed call is an outcome, not an error: the connection is returned
-// with its problem set. The error is for an unknown connection
+// with its problem set (settle). The error is for an unknown connection
 // (ErrNotFound), one turned off (ErrDisabled), a store failure, and a
-// call Stop overtook (ErrStopped). A connection turned off or removed
-// while the call ran records nothing.
+// call Stop overtook (ErrStopped). A verification records nothing when
+// its connection was turned off or removed while it ran, or when a
+// verification begun after it already recorded its outcome.
 func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 	if err := s.enter(); err != nil {
 		return Connection{}, err
@@ -51,16 +52,21 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 			return Connection{}, err
 		}
 		// No client means no call: the connection's problem is why.
-		s.setProblem(id, ClassifyFailure(row.Kind, err))
-		s.changed()
+		if moved, _ := s.settle(id, row.Kind, stamp{}, err, nil); moved {
+			s.changed()
+		}
 		return s.view(row), nil
 	}
+	at := s.begin(c)
 	s.opMu.Unlock()
 
+	// The key file read that shows its state also hands a replaced token
+	// to the client, so the call checks the token in the file.
+	file := s.look(row).KeyFile
 	verification, callErr := s.identity(ctx, row, c)
 
 	s.opMu.Lock()
-	out, moved, err := s.settleVerification(row, c, verification, callErr)
+	out, moved, err := s.settleVerification(row, at, file, verification, callErr)
 	s.opMu.Unlock()
 	if moved {
 		s.changed()
@@ -77,7 +83,6 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 	defer cancel()
 	stop := context.AfterFunc(s.life, cancel)
 	defer stop()
-	c.forgetCredential()
 	switch row.Kind {
 	case store.TrackerKindJira:
 		p, err := jiraprovider.New(jiraprovider.Options{Jira: c.jira, Site: row.Site})
@@ -97,16 +102,10 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 		}
 		return store.TrackerVerification{}, nil
 	}
+	// The client refuses a key of another workspace than row.Site.
 	v, err := c.linear.Viewer(ctx)
 	if err != nil {
 		return store.TrackerVerification{}, err
-	}
-	if got := strings.ToLower(v.Organization.URLKey); got != row.Site {
-		wrong := &WrongWorkspaceError{Want: row.Site}
-		if linearURLKey.MatchString(got) {
-			wrong.Got = got
-		}
-		return store.TrackerVerification{}, wrong
 	}
 	name := v.User.Name
 	if name == "" {
@@ -115,44 +114,33 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 	return store.TrackerVerification{AccountID: v.User.ID, Name: name}, nil
 }
 
-// settleVerification records the outcome of a verification of row made
-// with c, when row is still in use with c. The caller holds opMu.
-func (s *Service) settleVerification(row store.TrackerConnection, c *clients, v store.TrackerVerification, callErr error) (Connection, bool, error) {
-	if !s.inUse(row.ID, c) {
-		if s.isStopped() {
-			return Connection{}, false, ErrStopped
-		}
-		current, err := s.get(row.ID)
+// settleVerification records the outcome of the verification of row that
+// began at at, through settle: one whose outcome settle does not apply
+// records nothing, its verification row included, and returns the
+// connection as it is. file is the key file's state the verification
+// read. The caller holds opMu.
+func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file keyfile.Status, v store.TrackerVerification, callErr error) (Connection, bool, error) {
+	record := func() error {
+		v.VerifiedAt = s.now().UnixMilli()
+		recorded, _, err := s.store.RecordTrackerConnectionVerification(row.ID, v)
 		if err != nil {
-			return Connection{}, false, err
+			return s.writeError(row.ID, "record the verification of", err)
 		}
-		return s.view(current), false, nil
+		row = recorded
+		return nil
 	}
-	if callErr != nil {
-		s.setProblem(row.ID, ClassifyFailure(row.Kind, callErr))
-		return s.view(row), true, nil
+	moved, err := s.settle(row.ID, row.Kind, at, callErr, record)
+	switch {
+	case err != nil:
+		return Connection{}, false, err
+	case moved:
+		return s.viewWith(row, file), true, nil
+	case s.isStopped():
+		return Connection{}, false, ErrStopped
 	}
-	v.VerifiedAt = s.now().UnixMilli()
-	recorded, _, err := s.store.RecordTrackerConnectionVerification(row.ID, v)
+	current, err := s.get(row.ID)
 	if err != nil {
-		return Connection{}, false, s.writeError(row.ID, "record the verification of", err)
+		return Connection{}, false, err
 	}
-	s.clearProblem(row.ID)
-	return s.view(recorded), true, nil
-}
-
-// setProblem holds f as connection id's last failure, unless the service
-// stopped.
-func (s *Service) setProblem(id string, f Failure) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.stopped {
-		s.problems[id] = f
-	}
-}
-
-func (s *Service) clearProblem(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.problems, id)
+	return s.view(current), false, nil
 }

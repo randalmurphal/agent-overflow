@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -188,6 +189,75 @@ func closeUnderCall(t *testing.T, f *fixture, id string, arrived <-chan struct{}
 	_, notSent := errors.AsType[*trackerapi.NotSentError](err)
 	if !notSent && !strings.HasSuffix(err.Error(), "client is closed") && err.Error() != "ended" {
 		t.Fatalf("the call in flight ended with %v", err)
+	}
+}
+
+// A provider made while a Jira connection and its Tempo connection were
+// both in use holds both clients. When the Jira connection stops being
+// used (off, removed, the service stopped), the Tempo client stops too:
+// the held provider's worklog read fails without a request. Turned off,
+// the Tempo row stays on, and turning Jira on again gives a provider with
+// a new Tempo client.
+func TestTheTempoClientStopsWithItsJiraConnection(t *testing.T) {
+	t.Parallel()
+	day, err := tracker.NewDate(2026, 11, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := tracker.WorklogQuery{Author: "acc-user1", From: day, To: day}
+	for name, stop := range map[string]func(f *fixture, jiraID string) error{
+		"off":     func(f *fixture, id string) error { _, err := f.svc.SetEnabled(id, false); return err },
+		"removed": func(f *fixture, id string) error { return f.svc.Remove(id) },
+		"stopped": func(f *fixture, _ string) error { f.svc.Stop(); return nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			jira := f.addJira()
+			f.writeToken(jira, jiraToken)
+			tmp := f.addTempo(jira.ID)
+			f.writeToken(tmp, tempoToken)
+			f.tempo.On("GET", "/4/worklogs/user/acc-user1",
+				url.Values{"from": {"2026-11-16"}, "to": {"2026-11-16"}, "offset": {"0"}, "limit": {"1000"}}, "", 200,
+				`{"self":"x","metadata":{"count":0,"offset":0,"limit":1000},"results":[]}`).Repeat = true
+			held := f.provider(jira.ID)
+			if _, err := held.Time().Worklogs(t.Context(), query); err != nil {
+				t.Fatal(err)
+			}
+			f.svc.mu.Lock()
+			first := f.svc.clients[tmp.ID]
+			f.svc.mu.Unlock()
+			if err := stop(f, jira.ID); err != nil {
+				t.Fatal(err)
+			}
+			if f.inUse(tmp.ID) {
+				t.Fatal("the Tempo connection kept its client")
+			}
+			if _, err := held.Time().Worklogs(t.Context(), query); err == nil {
+				t.Fatal("the held provider read Tempo worklogs after its Jira connection stopped")
+			}
+			if got := len(f.tempo.Requests()); got != 1 {
+				t.Fatalf("Tempo saw %d requests, want the one before the stop", got)
+			}
+			if name != "off" {
+				return
+			}
+			if !f.row(tmp.ID).Enabled {
+				t.Fatal("turning Jira off turned its Tempo connection off")
+			}
+			if _, err := f.svc.SetEnabled(jira.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.provider(jira.ID).Time().Worklogs(t.Context(), query); err != nil {
+				t.Fatalf("a provider after turning Jira on again: %v", err)
+			}
+			f.svc.mu.Lock()
+			second := f.svc.clients[tmp.ID]
+			f.svc.mu.Unlock()
+			if second == nil || second == first {
+				t.Fatal("turning Jira on again did not give Tempo a new client")
+			}
+		})
 	}
 }
 

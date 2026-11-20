@@ -82,9 +82,9 @@ func (c *Client) Schedule(ctx context.Context, accountID string, from, to Date) 
 		if err != nil {
 			return nil, fmt.Errorf("tempo: read schedule of %s: %w", accountID, unreadable(resp, err))
 		}
-		day := ScheduleDay{Date: date, Kind: DayKind(resp.Scrub(d.Type)), Required: duration(d.Required)}
+		day := ScheduleDay{Date: date, Kind: DayKind(d.Type), Required: duration(d.Required)}
 		if h := d.Holiday; h != nil {
-			day.Holiday = &Holiday{Name: resp.Scrub(h.Name), Description: resp.Scrub(h.Description), Duration: duration(h.Duration), Floating: h.Type == "FLOATING"}
+			day.Holiday = &Holiday{Name: h.Name, Description: h.Description, Duration: duration(h.Duration), Floating: h.Type == "FLOATING"}
 		}
 		out = append(out, day)
 	}
@@ -171,15 +171,15 @@ func (c *Client) approval(ctx context.Context, accountID string, day Date) (Appr
 	if err != nil {
 		return Approval{}, err
 	}
-	a, err := raw.approval(day, resp.Scrub)
+	a, err := raw.approval(day)
 	if err != nil {
 		return Approval{}, unreadable(resp, err)
 	}
 	return a, nil
 }
 
-// approval reads raw, the answer for day; every string kept is scrubbed.
-func (raw approvalJSON) approval(day Date, scrub func(string) string) (Approval, error) {
+// approval reads raw, the answer for day.
+func (raw approvalJSON) approval(day Date) (Approval, error) {
 	a := Approval{Required: duration(raw.Required), Spent: duration(raw.Spent), Status: ApprovalOpen}
 	var err error
 	if a.From, err = ParseDate(raw.Period.From); err != nil {
@@ -192,14 +192,14 @@ func (raw approvalJSON) approval(day Date, scrub func(string) string) (Approval,
 		return Approval{}, fmt.Errorf("the answer is for the period %s to %s, which does not hold %s", a.From, a.To, day)
 	}
 	if raw.Reviewer != nil {
-		a.Reviewer = scrub(raw.Reviewer.AccountID)
+		a.Reviewer = raw.Reviewer.AccountID
 	}
 	if s := raw.Status; s != nil {
 		if s.Key != "" {
-			a.Status = ApprovalStatus(scrub(s.Key))
+			a.Status = ApprovalStatus(s.Key)
 		}
 		if s.Actor != nil {
-			a.Actor = scrub(s.Actor.AccountID)
+			a.Actor = s.Actor.AccountID
 		}
 		if s.UpdatedAt != "" {
 			if a.Changed, err = parseTimestamp(s.UpdatedAt); err != nil {

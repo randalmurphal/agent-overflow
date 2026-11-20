@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -56,21 +58,15 @@ type KeyFileError struct {
 func (e *KeyFileError) Error() string { return e.Err.Error() }
 func (e *KeyFileError) Unwrap() error { return e.Err }
 
-// WrongWorkspaceError is a Linear key that belongs to another workspace
-// than the connection's.
-type WrongWorkspaceError struct {
-	// Want is the connection's workspace URL key.
-	Want string
-	// Got is the URL key of the workspace the key belongs to; empty when
-	// Linear named one that is not a URL key.
-	Got string
-}
-
-func (e *WrongWorkspaceError) Error() string {
-	if e.Got == "" {
-		return fmt.Sprintf("this Linear API key belongs to another workspace than %s; make a key in %s", e.Want, e.Want)
+// wrongWorkspace is the message of a Linear key that belongs to the
+// workspace got instead of want. got is named only when it reads as a URL
+// key, so no other text Linear sent reaches the message.
+func wrongWorkspace(want, got string) string {
+	got = strings.ToLower(got)
+	if !linearURLKey.MatchString(got) {
+		return fmt.Sprintf("this Linear API key belongs to another workspace than %s; make a key in %s", want, want)
 	}
-	return fmt.Sprintf("this Linear API key belongs to the workspace %s, not %s; make a key in %s", e.Got, e.Want, e.Want)
+	return fmt.Sprintf("this Linear API key belongs to the workspace %s, not %s; make a key in %s", got, want, want)
 }
 
 // ClientError is a tracker client this computer could not build: the
@@ -96,7 +92,7 @@ func (e *ClientError) Unwrap() error { return e.Err }
 func ClassifyFailure(kind string, err error) Failure {
 	name := trackerName(kind)
 	var keyErr *KeyFileError
-	var wrong *WrongWorkspaceError
+	var wrong *linear.WrongWorkspaceError
 	var client *ClientError
 	var auth *trackerapi.AuthError
 	var limited *trackerapi.RateLimitedError
@@ -108,7 +104,7 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.As(err, &keyErr):
 		return Failure{Kind: FailureSetup, Message: keyErr.Error()}
 	case errors.As(err, &wrong):
-		return Failure{Kind: FailureSetup, Message: wrong.Error()}
+		return Failure{Kind: FailureSetup, Message: wrongWorkspace(wrong.Want, wrong.Got)}
 	case errors.As(err, &client):
 		return Failure{Kind: FailureSetup, Message: client.Error()}
 	case errors.As(err, &limited):
@@ -125,6 +121,10 @@ func ClassifyFailure(kind string, err error) Failure {
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", name, status.Status)}
 	case errors.As(err, &tooLarge):
 		return Failure{Kind: FailureTracker, Message: name + " sent an answer larger than Agent Overflow reads"}
+	case errors.Is(err, trackerapi.ErrCredentialChanged):
+		// The token in the key file was replaced while the answer was
+		// read; asking again uses the new one.
+		return Failure{Kind: FailureTransient, Message: name + " answered as the token in the key file was being replaced; try again"}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded),
 		errors.As(err, &notSent) && !errors.Is(err, trackerapi.ErrInvalidInput):
 		return Failure{Kind: FailureTransient, Message: name + " could not be reached; try again"}

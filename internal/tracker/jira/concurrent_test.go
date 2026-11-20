@@ -57,7 +57,7 @@ func TestConcurrentCalls(t *testing.T) {
 	for err := range errs {
 		// An answer that arrives as ForgetCredential drops the credential
 		// its request carried cannot be checked for it, and is refused.
-		if !errors.Is(err, errCredentialChanged) {
+		if !errors.Is(err, trackerapi.ErrCredentialChanged) {
 			t.Error(err)
 		}
 	}

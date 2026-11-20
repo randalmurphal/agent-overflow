@@ -157,9 +157,9 @@ func (s *Service) Remove(id string) error {
 }
 
 // PrepareKeyFile makes connection id's key file, empty and owner-only,
-// when it is missing, for the person to paste the token into, and drops
-// the credential its client holds so the token saved there is read on
-// the next call.
+// when it is missing, for the person to paste the token into. A token
+// already replaced there is read by the connection's client on its next
+// call.
 func (s *Service) PrepareKeyFile(id string) (Connection, error) {
 	var out Connection
 	err := s.change(func() (bool, error) {
@@ -171,12 +171,7 @@ func (s *Service) PrepareKeyFile(id string) (Connection, error) {
 		if err != nil {
 			return false, fmt.Errorf("trackerapp: create the key file of %s: %w", id, err)
 		}
-		s.mu.Lock()
-		if c := s.clients[id]; c != nil {
-			c.forgetCredential()
-		}
-		s.mu.Unlock()
-		out = s.view(row)
+		out = s.look(row)
 		return created, nil
 	})
 	return out, err

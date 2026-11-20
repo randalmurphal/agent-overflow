@@ -27,6 +27,8 @@ type Exchange struct {
 	// the request arrives, for a script whose cursors depend on earlier
 	// answers.
 	VarsFn func() string
+	// Key is the key the request must carry, bare; empty means Key.
+	Key    string
 	Status int // zero is 200
 	Header map[string]string
 	Body   string
@@ -123,8 +125,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		fail("unexpected %s %s", r.Method, r.URL)
 		return
 	}
-	if got := r.Header.Get("Authorization"); got != Key {
-		fail("Authorization %q, want the bare key", got)
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "lin_api_") {
+		fail("Authorization %q, want a bare key", auth)
 		return
 	}
 	if ct := r.Header.Get("Content-Type"); ct != "application/json" {
@@ -154,9 +157,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	exercised.Store(req.OperationName, true)
-	e := s.take(req.OperationName, req.Variables)
+	e := s.take(req.OperationName, req.Variables, auth)
 	if e == nil {
-		fail("unexpected %s with variables %s", req.OperationName, req.Variables)
+		fail("unexpected %s with variables %s and key %s", req.OperationName, req.Variables, auth)
 		return
 	}
 	s.answer(w, r, e, req.Variables, fail)
@@ -203,8 +206,8 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request, e *Exchange, var
 }
 
 // take removes and returns the first pending exchange for op whose
-// variables equal vars.
-func (s *Server) take(op string, vars json.RawMessage) *Exchange {
+// variables equal vars and whose key is key.
+func (s *Server) take(op string, vars json.RawMessage, key string) *Exchange {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, e := range s.pending {
@@ -212,7 +215,11 @@ func (s *Server) take(op string, vars json.RawMessage) *Exchange {
 		if e.VarsFn != nil {
 			want = e.VarsFn()
 		}
-		if e.Op == op && SameJSON(want, vars) {
+		wantKey := e.Key
+		if wantKey == "" {
+			wantKey = Key
+		}
+		if e.Op == op && key == wantKey && SameJSON(want, vars) {
 			s.pending = append(s.pending[:i], s.pending[i+1:]...)
 			return e
 		}
