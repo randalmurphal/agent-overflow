@@ -53,8 +53,27 @@ export interface MediaHandle<V extends MediaBytes> {
    */
   readonly settled: V | undefined;
   value: Promise<V>;
+  /**
+   * The pixel size the image will paint at, once the load knows it: from
+   * the answer that mints the byte transfer, before any byte arrives, so
+   * a host reserves the box while the bytes cross. Undefined when the load
+   * never learns one (not an image, a size the header does not give, a
+   * failure).
+   */
+  sized: Promise<ImageSize | undefined>;
   /** Releases this holder's retention; safe to call more than once. */
   release: () => void;
+}
+
+/** What a load reports before it settles: the size it will paint at. */
+export type MediaSizeSink = (size: ImageSize) => void;
+
+/** The size an image's `<img>` box takes from a mint answer: the
+ * original's when known, else the served variant's (MarkdownImage.svelte). */
+export function paintedSize(answer: { width: number; height: number; originalWidth: number; originalHeight: number }): ImageSize {
+  return answer.originalWidth > 0 && answer.originalHeight > 0
+    ? { width: answer.originalWidth, height: answer.originalHeight }
+    : { width: answer.width, height: answer.height };
 }
 
 /** Total decoded bytes the cache may pin at once. */
@@ -67,6 +86,7 @@ let maxEntries = MEDIA_CACHE_MAX_ENTRIES;
 
 interface CacheEntry {
   value: Promise<MediaBytes>;
+  sized: Promise<ImageSize | undefined>;
   settled: MediaBytes | undefined;
   /** Object URL to revoke on eviction; '' for a data URL or before settle. */
   objectURL: string;
@@ -90,7 +110,7 @@ let cachedBytes = 0;
  */
 export function acquireMediaBlob<V extends MediaBytes>(
   key: string,
-  load: () => Promise<V>,
+  load: (sized: MediaSizeSink) => Promise<V>,
 ): MediaHandle<V> {
   let entry = entries.get(key);
   if (entry) {
@@ -98,16 +118,25 @@ export function acquireMediaBlob<V extends MediaBytes>(
     entries.delete(key);
     entries.set(key, entry);
   } else {
+    let size: ((size: ImageSize | undefined) => void) | null = null;
     const created: CacheEntry = {
       value: undefined as unknown as Promise<MediaBytes>,
+      sized: new Promise((resolve) => {
+        size = resolve;
+      }),
       settled: undefined,
       objectURL: '',
       bytes: 0,
       retained: 0,
       discarded: false,
     };
-    created.value = load().then(
+    const answerSize = (known: ImageSize | undefined) => {
+      size?.(known && known.width > 0 && known.height > 0 ? { width: known.width, height: known.height } : undefined);
+      size = null;
+    };
+    created.value = load(answerSize).then(
       (resolved) => {
+        answerSize(undefined);
         // The entry may already have been dropped by a reset between the
         // request and its reply; only account for one still in the map.
         if (created.discarded) {
@@ -130,6 +159,7 @@ export function acquireMediaBlob<V extends MediaBytes>(
         return resolved;
       },
       (err: unknown) => {
+        answerSize(undefined);
         if (entries.get(key) === created) entries.delete(key);
         throw err;
       },
@@ -145,6 +175,7 @@ export function acquireMediaBlob<V extends MediaBytes>(
       return held.settled as V | undefined;
     },
     value: held.value as Promise<V>,
+    sized: held.sized,
     release() {
       if (released) return;
       released = true;
@@ -174,6 +205,21 @@ export function discardMediaBlobs(prefix: string): void {
       drop(key, entry);
     }
   }
+}
+
+/** What the cache holds now: entries, the bytes they count against the
+ * budget, the holders retaining them, entries still loading, and the
+ * object URLs it owns. */
+export function mediaBlobCacheStats(): { entries: number; bytes: number; retained: number; loading: number; objectURLs: number } {
+  let retained = 0;
+  let loading = 0;
+  let objectURLs = 0;
+  for (const entry of entries.values()) {
+    retained += entry.retained;
+    if (entry.settled === undefined) loading++;
+    if (entry.objectURL) objectURLs++;
+  }
+  return { entries: entries.size, bytes: cachedBytes, retained, loading, objectURLs };
 }
 
 /** The keys the cache holds, least recently used first. */

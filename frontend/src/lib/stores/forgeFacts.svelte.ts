@@ -1,0 +1,594 @@
+// Forge facts per PR: what the forge and the PR's repository answer about
+// the names its bodies mention (utils/forgeFacts.ts), so a body paints in
+// its final shape. Owned beside the PR snapshot and dropped with it
+// (prReviewStore.svelte.ts calls `observePRFacts` from its `onApply` and
+// `dropForgeFacts` from its `onDrop`).
+//
+// Work follows the snapshot, never the screen. Each applied snapshot scans
+// only the bodies (description, latest reviews, comments by id) whose text
+// changed since the last one, marks the keys nobody asked about `pending`
+// in the same task, so a body mounting in that frame already reads
+// `pending`, and asks for every key it needs in ONE `resolveForgeFacts`
+// call (chunks of 256). A frame also asks again for a key its bodies still
+// hold that answered `unavailable`, or whose answer is older than ten
+// minutes (the old answer stays in use meanwhile), once per frame, and an
+// unavailable one no sooner than a minute after its answer. Local
+// kinds (commits) need the pane's workspace and loaded revision, which
+// arrive after the first frame: `noteForgeFactsRevision` asks for those
+// once when the revision becomes known or its head moves. Nothing here
+// runs on a timer, a mount or a keystroke.
+//
+// Readers get an immutable snapshot of a PR's facts per version
+// (`forgeFactReader`): a document scope compares the snapshot it lexed
+// under with the next one by signature, so only blocks that read a key
+// whose answer changed rebuild. The live map is copied on the first write
+// after a snapshot was handed out, at most once per frame or answer.
+//
+// Bounded: a PR holds at most `MAX_FACTS_PER_PR` facts (a key past it is
+// not asked for and renders by shape) and `MAX_FACT_TEXT_PER_PR` characters
+// of answered file lines (an answer past it is held as unavailable, so its
+// permalink stays a link, and is asked for again once text is dropped), a
+// key no current body holds is dropped with the body, and everything goes
+// when the PR leaves the PR store. A body's text is the snapshot's own
+// string, never a second copy.
+//
+// A computer without `ResolveForgeFacts` (an older release, whose binding
+// answers null) is learned once: what its PRs hold is dropped, so bodies
+// render by shape, and nothing is marked or asked on it again until its
+// connection changes.
+//
+// A body's scan is kept while its text is the same, and, when a scan that
+// reads the head found keys in it (`FactScan.readsHead`), while the
+// frame's revision (its head and base commits and branch names) is too.
+// That revision is itself a fact the readers answer (`REVISION_FACT_KEY`),
+// never asked for: a block that resolves a repository file by it rebuilds
+// when it changes, and no other block does.
+
+import { SvelteMap } from 'svelte/reactivity';
+import type { BackendKey } from '../transport/backendKey';
+import type { WorkspaceRef } from '../types/git';
+import type { PRDetail, ReviewThread } from '../types/models';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import {
+  factKind,
+  isLocalFactKey,
+  NO_REVISION,
+  REVISION_FACT_KEY,
+  sameFact,
+  type FactRevision,
+  type ForgeFact,
+  type ForgeFactReader,
+  type ForgeFacts,
+} from '../utils/forgeFacts';
+import { forgeFactScanner, type ScannedKeys } from '../utils/forgeReferenceExtension';
+import type { PRRef } from '../utils/prReference';
+import type { PRRevision } from '../utils/prRevision';
+import { workspaceKeyBackend } from '../utils/workspaceKey';
+import { onBackendStatusChange } from './transportStatus.svelte';
+import { ResolveForgeFacts } from './bindings';
+import { withBackendTarget } from '../transport/backends';
+import { prReferenceWire } from '../utils/prReference';
+
+/** The facts one PR holds at most. */
+export const MAX_FACTS_PER_PR = 4096;
+/** The keys of one call at most (the wire's bound). */
+export const FACTS_PER_CALL = 256;
+/** The characters of answered file lines (`lines:` facts) one PR holds at most. */
+export const MAX_FACT_TEXT_PER_PR = 2 * 1024 * 1024;
+/** An answer older than this is asked for again by the next frame holding it. */
+export const FACT_FRESH_MS = 10 * 60 * 1000;
+/** An unavailable answer is asked for again no sooner than this after it. */
+export const FACT_RETRY_MS = 60 * 1000;
+
+export type ResolveForgeFactsCall = (
+  backend: BackendKey,
+  workspace: WorkspaceRef | null,
+  pr: PRRef,
+  revision: PRRevision | null,
+  keys: readonly string[],
+) => Promise<ForgeFacts | null>;
+
+const ZERO_REVISION: PRRevision = { baseRef: '', baseSHA: '', headSHA: '' };
+
+// The computer's answer; null when it has no `ResolveForgeFacts`. Without
+// the checkout to read in (a PR attached by no pane) nothing can be asked,
+// and every key is unavailable.
+const bound: ResolveForgeFactsCall = async (backend, workspace, pr, revision, keys) => {
+  if (!workspace) return { facts: keys.map(UNAVAILABLE) };
+  const answer: { facts?: unknown } | null = await withBackendTarget(backend, () =>
+    ResolveForgeFacts(workspace, prReferenceWire(pr), revision ?? ZERO_REVISION, [...keys]),
+  );
+  if (answer === null) return null;
+  return { facts: (Array.isArray(answer.facts) ? answer.facts : []) as ForgeFact[] };
+};
+let resolver: ResolveForgeFactsCall = bound;
+
+/**
+ * Asks `backend` for the facts `keys` name, about `pr` at `revision` in
+ * `workspace` (null and null when the pane has not loaded one: local kinds
+ * answer `unavailable`). The one seam the `ResolveForgeFacts` binding
+ * plugs into; null when the computer does not have it.
+ */
+export function resolveForgeFacts(
+  backend: BackendKey,
+  workspace: WorkspaceRef | null,
+  pr: PRRef,
+  revision: PRRevision | null,
+  keys: readonly string[],
+): Promise<ForgeFacts | null> {
+  return resolver(backend, workspace, pr, revision, keys);
+}
+
+/** Test seam: answer calls with `call`, or restore the default with null. */
+export function __setResolveForgeFactsForTest(call: ResolveForgeFactsCall | null): void {
+  resolver = call ?? bound;
+}
+
+/** One key's state. `state` and `sig` never change in place: a snapshot
+ * shares the object. The rest is bookkeeping no reader sees. */
+interface Entry {
+  readonly state: ForgeFact | 'pending';
+  readonly sig: string;
+  /** When the held answer arrived; 0 while none has. */
+  at: number;
+  /** A request for it is out. */
+  asking: boolean;
+  /** The head the last request ran at ('' with no revision). */
+  askedHead: string;
+  /** Its answer's text was past the PR's text bound: held as unavailable
+   * and not asked for again until text is dropped. */
+  over?: true;
+}
+
+interface Body {
+  /** The snapshot's own string: replaced by each frame's equal one, so the
+   * store never keeps an older snapshot's copy alive. */
+  text: string;
+  readonly keys: readonly string[];
+  /** Its keys embed `head`: a frame at another head scans it again. */
+  readonly readsHead: boolean;
+  /** The frame revision it was scanned at (`revisionId`). */
+  readonly head: string;
+  /** The frame that last saw it. */
+  seen: number;
+}
+
+interface PRFacts {
+  readonly key: string;
+  readonly backend: BackendKey;
+  readonly ref: PRRef;
+  readonly scan: (body: string, revision: FactRevision) => ScannedKeys;
+  /** The revision of the last frame that named a head commit, and its id. */
+  frameRevision: FactRevision;
+  head: string;
+  entries: Map<string, Entry>;
+  /** `entries` is held by `reader`: copy before a write. */
+  shared: boolean;
+  reader: ForgeFactReader | null;
+  version: number;
+  bodies: Map<string, Body>;
+  frame: number;
+  /** When a frame next has a key to ask again: 0 at once, Infinity never. */
+  dueAt: number;
+  /** The characters of file lines the held facts carry. */
+  textChars: number;
+  workspace: WorkspaceRef | null;
+  revision: PRRevision | null;
+}
+
+const prs = new Map<string, PRFacts>();
+/** Each PR's facts version, the one thing a reader tracks. */
+const versions = new SvelteMap<string, number>();
+/** Computers without `ResolveForgeFacts`: not asked again until their
+ * connection changes. */
+const lacking = new Set<BackendKey>();
+let signatures = 0;
+
+const PENDING_SIG = 'p';
+const UNAVAILABLE = (key: string): ForgeFact => ({ key, status: 'unavailable' });
+/** The checkout each held PR was attached from, until its revision loads. */
+const workspaces = new Map<string, WorkspaceRef>();
+const EMPTY_READER: ForgeFactReader = Object.freeze({ get: () => undefined, signature: () => '' });
+
+/** Observability for tests: what the store holds and does. */
+export const forgeFactsCounters = { scans: 0, calls: 0, keysAsked: 0, requestArrays: 0 };
+
+onBackendStatusChange((backend) => {
+  lacking.delete(backend);
+});
+
+const prRefId = (ref: PRRef): string => `${ref.forge}\u0000${ref.host}\u0000${ref.namespace}\u0000${ref.repo}\u0000${ref.number}`;
+
+function entryFor(ref: PRRef, key: string): PRFacts {
+  const held = prs.get(key);
+  if (held && prRefId(held.ref) === prRefId(ref)) return held;
+  const pr: PRFacts = {
+    key,
+    backend: workspaceKeyBackend(key),
+    ref,
+    // Keys name projects by path, never by address: the scan needs the PR
+    // reference alone.
+    scan: forgeFactScanner({ pr: ref, backend: workspaceKeyBackend(key), webBase: '' }),
+    frameRevision: NO_REVISION,
+    head: '',
+    entries: new Map(),
+    shared: false,
+    reader: null,
+    version: held ? held.version : 0,
+    bodies: new Map(),
+    frame: 0,
+    dueAt: Infinity,
+    textChars: 0,
+    workspace: held?.workspace ?? workspaces.get(key) ?? null,
+    revision: held?.revision ?? null,
+  };
+  prs.set(key, pr);
+  return pr;
+}
+
+/** The live map, unshared: copied once after a reader took a snapshot. */
+function writable(pr: PRFacts): Map<string, Entry> {
+  if (pr.shared) {
+    pr.entries = new Map(pr.entries);
+    pr.shared = false;
+  }
+  pr.reader = null;
+  return pr.entries;
+}
+
+function bump(pr: PRFacts): void {
+  pr.version++;
+  versions.set(pr.key, pr.version);
+}
+
+function headOf(pr: PRFacts): string {
+  return pr.revision?.headSHA ?? '';
+}
+
+/**
+ * Folds an applied PR snapshot in: scans the bodies that changed and asks
+ * for what they need. `ref` is the held PR reference; nothing happens
+ * without one.
+ */
+export function observePRFacts(
+  key: string,
+  ref: PRRef | undefined,
+  value: { readonly detail: PRDetail | null; readonly threads: readonly ReviewThread[] },
+): void {
+  if (!ref || (ref.forge !== 'github' && ref.forge !== 'gitlab')) return;
+  const pr = entryFor(ref, key);
+  if (lacking.has(pr.backend)) return;
+  const frame = ++pr.frame;
+  const detail = value.detail;
+  let moved = false;
+  if (detail?.headSHA) {
+    const revision: FactRevision = { head: detail.headSHA, base: detail.baseRefSHA ?? '', headRef: detail.headRefName ?? '', baseRef: detail.baseRefName ?? '' };
+    const id = revisionId(revision);
+    if (id !== pr.head) {
+      pr.frameRevision = revision;
+      pr.head = id;
+      moved = true;
+    }
+  }
+  const head = pr.head;
+  let ask: string[] | null = null;
+  let marked = false;
+  let changed = false;
+  let seen = 0;
+  const now = Date.now();
+  const visit = (id: string, text: string) => {
+    seen++;
+    const held = pr.bodies.get(id);
+    if (held && held.text === text && (!held.readsHead || held.head === head)) {
+      held.text = text;
+      held.seen = frame;
+      return;
+    }
+    changed = true;
+    forgeFactsCounters.scans++;
+    const { keys, readsHead } = pr.scan(text, pr.frameRevision);
+    pr.bodies.set(id, { text, keys, readsHead, head, seen: frame });
+    for (const factKey of keys) {
+      if (pr.entries.has(factKey)) continue;
+      if (pr.entries.size >= MAX_FACTS_PER_PR) break;
+      writable(pr).set(factKey, { state: 'pending', sig: PENDING_SIG, at: 0, asking: true, askedHead: headOf(pr) });
+      marked = true;
+      (ask ??= newRequest()).push(factKey);
+    }
+  };
+  if (detail) {
+    visit('d', detail.body ?? '');
+    for (const review of detail.latestReviews ?? []) visit(`r:${review.authorLogin}\u0000${review.submittedAt}`, review.body ?? '');
+  }
+  for (const thread of value.threads) {
+    for (const comment of thread.comments) visit(`c:${comment.id}`, comment.body ?? '');
+  }
+  // A body gone takes its keys with it, unless another body holds them.
+  if (seen < pr.bodies.size) {
+    for (const [id, body] of pr.bodies) if (body.seen !== frame) pr.bodies.delete(id);
+    dropUnheld(pr);
+  }
+  else if (changed) dropUnheld(pr);
+  // Keys to ask again: unavailable ones and stale answers the bodies hold.
+  if (now >= pr.dueAt) ask = askAgain(pr, now, ask);
+  // Readers answer the revision from their snapshot: a moved one is a new one.
+  if (moved && !marked) pr.reader = null;
+  if (marked || moved) bump(pr);
+  if (ask) send(pr, ask);
+}
+
+function revisionId(revision: FactRevision): string {
+  return `${revision.head}\u0000${revision.base}\u0000${revision.headRef}\u0000${revision.baseRef}`;
+}
+
+function newRequest(): string[] {
+  forgeFactsCounters.requestArrays++;
+  return [];
+}
+
+/** Drops each fact no current body holds. */
+function dropUnheld(pr: PRFacts): void {
+  let held: Set<string> | null = null;
+  for (const body of pr.bodies.values()) for (const key of body.keys) (held ??= new Set()).add(key);
+  let entries: Map<string, Entry> | null = null;
+  let freed = 0;
+  for (const [key, entry] of pr.entries) {
+    if (held?.has(key)) continue;
+    freed += textChars(entry.state);
+    (entries ??= writable(pr)).delete(key);
+  }
+  // The held snapshot still names them; no body reads them, so no reader
+  // needs a new one.
+  if (freed === 0) return;
+  pr.textChars -= freed;
+  // Room again: the answers the bound turned away are asked for by this frame.
+  for (const entry of pr.entries.values()) {
+    if (!entry.over) continue;
+    delete entry.over;
+    entry.at = 0;
+    pr.dueAt = 0;
+  }
+}
+
+/** The characters of file lines `state` carries. */
+function textChars(state: ForgeFact | 'pending'): number {
+  return typeof state === 'object' && typeof state.text === 'string' ? state.text.length : 0;
+}
+
+/** When `entry`'s answer is due to be asked for again; Infinity for one the text bound turned away. */
+function dueAgain(entry: Entry & { state: ForgeFact }): number {
+  if (entry.over) return Infinity;
+  return entry.at + (entry.state.status === 'unavailable' ? FACT_RETRY_MS : FACT_FRESH_MS);
+}
+
+/** Adds to `ask` the held keys due again, and sets when the next one is. */
+function askAgain(pr: PRFacts, now: number, ask: string[] | null): string[] | null {
+  let due = Infinity;
+  const head = headOf(pr);
+  for (const [key, entry] of pr.entries) {
+    if (entry.asking || entry.state === 'pending') continue;
+    const again = dueAgain(entry as Entry & { state: ForgeFact });
+    if (now >= again) {
+      entry.asking = true;
+      entry.askedHead = head;
+      (ask ??= newRequest()).push(key);
+    }
+    else if (again < due) due = again;
+  }
+  pr.dueAt = due;
+  return ask;
+}
+
+/**
+ * The pane loaded `revision` of the PR `key` in `workspace`: when it is
+ * the first one or its head moved, asks once for the local keys the
+ * bodies hold that have no answer at that head.
+ */
+export function noteForgeFactsRevision(key: string, workspace: WorkspaceRef, revision: PRRevision): void {
+  const pr = prs.get(key);
+  if (!pr) return;
+  const before = pr.revision;
+  pr.workspace = workspace;
+  pr.revision = revision;
+  if (before !== null && before.headSHA === revision.headSHA) return;
+  if (lacking.has(pr.backend)) return;
+  const head = revision.headSHA;
+  let ask: string[] | null = null;
+  let marked = false;
+  for (const body of pr.bodies.values()) {
+    for (const factKey of body.keys) {
+      if (!isLocalFactKey(factKey)) continue;
+      const entry = pr.entries.get(factKey);
+      if (!entry) {
+        if (pr.entries.size >= MAX_FACTS_PER_PR) continue;
+        writable(pr).set(factKey, { state: 'pending', sig: PENDING_SIG, at: 0, asking: true, askedHead: head });
+        marked = true;
+        (ask ??= newRequest()).push(factKey);
+        continue;
+      }
+      if (entry.askedHead === head) continue;
+      // Asked at another head, or answered without a repository to read.
+      if (entry.state === 'pending' || entry.asking || entry.state.status === 'unavailable') {
+        entry.asking = true;
+        entry.askedHead = head;
+        (ask ??= newRequest()).push(factKey);
+        // Unread for want of the checkout: asked again, it reads as asked,
+        // so an image keeps its loading box rather than flashing the chip.
+        if (entry.state !== 'pending') {
+          writable(pr).set(factKey, { state: 'pending', sig: PENDING_SIG, at: 0, asking: true, askedHead: head });
+          marked = true;
+        }
+      }
+    }
+  }
+  if (marked) bump(pr);
+  if (ask) send(pr, ask);
+}
+
+function send(pr: PRFacts, keys: string[]): void {
+  for (let start = 0; start < keys.length; start += FACTS_PER_CALL) {
+    const chunk = start === 0 && keys.length <= FACTS_PER_CALL ? keys : keys.slice(start, start + FACTS_PER_CALL);
+    forgeFactsCounters.calls++;
+    forgeFactsCounters.keysAsked += chunk.length;
+    let call: Promise<ForgeFacts | null>;
+    try {
+      call = resolveForgeFacts(pr.backend, pr.workspace, pr.ref, pr.revision, chunk);
+    } catch (err) {
+      call = Promise.reject(err);
+    }
+    call.then(
+      (answer) => (answer === null ? learnLacking(pr.backend) : settle(pr, chunk, answer.facts ?? [])),
+      (err: unknown) => fail(pr, chunk, err),
+    );
+  }
+}
+
+/**
+ * `backend` has no `ResolveForgeFacts`: its PRs drop what they hold, so
+ * their bodies render by shape, as that release renders them, and nothing
+ * is marked or asked there until its connection changes. Their bodies
+ * are scanned again by the first snapshot after that.
+ */
+function learnLacking(backend: BackendKey): void {
+  if (lacking.has(backend)) return;
+  lacking.add(backend);
+  for (const pr of prs.values()) {
+    if (pr.backend !== backend) continue;
+    pr.bodies.clear();
+    pr.dueAt = Infinity;
+    if (pr.entries.size === 0) continue;
+    writable(pr).clear();
+    pr.textChars = 0;
+    bump(pr);
+  }
+}
+
+/** Applies an answer to the keys it names, and marks the rest of the
+ * call's keys unavailable; one version bump for the lot. */
+function settle(pr: PRFacts, keys: readonly string[], facts: readonly ForgeFact[]): void {
+  if (prs.get(pr.key) !== pr) return;
+  const byKey = new Map<string, ForgeFact>();
+  for (const fact of facts) if (fact && typeof fact.key === 'string') byKey.set(fact.key, fact);
+  const now = Date.now();
+  let changed = false;
+  for (const key of keys) {
+    const entry = pr.entries.get(key);
+    if (!entry) continue;
+    entry.asking = false;
+    let fact = byKey.get(key) ?? UNAVAILABLE(key);
+    const held = entry.state;
+    // Text past the PR's bound is not held: the key reads as unavailable.
+    const over = pr.textChars - textChars(held) + textChars(fact) > MAX_FACT_TEXT_PER_PR;
+    if (over) fact = UNAVAILABLE(key);
+    // A refresh nobody could answer keeps the answer in use.
+    if (fact.status === 'unavailable' && held !== 'pending' && held.status !== 'unavailable') {
+      entry.at = now;
+      continue;
+    }
+    if (held !== 'pending' && sameFact(held, fact)) {
+      entry.at = now;
+      if (over) entry.over = true;
+      continue;
+    }
+    pr.textChars += textChars(fact) - textChars(held);
+    writable(pr).set(key, { state: fact, sig: String(++signatures), at: now, asking: false, askedHead: entry.askedHead, ...(over ? { over: true as const } : {}) });
+    changed = true;
+  }
+  pr.dueAt = Math.min(pr.dueAt, nextDue(pr));
+  if (changed) bump(pr);
+}
+
+function nextDue(pr: PRFacts): number {
+  let due = Infinity;
+  for (const entry of pr.entries.values()) {
+    if (entry.asking || entry.state === 'pending') continue;
+    const again = dueAgain(entry as Entry & { state: ForgeFact });
+    if (again < due) due = again;
+  }
+  return due;
+}
+
+function fail(pr: PRFacts, keys: readonly string[], err: unknown): void {
+  if (prs.get(pr.key) !== pr) return;
+  const kinds = new Map<string, number>();
+  for (const key of keys) kinds.set(factKind(key), (kinds.get(factKind(key)) ?? 0) + 1);
+  // Kinds and counts only: a key names projects, people and labels.
+  reportFrontendDiagnostic(
+    'forge facts: a request failed',
+    `${[...kinds].map(([kind, count]) => `${kind} ${count}`).join(', ')}; ${err instanceof Error ? err.name : typeof err}`,
+  );
+  settle(pr, keys, []);
+}
+
+/**
+ * The PR's facts as of now, for a document scope; re-evaluates where it is
+ * read when that PR's facts change, and only that PR's. An empty reader
+ * before the PR's first snapshot; null without a key.
+ */
+export function forgeFactReader(key: string | null): ForgeFactReader | null {
+  if (!key) return null;
+  versions.get(key);
+  const pr = prs.get(key);
+  if (!pr) return EMPTY_READER;
+  if (pr.reader) return pr.reader;
+  const entries = pr.entries;
+  pr.shared = true;
+  const revision: ForgeFact = { key: REVISION_FACT_KEY, status: 'found', revision: pr.frameRevision };
+  const revisionSig = pr.head;
+  pr.reader = {
+    get: (factKey) => (factKey === REVISION_FACT_KEY ? revision : entries.get(factKey)?.state),
+    signature: (factKey) => (factKey === REVISION_FACT_KEY ? revisionSig : (entries.get(factKey)?.sig ?? '')),
+  };
+  return pr.reader;
+}
+
+/** The checkout the PR `key` was attached from: where its facts are
+ * read until a pane loads a revision. Dropped with the PR. */
+export function noteForgeFactsWorkspace(key: string, workspace: WorkspaceRef | undefined): void {
+  if (!workspace) return;
+  workspaces.set(key, workspace);
+  const pr = prs.get(key);
+  if (!pr || pr.workspace !== null) return;
+  pr.workspace = workspace;
+  // What was unavailable for want of a checkout to ask in is due at once.
+  for (const entry of pr.entries.values()) {
+    if (entry.state === 'pending' || entry.state.status !== 'unavailable' || entry.over) continue;
+    entry.at = 0;
+    pr.dueAt = 0;
+  }
+}
+
+/** The checkout the PR `key`'s facts are read in (the pane's, else the one
+ * it was attached from), where its repository's images are read too; null
+ * before either is known. */
+export function forgeFactsWorkspace(key: string): WorkspaceRef | null {
+  return prs.get(key)?.workspace ?? workspaces.get(key) ?? null;
+}
+
+/** Drops everything held for the PR `key`, with its entry in the PR store. */
+export function dropForgeFacts(key: string): void {
+  prs.delete(key);
+  versions.delete(key);
+  workspaces.delete(key);
+}
+
+/** Test seam: what the store holds for `key`, or null. */
+export function __forgeFactsHeldForTest(key: string): { facts: number; bodies: number; version: number; textChars: number } | null {
+  const pr = prs.get(key);
+  return pr ? { facts: pr.entries.size, bodies: pr.bodies.size, version: pr.version, textChars: pr.textChars } : null;
+}
+
+/** Test seam: every PR key the store holds anything for. */
+export function __forgeFactsKeysForTest(): string[] {
+  return [...new Set([...prs.keys(), ...versions.keys(), ...workspaces.keys()])];
+}
+
+/** Test seam: drop everything, as a fresh module load would. */
+export function __resetForgeFactsForTest(): void {
+  prs.clear();
+  versions.clear();
+  lacking.clear();
+  resolver = bound;
+  workspaces.clear();
+  for (const name of Object.keys(forgeFactsCounters) as (keyof typeof forgeFactsCounters)[]) forgeFactsCounters[name] = 0;
+}

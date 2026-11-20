@@ -91,6 +91,10 @@ export type { SanitizeEmbeddedHtmlOptions } from './render/htmlSanitize';
 // images with, which the engine and the HTML sanitizer both run.
 export { destinationsOf } from './parser/lexer';
 export type { DestinationContext, DestinationHook } from './parser/engine/destination';
+// The URL a destination is read as (`decideDestination`), and whether an
+// image's URL plays: a host scan of raw text reads a destination the same way.
+export { backpedalUrl, canonicalHref } from './parser/engine/destination';
+export { mediaOfHref } from './parser/extensions/mediaImages';
 // Each forge's bare URL autolinks.
 export { markedGithubBareUrls, markedGitlabBareUrls } from './parser/extensions/bareUrls';
 export { imageSizeOf } from './render/imageSize';
@@ -106,8 +110,21 @@ export { DENIED_LINK_SCHEMES, isOpenableScheme, urlScheme } from './render/eleme
 // The renderers' own decisions about what text a token shows, for find's
 // projection of rendered markdown (chat/markdown/markdownFindText.ts).
 export { linkTagText, tableCellRenders } from './render/elements/url';
+// The renderers' unavailable-image chip, which a host showing a claimed
+// image that cannot load draws the same way.
+export { UNAVAILABLE_IMAGE_CLASS, unavailableImageText } from './render/elements/url';
 // What a whole document defines, for each block's lex: reference
 // definitions everywhere, and a forge's footnotes, heading anchors and
 // table of contents (parser/documentContext.ts).
 export { createDocumentContextCache, documentContextOf, mayNeedDocumentContext } from './parser/index';
 export type { DocumentContext, DocumentContextCache, DocumentForge } from './parser/index';
+// What a host knows about the names a document mentions, read by a
+// host's tokenizer through its block's scope (parser/documentScope.ts).
+export { readFact } from './parser/index';
+export type { DocumentReading, ForgeFactReader, ForgeFactState } from './parser/index';
+// A label's chip, which a host's extension builds and both renderers draw.
+export type { LabelChipToken } from './parser/extensions/labelChip';
+// A file excerpt written inline that stands as a block (a forge permalink):
+// the host's tokenizer lifts its inline token to the snippet.
+export { liftToBlock } from './parser/extensions/codeSnippet';
+export type { CodeSnippetToken } from './parser/extensions/codeSnippet';

@@ -19,6 +19,9 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
+	// facts holds the facts read of every forge kind's keys
+	// (forge_facts_gitlab.go).
+	facts *factCache[ForgeFact]
 	// projects caches each login's merge settings of a project, access
 	// its access level there and viewers its account on a host
 	// (gitlab_merge_read.go).
@@ -51,6 +54,7 @@ func (f *gitlabForge) resetCaches() {
 	f.servers.clear()
 	f.stateEventRetries.clear()
 	f.reactions.clear()
+	f.facts.clear()
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }

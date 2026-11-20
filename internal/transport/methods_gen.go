@@ -197,6 +197,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read", Route: "selected"},                                                   // main.App.GetEditorSettings
 	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "threads:operate", Route: "home"},                                                      // main.App.GetErrorLogLines
 	{Name: "GetGitActionOutcome", ID: 2541596437, Scope: "git:operate", Route: "workspace", CallerBound: true, Budget: 12 * time.Minute},     // main.App.GetGitActionOutcome
+	{Name: "GetGitBlobImage", ID: 3812666095, Scope: "files:read", Route: "workspace"},                                                       // main.App.GetGitBlobImage
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                                         // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read", Route: "home"},                                                          // main.App.GetKeybindings
 	{Name: "GetLocalImage", ID: 1709188995, Scope: "files:read", Route: "selected"},                                                          // main.App.GetLocalImage
@@ -456,6 +457,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RerequestPRReview", ID: 2068518611, Scope: "git:operate", Route: "selected"},                                                     // main.App.RerequestPRReview
 	{Name: "ResetKeybindings", ID: 2775767393, Scope: "settings:write", Route: "home"},                                                       // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285, Scope: "terminal:operate", Route: "home"},                                                       // main.App.ResizeTerminal
+	{Name: "ResolveForgeFacts", ID: 1279729209, Scope: "git:operate", Route: "workspace"},                                                    // main.App.ResolveForgeFacts
 	{Name: "RespondToApproval", ID: 1919237704, Scope: "approvals:respond", Route: "thread"},                                                 // main.App.RespondToApproval
 	{Name: "RespondToUserInput", ID: 1071592868, Scope: "approvals:respond", Route: "thread"},                                                // main.App.RespondToUserInput
 	{Name: "RestartToUpdate", ID: 3141913084, Scope: "host", Route: "home"},                                                                  // main.App.RestartToUpdate
@@ -475,6 +477,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SaveCIArtifacts", ID: 1986917811, Scope: "git:operate", Route: "selected", Budget: 30 * time.Minute},                             // main.App.SaveCIArtifacts
 	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate", Route: "thread"},                                                           // main.App.SaveDraft
 	{Name: "SaveForgeAttachment", ID: 2960563266, Scope: "git:operate", Route: "selected", Budget: 11 * time.Minute},                         // main.App.SaveForgeAttachment
+	{Name: "SaveGitBlobImage", ID: 3614441608, Scope: "files:read", Route: "workspace"},                                                      // main.App.SaveGitBlobImage
 	{Name: "SaveLocalImage", ID: 1040176720, Scope: "files:read", Route: "selected"},                                                         // main.App.SaveLocalImage
 	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate", Route: "selected", Budget: 15 * time.Minute},                              // main.App.SavePRCIJobLog
 	{Name: "SavePRCIJobLogSection", ID: 1281545488, Scope: "git:operate", Route: "selected"},                                                 // main.App.SavePRCIJobLogSection

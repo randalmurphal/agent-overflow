@@ -124,6 +124,8 @@
   import {
     clearCompletedCodeBlockRenderer,
     codeWrapLabel,
+    codeLineNumbers,
+    codeRendererLang,
     publishCompletedCodeBlockRenderer,
     renderStaticCodeBlockHtml,
   } from './staticCodeBlock';
@@ -368,7 +370,7 @@
     publishCompletedCodeBlockRenderer(
       completedRendererOwner,
       streamdown,
-      lang,
+      codeRendererLang(lang, token.firstLine),
       text,
       (staticID) =>
         renderStaticCodeBlockHtml(token, staticID, streamdown, codeLines.texts(), staticLineSpans, unwrapped),
@@ -629,13 +631,22 @@
   class="streamdown-code-host group/codeblock relative"
   data-code-source=""
   data-code-lang={token.lang ?? ''}
-  data-code-unwrapped={unwrapped ? '' : undefined}
+  data-code-unwrapped={unwrapped || token.firstLine ? '' : undefined}
 >
   <div
     data-streamdown-code={id}
     class={streamdown.theme.code.base}
   >
-    <div style="height: fit-content; width: 100%;" class={streamdown.theme.code.container}>
+    <div
+      style="height: fit-content; width: 100%;"
+      class={token.firstLine ? `${streamdown.theme.code.container} md-code-numbered` : streamdown.theme.code.container}
+    >
+      <!-- A numbered block (a file excerpt): its line numbers, chrome that
+           is never copied or found; its lines never wrap. Keep in step
+           with renderStaticCodeBlockHtml. -->
+      {#if token.firstLine}<span class="md-code-line-numbers" aria-hidden="true" data-find-skip
+          >{codeLineNumbers(token.firstLine, token.text)}</span
+        >{/if}
       <pre class={streamdown.theme.code.pre}><code
           >{#each codeLines.lines as line, lineIndex (lineIndex)}{#if lineIndex > 0}{'\n'}{/if}{#each line.segments as seg, segIndex (segIndex)}{#if seg.className}<span class={seg.className}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{/each}</code
         ></pre>
@@ -656,11 +667,13 @@
         </IconButton>
       </span>
     {/if}
-    <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
-      {#snippet children()}
-        <Icon icon={TextWrap} size={13} />
-      {/snippet}
-    </IconButton>
+    {#if !token.firstLine}
+      <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
+        {#snippet children()}
+          <Icon icon={TextWrap} size={13} />
+        {/snippet}
+      </IconButton>
+    {/if}
     <CopyButton
       text={token.text}
       label="Copy code"

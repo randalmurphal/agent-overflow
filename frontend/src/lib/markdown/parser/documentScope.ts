@@ -15,6 +15,20 @@ import { attributeOf, readTag } from './extensions/htmlTags';
 /** The forge whose rules a document follows; null in agent chat. */
 export type DocumentForge = 'github' | 'gitlab' | null;
 
+/**
+ * What a host knows about a name a document mentions (`#12`, a commit),
+ * by a key the host builds: its answer, `'pending'` while it is being
+ * asked, `undefined` when nobody asked. Keys and answers are opaque here.
+ */
+export type ForgeFactState<F = unknown> = F | 'pending' | undefined;
+
+export interface ForgeFactReader<F = unknown> {
+	/** The state of `key` now. */
+	get(key: string): ForgeFactState<F>;
+	/** A value that changes exactly when the answer for `key` changes. */
+	signature(key: string): string;
+}
+
 export interface DocumentScope {
 	readonly forge: DocumentForge;
 	/** Every reference definition in the document, first one per label. */
@@ -30,6 +44,10 @@ export interface DocumentScope {
 	readonly toc: DocumentToc | null;
 	/** The block opens the document: only blank lines come before it. */
 	readonly first: boolean;
+	/** The host's facts, as of one moment; absent or null on a surface
+	 * without them (agent chat, a draft preview). A reader answers the same
+	 * for as long as a scope holds it, so two scopes compare by it. */
+	readonly facts?: ForgeFactReader | null;
 }
 
 export interface DocumentToc {
@@ -73,6 +91,15 @@ export const readDocument = (lexer: Lexer, key: string): void => {
 	lexer.documentReads?.add(key);
 };
 
+/** The host's fact for `key`, recorded as a read of the lex: a block that
+ * read it rebuilds when its signature changes. Undefined without facts. */
+export const readFact = <F = unknown>(lexer: Lexer, key: string): ForgeFactState<F> => {
+	const scope = lexer.document;
+	if (!scope) return undefined;
+	lexer.documentReads?.add(`x:${key}`);
+	return scope.facts?.get(key) as ForgeFactState<F>;
+};
+
 const resolve = (scope: DocumentScope | null, key: string): string => {
 	switch (key.charCodeAt(0)) {
 		case 108 /* l */: {
@@ -89,6 +116,8 @@ const resolve = (scope: DocumentScope | null, key: string): string => {
 			return scope?.toc ? `${scope.toc.at}:${scope.toc.key}` : '';
 		case 115 /* s */:
 			return scope?.first ? '1' : '';
+		case 120 /* x */:
+			return scope?.facts?.signature(key.slice(2)) ?? '';
 		default:
 			return '';
 	}
@@ -107,6 +136,43 @@ export const sameScopeReads = (
 		if (resolve(previous, key) !== resolve(next, key)) return false;
 	}
 	return true;
+};
+
+/**
+ * A read of a block's scope made when its output renders rather than when
+ * it lexes: the text of an html block or region, which the sanitizer reads
+ * (`Lexer.htmlTextTokens`). `reads` holds the keys it read, and is null
+ * without a scope, as a lex without one records nothing.
+ */
+export interface DocumentReading {
+	scope: DocumentScope | null;
+	readonly reads: Set<string> | null;
+}
+
+const readings = new WeakMap<object, DocumentReading>();
+
+/**
+ * The reading `token` renders under in `scope`: the one it last rendered
+ * under while every key that render read resolves alike in `scope`, so a
+ * renderer that derives its output from the reading's identity renders
+ * again only when a key it read changed. A render clears the reading's
+ * reads before it reads (`renderUnder`).
+ */
+export const readingFor = (token: object, scope: DocumentScope | null): DocumentReading => {
+	const held = readings.get(token);
+	if (held && (held.scope === null) === (scope === null) && sameScopeReads(held.scope, scope, held.reads)) {
+		held.scope = scope;
+		return held;
+	}
+	const reading: DocumentReading = { scope, reads: scope ? new Set() : null };
+	readings.set(token, reading);
+	return reading;
+};
+
+/** `render` under `reading`, recording what it reads afresh. */
+export const renderUnder = <T>(reading: DocumentReading | null, render: () => T): T => {
+	reading?.reads?.clear();
+	return render();
 };
 
 /** Whether output under `scope` depends on where its block sits, which a

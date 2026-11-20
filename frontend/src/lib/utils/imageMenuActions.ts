@@ -1,7 +1,7 @@
 // Copy and save for the images the image menu (`ImageMenuHost.svelte`)
 // opens on, and the DOM tags that let that one delegated menu find them.
 //
-// Three kinds of image carry the menu:
+// Four kinds of image carry the menu:
 //
 //   attachment  A thread's image attachment. Every surface that paints one
 //               (the user message grid, the composer and editor thumbs, a
@@ -27,11 +27,20 @@
 //               work on the file itself, never the timeline's display-size
 //               derivative, and Copy Path and Copy Markdown give back the
 //               reference as the agent wrote it.
+//   repository  A file of the PR's repository a PR/MR body shows, painted by
+//               `RepositoryImageHost` through `repositoryImageMenuTag`. The
+//               tag carries the nonce-gated href the parse built, and
+//               `taggedMenuImage` accepts it only through
+//               `parseRepositoryImageHref`, and only for a found blob. Copy
+//               uses the blob's original bytes, held or fetched; Save writes
+//               the blob into the owning computer's Downloads
+//               (`SaveGitBlobImage`), downloads it, or opens the file's forge
+//               page; Copy Path gives the repository path.
 //
 // The host reads a tag back with `taggedMenuImage`, so the attribute names
 // live here only.
 
-import { SaveAttachment, SaveLocalImage } from '../stores/bindings';
+import { SaveAttachment, SaveGitBlobImage, SaveLocalImage } from '../stores/bindings';
 import type { BackendKey } from '../transport/backendKey';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
@@ -54,6 +63,9 @@ import { fetchLocalImageBytes } from './localImageCache';
 import { pathBasename } from './pathDisplay';
 import { parseLocalImageHref } from './pathLinkExtension';
 import { asPng, writePngToClipboard } from './pngClipboard';
+import { handleExternalURL } from './externalLinks';
+import { parseRepositoryImageHref, type RepositoryImageClaim } from './repositoryImageHref';
+import { acquirePaintedRepositoryImage, fetchRepositoryImageBytes, repositoryImageWorkspace } from './repositoryImages';
 
 export type LocalMenuImage = {
   kind: 'local';
@@ -69,7 +81,8 @@ export type LocalMenuImage = {
 export type ImageMenuTarget =
   | { kind: 'attachment'; threadId: string; attachmentId: string; filename: string }
   | { kind: 'forge'; attachment: ParsedForgeAttachmentHref }
-  | LocalMenuImage;
+  | LocalMenuImage
+  | { kind: 'repository'; image: RepositoryImageClaim };
 
 const KIND = 'data-image-menu';
 const THREAD = 'data-image-menu-thread';
@@ -111,6 +124,11 @@ export function localImageMenuTag(image: {
   return { [KIND]: 'local', [BACKEND]: image.backend, [HREF]: image.href, [ALT]: image.alt };
 }
 
+/** Attributes marking an element as one repository image, by its app href. */
+export function repositoryImageMenuTag(href: string): Record<string, string> {
+  return { [KIND]: 'repository', [HREF]: href };
+}
+
 /** The image `target` belongs to, or null. */
 export function taggedMenuImage(
   target: EventTarget | null,
@@ -122,6 +140,10 @@ export function taggedMenuImage(
   if (kind === 'forge') {
     const attachment = parseForgeAttachmentHref(element.getAttribute(HREF));
     return attachment ? { element, target: { kind: 'forge', attachment } } : null;
+  }
+  if (kind === 'repository') {
+    const image = parseRepositoryImageHref(element.getAttribute(HREF));
+    return image?.state === 'found' ? { element, target: { kind: 'repository', image } } : null;
   }
   if (kind === 'local') {
     const local = parseLocalImageHref(element.getAttribute(HREF));
@@ -164,9 +186,11 @@ export function taggedMenuImage(
 export function copyMenuImage(target: ImageMenuTarget): Promise<void> {
   const original = target.kind === 'forge'
     ? () => heldForgeImage(target.attachment)
-    : target.kind === 'local'
+    : target.kind === 'repository'
+      ? () => heldRepositoryImage(target.image)
+      : target.kind === 'local'
       ? () => fetchLocalImageBytes(target.backend, target.path, target.workspacePath, fullSizeMaxWidth())
-      : () => fetchAttachmentBytes(target.threadId, target.attachmentId);
+        : () => fetchAttachmentBytes(target.threadId, target.attachmentId);
   return writePngToClipboard(async () => asPng(await original()), 'Could not copy the image');
 }
 
@@ -201,6 +225,11 @@ export function copyLocalImagePath(image: LocalMenuImage): Promise<void> {
   return copyText(localImagePathText(image), 'Path');
 }
 
+/** Copy Path on a repository image: the repository path the claim names. */
+export function copyRepositoryImagePath(image: RepositoryImageClaim): Promise<void> {
+  return copyText(image.path, 'Path');
+}
+
 export function copyLocalImageMarkdown(image: LocalMenuImage): Promise<void> {
   return copyText(localImageMarkdownText(image), 'Markdown');
 }
@@ -229,6 +258,19 @@ async function heldForgeImage(attachment: ParsedForgeAttachmentHref): Promise<Bl
   return await fetchForgeAttachmentBytes(attachment.backend, attachment.pr, attachment.href, fullSizeMaxWidth());
 }
 
+// The repository image's original bytes, as `heldForgeImage` reads a forge
+// image's: the painted ones when they are not a derivative, else a fetch.
+async function heldRepositoryImage(image: RepositoryImageClaim): Promise<Blob> {
+  const handle = acquirePaintedRepositoryImage(image);
+  try {
+    const resolved = await handle.value;
+    if (!resolved.derived) return resolved.blob;
+  } finally {
+    handle.release();
+  }
+  return await fetchRepositoryImageBytes(image, fullSizeMaxWidth());
+}
+
 /** What Save does for `target` on this page (`fileSaveAction`). */
 function saveAction(target: ImageMenuTarget): { backend: BackendKey; action: FileSaveAction } | null {
   if (target.kind === 'forge') {
@@ -244,6 +286,9 @@ function saveAction(target: ImageMenuTarget): { backend: BackendKey; action: Fil
   if (target.kind === 'local') {
     return { backend: target.backend, action: fileSaveAction(target.backend, null) };
   }
+  if (target.kind === 'repository') {
+    return { backend: target.image.backend, action: fileSaveAction(target.image.backend, target.image.browserUrl || null) };
+  }
   let backend: BackendKey;
   try {
     backend = requireEntityBackend(resolveThreadBackend(target.threadId));
@@ -257,7 +302,7 @@ function saveAction(target: ImageMenuTarget): { backend: BackendKey; action: Fil
  * Whether this page may carry out Save. A file written on the owning
  * computer needs the scope that computer's save RPC requires
  * (`SaveAttachment` is attachments:write, `SaveForgeAttachment` is
- * git:operate, `SaveLocalImage` is files:read); a browser download reads
+ * git:operate, `SaveLocalImage` and `SaveGitBlobImage` are files:read); a browser download reads
  * bytes this page can already read, and opening the forge's own page needs
  * no grant. An owner this page cannot resolve answers true, so the click
  * reports the real error.
@@ -274,6 +319,7 @@ const SAVE_SCOPE = {
   attachment: 'attachments:write',
   forge: 'git:operate',
   local: 'files:read',
+  repository: 'files:read',
 } as const;
 
 /**
@@ -282,8 +328,9 @@ const SAVE_SCOPE = {
  * rather than promising a file.
  */
 export function saveMenuImageLabel(target: ImageMenuTarget): string {
-  if (target.kind === 'forge' && saveAction(target)?.action === 'open-externally') {
-    return target.attachment.pr.forge === 'gitlab' ? 'Open on GitLab' : 'Open on GitHub';
+  if ((target.kind === 'forge' || target.kind === 'repository') && saveAction(target)?.action === 'open-externally') {
+    const forge = target.kind === 'forge' ? target.attachment.pr.forge : target.image.pr.forge;
+    return forge === 'gitlab' ? 'Open on GitLab' : 'Open on GitHub';
   }
   return 'Save Image';
 }
@@ -304,6 +351,10 @@ export async function saveMenuImage(target: ImageMenuTarget): Promise<void> {
   }
   if (target.kind === 'local') {
     await saveLocalImage(target);
+    return;
+  }
+  if (target.kind === 'repository') {
+    await saveRepositoryImage(target.image);
     return;
   }
   try {
@@ -334,6 +385,30 @@ async function saveLocalImage(image: LocalMenuImage): Promise<void> {
     }
     const blob = await fetchLocalImageBytes(image.backend, image.path, image.workspacePath, 0);
     downloadBlob(blob, downloadName(pathBasename(image.path), blob.type));
+  } catch (err) {
+    addErrorToast(errString(err), err);
+  }
+}
+
+// A repository image's owning computer is the PR's: SaveGitBlobImage writes
+// the blob into its Downloads, a webview shell opens the file's forge page,
+// or a connected browser downloads the blob under the file's name.
+async function saveRepositoryImage(image: RepositoryImageClaim): Promise<void> {
+  try {
+    const action = fileSaveAction(image.backend, image.browserUrl || null);
+    const name = pathBasename(image.path) || image.path;
+    if (action === 'open-externally') {
+      await handleExternalURL(image.browserUrl);
+      return;
+    }
+    if (action === 'save-here' || action === 'save-there') {
+      const workspace = repositoryImageWorkspace(image);
+      const path = await withBackendTarget(image.backend, () => SaveGitBlobImage(workspace, image.oid, name));
+      addToast('success', savedFileMessage(action, image.backend, path));
+      return;
+    }
+    const blob = await fetchRepositoryImageBytes(image, 0);
+    downloadBlob(blob, downloadName(name, blob.type));
   } catch (err) {
     addErrorToast(errString(err), err);
   }

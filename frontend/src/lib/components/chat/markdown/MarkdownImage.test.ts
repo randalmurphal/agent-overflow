@@ -68,6 +68,7 @@ function fakeSource(variantFor: (tier: number) => Partial<MarkdownImageVariant> 
           return held.settled;
         },
         value: held.value,
+        sized: held.value.then(() => undefined, () => undefined),
         release: () => {
           if (released) return;
           released = true;

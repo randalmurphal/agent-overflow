@@ -24,6 +24,7 @@ import type { CitationToken } from './extensions/citations';
 import type { MdxToken } from './extensions/mdx';
 import type { DetailsSummaryToken, DetailsToken, HtmlInlineToken } from './extensions/embeddedHtml';
 import type { InlineDiffToken } from './extensions/inlineDiff';
+import type { LabelChipToken } from './extensions/labelChip';
 import type { HtmlRegionToken } from './extensions/htmlRegion';
 import { markedAlert } from './extensions/alert';
 import { markedFootnote, markedFootnoteBlock } from './extensions/footnotes';
@@ -40,6 +41,7 @@ import { markedCitations } from './extensions/citations';
 import { markedMdx, markedMdxBlock } from './extensions/mdx';
 import { markedBlockquoteBlock } from './extensions/blockquoteSource';
 import { applyDocumentScope, installDocumentScope } from './documentScope';
+import { liftInlineBlocks, type CodeSnippetToken } from './extensions/codeSnippet';
 import type { DocumentScope } from './documentScope';
 // Default plugin sets, in registration order. Hoisted so the options object
 // (and the regexes/closures inside each plugin) is built once, not per chunk.
@@ -279,6 +281,8 @@ export const lexCapture = (
         lexer.footnotes = seedFootnotes;
     const all = lexer.lex(markdown);
     applyDocumentScope(lexer, all);
+    if (lexer.lifts)
+        liftInlineBlocks(all);
     const tokens = all.filter((token) => isKeptType(token.type)) as StreamdownToken[];
     return {
         tokens,
@@ -338,7 +342,7 @@ export type Extension = {
      */
     tokenizesAlike?: (previous: Extension, source: string) => boolean;
 };
-export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken | HtmlInlineToken | HtmlRegionToken | InlineDiffToken | TCaption | CheckboxToken;
+export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken | HtmlInlineToken | HtmlRegionToken | InlineDiffToken | LabelChipToken | TCaption | CheckboxToken | CodeSnippetToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';
 
 /** marked's per-Lexer reference-link table. */
@@ -363,4 +367,4 @@ type LexOptions = LexerOptions & {
 	};
 };
 export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };
-export type { DetailsToken, DetailsSummaryToken, HtmlInlineToken, HtmlRegionToken, InlineDiffToken };
+export type { DetailsToken, DetailsSummaryToken, HtmlInlineToken, HtmlRegionToken, InlineDiffToken, LabelChipToken, CodeSnippetToken };

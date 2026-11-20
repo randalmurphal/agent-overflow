@@ -317,8 +317,14 @@ export interface ForgeRepo {
   teams?: { slug: string; name?: string }[];
   organization?: boolean;
   teamsRefused?: boolean;
-  /** The repository's labels; color "#rrggbb". */
-  labels?: { name: string; color?: string; id?: string }[];
+  /** The repository's labels; color "#rrggbb", textColor derived as GitLab does when omitted. */
+  labels?: { name: string; color?: string; textColor?: string; id?: string }[];
+  /** What a body's references are checked against: issues (on GitHub no
+   * number of a pull), and GitLab's milestones (a `group` one is an
+   * ancestor group's) and snippets. */
+  issues?: { number: number; title: string; state?: 'open' | 'closed' }[];
+  milestones?: { title: string; iid?: number; group?: string }[];
+  snippets?: { id: number; title: string }[];
   /** GitLab: the host's release, and what its server lacks. */
   serverVersion?: string;
   serverLacks?: 'introspection'[];
@@ -373,8 +379,21 @@ export interface ForgeHTTPInvocation extends ForgeInvocationCommon {
 
 export type ForgeInvocation = ForgeCLIInvocation | ForgeHTTPInvocation;
 
-export async function seedForge(harness: HarnessApp, repos: ForgeRepo[]): Promise<void> {
-  await harness.rpc('HarnessForgeSeed', { repos });
+/** A user, organization (GitHub) or group (GitLab) a host knows, which a
+ * mention in a body is checked against; a group's `epics` are GitLab's. */
+export interface ForgeAccount {
+  forge: 'github' | 'gitlab';
+  host?: string;
+  login: string;
+  name?: string;
+  kind?: 'user' | 'org' | 'group';
+  epics?: { number: number; title: string; state?: 'open' | 'closed' }[];
+}
+
+/** Seed `repos`, each replacing the same forge and project, and add
+ * `accounts`, which stay until HarnessReset. */
+export async function seedForge(harness: HarnessApp, repos: ForgeRepo[], accounts: ForgeAccount[] = []): Promise<void> {
+  await harness.rpc('HarnessForgeSeed', accounts.length ? { repos, accounts } : { repos });
 }
 
 /**

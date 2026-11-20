@@ -145,6 +145,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1655853383: 'selected', // GetEditorSettings
 	1581952506: 'home', // GetErrorLogLines
 	2541596437: 'workspace', // GetGitActionOutcome
+	3812666095: 'workspace', // GetGitBlobImage
 	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
 	1709188995: 'selected', // GetLocalImage
@@ -404,6 +405,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2068518611: 'selected', // RerequestPRReview
 	2775767393: 'home', // ResetKeybindings
 	1887984285: 'home', // ResizeTerminal
+	1279729209: 'workspace', // ResolveForgeFacts
 	1919237704: 'thread', // RespondToApproval
 	1071592868: 'thread', // RespondToUserInput
 	3141913084: 'home', // RestartToUpdate
@@ -423,6 +425,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1986917811: 'selected', // SaveCIArtifacts
 	3025273299: 'thread', // SaveDraft
 	2960563266: 'selected', // SaveForgeAttachment
+	3614441608: 'workspace', // SaveGitBlobImage
 	1040176720: 'selected', // SaveLocalImage
 	1537914193: 'selected', // SavePRCIJobLog
 	1281545488: 'selected', // SavePRCIJobLogSection

@@ -5,6 +5,7 @@ import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
 import { headingAnchor, htmlAnchorName } from '../parser/documentScope';
 import { fenceLanguage } from '../parser/fenceLanguage';
+import { labelChipBorderStyle, labelChipKeyStyle } from '../parser/extensions/labelChip';
 import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText, tableCellRenders } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
@@ -384,6 +385,34 @@ export function renderStaticTokenHtml(
 					output.push(`</${tag}>`);
 					break;
 				}
+
+				// Mirrors Element.svelte: an anchor for an approved href, else
+				// the same chip as a span; styles only from accepted colors.
+				case 'labelChip': {
+					const linkClass = classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [], !!streamdown.document?.forge);
+					const tag = linkClass.kind === 'anchor' ? 'a' : 'span';
+					output.push(
+						`<${tag} data-streamdown-label-chip="${dataId}"` +
+						attribute('class', token.scope === null ? 'md-label-chip' : 'md-label-chip md-label-chip-scoped') +
+						(linkClass.kind === 'anchor' ? attribute('href', linkClass.href) + ' target="_blank" rel="noopener noreferrer"' : '') +
+						attribute('title', token.title ?? undefined) +
+						attribute('style', labelChipBorderStyle(token)) +
+						`><span class="md-label-chip-key"${attribute('style', labelChipKeyStyle(token))}>` +
+						escapeHtml(token.scope ?? token.name) +
+						'</span>' +
+						(token.scope === null ? '' : `<span class="md-label-chip-value">${escapeHtml(token.name)}</span>`) +
+						`</${tag}>`,
+					);
+					break;
+				}
+
+				// Mirrors Element.svelte: a file excerpt's header and code
+				// (parser/extensions/codeSnippet.ts), each as itself.
+				case 'codeSnippet':
+					output.push(`<div data-streamdown-code-snippet="${dataId}" class="md-blk md-code-snippet">`);
+					if (!render(children)) return false;
+					output.push('</div>');
+					break;
 
 				// Mirrors Element.svelte: the tag is one of the parser's fixed
 				// names (HTML_INLINE_TAGS), never authored text.

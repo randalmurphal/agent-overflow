@@ -6,18 +6,30 @@
  */
 import { inline } from './rules';
 import type { Tokens } from './tokens';
+import type { ForgeFactState } from '../documentScope';
+
+/** A context's `fact` on a surface without facts. */
+export const NO_FACTS = (): undefined => undefined;
 
 /** What a destination hook knows of where the token sits. */
 export interface DestinationContext {
   /** Inside link text or an `<a>`: only an image is claimed there. */
   readonly inLink: boolean;
+  /**
+   * The host's fact for `key` in the producer's scope, recorded as a read
+   * of it (`readFact`; the sanitizer records it on the block's reading),
+   * so output that read it is rebuilt when its answer changes. Undefined
+   * on a surface without facts.
+   */
+  readonly fact: (key: string) => ForgeFactState;
 }
 
 /**
  * A host's claim on a destination: the token to emit in place of `token`
  * (a resolved href, an app href with its title, a preview), or undefined
  * to leave it to the next hook. `token.href` is already canonical
- * (`canonicalHref`). Pure: tokenizers call it speculatively.
+ * (`canonicalHref`). Pure but for the facts it reads through `context`:
+ * tokenizers call it speculatively.
  */
 export type DestinationHook = (
   token: Tokens.Link | Tokens.Image,

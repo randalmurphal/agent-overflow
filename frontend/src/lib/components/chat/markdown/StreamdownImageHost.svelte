@@ -13,6 +13,9 @@
   //     with the user's `gh`/`glab` login on the computer that owns the PR
   //     and rendered by what the bytes turned out to be, which is why it
   //     owns its own host rather than being an <img> branch here.
+  //   - A file of the PR's repository the parse claimed
+  //     (`agent-overflow:repo-image?nonce=…`, utils/repositoryImageHref.ts):
+  //     its own host paints it from the local git object store.
   //   - An http(s) or `data:image/…` src the URL gate approved: rendered
   //     directly, as a player when the parse marked the image playable
   //     (`media`, markdown/parser/extensions/mediaImages.ts).
@@ -28,6 +31,8 @@
   import { parseLocalImageHref } from '../../../utils/pathLinkExtension';
   import { parseForgeAttachmentHref } from '../../../utils/forgeAttachments';
   import ForgeAttachmentHost from './ForgeAttachmentHost.svelte';
+  import RepositoryImageHost from './RepositoryImageHost.svelte';
+  import { parseRepositoryImageHref } from '../../../utils/repositoryImageHref';
   import MarkdownImage from './MarkdownImage.svelte';
 
   let {
@@ -45,7 +50,8 @@
   // same image, and must not restart the fetch.
   const href = $derived(token.href);
   const forge = $derived(parseForgeAttachmentHref(href) !== null);
-  const local = $derived(forge ? null : parseLocalImageHref(href));
+  const repository = $derived(!forge && parseRepositoryImageHref(href) !== null);
+  const local = $derived(forge || repository ? null : parseLocalImageHref(href));
   const source = $derived(
     local ? localMarkdownImageSource(backend, local, localImageMenuTag({ backend, href, alt: token.text })) : null,
   );
@@ -57,7 +63,7 @@
   $effect(() => {
     // A forge attachment and a local image belong to their own renderers;
     // this effect must not claim either as an unpaintable scheme.
-    if (forge || local) return;
+    if (forge || repository || local) return;
     const direct = approvedSrc;
     reason = '';
     if (token.media ? /^https?:/i.test(direct) : /^(?:https?:|data:image\/)/i.test(direct)) {
@@ -84,6 +90,8 @@
 
 {#if forge}
   <ForgeAttachmentHost {token} />
+{:else if repository}
+  <RepositoryImageHost {token} />
 {:else if source}
   <MarkdownImage
     {source}

@@ -7,11 +7,12 @@
 	import SourceText from './SourceText.svelte';
 	import type { GenericToken, ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
-	import { useStreamdown } from '../context.svelte';
+	import { useBlockScope, useStreamdown } from '../context.svelte';
 	import { codespanClass } from '../codespan';
 	import FootnoteRef from './FootnoteRef.svelte';
-	import { tableCellRenders } from './url';
-	import { headingAnchor, htmlAnchorName } from '../../parser/documentScope';
+	import { classifyLinkHref, tableCellRenders } from './url';
+	import { labelChipBorderStyle, labelChipKeyStyle } from '../../parser/extensions/labelChip';
+	import { headingAnchor, htmlAnchorName, readingFor, renderUnder } from '../../parser/documentScope';
 	import { fenceLanguage } from '../../parser/fenceLanguage';
 	let {
 		token,
@@ -23,6 +24,7 @@
 		codeTextAppend?: ProvenAppend;
 	} = $props();
 	const streamdown = useStreamdown();
+	const blockScope = useBlockScope();
 
 	// The host owns code, mermaid and math rendering: the library ships no
 	// highlighter, no diagram engine and no TeX typesetter of its own. With
@@ -365,6 +367,27 @@
 	>
 		{@render children()}
 	</svelte:element>
+{:else if token.type === 'labelChip'}
+	<!-- A label chip (parser/extensions/labelChip.ts); staticHtml.ts renders the same markup. -->
+	{@const chipLink = classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [], !!streamdown.document?.forge)}
+	<svelte:element
+		this={chipLink.kind === 'anchor' ? 'a' : 'span'}
+		data-streamdown-label-chip={id}
+		class={token.scope === null ? 'md-label-chip' : 'md-label-chip md-label-chip-scoped'}
+		href={chipLink.kind === 'anchor' ? chipLink.href : undefined}
+		target={chipLink.kind === 'anchor' ? '_blank' : undefined}
+		rel={chipLink.kind === 'anchor' ? 'noopener noreferrer' : undefined}
+		title={token.title ?? undefined}
+		style={labelChipBorderStyle(token) ?? undefined}
+		><span class="md-label-chip-key" style={labelChipKeyStyle(token) ?? undefined}>{token.scope ?? token.name}</span
+		>{#if token.scope !== null}<span class="md-label-chip-value">{token.name}</span>{/if}</svelte:element
+	>
+{:else if token.type === 'codeSnippet'}
+	<!-- A file excerpt (parser/extensions/codeSnippet.ts): its header and
+	     code render as themselves; staticHtml.ts renders the same markup. -->
+	<div data-streamdown-code-snippet={id} class="md-blk md-code-snippet">
+		{@render children()}
+	</div>
 {:else if token.type === 'htmlInline'}
 	<!-- The tag is one of the parser's fixed names, never authored text. -->
 	<!-- Its attributes are the ones the HTML policy keeps (htmlPolicy.ts). -->
@@ -373,8 +396,16 @@
 	</svelte:element>
 {:else if token.type === 'html'}
 	{#if streamdown.renderHtml}
-		{@const content =
-			typeof streamdown.renderHtml === 'function' ? streamdown.renderHtml(token) : token.raw}
+		<!-- The block's reading stays the same object while every key the
+		     last render read resolves alike, so only such a change renders
+		     (sanitizes) the token again. A render is a fresh box: a derived
+		     whose value comes out equal keeps its old version, and Svelte
+		     would run it again each time the reading is checked; the box's
+		     string is what the page compares. -->
+		{@const render = streamdown.renderHtml}
+		{@const reading = readingFor(token, blockScope())}
+		{@const rendered = { html: typeof render === 'function' ? renderUnder(reading, () => render(token, reading)) : token.raw }}
+		{@const content = rendered.html}
 		<!-- The host may own the injection (to hydrate claimed media inside
 		     the fragment); the fallback is the plain injection. -->
 		<Slot props={{ children, token, content }} render={streamdown.snippets.html}>

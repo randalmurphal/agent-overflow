@@ -943,6 +943,54 @@ input[type="search"]::-webkit-search-cancel-button {
   overflow-wrap: normal;
   word-break: normal;
 }
+/* A numbered code block (a file excerpt, Tokens.Code.firstLine): the line
+   numbers in a gutter beside the pre, which pans alone. Its lines never
+   wrap (the host marks it unwrapped), so each number stays beside its line
+   and a block's height is its line count's: the gutter's, whatever the
+   lines hold. The pre has no margin or border of its own and the gutter
+   the pre's padding, so the first number sits on the first line. */
+.markdown-body .md-code-numbered {
+  display: flex;
+  align-items: flex-start;
+}
+.markdown-body .md-code-numbered > pre {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  border-width: 0;
+  border-radius: 0;
+}
+.markdown-body .md-code-line-numbers {
+  flex: none;
+  white-space: pre;
+  text-align: right;
+  user-select: none;
+  color: var(--fg-hint);
+  padding: 0.75rem 0 0.75rem 0.75rem;
+}
+/* A permalink's snippet (parser/extensions/codeSnippet.ts): its header of
+   file and commit links over its code, one framed block. */
+.markdown-body .md-code-snippet {
+  margin: var(--markdown-block-gap) 0;
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-field);
+  overflow: hidden;
+}
+.markdown-body .md-code-snippet > p {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--fg-muted);
+  background: var(--surface-1);
+  border-bottom-width: 1px;
+  border-bottom-style: solid;
+  border-bottom-color: var(--border-subtle);
+}
+.markdown-body .md-code-snippet [data-streamdown-code] {
+  margin: 0;
+  border-radius: 0;
+}
 .markdown-body blockquote {
   border-left: 3px solid var(--border);
   padding-left: 0.75rem;
@@ -1067,6 +1115,43 @@ input[type="search"]::-webkit-search-cancel-button {
   border-color: var(--border-subtle);
   border-radius: 9999px;
   vertical-align: middle;
+}
+
+/* A label chip (parser/extensions/labelChip.ts): the label's title on its
+   color, a scoped title's value beside it inside a border of the color.
+   Inline boxes, so the chip never changes its line's height, and every
+   length is the same whether or not the colors are known: the forge's
+   colors arrive inline and override only colors. */
+.markdown-body .md-label-chip {
+  display: inline;
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
+  border-radius: 0.75em;
+  font-size: 0.875em;
+  text-decoration: none;
+  white-space: nowrap;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.markdown-body .md-label-chip:hover {
+  text-decoration: none;
+}
+.markdown-body .md-label-chip-key,
+.markdown-body .md-label-chip-value {
+  padding: 0 0.5em;
+  border-radius: 0.75em;
+}
+.markdown-body .md-label-chip-key {
+  background-color: var(--code-inline-bg);
+  color: var(--text-secondary);
+}
+.markdown-body .md-label-chip-value {
+  color: var(--text-primary);
+}
+.markdown-body .md-label-chip-scoped .md-label-chip-key {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 /* LaTeX math starts as escaped source and upgrades to KaTeX when visible. */
@@ -1226,6 +1311,12 @@ svg[data-mermaid-svg] .labelBox {
 .markdown-body.review-prose strong {
   color: inherit;
 }
+/* A forge draws a link at its text's weight, so a reference the forge
+   answers is no target (text, utils/forgeReferenceExtension.ts) keeps the
+   width it had while it was a link. */
+.markdown-body.review-prose a[data-streamdown-link] {
+  font-weight: inherit;
+}
 /* Neither forge italicizes a quote, so emphasis inside one stays visible. */
 .markdown-body.review-prose blockquote {
   font-style: normal;
@@ -1252,12 +1343,21 @@ svg[data-mermaid-svg] .labelBox {
   display: inline;
   max-width: 100%;
 }
-.markdown-body.review-prose [data-streamdown-image] {
+.markdown-body.review-prose [data-streamdown-image],
+.markdown-body.review-prose .md-image-box {
   display: inline-block;
   margin: 0;
 }
 .markdown-body.review-prose [data-streamdown-image],
 .markdown-body.review-prose [data-streamdown-image] img {
+  border-radius: 0;
+}
+/* The box an image's bytes will fill (MarkdownImageBox.svelte) sits in
+   its line as the image does: inline, middle-aligned as preflight sets an
+   <img>, so the image replacing it moves nothing. */
+.markdown-body.review-prose .md-image-box-fill {
+  display: inline-block;
+  vertical-align: middle;
   border-radius: 0;
 }
 

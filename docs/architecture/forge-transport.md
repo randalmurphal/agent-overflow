@@ -1053,6 +1053,77 @@ comments with more than 100."
 Every comment carries its forge link in `ReviewComment.URL`: GitHub's
 comment `url`, GitLab's merge request URL with `#note_<id>`.
 
+## Facts
+
+`ResolveForgeFacts(ws, pr, rev, keys)` (`git.Core.ResolveFacts`,
+`internal/git/forge_facts*.go`, `local_facts.go`) answers what a PR's
+bodies and comments name: one `ForgeFact` per key, in the keys' order,
+each `found`, `absent` (the owner said it does not exist) or
+`unavailable` (nobody could say: a failed or refused read, an object
+that is not local, a cap, a kind this release does not know). At most
+256 keys a call; a repeated key is resolved once. The forge kinds and
+the local kinds run concurrently.
+
+| Key | Answered by |
+|---|---|
+| `ref:<project>#<n>` | GitHub `issueOrPullRequest` (kind `issue` or `pull`); GitLab `issue` |
+| `mr:<project>!<n>`, `label:<project>~<title>`, `milestone:<project>%<title>`, `snippet:<project>$<id>`, `epic:<group>&<n>` | GitLab only (`unavailable` on GitHub): `mergeRequest`, `labels(title:, includeAncestorGroups: true)`, `milestones(title:, includeAncestors: true)`, `snippets(ids:)`, `group { workItem(iid:) }` |
+| `user:<name>` | GitHub `repositoryOwner` (kind `user` or `org`); GitLab `user`, else `group` (kind `group`) |
+| `commit:<hex>` | local: 7 to 64 lowercase hex naming exactly one local commit; missing or ambiguous is `unavailable` and not held |
+| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and header dimensions (0 for svg, ico, avif), or `lfs` for a pointer; a blob over 25 MiB is `unavailable` |
+| `lines:<sha>:<path>:<start>-<end>` | local: at most 200 lines and 64 KiB of text from a blob of at most 2 MiB; binary or past the end is `absent` |
+
+A key that does not parse is `unavailable`; a project path or login the
+forge cannot hold, a path that is not clean or starts with `-`, and a
+range over 200 lines are `absent`, each without a request or a git run.
+
+Forge reads are background requests, so the rate gate's reserve refuses
+them (`unavailable`, no request). Each document is fixed text with one
+aliased slot per key, every part behind `@include`, so an unused slot
+runs nothing; a read sends the smallest that holds its keys. A missing
+node is null (GitHub beside a `NOT_FOUND` at its alias): that key is
+`absent`, and any other problem at an alias makes only that key
+`unavailable`. A read refused as too costly (GitLab's complexity limit of
+250) or too slow (GitHub's 502 or 504) is sent once more in halves, so a
+refusing forge costs at most three requests per read. Keys of more than
+four projects other than the PR's are `unavailable`. Each failed read is
+logged once with its operation and no titles.
+
+| Call | GitHub | GitLab |
+|---|---|---|
+| Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys |
+| Every forge key held | none | none |
+| Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob not held (stopped after at most 1 MiB, 4 at a time), 1 `git ls-tree` per commit whose path the batch-check called missing | same |
+| Every local key held | no git | no git |
+
+Every git read sets `GIT_NO_LAZY_FETCH=1`: in a partial clone a path
+whose blob is not local is `unavailable`, never fetched.
+
+The caches (`factCache`, `forge_facts_cache.go`) are LRU, bounded by
+entries and estimated bytes (an entry over 1/64 of the bytes is never
+held), and share one read among concurrent calls for a key, in one call
+or overlapping ones:
+
+| Cache | Key | Bound | Held |
+|---|---|---|---|
+| Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's is not held; `ResetForgeCaches` clears it |
+| Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed) |
+| Blob images, one per `Core` | blob id | 4096 entries, 2 MiB | the header's answer without expiry |
+
+`GetGitBlobImage(ws, oid, maxWidth)` serves a blob as `GetLocalImage`
+serves a file: `Core.BlobImage` (1 `git cat-file --batch-check` and a
+header read, or the blob image cache) refuses a blob that is not local,
+over the cap, an LFS pointer or no displayable image before any read;
+then the review diff's image store holds the bytes under `blob\x00<oid>`
+(one `git cat-file blob` into a buffer of the blob's size, shared with
+the review diff's images of the same blob) and each derived tier under
+the blob and tier, all within that store's budget. Concurrent calls share
+one read and one derivation, and the caller's context stops the read.
+`SaveGitBlobImage(ws, oid, name)`, the image menu's Save on the PR's
+computer, applies the same refusals and writes the blob into Downloads
+through the writer `SaveLocalImage` uses (the name cut to its last
+segment and sanitized, never over an existing file).
+
 ## Merged PR worktree cleanup
 
 `internal/app/app_worktree_merge_cleanup.go` removes a linked worktree

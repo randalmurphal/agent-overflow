@@ -5,16 +5,24 @@
 	// (the `html` snippet, else `{@html}`), so a host hydrates media there.
 	import Element from './Element.svelte';
 	import Slot from './Slot.svelte';
-	import { useStreamdown } from '../context.svelte';
+	import { useBlockScope, useStreamdown } from '../context.svelte';
+	import { readingFor, renderUnder } from '../../parser/documentScope';
 	import { htmlRegionNodes, parseHtmlRegion, type HtmlRegionNode } from '../htmlSanitize';
 	import type { HtmlRegionToken, StreamdownToken, Tokens } from '../../parser/index';
 
 	let { token }: { token: HtmlRegionToken } = $props();
 	const streamdown = useStreamdown();
+	const blockScope = useBlockScope();
 
+	// The same object while every key the last render read resolves alike
+	// (parser/documentScope.ts#readingFor): another fact sanitizes nothing.
+	const reading = $derived(readingFor(token, blockScope()));
 	const nodes = $derived.by(() => {
 		const renderHtml = streamdown.renderHtml;
-		return renderHtml ? htmlRegionNodes(parseHtmlRegion(token.parts, renderHtml), streamdown.allowedLinkPrefixes ?? []) : [];
+		const at = reading;
+		return renderHtml
+			? renderUnder(at, () => htmlRegionNodes(parseHtmlRegion(token.parts, renderHtml, at), streamdown.allowedLinkPrefixes ?? []))
+			: [];
 	});
 	const islands = $derived(token.tokens as StreamdownToken[]);
 

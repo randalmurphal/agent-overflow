@@ -1105,6 +1105,30 @@ describe('reviewPane store — PR scope', () => {
     expect(reviewStateForPane('pane-1', prSubject())).not.toBe(state);
   });
 
+  it("asks for the PR body's facts in the pane's workspace, and for its commits again at the loaded revision", async () => {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: PR_KEY,
+      detail: prDetailStub({ body: 'Fixes #1 in abc1234' }),
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    const resolve = setBindingMock('ResolveForgeFacts', async (_ws: WorkspaceRef, _pr: unknown, _rev: unknown, keys: string[]) => ({
+      facts: keys.map((key) => ({ key, status: key.startsWith('commit:') ? 'unavailable' : 'found', url: 'https://github.com/owner/repo/issues/1' })),
+    }));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await flushPane();
+    const calls = resolve.mock.calls.map(([ws, , rev, keys]) => [ws, (rev as { headSHA: string }).headSHA, keys]);
+    expect(calls).toEqual([
+      [REVIEW_WS, '', ['ref:owner/repo#1', 'commit:abc1234']],
+      [REVIEW_WS, 'sha-a', ['commit:abc1234']],
+    ]);
+    disposeReviewStateForPane('pane-1', state);
+  });
+
   it('pr:updated applies live on same head and flags stale on a moved head without touching the diff', async () => {
     installPRMocks();
     const state = reviewStateForPane('pane-1', prSubject());

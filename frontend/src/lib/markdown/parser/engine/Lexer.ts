@@ -32,7 +32,7 @@ import type { LexerOptions, TokenizerExtensionFunction, TokenizerStartFunction, 
 // tables are per-DOCUMENT state, so they belong on the Lexer instance rather
 // than in a module-level map that would leak across documents.
 import type { FootnoteMaps } from '../extensions/footnotes';
-import type { DocumentScope } from '../documentScope';
+import type { DocumentReading, DocumentScope } from '../documentScope';
 
 export class Lexer {
   tokens: TokensList;
@@ -82,6 +82,10 @@ export class Lexer {
    */
   document: DocumentScope | null = null;
   documentReads: Set<string> | null = null;
+  /** An inline tokenizer made a token that stands as a block where it
+   * sits alone in a paragraph's run (`liftsTo`, extensions/codeSnippet.ts):
+   * the finished lex splits paragraphs around it. */
+  lifts = false;
 
   /** The `[center]` / `[right]` alignment in force at the current top-level
    * position (extensions/align.ts); seed it to lex from inside one. */
@@ -666,11 +670,15 @@ export class Lexer {
    * extension that reads such text by another rule. Unless `linkable`,
    * `state.inLink` is set too. Each extension's next start is scanned for
    * once and kept until the run passes it, so the cost is linear in `src`.
+   * Under `reading`, a fact or definition an extension reads comes from its
+   * scope and is recorded in its reads, as in a block's lex.
    */
-  htmlTextTokens(src: string, extensions: readonly HtmlTextExtension[], linkable: boolean): Token[] | null {
+  htmlTextTokens(src: string, extensions: readonly HtmlTextExtension[], linkable: boolean, reading: DocumentReading | null = null): Token[] | null {
     const tokens: Token[] = [];
     const state = this.state;
-    const outer = { inLink: state.inLink, inHtmlText: state.inHtmlText, inlineRun: this.inlineRun };
+    const outer = { inLink: state.inLink, inHtmlText: state.inHtmlText, inlineRun: this.inlineRun, document: this.document, reads: this.documentReads };
+    this.document = reading?.scope ?? null;
+    this.documentReads = reading?.reads ?? null;
     state.inHtmlText = true;
     state.inLink = !linkable;
     // Its extensions read `src`, not an inline run.
@@ -716,6 +724,8 @@ export class Lexer {
       state.inLink = outer.inLink;
       state.inHtmlText = outer.inHtmlText;
       this.inlineRun = outer.inlineRun;
+      this.document = outer.document;
+      this.documentReads = outer.reads;
     }
   }
 }

@@ -128,7 +128,7 @@ async function sizedImage(path: ImagePath, attrs: string, lineWidth: number, ima
   if (path === 'bare renderer') {
     render(Streamdown, {
       target: host,
-      props: { content: source, theme: chatMarkdownTheme, extensions: EMBEDDED_HTML_EXTENSIONS, renderHtml: sanitizeEmbeddedHtmlToken },
+      props: { content: source, theme: chatMarkdownTheme, extensions: EMBEDDED_HTML_EXTENSIONS, renderHtml: (token) => sanitizeEmbeddedHtmlToken(token) },
     });
   } else {
     render(ChatMarkdown, {

@@ -56,7 +56,9 @@ on every inline, reference and autolink token, an extension that builds a
 link or image from other syntax (an HTML `<a>` or `<img>`) calls
 `Tokenizer.destination`, and the sanitizer runs the same hooks
 (`destinationsOf`) on every `href` and `src`. Do not claim a destination
-in a tokenizer of its own.
+in a tokenizer of its own. A hook reads a host fact through
+`DestinationContext.fact`, recorded as `readFact` records it, on both
+paths.
 
 The `*` wildcard admits every scheme except the deny-list in
 `render/elements/urlSchemes.ts` and `file:`; `internal/externalurl` mirrors the
@@ -121,6 +123,14 @@ backed tokens such as Mermaid, including when highlight caches are warm.
   under the same rule. Facts read from inline tokens come from a lex under
   the folded definitions, as the block renders. An append whose changed
   tail (`ParseBlocksCache.changedFrom`) holds no fact costs only the tail.
+  A host's facts (`ForgeFactReader`, `documentContextOf`'s last
+  argument) ride on every scope it hands out, an immutable snapshot per
+  change; a tokenizer reads one with `readFact`, which records
+  `x:<key>` and compares by `signature`. New facts fold nothing again.
+  An html token or region reads its block's scope when it renders: the
+  sanitizer's text hook lexes under a `DocumentReading`
+  (`readingFor`), which stays the same object until a key it read
+  resolves differently, so only that sanitizes again.
   Forge anchors are `data-md-anchor` and
   same-document links `data-md-fragment`, never `id` or a navigating href;
   chat resolves them inside the clicked `.markdown-body`.
@@ -142,6 +152,11 @@ selectors. Scope Markdown styles to Markdown-owned markup.
 - A tokenizer that builds a nested block token outside the block loop asks
   `Lexer.blockExtensionToken` first, so the token is the one the loop would
   produce there.
+- An inline token that stands as a block (a forge permalink's
+  `codeSnippet`) is returned with `liftToBlock`; `lexCapture` then splits
+  the paragraph or tight item text whose own run holds it
+  (`parser/extensions/codeSnippet.ts`), so both render paths and find see
+  the same blocks.
 - Link text holds no link: a tokenizer that builds a link checks
   `lexer.state.inLinkText`, and one that lexes link text sets it. A raw
   `<a>` tag changes `inLink` only. CommonMark's innermost link wins: a

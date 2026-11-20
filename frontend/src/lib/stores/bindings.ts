@@ -1314,6 +1314,8 @@ import {
   ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
   DeleteThreads as DeleteThreadsRaw,
   GetDeleteDependents as GetDeleteDependentsRaw,
+  GetGitBlobImage as GetGitBlobImageRaw,
+  SaveGitBlobImage as SaveGitBlobImageRaw,
   GetNativeMemoryStatus as GetNativeMemoryStatusRaw,
   GetThreadAgentRows as GetThreadAgentRowsRaw,
   GetThreadRequestStates as GetThreadRequestStatesRaw,
@@ -1325,8 +1327,14 @@ import {
   ListThreadWorkerSummaries as ListThreadWorkerSummariesRaw,
   MarkThreadRead as MarkThreadReadRaw,
   MarkThreadsRead as MarkThreadsReadRaw,
+  ResolveForgeFacts as ResolveForgeFactsRaw,
   WorkflowPauseItemAndEndSessions as WorkflowPauseItemAndEndSessionsRaw,
 } from '../../../bindings/agent-overflow/app.js';
+import {
+  ForgeFacts as ForgeFactsClass,
+  type PRReference as GitPRReference,
+  type PRRevision as GitPRRevision,
+} from '../../../bindings/agent-overflow/internal/git/models.js';
 import {
   ArchiveThreadResult,
   DeleteDependents,
@@ -1337,6 +1345,7 @@ import {
   ThreadWorkerSummary as ThreadWorkerSummaryClass,
   ThreadWorkerSummaryPage as ThreadWorkerSummaryPageClass,
   type AgentProfileCheck,
+  type LocalImage as LocalImageRow,
   type NativeMemoryStatus,
   type StandingAgentWakes as StandingAgentWakesRow,
   type ThreadAgentRowRead as ThreadAgentRowReadRow,
@@ -1499,4 +1508,31 @@ export function ListThreadPastAgentRows(threadId: string, after: PastAgentRowsCu
 
 export function GetThreadRequestStates(threadId: string, tokens: string[]): Promise<ThreadRequestStateRow[]> {
   return orOlder(() => GetThreadRequestStatesRaw(threadId, tokens), () => []);
+}
+
+/**
+ * ResolveForgeFacts; null from a computer without it, which the facts
+ * store remembers so it stops asking that computer.
+ */
+export function ResolveForgeFacts(
+  ws: Parameters<typeof ResolveForgeFactsRaw>[0],
+  pr: GitPRReference,
+  rev: GitPRRevision,
+  keys: string[],
+): Promise<ForgeFactsClass | null> {
+  return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys), () => null);
+}
+
+/** GetGitBlobImage; a computer without it serves no repository image, and the call rejects. */
+export function GetGitBlobImage(ws: Parameters<typeof GetGitBlobImageRaw>[0], oid: string, maxWidth: number): Promise<LocalImageRow> {
+  return orOlder(() => GetGitBlobImageRaw(ws, oid, maxWidth), () => {
+    throw new Error('That computer runs an older version, which cannot show images from its repository.');
+  });
+}
+
+/** SaveGitBlobImage; a computer without it saves no repository image, and the call rejects. */
+export function SaveGitBlobImage(ws: Parameters<typeof SaveGitBlobImageRaw>[0], oid: string, name: string): Promise<string> {
+  return orOlder(() => SaveGitBlobImageRaw(ws, oid, name), () => {
+    throw new Error('That computer runs an older version, which cannot save images from its repository.');
+  });
 }

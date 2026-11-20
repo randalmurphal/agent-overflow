@@ -39,6 +39,7 @@
 		incrementalLex,
 		matchesProvenAppend,
 		type Alignment,
+		type DocumentScope,
 		type IncrementalLexObserver,
 		type ProvenAppend,
 		type StreamdownToken
@@ -51,7 +52,7 @@
 		withoutPartialAlignmentCloser
 	} from '../parser/extensions/align';
 	import LiteralHost from './LiteralHost.svelte';
-	import { useStreamdown } from './context.svelte';
+	import { setBlockScope, useStreamdown } from './context.svelte';
 	import { renderStaticTokenHtml } from './staticHtml';
 	import { tableCellRenders } from './elements/url';
 	import { headingAnchor } from '../parser/documentScope';
@@ -78,6 +79,9 @@
 	} = $props();
 
 	const streamdown = useStreamdown();
+	const scopeOf = (): DocumentScope | null => (index === undefined ? null : streamdown.document?.scope(index) ?? null);
+	// What an html token reads when it renders comes from this block's scope.
+	setBlockScope(scopeOf);
 	// Per-instance incremental state: a streaming list block re-lexes only
 	// from its last item per update, and sealed items keep their token
 	// references so their subtrees below never re-evaluate. Non-reactive by
@@ -97,7 +101,7 @@
 		cache: typeof lexCache,
 		sourceAppend?: ProvenAppend
 	): StreamdownToken[] => {
-		const scope = index === undefined ? null : streamdown.document?.scope(index) ?? null;
+		const scope = scopeOf();
 		const run = () => incrementalLex(source, streamdown.extensions, cache, completer, sourceAppend, scope);
 		return isStatic ? run() : withoutAlignmentMarkers(run);
 	};

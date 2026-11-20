@@ -28,6 +28,7 @@
 import type { BackendKey } from '../transport/backendKey';
 import type { Forge, PRRef } from './prReference';
 import { MARKDOWN_HREF_NONCE } from './markdownHrefNonce';
+import type { ForgeFactReader } from './forgeFacts';
 
 /** Where a rendered body's forge attachments are fetched from. */
 export interface ForgeAttachmentSource {
@@ -36,6 +37,9 @@ export interface ForgeAttachmentSource {
   backend: BackendKey;
   /** The PR/MR web URL (`review.prDetail.url`), or '' when unknown. */
   webBase: string;
+  /** What the forge answered about the names the PR's bodies mention, as
+   * of now (stores/forgeFacts.svelte.ts); absent off the review pane. */
+  facts?: ForgeFactReader | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,9 @@ export namespace Tokens {
     lang?: string;
     text: string;
     escaped?: boolean;
+    /** Shown with line numbers from this one (a file excerpt,
+     * extensions/codeSnippet.ts); absent: no line numbers. */
+    firstLine?: number;
   }
 
   export interface Codespan {

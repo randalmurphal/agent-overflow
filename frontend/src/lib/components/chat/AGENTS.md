@@ -101,10 +101,13 @@ islands, footnote popovers, selection preservation, and streamed reveal.
   preserve extend-only visible text and selection until genuine divergence.
 - Keep completed Markdown blocks stable. Do not rebuild sealed DOM when only the
   volatile tail changes.
-- `markdown/MarkdownImage.svelte` paints a local or forge image at the display
-  tier `utils/imageTiers.ts` picks for its box and opens the app-level
-  lightbox; `StreamdownImageHost.svelte` and `ForgeAttachmentHost.svelte`
-  only decide which source it gets.
+- `markdown/MarkdownImage.svelte` paints a local, forge or repository image
+  at the display tier `utils/imageTiers.ts` picks for its box and opens the
+  app-level lightbox; `StreamdownImageHost.svelte`,
+  `ForgeAttachmentHost.svelte` and `RepositoryImageHost.svelte` only decide
+  which source it gets. While its bytes load, an image whose box is known
+  (authored size, then a fact's, then the mint answer's;
+  `utils/imageBox.ts`) shows `MarkdownImageBox.svelte` at the painted box.
 - An island whose text is drawn or fetched after the render (diagram, math,
   attachment chip) carries `data-find-skip` on its root, so find neither
   counts nor paints it; `markdownFindText.ts` projects the rest, parsing

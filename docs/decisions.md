@@ -934,15 +934,25 @@ and anti-changes that live only here:
   images in their line at their authored size and placement, emoji
   shortcodes, `~` strikethrough, color chips, `` $`…`$ `` and `math`
   fence math, `$$…$$` as display math, CommonMark list numbering, issue, PR/MR, commit, mention
-  and email references linked by shape (the page cannot check that a
-  target exists, so only shapes that cannot be prose link), relative
+  and email references checked against the forge in one batched lookup
+  per PR update, before a body mounts (a target the forge says does not
+  exist is text, a found one carries its title; while the answer is out
+  or could not be had the reference links by shape, so only shapes that
+  cannot be prose link), an image that names a file of the PR's own
+  repository (a relative path, or a blob or raw URL at the head branch,
+  the base branch or a commit) read from the local git objects at that
+  commit and boxed at its final size from the first paint (a Git LFS
+  pointer says so and links to the forge; its bytes are not fetched), relative
   links resolved to the forge however the link is written, a numbered
   footnotes section, and heading
   anchors with `#name` jumps that stay inside the body clicked. GitHub:
   a single newline is a line break, an alert needs its marker alone on
-  the first line of a top-level quote, a bare `ftp://` URL is text, and
+  the first line of a top-level quote, a bare `ftp://` URL is text,
   a `<picture>` source or `#gh-*-mode-only` image follows the app's
-  light or dark theme. GitLab:
+  light or dark theme, and a bare permalink to lines of the PR's own
+  repository at a full commit id shows those lines, read from the local
+  git objects. GitLab: a label reference as a chip in the label's
+  colors, milestone, snippet and epic references,
   the `{width=… height=…}` list, playable video and audio images,
   inline diff as a highlight, `>>>` quotes, front matter, `[~]` and table-cell tasks,
   description lists, JSON tables, titled alerts, `[[_TOC_]]`, and a

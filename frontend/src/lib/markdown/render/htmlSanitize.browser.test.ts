@@ -22,7 +22,7 @@ describe('sanitizeEmbeddedHtmlToken in a real parser', () => {
 describe('parseHtmlRegion in a real parser', () => {
 	it('moves more children than a call takes arguments', () => {
 		const count = 140_000;
-		const parsed = parseHtmlRegion(['<br>'.repeat(count) + '<div>', {}, '</div>'], sanitizeEmbeddedHtmlToken);
+		const parsed = parseHtmlRegion(['<br>'.repeat(count) + '<div>', {}, '</div>'], (token) => sanitizeEmbeddedHtmlToken(token));
 		expect(parsed.root.querySelectorAll('br').length).toBe(count);
 		expect(parsed.islands.size).toBe(1);
 	});

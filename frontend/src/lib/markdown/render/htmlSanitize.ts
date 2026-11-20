@@ -54,12 +54,14 @@
  */
 
 import type { MarkedToken, Token, Tokens } from '../parser/engine';
+import type { DocumentReading } from '../parser/documentScope';
+import { labelChipBorderStyle, labelChipKeyStyle, type LabelChipToken } from '../parser/extensions/labelChip';
 import { codespanClass } from './codespan';
 import { imageSizeOf } from './imageSize';
 import { imageSrcFor, pictureSources, type ColorScheme } from '../parser/extensions/themedImages';
 import { ANY_FORGE_HTML_POLICY, imageAlign, ruleAttributes, type HtmlPolicy } from '../parser/extensions/htmlPolicy';
 import { videoSrcs } from '../parser/extensions/embeddedHtml';
-import { canonicalHref, decideDestination, type DestinationHook } from '../parser/engine/destination';
+import { canonicalHref, decideDestination, NO_FACTS, type DestinationContext, type DestinationHook } from '../parser/engine/destination';
 import {
 	classifyLinkHref,
 	transformMediaUrl,
@@ -67,6 +69,24 @@ import {
 	unavailableImageText,
 	unavailableImageTitle
 } from './elements/url';
+
+/**
+ * The facts the destination hooks read while one token sanitizes: its
+ * block's reading (`sanitizeEmbeddedHtmlToken`), which records each read
+ * as a lex records one, so the token sanitizes again only when an answer
+ * it read changes. Set for the length of that synchronous call.
+ */
+let readFactHere: DestinationContext['fact'] = NO_FACTS;
+
+const readingFacts = (reading: DocumentReading | null): DestinationContext['fact'] => {
+	const facts = reading?.scope?.facts;
+	if (!reading || !facts) return NO_FACTS;
+	const reads = reading.reads;
+	return (key) => {
+		reads?.add(`x:${key}`);
+		return facts.get(key);
+	};
+};
 
 /** Without the surface's prefixes: absolute http(s) only. */
 const HTTP_ONLY: string[] = ['http://', 'https://'];
@@ -82,7 +102,7 @@ const linkTarget = (
 	title: string | null,
 	options: SanitizeEmbeddedHtmlOptions | undefined
 ): { href: string; title: string | null } | null => {
-	const token = decideDestination({ type: 'link', raw: '', href, title, text: '', tokens: [] }, options?.destinations, { inLink: false });
+	const token = decideDestination({ type: 'link', raw: '', href, title, text: '', tokens: [] }, options?.destinations, { inLink: false, fact: readFactHere });
 	const decided = classifyLinkHref(token.href, options?.allowedLinkPrefixes ?? HTTP_ONLY);
 	return decided.kind === 'anchor' ? { href: decided.href, title: token.title ?? null } : null;
 };
@@ -95,7 +115,7 @@ type MediaTarget = { kind: 'src'; src: string } | { kind: 'claim'; claim: string
  * renderers' media rule. A host hook that changed it claims it.
  */
 const mediaTarget = (src: string, options: SanitizeEmbeddedHtmlOptions | undefined, inLink: boolean): MediaTarget => {
-	const token = decideDestination({ type: 'image', raw: '', href: src, title: null, text: '', tokens: [] }, options?.destinations, { inLink });
+	const token = decideDestination({ type: 'image', raw: '', href: src, title: null, text: '', tokens: [] }, options?.destinations, { inLink, fact: readFactHere });
 	const url = transformMediaUrl(token.href, options?.allowedImagePrefixes ?? HTTP_ONLY);
 	if (url !== null && token.href !== canonicalHref(src)) return { kind: 'claim', claim: url };
 	if (url !== null) return { kind: 'src', src: url };
@@ -209,10 +229,13 @@ export interface SanitizeEmbeddedHtmlOptions {
 	 * `samp`, whose text is literal; `linkable` is false inside an `<a>`
 	 * or a `<kbd>`. The tokens render as the elements they name (a text or
 	 * escape's text, a code span, a link, an image), read by this policy as
-	 * authored HTML is, so a link it refuses shows its text; any other
-	 * token shows its `raw`.
+	 * authored HTML is, so a link it refuses shows its text; a label chip
+	 * is the renderers' chip; any other token shows its `raw`. `reading` is
+	 * the block's: what the hook reads of its scope is recorded there
+	 * (`Lexer.htmlTextTokens`), so the renderer sanitizes again only when
+	 * one of those keys changes.
 	 */
-	text?: (text: string, linkable: boolean) => readonly Token[] | null;
+	text?: (text: string, linkable: boolean, reading?: DocumentReading | null) => readonly Token[] | null;
 }
 
 /** Whether a text run may become tokens, and whether they may link. */
@@ -268,6 +291,39 @@ const appendTokenNodes = (tokens: readonly Token[], parent: Node, doc: Document,
 	}
 };
 
+/**
+ * A label chip as both renderers draw it (Element.svelte, staticHtml.ts):
+ * the renderers' markup, built here rather than read as authored HTML,
+ * which keeps none of its classes or styles. Its href passes the link rule.
+ */
+const appendLabelChip = (token: LabelChipToken, parent: Node, doc: Document, options: SanitizeEmbeddedHtmlOptions | undefined): void => {
+	const target = linkTarget(token.href, token.title, options);
+	const chip = doc.createElement(target === null ? 'span' : 'a');
+	chip.setAttribute('data-streamdown-label-chip', '');
+	chip.setAttribute('class', token.scope === null ? 'md-label-chip' : 'md-label-chip md-label-chip-scoped');
+	if (target !== null) {
+		chip.setAttribute('href', target.href);
+		chip.setAttribute('target', '_blank');
+		chip.setAttribute('rel', 'noopener noreferrer');
+	}
+	if (token.title) chip.setAttribute('title', token.title);
+	const border = labelChipBorderStyle(token);
+	if (border) chip.setAttribute('style', border);
+	const key = doc.createElement('span');
+	key.setAttribute('class', 'md-label-chip-key');
+	const keyStyle = labelChipKeyStyle(token);
+	if (keyStyle) key.setAttribute('style', keyStyle);
+	key.textContent = token.scope ?? token.name;
+	chip.appendChild(key);
+	if (token.scope !== null) {
+		const value = doc.createElement('span');
+		value.setAttribute('class', 'md-label-chip-value');
+		value.textContent = token.name;
+		chip.appendChild(value);
+	}
+	parent.appendChild(chip);
+};
+
 /** A host's claim on a `<video>`'s first claimed src (`videoSrcs`, as inline); null for none. */
 const videoClaim = (element: Element, options: SanitizeEmbeddedHtmlOptions | undefined, inLink: boolean): string | null => {
 	for (const src of videoSrcs(element)) {
@@ -310,21 +366,33 @@ const sanitizeInto = (
 	options: SanitizeEmbeddedHtmlOptions | undefined,
 	islands: string | undefined,
 	scope: TextScope,
-	placement: Placement
+	placement: Placement,
+	reading: DocumentReading | null
 ): void => {
 	const colorScheme = options?.colorScheme;
 	for (const child of source.childNodes) {
 		if (child.nodeType === Node.TEXT_NODE) {
 			const text = child.textContent ?? '';
-			const tokens = scope === 'literal' ? null : (options?.text?.(text, scope === 'linkable') ?? null);
+			const tokens = scope === 'literal' ? null : (options?.text?.(text, scope === 'linkable', reading) ?? null);
 			if (tokens === null) {
 				parent.append(text);
 				continue;
 			}
-			// Read as authored HTML, whose text is not asked again.
-			const nodes = parent.ownerDocument.createDocumentFragment();
-			appendTokenNodes(tokens, nodes, parent.ownerDocument, options);
-			sanitizeInto(nodes, parent, options, islands, 'literal', 'nested');
+			// Read as authored HTML, whose text is not asked again; a chip
+			// between them is the renderers' own markup.
+			const doc = parent.ownerDocument;
+			let from = 0;
+			for (let at = 0; at <= tokens.length; at++) {
+				const token = tokens[at] as Token | undefined;
+				if (token !== undefined && token.type !== 'labelChip') continue;
+				if (at > from) {
+					const nodes = doc.createDocumentFragment();
+					appendTokenNodes(from === 0 && at === tokens.length ? tokens : tokens.slice(from, at), nodes, doc, options);
+					sanitizeInto(nodes, parent, options, islands, 'literal', 'nested', null);
+				}
+				if (token !== undefined) appendLabelChip(token as unknown as LabelChipToken, parent, doc, options);
+				from = at + 1;
+			}
 			continue;
 		}
 		if (child.nodeType !== Node.ELEMENT_NODE) continue; // comments, PIs
@@ -404,7 +472,7 @@ const sanitizeInto = (
 			// An HTML template's children are its content fragment; a
 			// `template` in MathML is an ordinary element.
 			const content = tag === 'template' ? (element as Partial<HTMLTemplateElement>).content : undefined;
-			sanitizeInto(content ?? element, parent, options, islands, scope, placement === 'nested' ? 'nested' : 'stripped');
+			sanitizeInto(content ?? element, parent, options, islands, scope, placement === 'nested' ? 'nested' : 'stripped', reading);
 			continue;
 		}
 		const clean = parent.ownerDocument.createElement(tag);
@@ -437,17 +505,19 @@ const sanitizeInto = (
 			if (className !== '') clean.setAttribute('class', className);
 		}
 		host.append(clean);
-		sanitizeInto(element, clean, options, islands, scopeIn(tag, scope), 'nested');
+		sanitizeInto(element, clean, options, islands, scopeIn(tag, scope), 'nested', reading);
 	}
 };
 
 /**
  * `renderHtml` implementation. Returns sanitized HTML for block tokens; for
  * an inline tag, an allowlisted void element or tag-filtered text, else ''.
+ * `reading` is the block's, which the `text` hook reads under.
  */
 export const sanitizeEmbeddedHtmlToken = (
 	token: { raw: string; block?: boolean; islands?: string },
-	options?: SanitizeEmbeddedHtmlOptions
+	options?: SanitizeEmbeddedHtmlOptions,
+	reading: DocumentReading | null = null
 ): string => {
 	const raw = token.raw;
 	if (raw.replace(COMMENTS_AND_SPACE, '') === '') return '';
@@ -457,7 +527,13 @@ export const sanitizeEmbeddedHtmlToken = (
 	const out = doc.createElement('div');
 	// Only a block's text is asked: an inline tag token's is its own source.
 	const placement = token.block && policy.imageParagraphs ? 'top' : 'nested';
-	sanitizeInto(doc.body, out, options, token.islands, token.block ? 'linkable' : 'literal', placement);
+	const outer = readFactHere;
+	readFactHere = readingFacts(reading);
+	try {
+		sanitizeInto(doc.body, out, options, token.islands, token.block ? 'linkable' : 'literal', placement, reading);
+	} finally {
+		readFactHere = outer;
+	}
 	// A start tag alone is an empty element, which shows nothing.
 	if (!token.block && out.textContent === '' && out.querySelector('br, hr, img, wbr') === null) return '';
 	return out.innerHTML;
@@ -475,7 +551,7 @@ export const sanitizeEmbeddedHtmlToken = (
 export type HtmlRegionSource = Tokens.HTML & { islands: string };
 
 /** `renderHtml` as the context holds it, when it is set. */
-export type RenderRegionHtml = true | ((token: Tokens.HTML | Tokens.Tag) => string);
+export type RenderRegionHtml = true | ((token: Tokens.HTML | Tokens.Tag, reading?: DocumentReading | null) => string);
 
 export interface ParsedHtmlRegion {
 	/** A `<div>` holding the region's rendered HTML. */
@@ -493,11 +569,13 @@ const nonce = (): string => {
 /**
  * Renders a region's `parts` through `renderHtml` as one fragment and parses
  * the result. An island whose placeholder the HTML drops (inside a
- * `<picture>` or a claimed video) is not in `islands`.
+ * `<picture>` or a claimed video) is not in `islands`. `reading` is the
+ * region's block's, which `renderHtml` reads under.
  */
 export const parseHtmlRegion = (
 	parts: readonly (string | object)[],
-	renderHtml: RenderRegionHtml
+	renderHtml: RenderRegionHtml,
+	reading: DocumentReading | null = null
 ): ParsedHtmlRegion => {
 	const id = nonce();
 	let html = '';
@@ -506,7 +584,7 @@ export const parseHtmlRegion = (
 		html += typeof part === 'string' ? part : `<div ${ISLAND_ATTR}="${id}:${count++}"></div>`;
 	}
 	const source: HtmlRegionSource = { type: 'html', block: true, pre: false, raw: html, text: html, islands: id };
-	const doc = new DOMParser().parseFromString(renderHtml === true ? html : renderHtml(source), 'text/html');
+	const doc = new DOMParser().parseFromString(renderHtml === true ? html : renderHtml(source, reading), 'text/html');
 	const root = doc.createElement('div');
 	// One node per call: a spread turns the child count into an argument count.
 	while (doc.body.firstChild) root.append(doc.body.firstChild);

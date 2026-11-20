@@ -4,6 +4,8 @@
 	import { StreamdownContext, type StreamdownProps } from './context.svelte';
 	import {
 		lex,
+		lexCapture,
+		sameScopeReads,
 		parseBlocks,
 		blockAlignment,
 		createParseBlocksCache,
@@ -283,6 +285,7 @@
 	let lastTypedBlock: string | undefined;
 	let lastTypedExtensions: typeof streamdown.extensions | undefined;
 	let lastTypedScope: DocumentScope | null = null;
+	let lastTypedReads: ReadonlySet<string> | null = null;
 	let cachedLastBlockType: string | undefined;
 	const lastRenderedBlockType = $derived.by(() => {
 		if (isStatic || parseIncompleteMarkdown !== false) return undefined;
@@ -294,13 +297,19 @@
 		if (blockAlignment(blocksCache, index) !== null) return 'align';
 		const currentExtensions = streamdown.extensions;
 		const scope = documentContext?.scope(index) ?? null;
-		if (block === lastTypedBlock && currentExtensions === lastTypedExtensions && scope === lastTypedScope) {
+		// A new scope keeps the type when every key the lex read resolves
+		// as before: a host fact or definition the block does not read
+		// lexes nothing.
+		if (block === lastTypedBlock && currentExtensions === lastTypedExtensions && sameScopeReads(lastTypedScope, scope, lastTypedReads)) {
+			lastTypedScope = scope;
 			return cachedLastBlockType;
 		}
 		lastTypedBlock = block;
 		lastTypedExtensions = currentExtensions;
 		lastTypedScope = scope;
-		cachedLastBlockType = lex(block, currentExtensions, scope)[0]?.type;
+		const lexed = lexCapture(block, currentExtensions ?? [], null, null, scope);
+		lastTypedReads = lexed.reads;
+		cachedLastBlockType = lexed.tokens[0]?.type;
 		return cachedLastBlockType;
 	});
 

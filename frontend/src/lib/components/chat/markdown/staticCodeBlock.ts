@@ -69,6 +69,28 @@ export function resetCompletedCodeBlockRenderersForTest(): void {
   completedRendererIdentities = new WeakMap();
 }
 
+/**
+ * The registry key of a block's language: a numbered block (a file
+ * excerpt, `Tokens.Code.firstLine`) renders a gutter an unnumbered one of
+ * the same text has not, so the two never share a completed renderer.
+ */
+export function codeRendererLang(lang: string, firstLine: number | undefined): string {
+  return firstLine ? `${lang}#${firstLine}` : lang;
+}
+
+/**
+ * The line numbers of a numbered block, one per line from `firstLine`, as
+ * the gutter beside its `pre` shows them: chrome, never copied or found.
+ * Its lines never wrap, so each number stays beside its line.
+ */
+export function codeLineNumbers(firstLine: number, text: string): string {
+  let count = 1;
+  for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) count++;
+  const numbers: number[] = [];
+  for (let line = 0; line < count; line++) numbers.push(firstLine + line);
+  return numbers.join('\n');
+}
+
 /** Overlay toggle label: the action it performs from the current state. */
 export function codeWrapLabel(unwrapped: boolean): string {
   return unwrapped ? 'Wrap lines' : 'Unwrap lines';
@@ -200,25 +222,32 @@ export function renderStaticCodeBlockHtml(
   }
 
   const wrapLabel = codeWrapLabel(unwrapped);
+  const numbered = !!token.firstLine;
   return '<div class="streamdown-code-host group/codeblock relative" data-code-source=""' +
     attribute('data-code-lang', token.lang ?? '') +
-    (unwrapped ? ' data-code-unwrapped=""' : '') +
+    (unwrapped || numbered ? ' data-code-unwrapped=""' : '') +
     '><div' +
       attribute('data-streamdown-code', id) +
       attribute('class', streamdown.theme.code.base) +
     '><div style="height: fit-content; width: 100%;"' +
-      attribute('class', streamdown.theme.code.container) +
-    '><pre' + attribute('class', streamdown.theme.code.pre) + '><code>' +
+      attribute('class', numbered ? `${streamdown.theme.code.container} md-code-numbered` : streamdown.theme.code.container) +
+    '>' +
+    (numbered
+      ? '<span class="md-code-line-numbers" aria-hidden="true" data-find-skip="">' + codeLineNumbers(token.firstLine!, token.text) + '</span>'
+      : '') +
+    '<pre' + attribute('class', streamdown.theme.code.pre) + '><code>' +
       code.join('') +
     '</code></pre></div></div>' +
     '<div' + attribute('class', CODE_OVERLAY_CLASS) + '>' +
       (isRunnableShellLang(fenceLanguage(token.lang)) ? runButtonHtml() : '') +
-      '<button type="button"' +
-        attribute('aria-label', wrapLabel) + attribute('title', wrapLabel) +
-        attribute('class', COPY_BUTTON_CLASS) +
-        ' data-icon-button data-static-code-wrap>' +
-        wrapIconHtml() +
-      '</button>' +
+      (numbered
+        ? ''
+        : '<button type="button"' +
+          attribute('aria-label', wrapLabel) + attribute('title', wrapLabel) +
+          attribute('class', COPY_BUTTON_CLASS) +
+          ' data-icon-button data-static-code-wrap>' +
+          wrapIconHtml() +
+          '</button>') +
       '<button type="button" aria-label="Copy code" title="Copy code"' +
         attribute('class', COPY_BUTTON_CLASS) +
         ' data-icon-button data-static-code-copy>' +
@@ -242,7 +271,7 @@ export function renderCachedStaticCodeBlockHtml(
   const lang = fenceLanguage(token.lang);
   const completed = completedCodeBlockRenderers
     .get(streamdown)
-    ?.get(lang)
+    ?.get(codeRendererLang(lang, token.firstLine))
     ?.get(token.text)
     ?.values()
     .next().value;

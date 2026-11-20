@@ -235,6 +235,16 @@ type Core struct {
 	// `git worktree add`. Nil in production; tests set it to hold one
 	// checkout there while another runs.
 	beforeWorktreeAdd func(path string)
+
+	// localFacts holds the commit:, image: and lines: facts by workspace
+	// and resolved key, and blobImages each image blob's classification
+	// by blob id (local_facts.go). Both are content addressed, so neither
+	// expires; each is bounded and evicts the least recently used.
+	localFacts *factCache[ForgeFact]
+	blobImages *factCache[BlobImage]
+	// beforeFactGit runs before each git command of the facts reads with
+	// its arguments. Nil in production; tests count the commands.
+	beforeFactGit func(args []string)
 }
 
 type prCacheEntry struct {
@@ -328,9 +338,10 @@ func NewCore(opts ...CoreOption) *Core {
 		nowFn:                 time.Now,
 	}
 	core.fetchFn = core.fetchOriginQuiet
+	core.localFacts, core.blobImages = newLocalFactCaches()
 	core.forges = map[string]Forge{
-		"github": &githubForge{core: core},
-		"gitlab": &gitlabForge{core: core},
+		"github": &githubForge{core: core, facts: newForgeFactCache()},
+		"gitlab": &gitlabForge{core: core, facts: newForgeFactCache()},
 	}
 	for _, opt := range opts {
 		opt(core)

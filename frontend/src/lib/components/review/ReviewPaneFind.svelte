@@ -117,7 +117,12 @@
   let editing = new Set<string>();
 
   function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
-    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null, claimsCode: isSuggestionMark }));
+    return (texts ??= createMarkdownFindTextCache({
+      embeddedHtml: true,
+      forgeSource: readForgeSource?.() ?? null,
+      claimsCode: isSuggestionMark,
+      facts: () => readForgeSource?.()?.facts ?? null,
+    }));
   }
 
   function readDetails(): MountedCommentDetails {

@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/errorsx"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/reviewimage"
@@ -117,13 +118,6 @@ const reviewDiffPinTimeout = 5 * time.Second
 // maxReviewDiffFiles bounds one GetReviewDiffFileSizes call: each file
 // names at most two paths.
 const maxReviewDiffFiles = gitdiff.MaxEntryPaths / 2
-
-var (
-	// errNotImage marks bytes that are not an image a browser displays.
-	errNotImage = errors.New("not an image a browser displays")
-	// errLFSPointer marks bytes that are a Git LFS pointer.
-	errLFSPointer = errors.New("a Git LFS pointer")
-)
 
 // GetReviewDiffFileSizes answers the byte size and existence of each side of
 // the named files of an opened git-backed review diff, at most 100 per
@@ -286,7 +280,7 @@ func (a *App) GetEditDiffImage(ctx context.Context, threadID string, req EditDif
 			if err != nil {
 				return "", err
 			}
-			return displayImageMIME(buf)
+			return gitops.DisplayImageMIME(buf)
 		})
 	if err == nil {
 		size = held.Size
@@ -443,34 +437,18 @@ func (a *App) reviewDiffBlobSide(ctx context.Context, entry gitdiff.Entry, read 
 		if err := read(buf); err != nil {
 			return "", err
 		}
-		return displayImageMIME(buf)
+		return gitops.DisplayImageMIME(buf)
 	})
 	return a.mintReviewDiffSide(held, entry.Size, err)
-}
-
-// displayImageMIME answers the MIME type of bytes a browser displays as an
-// image, errLFSPointer for a Git LFS pointer, errNotImage otherwise.
-func displayImageMIME(buf []byte) (string, error) {
-	if gitdiff.IsLFSPointer(buf) {
-		return "", errLFSPointer
-	}
-	mime, err := attachment.DetectDisplayImageMIME(buf)
-	if err != nil {
-		return "", errNotImage
-	}
-	if _, _, err := attachment.ValidateDisplayImage(buf, mime); err != nil {
-		return "", errNotImage
-	}
-	return mime, nil
 }
 
 // mintReviewDiffSide answers a load's outcome: a URL for held bytes, the
 // size and a reason for bytes that are not shown, or the load's error.
 func (a *App) mintReviewDiffSide(held reviewimage.Entry, size int64, err error) (ReviewDiffImageSide, error) {
 	switch {
-	case errors.Is(err, errNotImage):
+	case errors.Is(err, gitops.ErrNotDisplayImage):
 		return ReviewDiffImageSide{Exists: true, Size: size, NotImage: true}, nil
-	case errors.Is(err, errLFSPointer):
+	case errors.Is(err, gitops.ErrLFSPointer):
 		return ReviewDiffImageSide{Exists: true, Size: size, Unavailable: unavailableLFS}, nil
 	case err != nil:
 		return ReviewDiffImageSide{}, err

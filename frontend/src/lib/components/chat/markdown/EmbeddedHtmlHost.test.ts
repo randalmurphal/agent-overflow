@@ -17,6 +17,7 @@ vi.mock('../../../utils/forgeAttachmentCache', async (importOriginal) => ({
     acquired.push(href);
     return {
       value: new Promise(() => {}),
+      sized: new Promise(() => {}),
       release: () => released.push(href),
     };
   },

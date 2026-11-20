@@ -30,7 +30,8 @@ import {
 } from '../../../markdown';
 import { getResolvedTheme } from '../../../stores/themeMode.svelte';
 import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
-import { buildForgeReferences } from '../../../utils/forgeReferenceExtension';
+import { buildForgeGitlabReferences, buildForgeReferences } from '../../../utils/forgeReferenceExtension';
+import { buildForgeRepositoryFiles } from '../../../utils/forgeRepositoryFiles';
 import { forgeHtmlOptions } from '../../../utils/forgeHtmlText';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
@@ -97,9 +98,17 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
   // References after attachments, whose destination hook claims a relative
   // `/uploads/` link the references' hook would resolve as a repository path.
   const references = buildForgeReferences(source);
+  // GitLab's labels, milestones, snippets and epics, ahead of the forge
+  // strikethrough in FORGE_SYNTAX, which it offers each tilde first.
+  const gitlabReferences = buildForgeGitlabReferences(source);
+  // The repository's own images and permalink snippets, after attachments,
+  // whose hook claims a relative `/uploads/` image first.
+  const repositoryFiles = buildForgeRepositoryFiles(source);
   const attachments: readonly Extension[] = [
     ...buildForgeAttachmentExtension({ pr, backend, webBase, embeddedHtml }),
+    ...(repositoryFiles ? [repositoryFiles] : []),
     references,
+    ...(gitlabReferences ? [gitlabReferences] : []),
   ];
   // GitHub renders a soft line break in a PR body or comment as <br>;
   // GitLab renders a space, as CommonMark does, and sizes an image by the
@@ -110,8 +119,11 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
   const colorScheme = pr.forge === 'github' ? getResolvedTheme : undefined;
   const emoji = forgeEmojiSlot(pr.forge);
   // Text and links inside HTML get what the forge gives them in a
-  // paragraph: references, then emoji, read when a run is (forgeHtmlText.ts).
-  const htmlText = forgeHtmlOptions(source, () => [references, resolveForgeEmoji(emoji)]);
+  // paragraph: references (GitLab's labels and the rest after them), then
+  // emoji, read when a run is (forgeHtmlText.ts).
+  const htmlText = forgeHtmlOptions(source, () =>
+    gitlabReferences ? [references, gitlabReferences, resolveForgeEmoji(emoji)] : [references, resolveForgeEmoji(emoji)],
+  );
   // Emoji shortcodes last: a module-constant slot that
   // `chatMarkdownExtensions` resolves once the name table has loaded.
   const extensions = [...attachments, ...forgeOwn, ...FORGE_SYNTAX[pr.forge], emoji];
@@ -124,8 +136,8 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
 }
 
 /** ChatMarkdown's parser extensions in order, which is the order their
- * destination hooks claim in: forge attachments, then the forge's relative
- * links, then preview, then path links. The forge's `<video>` tokenizer
+ * destination hooks claim in: forge attachments, then the repository's
+ * images, then the forge's relative links, then preview, then path links. The forge's `<video>` tokenizer
  * precedes the embedded-HTML pair, which would otherwise take its start. */
 export function chatMarkdownExtensions(parts: {
   forge: ChatMarkdownForgeOptions;

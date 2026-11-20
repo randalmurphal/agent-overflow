@@ -19,6 +19,8 @@ export {
     CommentReaction,
     CommentSuggestion,
     CommentTarget,
+    ForgeFact,
+    ForgeFacts,
     GitActionResult,
     GitBranch,
     GitStatus,

@@ -131,7 +131,13 @@ func imageConfigFrom(r io.Reader) (image.Config, error) {
 // ImageDimensions reads the declared width and height of an image header
 // under the pixel budget (imageConfig).
 func ImageDimensions(src []byte) (width, height int, err error) {
-	cfg, err := imageConfig(src)
+	return ImageDimensionsFrom(bytes.NewReader(src))
+}
+
+// ImageDimensionsFrom is ImageDimensions over a reader, read only as far
+// as the header.
+func ImageDimensionsFrom(r io.Reader) (width, height int, err error) {
+	cfg, err := imageConfigFrom(r)
 	if err != nil {
 		return 0, 0, err
 	}

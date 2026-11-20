@@ -16,6 +16,7 @@ import type { Lexer } from './Lexer';
 import type { Links, Tokens, Token } from './tokens';
 import type { LexerOptions } from './options';
 import { backpedalUrl, decideDestination } from './destination';
+import { readFact } from '../documentScope';
 
 /**
  * The link or image `cap` matched, or undefined for a link whose text holds
@@ -182,8 +183,11 @@ export class Tokenizer {
    * builds one from other syntax (an HTML `<a>` or `<img>`) calls it.
    */
   destination<T extends Tokens.Link | Tokens.Image>(token: T): T {
-    return decideDestination(token, this.options.destinations, { inLink: this.lexer.state.inLink }) as T;
+    return decideDestination(token, this.options.destinations, { inLink: this.lexer.state.inLink, fact: this.fact }) as T;
   }
+
+  /** A hook's fact read, recorded as this lex's (`readFact`). */
+  private readonly fact = (key: string) => readFact(this.lexer, key);
 
   /** The URL a bare URL run holds, by the surface's rule (`bareUrls`). */
   urlEnd(run: string): string {

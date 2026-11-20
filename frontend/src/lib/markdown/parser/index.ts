@@ -74,5 +74,5 @@ export type {
 } from './incrementalLex.cache';
 export { createDocumentContextCache, documentContextOf, headingSlug, mayNeedDocumentContext } from './documentContext';
 export type { DocumentContext, DocumentContextCache } from './documentContext';
-export { sameScopeReads } from './documentScope';
-export type { DocumentForge, DocumentScope } from './documentScope';
+export { readFact, readingFor, renderUnder, sameScopeReads } from './documentScope';
+export type { DocumentForge, DocumentReading, DocumentScope, ForgeFactReader, ForgeFactState } from './documentScope';

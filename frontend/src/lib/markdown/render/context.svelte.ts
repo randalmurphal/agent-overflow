@@ -4,7 +4,7 @@ import type { Component, Snippet } from 'svelte';
 import type { Theme } from './theme';
 import type { MermaidConfig } from 'mermaid';
 import type { KatexOptions } from 'katex';
-import type { Alignment, DocumentContext, ProvenAppend } from '../parser/index';
+import type { Alignment, DocumentContext, DocumentReading, DocumentScope, ProvenAppend } from '../parser/index';
 import type { ColorScheme } from '../parser/extensions/themedImages';
 // The class below assigns these props at runtime (`bind`); the interface types them.
 // eslint-disable-next-line typescript/no-unsafe-declaration-merging
@@ -61,6 +61,19 @@ export class StreamdownContext {
         setContext('streamdown', this);
     }
 }
+const BLOCK_SCOPE = Symbol('streamdown-block-scope');
+const NO_BLOCK_SCOPE = (): DocumentScope | null => null;
+
+/** Gives the elements a Block renders its document scope, for what they
+ * read when they render (an html token's text). */
+export const setBlockScope = (scope: () => DocumentScope | null): void => {
+    setContext(BLOCK_SCOPE, scope);
+};
+
+/** The document scope of the Block rendering this element; null outside one. */
+export const useBlockScope = (): (() => DocumentScope | null) =>
+    getContext<(() => DocumentScope | null) | undefined>(BLOCK_SCOPE) ?? NO_BLOCK_SCOPE;
+
 export const useStreamdown = (): StreamdownContext => {
     const context = getContext<StreamdownContext | undefined>('streamdown');
     if (!context) {
@@ -178,7 +191,9 @@ export type StreamdownProps = {
             important?: string;
         };
     };
-    renderHtml?: boolean | ((token: Tokens.HTML | Tokens.Tag) => string);
+    /** `reading` is the block's (parser/documentScope.ts#readingFor): what
+     * the render reads of its scope is recorded there. */
+    renderHtml?: boolean | ((token: Tokens.HTML | Tokens.Tag, reading?: DocumentReading | null) => string);
     icons?: {
         fullscreen?: Snippet;
         note?: Snippet;

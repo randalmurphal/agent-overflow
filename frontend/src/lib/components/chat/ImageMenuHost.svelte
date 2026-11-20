@@ -2,7 +2,8 @@
   /**
    * Right-click (long-press on the phone) menu for images: Copy Image and
    * Save Image, on a thread's image attachments, on forge images in PR and
-   * MR bodies and comments, and on images an agent wrote as a local path,
+   * MR bodies and comments, on files of a PR's repository its body shows,
+   * which add Copy Path, and on images an agent wrote as a local path,
    * which add Copy Path and Copy Markdown (`utils/imageMenuActions.ts`).
    *
    * Mounted once from `App.svelte`, built like `DiagramInteractionHost`:
@@ -28,6 +29,7 @@
     copyLocalImageMarkdown,
     copyLocalImagePath,
     copyMenuImage,
+    copyRepositoryImagePath,
     saveMenuImage,
     saveMenuImageLabel,
     taggedMenuImage,
@@ -105,8 +107,10 @@
   // The clipboard write is reached before the first await, inside the
   // click; the outcome is reported by the action.
   function copyPath(): void {
-    if (menu?.target.kind !== 'local') return;
-    void copyLocalImagePath(menu.target);
+    const target = menu?.target;
+    if (target?.kind === 'local') void copyLocalImagePath(target);
+    else if (target?.kind === 'repository') void copyRepositoryImagePath(target.image);
+    else return;
     close();
   }
 
@@ -189,6 +193,8 @@
     {#if menu.target.kind === 'local'}
       <MenuItem label="Copy Path" onSelect={copyPath} />
       <MenuItem label="Copy Markdown" onSelect={copyMarkdown} />
+    {:else if menu.target.kind === 'repository'}
+      <MenuItem label="Copy Path" onSelect={copyPath} />
     {/if}
     <MenuItem
       label={saveLabel}

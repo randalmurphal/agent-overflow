@@ -32,6 +32,13 @@
   // tier rather than releasing it and measuring: acquiring is what starts a
   // fetch, so measuring first would leave that fetch running unused.
   //
+  // Loading: the box is reserved as soon as it is knowable
+  // (utils/imageBox.ts), from the authored size at mount, the intrinsic
+  // size a host knows before any request (`intrinsic`, a repository
+  // image's fact), or the size the answer that mints the byte transfer
+  // gives (`MediaHandle.sized`), before the bytes cross. Only an image
+  // none of these sizes shows the loading chip.
+  //
   // A host that already holds a tier hands its handle over (`initial`). This
   // component owns that claim from then on and releases it like any other,
   // so an upgrade leaves nothing retained behind it; the host's own release
@@ -51,7 +58,9 @@
   import type { ImageSize } from '../../../markdown';
   import { localImageFailureReason } from '../../../utils/localImageCache';
   import type { MarkdownImageSource, MarkdownImageVariant } from '../../../utils/markdownImageSource';
-  import { rememberDecodedSize, type MediaHandle } from '../../../utils/mediaBlobCache';
+  import { rememberDecodedSize, type ImageSize as PixelSize, type MediaHandle } from '../../../utils/mediaBlobCache';
+  import { reservedImageBox } from '../../../utils/imageBox';
+  import MarkdownImageBox from './MarkdownImageBox.svelte';
 
   let {
     source,
@@ -61,6 +70,7 @@
     size,
     linked = false,
     initial,
+    intrinsic,
     ondecodeerror,
   }: {
     source: MarkdownImageSource;
@@ -78,6 +88,8 @@
      * overrides the remembered tier.
      */
     initial?: Held;
+    /** The original's pixel size, when the host knows it before any byte. */
+    intrinsic?: PixelSize;
     /** Hands a decode failure to the host's own chip instead of this one's. */
     ondecodeerror?: () => void;
   } = $props();
@@ -94,6 +106,8 @@
   let error = $state('');
   let reason = $state('');
   let loading = $state(false);
+  // The size the mint answer gave, while the first bytes are on their way.
+  let minted = $state.raw<PixelSize | null>(null);
 
   // Bookkeeping the template never reads.
   let painted: Painted | null = null;
@@ -114,6 +128,7 @@
       reason = '';
       loading = false;
       image = null;
+      minted = null;
       if (initial) {
         request(initial.tier, initial.handle);
         return;
@@ -146,7 +161,12 @@
     }
     const held = { tier, handle };
     pending = held;
-    if (!painted) loading = true;
+    if (!painted) {
+      loading = true;
+      void handle.sized.then((size) => {
+        if (pending === held && !painted && size) minted = size;
+      });
+    }
     void handle.value.then(
       (value) => {
         if (pending !== held) return;
@@ -232,6 +252,7 @@
   });
 
   const label = $derived(`Preview ${alt || source.filename}`);
+  const reserved = $derived(reservedImageBox(size, intrinsic ?? minted));
 
   function handleLoad(event: Event): void {
     if (image) rememberDecodedSize(image, event.currentTarget as HTMLImageElement);
@@ -326,6 +347,8 @@
   >
     [Image unavailable: {alt || 'No description'}{reason ? ` (${reason})` : ''}]
   </span>
+{:else if loading && reserved}
+  <MarkdownImageBox box={reserved} {size} label={`Loading ${alt || source.filename}`} measure={watchBox} />
 {:else if loading}
   <span
     data-streamdown-image-loading

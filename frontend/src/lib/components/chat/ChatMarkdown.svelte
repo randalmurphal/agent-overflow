@@ -57,6 +57,7 @@
     type Alignment,
     type DocumentContext,
     type DocumentForge,
+    type DocumentReading,
     type Extension,
     type ProvenAppend,
     type Tokens,
@@ -280,6 +281,11 @@
   const forgeNumber = $derived(forgeSource?.pr.number ?? 0);
   const forgeBackend = $derived(forgeSource?.backend ?? '');
   const forgeWebBase = $derived(forgeSource?.webBase ?? '');
+  // What the forge answered about the names this body mentions, as of now:
+  // a new reader per change of the PR's facts, which re-derives only the
+  // document context below, never the extensions. A block whose lex read
+  // none of the changed facts keeps its DOM (`sameScopeReads`).
+  const forgeFacts = $derived(forgeForge === 'github' || forgeForge === 'gitlab' ? (forgeSource?.facts ?? null) : null);
   // The forge attachment extensions, and the same claim for media the
   // parser never sees as a token: a forge wrapper (`<p align="center"><img
   // …>`, `<a href><img>`, a screenshot table, a `<details>` body) is ONE
@@ -304,7 +310,8 @@
   );
   const renderEmbeddedHtml = $derived.by(() => {
     const options = forgeOptions.html;
-    return (token: Tokens.HTML | Tokens.Tag) => sanitizeEmbeddedHtmlToken(token, options);
+    // `reading` is the token's block's, so its text reads the PR's facts.
+    return (token: Tokens.HTML | Tokens.Tag, reading?: DocumentReading | null) => sanitizeEmbeddedHtmlToken(token, options, reading);
   });
 
   const extensions = $derived.by(() => {
@@ -421,7 +428,7 @@
     parseBlocks(prefix, extensions, prefixAlignmentCache, prefixAppend);
     return {
       align: alignmentAtEnd(prefixAlignmentCache),
-      document: documentContextOf(prefixAlignmentCache, extensions ?? NO_EXTENSIONS, prefixDocumentCache, documentForge),
+      document: documentContextOf(prefixAlignmentCache, extensions ?? NO_EXTENSIONS, prefixDocumentCache, documentForge, forgeFacts),
     };
   });
   const tailAlignStart = $derived(prefixState.align);
@@ -432,12 +439,19 @@
   // `#name` links jump within it (markdown/fragmentLinks.ts).
   const settledBlocksCache = createParseBlocksCache();
   const settledDocumentCache = createDocumentContextCache();
-  const settledDocument = $derived.by((): DocumentContext | null => {
+  // The parse apart from the fold, so new facts fold nothing and parse
+  // nothing: only the context's scopes are handed out again.
+  const settledBlocks = $derived.by((): { blocks: ReturnType<typeof createParseBlocksCache> } | null => {
     if (streaming) return null;
     const source = processedSource;
     const needed = mayNeedDocumentContext(source, documentForge);
     if (needed) parseBlocks(source, extensions, settledBlocksCache);
-    return documentContextOf(needed ? settledBlocksCache : NO_BLOCKS, extensions ?? NO_EXTENSIONS, settledDocumentCache, documentForge);
+    return { blocks: needed ? settledBlocksCache : NO_BLOCKS };
+  });
+  const settledDocument = $derived.by((): DocumentContext | null => {
+    const parsed = settledBlocks;
+    if (!parsed) return null;
+    return documentContextOf(parsed.blocks, extensions ?? NO_EXTENSIONS, settledDocumentCache, documentForge, forgeFacts);
   });
   const documentContext = $derived(streaming ? prefixState.document : settledDocument);
 

@@ -30,6 +30,11 @@
   //
   // An authored size and alignment (render/imageSize.ts) size and place a
   // player as they do a picture.
+  //
+  // While loading, the box is reserved once it is knowable
+  // (MarkdownImageBox.svelte): from an authored size at mount, else from the
+  // size the answer that mints the transfer gives an image
+  // (`MediaHandle.sized`), before the bytes cross. Otherwise the chip.
   import Film from '@lucide/svelte/icons/film';
   import Music from '@lucide/svelte/icons/music';
   import Paperclip from '@lucide/svelte/icons/paperclip';
@@ -60,6 +65,9 @@
   } from '../../../utils/imageTiers';
   import { claimedInLink, forgeMarkdownImageSource } from '../../../utils/markdownImageSource';
   import MarkdownImage from './MarkdownImage.svelte';
+  import MarkdownImageBox from './MarkdownImageBox.svelte';
+  import { reservedImageBox } from '../../../utils/imageBox';
+  import type { ImageSize as PixelSize } from '../../../utils/mediaBlobCache';
 
   let { token }: { token: Tokens.Image } = $props();
 
@@ -93,6 +101,8 @@
   let error = $state('');
   let loading = $state(false);
   let decodeFailed = $state(false);
+  // An image's size from the mint answer, while its bytes are on their way.
+  let minted = $state.raw<PixelSize | null>(null);
 
   $effect(() => {
     const target = parsed;
@@ -105,6 +115,7 @@
     }
     error = '';
     decodeFailed = false;
+    minted = null;
     if (at === null) {
       // Unmeasured: the loading chip reports its container's width first.
       resolved = null;
@@ -122,6 +133,9 @@
     } else {
       resolved = null;
       loading = true;
+      void handle.sized.then((size) => {
+        if (!disposed && size) minted = size;
+      });
       void handle.value
         .then((value) => {
           if (disposed) return;
@@ -158,6 +172,7 @@
   const alt = $derived(token.text || name);
   const linked = $derived(claimedInLink(token));
   const size = $derived(imageSizeOf(token));
+  const reserved = $derived(reservedImageBox(size, minted));
 
   function handleDecodeError(): void {
     decodeFailed = true;
@@ -191,6 +206,8 @@
         open on {parsed?.pr.forge === 'gitlab' ? 'GitLab' : 'GitHub'}
       </a>
     {/if}
+  {:else if (loading || !resolved) && reserved}
+    <MarkdownImageBox box={reserved} {size} label={`Loading ${name}`} measure={measureFirst} />
   {:else if loading || !resolved}
     <span
       data-forge-attachment-loading

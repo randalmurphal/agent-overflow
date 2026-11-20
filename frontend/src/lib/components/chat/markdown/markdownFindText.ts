@@ -57,6 +57,8 @@ import {
   sanitizeEmbeddedHtmlToken,
   tableCellRenders,
   type DocumentContext,
+  type DocumentReading,
+  type ForgeFactReader,
   type ParseBlocksCache,
   type StreamdownToken,
 } from '../../../markdown';
@@ -74,6 +76,9 @@ export interface MarkdownFindTextOptions {
   /** Fenced blocks ChatMarkdown's `codeClaim` renders as something find
    * skips (codeClaim.ts), by their info string. */
   claimsCode?: (lang: string) => boolean;
+  /** The PR's facts as of now, as ChatMarkdown reads them from the same
+   * source (`ForgeAttachmentSource.facts`). */
+  facts?: () => ForgeFactReader | null;
 }
 
 export interface MarkdownFindText {
@@ -83,6 +88,9 @@ export interface MarkdownFindText {
   readonly all: readonly FindRun[];
   /** Whether each <details>, in document order, renders open. */
   readonly details: readonly boolean[];
+  /** Each fact the projection read, with its signature then: the text
+   * stands while every one still signs the same. */
+  readonly factReads: readonly (readonly [string, string])[];
 }
 
 interface TokenLike {
@@ -98,6 +106,8 @@ interface TokenLike {
   rowspan?: number;
   variant?: string;
   title?: string;
+  scope?: string | null;
+  name?: string;
   tokens?: TokenLike[];
   parts?: (string | TokenLike)[];
 }
@@ -116,10 +126,12 @@ export const SHOWS: Record<StreamdownToken['type'], Shows> = {
   align: 'nothing', paragraph: 'block', heading: 'block', blockquote: 'block', list: 'block', list_item: 'block',
   table: 'block', caption: 'block', checkbox: 'nothing', thead: 'inline', tbody: 'inline', tfoot: 'inline', tr: 'block',
   descriptionList: 'block', description: 'inline', descriptionTerm: 'block', descriptionDetail: 'block',
+  // A file excerpt: its header paragraph and its code, as themselves.
+  codeSnippet: 'block',
   detailsSummary: 'block',
   strong: 'inline', em: 'inline', del: 'inline', sub: 'inline', sup: 'inline', mdx: 'inline', htmlInline: 'inline', inlineDiff: 'inline',
   code: 'own', html: 'own', codespan: 'own', escape: 'own', footnoteRef: 'own', 'inline-citations': 'own',
-  details: 'own', link: 'own', td: 'own', th: 'own', alert: 'own', text: 'own', htmlRegion: 'own',
+  details: 'own', link: 'own', labelChip: 'own', td: 'own', th: 'own', alert: 'own', text: 'own', htmlRegion: 'own',
 };
 
 /**
@@ -152,9 +164,12 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     details.push(initial);
     return open?.[details.length - 1] ?? initial;
   };
+  // The block being walked, whose scope its HTML's text reads under, as
+  // the renderer's (render/elements/Element.svelte).
+  let reading: DocumentReading | null = null;
   const html = (token: TokenLike) => {
     if (!options.embeddedHtml) return;
-    const out = sanitizeEmbeddedHtmlToken({ raw: token.raw ?? '', block: token.block }, forge.html);
+    const out = sanitizeEmbeddedHtmlToken({ raw: token.raw ?? '', block: token.block }, forge.html, reading);
     if (out === '') return;
     if (!token.block) {
       // A stray inline tag shows a void element, which ends the run as a
@@ -179,7 +194,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
       return;
     }
     flush();
-    const parsed = parseHtmlRegion(token.parts ?? [], (each) => sanitizeEmbeddedHtmlToken(each, forge.html));
+    const parsed = parseHtmlRegion(token.parts ?? [], (each, at) => sanitizeEmbeddedHtmlToken(each, forge.html, at), reading);
     endRunsAtClaims(parsed.root);
     // Each island's runs, walked where it sits among the fragment's
     // <details> so every <details> is numbered in document order.
@@ -263,6 +278,9 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
         if (!show) hidden -= 1;
         return;
       }
+      case 'labelChip':
+        add(`${token.scope ?? ''}${token.name ?? ''}`);
+        return;
       case 'link':
         walk(token.tokens);
         if (linkTagText(token.href, [...CHAT_LINK_PREFIXES])) flush();
@@ -299,17 +317,38 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
   const body = blocksOf(shown);
   const forgeName = options.forgeSource?.pr.forge;
   const documentForge = forgeName === 'github' || forgeName === 'gitlab' ? forgeName : null;
-  const document = documentContextOf(body.cache, extensions, createDocumentContextCache(), documentForge);
+  // The facts a lex reads, through a reader that records each key.
+  const facts = documentForge ? (options.facts?.() ?? null) : null;
+  const read = new Set<string>();
+  const recording: ForgeFactReader | null = facts && {
+    get: (key) => {
+      read.add(key);
+      return facts.get(key);
+    },
+    signature: (key) => facts.signature(key),
+  };
+  const document = documentContextOf(body.cache, extensions, createDocumentContextCache(), documentForge, recording);
   const walkBlocks = ({ blocks, cache }: ReturnType<typeof blocksOf>, context: DocumentContext | null) => {
     for (const [index, block] of blocks.entries()) {
       if (blockAlignment(cache, index) === 'marker') continue;
-      walk(lex(block, extensions, context?.scope(index) ?? null) as unknown as TokenLike[]);
+      const scope = context?.scope(index) ?? null;
+      reading = scope && { scope, reads: new Set() };
+      walk(lex(block, extensions, scope) as unknown as TokenLike[]);
       flush();
     }
   };
   walkBlocks(body, document);
   if (document?.footnoteSection) walkBlocks(blocksOf(document.footnoteSection), document.after);
-  return { runs: all.filter((each) => each.shown).map((each) => each.text), all, details };
+  const factReads = facts && read.size > 0 ? [...read].map((key) => [key, facts.signature(key)] as const) : NO_FACT_READS;
+  return { runs: all.filter((each) => each.shown).map((each) => each.text), all, details, factReads };
+}
+
+const NO_FACT_READS: readonly (readonly [string, string])[] = Object.freeze([]);
+
+/** Whether every fact `text` read still signs as it did. */
+function factsHold(text: MarkdownFindText, facts: ForgeFactReader | null): boolean {
+  for (const [key, signature] of text.factReads) if ((facts?.signature(key) ?? '') !== signature) return false;
+  return true;
 }
 
 /** A claimed medium's host (ForgeAttachmentHost) is an image, a player or
@@ -318,9 +357,9 @@ function endRunsAtClaims(root: Element): void {
   for (const marker of root.querySelectorAll(`[${MEDIA_CLAIM_ATTR}]`)) marker.setAttribute('data-find-skip', '');
 }
 
-/** Holds `markdownFindText` per source while the sources and the options'
- * generation stay the same; a source with <details> the reader toggled is
- * read fresh. */
+/** Holds `markdownFindText` per source while the sources, the options'
+ * generation and the facts each read stay the same; a source with
+ * <details> the reader toggled is read fresh. */
 export function createMarkdownFindTextCache(options: MarkdownFindTextOptions): (source: string, open?: readonly boolean[]) => MarkdownFindText {
   let held = new Map<string, MarkdownFindText>();
   let used = new Map<string, MarkdownFindText>();
@@ -333,6 +372,8 @@ export function createMarkdownFindTextCache(options: MarkdownFindTextOptions): (
     }
     if (open) return markdownFindText(source, options, open);
     let text = used.get(source) ?? held.get(source);
+    // A text whose facts changed is read again; one that read none stands.
+    if (text && text.factReads.length > 0 && !factsHold(text, options.facts?.() ?? null)) text = undefined;
     if (!text) text = markdownFindText(source, options);
     used.set(source, text);
     if (used.size >= 512) {

@@ -31,7 +31,7 @@ import { getLexOptions, lex } from './lexer';
 import type { Extension } from './lexer';
 import type { ParseBlocksCache } from './parseBlocks.cache';
 import { forEachBlockToken, installDocumentScope, isTocMarker, sameScopeReads } from './documentScope';
-import type { DocumentForge, DocumentScope, DocumentToc } from './documentScope';
+import type { DocumentForge, DocumentScope, DocumentToc, ForgeFactReader } from './documentScope';
 import { footnoteRefAnchor } from './extensions/footnotes';
 import type { Footnote } from './extensions/footnotes';
 
@@ -86,6 +86,8 @@ export interface DocumentContextCache {
 	/** The scopes a block's forge lex runs under (`first` false, true): the
 	 * folded definitions of `context`. */
 	factScopes: readonly [DocumentScope, DocumentScope] | null;
+	/** `context` under the host's facts last asked for, and those facts. */
+	withFacts: { readonly base: DocumentContext; readonly facts: ForgeFactReader; readonly context: DocumentContext } | null;
 }
 
 export const createDocumentContextCache = (): DocumentContextCache => ({
@@ -98,7 +100,8 @@ export const createDocumentContextCache = (): DocumentContextCache => ({
 	context: null,
 	blocks: null,
 	generation: 0,
-	factScopes: null
+	factScopes: null,
+	withFacts: null
 });
 
 const FORGE_GATE = /\]:|\[\^|#|\[toc\]|\[\[_toc_\]\]|\n[ \t>]*[=-]/i;
@@ -296,11 +299,47 @@ const linksKey = (links: Links): string => {
 	return key;
 };
 
+/** `base` with every scope it hands out reading `facts`. */
+const contextWithFacts = (base: DocumentContext, facts: ForgeFactReader): DocumentContext => {
+	const scopes: DocumentScope[] = [];
+	let after: DocumentContext | undefined;
+	const context: DocumentContext = {
+		forge: base.forge,
+		scope: (index) => (scopes[index] ??= { ...base.scope(index), facts }),
+		get after() {
+			return (after ??= base.after === base ? context : contextWithFacts(base.after, facts));
+		},
+		footnoteSection: base.footnoteSection
+	};
+	return context;
+};
+
 /**
  * The context for the document `blocks` last parsed. `extensions` are the ones the
- * blocks render with.
+ * blocks render with. `facts` is the host's knowledge of what the document
+ * names, which every scope hands to its block's lex; a change of it alone
+ * folds nothing again, and a block that read none of it keeps its output
+ * (`sameScopeReads`). What other blocks need from a block is read without
+ * it: a fact changes how a name renders, never a definition, footnote or
+ * heading anchor.
  */
 export const documentContextOf = (
+	blocks: ParseBlocksCache,
+	extensions: Extension[],
+	cache: DocumentContextCache,
+	forge: DocumentForge,
+	facts: ForgeFactReader | null = null
+): DocumentContext => {
+	const base = foldedContextOf(blocks, extensions, cache, forge);
+	if (!facts) return base;
+	const held = cache.withFacts;
+	if (held && held.base === base && held.facts === facts) return held.context;
+	const context = contextWithFacts(base, facts);
+	cache.withFacts = { base, facts, context };
+	return context;
+};
+
+const foldedContextOf = (
 	blocks: ParseBlocksCache,
 	extensions: Extension[],
 	cache: DocumentContextCache,

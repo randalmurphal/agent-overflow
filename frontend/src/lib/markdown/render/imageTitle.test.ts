@@ -15,7 +15,7 @@ const titleOf = async (content: string): Promise<string | null | undefined> => {
 			theme: chatMarkdownTheme,
 			content,
 			extensions: EMBEDDED_HTML_EXTENSIONS,
-			renderHtml: sanitizeEmbeddedHtmlToken,
+			renderHtml: (token) => sanitizeEmbeddedHtmlToken(token),
 			allowedImagePrefixes: ['https://']
 		}
 	});

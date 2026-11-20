@@ -29,7 +29,7 @@ describe('the text hook', () => {
   it('is not asked inside code, pre, tt or samp, and links nothing inside an anchor or kbd', () => {
     const hook = vi.fn(issues);
     const out = block('<p><code>#1</code><pre>#2</pre><tt>#3</tt><samp>#4</samp><a href="https://example.invalid/">#5</a><kbd>#6</kbd></p>', { text: hook });
-    expect(hook.mock.calls).toEqual([['#5', false], ['#6', false]]);
+    expect(hook.mock.calls).toEqual([['#5', false, null], ['#6', false, null]]);
     expect(out).toContain('<a href="https://example.invalid/">#5</a>');
     expect(out).toContain('<kbd>#6</kbd>');
     expect(out).not.toContain('issues');
@@ -59,6 +59,23 @@ describe('the text hook', () => {
     expect(doc.body.querySelector('img')!.getAttribute('src')).toBe('https://example.invalid/i.png%22%20onerror=%22x');
     expect(doc.body.querySelector('img')!.getAttributeNames().sort()).toEqual(['alt', 'src']);
     expect(doc.body.textContent).toBe('<script>alert(1)</script>jsrelative<img src=x onerror=alert(1)><b>');
+  });
+
+  it('draws a returned label chip as the renderers do, its colors and href by their rules', () => {
+    const chip = (fields: Record<string, unknown>): Token =>
+      ({ type: 'labelChip', raw: '~x', text: 'x', scope: null, name: 'x', href: 'https://example.invalid/l', title: null, color: null, textColor: null, ...fields }) as unknown as Token;
+    const chips: SanitizeEmbeddedHtmlOptions['text'] = () => [
+      text('a '),
+      chip({ color: '#d9534f', textColor: '#ffffff' }),
+      text(' b '),
+      chip({ scope: 'type', name: 'bug', text: 'typebug', href: 'javascript:alert(1)', color: 'red;background:url(x)', textColor: '#fff"><b>' }),
+    ];
+    const out = block('<p>run</p>', { text: chips });
+    expect(out).toBe(
+      '<p>a <a data-streamdown-label-chip="" class="md-label-chip" href="https://example.invalid/l" target="_blank" rel="noopener noreferrer" style="border-color: #d9534f;">' +
+        '<span class="md-label-chip-key" style="background-color: #d9534f; color: #ffffff;">x</span></a>' +
+        ' b <span data-streamdown-label-chip="" class="md-label-chip md-label-chip-scoped"><span class="md-label-chip-key">type</span><span class="md-label-chip-value">bug</span></span></p>',
+    );
   });
 
   it('renders a returned image through the media claim', () => {
