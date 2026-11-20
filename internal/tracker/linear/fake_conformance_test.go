@@ -114,10 +114,17 @@ type conformanceEnv struct {
 
 func newConformanceEnv(t *testing.T) *conformanceEnv {
 	t.Helper()
+	return newFakeEnv(t, conformanceWorkspace())
+}
+
+// newFakeEnv is a client of a stateful fake holding w, whose key is the
+// conformance workspace's.
+func newFakeEnv(t *testing.T, w trackerfake.LinearWorkspace) *conformanceEnv {
+	t.Helper()
 	clock := &conformanceClock{now: cfStart}
 	e := trackerfake.New(trackerfake.Options{Now: clock.Now})
 	t.Cleanup(e.Close)
-	if err := e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{conformanceWorkspace()}}); err != nil {
+	if err := e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{w}}); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := trackerfake.Serve(e)
@@ -449,7 +456,7 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		q := RecentQuery{Filter: IssueFilter{Teams: []string{cfTeam}}, Limit: 2}
 		first := answered(f.c.RecentIssues(f.ctx, q)).must(t)
 		want(t, slices.Equal(identifiers(first.Items), []string{"WEB-1", "WEB-2"}) && first.HasNextPage &&
-			first.Next.Ceiling.Equal(f.issue(t, cfIssue2).UpdatedAt) && slices.Equal(first.Next.AtCeiling, []string{cfIssue2}),
+			first.Next.Bound.Equal(f.issue(t, cfIssue2).UpdatedAt) && slices.Equal(first.Next.At, []string{cfIssue2}),
 			"first page %v next %+v", identifiers(first.Items), first.Next)
 		// The page's last issue is updated between pages: it moves to the
 		// front, behind the walk, and the issue after it is neither

@@ -75,8 +75,8 @@ func TestChangedRows(t *testing.T) {
 	// server's Date is this computer's clock), so the next walk resumes
 	// exactly after it.
 	var cur cursorJSON
-	if err := json.Unmarshal(pg.Next, &cur); err != nil || !cur.Floor.Equal(mustTime(second.UpdatedAt)) ||
-		!slices.Equal(cur.AtFloor, []string{issueID(2)}) || cur.Walk != nil || cur.Team != web {
+	if err := json.Unmarshal(pg.Next, &cur); err != nil || !cur.Bound.Equal(mustTime(second.UpdatedAt)) ||
+		!slices.Equal(cur.At, []string{issueID(2)}) || cur.Walk != nil || cur.Team != web {
 		t.Errorf("next cursor %s %v", pg.Next, err)
 	}
 }
@@ -155,35 +155,6 @@ func (s *syncer) next() cursorJSON {
 	return cur
 }
 
-// More issues sharing one update time than a page holds, polled across
-// restarts, are each delivered once; the walk after delivers none, in
-// one request.
-func TestChangedRowsCohortAcrossRestarts(t *testing.T) {
-	t.Parallel()
-	cohort := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	clock := cohort.Add(time.Hour)
-	store := pollStore(cohort.Add(-time.Hour), &clock)
-	for i := range 600 {
-		store.Updated[issueID(i+1)] = cohort
-	}
-	s := &syncer{t: t, srv: lineartest.NewServer(t, store.Script(4)...), start: cohort.Add(-time.Hour)}
-	seen, requests := s.walk()
-	if len(seen) != 600 || requests != 3 {
-		t.Fatalf("%d issues delivered in %d requests", len(seen), requests)
-	}
-	for id, n := range seen {
-		if n != 1 {
-			t.Fatalf("issue %s delivered %d times in one walk", id, n)
-		}
-	}
-	if cur := s.next(); !cur.Floor.Equal(cohort) || len(cur.AtFloor) != 600 || cur.Walk != nil {
-		t.Fatalf("cursor after the walk: floor %v, %d left out, walk %+v", cur.Floor, len(cur.AtFloor), cur.Walk)
-	}
-	if seen, requests = s.walk(); len(seen) != 0 || requests != 1 {
-		t.Errorf("the next walk delivered %d in %d requests", len(seen), requests)
-	}
-}
-
 // Three idle ticks after a walk whose newest update is older than the
 // overlap deliver nothing, at one request each.
 func TestChangedRowsIdleTicks(t *testing.T) {
@@ -216,7 +187,7 @@ func TestChangedRowsOverlap(t *testing.T) {
 	store.Updated[issueID(1)] = updated
 	s := &syncer{t: t, srv: lineartest.NewServer(t, store.Script(3)...), start: updated}
 	s.walk()
-	if cur := s.next(); !cur.Floor.Equal(clock.Truncate(time.Second).Add(-tracker.DeltaOverlap)) || cur.AtFloor != nil {
+	if cur := s.next(); !cur.Bound.Equal(clock.Truncate(time.Second).Add(-tracker.DeltaOverlap)) || cur.At != nil {
 		t.Fatalf("cursor inside the overlap: %+v", cur)
 	}
 	clock = clock.Add(2 * time.Minute)
@@ -231,7 +202,7 @@ func TestChangedRowsOverlap(t *testing.T) {
 	noDate.Updated[issueID(1)] = updated
 	s = &syncer{t: t, srv: lineartest.NewServer(t, noDate.Script(2)...), start: updated}
 	s.walk()
-	if cur := s.next(); !cur.Floor.Equal(updated.Add(-tracker.DeltaOverlap)) || cur.AtFloor != nil {
+	if cur := s.next(); !cur.Bound.Equal(updated.Add(-tracker.DeltaOverlap)) || cur.At != nil {
 		t.Fatalf("cursor without a Date: %+v", cur)
 	}
 	if seen, _ := s.walk(); len(seen) != 1 {
@@ -273,7 +244,8 @@ func TestChangedRowsRefusesForeignCursor(t *testing.T) {
 	t.Parallel()
 	p, _ := newProvider(t)
 	t0 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	pc := linear.PollCursor{Floor: t0, AtFloor: []string{issueID(1)}, Walk: &linear.PollWalk{Start: t0, Delivered: true}}
+	drain := "c1"
+	pc := linear.PollCursor{Position: linear.Position{Bound: t0, At: []string{issueID(1)}, Drain: &drain}, Walk: &linear.PollWalk{Start: t0, Delivered: true}}
 	good, err := encodeCursor(web, pc)
 	if err != nil {
 		t.Fatal(err)
@@ -281,17 +253,24 @@ func TestChangedRowsRefusesForeignCursor(t *testing.T) {
 	if back, err := decodeCursor(web, good); err != nil || !reflect.DeepEqual(back, pc) {
 		t.Fatalf("round trip %+v %v", back, err)
 	}
+	if !strings.Contains(string(good), `"v":3,`) {
+		t.Fatalf("cursor %s is not version 3", good)
+	}
 	other, _ := encodeCursor(app, pc)
 	for name, c := range map[string]tracker.Cursor{
-		"other team":     other,
-		"not JSON":       tracker.Cursor("not a cursor"),
-		"empty":          tracker.Cursor{},
-		"version 1":      tracker.Cursor(strings.Replace(string(good), `"v":2`, `"v":1`, 1)),
-		"version 3":      tracker.Cursor(strings.Replace(string(good), `"v":2`, `"v":3`, 1)),
-		"no version":     tracker.Cursor(strings.Replace(string(good), `"v":2,`, ``, 1)),
-		"unknown member": tracker.Cursor(strings.Replace(string(good), `"v":2`, `"v":2,"x":1`, 1)),
-		"trailing data":  append(append(tracker.Cursor{}, good...), []byte(`{}`)...),
-		"version 1 form": tracker.Cursor(`{"v":1,"team":"` + web + `","since":"2026-11-01T00:00:00Z","after":"c1","floor":"2026-11-01T00:00:00Z"}`),
+		"other team":       other,
+		"not JSON":         tracker.Cursor("not a cursor"),
+		"empty":            tracker.Cursor{},
+		"version 2":        tracker.Cursor(strings.Replace(string(good), `"v":3`, `"v":2`, 1)),
+		"version 4":        tracker.Cursor(strings.Replace(string(good), `"v":3`, `"v":4`, 1)),
+		"no version":       tracker.Cursor(strings.Replace(string(good), `"v":3,`, ``, 1)),
+		"unknown member":   tracker.Cursor(strings.Replace(string(good), `"v":3`, `"v":3,"x":1`, 1)),
+		"repeated member":  tracker.Cursor(strings.Replace(string(good), `"v":3`, `"v":3,"team":"`+app+`"`, 1)),
+		"member in a case": tracker.Cursor(strings.Replace(string(good), `"team"`, `"Team"`, 1)),
+		"trailing object":  append(append(tracker.Cursor{}, good...), []byte(`{}`)...),
+		"trailing brace":   append(append(tracker.Cursor{}, good...), '}'),
+		"version 2 form":   tracker.Cursor(`{"v":2,"team":"` + web + `","floor":"2026-11-01T00:00:00Z","atFloor":["a"]}`),
+		"version 1 form":   tracker.Cursor(`{"v":1,"team":"` + web + `","since":"2026-11-01T00:00:00Z","after":"c1","floor":"2026-11-01T00:00:00Z"}`),
 	} {
 		_, err := p.ChangedRows(context.Background(), tracker.DeltaQuery{Board: web, From: c})
 		if !errors.Is(err, tracker.ErrInvalidInput) {
@@ -303,16 +282,16 @@ func TestChangedRowsRefusesForeignCursor(t *testing.T) {
 	}
 }
 
-// positionsX is one page of a listing's walk of issues, by ID and order.
-// positionJSON is is as a positions read answers it.
-func positionJSON(is lineartest.Issue) string {
+// positionNode is is as a positions read answers it.
+func positionNode(is lineartest.Issue) string {
 	return js(map[string]any{"id": is.ID, "sortOrder": is.SortOrder, "team": map[string]string{"id": is.Team}})
 }
 
+// positionsX is one page of a listing's walk of issues, by ID and order.
 func positionsX(vars string, more bool, cursor string, issues ...lineartest.Issue) lineartest.Exchange {
 	var nodes []string
 	for _, is := range issues {
-		nodes = append(nodes, positionJSON(is))
+		nodes = append(nodes, positionNode(is))
 	}
 	return lineartest.Exchange{Op: "IssuePositions", Vars: vars, Body: lineartest.Data(lineartest.PageJSON(nodes, more, cursor))}
 }

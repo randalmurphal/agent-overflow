@@ -411,7 +411,11 @@ Source for schema facts: the
   six issues exactly: after two were delivered, the next page was the
   other four in order. `updatedAt: {eq: ...}` with an issue's own
   millisecond `updatedAt` returned that issue alone under a
-  creation-ordered sort.
+  creation-ordered sort. That `eq` beside `id: {nin: [...]}` was accepted,
+  returned the issue when another was named and nothing when it was, and
+  took `after` with the first page's cursor (no more issues, no error).
+  Two issues sharing one `updatedAt` could not be produced, so a cursor
+  page inside such a run is not measured.
 - Measured the same day. A catalog nested under an issue is charged by
   its `first` whatever the issue page's `first`:
   `issues(first: F) { nodes { id team { members(first: N) { nodes { id } } } } }`

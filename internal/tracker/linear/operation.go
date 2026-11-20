@@ -20,6 +20,9 @@ type operation struct {
 	// for its outcome. A mutation's document aliases its payload's entity
 	// as "value".
 	mutation bool
+	// results are a mutation's response keys holding its payloads, each
+	// of which must say success: true for the write to have applied.
+	results []string
 	// maxBody bounds the answer when the default 8 MiB is too small: a
 	// page of issues carries their descriptions.
 	maxBody int64
@@ -37,7 +40,7 @@ func newQuery(name, root, text string) operation {
 // newMutation makes and registers a mutation; its document aliases the
 // root field "result".
 func newMutation(name, text string) operation {
-	return register(operation{name: name, root: "result", text: text, mutation: true})
+	return register(operation{name: name, root: "result", text: text, mutation: true, results: []string{"result"}})
 }
 
 func register(op operation) operation {
@@ -68,7 +71,11 @@ var families = map[string]family{}
 func newMutationFamily(name string, max int, text func(n int) string) family {
 	f := family{name: name, docs: make([]operation, max)}
 	for n := 1; n <= max; n++ {
-		f.docs[n-1] = operation{name: name, text: text(n), mutation: true}
+		results := make([]string, n)
+		for i := range results {
+			results[i] = alias(i)
+		}
+		f.docs[n-1] = operation{name: name, text: text(n), mutation: true, results: results}
 	}
 	register(f.docs[max-1])
 	families[name] = f

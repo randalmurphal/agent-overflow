@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -74,14 +73,14 @@ func TestRecentIssuesPagesByPosition(t *testing.T) {
 			break
 		}
 	}
-	if !slices.Equal(got, []string{"WEB-1", "WEB-2", "WEB-3", "WEB-4"}) || !q.From.Ceiling.Equal(base.Add(time.Minute)) || !slices.Equal(q.From.AtCeiling, []string{"issue-d"}) {
+	if !slices.Equal(got, []string{"WEB-1", "WEB-2", "WEB-3", "WEB-4"}) || !q.From.Bound.Equal(base.Add(time.Minute)) || !slices.Equal(q.From.At, []string{"issue-d"}) {
 		t.Errorf("walked %v, ended at %+v", got, q.From)
 	}
 }
 
 // A page that breaks the newest-first order, one that lists an issue
-// left out, one holding none that says more follow, and a cohort past
-// its bound fail the call; a left-out ID that is not one is refused.
+// left out and one holding none that says more follow fail the call; a
+// left-out ID that is not one is refused.
 func TestRecentIssuesErrors(t *testing.T) {
 	t.Parallel()
 	ceiling := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
@@ -94,21 +93,13 @@ func TestRecentIssuesErrors(t *testing.T) {
 		lineartest.Exchange{Op: "Issues", Vars: vars, Body: recentPage(true)},
 	)
 	c := f.client(t)
-	q := RecentQuery{Filter: IssueFilter{Teams: []string{"team-web"}}, From: RecentCursor{Ceiling: ceiling, AtCeiling: []string{"issue-a"}}}
+	q := RecentQuery{Filter: IssueFilter{Teams: []string{"team-web"}}, From: Position{Bound: ceiling, At: []string{"issue-a"}}}
 	for _, what := range []string{"newer", "left out", "empty with more"} {
 		if _, err := c.RecentIssues(context.Background(), q); err == nil {
 			t.Errorf("a page %s: no error", what)
 		}
 	}
-	full := position{newest: true, bound: ceiling}
-	for i := range maxCohort {
-		full.at = append(full.at, fmt.Sprintf("issue-%04d", i))
-	}
-	_, err := full.advance([]Issue{{ID: "issue-x", UpdatedAt: ceiling}})
-	if e, ok := errors.AsType[*CohortTooLargeError](err); !ok || e.Count != maxCohort+1 || !e.At.Equal(ceiling) {
-		t.Errorf("a cohort past the bound: %v", err)
-	}
-	q.From.AtCeiling = []string{""}
+	q.From.At = []string{""}
 	if _, err := c.RecentIssues(context.Background(), q); !errors.Is(err, trackerapi.ErrInvalidInput) {
 		t.Errorf("a bad left-out ID: %v", err)
 	}

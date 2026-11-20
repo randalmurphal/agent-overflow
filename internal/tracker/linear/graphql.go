@@ -3,11 +3,11 @@ package linear
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -37,17 +37,6 @@ type mutationData[T any] struct {
 	Result *payload[T] `json:"result"`
 }
 
-func (d *mutationData[T]) state() payloadState {
-	if d.Result == nil {
-		return payloadNone
-	}
-	return successState(d.Result.Success)
-}
-
-// payloadStater is a mutation answer's data, which says the write's
-// outcome. Every mutation's out implements it.
-type payloadStater interface{ state() payloadState }
-
 // reply is what a call reports beside its data.
 type reply struct {
 	Usage  Usage
@@ -65,9 +54,9 @@ type answer struct {
 	scrub  func(string) string
 }
 
-// call sends op with vars and decodes the answer's data into out in one
-// pass over the body. A mutation's out is a payloadStater. Its errors
-// name the operation; the transport's stay reachable through errors.As.
+// call sends op with vars and decodes the answer's data into out. Its
+// errors name the operation; the transport's stay reachable through
+// errors.As.
 func (c *Client) call(ctx context.Context, op operation, vars, out any) (reply, error) {
 	resp, err := c.http.Do(ctx, trackerapi.Request{
 		Method:       http.MethodPost,
@@ -82,22 +71,34 @@ func (c *Client) call(ctx context.Context, op operation, vars, out any) (reply, 
 	// The client's Usage was recorded by observeAnswer; this answer's
 	// own is read from its headers so a page keeps it under concurrency.
 	r := reply{Usage: usageOf(resp.Header), Status: resp.Status, Served: servedAt(resp.Header)}
-	a := answer{op: op, status: resp.Status, scrub: resp.Scrub}
-	present, wire, err := decodeAnswer(resp.Body, out)
+	return r, c.readAnswer(answer{op: op, status: resp.Status, scrub: resp.Scrub}, resp.Body, out)
+}
+
+// readAnswer reads body, an answer to a.op the transport passed, into out
+// and returns the call's error. The answer is checked whole first
+// (parseAnswer); then its errors and, for a write, the outcome its
+// payloads say decide, whatever the entities beside them hold; only an
+// answer that succeeded is decoded into out, and an entity that does not
+// decode leaves a write's outcome unknown.
+func (c *Client) readAnswer(a answer, body []byte, out any) error {
+	data, wire, err := parseAnswer(body)
 	if err != nil {
-		return r, a.decodeError("decode the answer", err)
+		return a.decodeError("decode the answer", err)
 	}
 	outcome := payloadNone
-	if op.mutation && present {
-		outcome = out.(payloadStater).state()
+	if a.op.mutation {
+		outcome = readOutcome(data, a.op.results)
 	}
-	if len(wire) > 0 || (op.mutation && outcome != payloadSucceeded) {
-		return r, c.failure(a, wire, outcome, nil)
+	if len(wire) > 0 || (a.op.mutation && outcome != payloadSucceeded) {
+		return c.failure(a, wire, outcome, nil)
 	}
-	if !present {
-		return r, &Error{Op: op.name, Status: resp.Status}
+	if data == nil {
+		return &Error{Op: a.op.name, Status: a.status}
 	}
-	return r, nil
+	if err := jsonv2.Unmarshal(data, out, decodeOptions); err != nil {
+		return a.decodeError("decode the answer's data", err)
+	}
+	return nil
 }
 
 // servedAt is the time an answer's Date header names, zero when it has
@@ -111,48 +112,54 @@ func servedAt(h http.Header) time.Time {
 }
 
 // decodeOptions read an answer as encoding/json does where Linear's
-// answers could differ: text that is not valid UTF-8 becomes U+FFFD and
-// a repeated member keeps its last value.
-var decodeOptions = jsonv2.JoinOptions(jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
+// answers could differ: text that is not valid UTF-8 becomes U+FFFD. A
+// member named twice in one object is refused, as a GraphQL answer never
+// repeats a name (jsontext's default).
+var decodeOptions = jsontext.AllowInvalidUTF8(true)
 
-// decodeAnswer reads a GraphQL answer in one pass: its errors, and its
-// data straight into out, so the data is never held as raw bytes.
-// present reports data that is neither absent nor null; out is
-// untouched when it is not.
-func decodeAnswer(body []byte, out any) (present bool, wire []wireError, err error) {
+// parseAnswer checks body as one GraphQL answer and returns its data
+// and its errors. The answer is one JSON object with nothing after it
+// but whitespace, every object in it naming each member once; anything
+// else fails. data is the data member's bytes within body, nil when it
+// is absent or null, so no copy of a page is made; it is checked as
+// JSON, not decoded.
+func parseAnswer(body []byte) (data []byte, wire []wireError, err error) {
 	dec := jsontext.NewDecoder(bytes.NewBuffer(body), decodeOptions)
 	if tok, err := dec.ReadToken(); err != nil {
-		return false, nil, err
+		return nil, nil, err
 	} else if tok.Kind() != '{' {
-		return false, nil, errors.New("the answer is not a JSON object")
+		return nil, nil, errors.New("the answer is not a JSON object")
 	}
 	for dec.PeekKind() != '}' {
 		name, err := dec.ReadToken()
 		if err != nil {
-			return false, nil, err
+			return nil, nil, err
 		}
-		switch name.String() {
-		case "data":
-			if dec.PeekKind() == 'n' {
-				_, err = dec.ReadToken()
-				present = false
-				break
-			}
-			present = true
-			err = jsonv2.UnmarshalDecode(dec, out, decodeOptions)
-		case "errors":
-			err = jsonv2.UnmarshalDecode(dec, &wire, decodeOptions)
-		default:
-			err = dec.SkipValue()
-		}
+		// A token is valid only until the next read.
+		key := name.String()
+		v, err := dec.ReadValue()
 		if err != nil {
-			return false, nil, err
+			return nil, nil, err
+		}
+		switch key {
+		case "data":
+			if v.Kind() != 'n' {
+				end := int(dec.InputOffset())
+				data = body[end-len(v) : end : end]
+			}
+		case "errors":
+			if err := jsonv2.Unmarshal(v, &wire, decodeOptions); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 	if _, err := dec.ReadToken(); err != nil {
-		return false, nil, err
+		return nil, nil, err
 	}
-	return present, wire, nil
+	if _, err := dec.ReadToken(); err != io.EOF {
+		return nil, nil, errors.New("the answer goes on after its JSON object")
+	}
+	return data, wire, nil
 }
 
 // payloadState is what a mutation answer's data says about the write.
@@ -162,21 +169,49 @@ const (
 	// payloadNone is no result: data or the result absent or null.
 	payloadNone payloadState = iota
 	// payloadUnsaid is a result without a boolean success: missing,
-	// null or another type.
+	// null, another type, or a result that is not an object.
 	payloadUnsaid
 	payloadFailed    // success: false
 	payloadSucceeded // success: true
 )
 
-// successState reads a payload's success as decoded into an any.
-func successState(v any) payloadState {
-	switch v {
-	case true:
-		return payloadSucceeded
-	case false:
-		return payloadFailed
+// readOutcome is what data says of a write whose payloads are at the
+// response keys results: the least of theirs, so it succeeded only when
+// every payload says success: true. It reads each payload's success
+// alone, whatever its entity holds; a key data lacks, or one it holds
+// null, is no result.
+func readOutcome(data []byte, results []string) payloadState {
+	if data == nil {
+		return payloadNone
 	}
-	return payloadUnsaid
+	if len(results) == 0 {
+		return payloadUnsaid
+	}
+	var members map[string]jsontext.Value
+	if jsonv2.Unmarshal(data, &members, decodeOptions) != nil {
+		return payloadUnsaid
+	}
+	out := payloadSucceeded
+	for _, key := range results {
+		v, ok := members[key]
+		s := payloadNone
+		if ok && v.Kind() != 'n' {
+			var p struct {
+				Success any `json:"success"`
+			}
+			s = payloadUnsaid
+			if jsonv2.Unmarshal(v, &p, decodeOptions) == nil {
+				switch p.Success {
+				case true:
+					s = payloadSucceeded
+				case false:
+					s = payloadFailed
+				}
+			}
+		}
+		out = min(out, s)
+	}
+	return out
 }
 
 // mutate sends a mutation and returns its payload's entity, nil when
@@ -222,14 +257,13 @@ func (c *Client) transportError(op operation, err error) error {
 	if !ok {
 		return fmt.Errorf("linear %s: %w", op.name, err)
 	}
-	var data mutationData[json.RawMessage]
-	present, wire, derr := decodeAnswer([]byte(statusErr.Body), &data)
+	data, wire, derr := parseAnswer([]byte(statusErr.Body))
 	if derr != nil || len(wire) == 0 {
 		return fmt.Errorf("linear %s: %w", op.name, err)
 	}
 	outcome := payloadNone
-	if op.mutation && present {
-		outcome = data.state()
+	if op.mutation {
+		outcome = readOutcome(data, op.results)
 	}
 	return c.failure(answer{op: op, status: statusErr.Status, scrub: statusErr.Scrub}, wire, outcome, err)
 }

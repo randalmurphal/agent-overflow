@@ -26,8 +26,8 @@ func drain(t *testing.T, f *fake, from PollCursor) (map[string][]time.Time, Poll
 		for _, issue := range p.Items {
 			seen[issue.ID] = append(seen[issue.ID], issue.UpdatedAt)
 		}
-		if p.Next.Floor.Before(from.Floor) {
-			t.Fatalf("Floor went back from %v to %v", from.Floor, p.Next.Floor)
+		if p.Next.Bound.Before(from.Bound) {
+			t.Fatalf("the floor went back from %v to %v", from.Bound, p.Next.Bound)
 		}
 		from = p.Next
 		if !p.HasNextPage {
@@ -69,25 +69,25 @@ func TestPollUpdateBetweenPagesLosesNothing(t *testing.T) {
 			t.Errorf("issue %s delivered at %v, want again at %v", id, got, want)
 		}
 	}
-	if !next.Floor.Equal(later.Add(time.Second)) || !slices.Equal(next.AtFloor, []string{"010"}) || next.Walk == nil || !next.Walk.Delivered {
+	if !next.Bound.Equal(later.Add(time.Second)) || !slices.Equal(next.At, []string{"010"}) || next.Walk == nil || !next.Walk.Delivered {
 		t.Errorf("next %+v, want the newest update", next)
 	}
 }
 
-// More issues sharing one update time than a page holds are each
-// delivered once, the cursor leaving out by ID those already delivered;
-// the walk resumed after them delivers nothing in one request.
-func TestPollCohortLargerThanAPage(t *testing.T) {
+// A tie of as many issues as a cohort holds is left out by ID: each is
+// delivered once, and the walk resumed after them delivers nothing in
+// one request.
+func TestPollFullCohort(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	since := at.Add(-time.Hour)
 	store := lineartest.NewPollStore("team-web", true, issuePage, since)
-	for i := range 600 {
+	for i := range maxCohort {
 		store.Updated[fmt.Sprintf("%03d", i)] = at
 	}
-	f := newFake(t, store.Script(4)...)
+	f := newFake(t, store.Script(2)...)
 	seen, next := drain(t, f, Restart(since))
-	if len(seen) != 600 {
+	if len(seen) != maxCohort {
 		t.Fatalf("%d issues delivered", len(seen))
 	}
 	for id, times := range seen {
@@ -95,8 +95,8 @@ func TestPollCohortLargerThanAPage(t *testing.T) {
 			t.Fatalf("issue %s delivered %d times", id, len(times))
 		}
 	}
-	if !next.Floor.Equal(at) || len(next.AtFloor) != 600 {
-		t.Fatalf("next floor %v with %d left out", next.Floor, len(next.AtFloor))
+	if !next.Bound.Equal(at) || len(next.At) != maxCohort {
+		t.Fatalf("next floor %v with %d left out", next.Bound, len(next.At))
 	}
 	seen, next = drain(t, f, next.Resume())
 	if len(seen) != 0 || next.Walk.Delivered {
@@ -127,32 +127,6 @@ func TestPollIdleResumes(t *testing.T) {
 	}
 }
 
-// A cohort past maxCohort fails the poll with its size rather than
-// growing every later request.
-func TestPollCohortBound(t *testing.T) {
-	t.Parallel()
-	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	store := lineartest.NewPollStore("team-web", false, issuePage, at)
-	for i := range maxCohort + 1 {
-		store.Updated[fmt.Sprintf("%04d", i)] = at
-	}
-	f := newFake(t, store.Script(5)...)
-	from := Restart(at)
-	var err error
-	for range 5 {
-		var p PollPage
-		p, err = f.client(t).PollIssues(context.Background(), PollQuery{TeamID: "team-web", From: from})
-		if err != nil {
-			break
-		}
-		from = p.Next
-	}
-	e, ok := errors.AsType[*CohortTooLargeError](err)
-	if !ok || e.Count != maxCohort+1 || !e.At.Equal(at) {
-		t.Fatalf("err %v", err)
-	}
-}
-
 // An empty poll with no team and no time reads every issue and keeps
 // its bounds; a page out of order, one listing an issue left out, and a
 // left-out ID that is not one fail the call.
@@ -169,20 +143,33 @@ func TestPollIssuesEmptyAndErrors(t *testing.T) {
 	)
 	c := f.client(t)
 	p, err := c.PollIssues(context.Background(), PollQuery{})
-	if err != nil || len(p.Items) != 0 || !p.Next.Floor.IsZero() || p.Next.AtFloor != nil || p.Next.Walk == nil || p.Next.Walk.Delivered {
+	if err != nil || len(p.Items) != 0 || !p.Next.Bound.IsZero() || p.Next.At != nil || p.Next.Walk == nil || p.Next.Walk.Delivered {
 		t.Fatalf("poll %+v %v", p, err)
 	}
 	if p.Next.Walk.Start.IsZero() {
 		t.Error("the walk's start is not the answer's Date")
 	}
-	from := PollCursor{Floor: since, AtFloor: []string{"a"}}
+	from := PollCursor{Position: Position{Bound: since, At: []string{"a"}}}
 	for _, what := range []string{"older", "left out"} {
 		if _, err := c.PollIssues(context.Background(), PollQuery{From: from}); err == nil {
 			t.Errorf("a page listing an issue %s: no error", what)
 		}
 	}
-	_, err = c.PollIssues(context.Background(), PollQuery{From: PollCursor{Floor: since, AtFloor: []string{""}}})
-	if !errors.Is(err, trackerapi.ErrInvalidInput) {
-		t.Errorf("a bad left-out ID: %v", err)
+	overfull := make([]string, maxCohort+1)
+	for i := range overfull {
+		overfull[i] = fmt.Sprintf("issue-%03d", i)
+	}
+	for name, bad := range map[string]Position{
+		"an empty left-out ID":    {Bound: since, At: []string{""}},
+		"a cohort past its bound": {Bound: since, At: overfull},
+		"a tie at the start":      {At: []string{"a"}},
+		"past the start":          {Past: true},
+		"past with a cohort":      {Bound: since, At: []string{"a"}, Past: true},
+		"past while draining":     {Bound: since, Drain: new(string), Past: true},
+		"draining from the start": {Drain: new(string)},
+	} {
+		if _, err := c.PollIssues(context.Background(), PollQuery{From: PollCursor{Position: bad}}); !errors.Is(err, trackerapi.ErrInvalidInput) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

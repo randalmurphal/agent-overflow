@@ -251,7 +251,7 @@ func TestChangedRowsWalkEnds(t *testing.T) {
 	}
 	var cur cursorJSON
 	want := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
-	if err := json.Unmarshal(pg.Next, &cur); err != nil || !cur.Floor.Equal(want) || !slices.Equal(cur.AtFloor, []string{issueID(1)}) || cur.Walk != nil {
+	if err := json.Unmarshal(pg.Next, &cur); err != nil || !cur.Bound.Equal(want) || !slices.Equal(cur.At, []string{issueID(1)}) || cur.Walk != nil {
 		t.Errorf("cursor after the walk %s %v", pg.Next, err)
 	}
 }

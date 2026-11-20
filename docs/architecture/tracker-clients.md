@@ -300,6 +300,17 @@ problem on that record, which stays usable.
   computed from again and refuses when it changed, a clear included.
   That recheck is the last read before the first write; it narrows the
   window and is not atomic, since Jira offers no precondition.
+- **Last read.** A write that rests on a read (an edit, a comment edit, a
+  transition, a worklog edit, a sprint move) sends no other request
+  between that read and the write. When something must be sent after it
+  (an image upload, a user lookup), the record is read again before the
+  write. A caller that passes a record as just read (`Current`) has sent
+  nothing since reading it.
+- **Caches.** Every cached answer (users, the signed-in user, the field
+  catalog, board configurations, sprint lists) is kept with the
+  `CredentialMark` it was drawn under and is handed out only while the
+  transport's own mark equals it, so a credential that is read again,
+  forgotten or replaced retires them all, whichever call caused it.
 - **Write answers.** A write is applied when its answer is a success form
   the spec documents and names what was written, or is a documented empty
   success such as a 204. One that names it but fails to decode elsewhere
@@ -377,7 +388,10 @@ set are sent as read. Billable time is the exception when the change sets
 a new time spent and no billable time: a fully billable record stays fully
 billable, and a record billed below its time is never left billed above
 the new time. Tempo bills the whole time when an update names none, so a
-billable time that was read is always sent.
+billable time that was read is always sent. An update reads the record
+again as its last request before the write and is refused (`Changed`) when
+it no longer holds what the change started from, since Tempo takes no
+precondition and the checks sit between the caller's read and the write.
 
 Checks run before a write. Those decidable from the op alone (issue,
 author, start date, durations, each attribute given once with a key and a
@@ -433,12 +447,13 @@ A Linear page cursor follows its issue: it means "after where that issue
 is now" ([measured](../references/tracker-api-measurements.md)). So a walk
 pages by cursor only in an order nothing changes (creation, or a fixed
 list). A walk ordered by update time or by manual order never does. Issues
-are polled oldest update first from a stored `PollCursor` that is a
-position no update can move: the update time of the newest issue
-delivered and the IDs delivered at exactly that time, which the next page
-leaves out unless they were updated since. A run of issues sharing one
-timestamp larger than a page drains across restarts, up to 1,000 issues;
-past that the poll fails with `*CohortTooLargeError`. A page hands up
+are polled oldest update first from a stored `Position` no update can
+move: the update time of the newest issue delivered and the IDs delivered
+at exactly that time (at most 100), which the next page leaves out unless
+they were updated since. A larger run of issues sharing one timestamp is
+drained by a walk of exactly that timestamp in creation order, paged by
+cursor, and the poll then continues strictly past it, so no run is too
+large to pass and every stored position resumes. A page hands up
 Linear's own clock (its `Date` header) so the provider can decide where
 the next walk starts. Polling cannot see a hard delete. The same cycle is
 set on up to 50 issues by one `issueBatchUpdate`, and manual order by one

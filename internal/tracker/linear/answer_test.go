@@ -1,154 +1,188 @@
 package linear
 
 import (
-	"context"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
-	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/secret"
-	"agent-overflow/internal/tracker/trackerapi"
-
 	"agent-overflow/internal/tracker/linear/lineartest"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
-// escapedKey is lineartest.Key as JSON may spell it inside a string, its first
-// underscore written as a \u escape, which a text scrub of the raw body
-// cannot match.
-var escapedKey = strings.Replace(lineartest.Key, "_", `\`+"u005f", 1)
+func identity(s string) string { return s }
 
-type scrubCase struct {
-	name   string
-	status int
-	body   string
-	issue  bool // ask for an issue rather than the viewer
-}
-
-// scrubCases puts the key, as written and JSON-escaped, in each place
-// of an error answer, under each status that reaches a different path:
-// a 200 the client decodes, a 400 the transport refuses with a body,
-// and a 401 the transport takes as a refused key.
-func scrubCases() []scrubCase {
-	var cases []scrubCase
-	for _, key := range []string{lineartest.Key, escapedKey} {
-		bodies := map[string]string{
-			"message, code, type and path": `{"data":null,"errors":[{"message":"bad ` + key + `","path":["` + key + `"],` +
-				`"extensions":{"code":"` + key + `","type":"` + key + `","userError":true}}]}`,
-			"presentable message": `{"errors":[{"message":"m","extensions":{"code":"INPUT_ERROR","userPresentableMessage":"key ` + key + `"}}]}`,
-			"raw message":         `{"errors":[{"message":"key ` + key + `","extensions":{"code":"INPUT_ERROR","userPresentableMessage":"m"}}]}`,
-			"refused key":         `{"errors":[{"message":"key ` + key + ` refused","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`,
-		}
-		for what, body := range bodies {
-			for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusUnauthorized} {
-				cases = append(cases, scrubCase{name: fmt.Sprintf("%s, %s, HTTP %d", key, what, status), status: status, body: body})
-			}
-		}
-		issue := strings.Replace(lineartest.IssueJSON("issue-1", "WEB-1", "KEY", 1), `"updatedAt":"KEY"`, `"updatedAt":"`+key+`"`, 1)
-		cases = append(cases, scrubCase{name: key + ", decoder quote", status: http.StatusOK, body: `{"data":{"issue":` + issue + `}}`, issue: true})
+// settleWrite is what an answer the transport passed proves about an
+// ArchiveIssue write.
+func settleWrite(body string) (outcome, error) {
+	var data mutationData[wireIssue]
+	err := (&Client{}).readAnswer(answer{op: opArchiveIssue, status: 200, scrub: identity}, []byte(body), &data)
+	if err == nil && data.Result.Value == nil {
+		err = errors.New("no entity")
 	}
-	return cases
+	return outcomeOf(err), err
 }
 
-// Answer text that echoes the key the request carried never reaches an
-// error, however JSON spells it: GraphQL messages, codes, types and
-// paths, Linear's message for a refused key, and a decoder's quote of
-// the data. Text is scrubbed after it is decoded.
-func TestAnswerTextIsScrubbed(t *testing.T) {
+// Malformed answers to a write, each with the outcome it proves. A
+// GraphQL answer is one JSON object naming each member once with nothing
+// after it; any other answer proves nothing, so a write is unknown,
+// whatever it says. A present success: false proves the refusal even
+// when the entity beside it does not decode. Each row's outcome is the
+// one the earlier two-step decode gave, except where noted: it took the
+// last of a repeated member.
+func TestWriteAnswerShapes(t *testing.T) {
 	t.Parallel()
-	for _, tc := range scrubCases() {
-		var err error
-		if tc.issue {
-			f := newFake(t, lineartest.Exchange{Op: "Issue", Vars: `{"id":"WEB-1"}`, Status: tc.status, Body: tc.body})
-			_, err = f.client(t).Issue(context.Background(), "WEB-1")
-		} else {
-			f := newFake(t, lineartest.Exchange{Op: "Viewer", Status: tc.status, Body: tc.body})
-			_, err = f.client(t).Viewer(context.Background())
-		}
-		if err == nil {
-			t.Errorf("%s: no error", tc.name)
-			continue
-		}
-		text := err.Error()
-		if e, ok := errors.AsType[*Error](err); ok {
-			for _, g := range e.Errors {
-				text += fmt.Sprint(g.Message, g.Code, g.Type, g.Path, g.rawMessage)
-			}
-		}
-		if auth, ok := errors.AsType[*trackerapi.AuthError](err); ok {
-			text += auth.Message
-		}
-		// The transport's message for a 401 shows the presentable message
-		// only, so the raw one leaves no trace to redact.
-		shown := tc.status != http.StatusUnauthorized || !strings.Contains(tc.name, "raw message")
-		if strings.Contains(text, lineartest.Key) || (shown && !strings.Contains(text, secret.Redacted)) {
-			t.Errorf("%s: %s", tc.name, text)
-		}
-	}
-}
-
-// Not found is the resource the call asked for missing, said by an
-// error at the root field of the call. The same error deeper in the
-// answer, or without a path, is a failed read.
-func TestNotFoundOnlyAtRoot(t *testing.T) {
-	t.Parallel()
-	missing := func(path string) string {
-		return `{"data":null,"errors":[{"message":"Entity not found: Issue",` + path +
-			`"extensions":{"code":"INPUT_ERROR","userError":true}}]}`
-	}
-	for _, tc := range []struct {
-		name, op, body string
-		want           bool
+	issue := lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)
+	ok := `{"data":{"result":{"success":true,"value":` + issue + `}}}`
+	userErr := `[{"message":"bad","extensions":{"code":"INPUT_ERROR","userError":true}}]`
+	badEntity := `{"id":"issue-1","updatedAt":"invalid"}`
+	for _, c := range []struct {
+		name, body string
+		want       outcome
 	}{
-		{"read root", "Issue", missing(`"path":["issue"],`), true},
-		{"read nested", "Issue", missing(`"path":["issue","project"],`), false},
-		{"read no path", "Issue", missing(``), false},
-		{"read other code", "Issue", strings.Replace(missing(`"path":["issue"],`), "INPUT_ERROR", "INTERNAL_ERROR", 1), false},
-		{"read other message", "Issue", strings.Replace(missing(`"path":["issue"],`), "Entity not found", "Bad", 1), false},
-		{"write root", "ArchiveIssue", missing(`"path":["result"],`), true},
-		{"write nested", "ArchiveIssue", missing(`"path":["result","value"],`), false},
+		{"complete", ok, applied},
+		{"whitespace after", ok + " \n\t", applied},
+		{"another member beside data", `{"extensions":{"x":1},"data":{"result":{"success":true,"value":` + issue + `}}}`, applied},
+		{"text not UTF-8", `{"data":{"result":{"success":true,"value":` + strings.Replace(issue, `"WEB-1"`, "\"WEB-\xff\"", 1) + `}}}`, applied},
+		// Repeated members, refused anywhere (the earlier decode took the
+		// last, so the second row read as applied).
+		{"data twice, applied first", `{"data":{"result":{"success":true,"value":` + issue + `}},"data":{"result":{}}}`, unknown},
+		{"data twice, applied last", `{"data":{"result":{}},"data":{"result":{"success":true,"value":` + issue + `}}}`, unknown},
+		{"result twice", `{"data":{"result":{"success":false},"result":{"success":true,"value":` + issue + `}}}`, unknown},
+		{"success twice", `{"data":{"result":{"success":false,"success":true,"value":` + issue + `}}}`, unknown},
+		{"a member of the entity twice", `{"data":{"result":{"success":true,"value":` + strings.Replace(issue, `"id":"issue-1"`, `"id":"issue-1","id":"issue-2"`, 1) + `}}}`, unknown},
+		{"errors twice", `{"errors":` + userErr + `,"errors":[],"data":null}`, unknown},
+		// What follows the object.
+		{"bytes after", ok + `garbage`, unknown},
+		{"a second object after", ok + `{}`, unknown},
+		{"a refusal followed by bytes", `{"data":{"result":{"success":false}}}x`, unknown},
+		// Not an answer.
+		{"empty body", ``, unknown},
+		{"whitespace", "  \n", unknown},
+		{"null", `null`, unknown},
+		{"an array", `[]`, unknown},
+		{"cut short", `{"data":{"result":{"success":true`, unknown},
+		{"no members", `{}`, unknown},
+		// Wrong types.
+		{"data an array", `{"data":[]}`, unknown},
+		{"data a string", `{"data":"x"}`, unknown},
+		{"result a string", `{"data":{"result":"x"}}`, unknown},
+		{"errors an object", `{"data":null,"errors":{"message":"x"}}`, unknown},
+		{"an error of the wrong shape", `{"data":null,"errors":[{"message":1}]}`, unknown},
+		// The entity does not decode: the payload's success decides.
+		{"refused, entity does not decode", `{"data":{"result":{"success":false,"value":` + badEntity + `}}}`, refused},
+		{"refused with errors, entity does not decode", `{"data":{"result":{"success":false,"value":` + badEntity + `}},"errors":` + userErr + `}`, refused},
+		{"applied, entity does not decode", `{"data":{"result":{"success":true,"value":` + badEntity + `}}}`, unknown},
+		{"entity of the wrong type", `{"data":{"result":{"success":true,"value":[]}}}`, unknown},
+		// Partial data and errors beside it.
+		{"no result, user errors", `{"data":{"result":null},"errors":` + userErr + `}`, refused},
+		{"data null, user errors", `{"data":null,"errors":` + userErr + `}`, refused},
+		{"applied with errors", `{"data":{"result":{"success":true,"value":` + issue + `}},"errors":` + userErr + `}`, unknown},
+		{"empty errors beside success", `{"data":{"result":{"success":true,"value":` + issue + `}},"errors":[]}`, applied},
+		{"success missing", `{"data":{"result":{"value":` + issue + `}}}`, unknown},
 	} {
-		f := newFake(t, lineartest.Exchange{Op: tc.op, Vars: `{"id":"WEB-1"}`, Body: tc.body})
-		c := f.client(t)
-		var err error
-		if tc.op == "Issue" {
-			_, err = c.Issue(context.Background(), "WEB-1")
-		} else {
-			_, err = c.ArchiveIssue(context.Background(), "WEB-1")
-		}
-		if _, ok := errors.AsType[*Error](err); !ok {
-			t.Errorf("%s: %v is not an *Error", tc.name, err)
-		}
-		if got := errors.Is(err, trackerapi.ErrNotFound); got != tc.want {
-			t.Errorf("%s: ErrNotFound %t, want %t (%v)", tc.name, got, tc.want, err)
+		got, err := settleWrite(c.body)
+		if got != c.want {
+			t.Errorf("%s: %s, want %s (%v)", c.name, got, c.want, err)
 		}
 	}
 }
 
-// A mutation is sent once whatever the failure: a 503, a reset
-// connection, a rate limit answered on a 200 to a person's own action.
-// A query is sent again after each.
-func TestRetryOnlyQueries(t *testing.T) {
+// Malformed answers to a read: an answer that is not a whole, well-formed
+// GraphQL answer is a decode error; errors beside data are the call's
+// error whatever the data holds, so a not-found stays one; data absent
+// with no errors is an *Error naming none.
+func TestReadAnswerShapes(t *testing.T) {
 	t.Parallel()
-	limited := `{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}`
-	unavailable := lineartest.Exchange{Status: http.StatusServiceUnavailable, Header: map[string]string{"Retry-After": "0"}, Body: `{"errors":[{"message":"busy"}]}`}
-	rateLimited := lineartest.Exchange{Body: limited, Header: map[string]string{"Retry-After": "0"}}
-	reset := lineartest.Exchange{Reset: true}
-	for name, failure := range map[string]lineartest.Exchange{"503": unavailable, "rate limit on 200": rateLimited, "reset": reset} {
-		mutation := failure
-		mutation.Op, mutation.Vars = "ArchiveIssue", `{"id":"WEB-1"}`
-		f := newFake(t, mutation)
-		ctx := trackerapi.WithInteractive(context.Background())
-		if _, err := f.client(t).ArchiveIssue(ctx, "WEB-1"); err == nil {
-			t.Errorf("%s: the mutation succeeded", name)
+	notFoundErr := `[{"message":"Entity not found: Issue","path":["issue"],"extensions":{"code":"INPUT_ERROR","userError":true}}]`
+	read := func(body string) error {
+		var data struct {
+			Issue *wireIssue `json:"issue"`
 		}
-
-		query := failure
-		query.Op = "Viewer"
-		f = newFake(t, query, lineartest.Exchange{Op: "Viewer", Body: viewerData})
-		if _, err := f.client(t).Viewer(ctx); err != nil {
-			t.Errorf("%s: the query was not sent again: %v", name, err)
+		return (&Client{}).readAnswer(answer{op: opIssueSummary, status: 200, scrub: identity}, []byte(body), &data)
+	}
+	isDecode := func(err error) bool { return err != nil && strings.Contains(err.Error(), "decode the answer") }
+	isNotFound := func(err error) bool { return errors.Is(err, trackerapi.ErrNotFound) }
+	isEmpty := func(err error) bool { e, ok := errors.AsType[*Error](err); return ok && len(e.Errors) == 0 }
+	for _, c := range []struct {
+		name string
+		body string
+		want func(error) bool
+	}{
+		{"not found beside data that does not decode", `{"data":{"issue":"x"},"errors":` + notFoundErr + `}`, isNotFound},
+		{"not found beside null data", `{"data":null,"errors":` + notFoundErr + `}`, isNotFound},
+		{"no data, no errors", `{"data":null}`, isEmpty},
+		{"no members", `{}`, isEmpty},
+		{"data that does not decode", `{"data":{"issue":"x"}}`, isDecode},
+		{"data twice", `{"data":{"issue":null},"data":{"issue":null}}`, isDecode},
+		{"a member twice deep in data", `{"data":{"issue":{"id":"a","id":"b"}}}`, isDecode},
+		{"bytes after", `{"data":{"issue":null}}x`, isDecode},
+		{"empty body", ``, isDecode},
+		{"not an object", `[]`, isDecode},
+	} {
+		if err := read(c.body); !c.want(err) {
+			t.Errorf("%s: %v", c.name, err)
 		}
 	}
+	if err := read(`{"data":{"issue":null}}`); err != nil {
+		t.Errorf("a well-formed answer: %v", err)
+	}
+}
+
+// The outcome of an aliased write is the least of its payloads': an
+// alias the data lacks or holds null is no result, so the write is not
+// taken as applied.
+func TestReadOutcomeOfAliases(t *testing.T) {
+	t.Parallel()
+	results := []string{"i0", "i1"}
+	for data, want := range map[string]payloadState{
+		`{"i0":{"success":true},"i1":{"success":true}}`:  payloadSucceeded,
+		`{"i0":{"success":true}}`:                        payloadNone,
+		`{"i0":{"success":true},"i1":null}`:              payloadNone,
+		`{"i0":{"success":true},"i1":{"success":false}}`: payloadFailed,
+		`{"i0":{"success":true},"i1":{}}`:                payloadUnsaid,
+		`{"i0":{"success":true},"i1":"x"}`:               payloadUnsaid,
+	} {
+		if got := readOutcome([]byte(data), results); got != want {
+			t.Errorf("%s: %d, want %d", data, got, want)
+		}
+	}
+	if got := readOutcome([]byte(`{"result":{"success":true}}`), nil); got != payloadUnsaid {
+		t.Errorf("a write that names no payload: %d", got)
+	}
+}
+
+// A write is never taken as applied unless its answer is one complete,
+// well-formed JSON object naming each member once, whose errors are
+// absent or empty, and whose payload says success: true.
+func FuzzWriteAnswer(f *testing.F) {
+	issue := lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)
+	for _, seed := range []string{
+		`{"data":{"result":{"success":true,"value":` + issue + `}}}`,
+		`{"data":{"result":{"success":false,"value":` + issue + `}}}`,
+		`{"data":{"result":{"success":true,"value":` + issue + `}},"data":{"result":{}}}`,
+		`{"data":{"result":{"success":true,"value":` + issue + `}}}garbage`,
+		`{"data":null,"errors":[{"message":"bad"}]}`,
+		``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if got, _ := settleWrite(string(body)); got != applied {
+			return
+		}
+		var doc struct {
+			Data struct {
+				Result struct {
+					Success jsontext.Value `json:"success"`
+				} `json:"result"`
+			} `json:"data"`
+			Errors []jsontext.Value `json:"errors"`
+		}
+		err := jsonv2.Unmarshal(body, &doc, jsontext.AllowInvalidUTF8(true))
+		if err != nil || len(doc.Errors) > 0 || string(doc.Data.Result.Success) != "true" {
+			t.Fatalf("applied from %q (%v)", body, err)
+		}
+	})
 }

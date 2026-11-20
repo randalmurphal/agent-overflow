@@ -64,7 +64,7 @@ func manualX(after string, more bool, cursor string, issues ...lineartest.Issue)
 	}
 	var nodes []string
 	for _, is := range issues {
-		nodes = append(nodes, positionJSON(is))
+		nodes = append(nodes, positionNode(is))
 	}
 	return lineartest.Exchange{Op: "IssuePositions", Vars: js(v), Body: lineartest.Data(lineartest.PageJSON(nodes, more, cursor))}
 }

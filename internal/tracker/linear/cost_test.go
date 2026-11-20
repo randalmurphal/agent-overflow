@@ -34,8 +34,20 @@ func costIssuePage(n int, description bool) []byte {
 	return b.Bytes()
 }
 
-// BenchmarkDecodeIssuePage is call's decode of one page: decodeAnswer's
-// single pass over the answer into the page, then each issue converted.
+// decodeIssuePage is call's decode of one page: the answer checked
+// whole, its data decoded into the page, then each issue converted.
+func decodeIssuePage(body []byte, n int) error {
+	var data rootPage[wireIssue]
+	if err := (&Client{}).readAnswer(answer{op: opIssues, status: 200, scrub: func(s string) string { return s }}, body, &data); err != nil {
+		return err
+	}
+	p, err := page(opIssues, *data.Page, Usage{}, wireIssue.typed)
+	if err == nil && len(p.Items) != n {
+		err = fmt.Errorf("%d issues, want %d", len(p.Items), n)
+	}
+	return err
+}
+
 func BenchmarkDecodeIssuePage(b *testing.B) {
 	for _, c := range []struct {
 		n    int
@@ -46,13 +58,7 @@ func BenchmarkDecodeIssuePage(b *testing.B) {
 			b.SetBytes(int64(len(body)))
 			b.ReportAllocs()
 			for b.Loop() {
-				var data rootPage[wireIssue]
-				present, wire, err := decodeAnswer(body, &data)
-				if err != nil || !present || wire != nil {
-					b.Fatal(present, wire, err)
-				}
-				p, err := page(opIssues, *data.Page, Usage{}, wireIssue.typed)
-				if err != nil || len(p.Items) != c.n {
+				if err := decodeIssuePage(body, c.n); err != nil {
 					b.Fatal(err)
 				}
 			}

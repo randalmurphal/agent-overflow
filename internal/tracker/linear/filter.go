@@ -88,6 +88,7 @@ type (
 		Some *entityFilter `json:"some"`
 	}
 	dateComparator struct {
+		Eq  string `json:"eq,omitempty"`
 		Gte string `json:"gte,omitempty"`
 		Gt  string `json:"gt,omitempty"`
 		Lte string `json:"lte,omitempty"`

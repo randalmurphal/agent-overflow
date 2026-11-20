@@ -1,9 +1,9 @@
 package linearprovider
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"time"
@@ -14,17 +14,34 @@ import (
 
 // cursorVersion is the version of the cursor encoding this package
 // writes; a cursor of any other version is refused. Version 1 carried
-// Linear's page cursor, which a poll no longer uses.
-const cursorVersion = 2
+// Linear's page cursor, which a poll no longer uses; version 2 held no
+// drain of a tie larger than a cohort.
+const cursorVersion = 3
 
 // cursorJSON is a sync cursor's bytes: the version, the team the walk
 // polls and the client's whole PollCursor.
 type cursorJSON struct {
-	Version int       `json:"v"`
-	Team    string    `json:"team"`
-	Floor   time.Time `json:"floor"`
-	AtFloor []string  `json:"atFloor,omitempty"`
-	Walk    *walkJSON `json:"walk,omitempty"`
+	Version int    `json:"v"`
+	Team    string `json:"team"`
+	positionJSON
+	Walk *walkJSON `json:"walk,omitempty"`
+}
+
+// positionJSON is a linear.Position's bytes, in a sync cursor and in a
+// search page token.
+type positionJSON struct {
+	Bound time.Time `json:"bound,omitzero"`
+	At    []string  `json:"at,omitempty"`
+	Drain *string   `json:"drain,omitempty"`
+	Past  bool      `json:"past,omitempty"`
+}
+
+func positionOf(p linear.Position) positionJSON {
+	return positionJSON{Bound: p.Bound, At: p.At, Drain: p.Drain, Past: p.Past}
+}
+
+func (p positionJSON) position() linear.Position {
+	return linear.Position{Bound: p.Bound, At: p.At, Drain: p.Drain, Past: p.Past}
 }
 
 type walkJSON struct {
@@ -33,7 +50,7 @@ type walkJSON struct {
 }
 
 func encodeCursor(team tracker.BoardID, c linear.PollCursor) (tracker.Cursor, error) {
-	out := cursorJSON{Version: cursorVersion, Team: string(team), Floor: c.Floor, AtFloor: c.AtFloor}
+	out := cursorJSON{Version: cursorVersion, Team: string(team), positionJSON: positionOf(c.Position)}
 	if c.Walk != nil {
 		out.Walk = &walkJSON{Start: c.Walk.Start, Delivered: c.Walk.Delivered}
 	}
@@ -44,14 +61,19 @@ func encodeCursor(team tracker.BoardID, c linear.PollCursor) (tracker.Cursor, er
 	return b, nil
 }
 
+// decodeStrict reads b, one JSON value, into v: an unknown or repeated
+// member, a name in another case and anything after the value are
+// refused, so bytes this package did not write are never half read.
+func decodeStrict(b []byte, v any) error {
+	return jsonv2.Unmarshal(b, v, jsonv2.RejectUnknownMembers(true))
+}
+
 // decodeCursor reads a cursor encodeCursor wrote for team. Bytes that are
 // not one, another version and another team's cursor are refused,
 // wrapping tracker.ErrInvalidInput, so a cursor is never misread.
 func decodeCursor(team tracker.BoardID, b tracker.Cursor) (linear.PollCursor, error) {
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
 	var c cursorJSON
-	if err := dec.Decode(&c); err != nil || dec.More() {
+	if err := decodeStrict(b, &c); err != nil {
 		return linear.PollCursor{}, fmt.Errorf("linearprovider: %w: the sync cursor is not one this package wrote", tracker.ErrInvalidInput)
 	}
 	switch {
@@ -60,7 +82,7 @@ func decodeCursor(team tracker.BoardID, b tracker.Cursor) (linear.PollCursor, er
 	case c.Team != string(team):
 		return linear.PollCursor{}, fmt.Errorf("linearprovider: %w: the sync cursor is for team %q, not %q", tracker.ErrInvalidInput, c.Team, team)
 	}
-	out := linear.PollCursor{Floor: c.Floor, AtFloor: c.AtFloor}
+	out := linear.PollCursor{Position: c.position()}
 	if c.Walk != nil {
 		out.Walk = &linear.PollWalk{Start: c.Walk.Start, Delivered: c.Walk.Delivered}
 	}
@@ -105,7 +127,7 @@ func (p *Provider) ChangedRows(ctx context.Context, q tracker.DeltaQuery) (track
 
 // nextWalk is where the walk after the finished walk c starts. A walk
 // that delivered a row resumes by tracker.DeltaResume of the newest row
-// it delivered (c's floor) and Linear's clock at its first page: exactly
+// it delivered (c's bound) and Linear's clock at its first page: exactly
 // after what it delivered, so an idle board delivers nothing, or again
 // from the time before which every update was visible to it. A walk that
 // delivered nothing resumes where it began.
@@ -113,7 +135,7 @@ func nextWalk(c linear.PollCursor) linear.PollCursor {
 	if c.Walk == nil || !c.Walk.Delivered {
 		return c.Resume()
 	}
-	restart, exact := tracker.DeltaResume(c.Floor, c.Walk.Start)
+	restart, exact := tracker.DeltaResume(c.Bound, c.Walk.Start)
 	if exact {
 		return c.Resume()
 	}

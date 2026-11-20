@@ -92,6 +92,7 @@ func scenarioWorkspace() trackerfake.LinearWorkspace {
 
 type scenario struct {
 	e     *trackerfake.Engine
+	c     *linear.Client
 	p     *Provider
 	clock *scenarioClock
 	ctx   context.Context
@@ -127,7 +128,7 @@ func newScenario(t *testing.T) *scenario {
 			t.Errorf("unhandled request %s: %s", r.Operation, r.Detail)
 		}
 	})
-	return &scenario{e: e, p: p, clock: clock, ctx: context.Background()}
+	return &scenario{e: e, c: c, p: p, clock: clock, ctx: context.Background()}
 }
 
 func scenarioMust[T any](t *testing.T) func(v T, err error) T {

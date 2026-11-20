@@ -1,31 +1,29 @@
 package linearprovider
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
 )
 
 // searchTokenVersion is the version of the search page token this
-// package writes; a token of any other version is refused.
-const searchTokenVersion = 1
+// package writes; a token of any other version is refused. Version 1
+// held no drain of a tie larger than a cohort.
+const searchTokenVersion = 2
 
 // searchToken is a search page token: the project the search pages (empty
 // for every team) and where its next page starts, Linear's page cursor
 // for a text search (After) or the position of a listing most recently
-// updated first (Ceiling and At).
+// updated first.
 type searchToken struct {
-	Version int       `json:"v"`
-	Team    string    `json:"team,omitempty"`
-	After   string    `json:"after,omitempty"`
-	Ceiling time.Time `json:"ceiling,omitzero"`
-	At      []string  `json:"at,omitempty"`
+	Version int    `json:"v"`
+	Team    string `json:"team,omitempty"`
+	After   string `json:"after,omitempty"`
+	positionJSON
 }
 
 func encodeSearchToken(t searchToken) (tracker.PageToken, error) {
@@ -41,10 +39,8 @@ func encodeSearchToken(t searchToken) (tracker.PageToken, error) {
 // team, a text search when text is set. Any other token is refused,
 // wrapping tracker.ErrInvalidInput, so a token is never misread.
 func decodeSearchToken(b tracker.PageToken, team string, text bool) (searchToken, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(b)))
-	dec.DisallowUnknownFields()
 	var t searchToken
-	if err := dec.Decode(&t); err != nil || dec.More() {
+	if err := decodeStrict([]byte(b), &t); err != nil {
 		return searchToken{}, fmt.Errorf("linearprovider: %w: the search page token is not one this package wrote", tracker.ErrInvalidInput)
 	}
 	switch {
@@ -52,7 +48,7 @@ func decodeSearchToken(b tracker.PageToken, team string, text bool) (searchToken
 		return searchToken{}, fmt.Errorf("linearprovider: %w: search page token version %d, want %d", tracker.ErrInvalidInput, t.Version, searchTokenVersion)
 	case t.Team != team:
 		return searchToken{}, fmt.Errorf("linearprovider: %w: the search page token is for project %q, not %q", tracker.ErrInvalidInput, t.Team, team)
-	case text != (t.After != "") || text == !t.Ceiling.IsZero():
+	case text != (t.After != "") || text == !t.Bound.IsZero() || text && (t.At != nil || t.Drain != nil || t.Past):
 		return searchToken{}, fmt.Errorf("linearprovider: %w: the search page token is not one of this kind of search", tracker.ErrInvalidInput)
 	}
 	return t, nil
@@ -95,8 +91,8 @@ func (p *Provider) Search(ctx context.Context, q tracker.SearchQuery) (tracker.S
 	} else {
 		var recent linear.RecentPage
 		recent, err = p.c.RecentIssues(ctx, linear.RecentQuery{Filter: linear.IssueFilter{Teams: []string{team}}, Limit: limit,
-			From: linear.RecentCursor{Ceiling: from.Ceiling, AtCeiling: from.At}})
-		page, next.Ceiling, next.At = recent.Page, recent.Next.Ceiling, recent.Next.AtCeiling
+			From: from.position()})
+		page, next.positionJSON = recent.Page, positionOf(recent.Next)
 	}
 	if err != nil {
 		return tracker.SearchPage{}, fmt.Errorf("linearprovider: search: %w", err)

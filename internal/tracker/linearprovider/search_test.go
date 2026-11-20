@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,17 +61,30 @@ func TestSearch(t *testing.T) {
 	if err != nil || pg.Cards[0].Key != "WEB-2" || pg.Next == "" {
 		t.Fatalf("project issues %+v %v", pg, err)
 	}
+	listing := string(pg.Next)
 	if pg, err := p.Search(ctx, tracker.SearchQuery{Project: web, Page: pg.Next}); err != nil || pg.Cards[0].Key != "WEB-3" || pg.Next != "" {
 		t.Errorf("next project page %+v %v", pg, err)
 	}
+	if !strings.HasPrefix(listing, `{"v":2,`) {
+		t.Fatalf("listing token %s is not version 2", listing)
+	}
+	edit := func(old, new string) tracker.PageToken {
+		return tracker.PageToken(strings.Replace(listing, old, new, 1))
+	}
 	for name, sq := range map[string]tracker.SearchQuery{
-		"control text":       {Text: "a\nb"},
-		"a text token":       {Project: web, Page: textToken},
-		"another project":    {Text: "login", Project: app, Page: textToken},
-		"not a token":        {Project: web, Page: "s2"},
-		"another version":    {Project: web, Page: `{"v":9,"team":"` + web + `","ceiling":"2026-11-01T00:00:00Z"}`},
-		"an unknown member":  {Project: web, Page: `{"v":1,"team":"` + web + `","ceiling":"2026-11-01T00:00:00Z","x":1}`},
-		"a token with no at": {Text: "login", Project: web, Page: `{"v":1,"team":"` + web + `"}`},
+		"control text":                {Text: "a\nb"},
+		"a text token":                {Project: web, Page: textToken},
+		"another project":             {Text: "login", Project: app, Page: textToken},
+		"not a token":                 {Project: web, Page: "s2"},
+		"version 1":                   {Project: web, Page: edit(`"v":2`, `"v":1`)},
+		"version 1 form":              {Project: web, Page: `{"v":1,"team":"` + web + `","ceiling":"2026-11-01T00:00:00Z"}`},
+		"an unknown member":           {Project: web, Page: edit(`"v":2`, `"v":2,"x":1`)},
+		"a repeated member":           {Project: web, Page: edit(`"v":2`, `"v":2,"team":"`+app+`"`)},
+		"a member in a case":          {Project: web, Page: edit(`"team"`, `"Team"`)},
+		"trailing data":               {Project: web, Page: tracker.PageToken(listing + "}")},
+		"a listing token past a tie":  {Project: web, Page: edit(`"v":2`, `"v":2,"past":true`)},
+		"a text token with no cursor": {Text: "login", Project: web, Page: `{"v":2,"team":"` + web + `"}`},
+		"a text token with a drain":   {Text: "login", Project: web, Page: tracker.PageToken(strings.Replace(string(textToken), `"v":2`, `"v":2,"drain":""`, 1))},
 	} {
 		if _, err := p.Search(ctx, sq); !errors.Is(err, tracker.ErrInvalidInput) {
 			t.Errorf("%s: %v", name, err)

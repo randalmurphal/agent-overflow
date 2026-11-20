@@ -96,25 +96,9 @@ var renumberFamily = newMutationFamily("RenumberIssues", maxBatch, func(n int) s
 	return b.String()
 })
 
-// aliasData is the data of a family's answer, by alias.
+// aliasData is the data of a family's answer, by alias; the document's
+// results name every alias, so its outcome is read from each.
 type aliasData map[string]*payload[wireIssue]
-
-// state is the document's outcome: succeeded only when every alias's
-// payload says so.
-func (d aliasData) state() payloadState {
-	if len(d) == 0 {
-		return payloadNone
-	}
-	out := payloadSucceeded
-	for _, p := range d {
-		var s payloadState
-		if p != nil {
-			s = successState(p.Success)
-		}
-		out = min(out, s)
-	}
-	return out
-}
 
 func alias(i int) string { return "i" + strconv.Itoa(i) }
 

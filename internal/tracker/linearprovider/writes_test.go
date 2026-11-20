@@ -334,7 +334,7 @@ func cyclePositionsX(c lineartest.Cycle, ids []string, issues ...lineartest.Issu
 	vars["id"] = c.ID
 	var nodes []string
 	for _, is := range issues {
-		nodes = append(nodes, positionJSON(is))
+		nodes = append(nodes, positionNode(is))
 	}
 	return lineartest.Exchange{Op: "CyclePositions", Vars: js(vars), Body: lineartest.Data(`"cycle":` + c.JSON() + `,` + lineartest.PageJSON(nodes, false, ""))}
 }

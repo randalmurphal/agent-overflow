@@ -83,6 +83,9 @@ func card(is linear.Issue, labels map[string]string) tracker.Card {
 		Status: tracker.StatusID(is.StateID), Assignee: tracker.UserID(is.AssigneeID), Priority: priorityChoice(is.Priority),
 		Parent: tracker.IssueID(is.ParentID), Created: is.CreatedAt, Updated: is.UpdatedAt,
 	}
+	if len(is.LabelIDs) > 0 {
+		c.Labels = make([]tracker.Choice, 0, len(is.LabelIDs))
+	}
 	for _, id := range is.LabelIDs {
 		c.Labels = append(c.Labels, tracker.Choice{ID: id, Name: labels[id]})
 	}

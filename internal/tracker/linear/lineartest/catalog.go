@@ -225,18 +225,28 @@ type Detail struct {
 	MoreStates    bool
 }
 
-// DetailJSON is i with d, as the single-issue read answers it.
+// DetailJSON is i with d, as the single-issue read answers it: one
+// member for each response key, the project and parent the read selects
+// twice merged as GraphQL merges them.
 func DetailJSON(i Issue, d Detail) string {
-	base := i.JSON()
-	parent := "null"
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(i.JSON()), &fields); err != nil {
+		panic(err) // Issue.JSON is an object
+	}
+	fields["parent"] = json.RawMessage("null")
 	if d.Parent != nil {
-		parent = d.Parent.JSON()
+		fields["parent"] = json.RawMessage(d.Parent.JSON())
 	}
-	project := "null"
+	fields["project"] = json.RawMessage("null")
 	if i.Project != "" {
-		project = encode(map[string]any{"id": i.Project, "name": d.ProjectName})
+		fields["project"] = json.RawMessage(encode(map[string]any{"id": i.Project, "name": d.ProjectName}))
 	}
-	return base[:len(base)-1] + `,"project":` + project + `,"parent":` + parent +
+	b, err := json.Marshal(fields)
+	if err != nil {
+		panic(err) // every member is JSON
+	}
+	base := string(b)
+	return base[:len(base)-1] +
 		`,"children":` + ConnectionJSON(d.Children, d.MoreChildren, "") +
 		`,"comments":` + ConnectionJSON(d.Comments, d.MoreComments, d.CommentCursor) +
 		`,"attachments":` + ConnectionJSON(d.Attachments, d.MoreAttachments, "") +
