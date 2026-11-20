@@ -9,6 +9,7 @@
 package helperproc
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -43,8 +44,13 @@ func Tie(t testing.TB, command *exec.Cmd) {
 }
 
 // Hold blocks the helper until the process that started it (Tie) is gone,
-// then exits the helper. It returns only by exiting.
+// then exits the helper. It returns only by exiting: 0 once stdin ends, or
+// 1 with the reason on stderr when stdin cannot be read, since the helper
+// can then no longer tell whether its starter is alive.
 func Hold() {
-	_, _ = io.Copy(io.Discard, os.Stdin)
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		fmt.Fprintf(os.Stderr, "helperproc: read the tie to the starting process: %v\n", err)
+		os.Exit(1)
+	}
 	os.Exit(0)
 }

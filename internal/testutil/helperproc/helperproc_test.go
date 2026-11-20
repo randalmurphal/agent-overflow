@@ -4,10 +4,12 @@ package helperproc
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -65,25 +67,69 @@ func TestAHeldHelperEndsWhenItsStarterIsKilled(t *testing.T) {
 		}
 	}
 	if held == 0 {
-		_ = starter.Process.Kill()
-		_ = starter.Wait()
-		t.Fatalf("the starter never started its helper: %v", scanner.Err())
+		killErr := starter.Process.Kill()
+		t.Fatalf("the starter never started its helper: scan %v, kill %v, wait %v", scanner.Err(), killErr, starter.Wait())
 	}
-	t.Cleanup(func() { _ = syscall.Kill(held, syscall.SIGKILL) })
-	if !running(held) {
-		t.Fatal("the helper ended while its starter was running")
+	t.Cleanup(func() {
+		if err := syscall.Kill(held, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("kill the helper %d: %v", held, err)
+		}
+	})
+	if alive, err := running(held); err != nil || !alive {
+		t.Fatalf("the helper ended while its starter was running (probe error %v)", err)
 	}
 	if err := starter.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	_ = starter.Wait()
+	var exit *exec.ExitError
+	if err := starter.Wait(); !errors.As(err, &exit) {
+		t.Fatalf("the killed starter's wait answered %v, want its exit", err)
+	}
 
 	deadline := time.Now().Add(10 * time.Second)
-	for running(held) && time.Now().Before(deadline) {
+	for {
+		alive, err := running(held)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !alive {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the helper outlived the process that started it")
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if running(held) {
-		t.Fatal("the helper outlived the process that started it")
+}
+
+// A helper whose tie cannot be read can no longer tell whether its starter
+// is alive, so Hold exits unsuccessfully and says why instead of reporting a
+// clean end.
+func TestHoldFailsWhenItsTieCannotBeRead(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reading a directory fails with EISDIR on Linux; other systems may answer it")
+	}
+	dir, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := dir.Close(); err != nil {
+			t.Errorf("close the directory: %v", err)
+		}
+	})
+	held := exec.Command(os.Args[0], "-test.run=^TestHelperRole$")
+	held.Env = append(os.Environ(), helperRoleEnv+"=held")
+	held.Stdin = dir
+	var stderr strings.Builder
+	held.Stderr = &stderr
+	err = held.Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("Hold on an unreadable stdin answered %v, want exit status 1", err)
+	}
+	if !strings.Contains(stderr.String(), "helperproc: read the tie") {
+		t.Fatalf("Hold's stderr is %q, want the read failure", stderr.String())
 	}
 }
 
@@ -114,11 +160,22 @@ func TestATiedHelpersTemporaryFilesGoInItsTestsDirectory(t *testing.T) {
 	}
 }
 
-// running reports whether pid exists and has not exited: a zombie has.
-func running(pid int) bool {
-	if syscall.Kill(pid, 0) != nil {
-		return false
+// running reports whether pid exists and has not exited: a zombie has. A
+// probe that fails for any reason but the process being gone is an error,
+// never an exit.
+func running(pid int) (bool, error) {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("signal probe of %d: %w", pid, err)
 	}
 	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+	if err != nil {
+		// ps exits 1 for a pid that is gone, which it can be by now.
+		if probe := syscall.Kill(pid, 0); errors.Is(probe, syscall.ESRCH) {
+			return false, nil
+		}
+		return false, fmt.Errorf("ps -p %d: %w (output %q)", pid, err, out)
+	}
+	return !strings.HasPrefix(strings.TrimSpace(string(out)), "Z"), nil
 }

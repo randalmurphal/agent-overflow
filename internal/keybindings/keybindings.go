@@ -182,10 +182,11 @@ var Defaults = []Keybinding{
 	// claimed by the engine (every chord with ctrl, meta or alt bound here is)
 	// and replayed after the pane is focused (docs/architecture/browser-tools.md
 	// § Keyboard). ctrl+tab is literal ctrl, as for terminal tabs: mod+tab is
-	// the macOS app switcher. Reload has two chords: mod+r reaches the page's
-	// replay only, because the app window reserves mod+r for reloading the app
-	// (internal/uikeys) before the SPA sees it, so f5 is the reload from the
-	// pane's own chrome.
+	// the macOS app switcher. The app window binds mod+r to reloading the app
+	// before the SPA sees it, and hands the chord to the SPA while this
+	// binding applies (internal/uikeys PageChords), so mod+r reloads the page
+	// from the pane's chrome as from inside the page; f5 is a second reload
+	// chord.
 	{Key: "mod+t", Command: "browser.newTab", When: "browserPaneFocused", DefaultID: "browser.newTab"},
 	{Key: "mod+l", Command: "browser.focusAddress", When: "browserPaneFocused", DefaultID: "browser.focusAddress"},
 	{Key: "mod+r", Command: "browser.reload", When: "browserPaneFocused", DefaultID: "browser.reload"},
@@ -265,10 +266,11 @@ var Defaults = []Keybinding{
 	// alt+shift+h/l pane moves already use for exactly that reason, and
 	// keeps the m-for-mute mnemonic.
 	{Key: "alt+shift+m", Command: "sound.toggleMute", DefaultID: "sound.toggleMute"},
-	// shift+tab cycles the active thread through chat → plan →
-	// design. The `when` expression keeps the chord inert while the
-	// palette or any modal has focus so Shift+Tab's default "focus
-	// prev" behaviour still wins inside those surfaces.
+	// shift+tab cycles the active thread between chat and plan
+	// (frontend/src/lib/utils/modeCycle.ts). The `when` expression keeps
+	// the chord inert while the palette or any modal has focus so
+	// Shift+Tab's default "focus prev" behaviour still wins inside those
+	// surfaces.
 	{Key: "shift+tab", Command: "mode.cycle", When: "hasActiveThread && !paletteOpen && !anyModalOpen", DefaultID: "mode.cycle"},
 	// Workflows pane (docs/specs/workflows-system-ui/UI-SPEC.md §8).
 	// Every chord is gated on the workflows pane holding focus, so the bare
