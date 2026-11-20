@@ -110,8 +110,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		}
 	}
 
-	// abandon ends a launch that failed: the started child is killed and
-	// the job closed, and a cleanup that fails joins cause.
+	// abandon ends a launch that failed: the started child is killed, the
+	// job closed and the child reaped (reapAbandoned), and a cleanup that
+	// fails joins cause.
 	abandon := func(cause error, started bool) error {
 		errs := []error{cause}
 		if started {
@@ -122,6 +123,11 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		if platform != nil {
 			if err := platform.close(); err != nil {
 				errs = append(errs, fmt.Errorf("close job object: %w", err))
+			}
+		}
+		if started {
+			if err := reapAbandoned(cmd, childExitConfirmWindow); err != nil {
+				errs = append(errs, err)
 			}
 		}
 		return errors.Join(errs...)
@@ -296,6 +302,29 @@ func shellQuote(s string) string {
 // never outlives the Windows GUI.
 type jobObjectLauncher struct {
 	handle windows.Handle
+}
+
+// reapAbandoned waits within the bound for cmd, a child a failed launch
+// killed, and releases what its run holds: its process handle, its pipes,
+// which ends their readers, and exec's watch of its context. Its kill is
+// its expected end, as an exit status or the context's interruption; any
+// other result of the wait, or a child still running past the bound, is
+// the error. One still running is reaped when it exits.
+func reapAbandoned(cmd *exec.Cmd, within time.Duration) error {
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case err := <-waited:
+		var exit *exec.ExitError
+		if err == nil || errors.As(err, &exit) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return fmt.Errorf("reap wsl.exe: %w", err)
+	case <-timer.C:
+		return fmt.Errorf("reap wsl.exe: still running %v after its kill", within)
+	}
 }
 
 func newPlatformLauncher() (platformLauncher, error) {
