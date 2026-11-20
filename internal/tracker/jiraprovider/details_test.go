@@ -60,6 +60,49 @@ func TestDetails(t *testing.T) {
 	}
 }
 
+// Only a 404 of an issue's own requests makes it Missing: one of its
+// comments does, one of the field catalog fails the read. The catalog is
+// read once for all the issues.
+func TestDetailsMissingIsTheIssuesOwnNotFound(t *testing.T) {
+	notFound := jiratest.Reply(http.StatusNotFound, `{"errorMessages":["test"],"errors":{}}`)
+	t.Run("comments", func(t *testing.T) {
+		f, p := detailSite(t, 1)
+		f.On("GET", "/rest/api/3/issue/10001/comment", notFound)
+		got, err := p.Details(t.Context(), []tracker.IssueID{"10001"})
+		if err != nil || len(got.Details) != 0 || !slices.Equal(got.Missing, []tracker.IssueID{"10001"}) {
+			t.Fatalf("details %d, missing %v, %v; want the issue missing", len(got.Details), got.Missing, err)
+		}
+	})
+	t.Run("field catalog", func(t *testing.T) {
+		f, p := detailSite(t, 1)
+		f.On("GET", fieldPath, notFound)
+		got, err := p.Details(t.Context(), []tracker.IssueID{"10001"})
+		if err == nil || !isStatus(err, http.StatusNotFound) || len(got.Missing) != 0 {
+			t.Fatalf("details with no field catalog: missing %v, %v; want the catalog's failure", got.Missing, err)
+		}
+	})
+	t.Run("one catalog read", func(t *testing.T) {
+		f, p := detailSite(t, 1)
+		for _, id := range []string{"20001", "20002"} {
+			f.On("GET", "/rest/api/3/issue/"+id, notFound)
+		}
+		p.jira.ForgetFields()
+		before := len(f.Requests())
+		if _, err := p.Details(t.Context(), []tracker.IssueID{"10001", "20001", "20002"}); err != nil {
+			t.Fatal(err)
+		}
+		catalogs := 0
+		for _, r := range f.Requests()[before:] {
+			if r == "GET "+fieldPath {
+				catalogs++
+			}
+		}
+		if catalogs != 1 {
+			t.Errorf("%d field catalog reads for three issues, want 1", catalogs)
+		}
+	})
+}
+
 // Any failure other than a 404 fails Details; an issue named twice or no
 // issue ID is refused before any request.
 func TestDetailsFailures(t *testing.T) {

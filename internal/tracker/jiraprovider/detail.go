@@ -39,9 +39,8 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 		return tracker.Detail{}, err
 	}
 	var (
-		s        site
-		full     jira.IssueDetail
-		comments tracker.CommentPage
+		s    site
+		read issueRead
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() (err error) {
@@ -49,15 +48,37 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 		return err
 	})
 	g.Go(func() (err error) {
-		if full, err = p.jira.IssueDetail(gctx, string(issue)); err != nil {
-			return fmt.Errorf("jiraprovider: detail of %s: %w", issue, err)
-		}
-		comments, err = p.commentPage(gctx, issue, "")
+		read, err = p.readIssue(gctx, issue)
 		return err
 	})
 	if err := g.Wait(); err != nil {
 		return tracker.Detail{}, err
 	}
+	return p.detailOf(s, issue, read)
+}
+
+// issueRead is what the requests on one issue's own paths returned.
+type issueRead struct {
+	full     jira.IssueDetail
+	comments tracker.CommentPage
+}
+
+// readIssue makes the requests on issue's own paths: the issue, then its
+// comments. Each names the issue, so a not found from it is the issue's:
+// gone, or not visible to the user.
+func (p *Provider) readIssue(ctx context.Context, issue tracker.IssueID) (read issueRead, err error) {
+	if read.full, err = p.jira.IssueDetail(ctx, string(issue)); err != nil {
+		return issueRead{}, fmt.Errorf("jiraprovider: detail of %s: %w", issue, err)
+	}
+	if read.comments, err = p.commentPage(ctx, issue, ""); err != nil {
+		return issueRead{}, err
+	}
+	return read, nil
+}
+
+// detailOf is issue's detail from its read and the site's field catalog.
+func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (tracker.Detail, error) {
+	full, comments := read.full, read.comments
 	is := full.Issue
 	cat := newCatalog()
 	d := tracker.Detail{URL: p.origin + "/browse/" + url.PathEscape(is.Key)}
@@ -90,10 +111,11 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 // detailsAtOnce is how many issues Details reads at a time.
 const detailsAtOnce = 4
 
-// Details reads each issue as Detail does, detailsAtOnce at a time: Jira
-// reads one issue's detail a request, so N issues cost N times Detail's
-// requests. An issue Jira answers 404 for is Missing; any other failure
-// ends the reads in flight and is the error.
+// Details reads each issue as Detail does, detailsAtOnce at a time, with
+// one read of the field catalog for all: Jira reads one issue's detail a
+// request, so N issues cost N times an issue's requests. An issue whose
+// own requests Jira answers 404 is Missing; any other failure, a 404 of
+// the field catalog included, ends the reads in flight and is the error.
 func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (tracker.Details, error) {
 	for i, issue := range issues {
 		if err := checkIssue(issue); err != nil {
@@ -103,24 +125,28 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 			return tracker.Details{}, invalidf("issue %s is named twice", issue)
 		}
 	}
-	read := make([]tracker.Detail, len(issues))
+	var s site
+	reads := make([]issueRead, len(issues))
 	missing := make([]bool, len(issues))
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(detailsAtOnce)
-	for i, issue := range issues {
-		g.Go(func() error {
-			d, err := p.Detail(gctx, issue)
-			switch {
-			case errors.Is(err, trackerapi.ErrNotFound):
-				missing[i] = true
-				return nil
-			case err != nil:
+	g.Go(func() (err error) {
+		s, err = p.site(gctx)
+		return err
+	})
+	g.Go(func() error {
+		each, ectx := errgroup.WithContext(gctx)
+		each.SetLimit(detailsAtOnce)
+		for i, issue := range issues {
+			each.Go(func() (err error) {
+				reads[i], err = p.readIssue(ectx, issue)
+				if errors.Is(err, trackerapi.ErrNotFound) {
+					missing[i], err = true, nil
+				}
 				return err
-			}
-			read[i] = d
-			return nil
-		})
-	}
+			})
+		}
+		return each.Wait()
+	})
 	if err := g.Wait(); err != nil {
 		return tracker.Details{}, err
 	}
@@ -128,9 +154,13 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 	for i, issue := range issues {
 		if missing[i] {
 			out.Missing = append(out.Missing, issue)
-		} else {
-			out.Details = append(out.Details, read[i])
+			continue
 		}
+		d, err := p.detailOf(s, issue, reads[i])
+		if err != nil {
+			return tracker.Details{}, err
+		}
+		out.Details = append(out.Details, d)
 	}
 	return out, nil
 }
