@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
+	"agent-overflow/internal/pump"
 	"agent-overflow/internal/transport"
 )
 
@@ -200,8 +201,9 @@ type prUpdateReference struct {
 // would then decrement — and eventually tear down — a pump it never
 // referenced.
 type prUpdateHandle struct {
-	pump   *prUpdatePump
-	active bool
+	pump *prUpdatePump
+	// ref is the handle on the pump core: its visibility vote and release.
+	ref *pump.Handle[prPumpRequest]
 	// follows are the job ids this caller follows the logs of
 	// (SetPRCILogFollows); each holds one ref on the pump's follow.
 	follows map[string]bool
@@ -664,8 +666,7 @@ func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 // for waits out a whole tick that the pause already made it miss.
 func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference {
 	id := uuid.NewString()
-	pump.TakeLocked()
-	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, active: true}
+	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, ref: pump.TakeLocked()}
 	ref := prUpdateReference{
 		id:       id,
 		snapshot: pump.lastSnapshot,
@@ -708,12 +709,9 @@ func prUpdatesCleanupKey(id string) string { return "pr-updates:" + id }
 func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
 	a.prUpdates.mu.Lock()
 	handle, ok := a.prUpdates.handles[subscriptionID]
-	if !ok || handle.active == active {
-		a.prUpdates.mu.Unlock()
-		return nil
+	if ok {
+		handle.ref.VoteLocked(active)
 	}
-	handle.active = active
-	handle.pump.VoteLocked(active)
 	a.prUpdates.mu.Unlock()
 	return nil
 }
@@ -970,17 +968,15 @@ func (a *App) unsubscribePRUpdates(id string) {
 		return
 	}
 	delete(a.prUpdates.handles, id)
-	var teardown *prUpdatePump
 	pump := handle.pump
 	releaseFollowsLocked(&pump.ciPhase, handle.follows)
 	handle.follows = nil
-	// The last release stamps the pump dead under the same lock pollPRUpdate
+	// The last release stops the pump under the same lock pollPRUpdate
 	// stores under, so a poll this pump still has in flight cannot stamp
 	// state (or a sequence) after a replacement pump exists — per key,
 	// sequence order must match content order, and this pump's fetch began
-	// before any successor's. dropPRUpdatePump re-stamps harmlessly.
-	if pump.ReleaseLocked(handle.active) {
-		teardown = pump
+	// before any successor's. dropPRUpdatePump re-stops harmlessly.
+	if handle.ref.ReleaseLocked() {
 		// Only if it is still the pump serving this key — a superseded
 		// (dead) pump was replaced in the map and must not evict its
 		// successor.
@@ -989,27 +985,23 @@ func (a *App) unsubscribePRUpdates(id string) {
 		}
 	}
 	a.prUpdates.mu.Unlock()
-	if teardown != nil {
-		teardown.Stop()
-	}
 }
 
 // dropPRUpdatePump removes a pump whose goroutine exited on its own (app
 // lifetime context, panic) along with every handle that pointed at it —
 // those handles name a stream that no longer exists.
 //
-// The `dead` stamp goes on FIRST and unconditionally, so a Subscribe that
-// takes the lock after this point mints a fresh pump instead of taking a
-// reference on a goroutine that has stopped. The residual window is a
-// Subscribe that took the lock BEFORE this ran: it is unclosable from here
-// (the goroutine cannot mark the pump under the lock any earlier than its
-// own teardown), and it is shutdown-only — the loop exits on the app
-// lifetime context, after which nothing new subscribes.
+// The stop goes on FIRST and unconditionally, so a Subscribe that takes
+// the lock after this point mints a fresh pump instead of taking a
+// reference on a goroutine that has stopped, and a request a caller is
+// still waiting on is refused. The residual window is a Subscribe that
+// took the lock BEFORE this ran: it is unclosable from here (the goroutine
+// cannot stop the pump under the lock any earlier than its own teardown),
+// and its handle's later calls are refused as an unknown subscription.
 func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
-	pump.Cancel()
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	pump.MarkDeadLocked()
+	pump.StopLocked()
 	if a.prUpdates.pumps[pump.prKey] == pump {
 		delete(a.prUpdates.pumps, pump.prKey)
 	}
@@ -1035,15 +1027,11 @@ func (a *App) closePRUpdatePumps() {
 	// A pump whose handles all vanished with a dropped connection can
 	// outlive them; close what is left so Wait() cannot block.
 	a.prUpdates.mu.Lock()
-	orphans := make([]*prUpdatePump, 0, len(a.prUpdates.pumps))
 	for key, pump := range a.prUpdates.pumps {
 		delete(a.prUpdates.pumps, key)
-		orphans = append(orphans, pump)
+		pump.StopLocked()
 	}
 	a.prUpdates.mu.Unlock()
-	for _, pump := range orphans {
-		pump.Stop()
-	}
 	a.closePipelinePumps()
 	a.closePRListPump()
 	a.prUpdates.wg.Wait()

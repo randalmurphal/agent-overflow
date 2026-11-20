@@ -128,37 +128,75 @@ func TestRetryHeldAfterResumeRearmsForTheRelease(t *testing.T) {
 	})
 }
 
-func TestRetryFireByBringsTheTimerForward(t *testing.T) {
+// ArmBy is the PR list pump's answer to each tick: failing projects keep
+// the doubling curve, a rate-limited one brings the retry forward to its
+// release, and nothing is held.
+func TestRetryArmByFollowsEachPoll(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := Retry{Base: 10 * time.Second, Interval: time.Minute}
-
-		r.Arm(false, time.Time{})
-		r.FireBy(time.Now().Add(20 * time.Second))
-		if r.Held() {
-			t.Fatal("FireBy reported a hold")
+		for i, poll := range []struct {
+			failing bool
+			by      time.Duration
+			want    time.Duration
+		}{
+			{failing: true, by: 3 * time.Second, want: 3 * time.Second},
+			{failing: true, by: 30 * time.Second, want: 20 * time.Second},
+			{failing: true, want: 40 * time.Second},
+			{failing: false, by: 5 * time.Second, want: 5 * time.Second},
+			{failing: true, want: 10 * time.Second},
+		} {
+			var by time.Time
+			if poll.by > 0 {
+				by = time.Now().Add(poll.by)
+			}
+			r.ArmBy(poll.failing, by)
+			if r.Held() {
+				t.Fatalf("poll %d: ArmBy reported a hold", i)
+			}
+			if got := waitFired(t, &r); got != poll.want {
+				t.Fatalf("poll %d fired after %v, want %v", i, got, poll.want)
+			}
 		}
-		if got := waitFired(t, &r); got != 20*time.Second {
-			t.Fatalf("release with nothing armed fired after %v, want the release", got)
-		}
-
-		r.Arm(true, time.Time{})
-		r.FireBy(time.Now().Add(3 * time.Second))
-		if got := waitFired(t, &r); got != 3*time.Second {
-			t.Fatalf("earlier release fired after %v, want the release", got)
-		}
-
-		r.Arm(true, time.Time{})
-		r.FireBy(time.Now().Add(time.Minute))
-		if got := waitFired(t, &r); got != 20*time.Second {
-			t.Fatalf("later release fired after %v, want the doubling step", got)
-		}
-
-		r.Arm(false, time.Time{})
-		r.FireBy(time.Time{})
+		r.ArmBy(false, time.Time{})
 		if r.C() != nil {
-			t.Fatal("a zero release armed a retry")
+			t.Fatal("a healthy poll with no release armed a retry")
 		}
 	})
+}
+
+// Each arm is one poll's whole answer and replaces the last, so an
+// earlier release is never lost to a later one already armed, and a later
+// poll's release is what the timer waits for.
+func TestRetryArmByReplacesThePreviousArm(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := Retry{Base: 10 * time.Second, Interval: time.Minute}
+		r.ArmBy(false, time.Now().Add(20*time.Second))
+		r.ArmBy(false, time.Now().Add(3*time.Second))
+		if got := waitFired(t, &r); got != 3*time.Second {
+			t.Fatalf("earlier release fired after %v, want 3s", got)
+		}
+
+		r = Retry{Base: 10 * time.Second, Interval: time.Minute}
+		r.ArmBy(true, time.Now().Add(3*time.Second))
+		r.ArmBy(true, time.Now().Add(8*time.Second))
+		if got := waitFired(t, &r); got != 8*time.Second {
+			t.Fatalf("second poll's release fired after %v, want 8s", got)
+		}
+
+		r.Arm(true, time.Now().Add(30*time.Second))
+		r.ArmBy(true, time.Time{})
+		if r.Held() {
+			t.Fatal("ArmBy kept the hold an earlier Arm set")
+		}
+	})
+}
+
+func TestRetryFiredWhilePausedNeedsAnArmedRetry(t *testing.T) {
+	r := Retry{Base: time.Second, Interval: time.Minute}
+	assertPanics(t, "FiredWhilePaused before any arm", r.FiredWhilePaused)
+	r.Arm(true, time.Time{})
+	r.FiredWhilePaused()
+	assertPanics(t, "a second FiredWhilePaused", r.FiredWhilePaused)
 }
 
 func TestRetryArmNeedsItsCurve(t *testing.T) {
@@ -169,6 +207,7 @@ func TestRetryArmNeedsItsCurve(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertPanics(t, "Arm without a curve", func() { r.Arm(false, time.Time{}) })
+			assertPanics(t, "ArmBy without a curve", func() { r.ArmBy(false, time.Time{}) })
 		})
 	}
 }

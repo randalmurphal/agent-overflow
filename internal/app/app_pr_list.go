@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/pump"
 	"agent-overflow/internal/transport"
 )
 
@@ -114,7 +115,7 @@ type prListPump struct {
 }
 
 type prListHandle struct {
-	active bool
+	ref *pump.Handle[prPumpRequest]
 }
 
 func prListCleanupKey(id string) string { return "pr-list:" + id }
@@ -187,8 +188,7 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 		start = true
 	}
 	id = uuid.NewString()
-	pump.TakeLocked()
-	a.prUpdates.listHandles[id] = &prListHandle{active: true}
+	a.prUpdates.listHandles[id] = &prListHandle{ref: pump.TakeLocked()}
 	if pump.snapshot.Seq != 0 {
 		snapshot := pump.snapshot
 		return id, pump, start, &snapshot, 0, nil
@@ -204,14 +204,9 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 //ao:route home
 func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active bool) error {
 	a.prUpdates.mu.Lock()
-	handle, ok := a.prUpdates.listHandles[subscriptionID]
-	pump := a.prUpdates.list
-	if !ok || handle.active == active || pump == nil || pump.DeadLocked() {
-		a.prUpdates.mu.Unlock()
-		return nil
+	if handle, ok := a.prUpdates.listHandles[subscriptionID]; ok {
+		handle.ref.VoteLocked(active)
 	}
-	handle.active = active
-	pump.VoteLocked(active)
 	a.prUpdates.mu.Unlock()
 	return nil
 }
@@ -253,25 +248,20 @@ func (a *App) unsubscribePRList(id string) {
 		return
 	}
 	delete(a.prUpdates.listHandles, id)
-	var teardown *prListPump
-	if pump.ReleaseLocked(handle.active) {
-		teardown = pump
+	if handle.ref.ReleaseLocked() {
 		a.prUpdates.list = nil
 	}
 	a.prUpdates.mu.Unlock()
-	if teardown != nil {
-		teardown.Stop()
-	}
 }
 
-// dropPRListPump forgets a pump whose goroutine exited, with every handle
-// on it when it exited on its own, and drops what it held: the next
-// subscribe reads the store.
+// dropPRListPump stops a pump whose goroutine exited, forgets it with
+// every handle on it when it exited on its own, and drops what it held: a
+// request still waiting on it is refused, and the next subscribe reads the
+// store.
 func (a *App) dropPRListPump(pump *prListPump) {
-	pump.Cancel()
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	pump.MarkDeadLocked()
+	pump.StopLocked()
 	if a.prUpdates.list == pump {
 		a.prUpdates.list = nil
 		clear(a.prUpdates.listHandles)
@@ -293,11 +283,10 @@ func (a *App) closePRListPump() {
 		a.unsubscribePRList(id)
 	}
 	a.prUpdates.mu.Lock()
-	pump := a.prUpdates.list
-	a.prUpdates.list = nil
-	a.prUpdates.mu.Unlock()
-	if pump != nil {
-		pump.Stop()
+	defer a.prUpdates.mu.Unlock()
+	if pump := a.prUpdates.list; pump != nil {
+		a.prUpdates.list = nil
+		pump.StopLocked()
 	}
 }
 
@@ -319,8 +308,7 @@ func (a *App) pumpPRList(pump *prListPump) {
 		// A failing project retries on the doubling schedule; one held by a
 		// rate limit waits for its release, while the others ride the
 		// ticker.
-		retry.Arm(failing, time.Time{})
-		retry.FireBy(release)
+		retry.ArmBy(failing, release)
 	}
 	tick(forgeapi.WithInteractive(pump.Context()))
 	for {

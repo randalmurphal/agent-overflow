@@ -722,14 +722,14 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	}
 
 	// Stand in for the goroutine's teardown having begun: the pump is
-	// stamped dead but its drop has not removed it from the map yet.
+	// stopped but its drop may not have removed it from the map yet.
 	app.prUpdates.mu.Lock()
 	dying := app.prUpdates.pumps[first.PRKey]
 	if dying == nil {
 		app.prUpdates.mu.Unlock()
 		t.Fatalf("no pump tracked for %q after Subscribe", first.PRKey)
 	}
-	dying.MarkDeadLocked()
+	dying.StopLocked()
 	app.prUpdates.mu.Unlock()
 
 	second, err := app.SubscribePRUpdates(context.Background(), testPR)
@@ -772,10 +772,6 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	if _, _, _, present := prPumpState(app, first.PRKey); present {
 		t.Fatalf("fresh pump survived its last unsubscribe")
 	}
-	// The dying pump's goroutine is still parked (the test faked its death
-	// rather than letting the lifetime context end it); stop it so Wait
-	// cannot block on a fixture artifact.
-	dying.Stop()
 	app.prUpdates.wg.Wait()
 }
 
@@ -815,7 +811,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	// Stand in for the goroutine's teardown having begun while this poll's
 	// fetch was already out on the wire.
 	app.prUpdates.mu.Lock()
-	pump.MarkDeadLocked()
+	pump.StopLocked()
 	globalSeq := app.prUpdates.seq
 	pumpSeq := pump.seq
 	last := string(pump.last)
