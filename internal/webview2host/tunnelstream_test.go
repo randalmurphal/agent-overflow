@@ -31,7 +31,7 @@ func TestATunnelStreamEndsAfterItsQueuedData(t *testing.T) {
 		w.Stop()
 		_ = local.Close()
 	})
-	if err := w.Write([]byte("late")); !errors.Is(err, ErrTunnelStreamStopped) {
+	if err := w.Write([]byte("late")); !errors.Is(err, errTunnelStreamStopped) {
 		t.Fatalf("data after the close was %v, want refused", err)
 	}
 	select {

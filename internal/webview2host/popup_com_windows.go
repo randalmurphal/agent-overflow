@@ -15,28 +15,30 @@ import (
 
 // addNewWindowRequested is add_NewWindowRequested([in]
 // ICoreWebView2NewWindowRequestedEventHandler*, [out]
-// EventRegistrationToken*).
-func (v *iCoreWebView2) addNewWindowRequested(handler *iNewWindowRequestedHandler) (eventRegistrationToken, error) {
+// EventRegistrationToken*), for the view's life: the token is never
+// needed.
+func (v *iCoreWebView2) addNewWindowRequested(handler *iNewWindowRequestedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddNewWindowRequested.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // addWindowCloseRequested is add_WindowCloseRequested([in]
 // ICoreWebView2WindowCloseRequestedEventHandler*, [out]
-// EventRegistrationToken*).
-func (v *iCoreWebView2) addWindowCloseRequested(handler *iViewEventHandler) (eventRegistrationToken, error) {
+// EventRegistrationToken*), for the view's life: the token is never
+// needed.
+func (v *iCoreWebView2) addWindowCloseRequested(handler *iViewEventHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddWindowCloseRequested.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // ---------------------------------------------------------------------

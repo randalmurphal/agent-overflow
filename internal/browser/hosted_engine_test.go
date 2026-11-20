@@ -534,7 +534,7 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	}
 	sink.expectOps(t, webview2host.OpCloseProfile)
 	directive := sink.next(t)
-	if profileHandle(directive.ProfileID) != profile.Handle() || !directive.Ephemeral {
+	if profileHandle(directive.ProfileID) != profile.Handle() {
 		t.Fatalf("close-profile directive is %+v", directive)
 	}
 }

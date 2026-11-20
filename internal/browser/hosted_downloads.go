@@ -44,8 +44,8 @@ const (
 	hostedPathTimeout = 10 * time.Second
 	// hostedDownloadQuiet is how long a running download may go without a
 	// snapshot before the engine asks the launcher for one. The launcher
-	// sends one every DownloadProgressInterval while bytes arrive, so a
-	// download this quiet has stalled or its report was lost; one small
+	// sends one every 250 ms while bytes arrive, so a download this quiet
+	// has stalled or its report was lost; one small
 	// directive and answer per quiet download per interval is the cost,
 	// and the interval bounds how long a row whose end was lost stays
 	// running.

@@ -114,14 +114,14 @@ func (p *hostPage) unannounced() bool {
 func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) error {
 	opened := newNewWindowRequestedHandler(func(args *iNewWindowRequestedEventArgs) { h.newWindowRequested(page, args) })
 	page.newWindow = opened
-	_, err := view.addNewWindowRequested(opened)
+	err := view.addNewWindowRequested(opened)
 	opened.ref.release()
 	if err != nil {
 		return fmt.Errorf("new-window subscription: %w", err)
 	}
 	closing := newViewEventHandler(func() { h.windowCloseRequested(page) })
 	page.closeRequested = closing
-	_, err = view.addWindowCloseRequested(closing)
+	err = view.addWindowCloseRequested(closing)
 	closing.ref.release()
 	if err != nil {
 		return fmt.Errorf("close-request subscription: %w", err)

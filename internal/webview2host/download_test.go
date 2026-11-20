@@ -17,8 +17,8 @@ import (
 func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
 	long := "data:application/octet-stream;base64," + strings.Repeat("QUJD", 250_000)
 	addr := readDownloadAddress(long, nil)
-	if len(addr.shown) > MaxDownloadURIBytes || !strings.HasPrefix(long, addr.shown) {
-		t.Fatalf("the kept address is %d bytes, want a prefix of at most %d", len(addr.shown), MaxDownloadURIBytes)
+	if len(addr.shown) > maxDownloadURIBytes || !strings.HasPrefix(long, addr.shown) {
+		t.Fatalf("the kept address is %d bytes, want a prefix of at most %d", len(addr.shown), maxDownloadURIBytes)
 	}
 	start := uintptr(unsafe.Pointer(unsafe.StringData(long)))
 	kept := uintptr(unsafe.Pointer(unsafe.StringData(addr.shown)))
@@ -192,7 +192,7 @@ func TestProgressGatePassesOneReportPerInterval(t *testing.T) {
 			passed++
 		}
 	}
-	if want := int(time.Second / DownloadProgressInterval); passed != want {
+	if want := int(time.Second / downloadProgressInterval); passed != want {
 		t.Fatalf("a second of per-millisecond chunks passed %d reports, want %d", passed, want)
 	}
 }

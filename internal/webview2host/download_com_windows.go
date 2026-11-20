@@ -55,14 +55,16 @@ func (v *iCoreWebView2_4) release() {
 	_, _, _ = v.vtbl.Release.Call(uintptr(unsafe.Pointer(v)))
 }
 
-func (v *iCoreWebView2_4) addDownloadStarting(handler *iDownloadStartingHandler) (eventRegistrationToken, error) {
+// addDownloadStarting subscribes handler for the view's life; its
+// registration token is never needed.
+func (v *iCoreWebView2_4) addDownloadStarting(handler *iDownloadStartingHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddDownloadStarting.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // ---------------------------------------------------------------------

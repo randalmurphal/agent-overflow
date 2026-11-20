@@ -816,7 +816,7 @@ func (a *launcherApp) launchAndShow(distro string, transient, retryMigration boo
 		}
 	}
 
-	if err := a.startNotificationBridge(bs, l); err != nil {
+	if err := a.startNotificationBridge(bs); err != nil {
 		log.Printf("notifications: start launcher bridge: %v", err)
 	}
 
@@ -1586,7 +1586,7 @@ func (a *launcherApp) afterWindow(chosen string, transient bool) {
 	}
 }
 
-func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launcher *wsllauncher.Launcher) error {
+func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap) error {
 	client, err := wsllauncher.NewNotificationClient(wsllauncher.NotificationClientConfig{
 		WSURL:   fmt.Sprintf("ws://127.0.0.1:%d/ws", bs.Port),
 		Token:   bs.Token,

@@ -73,7 +73,7 @@ func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) error {
 	defer view4.release()
 	handler := newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { h.downloadStarting(page, args) })
 	page.downloadStarting = handler
-	_, err := view4.addDownloadStarting(handler)
+	err := view4.addDownloadStarting(handler)
 	handler.ref.release()
 	if err != nil {
 		return fmt.Errorf("download subscription: %w", err)
@@ -291,7 +291,7 @@ func (h *Host) detachOperation(d *hostDownload) {
 }
 
 // downloadBytes reports a download's snapshot as its bytes change, at most
-// once per DownloadProgressInterval.
+// once per downloadProgressInterval.
 func (h *Host) downloadBytes(d *hostDownload) {
 	if d.op == nil || !d.gate.due(time.Now()) {
 		return

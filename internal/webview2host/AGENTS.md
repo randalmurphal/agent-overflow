@@ -134,7 +134,7 @@ change never arrived ends then, and is answered with a snapshot marked
 backend never creates a row from: a running one's, an ended one's kept
 terminal snapshot under its own number (up to `MaxEndedDownloads` per page
 while the page lives), or `DownloadUnknown` for an id with no record. The
-launcher keeps a copy of at most `MaxDownloadURIBytes` of a download's
+launcher keeps a copy of at most `maxDownloadURIBytes` of a download's
 address, taken as it starts, and a digest of the whole address that a
 resume is matched by (`downloadAddress`, `resumeKey`); an address the
 runtime did not answer has no key, so it matches nothing. A report is bounded: the

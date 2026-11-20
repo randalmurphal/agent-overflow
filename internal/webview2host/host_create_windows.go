@@ -192,7 +192,7 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.pageReport(page, ReportProcessFailed, processFailedKindName(kind))
 	})
 	page.failHandler = failHandler
-	if _, err := view.addProcessFailed(failHandler); err != nil {
+	if err := view.addProcessFailed(failHandler); err != nil {
 		h.config.Logf("browser host: page %s process-failed subscription: %v", page.id, err)
 	}
 	failHandler.ref.release()
@@ -200,7 +200,7 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.acceleratorPressed(page, args)
 	})
 	page.keyHandler = keyHandler
-	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
+	if err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
 	keyHandler.ref.release()

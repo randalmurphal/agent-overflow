@@ -424,7 +424,7 @@ func TestAPageKeepsBoundedEndedSnapshotsUntilItGoes(t *testing.T) {
 }
 
 // A download from a long address (a data URL) keeps and reports at most
-// MaxDownloadURIBytes of it, in every snapshot and the terminal one it
+// maxDownloadURIBytes of it, in every snapshot and the terminal one it
 // keeps, and a resume is matched by the whole address: of two dropped
 // downloads whose addresses share that prefix, the resume takes its own.
 func TestALongAddressIsKeptBoundedAndResumesByTheWholeAddress(t *testing.T) {
@@ -451,11 +451,11 @@ func TestALongAddressIsKeptBoundedAndResumesByTheWholeAddress(t *testing.T) {
 		t.Fatalf("reports %s", got)
 	}
 	for _, report := range reports {
-		if len(report.URI) > MaxDownloadURIBytes || !strings.HasPrefix(prefix, report.URI) {
-			t.Fatalf("a report carries %d bytes of the address, want at most %d", len(report.URI), MaxDownloadURIBytes)
+		if len(report.URI) > maxDownloadURIBytes || !strings.HasPrefix(prefix, report.URI) {
+			t.Fatalf("a report carries %d bytes of the address, want at most %d", len(report.URI), maxDownloadURIBytes)
 		}
 	}
-	if kept := r.page.ended.byID["dl-t-2"]; len(kept.URI) > MaxDownloadURIBytes {
+	if kept := r.page.ended.byID["dl-t-2"]; len(kept.URI) > maxDownloadURIBytes {
 		t.Fatalf("the kept terminal snapshot holds %d bytes of the address", len(kept.URI))
 	}
 	r.done(t, a, b, ofB)

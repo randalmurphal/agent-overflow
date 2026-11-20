@@ -542,14 +542,16 @@ func (c *iCoreWebView2Controller) putBounds(bounds rect) error {
 	return hresult(hr)
 }
 
-func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) (eventRegistrationToken, error) {
+// addAcceleratorKeyPressed subscribes handler for the controller's life;
+// its registration token is never needed.
+func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := c.vtbl.AddAcceleratorKeyPressed.Call(
 		uintptr(unsafe.Pointer(c)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // moveFocusProgrammatic is COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC (0)
@@ -742,14 +744,16 @@ func (v *iCoreWebView2) openDevToolsWindow() error {
 	return hresult(hr)
 }
 
-func (v *iCoreWebView2) addProcessFailed(handler *iProcessFailedHandler) (eventRegistrationToken, error) {
+// addProcessFailed subscribes handler for the view's life; its
+// registration token is never needed.
+func (v *iCoreWebView2) addProcessFailed(handler *iProcessFailedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddProcessFailed.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 func (v *iCoreWebView2) callDevToolsProtocolMethod(method, paramsJSON string, handler *iDevToolsCompletedHandler) error {

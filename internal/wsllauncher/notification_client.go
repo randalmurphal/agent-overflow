@@ -103,9 +103,9 @@ type NotificationClient struct {
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
 	handleKeepAwake   func(mode string)
-	handleBrowserHost func(directive webview2host.Directive)
-	// browserHostLanes orders handleBrowserHost calls per page; nil when
-	// the channel is not subscribed.
+	// browserHostLanes hands each browser:host directive to the
+	// launcher's pane host in order per page; nil when the channel is not
+	// subscribed.
 	browserHostLanes *directiveLanes
 	// channels is the exact subscribe-frame payload, fixed at construction so
 	// every reconnect asks for the same set.
@@ -210,7 +210,6 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 		handleInstall:     config.HandleUpdateInstall,
 		handleWebviewTrim: config.HandleWebviewTrim,
 		handleKeepAwake:   config.HandleKeepAwake,
-		handleBrowserHost: config.HandleBrowserHost,
 		channels:          channels,
 		levelChannels:     levelChannels,
 		logf:              logf,
@@ -540,7 +539,7 @@ func (c *NotificationClient) handleWebviewTrimDirective(data json.RawMessage) {
 // same connection. Unlike its siblings it keeps arrival order per page
 // (directiveLanes): a page's bounds, show and hide must apply in order.
 func (c *NotificationClient) handleBrowserHostDirective(data json.RawMessage) {
-	if c.handleBrowserHost == nil {
+	if c.browserHostLanes == nil {
 		c.logf("browser host: ignore directive on an unsubscribed connection")
 		return
 	}

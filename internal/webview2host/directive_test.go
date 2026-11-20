@@ -31,7 +31,7 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		{Op: OpClearData, PageID: "0123456789abcdef"},
 		{Op: OpFind, PageID: "page-1"},
 		{Op: OpFind, PageID: "page-1", Query: "größe \U0001F600"},
-		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", MaxFindQueryBytes)},
+		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", maxFindQueryBytes)},
 		{Op: OpFindStop, PageID: "page-1"},
 		{Op: OpCancelDownload, PageID: "page-1", Download: "dl-abc-1", Cancel: 1},
 		{Op: OpDownloadStatus, PageID: "page-1", Download: "dl-abc-1", Cancel: 2},
@@ -82,7 +82,7 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"clear-data with a path correlation id", Directive{Op: OpClearData, PageID: "../evil"}, "disallowed byte"},
 		{"find without page", Directive{Op: OpFind, Query: "a"}, "page id is required"},
 		{"find-stop without page", Directive{Op: OpFindStop}, "page id is required"},
-		{"find query too long", Directive{Op: OpFind, PageID: "p", Query: strings.Repeat("a", MaxFindQueryBytes+1)}, "exceeds"},
+		{"find query too long", Directive{Op: OpFind, PageID: "p", Query: strings.Repeat("a", maxFindQueryBytes+1)}, "exceeds"},
 		{"find query with NUL", Directive{Op: OpFind, PageID: "p", Query: "a\x00b"}, "without NUL"},
 		{"find query not UTF-8", Directive{Op: OpFind, PageID: "p", Query: "a\xffb"}, "UTF-8"},
 		{"cancel-download without page", Directive{Op: OpCancelDownload, Download: "dl-1", Cancel: 1}, "page id is required"},
@@ -106,8 +106,8 @@ func TestDirectiveValidateRejects(t *testing.T) {
 // and drops on it rather than treating it as a malformed frame.
 func TestDirectiveUnknownOpIsSentinelWrapped(t *testing.T) {
 	err := Directive{Op: "teleport", PageID: "p"}.Validate()
-	if !errors.Is(err, ErrUnknownOp) {
-		t.Fatalf("Validate error = %v, want it to wrap ErrUnknownOp", err)
+	if !errors.Is(err, errUnknownOp) {
+		t.Fatalf("Validate error = %v, want it to wrap errUnknownOp", err)
 	}
 }
 

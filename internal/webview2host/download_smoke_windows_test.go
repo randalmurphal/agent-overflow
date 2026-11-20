@@ -25,7 +25,7 @@ import (
 //   - each lands in the user's Downloads folder under its own name, a taken
 //     name becoming "name (1).ext", and the started report already names the
 //     final file, which keeps WebView2's mark of the web; a 50 MB download
-//     reports its progress at most once per DownloadProgressInterval;
+//     reports its progress at most once per downloadProgressInterval;
 //   - a Content-Disposition navigation, an anchor's download attribute and a
 //     blob: URL are all taken;
 //   - WebView2's download dialog never opens (IsDefaultDownloadDialogOpen
@@ -70,7 +70,7 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 	start := time.Now()
 	big := s.navigateDownload("big.bin", "/cd/big.bin?size=52428800")
 	s.expectCompleted(big, "big.bin", 52428800)
-	if limit := int(time.Since(start)/DownloadProgressInterval) + 2; big.progress > limit {
+	if limit := int(time.Since(start)/downloadProgressInterval) + 2; big.progress > limit {
 		t.Fatalf("50 MB reported progress %d times in %v, over the bound %d", big.progress, time.Since(start), limit)
 	}
 
