@@ -383,15 +383,17 @@ func (s *Service) endBoardLocked(p *boardPump) {
 	if p.over {
 		return
 	}
-	p.core.StopLocked()
-	if s.subs.boards[p.scope] == p {
-		delete(s.subs.boards, p.scope)
-	}
-	s.endHandlesLocked(&p.core)
+	// The end is told before the core stops: stopping refuses the requests
+	// that wait on it, and their callers must find the end already told.
 	pending := p.pending
 	p.over, p.pending = true, boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
 		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.sync, Ended: true,
 	})
+	p.core.StopLocked()
+	if s.subs.boards[p.scope] == p {
+		delete(s.subs.boards, p.scope)
+	}
+	s.endHandlesLocked(&p.core)
 }

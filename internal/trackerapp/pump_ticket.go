@@ -180,8 +180,9 @@ func (s *Service) digestOf(v DetailView) uint64 {
 
 // runTicketPump is a ticket pump's goroutine: an interactive first read,
 // then a read every Cadence.Ticket while a handle shows the ticket, at
-// once when another read stored a changed card of the issue, on a
-// person's request, and on the retry schedule while reads fail.
+// once when another read stored a changed card of the issue, in full on a
+// person's request (RefreshIssueDetail), and on the retry schedule while
+// reads fail.
 func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.workers.Done()
 	defer close(tp.exited)
@@ -189,43 +190,42 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 	defer next.Stop()
 	retry := pump.Retry{Base: s.cadence.RetryBase, Interval: tp.every}
 	missed := false
-	step := func(u Urgency) (over bool, err error) {
+	step := func(u Urgency, full bool) (over bool, err error) {
 		missed = false
-		res := s.ticketTick(tp, u)
+		res := s.ticketTick(tp, u, full)
 		retry.Arm(res.failed, res.retryAt)
 		next.Reset(tp.every)
 		return res.over, res.err
 	}
-	over, _ := step(Interactive)
+	over, _ := step(Interactive, false)
 	for !over {
 		select {
 		case <-tp.core.Done():
 			return
 		case req := <-tp.core.Requests():
-			// TODO(forced-read): a person's refresh reads in full
 			var err error
-			over, err = step(Interactive)
+			over, err = step(Interactive, true)
 			if over {
 				err = ErrSubscriptionEnded
 			}
 			req.Finish(err)
 		case <-tp.core.Wake():
 			if !tp.core.Paused() && missed {
-				over, _ = step(Background)
+				over, _ = step(Background, false)
 			}
 		case <-tp.cardChanged:
 			if tp.core.Paused() {
 				missed = true
 				continue
 			}
-			over, _ = step(Background)
+			over, _ = step(Background, false)
 		case <-retry.C():
 			if tp.core.Paused() {
 				retry.FiredWhilePaused()
 				missed = true
 				continue
 			}
-			over, _ = step(Background)
+			over, _ = step(Background, false)
 		case <-next.C:
 			if tp.core.Paused() {
 				missed = true
@@ -234,20 +234,20 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 			if retry.Held() {
 				continue
 			}
-			over, _ = step(Background)
+			over, _ = step(Background, false)
 		}
 	}
 }
 
-// ticketTick reads tp's issue through IssueDetail, passes what the read
-// stored through the change funnel, and settles the outcome into the
+// ticketTick reads tp's issue through IssueDetail, or in full when full is
+// set, passes what the read stored through the change funnel, and settles the outcome into the
 // pump: the view it holds, a change or a failure to tell, and its end when
 // the connection was turned off or removed.
-func (s *Service) ticketTick(tp *ticketPump, u Urgency) tickResult {
+func (s *Service) ticketTick(tp *ticketPump, u Urgency, full bool) tickResult {
 	ctx := tp.core.Context()
 	conn, issue := tp.key.connection, tp.key.issue
 	readAt := s.now().UnixMilli()
-	v, ch, err := s.IssueDetail(ctx, conn, issue, u)
+	v, ch, err := s.issueDetail(ctx, conn, issue, u, full)
 	kind, root := s.heldKindRoot(conn)
 	s.publish(root, Scope{Connection: conn}, ch, &tickOrigin{ticket: tp})
 	var res tickResult
@@ -332,11 +332,13 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 	if tp.over {
 		return
 	}
+	// The end is told before the core stops, as a board's is
+	// (endBoardLocked).
+	s.flushTicketLocked(tp, true)
+	tp.over, tp.held = true, nil
 	tp.core.StopLocked()
 	if s.subs.tickets[tp.key] == tp {
 		delete(s.subs.tickets, tp.key)
 	}
 	s.endHandlesLocked(&tp.core)
-	s.flushTicketLocked(tp, true)
-	tp.over, tp.held = true, nil
 }

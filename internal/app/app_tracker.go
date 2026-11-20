@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"testing"
 	"time"
@@ -115,6 +116,22 @@ func (a *App) initTrackers() error {
 		Version:        a.version,
 		Now:            time.Now,
 		Life:           a.appCtx,
+		// No bound method subscribes to a board or a ticket yet, so no event
+		// has a channel: one arriving means a subscription was made without
+		// its channel.
+		EmitBoard: func(e trackerapp.BoardEvent) {
+			log.Printf("tracker: a board event of connection %s has no channel to its clients", e.Scope.Connection)
+		},
+		EmitIssue: func(e trackerapp.IssueEvent) {
+			log.Printf("tracker: an issue event of connection %s has no channel to its clients", e.Connection)
+		},
+		Settled: a.awaitFirstReadsSettled,
+		ClientConnected: func() bool {
+			bus := a.eventBus.Load()
+			return bus != nil && bus.SubscriberCount() > 0
+		},
+		// The service logs each failure of its linked-issues loop itself.
+		LoopFailed: func(error) {},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialise tracker connections: %w", err)

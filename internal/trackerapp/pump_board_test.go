@@ -155,14 +155,14 @@ func TestIdlePumpTickCosts(t *testing.T) {
 		moves              bool
 		provider, storeUse string
 	}{
-		{"jira-shaped", true, "Cards:1", "GetMirrorCatalog:1 GetMirrorDetail:1 GetMirrorSync:1 ListMirrorCards:1 TouchMirrorDetail:1 UpsertMirrorCards:1"},
+		{"jira-shaped", true, "Cards:1", "ConfirmMirrorDetail:1 GetMirrorCatalog:1 GetMirrorDetail:1 GetMirrorSync:1 ListMirrorCards:1 UpsertMirrorCards:1"},
 		{"linear-shaped", false, "Detail:1", "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorCards:1 StoreMirrorDetail:1"},
 	} {
 		m.p.set(func(p *scripted) { p.caps.DetailMovesUpdated = c.moves })
-		m.svc.ticketTick(tp, Background) // settles the change of shape
+		m.svc.ticketTick(tp, Background, false) // settles the change of shape
 		before, _ = len(m.p.callsInOrder()), cs.take()
 		_, issuesBefore, _ := m.events.snapshot()
-		m.svc.ticketTick(tp, Background)
+		m.svc.ticketTick(tp, Background, false)
 		provider, stored := countsOf(m.p.callsInOrder()[before:]), cs.take()
 		t.Logf("idle %s ticket read: provider %s store %s", c.name, describeCounts(provider), describeCounts(stored))
 		if describeCounts(provider) != c.provider || describeCounts(stored) != c.storeUse {
@@ -319,12 +319,22 @@ func TestFailureScheduleAndEvents(t *testing.T) {
 	}
 
 	// A rate limit holds the next read until its release, well past the
-	// doubling curve's first step.
-	until := time.Now().Add(300 * time.Millisecond)
+	// doubling curve's first step. The release is set when the limit is
+	// answered, so a slow run cannot pass it before the read is made.
+	var until, next time.Time
 	m.p.set(func(p *scripted) {
 		p.block = func(_ context.Context, name string) error {
-			if name == "ChangedRows" && time.Now().Before(until) {
+			if name != "ChangedRows" {
+				return nil
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case until.IsZero():
+				until = time.Now().Add(300 * time.Millisecond)
 				return &trackerapi.RateLimitedError{Until: until}
+			case next.IsZero():
+				next = time.Now()
 			}
 			return nil
 		}
@@ -334,8 +344,11 @@ func TestFailureScheduleAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitCalls(t, m.p, "ChangedRows", base+2)
-	if now := time.Now(); now.Before(until) {
-		t.Fatalf("the read after a rate limit came %v before its release", until.Sub(now))
+	mu.Lock()
+	early := until.Sub(next)
+	mu.Unlock()
+	if early > 0 {
+		t.Fatalf("the read after a rate limit came %v before its release", early)
 	}
 	m.events.waitFor(t, "the rate limit and its clear", func(b []BoardEvent, _ []IssueEvent, _ []error) bool {
 		return b[len(b)-1].Sync.Failure == nil && slices.ContainsFunc(b, func(e BoardEvent) bool {

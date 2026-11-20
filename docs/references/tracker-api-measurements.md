@@ -458,6 +458,16 @@ Source for schema facts: the
   `commentCreate` as before it, and `issues(filter: {updatedAt: {gte:
   <the comment's createdAt>}})` did not list the issue. An issue's
   `updatedAt` therefore does not say whether its comments changed.
+- Measured the same day with ten throwaway issues, three of them
+  commented. The ticket view's selection (the issue with its children,
+  comments, attachments, relations both ways, history and its team's
+  states, at the page sizes of the single-issue read) cost 621 points
+  through `issue(id:)` and 622 through
+  `issues(filter: {id: {in: [...]}})` for 1, 2, 5 and 10 issues alike, at
+  `first` equal to the count and at `first: 50`; each issue came back with
+  its own comments and states. An ID that names nothing was left out with
+  no error. Reading N issues in full in one request therefore costs the
+  request and the points of one.
 
 ## Tempo
 
