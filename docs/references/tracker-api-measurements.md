@@ -268,6 +268,17 @@ Other:
   `updated >=` its new update time, returned it between 0.5 and 2.1 s
   after the edit answered. Those times include about 0.6 s of two
   requests, so a list read showed an edit within about 2 seconds.
+- Measured the same day on one throwaway issue, deleted after, on reads
+  that name the issue by ID right after a write. After each of six summary
+  edits 4 s apart, the first answer of the board issue list and of the
+  search, each with `jql=id in (<id>)`, and of `POST /issue/bulkfetch`
+  carried the new summary (answers 0.2 to 0.4 s after the edit answered).
+  So the lag above is in matching `updated >=`, not in the field values of
+  an issue a list returns. After the create, the bulk fetch returned the
+  issue in its first answer (0.3 s) and the search by ID did not return it
+  until 23 s after the create answered: a new issue is found by ID through
+  a list only once Jira has indexed it, which took 0.6 s in the earlier
+  run and 23 s in this one.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list
@@ -468,6 +479,13 @@ Source for schema facts: the
   its own comments and states. An ID that names nothing was left out with
   no error. Reading N issues in full in one request therefore costs the
   request and the points of one.
+- Measured the same day on one throwaway issue, deleted after, on reads
+  right after a write. After `issueCreate` and after each of five
+  `issueUpdate` title edits 2 s apart, the first
+  `issues(filter: {id: {in: [<id>]}})` and the first
+  `issues(orderBy: updatedAt, filter: {team: ..., updatedAt: {gte: <the
+  write's updatedAt>}})` returned the issue with its new title. A list
+  read shows a create and an edit at once.
 
 ## Tempo
 
