@@ -114,6 +114,7 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 		}
 		start := e.pages.popupStart(d.key.page)
 		start.Frame, start.ID, start.URL, start.SuggestedName = frame, id, report.URI, name
+		start.EndReported = func() bool { return e.pages.endReported(d) }
 		if e.events.DownloadStarted(start) != downloadAdmitted {
 			// The Manager refused it: nothing later reaches a row.
 			e.pages.end(d)
@@ -132,38 +133,60 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 		}
 	}
 	d.applied = report.Seq
-	progress := downloadProgress{ID: id, Received: float64(report.Received), Total: float64(report.Total), State: downloadInProgress}
+	progress := receivedProgress(report)
 	switch report.State {
 	case webview2host.DownloadRunning:
 		if !admitted && report.Received == 0 {
 			return
 		}
 	case webview2host.DownloadCompleted:
-		progress.State = downloadCompleted
 		if report.Path == "" {
-			// Saved, under a path the launcher could not report.
-			progress.Error = report.Reason
 			break
 		}
 		pathCtx, cancel := context.WithTimeout(ctx, hostedPathTimeout)
 		path, err := e.backendPath(pathCtx, report.Path)
 		cancel()
-		if ctx.Err() != nil {
-			// The engine stopped; the Manager settled the page's rows first.
+		switch {
+		case ctx.Err() != nil:
+			// The engine stopped, and Stop took this end, which it delivers
+			// (hostedPages.stopAll).
 			return
-		}
-		if err != nil {
+		case err != nil:
 			progress.Error = fmt.Sprintf("the file was saved to %s, which this backend cannot reach, so it is not opened from here: %v", report.Path, err)
-		} else {
-			progress.FilePath = path
+		default:
+			progress.FilePath, progress.Error = path, ""
 		}
-	case webview2host.DownloadInterrupted:
-		progress.State, progress.Error = hostedDownloadEnd(report.End), report.Reason
+	case webview2host.DownloadInterrupted, webview2host.DownloadUnknown:
+	}
+	if report.Terminal() && !e.pages.takeEnd(d) {
+		// Stop took it, and delivers it.
+		return
 	}
 	e.events.DownloadProgress(progress)
 	if report.Terminal() {
 		e.pages.end(d)
 	}
+}
+
+// receivedProgress is the progress a snapshot reports before any path
+// conversion: a completed download's file is named, not opened from
+// here, until the lane converts its path.
+func receivedProgress(report webview2host.DownloadReport) downloadProgress {
+	progress := downloadProgress{ID: downloadID(report.ID), Received: float64(report.Received), Total: float64(report.Total), State: downloadInProgress}
+	switch report.State {
+	case webview2host.DownloadCompleted:
+		progress.State = downloadCompleted
+		if report.Path == "" {
+			// Saved, under a path the launcher could not report.
+			progress.Error = report.Reason
+		} else {
+			progress.Error = fmt.Sprintf("the file was saved to %s; the browser closed before this backend located it, so it is not opened from here", report.Path)
+		}
+	case webview2host.DownloadInterrupted:
+		progress.State, progress.Error = hostedDownloadEnd(report.End), report.Reason
+	case webview2host.DownloadRunning, webview2host.DownloadUnknown:
+	}
+	return progress
 }
 
 // hostedDownloadEnd is the state of a download the launcher ended for end,

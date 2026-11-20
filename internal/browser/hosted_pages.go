@@ -373,6 +373,9 @@ func (p *hostedPages) acceptSnapshot(page ids.PageHandle, report webview2host.Do
 		p.watchLocked()
 	}
 	d.heard = time.Now()
+	if report.Terminal() && d.ending == endNotReceived {
+		d.ending = endReceived
+	}
 	p.submitLocked(&acceptedWork{kind: acceptedSnapshot, page: page, snapshot: report, download: d})
 	return snapshotAccepted
 }
@@ -496,8 +499,13 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 // the lanes (Stop): work still waiting is dropped, a path conversion under
 // way ends, and whoever waits for a page to go is woken. It answers the
 // wait for the lanes' goroutines, which the caller makes once it holds no
-// lock.
-func (p *hostedPages) stopAll() func() {
+// lock, and the received ends its lanes have not delivered, in each
+// lane's order, the one under way first, which the Manager may be waiting
+// for (downloadStart.EndReported): one a lane already took is that lane's
+// to deliver (takeEnd). A download's admission may still be in flight on
+// its lane, so an end is taken whether or not it was admitted; the
+// Manager drops the end of a download it has no row for.
+func (p *hostedPages) stopAll() (join func(), ends []webview2host.DownloadReport) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stop != nil {
@@ -511,7 +519,19 @@ func (p *hostedPages) stopAll() func() {
 		}
 		close(r.retired)
 	}
+	take := func(w *acceptedWork) {
+		if w != nil && w.kind == acceptedSnapshot && w.download.ending == endReceived && w.snapshot.Terminal() {
+			w.download.ending = endTaken
+			ends = append(ends, w.snapshot)
+		}
+	}
+	for _, lane := range p.lanes.byKey {
+		take(lane.current)
+		for _, w := range lane.jobs {
+			take(w)
+		}
+	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)
 	p.owners = make(map[downloadID]ids.PageHandle)
-	return p.stopLanesLocked()
+	return p.stopLanesLocked(), ends
 }

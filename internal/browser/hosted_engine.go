@@ -318,7 +318,7 @@ func (e *hostedEngine) Stop() {
 		e.endCloseFallbackLocked(pageID)
 	}
 	e.targets = e.newTargets()
-	joinLanes := e.pages.stopAll()
+	joinLanes, ends := e.pages.stopAll()
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -327,6 +327,11 @@ func (e *hostedEngine) Stop() {
 		allocCancel()
 	}
 	joinLanes()
+	// A received end the lanes no longer process is still the end of a row
+	// the Manager may have left to it (downloadStart.EndReported).
+	for _, end := range ends {
+		e.events.DownloadProgress(receivedProgress(end))
+	}
 }
 
 // FileURL answers the file URL the Windows-side renderer can actually

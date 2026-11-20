@@ -100,6 +100,8 @@ func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
 	return nil, nil
 }
 
+// pageForDownload answers the listed page download id runs in, with its
+// jar, or the page that left with it waiting for its end, with no jar.
 func (m *Manager) pageForDownload(id downloadID) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -110,7 +112,24 @@ func (m *Manager) pageForDownload(id downloadID) (*managedPage, *jarScope) {
 			}
 		}
 	}
-	return nil, nil
+	return m.endPending[id], nil
+}
+
+// endDelivered forgets download id of p, a page that left, once its row
+// no longer waits for its end.
+func (m *Manager) endDelivered(p *managedPage, id downloadID) {
+	held := p.downloads.hold()
+	entry := held.entry(id)
+	waits := entry != nil && !entry.phase.ended()
+	held.release()
+	if waits {
+		return
+	}
+	m.mu.Lock()
+	if m.endPending[id] == p {
+		delete(m.endPending, id)
+	}
+	m.mu.Unlock()
 }
 
 // endedDownloads are the downloads a page left running when it stopped being
@@ -126,7 +145,9 @@ type endedDownloads struct {
 // being the Manager's goes through it (a close, a jar switch, a suspend, the
 // engine's own close, the browser's close), so none can leave the page's
 // downloads running with nothing to settle them: they settle here as
-// canceled with reason, and the page admits none after (downloadStarted).
+// canceled with reason, but for one whose end its engine received and will
+// deliver (downloadStart.EndReported), which that end settles, and the
+// page admits none after (downloadStarted).
 // The caller holds m.mu, publishes the answer once it is released
 // (publishDownloads), and stops it (stopEndedDownloads) before the profile
 // is disposed.
@@ -146,6 +167,21 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 		// One being published settles when its file is in place
 		// (publishFinishedDownload).
 		if !entry.takesReports() {
+			continue
+		}
+		if entry.endReported != nil && entry.endReported() {
+			to := rowEndPending
+			if entry.phase == rowCancelRequested {
+				to = rowEndPendingCancelRequested
+			}
+			if err := entry.advance(to); err != nil {
+				log.Printf("browser: %v", err)
+				continue
+			}
+			if m.endPending == nil {
+				m.endPending = make(map[downloadID]*managedPage)
+			}
+			m.endPending[downloadID(entry.ID)] = p
 			continue
 		}
 		if err := entry.settle(downloadStateCanceled); err != nil {

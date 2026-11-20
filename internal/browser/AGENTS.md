@@ -248,8 +248,10 @@ canceled, failed, untracked, page gone); the Manager lists it from that,
 never from whether a cancel was pending. Every removal of a live page
 goes through `pageLeftLocked`, which settles the page's running
 downloads, except one whose file is being published, which its publish
-settles, and, in the same hold of its log, ends its admission of new
-ones. The hosted engine's
+settles, and one whose end its engine received and still delivers
+(`downloadStart.EndReported`, the hosted engine's lanes, and Stop for
+what they did not process), which that end settles, and, in the same
+hold of its log, ends its admission of new ones. The hosted engine's
 downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 each a download of one page, keyed by page and id, so a report naming
 another page's download is refused; its page's lane applies them in

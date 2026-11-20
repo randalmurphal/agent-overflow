@@ -10,13 +10,16 @@ import (
 // Every move of a download row's phase, from every phase: advance allows
 // only the moves of its lifecycle and settle ends a row once.
 func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
-	phases := []downloadRowPhase{rowRunning, rowCancelRequested, rowPublishing, rowSettled, rowUserCanceled}
+	phases := []downloadRowPhase{rowRunning, rowCancelRequested, rowPublishing, rowEndPending, rowEndPendingCancelRequested, rowSettled, rowUserCanceled}
 	allowed := map[[2]downloadRowPhase]bool{
 		{rowRunning, rowCancelRequested}: true,
 		{rowRunning, rowPublishing}:      true,
 		{rowCancelRequested, rowRunning}: true,
 		// A finish that beat the cancel is published.
 		{rowCancelRequested, rowPublishing}: true,
+		// Its page left after its end was received, which settles it.
+		{rowRunning, rowEndPending}:                        true,
+		{rowCancelRequested, rowEndPendingCancelRequested}: true,
 	}
 	for _, from := range phases {
 		for _, to := range phases {
@@ -41,6 +44,10 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 		{rowCancelRequested, downloadStateCompleted, rowSettled},
 		{rowPublishing, downloadStateCompleted, rowSettled},
 		{rowPublishing, downloadStateFailed, rowSettled},
+		{rowEndPending, downloadStateCompleted, rowSettled},
+		{rowEndPending, downloadStateCanceled, rowSettled},
+		{rowEndPendingCancelRequested, downloadStateCanceled, rowUserCanceled},
+		{rowEndPendingCancelRequested, downloadStateCompleted, rowSettled},
 	} {
 		entry := DownloadInfo{ID: "dl", phase: tc.from, State: downloadStateRunning}
 		if err := entry.settle(tc.state); err != nil || entry.phase != tc.want || entry.State != tc.state {
