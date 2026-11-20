@@ -192,7 +192,7 @@ func TestADownloadRowListsTheCauseTheLauncherSaw(t *testing.T) {
 	}
 }
 
-// The reviewer's sequence through the Manager: the launcher's refusal of a
+// Through the Manager: the launcher's refusal of a
 // cancel is lost, a status answer carries it, and the user's next cancel
 // reaches the launcher instead of being taken for the first still
 // standing. A failure after a lost refusal lists as a failure, not as the

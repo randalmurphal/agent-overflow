@@ -532,7 +532,7 @@ func untouched(t *testing.T, r *downloadRig, id string, op *fakeOp, stale int, p
 	}
 }
 
-// The reviewer's sequence: a and b from one address save to f.bin and
+// Downloads a and b from one address save to f.bin and
 // f (1).bin, and only b drops. b alone reads as dropped, so WebView2's
 // resume, proposing f (2).bin, is b's: b's row, set back to b's file, and
 // a is untouched.

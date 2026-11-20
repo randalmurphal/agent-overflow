@@ -98,7 +98,7 @@ describe('the chat header browser button', () => {
     expect(kinds(act)).toEqual(['show-browser', 'show-browser']);
   });
 
-  // The reviewer's sequence: the first show's tab opened the pane, and its
+  // The first show's tab opened the pane, and its
   // last tab closed before the show answered. The button offers show
   // again, and a press is a new show, not the old one joined.
   it('a press after the shown pane closed sends a show while an older one is unanswered', async () => {

@@ -731,7 +731,7 @@ describe('browser state kept per surface', () => {
     await second;
     expect(browserThreadState('thread-a')?.seq).toBe(3);
   });
-  // The reviewer's sequence: an action's answer outlives the window's
+  // An action's answer outlives the window's
   // observation of its thread. Left and shown again, the thread is observed
   // afresh, and the old answer is not its state: the next read asks.
   it('admits no action answer from before the thread left and came back, and reads it again', async () => {

@@ -224,7 +224,7 @@ func TestDownloadSmokeFollowsWebView2sOwnResume(t *testing.T) {
 	}
 }
 
-// The reviewer's sequence: two downloads from one address save to
+// Two downloads from one address save to
 // "pair.bin" and "pair (1).bin", and only the second drops. Its operation
 // alone reads as dropped when WebView2's resume of it starts, so the
 // resume is that download's: its row and its file, completed byte for

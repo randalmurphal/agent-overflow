@@ -139,7 +139,7 @@ func TestUserDirsValuesReadAsXdgUserDirsWritesThem(t *testing.T) {
 	}
 }
 
-// The reviewer's relocated folder: a valid value with an escaped $ names a
+// A relocated folder: a valid value with an escaped $ names a
 // folder downloads go to.
 func TestARelocatedDownloadsFolderWithAnEscapeIsUsed(t *testing.T) {
 	if runtime.GOOS != "linux" {
@@ -1127,7 +1127,7 @@ func TestADownloadThePageStillListsOpens(t *testing.T) {
 	}
 }
 
-// The reviewer's sequence: another thread of the same workspace completes
+// Another thread of the same workspace completes
 // many downloads, and many other workspaces complete one each; a row the
 // pane still lists opens throughout.
 func TestAListedRowStaysOpenableWhateverOthersDownload(t *testing.T) {

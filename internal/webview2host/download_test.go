@@ -70,7 +70,7 @@ func TestDownloadReportShortensItsAddressToFit(t *testing.T) {
 		name string
 		uri  string
 	}{
-		{"the reviewer's ampersands", "data:text/plain," + strings.Repeat("&", 1000)},
+		{"1,000 ampersands", "data:text/plain," + strings.Repeat("&", 1000)},
 		{"100,000 bytes", "https://example.test/" + strings.Repeat("a", 100_000)},
 		{"multi-byte characters", "data:text/plain," + strings.Repeat("é€😀", 2000)},
 		{"escaped quotes and controls", "data:text/plain," + strings.Repeat("\"\x01\\", 2000)},

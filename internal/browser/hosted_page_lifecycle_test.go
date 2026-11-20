@@ -16,8 +16,8 @@ import (
 
 // A hosted page's report is received apart from its processing
 // (hosted_pages.go): what is true at receipt is recorded at receipt, and
-// the effects run on the page's lane in order. These are the reviewer's
-// sequences against the real Manager and the fake launcher.
+// the effects run on the page's lane in order, against the real Manager
+// and the fake launcher.
 
 // blockPath holds the engine's conversion of every Windows path ending in
 // name until release, and closes entered as the first one starts.

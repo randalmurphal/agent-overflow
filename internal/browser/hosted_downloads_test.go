@@ -299,7 +299,7 @@ func TestHostedEngineAppliesSnapshotsIdempotently(t *testing.T) {
 	}
 }
 
-// The reviewer's sequence: the start and progress arrive, the end is lost,
+// The start and progress arrive, the end is lost,
 // and the download looks running. The user's cancel asks the launcher,
 // whose answer is the download's terminal snapshot, which settles the row
 // once; the engine asks nothing more of it.
@@ -502,7 +502,7 @@ func TestHostedEngineBoundsItsEndedDownloads(t *testing.T) {
 	}
 }
 
-// The reviewer's sequence: the engine asks about a quiet download, the
+// The engine asks about a quiet download, the
 // download's own end arrives first, the page ends maxHostedEndedDownloads
 // more, and only then does the launcher's answer arrive, as its running
 // snapshot, its kept terminal snapshot or "unknown". None reopens the

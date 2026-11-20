@@ -15,7 +15,7 @@ import (
 	"agent-overflow/internal/webview2host"
 )
 
-// The reviewer's sequence through the launcher's own report queue: page-b's
+// Through the launcher's own report queue: page-b's
 // download completes and its path conversion blocks; page-a's Ctrl-click
 // popup, reported after it, is recorded with its opener, and its workspace
 // file request passes page-a's policy, while the conversion still blocks.
