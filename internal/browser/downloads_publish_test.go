@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -306,9 +305,58 @@ func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {
 	}
 }
 
-// heldLinking is whether a placement links the open, checked file itself
-// (placeHeld): on Linux, whose test hosts have /proc.
-var heldLinking = runtime.GOOS == "linux"
+// heldLinkingHere reports whether a placement on the filesystem of t's
+// temporary directories, where the tests' Downloads folder and artifacts
+// are, links the open, checked file itself: one probe of placeHeld, the
+// call placeNoReplaceIn decides by.
+func heldLinkingHere(t *testing.T) bool {
+	t.Helper()
+	dir := t.TempDir()
+	writeFiles(t, filepath.Join(dir, "source"))
+	held, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	info, err := held.Lstat("source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	into := filepath.Join(dir, "into")
+	if err := os.Mkdir(into, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	intoRoot, err := os.OpenRoot(into)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer intoRoot.Close()
+	_, _, err = placeHeld(placeSource{path: filepath.Join(dir, "source"), info: info, dir: held}, placeDir{path: into, root: intoRoot}, "the probe", func(int) string { return "placed" })
+	if errors.Is(err, errNoHeldLink) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("probe the held link: %v", err)
+	}
+	return true
+}
+
+// placeBy readies t for a placement by held link (held) or by name: a held
+// link is skipped where heldLinkingHere finds none, and a placement by name
+// is forced through placeHeldFile on a system that links held files.
+func placeBy(t *testing.T, held bool) {
+	t.Helper()
+	if held {
+		if !heldLinkingHere(t) {
+			t.Skip("this filesystem cannot link a held file")
+		}
+		return
+	}
+	placeHeldFile = func(placeSource, placeDir, string, func(int) string) (string, os.FileInfo, error) {
+		return "", nil, errNoHeldLink
+	}
+	t.Cleanup(func() { placeHeldFile = placeHeld })
+}
 
 // A staged file swapped for other bytes after the publish checked it never
 // gives those bytes a public name. Linking the held file publishes the
@@ -332,9 +380,7 @@ func TestAStagedFileSwappedAsItIsPublishedNeverHasAPublicName(t *testing.T) {
 		{"by name, rename", false, false, false, "changed before the download was saved"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.held != heldLinking && tc.linking {
-				t.Skip("a held link replaces placing by name with a link here, or is not available")
-			}
+			placeBy(t, tc.held)
 			manager, _, access, page := newDownloadManager(t)
 			downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
 			var staged, aside string
@@ -407,44 +453,47 @@ func TestAStagedFileSwappedAsItIsPublishedNeverHasAPublicName(t *testing.T) {
 // not granted as the download.
 func TestAFileSwappedInAtThePublicNameIsNotTheDownload(t *testing.T) {
 	for _, saving := range []downloadSaving{downloadsStaged, downloadsAsArtifacts} {
-		t.Run(fmt.Sprint(saving), func(t *testing.T) {
-			manager, _, access, page := newDownloadManagerFor(t, saving)
-			dir := filepath.Join(os.Getenv("HOME"), "Downloads")
-			if saving == downloadsAsArtifacts {
-				dir = authorityOf(t, manager, access).downloadDir
-			}
-			public := ""
-			linkDownload = func(from, to string) error {
-				if err := linkFile(from, to); err != nil {
-					return err
+		for _, held := range []bool{true, false} {
+			t.Run(fmt.Sprint(saving, ", held link ", held), func(t *testing.T) {
+				placeBy(t, held)
+				manager, _, access, page := newDownloadManagerFor(t, saving)
+				dir := filepath.Join(os.Getenv("HOME"), "Downloads")
+				if saving == downloadsAsArtifacts {
+					dir = authorityOf(t, manager, access).downloadDir
 				}
-				if public == "" && !placing(to) {
-					public = filepath.Join(dir, filepath.Base(to))
-					replacement := to + ".swap"
-					if err := os.WriteFile(replacement, []byte("unrelated file"), 0o600); err != nil {
-						t.Error(err)
+				public := ""
+				linkDownload = func(from, to string) error {
+					if err := linkFile(from, to); err != nil {
+						return err
 					}
-					if err := os.Rename(replacement, to); err != nil {
-						t.Error(err)
+					if public == "" && !placing(to) {
+						public = filepath.Join(dir, filepath.Base(to))
+						replacement := to + ".swap"
+						if err := os.WriteFile(replacement, []byte("unrelated file"), 0o600); err != nil {
+							t.Error(err)
+						}
+						if err := os.Rename(replacement, to); err != nil {
+							t.Error(err)
+						}
 					}
+					return nil
 				}
-				return nil
-			}
-			t.Cleanup(func() { linkDownload = linkFile })
-			startDownload(t, manager, access, page, "report.txt", 10)
-			got := threadDownloads(manager, access)[0]
-			if got.State != downloadStateFailed || !strings.Contains(got.Error, "changed as the download was saved there") || got.Openable {
-				t.Fatalf("the download lists as %+v, want it failed for the swap", got)
-			}
-			if data, err := os.ReadFile(public); err != nil || string(data) != "unrelated file" {
-				t.Fatalf("the file put at %s reads %q, %v", public, data, err)
-			}
-			// The workspace's artifact directory, AO's own, opens by its
-			// directory; a file in the Downloads folder only by its row.
-			if _, err := manager.authorizeFile(access.Caller(), public); saving == downloadsStaged && err == nil {
-				t.Fatal("the file put at the public name opens as the download")
-			}
-		})
+				t.Cleanup(func() { linkDownload = linkFile })
+				startDownload(t, manager, access, page, "report.txt", 10)
+				got := threadDownloads(manager, access)[0]
+				if got.State != downloadStateFailed || !strings.Contains(got.Error, "changed as the download was saved there") || got.Openable {
+					t.Fatalf("the download lists as %+v, want it failed for the swap", got)
+				}
+				if data, err := os.ReadFile(public); err != nil || string(data) != "unrelated file" {
+					t.Fatalf("the file put at %s reads %q, %v", public, data, err)
+				}
+				// The workspace's artifact directory, AO's own, opens by its
+				// directory; a file in the Downloads folder only by its row.
+				if _, err := manager.authorizeFile(access.Caller(), public); saving == downloadsStaged && err == nil {
+					t.Fatal("the file put at the public name opens as the download")
+				}
+			})
+		}
 	}
 }
 
@@ -456,11 +505,17 @@ func TestAFileSwappedInAtThePublicNameIsNotTheDownload(t *testing.T) {
 // public name holds the file it checked. Placing by name has its limit: a
 // file swapped in at the private name after its check takes the public
 // name, and then the row fails and never takes that file as the download.
-// The assertions follow the placement that ran, which on Linux is the held
-// link.
+// Each placement runs where the system offers it, a placement by name
+// everywhere.
 func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
-	for _, saving := range []downloadSaving{downloadsStaged, downloadsAsArtifacts} {
-		t.Run(fmt.Sprint(saving), func(t *testing.T) {
+	for _, tc := range []struct {
+		saving downloadSaving
+		held   bool
+	}{{downloadsStaged, true}, {downloadsStaged, false}, {downloadsAsArtifacts, true}, {downloadsAsArtifacts, false}} {
+		placement := map[bool]string{true: "held link", false: "by name"}[tc.held]
+		t.Run(fmt.Sprint(tc.saving, ", ", placement), func(t *testing.T) {
+			saving := tc.saving
+			placeBy(t, tc.held)
 			manager, _, access, page := newDownloadManagerFor(t, saving)
 			var private, source, swappedAt string
 			linkDownload = func(from, to string) error {
@@ -487,11 +542,10 @@ func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			byName := private != ""
-			if byName == heldLinking {
-				t.Fatalf("placed by name: %v; this platform links the held file: %v", byName, heldLinking)
+			if byName := private != ""; byName == tc.held {
+				t.Fatalf("placed by name: %v, want the %s", byName, placement)
 			}
-			if byName {
+			if !tc.held {
 				if item.State != downloadStateFailed || !strings.Contains(item.Error, "changed as the download was saved there") || item.Openable {
 					t.Fatalf("the download whose private name was swapped lists as %+v, want it failed", item.ThreadDownload)
 				}
