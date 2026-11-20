@@ -56,4 +56,23 @@ func TestARetiredMountReachesNothingOfAFreshLifetime(t *testing.T) {
 	if turn.Commit() != turnorder.Passed {
 		t.Fatal("a numbered command of the retired mount was admitted for the fresh lifetime")
 	}
+
+	// A stop made through the retired lifetime's Access ends no search of
+	// the fresh one, whichever mount it names.
+	mount, err := m.AttachPane(fresh.Caller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Find(t.Context(), fresh, PageID(tab.ID), FindStart, "x", MountID(mount.ID), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Find(t.Context(), f.access, PageID(tab.ID), FindStop, "", MountID(mount.ID), 1); err != nil {
+		t.Fatal(err)
+	}
+	p.findMu.Lock()
+	active = p.find.active
+	p.findMu.Unlock()
+	if !active {
+		t.Fatal("a stop through the retired Access ended the fresh lifetime's search")
+	}
 }

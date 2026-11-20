@@ -195,7 +195,7 @@ func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID Page
 		}
 	}
 	var errs []error
-	for _, p := range m.findStopPages(access.ThreadID(), named, owner) {
+	for _, p := range m.findStopPages(access.tb, named, owner) {
 		finder, mode := pageFinder(p)
 		if mode == "" {
 			continue
@@ -223,8 +223,9 @@ func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID Page
 }
 
 // findStopPages are the pages a stop runs on: the named page, if it exists,
-// and every other live page of the thread whose search the stop ends.
-func (m *Manager) findStopPages(threadID ThreadID, named *managedPage, owner findOwner) []*managedPage {
+// and every other live page of the thread lifetime tb whose search the stop
+// ends.
+func (m *Manager) findStopPages(tb *threadBrowser, named *managedPage, owner findOwner) []*managedPage {
 	var pages []*managedPage
 	if named != nil {
 		pages = append(pages, named)
@@ -233,7 +234,7 @@ func (m *Manager) findStopPages(threadID ThreadID, named *managedPage, owner fin
 	var others []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner.id == threadID && p != named {
+			if p.owner == tb && p != named {
 				others = append(others, p)
 			}
 		}
