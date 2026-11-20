@@ -547,10 +547,14 @@ func webkitPresentView(view webkitView, placement PanePlacement) error {
 }
 
 // webkitSetViewBackground paints the page's base (pageBase) underneath the
-// page: white under a document, the pane's color under a blank tab.
-func webkitSetViewBackground(view webkitView, color webkitRGB) error {
+// page: white under a document, the pane's color under a blank tab. color
+// is packed 0xRRGGBB (nativePaneColor); GdkRGBA takes each channel in 0..1.
+func webkitSetViewBackground(view webkitView, color uint32) error {
+	red := float64((color>>16)&0xff) / 255
+	green := float64((color>>8)&0xff) / 255
+	blue := float64(color&0xff) / 255
 	return view.do(func(view unsafe.Pointer) {
-		C.ao_wk_view_set_background(view, C.double(color.R), C.double(color.G), C.double(color.B))
+		C.ao_wk_view_set_background(view, C.double(red), C.double(green), C.double(blue))
 	})
 }
 

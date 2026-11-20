@@ -48,7 +48,6 @@ func newNativeEngine(_ string, opts ManagerOptions, events engineEvents) browser
 	return &wkEngine{
 		window: opts.NativeWindow, events: events,
 		popups: newHeldPopups(), slots: make(map[int]bool),
-		pane: make(map[uint64]wkPaneState),
 	}
 }
 
@@ -61,10 +60,11 @@ type wkEngine struct {
 	startMu sync.Mutex
 	started bool
 
-	mu     sync.Mutex
 	popups *heldPopups
-	slots  map[int]bool
-	pane   map[uint64]wkPaneState
+	pane   nativePanes
+	// mu guards slots, the park view rows in use (claimSlot).
+	mu    sync.Mutex
+	slots map[int]bool
 
 	// downloadEvents carries every download report to the Manager off the
 	// main thread, one at a time in the order they were made, so a fast

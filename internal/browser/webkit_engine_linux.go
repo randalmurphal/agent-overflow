@@ -41,7 +41,6 @@ func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents)
 	return &webkitEngine{
 		configDir: configDir, window: opts.NativeWindow, events: events,
 		popups: newHeldPopups(),
-		pane:   make(map[uint64]webkitPaneState),
 	}
 }
 
@@ -50,14 +49,13 @@ type webkitEngine struct {
 	window    func() unsafe.Pointer
 	events    engineEvents
 
-	// startMu serializes host attachment. Separate from mu on purpose: it is
-	// held across a GTK call, so no callback may ever take it.
+	// startMu serializes host attachment. It is held across a GTK call, so
+	// no callback may ever take it.
 	startMu sync.Mutex
 	started bool
 
-	mu     sync.Mutex
 	popups *heldPopups
-	pane   map[uint64]webkitPaneState
+	pane   nativePanes
 
 	// downloadEvents carries every download report to the Manager off the
 	// GTK thread, one at a time in the order they were made, so a fast

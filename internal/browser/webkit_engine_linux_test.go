@@ -61,58 +61,6 @@ func TestNativeEngineRefusesToStartBeforeTheWindowExists(t *testing.T) {
 	engine.Interrupt()
 }
 
-// The pane background is the one piece of the presentation path that is pure
-// arithmetic, and the one whose failure is silent: an unparsed color leaves the
-// view white, which reads as a flash rather than as an error.
-func TestPaneBackgroundParsesSixDigitHexAndRefusesAnythingElse(t *testing.T) {
-	for _, tc := range []struct {
-		value string
-		want  webkitRGB
-	}{
-		{"#000000", webkitRGB{0, 0, 0}},
-		{"#ffffff", webkitRGB{1, 1, 1}},
-		{"#FFFFFF", webkitRGB{1, 1, 1}},
-		{"  #ff0000  ", webkitRGB{1, 0, 0}},
-		{"#00ff00", webkitRGB{0, 1, 0}},
-		{"#0000ff", webkitRGB{0, 0, 1}},
-		{"#1e2433", webkitRGB{30.0 / 255, 36.0 / 255, 51.0 / 255}},
-	} {
-		got, ok := webkitParseBackground(tc.value)
-		if !ok || got != tc.want {
-			t.Fatalf("webkitParseBackground(%q) = %v, %v; want %v", tc.value, got, ok, tc.want)
-		}
-	}
-	for _, value := range []string{
-		"", "   ", "#", "#fff", "#ff00ff00", "1e2433", "#12345g", "#12 456",
-		"rgb(0,0,0)", "transparent", "#+00000", "#0x0000",
-	} {
-		if got, ok := webkitParseBackground(value); ok {
-			t.Fatalf("webkitParseBackground(%q) = %v, true; want no answer", value, got)
-		}
-	}
-}
-
-// The dedupe compares the whole placement, so a clip that moves while the rect
-// holds still, or a scale that changes, still re-presents. Losing that would
-// freeze the crop against a scroll.
-func TestPaneDedupeSeesAClipThatMovedUnderAStillRect(t *testing.T) {
-	rect := PaneRect{X: 10, Y: 20, Width: 300, Height: 400, ClipX: 10, ClipY: 20, ClipWidth: 300, ClipHeight: 400}
-	placement := PanePlacement{Rect: rect, PageWidth: 1280, PageHeight: 720, Scale: 0.5}
-	st := webkitPaneState{placement: placement, applied: placement, appliedShown: true, shown: true}
-	if !webkitPaneApplied(st) {
-		t.Fatal("an unchanged placement must stay deduped")
-	}
-	st.placement.Rect.ClipY, st.placement.Rect.ClipHeight = 60, 360
-	if webkitPaneApplied(st) {
-		t.Fatal("a moved clip must not be treated as already applied")
-	}
-	st.placement = placement
-	st.placement.Scale = 0.25
-	if webkitPaneApplied(st) {
-		t.Fatal("a changed scale must not be treated as already applied")
-	}
-}
-
 func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	engine := newNativeEngine(t.TempDir(), ManagerOptions{
 		NativeWindow: func() unsafe.Pointer { return nil },
