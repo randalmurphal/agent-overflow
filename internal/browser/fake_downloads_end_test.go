@@ -10,19 +10,17 @@ import (
 )
 
 // A tab closed after the engine took a finished download's end, and before
-// that end was reported, leaves the row to the report where the end needs
-// nothing of the page: an artifact or a file the engine saved is listed
-// completed. A staged file is published from its page's row, so the
-// page's leave cancels it and its staged file goes, as on WebKit.
+// that end was reported, leaves the row to the report: it lists completed
+// with its file kept, an artifact moved to the workspace, a staged file
+// published to the Downloads folder, a file the engine saved where it is.
 func TestATabClosedBeforeAFakeDownloadsFinishIsReported(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		saving downloadSaving
-		want   string
 	}{
-		{"artifact", downloadsAsArtifacts, downloadStateCompleted},
-		{"saved by the engine", downloadsSavedByEngine, downloadStateCompleted},
-		{"staged", downloadsStaged, downloadStateCanceled},
+		{"artifact", downloadsAsArtifacts},
+		{"saved by the engine", downloadsSavedByEngine},
+		{"staged", downloadsStaged},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, tc.saving)
@@ -34,9 +32,8 @@ func TestATabClosedBeforeAFakeDownloadsFinishIsReported(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var written string
-			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) {
-				written = file
+			written := heldFile(t, manager, item.engineID)
+			manager.engine.(*fakeEngine).beforeFinishReport = func(string) {
 				if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
 					t.Error(err)
 				}
@@ -45,26 +42,50 @@ func TestATabClosedBeforeAFakeDownloadsFinishIsReported(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := threadDownloads(manager, access)[0]
-			if got.State != tc.want {
-				t.Fatalf("the download lists as %+v, want %s", got, tc.want)
+			if got.State != downloadStateCompleted || got.Error != "" || got.ReceivedBytes != 64 {
+				t.Fatalf("the download lists as %+v, want completed", got)
 			}
-			if tc.want == downloadStateCompleted {
-				if got.Error != "" || got.ReceivedBytes != 64 {
-					t.Fatalf("the finished download lists as %+v", got)
-				}
-				finished, err := manager.finishedDownloadPath(access, DownloadKey(got.ID))
-				if err != nil {
-					t.Fatalf("the finished file: %v", err)
-				}
-				if stat, err := os.Stat(finished.path); err != nil || stat.Size() != 64 {
-					t.Fatalf("the finished file at %s: %v", finished.path, err)
-				}
-				return
+			finished, err := manager.finishedDownloadPath(access, DownloadKey(got.ID))
+			if err != nil {
+				t.Fatalf("the finished file: %v", err)
 			}
-			if _, err := os.Lstat(written); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("the canceled download's file %s stays: %v", written, err)
+			if stat, err := os.Stat(finished.path); err != nil || stat.Size() != 64 {
+				t.Fatalf("the finished file at %s: %v", finished.path, err)
+			}
+			if tc.saving != downloadsSavedByEngine {
+				if _, err := os.Lstat(written); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("the engine's file %s stays beside the finished one: %v", written, err)
+				}
 			}
 		})
+	}
+}
+
+// A tab closed while its staged download runs cancels it and removes its
+// staged file.
+func TestATabClosedWhileAStagedDownloadRunsCancelsIt(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsStaged)
+	if _, err := manager.Open(t.Context(), access, "https://example.test/sibling", OpenOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "running.txt", 64, "hold")
+	item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := heldFile(t, manager, item.engineID)
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("no staged file: %v", err)
+	}
+	if err := manager.ClosePage(t.Context(), access, PageID(page.ID)); err != nil {
+		t.Fatal(err)
+	}
+	got := threadDownloads(manager, access)[0]
+	if got.State != downloadStateCanceled || got.Error == "" {
+		t.Fatalf("the download lists as %+v, want canceled with its reason", got)
+	}
+	if _, err := os.Lstat(staged); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the canceled download's staged file stays: %v", err)
 	}
 }
 

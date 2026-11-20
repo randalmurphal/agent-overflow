@@ -155,7 +155,8 @@ type receivingDriver interface {
 // received and has not had admitted is listed first (receivingDriver), and
 // they settle here as canceled with reason, but for one whose end its
 // engine received and will deliver (downloadStart.EndReported), which that
-// end settles, and the page admits none after (downloadStarted).
+// end settles, a staged finish by its publish with its staged file kept,
+// and the page admits none after (downloadStarted).
 // The caller holds m.mu, publishes the answer once it is released
 // (publishDownloads), and stops it (stopEndedDownloads) before the profile
 // is disposed.

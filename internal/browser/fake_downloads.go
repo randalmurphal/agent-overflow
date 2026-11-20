@@ -120,12 +120,7 @@ func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error
 		return nil
 	}
 	start := downloadStart{Frame: frame, ID: id, URL: request.url, SuggestedName: name}
-	if p.engine.saving != downloadsStaged {
-		// A staged download's finish publishes its file, which a row whose
-		// page left first cannot do, so its page's leave settles it, as on
-		// WebKit.
-		start.EndReported = func() bool { return p.endReported(id) }
-	}
+	start.EndReported = func() bool { return p.endReported(id) }
 	// Cancellable from before its start is reported: a cancel made while
 	// the start or a progress report is handled is taken, and this run
 	// reports it as the download's one end after that report, with the
