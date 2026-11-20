@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -104,9 +105,10 @@ func (m *Manager) selectTabWhere(access Access, turn *turnorder.Turn, pick func(
 }
 
 // labelHolderLocked answers tb's other tab (not pageID) whose label equals
-// label, ignoring case, or "" when none does: a thread's labels are unique,
-// and every label write checks here in the m.mu hold that commits it. An
-// empty label is never held. The caller holds m.mu.
+// label, ignoring case, or for which a LabelPage call claims it, or ""
+// when none does: a thread's labels are unique, and every label write
+// checks here in the m.mu hold that commits it. An empty label is never
+// held. The caller holds m.mu.
 func (m *Manager) labelHolderLocked(tb *threadBrowser, pageID PageID, label string) PageID {
 	if label == "" {
 		return ""
@@ -116,7 +118,27 @@ func (m *Manager) labelHolderLocked(tb *threadBrowser, pageID PageID, label stri
 			return tab.id
 		}
 	}
+	for _, claim := range tb.labelClaims {
+		if claim.page != pageID && strings.EqualFold(claim.label, label) {
+			return claim.page
+		}
+	}
 	return ""
+}
+
+// labelClaim is a label a LabelPage call holds for its tab from its
+// admission to its commit, so the suspended tab it restores for the label
+// is restored for a label no other write takes meanwhile.
+type labelClaim struct {
+	label string
+	page  PageID
+}
+
+// releaseLabelClaim ends claim, one of tb's.
+func (m *Manager) releaseLabelClaim(tb *threadBrowser, claim *labelClaim) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tb.labelClaims = slices.DeleteFunc(tb.labelClaims, func(c *labelClaim) bool { return c == claim })
 }
 
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, label string) (PageInfo, error) {
@@ -134,10 +156,20 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 	taken := func(holder PageID) error {
 		return fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
 	}
-	// A label another tab holds is refused before a suspended tab restores
-	// for it, and again where it commits.
+	// A label another tab holds or a call claims is refused before a
+	// suspended tab restores for it, and the label is claimed for the tab
+	// until it commits, so no other write takes it while the tab restores.
+	// An omitted page_id names the thread's one tab.
 	m.mu.Lock()
+	if tabs := m.threadTabsLocked(access.tb); pageID == "" && len(tabs) == 1 {
+		pageID = tabs[0].id
+	}
 	holder := m.labelHolderLocked(access.tb, pageID, label)
+	if holder == "" && label != "" {
+		claim := &labelClaim{label: label, page: pageID}
+		access.tb.labelClaims = append(access.tb.labelClaims, claim)
+		defer m.releaseLabelClaim(access.tb, claim)
+	}
 	m.mu.Unlock()
 	if holder != "" {
 		return PageInfo{}, taken(holder)

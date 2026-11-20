@@ -75,6 +75,9 @@ type threadBrowser struct {
 	// lifetime out of the registry. Both guarded by m.mu.
 	provisional bool
 	lookups     int
+	// labelClaims are the labels LabelPage calls hold for their tabs from
+	// admission to commit (control.go). Guarded by m.mu.
+	labelClaims []*labelClaim
 }
 
 func newThreadBrowser(id ThreadID) *threadBrowser {

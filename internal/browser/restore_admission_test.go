@@ -375,3 +375,41 @@ func TestARefusedLabelRestoresNothing(t *testing.T) {
 		t.Fatal("a refused label restored the suspended tab")
 	}
 }
+
+// A label is the restoring tab's from its admission: a second write of the
+// same label to another tab while the first restores its suspended tab is
+// refused, and the first lands on the tab it restored.
+func TestALabelIsClaimedWhileItsTabRestores(t *testing.T) {
+	m, engine := newLifecycleManager(t)
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+	live := mustOpen(t, m, access, addr("live"))
+	saved := mustOpen(t, m, access, addr("saved"))
+	suspendTab(t, m, access, saved.ID)
+	release := engine.hold(&engine.navGate)
+	defer release()
+	labeled := make(chan error, 1)
+	go func() {
+		_, err := m.LabelPage(context.Background(), access, PageID(saved.ID), "docs")
+		labeled <- err
+	}()
+	receive(t, engine.navigating, "the saved tab's restore")
+	if _, err := m.LabelPage(t.Context(), access, PageID(live.ID), "Docs"); err == nil {
+		t.Fatal("a label claimed by a restoring tab was given to another tab")
+	}
+	release()
+	if err := <-labeled; err != nil {
+		t.Fatalf("the restoring tab's label: %v", err)
+	}
+	for _, tab := range m.CompanionState(access.Caller()).Pages {
+		want := map[string]string{live.ID: "", saved.ID: "docs"}[tab.ID]
+		if tab.Label != want {
+			t.Fatalf("tab %s is labeled %q, want %q", tab.ID, tab.Label, want)
+		}
+	}
+	m.mu.Lock()
+	claims := len(access.tb.labelClaims)
+	m.mu.Unlock()
+	if claims != 0 {
+		t.Fatalf("%d label claims are left", claims)
+	}
+}
