@@ -33,7 +33,7 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	p, scope := m.pageForFrame(event.Frame)
 	switch {
 	case p != nil:
-		return m.admitTo(p, event, m.downloadFileOf(scope, event.ID), nil)
+		return m.admitTo(p, event, m.downloadFileOf(scope, event.ID))
 	case event.Popup != "":
 		// A popup not listed yet: its fate lists it (popup_parked.go).
 		return m.parkDownload(event)
@@ -44,9 +44,8 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 // admitTo lists a starting download in p, its owner, with file, the file
 // its engine writes it into. It answers downloadRefused when p left (its
 // log ended) or, on an engine whose downloads are AO's, p's workspace
-// refuses the reservation, which the row then says. A parked download's
-// listing (parked set) takes its file and reservation over.
-func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile, parked *parkedDownload) downloadAdmission {
+// refuses the reservation, which the row then says.
+func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile) downloadAdmission {
 	authority := p.authority
 	source := downloadSource(p, event)
 	if m.downloadAdmitting != nil {
@@ -60,11 +59,6 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 	}
 	entry := m.downloadEntry(event)
 	switch {
-	case parked != nil:
-		// Its listing moves its file and reservation to its row: its bytes
-		// stay held, against the workspace they were taken from.
-		entry.reservation = quota.Take(&parked.reservation)
-		entry.source, parked.file = parked.file, downloadFile{}
 	case m.downloadsToArtifacts():
 		reservation, err := m.reserveDownload(authority)
 		if err != nil {

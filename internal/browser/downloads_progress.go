@@ -41,8 +41,13 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // row waiting for this end (pageLeftLocked), so a row this settles stops
 // waiting whichever the lookup found.
 func (m *Manager) applyToRow(p *managedPage, scope *jarScope, event downloadProgress) {
+	m.applyHeldRow(p, scope, p.downloads.hold(), event)
+}
+
+// applyHeldRow is applyToRow for a caller that holds p's download log,
+// which this releases.
+func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLogHold, event downloadProgress) {
 	defer m.endDelivered(p, event.ID)
-	held := p.downloads.hold()
 	entry := held.entry(event.ID)
 	// A settled download takes no further report: AO stopped it (a quota,
 	// its size, the user, its page closing) or the engine already ended it.

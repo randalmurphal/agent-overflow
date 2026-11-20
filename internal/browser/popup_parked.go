@@ -21,7 +21,11 @@ import (
 // it is: running, finished or ended. A popup's fate is known at the end of
 // its adoption, at its page's close (removeClosedPage), or after
 // popupParkTimeout if neither comes, and is remembered (popupFate), so a
-// download the popup starts after it goes the same way at once. The tab
+// download the popup starts after it goes the same way at once. Where a
+// download goes is decided and its row added in one m.mu hold
+// (placeParked), the hold every page's departure takes, so an opener
+// leaving at any point of that listing finds the row in its log or has
+// already left as the popup's carrier. The tab
 // and its downloads are listed in one m.parkMu hold, which a page's close
 // also takes (removeClosedPage), so a close never takes the tab before the
 // downloads, with their newest progress, are in it. A download whose
@@ -34,7 +38,7 @@ import (
 // listed one does from its start: maxDownloadBytes of its workspace's
 // allowance, the workspace of the nearest page that opened it, and of the
 // artifact quota, or it is refused. Its listing takes that reservation and
-// its file over (admitTo), and its refusal discards both, the file first
+// its file over (placeParked), and its refusal discards both, the file first
 // (downloads_discard.go). One whose progress passes the per-download cap
 // is stopped then. A parked download keeps the jar it is written in, whose
 // directory holds its file until it is listed or removed, whether or not
@@ -123,13 +127,6 @@ func (m *Manager) carryEndedPopupsLocked(p *managedPage, reason string) []ids.Pa
 	return carried
 }
 
-// carrierOf answers the carrier of popup handle.
-func (m *Manager) carrierOf(handle ids.PageHandle) (popupCarrier, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.carriersLocked().get(handle)
-}
-
 // forgetEndedPopup forgets the end of popup handle (endedPopupLocked) and
 // its carrier once its engine reports nothing more of it: its close was
 // processed (removeClosedPage), or its discard returned (finishAdoption).
@@ -201,42 +198,23 @@ type popupFate struct {
 	openers []ids.PageHandle
 }
 
-// parkDownload keeps a download of a popup not listed yet, or lists it at
-// once when the popup's fate is known (admitTo answers then). Nobody has
-// refused a download whose owner is not known yet, which it answers
-// downloadUnowned: the popup's fate names no listed page, or, on an engine
-// whose downloads are AO's, its jar is not open or no page of its opener
-// chain gives it a workspace. It answers downloadRefused past the bounds
-// and when the workspace has no room for it. A download it does not admit
-// leaves nothing parked.
+// parkDownload keeps a download of a popup not listed yet, or, when the
+// popup's fate is known, lists it at once where that fate puts it
+// (placeParked). Nobody has refused a download whose owner is not known
+// yet, which it answers downloadUnowned: the popup's fate names no page
+// that takes it, or, on an engine whose downloads are AO's, its jar is not
+// open or no page of its opener chain gives it a workspace. It answers
+// downloadRefused past the bounds and when the workspace has no room for
+// it. A download it does not admit leaves nothing parked.
 func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
-	if fate, known := m.fates().get(event.Popup); known {
-		if carrier, carried := m.carrierOf(event.Popup); carried && fate.listed == "" {
-			// After its fate: listed as its carrier's leave would have.
-			m.mu.Lock()
-			scope := m.profileScopeLocked(event.Profile)
-			m.mu.Unlock()
-			d := &parkedDownload{start: event, scope: scope, file: m.downloadFileOf(scope, event.ID)}
-			if discard, canceled := m.listCarried(carrier, d); canceled {
-				m.stopRefused(d, discard)
-			}
-			return downloadAdmitted
-		}
-		fate.openers = mergeOpeners(fate.openers, event.Openers)
-		target := m.fateTarget(event.Popup, fate)
-		if target == nil {
-			return downloadUnowned
-		}
-		m.mu.Lock()
-		scope := m.profileScopeLocked(event.Profile)
-		m.mu.Unlock()
-		return m.admitTo(target, event, m.downloadFileOf(scope, event.ID), nil)
-	}
+	fate, known := m.fates().get(event.Popup)
 	popup := m.parked[event.Popup]
 	var openers []ids.PageHandle
 	switch {
+	case known:
+		openers = fate.openers
 	case popup == nil && len(m.parked) >= maxParkedPopups:
 		return downloadRefused
 	case popup != nil && len(popup.downloads) >= maxParkedDownloads:
@@ -261,6 +239,18 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 			return downloadRefused
 		}
 		d.reservation = reservation
+	}
+	if known {
+		fate.openers = openers
+		placed, discard, canceled := m.placeParked(event.Popup, fate, d, true)
+		if !placed {
+			quota.Take(&d.reservation).Release()
+			return downloadUnowned
+		}
+		if canceled {
+			m.stopRefused(d, discard)
+		}
+		return downloadAdmitted
 	}
 	if popup == nil {
 		popup = m.parkPopupLocked(event.Popup)
@@ -367,36 +357,109 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 		fate.openers = mergeOpeners(fate.openers, popup.openers)
 	}
 	m.fates().put(handle, fate)
-	carrier, carried := m.carrierOf(handle)
 	if popup == nil {
 		return
 	}
-	if carried && fate.listed == "" {
-		for _, d := range popup.downloads {
-			if discard, canceled := m.listCarried(carrier, d); canceled {
-				m.stopRefused(d, discard)
-			}
-		}
-		return
-	}
-	target := m.fateTarget(handle, fate)
 	for _, d := range popup.downloads {
-		if target == nil {
+		placed, discard, canceled := m.placeParked(handle, fate, d, true)
+		switch {
+		case !placed:
 			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
 			m.refuseParked(d)
-			continue
-		}
-		// Its listing takes its reservation over (admitTo), which only a
-		// tab that left meanwhile refuses.
-		if m.admitTo(target, d.start, d.file, d) != downloadAdmitted {
-			log.Printf("browser: download %s of popup %s is listed in no tab: its tab closed as it was listed", d.start.ID, handle)
-			m.refuseParked(d)
-			continue
-		}
-		if d.newest != nil {
-			m.applyDownloadProgress(*d.newest)
+		case canceled:
+			m.stopRefused(d, discard)
 		}
 	}
+}
+
+// placeParked lists d, a download of popup handle whose fate is fate, in
+// the page that fate gives it, and decides that page and adds the row in
+// one m.mu hold, so no page's departure comes between the two: the
+// popup's tab while it is listed; else, for a popup never listed, the
+// leave that carries it (popupCarrier); else, with live, its nearest
+// listed opener (popupLineage). The row takes d's file and reservation,
+// and d's newest progress is applied before the page's log is let go, so
+// a departure that follows settles the row as it is. A row in a carrier's
+// log then settles as that leave settled its others (departLocked), and
+// discard is the discard of a row that settled canceled, which the caller
+// finishes once its engine stops writing the file. It answers placed
+// false, with d untouched, when no page takes it. The caller holds
+// m.parkMu.
+func (m *Manager) placeParked(handle ids.PageHandle, fate popupFate, d *parkedDownload, live bool) (placed bool, discard downloadDiscard, canceled bool) {
+	m.mu.Lock()
+	p, scope, carrier, carried := m.parkedOwnerLocked(handle, fate, live)
+	if p == nil {
+		m.mu.Unlock()
+		return false, downloadDiscard{}, false
+	}
+	if m.downloadAdmitting != nil {
+		m.downloadAdmitting()
+	}
+	held := p.downloads.hold()
+	entry := m.downloadEntry(d.start)
+	// Its bytes stay held, against the workspace they were taken from.
+	entry.reservation = quota.Take(&d.reservation)
+	entry.source, d.file = d.file, downloadFile{}
+	listed := m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, d.start))
+	m.mu.Unlock()
+	if d.newest != nil {
+		m.applyHeldRow(p, scope, held, *d.newest)
+	} else {
+		held.release()
+	}
+	m.publishDownloads(listed)
+	if !carried {
+		return true, downloadDiscard{}, false
+	}
+	m.mu.Lock()
+	held = p.downloads.hold()
+	var note downloadNote
+	if row := held.entry(d.start.ID); row != nil && !row.phase.ended() {
+		note, discard, canceled = m.departLocked(p, row, carrier.reason)
+	}
+	held.release()
+	m.mu.Unlock()
+	if canceled {
+		m.publishDownloads(note)
+	}
+	return true, discard, canceled
+}
+
+// parkedOwnerLocked answers the page a parked download of popup handle,
+// whose fate is fate, is listed in (placeParked), with its jar while it
+// is listed, and, for a carrier's page, the carrier. The caller holds
+// m.mu.
+func (m *Manager) parkedOwnerLocked(handle ids.PageHandle, fate popupFate, live bool) (*managedPage, *jarScope, popupCarrier, bool) {
+	if fate.listed == "" {
+		if carrier, carried := m.carriersLocked().get(handle); carried {
+			return carrier.page, nil, carrier, true
+		}
+	}
+	if !live {
+		return nil, nil, popupCarrier{}, false
+	}
+	if fate.listed != "" {
+		if p, scope := m.listedPageLocked(fate.listed); p != nil {
+			return p, scope, popupCarrier{}, false
+		}
+	}
+	for _, opener := range m.popupLineage(handle, fate.openers) {
+		if p, scope := m.listedPageLocked(opener); p != nil {
+			return p, scope, popupCarrier{}, false
+		}
+	}
+	return nil, nil, popupCarrier{}, false
+}
+
+// listedPageLocked answers the listed page whose driver has handle, with
+// its jar. The caller holds m.mu.
+func (m *Manager) listedPageLocked(handle ids.PageHandle) (*managedPage, *jarScope) {
+	for _, scope := range m.scopes {
+		if p := pageWithHandle(scope, handle); p != nil {
+			return p, scope
+		}
+	}
+	return nil, nil
 }
 
 // refuseParked ends a parked download no tab took: it stops, once
@@ -416,39 +479,6 @@ func (m *Manager) stopRefused(d *parkedDownload, discard downloadDiscard) {
 	}
 	// Stopped before: its engine was asked to cancel it then.
 	go m.finishDiscard(discard)
-}
-
-// listCarried lists d, a parked download of a popup that c carries, in c's
-// page's ended log as c's leave would have had the popup's end come first:
-// with its newest progress, and settled then as that leave settles a row
-// still running (departLocked). It answers the discard of a row it
-// canceled, whose engine the caller has stop it. The caller holds m.parkMu.
-func (m *Manager) listCarried(c popupCarrier, d *parkedDownload) (discard downloadDiscard, canceled bool) {
-	p := c.page
-	m.mu.Lock()
-	held := p.downloads.hold()
-	entry := m.downloadEntry(d.start)
-	entry.reservation = quota.Take(&d.reservation)
-	entry.source, d.file = d.file, downloadFile{}
-	listed := m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, d.start))
-	held.release()
-	m.mu.Unlock()
-	m.publishDownloads(listed)
-	if d.newest != nil {
-		m.applyToRow(p, nil, *d.newest)
-	}
-	m.mu.Lock()
-	held = p.downloads.hold()
-	var note downloadNote
-	if row := held.entry(d.start.ID); row != nil && !row.phase.ended() {
-		note, discard, canceled = m.departLocked(p, row, c.reason)
-	}
-	held.release()
-	m.mu.Unlock()
-	if canceled {
-		m.publishDownloads(note)
-	}
-	return discard, canceled
 }
 
 // stopParked has the engine cancel a parked download still running, and
@@ -472,25 +502,6 @@ func (m *Manager) stopParked(d *parkedDownload, discard downloadDiscard) {
 	}()
 }
 
-// fateTarget answers the page that takes the downloads of popup handle:
-// its tab while listed, else (never listed, or closed since by any path)
-// its nearest listed opener, or nil (popupLineage).
-func (m *Manager) fateTarget(handle ids.PageHandle, fate popupFate) *managedPage {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if fate.listed != "" {
-		if p := m.pageByHandleLocked(fate.listed); p != nil {
-			return p
-		}
-	}
-	for _, opener := range m.popupLineage(handle, fate.openers) {
-		if p := m.pageByHandleLocked(opener); p != nil {
-			return p
-		}
-	}
-	return nil
-}
-
 // fates is the record of popup fates, the newest orderSlack. The caller
 // holds m.parkMu.
 func (m *Manager) fates() *boundedMap[ids.PageHandle, popupFate] {
@@ -509,16 +520,16 @@ func (m *Manager) dropParked() []downloadDiscard {
 	var discards []downloadDiscard
 	for handle, popup := range m.parked {
 		popup.timer.Stop()
-		carrier, carried := m.carrierOf(handle)
+		fate, _ := m.fates().get(handle)
 		for _, d := range popup.downloads {
-			if carried {
-				if discard, canceled := m.listCarried(carrier, d); canceled {
-					discards = append(discards, discard)
-				}
-				continue
+			placed, discard, canceled := m.placeParked(handle, fate, d, false)
+			switch {
+			case !placed:
+				log.Printf("browser: download %s of popup %s is listed in no tab: the browser closed", d.start.ID, handle)
+				discards = append(discards, d.discard())
+			case canceled:
+				discards = append(discards, discard)
 			}
-			log.Printf("browser: download %s of popup %s is listed in no tab: the browser closed", d.start.ID, handle)
-			discards = append(discards, d.discard())
 		}
 	}
 	m.parked, m.parkedIDs, m.popupFates = nil, nil, nil
