@@ -77,7 +77,9 @@ function withdraw(threadId: string): void {
 }
 
 function withdrawAll(): void {
-  for (const threadId of [...requests.keys()]) withdraw(threadId);
+  // A Map visits every entry still present, so a withdrawn request deleting
+  // itself skips nothing.
+  for (const threadId of requests.keys()) withdraw(threadId);
 }
 
 let listening = false;
