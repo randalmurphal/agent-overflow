@@ -26,6 +26,7 @@ var mirrorPoolReads = map[string]int{
 	"ListMirrorIssueWorklogs": 1, // a page of one issue's worklogs
 	"GetMirrorSync":           1, // one board's state
 	"GetMirrorDetail":         1, // one issue's detail
+	"ListMirrorDetailStates":  1, // at most mirrorMaxLookup details without their documents, each by key
 	// The detached roots and the retired boards, from partial indexes
 	// sized by the work pending.
 	"FinishMirrorCleanup":         2,
