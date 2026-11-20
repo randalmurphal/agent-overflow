@@ -12,11 +12,13 @@ type mentionNode struct {
 	who string
 }
 
-var kindMention = lazy[gast.NodeKind]{build: func() gast.NodeKind {
-	return gast.NewNodeKind("Mention")
-}}
+// kindMention is registered at init, the package's one piece of init
+// work: goldmark keeps node kinds in a table it does not lock, so a kind
+// registered later would race with any goroutine of the program reading a
+// kind's name.
+var kindMention = gast.NewNodeKind("Mention")
 
-func (n *mentionNode) Kind() gast.NodeKind { return kindMention.get() }
+func (n *mentionNode) Kind() gast.NodeKind { return kindMention }
 
 func (n *mentionNode) Dump(src []byte, level int) {
 	gast.DumpHelper(n, src, level, map[string]string{"Who": n.who}, nil)

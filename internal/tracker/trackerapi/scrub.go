@@ -128,10 +128,12 @@ type scrubber struct {
 	big  []byte
 }
 
-// loadScrubber sets s, a zero scrubber, to the forms of the credential a
-// hop carried, copied under the credential lock that guards its zeroing.
+// loadScrubber sets s to the forms of the credential a hop carried,
+// copied under the credential lock that guards its zeroing, and to no
+// forms for a hop that carried none. Whatever s held before is cleared.
 // The caller clears s after use.
 func (c *Client) loadScrubber(s *scrubber, sent sentWith) {
+	s.reset()
 	if !sent.carried {
 		return
 	}
@@ -144,9 +146,16 @@ func (c *Client) loadScrubber(s *scrubber, sent sentWith) {
 	s.load(sent.cred)
 }
 
-// load copies cr's forms into s, a zero scrubber. The caller holds the
-// credential lock, or owns cr.
+// reset clears the forms' copy and returns s to the zero scrubber.
+func (s *scrubber) reset() {
+	s.clear()
+	s.lost, s.n, s.big = false, 0, nil
+}
+
+// load sets s to cr's forms, clearing whatever it held. The caller holds
+// the credential lock, or owns cr.
 func (s *scrubber) load(cr *Credential) {
+	s.reset()
 	wire := cr.wire.Reveal()
 	if len(wire) > len(s.buf) {
 		s.big = bytes.Clone(wire)

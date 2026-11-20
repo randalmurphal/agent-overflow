@@ -13,10 +13,21 @@ import (
 	"testing"
 )
 
-// The package runs no code at init: every table and expression waits for
-// its first use. The probe in testdata links the package and nothing else
-// of this module, so its init trace is the package's own, free of the
-// test variables a test binary adds.
+// initAllowance is what the package's init may allocate: registering one
+// goldmark node kind, which appends to goldmark's table. Everything else
+// waits for its first use.
+const (
+	initBytes  = 256
+	initAllocs = 2
+)
+
+var initTrace = regexp.MustCompile(`(\d+) bytes, (\d+) allocs`)
+
+// The package's init registers its goldmark node kind and does nothing
+// else: every table and expression waits for its first use. The probe in
+// testdata links the package and nothing else of this module, so its init
+// trace is the package's own, free of the test variables a test binary
+// adds.
 func TestInitCost(t *testing.T) {
 	t.Parallel()
 	bin := filepath.Join(t.TempDir(), "initcost")
@@ -31,10 +42,83 @@ func TestInitCost(t *testing.T) {
 		t.Fatalf("run the probe: %v\n%s", err, out)
 	}
 	for line := range strings.Lines(string(out)) {
-		if strings.HasPrefix(line, "init agent-overflow/internal/tracker/adf ") {
-			t.Errorf("the package runs code at init: %s", strings.TrimSpace(line))
+		if !strings.HasPrefix(line, "init agent-overflow/internal/tracker/adf ") {
+			continue
+		}
+		m := initTrace.FindStringSubmatch(line)
+		if m == nil {
+			t.Fatalf("an init trace line of another shape: %s", strings.TrimSpace(line))
+		}
+		bytes, _ := strconv.Atoi(m[1])
+		allocs, _ := strconv.Atoi(m[2])
+		if bytes > initBytes || allocs > initAllocs {
+			t.Errorf("the package's init allocates %d bytes in %d allocations, over %d and %d: %s",
+				bytes, allocs, initBytes, initAllocs, strings.TrimSpace(line))
 		}
 	}
+}
+
+// A goldmark node kind is registered by a package variable's initializer,
+// never from a function: goldmark's kind table is not locked, so a kind
+// registered at first use races with every goroutine reading a kind's
+// name.
+func TestNodeKindsAreRegisteredAtInit(t *testing.T) {
+	t.Parallel()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	found := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			_, inFunc := decl.(*ast.FuncDecl)
+			ast.Inspect(decl, func(n ast.Node) bool {
+				if _, lit := n.(*ast.FuncLit); lit {
+					for range countNodeKinds(n) {
+						t.Errorf("%s: NewNodeKind is called from a function literal", fset.Position(n.Pos()))
+					}
+					return false
+				}
+				call, ok := n.(*ast.CallExpr)
+				if !ok || !isNewNodeKind(call) {
+					return true
+				}
+				found++
+				if inFunc {
+					t.Errorf("%s: NewNodeKind is called from a function", fset.Position(call.Pos()))
+				}
+				return true
+			})
+		}
+	}
+	if found == 0 {
+		t.Fatal("found no NewNodeKind call")
+	}
+}
+
+func isNewNodeKind(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "NewNodeKind"
+}
+
+// countNodeKinds is how many NewNodeKind calls n holds.
+func countNodeKinds(n ast.Node) int {
+	count := 0
+	ast.Inspect(n, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && isNewNodeKind(call) {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 // Every lazyRegexp pattern is a constant that compiles: one that does not

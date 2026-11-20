@@ -132,7 +132,12 @@ type Request struct {
   read, without a copy or an allocation. That check is exact: a body is
   decoded only when it holds a form as bytes, an escape that decodes to a
   byte some form holds, invalid UTF-8 while a form holds a byte of the
-  replacement character, or a malformed escape. A streamed download is the file's bytes and is not
+  replacement character, or a malformed escape. The scrub covers the text
+  one JSON decode of the body produces: no client decodes a string value
+  of an answer as JSON a second time, and a test refuses a string field
+  with the `string` tag option anywhere under `internal/tracker`, which
+  would. Text a decoder builds about a body, such as an error naming a
+  path of keys, is not the body and goes through `Scrub`. A streamed download is the file's bytes and is not
   scrubbed. `Response.Scrub`, `StatusError.Scrub` and `AuthError.Scrub`
   remove the credential from other text a client builds about an answer,
   such as a decode error. They return text unchanged when the request
