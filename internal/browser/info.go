@@ -248,7 +248,8 @@ func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64
 	// An engine reports the same address and title again (a target info
 	// change that touched neither); that alone pushes nothing.
 	m.publishPages(p.owner.id)
-	go m.refreshHistoryState(p, stamp)
+	// Lifecycle work, which Close joins; a Manager closing reads nothing.
+	m.goLife(func() { m.refreshHistoryState(p, stamp) })
 }
 
 // pageDocumentTitle is pageHooks.DocumentTitle. Like an engine report it is

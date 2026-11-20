@@ -1355,8 +1355,8 @@ func TestFindEndsSubmittedDuringCloseAreJoined(t *testing.T) {
 		// Submitted after Close returned: refused, not started.
 		f.fake.commitDocument()
 		f.manager.endFind(p)
-		// Work wrongly started after Close would be running by now.
-		time.Sleep(20 * time.Millisecond)
+		// Join any find work those started; a refused submission started none.
+		f.manager.findWork.Wait()
 		if n := late.Load(); n != 0 {
 			t.Fatalf("round %d: %d find applies ran after Close returned", round, n)
 		}

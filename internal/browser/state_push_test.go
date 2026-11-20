@@ -10,13 +10,14 @@ import (
 // statePushes counts the thread state pushes a Manager publishes and keeps
 // the newest by sequence, as a client does.
 type statePushes struct {
+	m      *Manager
 	mu     sync.Mutex
 	n      int
 	newest CompanionEvent
 }
 
 func countStatePushes(m *Manager) *statePushes {
-	c := &statePushes{}
+	c := &statePushes{m: m}
 	m.SetEventSink(func(event CompanionEvent) {
 		if event.Kind == "state" {
 			c.mu.Lock()
@@ -52,8 +53,8 @@ func (c *statePushes) take() int {
 }
 
 // settle answers the pushes counted since the last take once want have
-// arrived, or the deadline passed, and a moment more has brought no other:
-// a push can come from a goroutine of the Manager's (refreshHistoryState).
+// arrived, or the deadline passed, and the Manager's lifecycle work has
+// finished: a push can come from it (refreshHistoryState).
 func (c *statePushes) settle(want int) int {
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 		c.mu.Lock()
@@ -63,7 +64,7 @@ func (c *statePushes) settle(want int) int {
 			break
 		}
 	}
-	time.Sleep(50 * time.Millisecond)
+	c.m.lifeWork.Wait()
 	return c.take()
 }
 
