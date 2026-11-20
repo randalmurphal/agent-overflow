@@ -12,8 +12,8 @@ func TestAReservationHoldsEveryPoolOrNone(t *testing.T) {
 	workspace, global := NewPool("workspace downloads", 10), NewPool("browser artifacts", 10)
 	global.SetUsed(8)
 	r, err := Reserve(5, workspace, global)
-	var full *FullError
-	if r != nil || !errors.As(err, &full) || full.Pool != "browser artifacts" {
+	var full *fullError
+	if r != nil || !errors.As(err, &full) || full.pool != "browser artifacts" {
 		t.Fatalf("reserve = %v, %v; want the artifact pool's refusal", r, err)
 	}
 	if workspace.Used() != 0 || global.Used() != 8 {

@@ -331,7 +331,7 @@ func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
 	}
 	wantDownloads(t, manager, opener, "dl-1 completed 5")
 	manager.mu.Lock()
-	root := manager.listedPageLocked(opener)
+	root := manager.pageByHandleLocked(opener)
 	manager.mu.Unlock()
 	path := root.downloads.list()[0].Path
 	if path == "" || path == file {
@@ -399,7 +399,7 @@ func awaitAdmission(t *testing.T, m *Manager, handle string) {
 func popupOutcome(m *Manager, access Access, opener ids.PageHandle) (int, []PageInfo) {
 	pages := m.CompanionState(access.Caller()).Pages
 	m.mu.Lock()
-	livePopup := m.listedPageLocked("popup") != nil
+	livePopup := m.pageByHandleLocked("popup") != nil
 	m.mu.Unlock()
 	switch {
 	case len(pages) == 1:

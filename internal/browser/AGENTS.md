@@ -61,18 +61,24 @@ mode. Product behavior and authority are defined in
   profile, where `Dispose` finds it, only once its view is in place. A
   created or restored page whose engine reports its close or crash before
   its listing, even before NewPage returns, is never listed live
-  (`creation_end.go`): a close fails it, a crash lists the crashed tab.
+  (`creation_end.go`): a close fails it, a crash lists the crashed tab,
+  also when a setup step then fails. Every return of a created, restored
+  or adopted page's setup reaches one decision in the hold that lists it
+  (`unlistedOutcomeLocked`), which reads that end, the lifetime's state,
+  the forget fence and the jar generation.
   A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab
   stack and the user's actions on whole tabs are `companion_tabs.go`. A
-  pane's tab selections and closes, each naming its tab, are admitted per
-  mount in the user's order (`selection.go` over `turnorder`, which owns
-  the numbering): each takes its turn before the lock hold that sets the
-  active tab, adds the tab or takes the closed tabs out, and that hold
-  ends it with `Turn.Commit`, whose standing says whether to act. Page work never delays the next turn, and
-  the one function that selects answers the tab its caller may restore.
+  pane's commands that read or change the tab strip (selections, openings,
+  closes and moves), each naming its tab, are admitted per mount in the
+  user's order (`selection.go` over `turnorder`, which owns the
+  numbering): each takes its turn before the lock hold that sets the
+  active tab, adds the tab, takes the closed tabs out or reorders them,
+  and that hold ends it with `Turn.Commit`, whose standing says whether
+  to act. Page work never delays the next turn, and the one function that
+  selects answers the tab its caller may restore.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. A presentation pass decides its show in one `Manager.mu` hold after
   its hides and any layout wait (`decidePresentation`), against the
@@ -242,10 +248,12 @@ writes only inside the app's private staging directory there, into the
 file the Manager names as the download starts (`download_staging.go`),
 and the Manager moves the finished file beside it without copying
 (`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
-never replacing a file, and only once a private name there is seen to
-hold the download's file (`placeNoReplace`); WebView2 saves there itself and only a regular
-file of the reported size is openable (`engineSavedDownload`, whose
-comment states the limit). Close waits for a publish under way.
+never replacing a file, and only once a private name beside the staged
+file is seen to hold it; the row trusts only the identity checked on the
+held staged file, never what a name answers later (`placeNoReplace`).
+WebView2 saves there itself and only a regular file of the reported size
+is openable (`engineSavedDownload`, whose comment states the limit).
+Close waits for a publish under way.
 Headless Chromium alone keeps downloads as artifacts with quota
 reservation, the per-download cap and pruning; keep those bounds on that
 path only. A page's download log (`downloads_log.go`) and its thread's

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"time"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/browser/turnorder"
 )
 
@@ -180,7 +180,6 @@ func (m *Manager) reserveTabLocked(ctx context.Context, access Access, turn *tur
 	}
 	if user {
 		tb.session.ActivePageID, tb.session.Visible = string(p.id), true
-		tb.session.UpdatedAt = time.Now()
 	}
 	return r, nil
 }
@@ -217,43 +216,22 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 	var scope *jarScope
 	var err error
 	var closed bool
-	var refused *admissionRefused
-	// ended is the page's end its engine reported before its listing, and
-	// released the jar that left with nothing in it.
-	var ended creationEnd
-	var released *jarScope
+	var outcome listingOutcome
+	var verdict popupadmit.Verdict
 	for {
 		m.startMu.Lock()
 		scope, err = m.openPageLocked(r.ctx, access.Caller(), p, admit)
-		refused = nil
-		errors.As(err, &refused)
-		// One m.mu hold settles the creation against its close flag and its
-		// thread's jar as they are now, so neither a close nor a jar switch can
-		// land between reading them and acting on it. A switch writing its
+		// One m.mu hold decides the creation, whatever its setup answered,
+		// against its close flag, the end its engine reported, the forget
+		// fence and its thread's jar as they are now, so none of them can
+		// change between reading it and acting on it. A switch writing its
 		// saved copy is waited for: the listing is a change of the tabs it
-		// captured.
-		if lerr := m.lockStructure(context.Background(), tb); lerr != nil {
-			m.startMu.Unlock()
-			return nil, lerr
-		}
+		// captured. Without a cancel: a switch ends with its one write.
+		_ = m.lockStructure(context.Background(), tb)
 		closed = pending.closed
-		if err == nil && !closed && p.unlistedEnd.ended() {
-			// Its engine reported the page's end before this hold: a close
-			// fails the creation, a crash lists the crashed tab it is.
-			ended = p.unlistedEnd
-			delete(m.pending, p.id)
-			delete(scope.creating, p)
-			if !ended.closed {
-				m.listCrashedLocked(p, ended.crash)
-			}
-			if m.releaseScopeLocked(scope) {
-				released = scope
-			}
-			m.mu.Unlock()
-			m.startMu.Unlock()
-			break
-		}
-		if err == nil && !closed && !m.jarCurrentLocked(p) {
+		verdict = p.unlistedEnd.Verdict(err != nil)
+		outcome = m.unlistedOutcomeLocked(p, !closed, verdict)
+		if outcome == retryStale {
 			// The thread switched jars while the engine created the page in the
 			// old one: it is created again, under the same tab, in the new one.
 			stale := p
@@ -263,60 +241,111 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 			m.abandonStale(scope, stale, p)
 			continue
 		}
-		switch {
-		case err == nil && !closed:
-			delete(m.pending, p.id)
-			delete(scope.creating, p)
-			m.listPageLocked(scope, p)
-		case err != nil && (closed || !user || refused != nil):
-			delete(m.pending, p.id)
-		case err != nil:
-			pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
-		}
+		m.settleCreationLocked(r, scope, outcome, verdict, err)
 		m.mu.Unlock()
 		m.startMu.Unlock()
 		break
 	}
-
-	switch {
-	case ended.ended():
-		return nil, m.endedBeforeListing(p, ended, released, user)
-	case err == nil && !closed:
+	if outcome == listLive {
 		// The tab leaves its creating state.
 		m.pageAdded(p)
 		return p, nil
-	case err == nil:
-		// Closed while the engine created it: the engine page is closed
-		// before the entry stops holding the thread's slot.
-		pending.cleanupErr = m.abandonPage(scope, p)
+	}
+	return nil, m.finishUnlisted(r, scope, outcome, verdict, err)
+}
+
+// settleCreationLocked applies outcome, the decision on r's page
+// (unlistedOutcomeLocked), to its tab in the hold that made it: a live page
+// is listed, a crashed one becomes the crashed tab, a user's tab whose
+// setup failed keeps the failure as its error, and any other tab leaves,
+// except a tab closed while it was created, whose entry holds its
+// thread's slot until its engine page is closed (finishUnlisted). setupErr
+// is what the page's setup answered. The caller holds m.mu.
+func (m *Manager) settleCreationLocked(r *tabReservation, scope *jarScope, outcome listingOutcome, verdict popupadmit.Verdict, setupErr error) {
+	pending := r.pending
+	p := pending.p
+	var refused *admissionRefused
+	switch {
+	case outcome == listLive:
+		delete(m.pending, p.id)
+		delete(scope.creating, p)
+		m.listPageLocked(scope, p)
+	case outcome == listCrashed:
+		delete(m.pending, p.id)
+		m.listCrashedLocked(p, crashFailure(verdict.CrashReason()))
+	case outcome == refuseGone && pending.closed:
+	case outcome == refuseFailed && r.user && !errors.As(setupErr, &refused):
+		pending.err = truncateUTF8(setupErr.Error(), maxPageErrorBytes)
+	default:
+		delete(m.pending, p.id)
+	}
+}
+
+// finishUnlisted finishes r's creation that listed no live page
+// (settleCreationLocked) and answers its error: its engine page is closed
+// and its reservation ended (releaseUnlisted), the tab state published,
+// and a profile the creation left empty failing to dispose is reported
+// whether or not its tab is still there, since a close can take the tab
+// at any point from here and then answers with it. A crashed tab answers
+// its crash, which a user's tab shows; a page closed by its engine
+// errClosedBeforeListing; a tab closed meanwhile, or taken by a forget of
+// every page (recordsAdmittedLocked), errClosedWhileCreating.
+func (m *Manager) finishUnlisted(r *tabReservation, scope *jarScope, outcome listingOutcome, verdict popupadmit.Verdict, setupErr error) error {
+	pending, user := r.pending, r.user
+	p, threadID := pending.p, r.access.ThreadID()
+	cleanup := m.releaseUnlisted(scope, p)
+	if outcome == refuseGone && pending.closed {
+		// The engine page is closed before the entry stops holding the
+		// thread's slot.
 		m.dropPending(pending)
-		if pending.cleanupErr != nil {
-			m.reportTeardown(threadID, p.id, pending.cleanupErr)
-		}
-		return nil, errClosedWhileCreating
 	}
-	if closed || user {
-		// The profile the creation left behind failing to dispose is
-		// reported whether or not its tab is still there: a close can take
-		// the tab at any point from here, and then answers with it. The
-		// creation's own failure (its cancellation, for a closed tab) is not.
-		pending.cleanupErr = teardownPart(err)
-		if pending.cleanupErr != nil {
-			m.reportTeardown(threadID, p.id, pending.cleanupErr)
+	// The creation's own failure (its cancellation, for a closed tab) is not
+	// a teardown failure.
+	teardown := errors.Join(teardownPart(setupErr), cleanup)
+	if pending.closed || user || outcome != refuseFailed {
+		pending.cleanupErr = teardown
+		if teardown != nil {
+			m.reportTeardown(threadID, p.id, teardown)
 		}
+	} else if cleanup != nil {
+		// The agent that asked hears of it with the failure.
+		setupErr = errors.Join(setupErr, asTeardown(cleanup))
 	}
-	m.repairActivePage(tb)
+	if outcome == refuseGone && pending.closed && setupErr == nil {
+		// Closed while the engine created it: the close published the tab.
+		return errClosedWhileCreating
+	}
+	if outcome == listCrashed {
+		m.ensureActivePage(p.owner, p.id)
+	} else {
+		m.repairActivePage(p.owner)
+	}
 	m.emitThreadState(threadID)
 	m.syncPanePresentation(threadID)
+	var refused *admissionRefused
 	switch {
-	case closed:
-		return nil, errClosedWhileCreating
-	case refused != nil:
-		return nil, refused.err
+	case outcome == listCrashed:
+		if err := m.persistThreads([]ThreadID{threadID}); err != nil {
+			// The tab is in memory; only a restart before the next save loses it.
+			log.Printf("browser: page %s crashed as it opened: save the thread's pages: %v", p.id, err)
+		}
+		crashed := errors.New("browser: " + crashFailure(verdict.CrashReason()))
+		if user {
+			return &shownOnTab{err: crashed}
+		}
+		return crashed
+	case outcome == refuseClosed:
+		return errClosedBeforeListing
+	case outcome == refuseGone:
+		// Closed meanwhile, or crashed while every page is forgotten, which
+		// closes the tab with them.
+		return errClosedWhileCreating
+	case errors.As(setupErr, &refused):
+		return refused.err
 	case user:
-		return nil, &shownOnTab{err: err}
+		return &shownOnTab{err: setupErr}
 	}
-	return nil, err
+	return setupErr
 }
 
 // freshPendingPageLocked replaces a pending tab's page, whose engine page was

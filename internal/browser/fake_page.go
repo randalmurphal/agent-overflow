@@ -91,6 +91,11 @@ func (p *fakePage) Close() {
 	first := !p.closed
 	p.closed = true
 	p.mu.Unlock()
+	if first {
+		if hook := p.profile.engine.beforePageClose; hook != nil {
+			hook()
+		}
+	}
 	p.cancel()
 	if !first {
 		return
@@ -313,8 +318,6 @@ func (p *fakePage) Pointer(context.Context, PointerOptions) error { return errFa
 func (p *fakePage) Scroll(context.Context, string, float64, float64) error {
 	return errFakeEngineHasNoPage
 }
-
-func (p *fakePage) WaitVisible(context.Context, string) error { return errFakeEngineHasNoPage }
 
 func (p *fakePage) FindMode() string {
 	p.mu.Lock()

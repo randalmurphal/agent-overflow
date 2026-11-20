@@ -148,17 +148,14 @@
     const project = getProject(projectId);
     if (!project) return null;
     return {
-      id: project.project.id,
       name: getProjectLabelText(project.project.id) || project.project.name,
       path: project.project.path,
     };
   });
 
-  // The design panel needs a real thread row — its preview URL keys off it.
-  // The REVIEW panel does not: its subject is the checkout, which a draft
-  // placeholder names as well as a persisted row does. Drawer terminals are
-  // allowed on placeholders too; they use the synthetic placeholder id and
-  // are cleaned up or migrated by ThreadPane.
+  // Take control mirrors the thread's running session, which a draft
+  // placeholder does not have yet: the press asks for the thread to be
+  // started first.
   async function ensureThreadThenToggle(toggle: () => void): Promise<void> {
     if (!pane.threadId) {
       addToast('info', 'Start the thread before opening this panel.');

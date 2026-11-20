@@ -189,6 +189,45 @@ func TestCloseOthersTakesItsTurn(t *testing.T) {
 	}
 }
 
+// Close to the right of b, then a dragged after b, the move arriving
+// first: the move waits for the close's turn, so the close reads the strip
+// the user saw, closes c and d, and a survives behind b.
+func TestAMoveWaitsForTheCloseBeforeIt(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	moving := deliver(func() error {
+		return m.MoveCompanionPage(numbered(context.Background(), mount, 2), access, PageID(ids[0]), 1)
+	})
+	awaitWaiting(t, m, mount, 1)
+	if got := tabIDs(m, access); !slices.Equal(got, ids) {
+		t.Fatalf("tabs %v before the close's turn, want the move waiting %v", got, ids)
+	}
+	if err := m.CloseCompanionTabs(numbered(t.Context(), mount, 1), access, PageID(ids[1]), CloseTabsRight); err != nil {
+		t.Fatal(err)
+	}
+	mustDeliver(t, moving, "the move of a")
+	if got, want := tabIDs(m, access), []string{ids[1], ids[0]}; !slices.Equal(got, want) {
+		t.Fatalf("tabs %v, want c and d closed and a moved after b %v", got, want)
+	}
+}
+
+// A passed move (a repeat of its number, or from a mount that is gone)
+// moves nothing.
+func TestAPassedMoveMovesNothing(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	if err := m.MoveCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[3]), 0); err != nil {
+		t.Fatal(err)
+	}
+	moved := []string{ids[3], ids[0], ids[1], ids[2]}
+	for _, at := range []Numbered{place(mount, 1), place("gone", 1)} {
+		if err := m.MoveCompanionPage(WithSelection(t.Context(), at), access, PageID(ids[3]), 3); err != nil {
+			t.Fatal(err)
+		}
+		if got := tabIDs(m, access); !slices.Equal(got, moved) {
+			t.Fatalf("tabs %v after a passed move, want %v", got, moved)
+		}
+	}
+}
+
 // A tab still being created closes at a close naming it at once: its
 // opening's turn ended when the tab was added.
 func TestACloseDoesNotWaitForATabsCreation(t *testing.T) {

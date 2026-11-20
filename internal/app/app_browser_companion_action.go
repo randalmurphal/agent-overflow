@@ -64,7 +64,8 @@ const (
 	// mount, epoch and number, and with none it keeps arrival order.
 	placeIfFromPane
 	// placeNumbered comes only from a pane and carries its mount, epoch and
-	// number: a close, which takes its turn in the user's order.
+	// number: a close or a move, which reads or changes the strip's order
+	// and takes its turn in the user's order.
 	placeNumbered
 	// placeMount comes only from a pane and carries its mount alone: a jar
 	// switch, which acts on the lifetime that pane attached to (BindMount).
@@ -91,7 +92,7 @@ var companionSpecs = map[string]companionSpec{
 	"activate":            {kind: kindActivate, target: targetNamed, place: placeIfFromPane},
 	"restore":             {kind: kindRestore, target: targetNamed},
 	"step":                {kind: kindStep, place: placeIfFromPane},
-	"move":                {kind: kindMove, target: targetNamed},
+	"move":                {kind: kindMove, target: targetNamed, place: placeNumbered},
 	"show":                {kind: kindShow, target: targetOptional},
 	"hide":                {kind: kindHide},
 	"new":                 {kind: kindNew, place: placeIfFromPane},
@@ -142,8 +143,9 @@ var errCompanionActionShape = errors.New("browser: malformed companion action")
 var errNoCompanionHandler = errors.New("browser: companion action has no handler")
 
 // parseCompanionAction validates action against its kind's spec: a named
-// command names its tab, a close carries its pane's mount, epoch and
-// number, a selection all three or none, and a jar switch its pane's mount.
+// command names its tab, a close or a move carries its pane's mount, epoch
+// and number, a selection all three or none, and a jar switch its pane's
+// mount.
 func parseCompanionAction(action BrowserCompanionAction) (companionCommand, error) {
 	name := strings.ToLower(strings.TrimSpace(action.Kind))
 	spec, ok := companionSpecs[name]

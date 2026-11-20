@@ -182,7 +182,6 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	for owner := range owners {
 		owner.session.ActivePageID = ""
 		owner.session.Visible = false
-		owner.session.UpdatedAt = time.Now()
 	}
 	// Every private jar goes with the browser; the next private page opens
 	// a new one.

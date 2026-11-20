@@ -21,12 +21,12 @@ type threadTab struct {
 	pending *pendingPage
 }
 
-// threadTabs is THE tab-strip order of a thread's pages, live and suspended:
-// every surface that lists them (companion state, browser_pages, ambiguity
-// errors, tab moves) uses it, so the UI, the tools and the errors never
-// disagree about which tab is first. The companion also shows the tabs
-// still being created and failed creations (companionTabsLocked); a tool
-// sees a page once it exists.
+// threadTabs is the tab-strip order of a thread's pages, live and
+// suspended, which the companion state, ambiguity errors and tab moves
+// use. browser_pages reads these tabs and answers them most recently used
+// first (Pages). The companion also shows the tabs still being created and
+// failed creations (companionTabsLocked); a tool sees a page once it
+// exists.
 func (m *Manager) threadTabs(tb *threadBrowser) []threadTab {
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(tb)

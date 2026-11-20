@@ -119,7 +119,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`composer-shell-commands.md`](specs/composer-shell-commands.md) | `!command` in the composer and Run on a shell code block: the app runs it, streams it, and sends the output as a user message. Implemented 2026-11-10. |
 | [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
 | [`markdown-first-party.md`](specs/markdown-first-party.md) | Promoting the markdown renderer to first-party code (streamdown plus absorbed marked). Approved 2026-08-29. |
-| [`embedded-browser.md`](specs/embedded-browser.md) | The embedded native browser pane that replaced the Chrome screencast: platform drivers, recipes, and serve mode's headless tools-only engine. Implemented. |
+| [`embedded-browser.md`](specs/embedded-browser.md) | The embedded native browser pane: engines per platform, their hosting constraints, and serve mode's headless tools-only engine. Implemented. |
 | [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible groups of threads inside a project's sidebar list, shown above the pin blocks; members pin individually. Signed off and implemented 2026-09-02. |
 | [`remote-access.md`](specs/remote-access.md) | Remote transport, pairing, Android, previews, and supervised updates; historical implementation notes and outstanding requirements. |
 | [`connected-computers.md`](specs/connected-computers.md) | Approved multi-computer product contract, ownership, portability, and acceptance matrix; implementation in progress. |

@@ -81,21 +81,42 @@ describe('the chat header browser button', () => {
     expect(companionForSource('main', 'browser')).not.toBeNull();
   });
 
-  // Every press sends; the Manager converges the shows. The second press's
-  // focus request replaces the first's, so the first answer settles nothing.
-  it('a press repeated before the answer sends again, and its focus request replaces the first', async () => {
+  // Every press sends; the Manager converges the shows on one tab and names
+  // it only in the answer of the show that opened it (ShowOpened); the other
+  // answers name none. The presses' focus request is for that tab, in
+  // either answer order, through the second press's own pointer press.
+  for (const order of [[0, 1], [1, 0]] as const) {
+    it(`two presses before the pane appears focus the tab they opened, answered ${order.join(', ')}`, async () => {
+      const replies: Array<(state: unknown) => void> = [];
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
+      const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+      window.dispatchEvent(new Event('pointerdown'));
+      const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+      await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(2));
+      expect(kinds(act)).toEqual(['show-browser', 'show-browser']);
+      const answers = [{ ...shown(2), pageId: 'page-1' }, shown(3)];
+      replies[order[0]](answers[order[0]]);
+      await vi.waitFor(() => expect(addressFocusIntent('thread-browser')).toEqual(order[0] === 0 ? ['page-1'] : []));
+      replies[order[1]](answers[order[1]]);
+      await Promise.all([first, again]);
+      expect(addressFocusIntent('thread-browser')).toEqual(['page-1']);
+      expect(takeAddressFocus('thread-browser', { id: 'page-1' })).toBe(true);
+    });
+  }
+
+  // Both answers name no tab (the thread had one): nothing is focused.
+  it('two presses that open no tab focus nothing', async () => {
     const replies: Array<(state: unknown) => void> = [];
-    const act = setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
+    setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
     const first = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
     const again = runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
-    await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(2));
-    replies[0]({ ...shown(2), pageId: 'page-1' });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[0](shown(2));
     await first;
-    expect(addressFocusIntent('thread-browser')).toBe('');
-    replies[1]({ ...shown(3), pageId: 'page-1' });
+    expect(addressFocusIntent('thread-browser')).toEqual([]);
+    replies[1](shown(3));
     await again;
-    expect(addressFocusIntent('thread-browser')).toBe('page-1');
-    expect(kinds(act)).toEqual(['show-browser', 'show-browser']);
+    expect(addressFocusIntent('thread-browser')).toBeNull();
   });
 
   // The first show's tab opened the pane, and its
@@ -117,7 +138,7 @@ describe('the chat header browser button', () => {
     replies[1]({ ...shown(4), pageId: 'page-1' });
     await Promise.all([first, again]);
     expect(companionForSource('main', 'browser')).not.toBeNull();
-    expect(addressFocusIntent('thread-browser')).toBe('page-1');
+    expect(addressFocusIntent('thread-browser')).toEqual(['page-1']);
   });
 
   // Two presses refused for one reason: one toast says it.
@@ -176,7 +197,7 @@ describe('the chat header browser button', () => {
   it('focuses the address of the tab the show opened, and of no tab it found', async () => {
     setBindingMock('BrowserCompanionDo', async () => ({ ...shown(2), pageId: 'page-1' }));
     await runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
-    expect(addressFocusIntent('thread-browser')).toBe('page-1');
+    expect(addressFocusIntent('thread-browser')).toEqual(['page-1']);
     expect(takeAddressFocus('thread-browser', { id: 'page-1' })).toBe(true);
     closeCompanion('browser-main');
     setBindingMock('BrowserCompanionDo', async () => shown(3));
@@ -574,12 +595,12 @@ describe('opening a browser tab', () => {
     }));
     const opened = openBrowserTab(THREAD, { focusAddress: true });
     await vi.waitFor(() => expect(companionForSource('main', 'browser')).not.toBeNull());
-    expect(addressFocusIntent(THREAD)).toBe('');
+    expect(addressFocusIntent(THREAD)).toEqual([]);
     // Not while it is created: there is no page to take an address yet.
     expect(takeAddressFocus(THREAD, { id: 'n', creating: true })).toBe(false);
     answer();
     expect(await opened).toBeNull();
-    expect(addressFocusIntent(THREAD)).toBe('n');
+    expect(addressFocusIntent(THREAD)).toEqual(['n']);
     expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(true);
     // Once.
     expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
@@ -596,10 +617,11 @@ describe('opening a browser tab', () => {
     expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
   });
 
-  // A second new tab replaces the first's request: the first answer, ready
-  // or refused, arriving after it, neither resolves nor withdraws it.
+  // A second new tab while the first is unanswered joins its request: the
+  // first answer, ready or refused, does not withdraw it, and the pane takes
+  // it at the newer tab it shows.
   for (const firstFails of [false, true]) {
-    it(`leaves the newer tab's focus to its own answer when the older ${firstFails ? 'fails' : 'answers'} late`, async () => {
+    it(`focuses the newer tab when the older ${firstFails ? 'fails' : 'answers'} first`, async () => {
       const answers: Array<(pageId: string) => void> = [];
       setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve, reject) => {
         answers.push((pageId) => {
@@ -615,10 +637,12 @@ describe('opening a browser tab', () => {
       await vi.waitFor(() => expect(answers).toHaveLength(2));
       answers[0](firstFails ? '' : 'a');
       await first;
-      expect(addressFocusIntent(THREAD)).toBe('');
+      expect(addressFocusIntent(THREAD)).toEqual(firstFails ? [] : ['a']);
+      // The first tab shown while the second is due keeps the request.
+      if (!firstFails) expect(takeAddressFocus(THREAD, { id: 'other' })).toBe(false);
       answers[1]('b');
       await second;
-      expect(addressFocusIntent(THREAD)).toBe('b');
+      expect(addressFocusIntent(THREAD)).toEqual(firstFails ? ['b'] : ['a', 'b']);
       expect(takeAddressFocus(THREAD, { id: 'b' })).toBe(true);
     });
   }

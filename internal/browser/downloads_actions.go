@@ -44,7 +44,7 @@ func (m *Manager) threadDownload(access Access, id DownloadKey) (threadDownload,
 // deletes the finished file. The engine's refusal is the answer and the
 // download keeps running and listed as such.
 func (m *Manager) CancelThreadDownload(access Access, id DownloadKey) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	item, err := m.threadDownload(access, id)
@@ -95,7 +95,7 @@ func (m *Manager) CancelThreadDownload(access Access, id DownloadKey) error {
 // artifact goes with the rest after artifactMaxAge. A lifetime the
 // thread's close detached is refused with ErrThreadClosed.
 func (m *Manager) ClearThreadDownloads(access Access) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	if err := access.End(); err != nil {
@@ -153,7 +153,7 @@ func sameDownloadedFile(recorded, current os.FileInfo) bool {
 // RevealThreadDownload opens the OS file manager with a finished download
 // selected, through the same hand-off as RevealPageFile.
 func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id DownloadKey) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	item, err := m.finishedDownloadPath(access, id)
@@ -168,7 +168,7 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id Do
 // its workspace's downloads (authorizeFile). With ctx's numbered selection
 // passed (selection.go) it opens nothing.
 func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id DownloadKey) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	turn, err := m.selectionTurn(ctx, access)
@@ -191,9 +191,6 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id Down
 	}
 	if err != nil {
 		return info, err
-	}
-	if m.downloadOpening != nil {
-		m.downloadOpening()
 	}
 	opened, err := m.openFile(ctx, access, item.path, item.file, OpenOptions{PageID: PageID(info.ID)})
 	if err != nil {

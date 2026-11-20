@@ -39,15 +39,32 @@ async function expectPromoted(section: Locator, promoted: boolean): Promise<void
 }
 
 // The row at the top of a pane's timeline and how far below the top it sits.
+// The first row in view and its offset from the top, once the timeline is
+// still: the same row at the same offset over five frames in a row, so a
+// wheel's scroll and the window's remeasure have landed.
 async function readingAnchor(pane: Locator): Promise<{ id: string; offset: number }> {
-  return await pane.getByTestId('message-timeline-scroll').evaluate((scroller) => {
-    const top = scroller.getBoundingClientRect().top;
-    for (const row of scroller.querySelectorAll<HTMLElement>('[data-item-id]')) {
-      const rect = row.getBoundingClientRect();
-      if (rect.bottom > top + 1) return { id: row.dataset.itemId ?? '', offset: rect.top - top };
-    }
-    return { id: '', offset: 0 };
-  });
+  return await pane.getByTestId('message-timeline-scroll').evaluate((scroller) => new Promise<{ id: string; offset: number }>((resolve, reject) => {
+    const read = () => {
+      const top = scroller.getBoundingClientRect().top;
+      for (const row of scroller.querySelectorAll<HTMLElement>('[data-item-id]')) {
+        const rect = row.getBoundingClientRect();
+        if (rect.bottom > top + 1) return { id: row.dataset.itemId ?? '', offset: rect.top - top };
+      }
+      return { id: '', offset: 0 };
+    };
+    let last = read();
+    let still = 0;
+    let frames = 0;
+    const step = () => {
+      const next = read();
+      still = next.id === last.id && next.offset === last.offset ? still + 1 : 0;
+      last = next;
+      if (still >= 5) return resolve(last);
+      if (++frames > 600) return reject(new Error('the timeline did not come to rest'));
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }));
 }
 
 function turns(count: number): { userText: string; items: { kind: string; summary: string }[] }[] {
@@ -83,7 +100,6 @@ test('a thread pane promotes over the strip and demotes to its slot, keeping its
   await scroller.hover();
   await page.mouse.wheel(0, -2400);
   await expect.poll(() => scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeGreaterThan(1500);
-  await page.waitForTimeout(300);
   const anchor = await readingAnchor(longPane);
   expect(anchor.id).not.toBe('');
 

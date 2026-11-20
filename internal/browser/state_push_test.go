@@ -10,13 +10,14 @@ import (
 // statePushes counts the thread state pushes a Manager publishes and keeps
 // the newest by sequence, as a client does.
 type statePushes struct {
+	m      *Manager
 	mu     sync.Mutex
 	n      int
 	newest CompanionEvent
 }
 
 func countStatePushes(m *Manager) *statePushes {
-	c := &statePushes{}
+	c := &statePushes{m: m}
 	m.SetEventSink(func(event CompanionEvent) {
 		if event.Kind == "state" {
 			c.mu.Lock()
@@ -52,8 +53,8 @@ func (c *statePushes) take() int {
 }
 
 // settle answers the pushes counted since the last take once want have
-// arrived, or the deadline passed, and a moment more has brought no other:
-// a push can come from a goroutine of the Manager's (refreshHistoryState).
+// arrived, or the deadline passed, and the Manager's lifecycle work has
+// finished: a push can come from it (refreshHistoryState).
 func (c *statePushes) settle(want int) int {
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 		c.mu.Lock()
@@ -63,7 +64,7 @@ func (c *statePushes) settle(want int) int {
 			break
 		}
 	}
-	time.Sleep(50 * time.Millisecond)
+	c.m.lifeWork.Wait()
 	return c.take()
 }
 
@@ -82,7 +83,7 @@ func TestAToolCallPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	pushes := countStatePushes(manager)
 	wait := func() {
 		t.Helper()
-		if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+		if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -223,7 +224,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 				t.Fatalf("after the read the tabs show %q (before: %q), want what it stored", got, old)
 			}
 			manager.updatePageInfo(p.driver.Handle(), page.URL, "Retitled", 1)
-			if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+			if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 				t.Fatal(err)
 			}
 			if got := pushes.shownTitle(page.ID); got != "Retitled" {
@@ -245,7 +246,7 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 		if _, err := manager.Pages(t.Context(), access); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+		if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,7 +269,7 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 	if !labeled.Selected || labeled.LastOpened != pages[0].LastOpened {
 		t.Fatalf("browser_label_page after browser_pages answers %+v", labeled)
 	}
-	if _, err := manager.Wait(t.Context(), access, PageID(page.ID), "", 1); err != nil {
+	if _, err := manager.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(page.ID), Milliseconds: 1}); err != nil {
 		t.Fatal(err)
 	}
 	relabeled, err := manager.LabelPage(t.Context(), access, PageID(page.ID), "docs")

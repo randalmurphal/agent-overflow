@@ -94,7 +94,7 @@ func (m *Manager) awaitOpener(opener ids.PageHandle) bool {
 	defer deadline.Stop()
 	for {
 		m.mu.Lock()
-		if m.listedPageLocked(opener) != nil {
+		if m.pageByHandleLocked(opener) != nil {
 			m.mu.Unlock()
 			return true
 		}
@@ -123,15 +123,4 @@ func (m *Manager) unlistedLocked() *boundedMap[ids.PageHandle, struct{}] {
 		m.unlisted = newBoundedMap[ids.PageHandle, struct{}](orderSlack)
 	}
 	return m.unlisted
-}
-
-// listedPageLocked answers the listed page whose driver has handle, or
-// nil. The caller holds m.mu.
-func (m *Manager) listedPageLocked(handle ids.PageHandle) *managedPage {
-	for _, scope := range m.scopes {
-		if p := pageWithHandle(scope, handle); p != nil {
-			return p
-		}
-	}
-	return nil
 }

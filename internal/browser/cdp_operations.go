@@ -93,16 +93,15 @@ func (p *cdpPage) PageStatus(ctx context.Context) (pageStatus, error) {
 }
 
 func (p *cdpPage) NavigationMark(ctx context.Context) (navigationMark, error) {
-	var mark navigationMark
 	location, err := chromedp.Run(ctx, chromedp.Location())
 	if err != nil {
-		return mark, err
+		return navigationMark{}, fmt.Errorf("browser: read the page's location: %w", err)
 	}
 	tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{})
 	if err != nil {
 		return navigationMark{}, fmt.Errorf("browser: read the page's frame tree: %w", err)
 	}
-	mark.URL = location
+	mark := navigationMark{URL: location}
 	if tree.FrameTree != nil && tree.FrameTree.Frame != nil {
 		mark.Loader = string(tree.FrameTree.Frame.LoaderID)
 	}

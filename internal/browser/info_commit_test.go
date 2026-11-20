@@ -86,7 +86,7 @@ var operationReaders = []struct {
 	read func(*testing.T, *Manager, Access, string)
 }{
 	{"Wait", func(t *testing.T, m *Manager, access Access, pageID string) {
-		if _, err := m.Wait(t.Context(), access, PageID(pageID), "", 1); err != nil {
+		if _, err := m.WaitAdvanced(t.Context(), access, WaitOptions{PageID: PageID(pageID), Milliseconds: 1}); err != nil {
 			t.Error(err)
 		}
 	}},

@@ -52,13 +52,13 @@ func TestSwitchingTheJarSuspendsTheTabsIntoTheNewJar(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	first := openPage(t, manager, access, "https://example.test/first")
-	second := openPage(t, manager, access, "https://example.test/second")
-	third := openPage(t, manager, access, "https://example.test/third")
+	first := mustOpen(t, manager, access, "https://example.test/first")
+	second := mustOpen(t, manager, access, "https://example.test/second")
+	third := mustOpen(t, manager, access, "https://example.test/third")
 	if _, err := manager.LabelPage(t.Context(), access, PageID(second.ID), "login"); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.MoveCompanionPage(access, PageID(third.ID), 0); err != nil {
+	if err := manager.MoveCompanionPage(t.Context(), access, PageID(third.ID), 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(second.ID)); err != nil {
@@ -116,8 +116,8 @@ func TestASwitchSavesItsTabsBeforeTheOldPagesClose(t *testing.T) {
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	openPage(t, manager, access, "https://example.test/one")
-	openPage(t, manager, access, "https://example.test/two")
+	mustOpen(t, manager, access, "https://example.test/one")
+	mustOpen(t, manager, access, "https://example.test/two")
 	release := engine.holdClose()
 	t.Cleanup(release)
 	setJar(t, manager, access, JarThread)
@@ -141,7 +141,7 @@ func TestABusyPageDoesNotHoldASwitch(t *testing.T) {
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	page := openPage(t, manager, access, "https://example.test/busy")
+	page := mustOpen(t, manager, access, "https://example.test/busy")
 	handle := paneHandle(manager, access, page.ID)
 	var titles uint64
 	saved := make(chan error, 1)
@@ -180,8 +180,8 @@ func TestTabsChangedDuringASwitchChangeAfterIt(t *testing.T) {
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	gone := openPage(t, manager, access, "https://example.test/gone")
-	openPage(t, manager, access, "https://example.test/kept")
+	gone := mustOpen(t, manager, access, "https://example.test/gone")
+	mustOpen(t, manager, access, "https://example.test/kept")
 	opened := make(chan PageInfo, 1)
 	closed := make(chan error, 1)
 	manager.switchWritten = func() {
@@ -234,7 +234,7 @@ func TestAThreadClosedDuringASwitchClosesWhatTheSwitchLeft(t *testing.T) {
 	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	openPage(t, manager, access, "https://example.test/")
+	mustOpen(t, manager, access, "https://example.test/")
 	closed := make(chan error, 1)
 	manager.switchWritten = func() {
 		go func() { closed <- manager.CloseThread(context.Background(), access.ThreadID()) }()
@@ -270,8 +270,8 @@ func TestASwitchThatCannotSaveKeepsTheJarAndThePages(t *testing.T) {
 	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	openPage(t, manager, access, "https://example.test/one")
-	openPage(t, manager, access, "https://example.test/two")
+	mustOpen(t, manager, access, "https://example.test/one")
+	mustOpen(t, manager, access, "https://example.test/two")
 	if err := os.WriteFile(manager.recordDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -307,8 +307,8 @@ func TestASwitchedTabThatCannotComeBackStaysSuspended(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	ok := openPage(t, manager, access, "https://example.test/ok")
-	down := openPage(t, manager, access, "https://example.test/down")
+	ok := mustOpen(t, manager, access, "https://example.test/ok")
+	down := mustOpen(t, manager, access, "https://example.test/down")
 	engine.mu.Lock()
 	engine.navErr["https://example.test/down"] = errors.New("net::ERR_CONNECTION_REFUSED")
 	engine.mu.Unlock()
@@ -332,7 +332,7 @@ func TestASwitchAtTheThreadCapKeepsEveryTab(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	for range maxPagesPerThread {
-		openPage(t, manager, access, "https://example.test/")
+		mustOpen(t, manager, access, "https://example.test/")
 	}
 	setJar(t, manager, access, JarProject)
 	if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "page limit reached for thread") {
@@ -353,7 +353,7 @@ func TestASwitchKeepsTheThreadCapExact(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	for range maxPagesPerThread - 1 {
-		openPage(t, manager, access, "https://example.test/")
+		mustOpen(t, manager, access, "https://example.test/")
 	}
 	release := engine.holdClose()
 	t.Cleanup(release)
@@ -375,7 +375,7 @@ func TestClosedSwitchedTabsKeepTheirSlotsUntilTheirPagesClose(t *testing.T) {
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
 	for range maxPagesPerThread {
-		openPage(t, manager, access, "https://example.test/")
+		mustOpen(t, manager, access, "https://example.test/")
 	}
 	release := engine.holdClose()
 	t.Cleanup(release)
@@ -419,7 +419,7 @@ func TestARestoreWaitsForTheSwitchsTeardown(t *testing.T) {
 		access := proj.access(manager, id, proj.one)
 		threads = append(threads, access)
 		for range maxPagesPerThread {
-			openPage(t, manager, access, "https://example.test/")
+			mustOpen(t, manager, access, "https://example.test/")
 		}
 	}
 	release := engine.holdClose()
@@ -445,12 +445,12 @@ func TestARestoreWaitsForTheSwitchsOldProfile(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	switching := proj.access(manager, "a", proj.one)
-	openPage(t, manager, switching, "https://example.test/one")
-	openPage(t, manager, switching, "https://example.test/two")
+	mustOpen(t, manager, switching, "https://example.test/one")
+	mustOpen(t, manager, switching, "https://example.test/two")
 	for i := range maxWorkspaceContexts - 1 {
 		other := proj.access(manager, "other-"+string(rune('a'+i)), proj.one)
 		setJar(t, manager, other, JarThread)
-		openPage(t, manager, other, "https://example.test/")
+		mustOpen(t, manager, other, "https://example.test/")
 	}
 	step := engine.stepCloses(t)
 	setJar(t, manager, switching, JarThread)
@@ -481,7 +481,7 @@ func TestClearingSiteDataDuringASwitchLeavesNothing(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	page := openPage(t, manager, access, "https://example.test/")
+	page := mustOpen(t, manager, access, "https://example.test/")
 	release := engine.holdClose()
 	t.Cleanup(release)
 	setJar(t, manager, access, JarThread)
@@ -562,7 +562,7 @@ func TestASwitchFencesAnInFlightRestore(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	page := openPage(t, manager, access, "https://example.test/saved")
+	page := mustOpen(t, manager, access, "https://example.test/saved")
 	live, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +592,7 @@ func TestASwitchFencesPopupAdoption(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	page := openPage(t, manager, access, "https://example.test/")
+	page := mustOpen(t, manager, access, "https://example.test/")
 	opener := paneHandle(manager, access, page.ID)
 	worktree := canonical(t, proj.one)
 	engine.mu.Lock()
@@ -627,7 +627,7 @@ func TestSettingTheJarWithNoTabsOnlyApplies(t *testing.T) {
 	if len(engine.created()) != 0 || len(manager.CompanionState(access.Caller()).Pages) != 0 {
 		t.Fatal("setting the jar with no tab opened something")
 	}
-	page := openPage(t, manager, access, "https://example.test/")
+	page := mustOpen(t, manager, access, "https://example.test/")
 	setJar(t, manager, access, JarProject)
 	if got, ok := findTab(manager, access, page.ID); !ok || got.Suspended {
 		t.Fatalf("re-setting the same jar touched the tab: %+v", got)
@@ -648,7 +648,7 @@ func TestASecondSwitchMovesTheTabsToTheNewestJar(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	page := openPage(t, manager, access, "https://example.test/")
+	page := mustOpen(t, manager, access, "https://example.test/")
 	setJar(t, manager, access, JarThread)
 	setJar(t, manager, access, JarProject)
 	if err := manager.ActivateCompanionPage(t.Context(), access, PageID(page.ID)); err != nil {

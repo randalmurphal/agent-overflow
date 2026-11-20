@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BrowserPageInfo } from '../../stores/bindings';
   import { browserAction, pageIdOf, type BrowserAction, type PageId } from '../../stores/browserActionWire';
+  import { tabTakesAddress } from '../../stores/browserActions';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -37,9 +38,8 @@
     onDismiss: () => void;
   } = $props();
 
-  // A tab still being created, or one that could not be, has no page to
-  // reload or copy. A crashed tab (suspended, with its error) reloads.
-  let hasPage = $derived(!page.creating && !(page.error && !page.suspended));
+  // A tab with no page yet has nothing to reload or copy (tabTakesAddress).
+  let hasPage = $derived(tabTakesAddress(page));
   let address = $derived(hasPage && page.url && page.url !== 'about:blank' ? page.url : '');
   let external = $derived(address ? openableExternalURL(address) : null);
   let externalTitle = $derived(

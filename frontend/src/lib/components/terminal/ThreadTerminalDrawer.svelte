@@ -9,7 +9,7 @@
   import TerminalSurface from './TerminalSurface.svelte';
   import type { ThreadTerminalDrawerProps } from './terminalDrawerTypes';
 
-  let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
+  let { surface }: ThreadTerminalDrawerProps = $props();
 
   // Same key TerminalSurface derives, read once at init (the parent keys this
   // on the thread). The helper reads `surface` inside a function so it isn't
@@ -52,7 +52,7 @@
     acquireResizeLease={surface.acquireResizeLease}
   >
     {#snippet children()}
-      <TerminalSurface {surface} {manual} />
+      <TerminalSurface {surface} />
     {/snippet}
   </Drawer>
 </div>

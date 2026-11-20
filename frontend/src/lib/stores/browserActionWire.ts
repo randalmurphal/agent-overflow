@@ -111,50 +111,50 @@ export type PageFocusRequest =
   | { readonly kind: 'focus-page'; readonly pageId: PageId; readonly intent: number }
   | { readonly kind: 'focus-page-withdraw'; readonly intent: number };
 
+/** Every kind of action the window sends on the wire. */
+export type WireKind = BrowserAction['kind'] | PageFocusRequest['kind'];
+
 /**
- * Whether action takes a number in its pane mount's order: what selects a
- * tab, and what closes one, which changes the active tab and the closed
- * tabs the next command sees.
+ * Whether each kind takes a number in its pane mount's order: every kind
+ * whose result depends on, or changes, the tab strip's selection, order or
+ * membership (a selection, a step, an opening, a close, a move), so none
+ * overtakes the pane's earlier one. The backend's companionSpecs agree
+ * (internal/app/app_browser_companion_action.go), and architecture.test.ts
+ * says why each kind is or is not numbered.
  */
-function ordered(action: BrowserAction | PageFocusRequest): boolean {
-  switch (action.kind) {
-    case 'activate':
-    case 'step':
-    case 'new':
-    case 'reopen':
-    case 'duplicate':
-    case 'download-open':
-    case 'show-browser':
-    case 'close':
-    case 'close-others':
-    case 'close-right':
-      return true;
-    case 'download-cancel':
-    case 'download-reveal':
-    case 'back':
-    case 'forward':
-    case 'reload':
-    case 'stop':
-    case 'restore':
-    case 'devtools':
-    case 'navigate':
-    case 'move':
-    case 'hide':
-    case 'jar':
-    case 'downloads-clear':
-    case 'focus-page':
-    case 'focus-page-withdraw':
-      return false;
-    default:
-      return unhandled(action);
-  }
-}
+export const NUMBERED_KINDS: { readonly [K in WireKind]: boolean } = {
+  activate: true,
+  step: true,
+  new: true,
+  reopen: true,
+  duplicate: true,
+  'download-open': true,
+  'show-browser': true,
+  close: true,
+  'close-others': true,
+  'close-right': true,
+  move: true,
+  back: false,
+  forward: false,
+  reload: false,
+  stop: false,
+  restore: false,
+  devtools: false,
+  navigate: false,
+  hide: false,
+  jar: false,
+  'download-cancel': false,
+  'download-reveal': false,
+  'downloads-clear': false,
+  'focus-page': false,
+  'focus-page-withdraw': false,
+};
 
 function unhandled(action: never): never {
   throw new Error(`browser action ${JSON.stringify(action)} has no wire form`);
 }
 
-/** An ordered action's place in its mount's order. */
+/** A numbered action's place in its mount's order. */
 interface Place {
   readonly mount: BrowserMountId;
   readonly epoch: number;
@@ -225,7 +225,7 @@ interface MountNumbering {
 
 const mountNumberings = new Map<BrowserMountId, MountNumbering>();
 
-/** An ordered action's place, and the end of its wait for an answer (safe to call more than once). */
+/** A numbered action's place, and the end of its wait for an answer (safe to call more than once). */
 function takePlace(mount: BrowserMountId): { readonly place: Place; readonly answered: () => void } {
   let numbering = mountNumberings.get(mount);
   if (!numbering) {
@@ -265,7 +265,7 @@ export type BrowserActionAnswer =
 
 /**
  * Sends `action` from `pane`: numbered in the pane mount's order when its
- * kind is ordered, and only while `pane` is still the thread's attached
+ * kind is numbered (NUMBERED_KINDS), and only while `pane` is still the thread's attached
  * mount.
  */
 export function sendFromPane(pane: BrowserPaneAttachment, action: BrowserAction | PageFocusRequest): Promise<BrowserActionAnswer> {
@@ -282,7 +282,7 @@ async function send(origin: ActionOrigin, action: BrowserAction | PageFocusReque
   const refusal = nativeBrowserRefusal(threadId);
   if (refusal) return { kind: 'refused', error: refusal.message, cause: refusal };
   if (origin.kind === 'pane' && !isCurrentBrowserPane(origin.pane)) return { kind: 'pane-gone' };
-  const taken = origin.kind === 'pane' && ordered(action) ? takePlace(origin.pane.mount) : null;
+  const taken = origin.kind === 'pane' && NUMBERED_KINDS[action.kind] ? takePlace(origin.pane.mount) : null;
   const stamp = browserStateStamp(threadId);
   try {
     const state = await BrowserCompanionDo(threadId, wireAction(action, origin, taken?.place ?? null));

@@ -108,6 +108,19 @@ export interface CommandFlags {
    */
   browserPaneUnattached: boolean;
   /**
+   * True while the keyboard's target is a browser pane whose address field
+   * cannot take focus or a reload (browserActions#isBrowserAddressUnavailable):
+   * its chrome is inert until the attach answers, and a shown tab still being
+   * created, or one that failed to open, takes no address. Negative, as
+   * noPaneTarget.
+   */
+  browserAddressUnavailable: boolean;
+  /**
+   * True while the keyboard's target is a browser pane whose thread has no
+   * closed tab to reopen. Negative, as noPaneTarget.
+   */
+  browserNoClosedTab: boolean;
+  /**
    * Whether this session holds `access:admin` (`transport/scopes.ts`), which
    * covers the device list and the provider-account surface. A command whose
    * RPCs need it gates on this flag so it is *disabled* without it — absent

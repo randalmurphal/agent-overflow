@@ -26,11 +26,11 @@ type revealCommand struct {
 
 // RevealPageFile opens the OS file manager with the local file a page is
 // displaying selected, so it can be dragged into apps that accept file drops
-// but not file paste (Teams refuses a pasted file object outright — verified
-// live 2026-09-01 against both this app's clipboard copy and Explorer's own).
-// Only file:// pages qualify: there is nothing to reveal for a remote URL.
+// but not file paste (Teams refuses a pasted file object, Explorer's own
+// included). Only file:// pages qualify: there is nothing to reveal for a
+// remote URL.
 func (m *Manager) RevealPageFile(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
@@ -112,8 +112,8 @@ func revealFileInFileManager(ctx context.Context, path string) error {
 	}
 	switch {
 	case platform.IsWSL():
-		// Explorer opens \\wsl.localhost paths directly, so the ORIGINAL
-		// file is revealed — no staging copy that could go stale.
+		// Explorer opens \\wsl.localhost paths directly, so the original
+		// file is revealed, with no staged copy that could go stale.
 		windowsPath, err := windowsPathFor(ctx, path)
 		if err != nil {
 			return err
@@ -168,15 +168,12 @@ func runLinuxRevealCommands(ctx context.Context, path string) error {
 		}
 		return nil
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no file manager found")
-	}
 	return fmt.Errorf("browser: show in file manager needs a org.freedesktop.FileManager1 service or xdg-open: %w", lastErr)
 }
 
 // runRevealCommand runs one bounded reveal subprocess. ignoreExitStatus is
 // for explorer.exe, which reports exit code 1 on success by long-standing
-// Windows behavior — only a failure to launch at all is an error there.
+// Windows behavior: only a failure to launch at all is an error there.
 func runRevealCommand(ctx context.Context, command revealCommand, ignoreExitStatus bool) error {
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

@@ -53,6 +53,7 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 			return nil
 		},
 	}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 
 	// A symlinked address resolves to the real file: the file manager must
@@ -98,10 +99,9 @@ func (e rendererFSEngine) BackendFilePath(_ context.Context, rawURL string) (str
 	return filepath.Join(e.base, filepath.FromSlash(rest)), nil
 }
 
-// A page's address on the hosted engine is in the RENDERER's form; the
-// reveal must resolve the backend path through the engine seam rather than
-// stat the URL's path (live incident 2026-08-31, from the clipboard-copy
-// predecessor of this feature).
+// A page's address on the hosted engine is in the renderer's form; the
+// reveal resolves the backend path through the engine seam rather than
+// stat the URL's path.
 func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"thread": {ActivePageID: "page"}})
 	dir := t.TempDir()
@@ -122,6 +122,7 @@ func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
 			return nil
 		},
 	}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "file://renderer.host/report.pdf"}})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err != nil {

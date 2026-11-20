@@ -133,25 +133,19 @@ func (m *Manager) announcePopup(popup enginePopup) bool {
 // listing, as the crashed tab it is: a suspended record carrying the
 // failure (crash.go), in the hold that ends its reservation, with no live
 // listing before it. What it downloaded goes to its opener's tab
-// (finishAdoption). As a crash of a listed page does, it lists nothing
-// while the Manager closes or forgets every page, or for a thread lifetime
-// its close detached, whose records that close already dropped. It answers
-// whether it listed the popup, and the jar to dispose when the reservation
-// was the last thing holding it. The caller holds m.parkMu and m.mu.
-func (m *Manager) listCrashedPopupLocked(scope *jarScope, p *managedPage, handle ids.PageHandle, reason string) (bool, *jarScope) {
-	if m.closed || m.forgettingLocked() || p.owner.detached.Load() {
-		return false, nil
-	}
+// (finishAdoption). The caller decided it (unlistedOutcomeLocked), which
+// lists a crashed tab only while its lifetime may have records. It answers
+// the jar to dispose when the reservation was the last thing holding it.
+// The caller holds m.parkMu and m.mu.
+func (m *Manager) listCrashedPopupLocked(scope *jarScope, p *managedPage, handle ids.PageHandle, reason string) *jarScope {
 	delete(scope.creating, p)
 	m.adopting[handle] = nil
 	m.commitHeldInfoLocked(p, handle)
-	rec := recordOf(p, p.cachedInfo())
-	rec.failure = crashFailure(reason)
-	m.suspended[p.id] = rec
+	m.listCrashedLocked(p, crashFailure(reason))
 	if m.releaseScopeLocked(scope) {
-		return true, scope
+		return scope
 	}
-	return true, nil
+	return nil
 }
 
 // crashedPopupListed publishes a popup listed crashed

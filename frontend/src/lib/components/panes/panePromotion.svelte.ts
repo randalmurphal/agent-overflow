@@ -37,7 +37,7 @@ import type { AirspaceRect } from '../../utils/paneAirspace.svelte';
 import { setPromotedLayer } from '../../utils/panePromotion.svelte';
 import { motionReduced } from '../../utils/reducedMotion';
 
-export const PANE_PROMOTE_DURATION_MS = 180;
+const PANE_PROMOTE_DURATION_MS = 180;
 // A stalled frame advances at most this much, so a resumed tab does not
 // finish the reveal in one jump it never showed.
 const MAX_FRAME_MS = 40;
@@ -386,5 +386,3 @@ export function createPanePromotion(options: PanePromotionOptions) {
     destroy,
   };
 }
-
-export type PanePromotion = ReturnType<typeof createPanePromotion>;

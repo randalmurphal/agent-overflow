@@ -4,7 +4,7 @@
 // command for that chord there, the SPA asks the shell to hand the chord
 // over instead, and replays it as the keydown the window withheld: it goes
 // through the one keybinding dispatcher, as a chord pressed in the native
-// page does (browserCompanion.svelte.ts replayBrowserAccelerator). The
+// page does (browserPageChords.ts replayBrowserAccelerator). The
 // chord is asked for while the browser pane reserves it
 // (browserPaneReservesChord), attached or not, and one nothing runs there
 // does nothing; one handed over after the pane stopped reserving it goes
@@ -27,7 +27,7 @@ export function reloadAppMessage(document: number): string {
 }
 
 /** The SPA's seq-th report, in the shell's document `document`. */
-export function routeMessage(document: number, seq: number, route: boolean): string {
+function routeMessage(document: number, seq: number, route: boolean): string {
   return `${MESSAGE_PREFIX}route-reload:${document}:${seq}:${route ? 1 : 0}`;
 }
 

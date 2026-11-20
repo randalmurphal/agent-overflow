@@ -56,10 +56,6 @@ func (p *cdpPage) Scroll(ctx context.Context, selector string, x, y float64) err
 	return err
 }
 
-func (p *cdpPage) WaitVisible(ctx context.Context, selector string) error {
-	return chromedp.Do(ctx, chromedp.WaitVisible(chromedp.CSS(selector)))
-}
-
 func (p *cdpPage) Pointer(ctx context.Context, opts PointerOptions) error {
 	action := strings.ToLower(strings.TrimSpace(opts.Action))
 	modifiers, err := inputModifiers(opts.Modifiers)

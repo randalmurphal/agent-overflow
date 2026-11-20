@@ -16,8 +16,9 @@ import (
 // release numbers what settled, drops the earliest settled past the
 // bound and wakes the waiters, so no writer can leave the log over its
 // bound or a waiter asleep. A running download is never dropped: its
-// progress, its reservation and its cancel all need it, and the quotas
-// bound how many run.
+// progress, its reservation and its cancel all need it. Only artifact
+// downloads (downloadsAsArtifacts) have quotas, which bound how many of
+// them run.
 type pageDownloadLog struct {
 	mu      sync.Mutex
 	entries []DownloadInfo
@@ -113,6 +114,22 @@ func (h *downloadLogHold) entry(id downloadID) *DownloadInfo {
 		}
 	}
 	return nil
+}
+
+// publishing answers the entry of download id whose file is being
+// published (rowPublishing), which stays in the log until its publish
+// settles it: a running entry is never trimmed, and neither a report, a
+// cancel nor its page's departure settles one being published. The error
+// says that broke.
+func (h *downloadLogHold) publishing(id downloadID) (*DownloadInfo, error) {
+	entry := h.entry(id)
+	if entry == nil {
+		return nil, fmt.Errorf("%w: download %s left its page's log while its file was published", errDownloadPhase, id)
+	}
+	if entry.phase != rowPublishing {
+		return nil, fmt.Errorf("%w: download %s is %v while its file was published", errDownloadPhase, id, entry.phase)
+	}
+	return entry, nil
 }
 
 // running answers the entries still running.

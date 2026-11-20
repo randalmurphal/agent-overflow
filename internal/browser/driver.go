@@ -309,7 +309,8 @@ type pageDriver interface {
 	// PageStatus samples the load state a wait condition is evaluated against.
 	PageStatus(ctx context.Context) (pageStatus, error)
 	// NavigationMark captures the page's current navigation identity, so a
-	// caller can tell that a navigation happened at all.
+	// caller can tell that a navigation happened at all. Any part of it
+	// that cannot be read fails the read with an error and no mark.
 	NavigationMark(ctx context.Context) (navigationMark, error)
 
 	// Snapshot returns the accessibility-ish page snapshot. Element node ids
@@ -356,8 +357,6 @@ type pageDriver interface {
 	Pointer(ctx context.Context, opts PointerOptions) error
 	// Scroll scrolls a selector, or the window when it is empty.
 	Scroll(ctx context.Context, selector string, x, y float64) error
-	// WaitVisible blocks until a selector is visible or the context ends.
-	WaitVisible(ctx context.Context, selector string) error
 
 	// SetViewport lays the page out at width x height CSS pixels: what it
 	// lays out and captures at, presented or not. The Manager sets it from

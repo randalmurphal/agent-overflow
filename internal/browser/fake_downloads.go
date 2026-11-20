@@ -179,7 +179,7 @@ func fakeSaveInDownloads(suggested string) (string, error) {
 	}
 	name := safeArtifactName(suggested, "download")
 	ext := filepath.Ext(name)
-	for i := 0; i < maxDownloadNameCollisions; i++ {
+	for i := 0; i < maxNameVariants; i++ {
 		candidate := filepath.Join(dir, name)
 		if i > 0 {
 			candidate = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), i, ext))

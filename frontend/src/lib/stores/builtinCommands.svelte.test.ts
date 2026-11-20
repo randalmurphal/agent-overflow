@@ -14,7 +14,7 @@ import {
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
 import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
-import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';import { stepBack } from '../utils/stepBack';
+import { companionForSource, installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';import { stepBack } from '../utils/stepBack';
 import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
@@ -1119,7 +1119,7 @@ describe('find.in-pane command', () => {
   });
 
   // A chord from the browser pane's native view is replayed on the window
-  // with the companion focused (browserCompanion.replayBrowserAccelerator)
+  // with the companion focused (browserPageChords.replayBrowserAccelerator)
   // while the document has no keyboard focus. The context is the source
   // thread pane's, whose terminal may still hold DOM focus: that focus is
   // stale and must not gate the chord, while a terminal the user is typing
@@ -2519,19 +2519,26 @@ describe('pane navigation into a terminal pane', () => {
       left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
       registerPaneForTest('main', left);
       setPaneLayoutItemsForTest([{ id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 }]);
-      const plan = openCompanion('main', 'plan')!;
+      const companion = openCompanion('main', kind)!;
+      expect(companion.kind).toBe(kind);
+      const hosted = createThreadPane({ paneId: companion.paneId });
+      hosted.replaceThread(makeThread({ id: 'hosted', mode: 'chat' }));
+      registerPaneForTest(companion.paneId, hosted);
+      // A side chat's close deletes its fork.
+      setBindingMock('DeleteThread', async () => null);
       registerFixtureCommands(left);
       const leftComposer = mountComposerForPane('main');
-      const planSection = mountComposerForPane(plan.paneId);
+      const hostedComposer = mountComposerForPane(companion.paneId);
       try {
-        focusPane(plan.paneId);
-        planSection.textarea.focus();
+        focusPane(companion.paneId);
+        hostedComposer.textarea.focus();
         runCommand('pane.close', makeCommandContext(left, {}));
+        expect(companionForSource('main', kind)).toBeNull();
         expect(getFocusedPaneId()).toBe('main');
         expect(document.activeElement).toBe(leftComposer.textarea);
       } finally {
         leftComposer.cleanup();
-        planSection.cleanup();
+        hostedComposer.cleanup();
         resetCompanionPanesForTest();
       }
     });

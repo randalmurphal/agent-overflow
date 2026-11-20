@@ -3,7 +3,7 @@
   // DirectoryBrowser: path input + listbox + keyboard nav.
   //
   // The browse / debounce / typeahead browser lives in
-  // `directoryBrowser.svelte.ts`. This shell owns the markup + the
+  // `directoryBrowserState.svelte.ts`. This shell owns the markup + the
   // listbox keyboard handler. Behaviours:
   //
   //  - ArrowUp / ArrowDown move the highlight.

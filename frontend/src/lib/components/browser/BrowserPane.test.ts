@@ -14,6 +14,9 @@ import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const THREAD = 'thread-1';
 
@@ -133,6 +136,30 @@ describe('<BrowserPane> suspended pages', () => {
     expect(chrome.getAttribute('aria-busy')).toBe('false');
     await fireEvent.click(view.getAllByTestId('browser-tab')[1]);
     await waitFor(() => expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'b', mount: 'mount-1' })));
+  });
+
+  // Two computers claim the thread at one ownership epoch: this window may
+  // not host its browser, so the attached pane's chrome is unavailable and
+  // the home computer's tabs are not shown.
+  it('makes its chrome unavailable and shows no tab once two computers claim the thread', async () => {
+    setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: state([page('a', false), page('b', false)]) }));
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a', false), page('b', false)])));
+    const view = render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD }) });
+    const chrome = view.getByTestId('browser-pane-chrome');
+    await waitFor(() => expect(chrome.inert).toBe(false));
+    expect(view.getAllByTestId('browser-tab')).toHaveLength(2);
+    stageBackend({ id: 'remote', backendId: 'remote' });
+    try {
+      noteThread(THREAD, HOME_BACKEND, 4);
+      noteThread(THREAD, 'remote', 4);
+      await tick();
+      expect(chrome.inert).toBe(true);
+      expect(view.queryAllByTestId('browser-tab')).toHaveLength(0);
+    } finally {
+      forgetThread(THREAD);
+      forgetBackendEntities('remote');
+      resetStagedBackends();
+    }
   });
 
   it('asks nothing for a live active page', async () => {

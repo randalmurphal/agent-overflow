@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -268,10 +270,6 @@ type Manager struct {
 	// downloadAdmitting is a test seam run between a download start's page
 	// lookup and its admission. Production leaves it nil.
 	downloadAdmitting func()
-	// downloadOpening is a test seam run between the tab a finished
-	// download opens in and its file's open (OpenThreadDownload).
-	// Production leaves it nil.
-	downloadOpening func()
 }
 
 type ManagerOptions struct {
@@ -383,15 +381,20 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 // key file the pre-engine browser wrote (spec §4). They hold cookies and
 // localStorage for a Chrome that no longer exists and cannot be imported into
 // an engine profile, so first boot of this code is where they stop existing.
-// Best-effort by design: a checkpoint we cannot unlink is unreadable anyway.
+// A removal that fails is logged and boot goes on: a checkpoint no engine
+// reads holds nothing the browser uses. Their absence is not a failure.
 func pruneEncryptedCheckpoints(configDir string) {
-	_ = os.RemoveAll(filepath.Join(configDir, "browser-state"))
-	_ = os.Remove(filepath.Join(configDir, "browser-state.key"))
+	if err := os.RemoveAll(filepath.Join(configDir, "browser-state")); err != nil {
+		log.Printf("browser: remove the old site-data checkpoints: %v", err)
+	}
+	if err := os.Remove(filepath.Join(configDir, "browser-state.key")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("browser: remove the old site-data checkpoint key: %v", err)
+	}
 }
 
 // Available reports whether this deployment has a browser engine at all. It is
 // the question the App answers before offering a thread the browser MCP
-// server: a windowless deployment gets no browser tools rather than 28 tools
+// server: a windowless deployment gets no browser tools rather than tools
 // that all refuse (spec §9).
 func (m *Manager) Available() bool {
 	_, none := m.engine.(unavailableEngine)

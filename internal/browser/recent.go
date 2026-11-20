@@ -103,14 +103,11 @@ func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
 // forgetBrowsingLocked forgets tb's browsing history, its recent addresses
 // and its closed tabs (companion_tabs.go), by replacing the object that
 // holds them, which voids every claim on the old one (tabClaim), and
-// advances the forget generation the address cache reads. It answers
-// whether closed tabs were forgotten, which the thread's state shows. The
-// caller holds m.mu.
-func (m *Manager) forgetBrowsingLocked(tb *threadBrowser) bool {
-	hadClosed := closedCountLocked(tb) > 0
+// advances the forget generation the address cache reads. The caller holds
+// m.mu.
+func (m *Manager) forgetBrowsingLocked(tb *threadBrowser) {
 	tb.browsing = &browsing{}
 	m.recentGen++
-	return hadClosed
 }
 
 // forgetAllBrowsingLocked forgets every thread lifetime's browsing history

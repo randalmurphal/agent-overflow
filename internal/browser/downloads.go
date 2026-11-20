@@ -207,7 +207,7 @@ func (m *Manager) stopEndedDownloads(ended endedDownloads) {
 }
 
 func (m *Manager) Downloads(ctx context.Context, access Access, opts DownloadOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -224,14 +224,10 @@ func (m *Manager) Downloads(ctx context.Context, access Access, opts DownloadOpt
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return waitDownloadPage(waitCtx, p, opts.After)
+		return p.downloads.settledAfter(waitCtx, opts.After)
 	default:
 		return nil, fmt.Errorf("browser: download action must be list or wait")
 	}
-}
-
-func waitDownloadPage(ctx context.Context, p *managedPage, after uint64) (DownloadInfo, error) {
-	return p.downloads.settledAfter(ctx, after)
 }
 
 func safeArtifactName(name, fallback string) string {
@@ -277,7 +273,7 @@ func artifactNames(name string) func(i int) string {
 // creates it exclusively; one that moves a file there uses placeNoReplace.
 func uniqueArtifactPath(dir, name string) (string, error) {
 	names := artifactNames(name)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < maxNameVariants; i++ {
 		candidate := filepath.Join(dir, names(i))
 		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
 			return candidate, nil

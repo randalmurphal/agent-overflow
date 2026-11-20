@@ -50,4 +50,5 @@ available.
 an import cycle.
 
 Every helper accepts `testing.TB` or `*testing.T` and uses per-test temporary
-state. Run `go test ./internal/testutil` after changing shared fixtures.
+state. After changing a shared fixture, run
+`make go-test GO_TEST_PKGS='./internal/testutil/... <packages that use it>'`.

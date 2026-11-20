@@ -221,7 +221,7 @@ func (m *Manager) profileScopeLocked(handle profileHandle) *jarScope {
 // m.mu.
 func (m *Manager) openerAuthorityLocked(handles []ids.PageHandle) *workspaceAuthority {
 	for _, handle := range handles {
-		if p := m.listedPageLocked(handle); p != nil {
+		if p := m.pageByHandleLocked(handle); p != nil {
 			return p.authority
 		}
 		if p := m.adopting[handle]; p != nil {
@@ -323,12 +323,12 @@ func (m *Manager) fateTarget(handle ids.PageHandle, fate popupFate) *managedPage
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fate.listed != "" {
-		if p := m.listedPageLocked(fate.listed); p != nil {
+		if p := m.pageByHandleLocked(fate.listed); p != nil {
 			return p
 		}
 	}
 	for _, opener := range m.popupLineage(handle, fate.openers) {
-		if p := m.listedPageLocked(opener); p != nil {
+		if p := m.pageByHandleLocked(opener); p != nil {
 			return p
 		}
 	}

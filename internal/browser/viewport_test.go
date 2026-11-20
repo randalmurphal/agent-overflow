@@ -314,11 +314,9 @@ func TestViewportSetReportsAPageThatRefusesTheSize(t *testing.T) {
 	}
 }
 
-// A second mount for the thread (the harness screenshot path mounts one
-// beside the UI's pane) takes the pages to its size; releasing it hands them
-// back to the mount that stays instead of leaving them at a size no pane has.
 // Only the presenting mount sizes the pages; when it detaches, the mount
-// that remains presents and hands the pages its size.
+// that remains presents and hands the pages its size instead of leaving
+// them at a size no pane has.
 func TestDetachingThePresenterHandsPagesToTheRemainingPane(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	first := f.attach(t)

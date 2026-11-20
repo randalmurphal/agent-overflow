@@ -6,7 +6,7 @@
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import type { BrowserRecentAddress } from '../../stores/bindings';
   import { readRecentAddresses } from '../../stores/browserActionWire';
-  import { browserCompanionState, browserPaneAttachment, type BrowserPaneAttachment } from '../../stores/browserCompanion.svelte';
+  import { browserPaneAttachment, browserPaneState, type BrowserPaneAttachment } from '../../stores/browserCompanion.svelte';
   import { loadDevServers, machineDevServers } from '../../stores/devServers.svelte';
   import { isLocalEnter } from '../../utils/localEnter';
   import { randomId } from '../../utils/randomId';
@@ -37,10 +37,11 @@
   const thread = browserPaneThread();
   let threadId = $derived(thread());
   // The pane attachment the list reads from: null while the pane has none
-  // or this window may not host the thread's browser, and then no recent
-  // address is read or shown.
+  // or this window may not host the thread's browser, and then no tab or
+  // recent address is read or shown (browserPaneState). Dev servers are the
+  // thread's computer's listening ports, not its browser's.
   let pane = $derived(threadId ? browserPaneAttachment(threadId) : null);
-  let browser = $derived(threadId ? browserCompanionState(threadId) : null);
+  let browser = $derived(pane ? browserPaneState(pane) : null);
   let activePageId = $derived(browser?.activePageId ?? '');
   let machine = $derived(threadId ? machineDevServers(threadMachine(threadId, null)) : null);
 

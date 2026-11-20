@@ -9,88 +9,50 @@
 // view from exactly these reports (internal/browser `paneCanShow`).
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
 import { mount, unmount } from 'svelte';
-import '../../../app.css';
 
 vi.mock('../chat/ChatView.svelte', async () => ({
   default: (await import('../../../test/mocks/StubChatView.svelte')).default,
 }));
 
-import PaneHost from '../panes/PaneHost.svelte';
-// Loaded up front, so the companion's lazy import of it resolves at once.
-import './BrowserPane.svelte';
-import { createPane, resetPanesForTest, revealPane } from '../../stores/panes.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { revealPane } from '../../stores/panes.svelte';
+import { applyBrowserCompanionState } from '../../stores/browserCompanion.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
-import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
+import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
 import { addToast, removeToast, resetToastsForTest } from '../../stores/toast.svelte';
 import Toast from '../shared/Toast.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { makeThread } from '../../../test/helpers/chat';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
-import { __setTransportStatusForTest, getTransportStatus } from '../../stores/transportStatus.svelte';
+import { mountBrowserPaneStrip, type BrowserPaneStrip } from '../../../test/helpers/browserPaneStrip';
 
 const THREAD = 'thread-browser';
-
-interface Report {
-  width: number; height: number; clipWidth: number; clipHeight: number;
-  visible: boolean;
-}
 
 const shown = {
   kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, seq: 1,
   pages: [{ id: 'a', url: 'https://example.test/a', title: 'Page a', canGoBack: false, canGoForward: false }],
 };
 
+let strip: BrowserPaneStrip;
 let host: HTMLDivElement;
-let app: ReturnType<typeof mount> | null = null;
-let reports: Array<Report & { mount: string }>;
+let reports: BrowserPaneStrip['reports'];
 let answerAttach: () => void;
-let transportBefore: ReturnType<typeof getTransportStatus>;
 
 beforeEach(async () => {
-  await page.viewport(1400, 700);
-  transportBefore = getTransportStatus();
-  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-  reports = [];
-  resetBrowserCompanionForTest();
   // The attach answers when the test lets it.
   const attached = new Promise<void>((resolve) => { answerAttach = resolve; });
-  setBindingMock('BrowserCompanionPaneAttach', async () => {
-    await attached;
-    return { id: 'mount-1', state: shown };
+  strip = await mountBrowserPaneStrip({
+    threadId: THREAD,
+    attach: async () => {
+      await attached;
+      return { id: 'mount-1', state: shown };
+    },
   });
-  setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
-  setBindingMock('BrowserCompanionDo', async () => undefined);
-  setBindingMock('BrowserCompanionPaneRect', async (mountId: string, rect: Report) => {
-    reports.push({ ...rect, mount: mountId });
-  });
-  host = document.createElement('div');
-  host.style.cssText = 'position:fixed;top:0;left:0;width:1200px;height:500px;display:flex';
-  document.body.append(host);
-  installCompanionPanes();
-  setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 500 }]);
-  createPane('main').replaceThread(makeThread({ id: THREAD }));
-  openCompanion('main', 'browser');
-  app = mount(PaneHost, { target: host });
+  ({ host, reports } = strip);
 });
 
 afterEach(async () => {
   answerAttach();
   setCompactLayoutForTest(false);
-  if (app) await unmount(app);
-  app = null;
-  host.remove();
-  resetBrowserCompanionForTest();
-  resetCompanionPanesForTest();
-  resetPaneLayoutForTest();
-  resetPanesForTest();
-  resetAirspaceForTest();
-  resetBindingMocks();
-  __setTransportStatusForTest(transportBefore);
+  await strip.teardown();
 });
 
 it('reports the rect when the mount arrives after the pane already had its state', async () => {

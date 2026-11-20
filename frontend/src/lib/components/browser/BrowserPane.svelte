@@ -3,14 +3,16 @@
   import {
     attachBrowserCompanion,
     browserActionError,
+    browserPaneAttachment,
     browserPaneMountId,
     browserShownPage,
     browserThreadState,
+    canUseNativeBrowser,
     noteBrowserPaneError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
-  import { actInPane, openBrowserTabInPane } from '../../stores/browserActions';
+  import { actInPane, openBrowserTabInPane, tabTakesAddress } from '../../stores/browserActions';
   import { browserAction, pageIdOf, revealPageFile as revealBrowserPageFile, type BrowserAction } from '../../stores/browserActionWire';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
@@ -43,8 +45,10 @@
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
 
   // The thread's admitted state (the header and the keyboard read the same
-  // one) and this pane's mount, which the attachment owns.
-  let threadState = $derived(ctx.threadId ? browserThreadState(ctx.threadId) : null);
+  // one) while this window may host the thread's browser: its tabs are the
+  // home computer's, so a thread another computer claims too shows none.
+  // Before the attach answers the strip shows them in the inert chrome.
+  let threadState = $derived(ctx.threadId && canUseNativeBrowser(ctx.threadId) ? browserThreadState(ctx.threadId) : null);
   let actionError = $derived(ctx.threadId ? browserActionError(ctx.threadId) : '');
   let findCleanupError = $derived(ctx.threadId ? browserFindCleanupError(ctx.threadId) : '');
   let pages = $derived(threadState?.pages ?? []);
@@ -52,9 +56,11 @@
   let activePageId = $derived(threadState?.activePageId ?? '');
   let closedTabs = $derived(threadState?.closedTabs ?? 0);
   let activePage = $derived(browserShownPage(threadState));
-  // The attached mount the pane's actions are sent from; null until the
-  // attach answers, and the chrome is unavailable until then.
-  let pane = $derived(attachment?.current?.pane ?? null);
+  // The validated attachment the pane's actions are sent from and its
+  // surfaces read through (browserPaneAttachment): null until the attach
+  // answers and while this window may not host the thread's browser, and
+  // the chrome is unavailable then.
+  let pane = $derived(ctx.threadId ? browserPaneAttachment(ctx.threadId) : null);
   let attached = $derived(pane !== null);
 
   $effect(() => {
@@ -198,7 +204,7 @@
     if (!pane) return;
     const page = activePage;
     const pageId = pageIdOf(page?.id);
-    if (page && pageId && !page.creating && !(page.error && !page.suspended)) void act(browserAction.navigate(pageId, path));
+    if (pageId && tabTakesAddress(page)) void act(browserAction.navigate(pageId, path));
     else void openBrowserTabInPane(pane, { address: path });
   }
 

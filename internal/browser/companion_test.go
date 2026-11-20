@@ -22,6 +22,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 		scopes:  map[jarKey]*jarScope{"/repo": {pages: pages}},
 		threads: threads,
 	}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 
 	order := func() []string {
@@ -33,14 +34,14 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 		return ids
 	}
 
-	if err := m.MoveCompanionPage(access, "third", 0); err != nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "third", 0); err != nil {
 		t.Fatalf("move = %v", err)
 	}
 	if got := order(); got[0] != "third" || got[1] != "first" || got[2] != "second" {
 		t.Fatalf("order after front move = %v", got)
 	}
 	// An out-of-range index clamps to the end instead of failing.
-	if err := m.MoveCompanionPage(access, "third", 99); err != nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "third", 99); err != nil {
 		t.Fatalf("clamped move = %v", err)
 	}
 	if got := order(); got[2] != "third" {
@@ -55,7 +56,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 	if got := order(); got[3] != "late" {
 		t.Fatalf("order with late page = %v", got)
 	}
-	if err := m.MoveCompanionPage(access, "missing", 0); err == nil {
+	if err := m.MoveCompanionPage(t.Context(), access, "missing", 0); err == nil {
 		t.Fatal("moving an unknown page did not fail")
 	}
 }
@@ -69,6 +70,7 @@ func TestCompanionStateSnapshotsAreNumberedInReadOrder(t *testing.T) {
 		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{}}},
 		threads: threads,
 	}
+	ownThreads(m)
 	first := m.threadState("a")
 	second := m.threadState("b")
 	third := m.threadState("a")
@@ -108,6 +110,7 @@ func TestCompanionStateKeepsTabOrderAndUsesExplicitActivePage(t *testing.T) {
 	m := &Manager{scopes: map[jarKey]*jarScope{
 		"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}},
 	}, threads: threads}
+	ownThreads(m)
 
 	state := m.threadState("thread")
 	if len(state.Pages) != 2 || state.Pages[0].ID != "first" || state.Pages[1].ID != "second" {
@@ -133,6 +136,7 @@ func TestBackgroundPageActivityDoesNotStealCompanionSelection(t *testing.T) {
 		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
+	ownThreads(m)
 
 	m.pageUsed(second)
 	if got := m.threadState("thread").ActivePageID; PageID(got) != first.id {
@@ -152,6 +156,7 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	show := true
 	if _, err := m.Visibility(context.Background(), access, &show, ""); err == nil || !strings.Contains(err.Error(), "page_id is required") {
@@ -176,6 +181,7 @@ func TestImplicitPageResolutionIsConvenientOnlyWhenUnambiguous(t *testing.T) {
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: string(second.id), Label: "docs"}
 	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first}}}}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	resolved, _, err := m.lookupOrSelectPage(context.Background(), access, "")
 	if err != nil || resolved != first {
@@ -196,6 +202,7 @@ func TestPageLabelsAreThreadUniqueAndEditable(t *testing.T) {
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: string(second.id)}
 	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}}}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	info, err := m.LabelPage(context.Background(), access, first.id, " app-preview ")
 	if err != nil || info.Label != "app-preview" {
@@ -222,6 +229,7 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
+	ownThreads(m)
 	show := true
 	var wg sync.WaitGroup
 	for _, tc := range []struct {

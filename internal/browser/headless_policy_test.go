@@ -132,8 +132,8 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	a, b := proj.access(manager, "a", proj.one), proj.access(manager, "b", proj.two)
 	setJar(t, manager, a, JarProject)
 	setJar(t, manager, b, JarProject)
-	pageA := openPage(t, manager, a, "https://example.test/a")
-	openPage(t, manager, b, "https://example.test/b")
+	pageA := mustOpen(t, manager, a, "https://example.test/a")
+	mustOpen(t, manager, b, "https://example.test/b")
 	openerA := paneHandle(manager, a, pageA.ID)
 	jars.ownFrame("F-of-A", openerA)
 

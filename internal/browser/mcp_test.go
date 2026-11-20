@@ -104,9 +104,6 @@ func (f *fakeController) Press(context.Context, Access, PageID, string) (PageInf
 func (f *fakeController) Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Wait(context.Context, Access, PageID, string, int) (PageInfo, error) {
-	return PageInfo{}, nil
-}
 func (f *fakeController) History(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
@@ -420,7 +417,7 @@ func TestMCPRequestChecksRefuseNonLoopbackPeer(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		request.RemoteAddr = peer.remoteAddr
 		recorder := httptest.NewRecorder()
-		server.handle(recorder, request)
+		server.ServeHTTP(recorder, request)
 		if recorder.Code != peer.want {
 			t.Errorf("peer %q: status = %d, want %d", peer.remoteAddr, recorder.Code, peer.want)
 		}

@@ -89,7 +89,7 @@ func fillProfiles(t *testing.T, m *Manager, proj project, n int) {
 	for i := range n {
 		other := proj.access(m, "other-"+string(rune('a'+i)), proj.one)
 		setJar(t, m, other, JarThread)
-		openPage(t, m, other, "https://example.test/")
+		mustOpen(t, m, other, "https://example.test/")
 	}
 }
 
@@ -106,7 +106,7 @@ func TestTheJarPolicyAnswersForAPageBeingCreated(t *testing.T) {
 	if err := os.WriteFile(other, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	openPage(t, manager, b, "https://example.test/b")
+	mustOpen(t, manager, b, "https://example.test/b")
 	page := openWorkspaceFile(t, manager, a)
 	suspendTab(t, manager, a, page.ID)
 	policy := engine.profile("project:P").allow
@@ -206,7 +206,7 @@ func TestClosingATabCancelsItsRestore(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access(manager, "a", proj.one)
-	page := openPage(t, manager, access, "https://example.test/")
+	page := mustOpen(t, manager, access, "https://example.test/")
 	suspendTab(t, manager, access, page.ID)
 	release := engine.holdNav()
 	t.Cleanup(release)
@@ -269,7 +269,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 	t.Run("suspended before the switch", func(t *testing.T) {
 		s := newSetup(t)
 		suspended := openWorkspaceFile(t, s.manager, s.access)
-		live := openPage(t, s.manager, s.access, "https://example.test/live")
+		live := mustOpen(t, s.manager, s.access, "https://example.test/live")
 		suspendTab(t, s.manager, s.access, suspended.ID)
 		fillProfiles(t, s.manager, s.proj, maxWorkspaceContexts-1)
 		release := s.jars.holdCloseOf(t, paneHandle(s.manager, s.access, live.ID))
@@ -280,7 +280,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 	t.Run("old profile still disposing", func(t *testing.T) {
 		s := newSetup(t)
 		suspended := openWorkspaceFile(t, s.manager, s.access)
-		live := openPage(t, s.manager, s.access, "https://example.test/live")
+		live := mustOpen(t, s.manager, s.access, "https://example.test/live")
 		suspendTab(t, s.manager, s.access, suspended.ID)
 		fillProfiles(t, s.manager, s.proj, maxWorkspaceContexts-1)
 		release := s.jars.holdDispose(t)
@@ -307,7 +307,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 
 	t.Run("left suspended by an earlier switch", func(t *testing.T) {
 		s := newSetup(t)
-		first := openPage(t, s.manager, s.access, "https://example.test/first")
+		first := mustOpen(t, s.manager, s.access, "https://example.test/first")
 		second := openWorkspaceFile(t, s.manager, s.access)
 		fillProfiles(t, s.manager, s.proj, maxWorkspaceContexts-1)
 		setJar(t, s.manager, s.access, JarThread)
@@ -322,7 +322,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 	t.Run("retrying after a newer switch", func(t *testing.T) {
 		s := newSetup(t)
 		suspended := openWorkspaceFile(t, s.manager, s.access)
-		live := openPage(t, s.manager, s.access, "https://example.test/live")
+		live := mustOpen(t, s.manager, s.access, "https://example.test/live")
 		suspendTab(t, s.manager, s.access, suspended.ID)
 		fillProfiles(t, s.manager, s.proj, maxWorkspaceContexts-1)
 		releaseNav := s.jars.holdNav()
@@ -339,7 +339,7 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 	t.Run("admitted after a newer switch", func(t *testing.T) {
 		s := newSetup(t)
 		suspended := openWorkspaceFile(t, s.manager, s.access)
-		live := openPage(t, s.manager, s.access, "https://example.test/live")
+		live := mustOpen(t, s.manager, s.access, "https://example.test/live")
 		suspendTab(t, s.manager, s.access, suspended.ID)
 		fillProfiles(t, s.manager, s.proj, maxWorkspaceContexts-1)
 		s.gate.armed.Store(true)
@@ -352,4 +352,26 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 		s.gate.release()
 		expectWaiting(t, s, restored, release, suspended.ID, "thread:a")
 	})
+}
+
+// A label another tab holds is refused before the suspended tab it names
+// restores for it.
+func TestARefusedLabelRestoresNothing(t *testing.T) {
+	m, _ := newLifecycleManager(t)
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+	first := mustOpen(t, m, access, addr("first"))
+	second := mustOpen(t, m, access, addr("second"))
+	if _, err := m.LabelPage(t.Context(), access, PageID(first.ID), "docs"); err != nil {
+		t.Fatal(err)
+	}
+	suspendTab(t, m, access, second.ID)
+	if _, err := m.LabelPage(t.Context(), access, PageID(second.ID), "Docs"); err == nil {
+		t.Fatal("a label another tab holds was accepted")
+	}
+	m.mu.Lock()
+	_, suspended := m.suspended[PageID(second.ID)]
+	m.mu.Unlock()
+	if !suspended {
+		t.Fatal("a refused label restored the suspended tab")
+	}
 }

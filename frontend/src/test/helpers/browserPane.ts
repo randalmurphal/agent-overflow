@@ -4,14 +4,20 @@
 
 import { onTestFinished, vi } from 'vitest';
 import {
+  applyBrowserCompanionState,
   attachBrowserCompanion,
   browserPaneAttachment,
   browserPaneMountId,
   browserThreadState,
+  resetBrowserCompanionForTest,
   type BrowserPaneAttachment,
   type BrowserPaneMount,
 } from '../../lib/stores/browserCompanion.svelte';
 import { pageIdOf, type PageId } from '../../lib/stores/browserActionWire';
+import { installCompanionPanes, resetCompanionPanesForTest } from '../../lib/stores/companionPanes.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../lib/stores/paneLayout.svelte';
+import { createPane, resetPanesForTest } from '../../lib/stores/panes.svelte';
+import { makeThread } from './chat';
 import type { EntityAttachment } from '../../lib/stores/entityStore.svelte';
 import { setBindingMock } from '../mocks/bindings-app';
 
@@ -27,6 +33,28 @@ export async function attachBrowserPaneForTest(threadId: string, mount: string):
     if (browserPaneMountId(threadId) !== mount) throw new Error(`the pane mount ${mount} is not attached yet`);
   });
   return attachment;
+}
+
+/**
+ * A thread pane `main` showing the thread, beside it the thread's browser
+ * pane on one tab, attached as `mount`; the stores involved are reset first.
+ */
+export async function openBrowserPaneForTest(threadId: string, mount: string): Promise<void> {
+  resetBrowserCompanionForTest();
+  resetCompanionPanesForTest();
+  resetPaneLayoutForTest();
+  resetPanesForTest();
+  installCompanionPanes();
+  setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+  createPane('main').replaceThread(makeThread({ id: threadId }));
+  applyBrowserCompanionState({
+    kind: 'state',
+    threadId,
+    activePageId: 'page-1',
+    visible: true,
+    pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example', canGoBack: false, canGoForward: false }],
+  });
+  await attachBrowserPaneForTest(threadId, mount);
 }
 
 /** The thread's attached pane; fails the test when it has none. */

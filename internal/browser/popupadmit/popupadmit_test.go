@@ -3,6 +3,7 @@ package popupadmit
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/browser/ids"
@@ -38,17 +39,20 @@ func TestCommitReadsWhatEndedThePopup(t *testing.T) {
 						t.Fatalf("an observation of a pending popup was %v", got)
 					}
 				}
-				commit, want := r.Commit, tc.want
+				want := tc.want
 				if !attached {
-					commit, want = r.CommitFailed, tc.unattached
+					want = tc.unattached
 				}
-				v := commit("p")
+				v := r.Commit("p", !attached)
 				wantReason := tc.reason
 				if want != ListCrashed {
 					wantReason = ""
 				}
 				if v.Kind() != want || v.CrashReason() != wantReason {
 					t.Fatalf("commit = %v %q, want %v %q", v.Kind(), v.CrashReason(), want, wantReason)
+				}
+				if closed := strings.Contains(tc.name, "close"); v.Closed() != closed {
+					t.Fatalf("commit closed = %v, want %v", v.Closed(), closed)
 				}
 				wantDisposition := Ended
 				if want == List {
@@ -60,7 +64,7 @@ func TestCommitReadsWhatEndedThePopup(t *testing.T) {
 				if got := r.Observe("p", Closed()); got != Unheld {
 					t.Fatalf("an observation after the commit was %v", got)
 				}
-				if again := r.Commit("p"); again.Kind() != Refuse {
+				if again := r.Commit("p", false); again.Kind() != Refuse {
 					t.Fatalf("a second commit answered %v", again.Kind())
 				}
 			})
@@ -75,7 +79,7 @@ func TestCommitReadsWhatEndedThePopup(t *testing.T) {
 // nothing keeps it for an announcement.
 func TestAnAdmissionEndsOnce(t *testing.T) {
 	r := New(8)
-	if r.Commit("unknown").Kind() != Refuse {
+	if r.Commit("unknown", false).Kind() != Refuse {
 		t.Fatal("an unknown popup was listed")
 	}
 	r.Announce("a", "o")
@@ -86,14 +90,14 @@ func TestAnAdmissionEndsOnce(t *testing.T) {
 	if d, _ := r.Disposition("a"); d != Ended {
 		t.Fatalf("a discarded popup is %v", d)
 	}
-	if r.Commit("a").Kind() != Refuse {
+	if r.Commit("a", false).Kind() != Refuse {
 		t.Fatal("a discarded popup was listed")
 	}
 	if r.Announce("a", "o") {
 		t.Fatal("an ended popup was announced again")
 	}
 	r.Announce("b", "o")
-	r.Commit("b")
+	r.Commit("b", false)
 	r.Discard("b")
 	if d, _ := r.Disposition("b"); d != Listed {
 		t.Fatalf("a discard after the listing moved the popup to %v", d)
@@ -106,7 +110,7 @@ func TestAnAdmissionEndsOnce(t *testing.T) {
 		t.Fatalf("an observation of a handle never announced was %v", got)
 	}
 	r.Announce("never", "o")
-	if v := r.Commit("never"); v.Kind() != List {
+	if v := r.Commit("never", false); v.Kind() != List {
 		t.Fatalf("a popup observed before its announcement commits as %v; an engine announces first, and nothing is kept", v.Kind())
 	}
 }
@@ -142,7 +146,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 	const limit = 4
 	r := New(limit)
 	r.Announce("parent", "tab")
-	r.Commit("parent")
+	r.Commit("parent", false)
 	r.Announce("child", "parent")
 	churn := func(prefix string) {
 		for i := range 8 * limit {
@@ -151,7 +155,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 			if i%2 == 0 {
 				r.Discard(h)
 			} else {
-				r.Commit(h)
+				r.Commit(h, false)
 				r.Leave(h)
 			}
 		}
@@ -166,7 +170,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 	if got := r.Ancestors("child"); !got.Known() || !slices.Equal(got.Chain(), want) {
 		t.Fatalf("after its parent's tab left and more turnover, the pending child's ancestors are %v, want %v", got, want)
 	}
-	if live, kept := r.retained(); live != 2 || kept != limit {
+	if live, kept := retained(r); live != 2 || kept != limit {
 		t.Fatalf("the registry keeps %d live and %d settled admissions, want 2 and %d", live, kept, limit)
 	}
 	r.Discard("child")
@@ -177,7 +181,7 @@ func TestALiveChainOutlivesTurnover(t *testing.T) {
 	if got := r.Ancestors("child"); got.Known() {
 		t.Fatalf("past the history's limit, the child's ancestors are still %v", got)
 	}
-	if live, kept := r.retained(); live != 0 || kept != limit {
+	if live, kept := retained(r); live != 0 || kept != limit {
 		t.Fatalf("the registry keeps %d live and %d settled admissions, want 0 and %d", live, kept, limit)
 	}
 }
@@ -198,4 +202,12 @@ func TestAPopupOfAnEndedOpenerKeepsItsChain(t *testing.T) {
 	if got := r.Ancestors("late"); !got.Known() || !slices.Equal(got.Chain(), []ids.PageHandle{"parent", "tab"}) {
 		t.Fatalf("the late popup's ancestors are %v", got)
 	}
+}
+
+// retained answers how many admissions r has live and how many its history
+// keeps.
+func retained(r *Registry) (live, kept int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.live), len(r.history.entries)
 }

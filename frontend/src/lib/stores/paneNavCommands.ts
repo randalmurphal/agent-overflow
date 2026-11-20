@@ -37,7 +37,7 @@ export const TERMINAL_MANAGEMENT_COMMAND_IDS: ReadonlySet<string> = new Set([
 
 // Maximize or restore the focused pane (alt+shift+enter). Un-gated like the
 // pane-nav chords, so a terminal pane can be maximized from inside its xterm.
-export const PANE_PROMOTE_COMMAND_ID = 'pane.togglePromoted';
+const PANE_PROMOTE_COMMAND_ID = 'pane.togglePromoted';
 
 // Every command id the terminal key handler lets bubble out of a focused xterm:
 // pane navigation and promotion, terminal.refresh, and tab/pane management. TerminalBody

@@ -2,9 +2,9 @@ package browser
 
 import (
 	"errors"
-	"log"
 
 	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/popupadmit"
 )
 
 // A page the Manager creates or restores can close or crash before it is
@@ -14,80 +14,106 @@ import (
 // The engine's report records the end in its own call (noteCreationEnd):
 // on the page when the page is attached and not listed yet, or, while the
 // one engine page creation in flight (newPage, under startMu) has not
-// returned, in that creation's watch, which its attach reads. The listing's
-// hold reads the page's end (unlistedEnd): a close lists no tab and fails
-// the creation (errClosedBeforeListing), a crash alone lists the crashed tab
-// a listed page's crash leaves (crash.go). A report made after the listing
-// finds the listed page, whose tab the report's own work ends.
-
-// creationEnd is what an engine reported ending a page before its listing:
-// nothing, its close, or its process's end for crash. A close outweighs a
-// crash, as for a popup.
-type creationEnd struct {
-	closed bool
-	crash  string
-}
-
-// with is e and then the report of a close (closed) or of a crash.
-func (e creationEnd) with(closed bool, crash string) creationEnd {
-	switch {
-	case closed:
-		e.closed = true
-	case e.crash == "":
-		e.crash = crashFailure(crash)
-	}
-	return e
-}
-
-// ended reports whether anything ended the page.
-func (e creationEnd) ended() bool { return e.closed || e.crash != "" }
+// returned, in that creation's watch, which its attach reads. A report made
+// after the listing finds the listed page, whose tab the report's own work
+// ends.
+//
+// Every return path of a page's setup, its success and each step's
+// failure, reaches the one decision on it (unlistedOutcomeLocked), in the
+// hold that lists it: a created page's (createReserved), a restored one's
+// (restorePage) and an adopted popup's (commitPopup). A page whose setup
+// failed after its attach stays reserved in its jar until that decision,
+// so the end its engine recorded is read whether its setup succeeded or not.
 
 // errClosedBeforeListing fails a creation or a restore whose page its
 // engine reported closed before the Manager listed it.
 var errClosedBeforeListing = errors.New("browser: the page closed as it opened")
 
+// listingOutcome is the decision on a page created, restored or adopted
+// before it is listed (unlistedOutcomeLocked).
+type listingOutcome int
+
+const (
+	// listLive: list the page as a live tab.
+	listLive listingOutcome = iota + 1
+	// listCrashed: its process ended first: list the crashed tab a listed
+	// page's crash leaves (crash.go), never a live one.
+	listCrashed
+	// refuseClosed: its engine closed it first: list nothing and fail with
+	// errClosedBeforeListing.
+	refuseClosed
+	// refuseFailed: a step of its setup failed with no end to show: list
+	// nothing and fail with the step's error.
+	refuseFailed
+	// refuseGone: its tab is no longer the creation's (closed, its
+	// lifetime closed, the browser closing), or it crashed while no page of
+	// its lifetime may become a record (recordsAdmittedLocked): list
+	// nothing.
+	refuseGone
+	// retryStale: set up in a jar its thread switched away from: create it
+	// again in the thread's jar.
+	retryStale
+)
+
+// unlistedOutcomeLocked is the one decision on p, created, restored or
+// adopted and not listed yet, in the hold that lists it. current is
+// whether its tab is still the creation's, and verdict its end's
+// (popupadmit.Ending.Verdict with its setup's failure: the page's own
+// unlistedEnd, or a popup's admission's Commit), read in this hold. A
+// crash lists the crashed tab only while a page of its lifetime may
+// become a record, and a page set up is listed live only in its thread's
+// current jar. The caller holds m.mu and acts on the outcome in the same
+// hold.
+func (m *Manager) unlistedOutcomeLocked(p *managedPage, current bool, verdict popupadmit.Verdict) listingOutcome {
+	if !current {
+		return refuseGone
+	}
+	switch verdict.Kind() {
+	case popupadmit.ListCrashed:
+		if !m.recordsAdmittedLocked(p.owner) {
+			return refuseGone
+		}
+		return listCrashed
+	case popupadmit.Refuse:
+		if verdict.Closed() {
+			return refuseClosed
+		}
+		return refuseFailed
+	case popupadmit.List:
+	}
+	if !m.jarCurrentLocked(p) {
+		return retryStale
+	}
+	return listLive
+}
+
+// recordsAdmittedLocked reports whether a page of tb may become a record
+// (suspended or crashed): not while the Manager closes, whose Close saves
+// the pages it has, or forgets every page (forgettingLocked), whose sweep
+// of the records has run or is about to, and not for a lifetime its close
+// detached, whose records that close dropped. The caller holds m.mu.
+func (m *Manager) recordsAdmittedLocked(tb *threadBrowser) bool {
+	return !m.closed && !m.forgettingLocked() && !tb.detached.Load()
+}
+
 // listCrashedLocked lists p, not listed yet and its process ended, as the
 // crashed tab a listed page's crash leaves: a suspended record carrying
-// the failure. The caller holds m.mu and has taken p out of its scope's
-// creating pages.
+// failure. The caller holds m.mu and has taken p out of the creating
+// pages it listed, and closes p's engine page after the hold.
 func (m *Manager) listCrashedLocked(p *managedPage, failure string) {
 	rec := recordOf(p, p.cachedInfo())
 	rec.failure = failure
 	m.suspended[p.id] = rec
 }
 
-// endedBeforeListing finishes a creation whose page ended before its
-// listing (createReserved): the engine page is closed, the profile left
-// empty disposed, and the tab, crashed or gone, published. A user's tab
-// that crashed answers as one shown with its failure.
-func (m *Manager) endedBeforeListing(p *managedPage, ended creationEnd, released *jarScope, user bool) error {
-	p.driver.Close()
-	m.mu.Lock()
-	// Never listed live, so a popup its engine page opened is not adopted
-	// (awaitOpener).
-	m.unlistedLocked().put(p.driver.Handle(), struct{}{})
-	m.listingChangedLocked()
-	m.mu.Unlock()
-	m.disposeReleased(endedDownloads{}, released, p.owner.id, p.id)
-	if ended.closed {
-		m.repairActivePage(p.owner)
-	} else {
-		m.ensureActivePage(p.owner, p.id)
+// releaseUnlisted closes the engine page of p, set up in scope and not
+// listed live, and ends its reservation there (abandonPage); nothing for
+// a page whose setup ended before its attach (nil scope).
+func (m *Manager) releaseUnlisted(scope *jarScope, p *managedPage) error {
+	if scope == nil {
+		return nil
 	}
-	m.emitThreadState(p.owner.id)
-	m.syncPanePresentation(p.owner.id)
-	if ended.closed {
-		return errClosedBeforeListing
-	}
-	if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {
-		// The tab is in memory; only a restart before the next save loses it.
-		log.Printf("browser: page %s crashed as it opened: save the thread's pages: %v", p.id, err)
-	}
-	crashed := errors.New("browser: " + ended.crash)
-	if user {
-		return &shownOnTab{err: crashed}
-	}
-	return crashed
+	return m.abandonPage(scope, p)
 }
 
 // creationWatch is the one engine page creation in flight: the ends its
@@ -96,7 +122,7 @@ func (m *Manager) endedBeforeListing(p *managedPage, ended creationEnd, released
 // call to the attach, and holds at most an end per page the engine has,
 // since no other page is created while it lives.
 type creationWatch struct {
-	ends map[ids.PageHandle]creationEnd
+	ends map[ids.PageHandle]popupadmit.Ending
 }
 
 // noteCreationEnd records an engine's report of the close (closed) or the
@@ -104,6 +130,10 @@ type creationWatch struct {
 // listed page, a page closing, a popup (whose admission keeps its ends) and
 // a page the Manager will not list are left to the report's work.
 func (m *Manager) noteCreationEnd(handle ids.PageHandle, closed bool, crash string) {
+	end := popupadmit.Crashed(crash)
+	if closed {
+		end = popupadmit.Closed()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.pageByHandleLocked(handle) != nil || m.closingPageByHandleLocked(handle) {
@@ -111,7 +141,7 @@ func (m *Manager) noteCreationEnd(handle ids.PageHandle, closed bool, crash stri
 	}
 	if p := m.creatingPageByHandleLocked(handle); p != nil {
 		if !m.adoptingLocked(p) {
-			p.unlistedEnd = p.unlistedEnd.with(closed, crash)
+			p.unlistedEnd = p.unlistedEnd.With(end)
 		}
 		return
 	}
@@ -126,9 +156,9 @@ func (m *Manager) noteCreationEnd(handle ids.PageHandle, closed bool, crash stri
 		return
 	}
 	if watch.ends == nil {
-		watch.ends = make(map[ids.PageHandle]creationEnd)
+		watch.ends = make(map[ids.PageHandle]popupadmit.Ending)
 	}
-	watch.ends[handle] = watch.ends[handle].with(closed, crash)
+	watch.ends[handle] = watch.ends[handle].With(end)
 }
 
 // closingPageByHandleLocked reports whether a page closing in any scope

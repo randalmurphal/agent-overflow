@@ -192,8 +192,7 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
 
   // Layout-driven POSITION changes: a divider drag on another pane slides
   // this pane sideways without resizing it, which no ResizeObserver, window
-  // resize or scroll event reports (live incident 2026-08-31: the native
-  // view stayed planted until the next scroll). Pane widths and the sidebar
+  // resize or scroll event reports. Pane widths and the sidebar
   // are the app's own movers, so reading them here re-measures on every
   // frame of a drag. Over-firing is fine: the store skips an unchanged rect.
   $effect(() => {

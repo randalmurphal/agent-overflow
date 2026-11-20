@@ -63,8 +63,11 @@ beforeEach(async () => {
   const lines = Array.from({ length: 300 }, (_, i) => (i === NEEDLE_ROW ? `row ${i} ${'.'.repeat(70)} needle` : i === LEFT_ROW ? `row ${i} left` : `row ${i}`));
   setBindingMock('GetTerminalReplay', async () => ({ data: base64(lines.join('\r\n')), fromSequence: 0, throughSequence: 1 }));
   const handle = getThreadTerminalState(terminalStateKeyForPane('thread-overlay', PANE));
-  handle.addTab({ terminalID: TERMINAL, threadID: 'thread-overlay', shell: '/bin/bash', cwd: '/tmp', rows: 24, cols: 80, pid: 1, startedAt: 0, running: true, exitCode: 0, exitReason: '' });
+  const summary = { terminalID: TERMINAL, threadID: 'thread-overlay', shell: '/bin/bash', cwd: '/tmp', rows: 24, cols: 80, pid: 1, startedAt: 0, running: true, exitCode: 0, exitReason: '' };
+  handle.addTab(summary);
   handle.setActive(TERMINAL);
+  // The thread's computer lists the same shell when the surface mounts.
+  setBindingMock('ListTerminals', async () => [summary]);
   const attach = handle.attachXterm.bind(handle);
   handle.attachXterm = (terminalID, xterm) => {
     term = xterm as Terminal;
@@ -74,7 +77,7 @@ beforeEach(async () => {
   pane.dataset.paneId = PANE;
   pane.style.cssText = 'display:flex;flex-direction:column;width:640px;height:300px';
   document.body.appendChild(pane);
-  component = mount(TerminalSurface, { target: pane, props: { surface: surface(), manual: true } });
+  component = mount(TerminalSurface, { target: pane, props: { surface: surface() } });
   await vi.waitFor(() => expect(getPaneFindProvider(KEY)).not.toBeNull(), { timeout: 3000 });
   await frames();
 });

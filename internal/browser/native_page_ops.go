@@ -21,7 +21,7 @@ import (
 // body. A page type embeds nativePageOps over its own nativeView.
 
 const (
-	// nativePollInterval is how often a load or visibility wait re-samples.
+	// nativePollInterval is how often a load wait re-samples.
 	// Each sample is one UI-thread dispatch, so this is a real cost and not
 	// a free spin.
 	nativePollInterval = 50 * time.Millisecond
@@ -357,27 +357,6 @@ func (o *nativePageOps) Pointer(ctx context.Context, opts PointerOptions) error 
 	}
 	_, err = o.evalBody(ctx, script)
 	return err
-}
-
-// WaitVisible polls, because WebKit has no wait primitive. The Manager owns
-// the deadline; this only samples until it is reached.
-func (o *nativePageOps) WaitVisible(ctx context.Context, selector string) error {
-	opCtx, cancel := o.bind(ctx)
-	defer cancel()
-	script := webkitVisibleScript(selector)
-	ticker := time.NewTicker(nativePollInterval)
-	defer ticker.Stop()
-	for {
-		var visible bool
-		if err := o.evalInto(opCtx, script, &visible); err == nil && visible {
-			return nil
-		}
-		select {
-		case <-opCtx.Done():
-			return opCtx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 func (o *nativePageOps) AssetInventory(ctx context.Context) (pageAssets, error) {

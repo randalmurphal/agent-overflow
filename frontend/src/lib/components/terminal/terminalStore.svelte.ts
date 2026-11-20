@@ -49,76 +49,36 @@ export const PENDING_OUTPUT_LIMITS = {
 };
 
 /**
- * Append `chunk` to a pending-output queue, dropping oldest chunks when the
- * total byte count would exceed the cap. If the single incoming chunk is
- * larger than the cap we slice its tail and discard the queue. Exported as a
- * pure helper so the logic is unit-testable without a Svelte state wrapper.
+ * Appends `chunk`, numbered `sequence`, to a pending-output queue and its
+ * parallel sequence list, evicting the oldest whole chunks while the total
+ * would exceed the cap. A chunk that alone reaches the cap replaces the
+ * queue with its own tail.
  */
-function trimPendingOutputEntries(
-  existing: Uint8Array[],
-  chunk: Uint8Array,
-  existingSequences: number[] | null = null,
-  sequence = 0,
-): { output: Uint8Array[]; sequences: number[] | null } {
-  if (chunk.length === 0) {
-    return { output: existing, sequences: existingSequences };
-  }
-  if (chunk.length >= PENDING_OUTPUT_BYTE_CAP) {
-    // A single jumbo chunk exceeds the cap — keep just the tail of it.
-    return {
-      output: [chunk.slice(chunk.length - PENDING_OUTPUT_BYTE_CAP)],
-      sequences: existingSequences ? [sequence] : null,
-    };
-  }
-  let totalBytes = chunk.length;
-  for (const s of existing) totalBytes += s.length;
-  if (totalBytes <= PENDING_OUTPUT_BYTE_CAP) {
-    return {
-      output: [...existing, chunk],
-      sequences: existingSequences ? [...existingSequences, sequence] : null,
-    };
-  }
-  // Evict oldest whole chunks first, then slice into the next chunk if we
-  // still overflow. The resulting queue is always <= the cap.
-  const next = existing.slice();
-  const nextSequences = existingSequences?.slice() ?? null;
-  let size = totalBytes;
-  while (next.length > 0 && size > PENDING_OUTPUT_BYTE_CAP) {
-    const first = next[0]!;
-    size -= first.length;
-    next.shift();
-    nextSequences?.shift();
-  }
-  if (size > PENDING_OUTPUT_BYTE_CAP && next.length > 0) {
-    // Shouldn't happen with the loop above but keeps the invariant obvious.
-    next.length = 0;
-    if (nextSequences) nextSequences.length = 0;
-    size = 0;
-  }
-  next.push(chunk);
-  nextSequences?.push(sequence);
-  return { output: next, sequences: nextSequences };
-}
-
-export function trimPendingOutput(existing: Uint8Array[], chunk: Uint8Array): Uint8Array[] {
-  return trimPendingOutputEntries(existing, chunk).output;
-}
-
-function trimPendingOutputWithSequences(
+function appendPendingOutput(
   existing: Uint8Array[],
   existingSequences: number[],
   chunk: Uint8Array,
   sequence: number,
 ): { output: Uint8Array[]; sequences: number[] } {
-  const trimmed = trimPendingOutputEntries(existing, chunk, existingSequences, sequence);
-  return { output: trimmed.output, sequences: trimmed.sequences ?? [] };
+  if (chunk.length === 0) return { output: existing, sequences: existingSequences };
+  if (chunk.length >= PENDING_OUTPUT_BYTE_CAP) {
+    return { output: [chunk.slice(chunk.length - PENDING_OUTPUT_BYTE_CAP)], sequences: [sequence] };
+  }
+  const output = [...existing, chunk];
+  const sequences = [...existingSequences, sequence];
+  let size = 0;
+  for (const s of output) size += s.length;
+  while (size > PENDING_OUTPUT_BYTE_CAP) {
+    size -= output.shift()!.length;
+    sequences.shift();
+  }
+  return { output, sequences };
 }
 
 /**
- * Creates a reactive state container for a thread's terminal surface. The
- * mounted drawer is currently the only renderer, but the state is deliberately
- * independent of that renderer so a future dock/overlay can attach to the same
- * thread-owned terminal model.
+ * Creates a reactive state container for a thread's terminal surface. It is
+ * independent of the surface that renders it: the thread's drawer and the
+ * terminal pane (TerminalView) both mount TerminalSurface over it.
  */
 export function createThreadTerminalState(): ThreadTerminalStateHandle {
   let tabs: TerminalTabState[] = $state([]);
@@ -219,7 +179,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       if (sequence > 0 && sequence <= watermark) return;
       tabs = tabs.map((t) => {
         if (t.terminalID !== terminalID) return t;
-        const next = trimPendingOutputWithSequences(
+        const next = appendPendingOutput(
           t.pendingOutput,
           pendingSequencesByTerminal.get(terminalID) ?? [],
           data,
