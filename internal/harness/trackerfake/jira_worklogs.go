@@ -44,14 +44,14 @@ func spentText(secs int64) string {
 	return strings.Join(parts, " ")
 }
 
-// worklogPageJSON is the worklog field's value, or a worklog list page.
-func (s *jiraSite) worklogPageJSON(is *JiraIssue, ws []JiraWorklog, start int) map[string]any {
-	list := []any{}
+// worklogPageJSON is the page of ws from start, at most size long: a
+// worklog list page, or the worklog field's value.
+func (s *jiraSite) worklogPageJSON(is *JiraIssue, ws []JiraWorklog, start, size int) map[string]any {
+	list := make([]any, len(ws))
 	for i := range ws {
-		list = append(list, s.worklogJSON(is, &ws[i]))
+		list[i] = s.worklogJSON(is, &ws[i])
 	}
-	page := offsetPage(list, start, max(len(list), 1))
-	return map[string]any{"startAt": start, "maxResults": len(list), "total": len(list), "worklogs": page["values"]}
+	return listPage("worklogs", list, start, size)
 }
 
 func listWorklogs(c *jiraCall) answer {
@@ -75,10 +75,7 @@ func listWorklogs(c *jiraCall) answer {
 			ws = append(ws, w)
 		}
 	}
-	end := min(start+size, len(ws))
-	out := c.s.worklogPageJSON(is, ws[min(start, len(ws)):end], start)
-	out["maxResults"], out["total"] = size, len(ws)
-	return jsonAnswer(http.StatusOK, out)
+	return jsonAnswer(http.StatusOK, c.s.worklogPageJSON(is, ws, start, size))
 }
 
 // foundWorklog is the worklog {id} names on the issue {issue} names; one

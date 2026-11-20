@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -15,27 +14,25 @@ import (
 	"agent-overflow/internal/tracker/linear/linearschema"
 )
 
-// gqlObject is an object the executor reads fields of. value is a
-// field's value: nil, a string, float64, bool or time.Time scalar, a
-// []string, an object, or a list of objects for a list or connection;
-// ok is false for a field the fake does not implement.
+// gqlObject is an object the executor reads fields of, through its type's
+// field table (linear_types.go); ok is false for a field the fake does
+// not implement.
 type gqlObject interface {
 	typeName() string
 	value(name string) (any, bool)
 }
 
-// argFielder is an object some of whose fields take arguments of their
-// own (the query and mutation roots); handled is false for any other
-// field. It consumes the arguments it reads from args.
+// argFielder is a root whose rootFields include fields with arguments of
+// their own; handled is false for any other field.
 type argFielder interface {
-	argField(r *gqlRun, name string, args map[string]any) (v any, err *gqlErr, handled bool)
+	argField(r *gqlRun, f *ast.Field, args map[string]any) (v any, err *gqlErr, handled bool)
 }
 
 // gqlRun is one request's execution.
 type gqlRun struct {
 	e         *Engine
 	w         *linearWorkspace
-	doc       *ast.QueryDocument
+	s         *ast.Schema
 	vars      map[string]any
 	errors    []gqlErr
 	unhandled string
@@ -46,8 +43,9 @@ type gqlRun struct {
 // linearMaxPage is the largest page (measured).
 const linearMaxPage = 250
 
-// execute runs a request already checked against the schema. Callers
-// hold mu.
+// execute runs a request already checked against the schema: the
+// pre-pass (checkOperation) refuses anything the executor does not
+// implement before anything runs. Callers hold mu.
 func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 	s, err := linearschema.Schema()
 	if err != nil {
@@ -71,7 +69,10 @@ func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 	if verr != nil {
 		return unhandledf("variables: %v", verr)
 	}
-	r := &gqlRun{e: e, w: w, doc: doc, vars: vars, now: e.now()}
+	if problem := checkOperation(s, op, vars); problem != "" {
+		return unhandledf("%s", problem)
+	}
+	r := &gqlRun{e: e, w: w, s: s, vars: vars, now: e.now()}
 	w.clock = r.now
 	var root gqlObject = queryRoot{w}
 	if op.Operation == ast.Mutation {
@@ -136,22 +137,37 @@ func (r *gqlRun) selectFields(obj gqlObject, set ast.SelectionSet, path []any) m
 			key := responseKey(s)
 			out[key] = r.field(obj, s, append(slices.Clone(path), key))
 		case *ast.FragmentSpread:
-			if s.Definition.TypeCondition == obj.typeName() {
-				for k, v := range r.selectFields(obj, s.Definition.SelectionSet, path) {
-					out[k] = v
-				}
-			} else {
-				r.fail("fragment %s on %s spread on %s", s.Name, s.Definition.TypeCondition, obj.typeName())
-			}
+			r.spread(obj, s.Definition.TypeCondition, s.Definition.SelectionSet, path, out)
 		case *ast.InlineFragment:
-			if s.TypeCondition == "" || s.TypeCondition == obj.typeName() {
-				for k, v := range r.selectFields(obj, s.SelectionSet, path) {
-					out[k] = v
-				}
-			}
+			r.spread(obj, s.TypeCondition, s.SelectionSet, path, out)
 		}
 	}
 	return out
+}
+
+// spread answers a fragment's selection on obj into out. The pre-pass
+// refuses a fragment on a type other than its parent's.
+func (r *gqlRun) spread(obj gqlObject, cond string, set ast.SelectionSet, path []any, out map[string]any) {
+	if cond != "" && cond != obj.typeName() {
+		r.fail("a fragment on %s inside %s is not implemented", cond, obj.typeName())
+		return
+	}
+	for k, v := range r.selectFields(obj, set, path) {
+		out[k] = v
+	}
+}
+
+// fieldArgs are f's arguments with vars applied, those null left out:
+// a map of the field's own, whose values may be shared with vars and
+// are never changed.
+func fieldArgs(f *ast.Field, vars map[string]any) map[string]any {
+	args := f.ArgumentMap(vars)
+	for k, v := range args {
+		if v == nil {
+			delete(args, k)
+		}
+	}
+	return args
 }
 
 // field answers one field of obj.
@@ -159,17 +175,12 @@ func (r *gqlRun) field(obj gqlObject, f *ast.Field, path []any) any {
 	if f.Name == "__typename" {
 		return obj.typeName()
 	}
-	args := f.ArgumentMap(r.vars)
-	for k, v := range args {
-		if v == nil {
-			delete(args, k)
-		}
-	}
+	args := fieldArgs(f, r.vars)
 	var v any
 	handled := false
 	if af, ok := obj.(argFielder); ok {
 		var gerr *gqlErr
-		if v, gerr, handled = af.argField(r, f.Name, args); gerr != nil {
+		if v, gerr, handled = af.argField(r, f, args); gerr != nil {
 			gerr.path = path
 			r.errors = append(r.errors, *gerr)
 			return nil
@@ -182,13 +193,13 @@ func (r *gqlRun) field(obj gqlObject, f *ast.Field, path []any) any {
 			return nil
 		}
 	}
-	if typ := f.Definition.Type.Name(); strings.HasSuffix(typ, "Connection") || strings.HasSuffix(typ, "SearchPayload") {
+	if typ := f.Definition.Type.Name(); isConnection(typ) {
 		list, ok := v.([]gqlObject)
 		if !ok {
 			r.fail("field %s.%s is not a list the fake pages", obj.typeName(), f.Name)
 			return nil
 		}
-		conn, gerr := r.connection(obj, f.Name, list, args)
+		conn, gerr := r.connection(typ, obj, f.Name, list, args)
 		if gerr != nil {
 			gerr.path = path
 			r.errors = append(r.errors, *gerr)
@@ -229,7 +240,7 @@ func (r *gqlRun) render(v any, f *ast.Field, path []any) any {
 // linearTime is how Linear writes a DateTime.
 func linearTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// take consumes an argument.
+// take consumes an argument from a field's own argument map.
 func take(args map[string]any, name string) (any, bool) {
 	v, ok := args[name]
 	delete(args, name)

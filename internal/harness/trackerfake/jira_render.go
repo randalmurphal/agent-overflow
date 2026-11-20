@@ -132,7 +132,7 @@ func (s *jiraSite) render(is *JiraIssue, id, viewer string) any {
 	case "comment":
 		return s.commentPageJSON(is, 0, len(is.Comments))
 	case "worklog":
-		return s.worklogPageJSON(is, is.Worklogs, 0)
+		return s.worklogPageJSON(is, is.Worklogs, 0, len(is.Worklogs))
 	case "watches":
 		return map[string]any{"self": s.self("issue/" + is.Key + "/watchers"), "watchCount": len(is.Watchers), "isWatching": slices.Contains(is.Watchers, viewer)}
 	}

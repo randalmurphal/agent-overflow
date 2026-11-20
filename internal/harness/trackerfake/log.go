@@ -3,18 +3,23 @@ package trackerfake
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // maxLogged bounds the request log: the oldest entries go first and
 // RequestLog.Dropped counts them.
 const maxLogged = 4096
 
-// maxLoggedBody bounds the JSON body an entry records.
-const maxLoggedBody = 64 << 10
+// maxLoggedMember bounds each member an entry keeps, in bytes: a text
+// (the path, operation and detail, each query key and value, each file
+// name) is cut to it, and a JSON value (the body, the variables) over it
+// is left out. Request.Omitted names each.
+const maxLoggedMember = 64 << 10
 
 // redacted replaces a credential wherever an entry would repeat it.
 const redacted = "<redacted>"
@@ -38,13 +43,17 @@ type Request struct {
 	// when Unhandled.
 	Route string     `json:"route,omitempty"`
 	Query url.Values `json:"query,omitempty"`
-	// Operation and Variables are a GraphQL request's, as sent.
+	// Operation and Variables are a GraphQL request's.
 	Operation string          `json:"operation,omitempty"`
 	Variables json.RawMessage `json:"variables,omitempty"`
-	// Body is a JSON request body, at most 64 KiB.
+	// Body is a JSON request body. Body and Variables are re-encoded:
+	// keys sorted, no space.
 	Body json.RawMessage `json:"body,omitempty"`
 	// Files are the file names of a multipart upload.
 	Files []string `json:"files,omitempty"`
+	// Omitted names each member cut or left out for being over 64 KiB,
+	// and its size.
+	Omitted []string `json:"omitted,omitempty"`
 	// Status is the answer's; zero for a connection closed with no answer
 	// and for a held request not yet answered.
 	Status int `json:"status"`
@@ -127,6 +136,7 @@ func (r Request) clone() Request {
 	r.Variables = bytes.Clone(r.Variables)
 	r.Body = bytes.Clone(r.Body)
 	r.Files = slices.Clone(r.Files)
+	r.Omitted = slices.Clone(r.Omitted)
 	return r
 }
 
@@ -141,27 +151,109 @@ func cloneValues(v url.Values) url.Values {
 	return out
 }
 
-// scrubbed is r with every secret replaced wherever its text repeats one.
-// A secret that does not appear leaves the text as it is.
-func (r Request) scrubbed(secrets []string) Request {
-	r = r.clone()
-	scrub := func(s string) string { return scrubText(s, secrets) }
-	r.Path, r.Detail, r.Operation = scrub(r.Path), scrub(r.Detail), scrub(r.Operation)
-	for k, vs := range r.Query {
-		for i := range vs {
-			vs[i] = scrub(vs[i])
+// logEntry is what the log keeps of x's entry, and the only way an entry
+// is made: every credential the engine knows or x presented is replaced
+// in every text, in every decoded JSON string, number and key, and every
+// member is bounded by maxLoggedMember. Callers hold mu.
+func (e *Engine) logEntry(x *exchange) Request {
+	return entryOf(x.entry, e.secrets(x))
+}
+
+func entryOf(in Request, secrets []string) Request {
+	r := in.clone()
+	b := &entryBuilder{secrets: secrets}
+	r.Path = b.text("path", r.Path)
+	r.Operation = b.text("operation", r.Operation)
+	r.Detail = b.text("detail", r.Detail)
+	if r.Query != nil {
+		q := url.Values{}
+		for k, vs := range r.Query {
+			key := b.text("query key", k)
+			for _, v := range vs {
+				q[key] = append(q[key], b.text("query "+key, v))
+			}
 		}
-		if sk := scrub(k); sk != k {
-			delete(r.Query, k)
-			r.Query[sk] = vs
-		}
+		r.Query = q
 	}
 	for i := range r.Files {
-		r.Files[i] = scrub(r.Files[i])
+		r.Files[i] = b.text("file name", r.Files[i])
 	}
-	r.Body = scrubJSON(r.Body, scrub)
-	r.Variables = scrubJSON(r.Variables, scrub)
+	r.Body = b.json("body", r.Body)
+	r.Variables = b.json("variables", r.Variables)
+	r.Omitted = b.omitted
 	return r
+}
+
+type entryBuilder struct {
+	secrets []string
+	omitted []string
+}
+
+// text is s scrubbed and cut to the bound.
+func (b *entryBuilder) text(what, s string) string {
+	s = scrubText(s, b.secrets)
+	if len(s) <= maxLoggedMember {
+		return s
+	}
+	b.omitted = append(b.omitted, fmt.Sprintf("%s: %d bytes cut to %d", what, len(s), maxLoggedMember))
+	cut := maxLoggedMember
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// json is raw decoded, scrubbed and encoded again, or nothing when that
+// is over the bound.
+func (b *entryBuilder) json(what string, raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		b.omitted = append(b.omitted, fmt.Sprintf("%s: not JSON: %v", what, err))
+		return nil
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(b.scrubValue(v)); err != nil {
+		b.omitted = append(b.omitted, fmt.Sprintf("%s: encode: %v", what, err))
+		return nil
+	}
+	encoded := bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+	if len(encoded) > maxLoggedMember {
+		b.omitted = append(b.omitted, fmt.Sprintf("%s: %d bytes left out, over %d", what, len(encoded), maxLoggedMember))
+		return nil
+	}
+	return encoded
+}
+
+func (b *entryBuilder) scrubValue(v any) any {
+	switch v := v.(type) {
+	case string:
+		return scrubText(v, b.secrets)
+	case json.Number:
+		if s := scrubText(string(v), b.secrets); s != string(v) {
+			return s
+		}
+		return v
+	case []any:
+		out := make([]any, len(v))
+		for i, x := range v {
+			out[i] = b.scrubValue(x)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, x := range v {
+			out[scrubText(k, b.secrets)] = b.scrubValue(x)
+		}
+		return out
+	}
+	return v
 }
 
 // scrubText is s with every secret replaced by the redacted marker.
@@ -172,20 +264,4 @@ func scrubText(s string, secrets []string) string {
 		}
 	}
 	return s
-}
-
-// scrubJSON scrubs a JSON value's text; a value whose scrubbed text is no
-// longer JSON is replaced by the redacted marker as a string.
-func scrubJSON(raw json.RawMessage, scrub func(string) string) json.RawMessage {
-	if len(raw) == 0 {
-		return raw
-	}
-	out := scrub(string(raw))
-	if out == string(raw) {
-		return raw
-	}
-	if !json.Valid([]byte(out)) {
-		return json.RawMessage(`"` + redacted + `"`)
-	}
-	return json.RawMessage(out)
 }

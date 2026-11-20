@@ -363,8 +363,7 @@ func createMetaTypes(c *jiraCall) answer {
 		tj := c.s.issueTypeJSON(p, t.ID).(map[string]any)
 		types = append(types, tj)
 	}
-	page := offsetPage(types, start, size)
-	return jsonAnswer(http.StatusOK, map[string]any{"issueTypes": page["values"], "startAt": start, "maxResults": size, "total": len(types)})
+	return jsonAnswer(http.StatusOK, listPage("issueTypes", types, start, size))
 }
 
 func createMetaFields(c *jiraCall) answer {
@@ -384,8 +383,7 @@ func createMetaFields(c *jiraCall) answer {
 	for _, sf := range t.Screen {
 		fields = append(fields, c.s.fieldMeta(p, nil, sf, true))
 	}
-	page := offsetPage(fields, start, size)
-	return jsonAnswer(http.StatusOK, map[string]any{"fields": page["values"], "startAt": start, "maxResults": size, "total": len(fields)})
+	return jsonAnswer(http.StatusOK, listPage("fields", fields, start, size))
 }
 
 // userWindow is the users keep accepts in the window startAt and
@@ -405,7 +403,8 @@ func (c *jiraCall) userWindow(filterFirst bool, keep func(u *JiraUser) bool) ans
 		}
 	}
 	out := []any{}
-	for _, u := range users[min(start, len(users)):min(start+size, len(users), 1000)] {
+	page, _ := offsetWindow(users[:min(len(users), 1000)], start, size)
+	for _, u := range page {
 		if filterFirst || keep(u) {
 			out = append(out, c.s.userJSON(u.AccountID))
 		}

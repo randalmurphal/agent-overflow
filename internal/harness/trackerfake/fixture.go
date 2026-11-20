@@ -50,11 +50,17 @@ func (e *Engine) seed(f Fixture) error {
 	if err := e.checkTokens(sites, spaces); err != nil {
 		return err
 	}
+	replaced := false
 	for _, s := range sites {
+		replaced = replaced || e.jira[s.Site] != nil
 		e.jira[s.Site] = s
 	}
 	for _, w := range spaces {
+		replaced = replaced || e.linear[w.key()] != nil
 		e.linear[w.key()] = w
+	}
+	if replaced {
+		e.gen++
 	}
 	return nil
 }

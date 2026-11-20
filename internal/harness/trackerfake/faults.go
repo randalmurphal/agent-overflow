@@ -84,13 +84,12 @@ func newFaultState() faultState {
 	return faultState{offline: map[Origin]bool{}}
 }
 
-// reset clears every control and ends every held request with its
-// connection closed.
+// reset clears every control and lets every held request go; the reset
+// or close that called it is what drops them (resume).
 func (f *faultState) reset() {
 	clear(f.offline)
 	f.armed = nil
 	for _, h := range f.holds {
-		h.drop = true
 		close(h.done)
 	}
 	f.holds = nil

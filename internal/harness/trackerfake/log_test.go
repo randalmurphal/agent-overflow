@@ -1,7 +1,6 @@
 package trackerfake
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -52,21 +51,6 @@ func TestRequestsSinceAndCopies(t *testing.T) {
 	later.Requests[0].Body[0] = 'X'
 	if w.e.Requests(0).Requests[1].Body[0] == 'X' {
 		t.Fatal("a returned entry shares the log's memory")
-	}
-}
-
-func TestScrubbedKeepsJSON(t *testing.T) {
-	r := Request{Body: json.RawMessage(`{"a":"secret-value-1","secret-value-1":1}`), Variables: json.RawMessage(`"x"`)}
-	got := r.scrubbed([]string{"secret-value-1", ""})
-	if strings.Contains(string(got.Body), "secret-value-1") || !json.Valid(got.Body) {
-		t.Fatalf("body %s", got.Body)
-	}
-	if string(got.Variables) != `"x"` {
-		t.Fatalf("untouched variables became %s", got.Variables)
-	}
-	broken := Request{Body: json.RawMessage(`{"a":"x"}`)}.scrubbed([]string{`"x"`})
-	if string(broken.Body) != `"`+redacted+`"` {
-		t.Fatalf("a body no longer JSON became %s", broken.Body)
 	}
 }
 

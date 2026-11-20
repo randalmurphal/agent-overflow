@@ -38,11 +38,9 @@ func (s *jiraSite) commentPageJSON(is *JiraIssue, start, size int) map[string]an
 	for i := range is.Comments {
 		list[i] = s.commentJSON(is, &is.Comments[i])
 	}
-	page := offsetPage(list, start, size)
-	return map[string]any{
-		"self": s.self("issue/" + is.ID + "/comment"), "startAt": start, "maxResults": size,
-		"total": len(list), "comments": page["values"],
-	}
+	page := listPage("comments", list, start, size)
+	page["self"] = s.self("issue/" + is.ID + "/comment")
+	return page
 }
 
 // addComment stores a comment by author and returns it; internal holds

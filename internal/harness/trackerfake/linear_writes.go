@@ -12,30 +12,46 @@ import (
 // unverified).
 const linearFold = 3 * time.Minute
 
-// linearInput reads an input object's members, each consumed; done
-// fails the request on any member left.
+// linearInputs are the members of each input object type the mutations
+// read. The pre-pass refuses any other member, and done fails a request
+// whose resolver left a listed member unread.
+var linearInputs = map[string][]string{
+	"IssueCreateInput":         issueMemberNames(false),
+	"IssueUpdateInput":         issueMemberNames(true),
+	"CommentCreateInput":       {"issueId", "body", "parentId"},
+	"CommentUpdateInput":       {"body"},
+	"IssueRelationCreateInput": {"issueId", "relatedIssueId", "type"},
+	"AttachmentCreateInput":    {"issueId", "url", "title", "subtitle"},
+}
+
+// linearInput reads an input object's members. Reading never changes the
+// value, which a variable may share with another field.
 type linearInput struct {
 	r    *gqlRun
 	what string
 	m    map[string]any
+	read map[string]bool
 }
 
 func (r *gqlRun) input(args map[string]any, what string) *linearInput {
 	raw, _ := take(args, "input")
 	m, _ := raw.(map[string]any)
-	return &linearInput{r: r, what: what, m: m}
+	return &linearInput{r: r, what: what, m: m, read: map[string]bool{}}
 }
 
 // get is a member: present, and its value (nil for an explicit null).
 func (in *linearInput) get(key string) (any, bool) {
 	v, ok := in.m[key]
-	delete(in.m, key)
+	in.read[key] = true
 	return v, ok
 }
 
+// done fails the request on a member the resolver did not read.
 func (in *linearInput) done() {
 	for k := range in.m {
-		in.r.fail("input member %s.%s is not implemented", in.what, k)
+		if !in.read[k] {
+			in.r.fail("input member %s.%s is not implemented", in.what, k)
+		}
 	}
 }
 
@@ -45,120 +61,179 @@ func inputErr(format string, args ...any) *gqlErr {
 
 func idArg(args map[string]any) string {
 	v, _ := take(args, "id")
-	s, _ := v.(string)
-	return s
-}
-
-// setIssue applies the members of an issue create or update to is,
-// returning Linear's refusal of a reference the workspace lacks.
-func (r *gqlRun) setIssue(in *linearInput, is *LinearIssue) *gqlErr {
-	w := r.w
-	if v, ok := in.get("teamId"); ok {
-		t := w.team(str(v))
-		if t == nil {
-			return notFound("Team")
-		}
-		if t.ID != is.Team {
-			is.Team, is.Number, is.State = t.ID, w.nextNumber(t.ID), t.DefaultState
-		}
-	}
-	for key, dst := range map[string]*string{"title": &is.Title, "description": &is.Description, "dueDate": &is.DueDate} {
-		if v, ok := in.get(key); ok {
-			*dst = str(v)
-		}
-	}
-	refs := []struct {
-		key, typ string
-		dst      *string
-		exists   func(string) bool
-	}{
-		{"stateId", "WorkflowState", &is.State, func(id string) bool { s := w.state(id); return s != nil && s.Team == is.Team }},
-		{"assigneeId", "User", &is.Assignee, func(id string) bool { return w.user(id) != nil }},
-		{"cycleId", "Cycle", &is.Cycle, func(id string) bool { c := w.cycle(id); return c != nil && c.Team == is.Team }},
-		{"projectId", "Project", &is.Project, func(id string) bool { return w.project(id) != nil }},
-		{"parentId", "Issue", &is.Parent, func(id string) bool { p := w.issue(id); return p != nil && p.ID != is.ID }},
-	}
-	for _, ref := range refs {
-		v, ok := in.get(ref.key)
-		if !ok {
-			continue
-		}
-		id := str(v)
-		if id != "" && !ref.exists(id) {
-			return notFound(ref.typ)
-		}
-		if ref.key == "parentId" && id != "" {
-			id = w.issue(id).ID
-		}
-		*ref.dst = id
-	}
-	if v, ok := in.get("priority"); ok {
-		p := toFloat(v)
-		if p < 0 || p > 4 {
-			return inputErr("priority must be between 0 and 4")
-		}
-		is.Priority = p
-	}
-	for key, dst := range map[string]**float64{"estimate": &is.Estimate, "subIssueSortOrder": &is.SubIssueSortOrder} {
-		if v, ok := in.get(key); ok {
-			*dst = nil
-			if v != nil {
-				n := toFloat(v)
-				*dst = &n
-			}
-		}
-	}
-	for key, dst := range map[string]*float64{"sortOrder": &is.SortOrder, "prioritySortOrder": &is.PrioritySortOrder} {
-		if v, ok := in.get(key); ok {
-			*dst = toFloat(v)
-		}
-	}
-	return r.setLabels(in, is)
-}
-
-func (r *gqlRun) setLabels(in *linearInput, is *LinearIssue) *gqlErr {
-	ids := func(v any) ([]string, *gqlErr) {
-		list, _ := v.([]any)
-		out := []string{}
-		for _, x := range list {
-			if r.w.label(str(x)) == nil {
-				return nil, notFound("IssueLabel")
-			}
-			out = append(out, str(x))
-		}
-		return out, nil
-	}
-	if v, ok := in.get("labelIds"); ok {
-		list, err := ids(v)
-		if err != nil {
-			return err
-		}
-		is.Labels = list
-	}
-	if v, ok := in.get("addedLabelIds"); ok {
-		list, err := ids(v)
-		if err != nil {
-			return err
-		}
-		for _, id := range list {
-			if !slices.Contains(is.Labels, id) {
-				is.Labels = append(is.Labels, id)
-			}
-		}
-	}
-	if v, ok := in.get("removedLabelIds"); ok {
-		list, err := ids(v)
-		if err != nil {
-			return err
-		}
-		is.Labels = slices.DeleteFunc(is.Labels, func(id string) bool { return slices.Contains(list, id) })
-	}
-	return nil
+	return str(v)
 }
 
 func str(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// issueMember is one member of an issue create or update, in the order
+// they apply: the Issue field it sets and how. id marks a member naming
+// a record, whose empty ID clears it as a null does; updateOnly marks one
+// only IssueUpdateInput has.
+type issueMember struct {
+	name, field    string
+	id, updateOnly bool
+	set            func(r *gqlRun, is *LinearIssue, v any) *gqlErr
+}
+
+func issueMemberNames(update bool) []string {
+	var out []string
+	for _, m := range issueMembers {
+		if update || !m.updateOnly {
+			out = append(out, m.name)
+		}
+	}
+	return out
+}
+
+var issueMembers = []issueMember{
+	{name: "teamId", field: "team", id: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
+		t := r.w.team(str(v))
+		if t == nil {
+			return notFound("Team")
+		}
+		if t.ID != is.Team {
+			is.Team, is.Number, is.State = t.ID, r.w.nextNumber(t.ID), t.DefaultState
+		}
+		return nil
+	}},
+	{name: "title", field: "title", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.Title = str(v); return nil }},
+	{name: "description", field: "description", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.Description = str(v); return nil }},
+	{name: "dueDate", field: "dueDate", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.DueDate = str(v); return nil }},
+	issueRef("stateId", "state", "WorkflowState", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+		s := w.state(id)
+		return &is.State, s != nil && s.Team == is.Team
+	}),
+	issueRef("assigneeId", "assignee", "User", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+		return &is.Assignee, w.user(id) != nil
+	}),
+	issueRef("cycleId", "cycle", "Cycle", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+		c := w.cycle(id)
+		return &is.Cycle, c != nil && c.Team == is.Team
+	}),
+	issueRef("projectId", "project", "Project", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+		return &is.Project, w.project(id) != nil
+	}),
+	{name: "parentId", field: "parent", id: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
+		id := str(v)
+		if id == "" {
+			is.Parent = ""
+			return nil
+		}
+		p := r.w.issue(id)
+		if p == nil || p.ID == is.ID {
+			return notFound("Issue")
+		}
+		is.Parent = p.ID
+		return nil
+	}},
+	{name: "priority", field: "priority", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr {
+		p := toFloat(v)
+		if p < 0 || p > 4 {
+			return inputErr("priority must be between 0 and 4")
+		}
+		is.Priority = p
+		return nil
+	}},
+	{name: "estimate", field: "estimate", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.Estimate = numOrUnset(v); return nil }},
+	{name: "subIssueSortOrder", field: "subIssueSortOrder", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr {
+		is.SubIssueSortOrder = numOrUnset(v)
+		return nil
+	}},
+	{name: "sortOrder", field: "sortOrder", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.SortOrder = toFloat(v); return nil }},
+	{name: "prioritySortOrder", field: "prioritySortOrder", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr {
+		is.PrioritySortOrder = toFloat(v)
+		return nil
+	}},
+	{name: "labelIds", field: "labelIds", set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
+		list, err := r.labelIDs(v)
+		if err == nil {
+			is.Labels = list
+		}
+		return err
+	}},
+	{name: "addedLabelIds", field: "labelIds", updateOnly: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
+		list, err := r.labelIDs(v)
+		for _, id := range list {
+			if !slices.Contains(is.Labels, id) {
+				is.Labels = append(is.Labels, id)
+			}
+		}
+		return err
+	}},
+	{name: "removedLabelIds", field: "labelIds", updateOnly: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
+		list, err := r.labelIDs(v)
+		is.Labels = slices.DeleteFunc(is.Labels, func(id string) bool { return slices.Contains(list, id) })
+		return err
+	}},
+}
+
+// issueRef is a member naming a record by ID; target is the issue field
+// it sets and whether id names a record the issue may reference.
+func issueRef(name, field, typ string, target func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool)) issueMember {
+	return issueMember{name: name, field: field, id: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
+		dst, ok := target(r.w, is, str(v))
+		if str(v) != "" && !ok {
+			return notFound(typ)
+		}
+		*dst = str(v)
+		return nil
+	}}
+}
+
+func numOrUnset(v any) *float64 {
+	if v == nil {
+		return nil
+	}
+	n := toFloat(v)
+	return &n
+}
+
+// labelIDs reads a list of label IDs, refusing one the workspace lacks.
+func (r *gqlRun) labelIDs(v any) ([]string, *gqlErr) {
+	list, _ := v.([]any)
+	out := []string{}
+	for _, x := range list {
+		if r.w.label(str(x)) == nil {
+			return nil, notFound("IssueLabel")
+		}
+		out = append(out, str(x))
+	}
+	return out, nil
+}
+
+// setIssue applies the members of an issue create or update to is. A
+// null, or an empty ID, clears a field the schema lets be null and is
+// refused for one it does not (state, team, title, priority, the sort
+// orders, the labels): the schema says the issue always has one, and
+// Linear's own answer to it is unverified.
+func (r *gqlRun) setIssue(in *linearInput, is *LinearIssue) *gqlErr {
+	for _, m := range issueMembers {
+		v, ok := in.get(m.name)
+		if !ok {
+			continue
+		}
+		if (v == nil || m.id && v == "") && r.nonNull("Issue", m.field) {
+			return inputErr("%s must not be null", m.name)
+		}
+		if err := m.set(r, is, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// nonNull reports a field of typ the schema declares non-null.
+func (r *gqlRun) nonNull(typ, field string) bool {
+	if def := r.s.Types[typ]; def != nil {
+		if f := def.Fields.ForName(field); f != nil {
+			return f.Type.NonNull
+		}
+	}
+	return false
 }
 
 // stamp sets the state's timestamps after a state change: started,
@@ -258,7 +333,7 @@ func (m mutationRoot) createIssue(r *gqlRun, args map[string]any) (any, *gqlErr)
 	in.done()
 	w.stamp(&is, r.now)
 	w.Issues = append(w.Issues, is)
-	return payloadObj{"IssuePayload", "issue", issueObj{w: w, is: &w.Issues[len(w.Issues)-1]}}, nil
+	return issueObj{w: w, is: &w.Issues[len(w.Issues)-1]}, nil
 }
 
 // foundIssue is the issue an id argument names, or Linear's not-found.
@@ -276,19 +351,17 @@ func (m mutationRoot) updateIssue(r *gqlRun, args map[string]any) (any, *gqlErr)
 		return nil, err
 	}
 	in := r.input(args, "IssueUpdateInput")
-	next := *is
-	next.Labels = slices.Clone(is.Labels)
-	if err := r.setIssue(in, &next); err != nil {
+	before := *is
+	before.Labels = slices.Clone(is.Labels)
+	if err := r.setIssue(in, is); err != nil {
 		return nil, err
 	}
 	in.done()
-	if next.State != is.State {
-		w.stamp(&next, r.now)
+	if is.State != before.State {
+		w.stamp(is, r.now)
 	}
-	before := *is
-	*is = next
 	w.record(r.e, &before, is, w.Viewer, r.now)
-	return payloadObj{"IssuePayload", "issue", issueObj{w: w, is: is}}, nil
+	return issueObj{w: w, is: is}, nil
 }
 
 func (m mutationRoot) archiveIssue(r *gqlRun, args map[string]any) (any, *gqlErr) {
@@ -310,7 +383,7 @@ func (m mutationRoot) setArchived(r *gqlRun, args map[string]any, archived bool)
 		is.ArchivedAt = r.now
 	}
 	m.w.record(r.e, &before, is, m.w.Viewer, r.now)
-	return payloadObj{"IssueArchivePayload", "entity", issueObj{w: m.w, is: is}}, nil
+	return issueObj{w: m.w, is: is}, nil
 }
 
 // deleteIssue trashes an issue, or removes it and what hangs off it
@@ -327,10 +400,10 @@ func (m mutationRoot) deleteIssue(r *gqlRun, args map[string]any) (any, *gqlErr)
 		w.Comments = slices.DeleteFunc(w.Comments, func(c LinearComment) bool { return c.Issue == id })
 		w.Attachments = slices.DeleteFunc(w.Attachments, func(a LinearAttachment) bool { return a.Issue == id })
 		w.Relations = slices.DeleteFunc(w.Relations, func(x LinearRelation) bool { return x.Issue == id || x.Related == id })
-		return payloadObj{typ: "IssueArchivePayload"}, nil
+		return nil, nil
 	}
 	before := *is
 	is.Trashed, is.ArchivedAt = true, r.now
 	w.record(r.e, &before, is, w.Viewer, r.now)
-	return payloadObj{typ: "IssueArchivePayload"}, nil
+	return nil, nil
 }

@@ -182,17 +182,46 @@ func (c *jiraCall) touch(is *JiraIssue) time.Time {
 	return now
 }
 
-// offsetPage is Jira's offset-paged envelope over values.
-func offsetPage[T any](values []T, startAt, maxResults int) map[string]any {
+// Jira pages two ways: by offset (startAt and maxResults, pageWindow),
+// windowed by offsetWindow alone, and by token (nextPageToken),
+// windowed by tokenWindow alone. Each takes every value the read
+// matched, never a page of them.
+
+// offsetWindow is the page of values from startAt, at most maxResults
+// long, and whether it is the last.
+func offsetWindow[T any](values []T, startAt, maxResults int) ([]T, bool) {
 	end := min(startAt+maxResults, len(values))
-	page := []T{}
-	if startAt < len(values) {
-		page = values[startAt:end]
+	if startAt >= len(values) {
+		return []T{}, true
 	}
+	return values[startAt:end], end >= len(values)
+}
+
+// offsetPage is Jira's offset-paged envelope over values, as the
+// Agile and catalog lists write it.
+func offsetPage[T any](values []T, startAt, maxResults int) map[string]any {
+	page, last := offsetWindow(values, startAt, maxResults)
 	return map[string]any{
 		"startAt": startAt, "maxResults": maxResults, "total": len(values),
-		"isLast": end >= len(values), "values": page,
+		"isLast": last, "values": page,
 	}
+}
+
+// listPage is the envelope of a list Jira writes under its own key
+// (comments, worklogs, issue types, fields), with no isLast.
+func listPage[T any](key string, values []T, startAt, maxResults int) map[string]any {
+	page, _ := offsetWindow(values, startAt, maxResults)
+	return map[string]any{"startAt": startAt, "maxResults": maxResults, "total": len(values), key: page}
+}
+
+// tokenWindow is the page of values from offset, at most size long, and
+// the token of the next page, empty for the last.
+func tokenWindow[T any](values []T, scope string, offset, size int) ([]T, string) {
+	page, last := offsetWindow(values, offset, size)
+	if last {
+		return page, ""
+	}
+	return page, pageToken(scope, offset+len(page))
 }
 
 // pageWindow reads startAt and maxResults, maxResults def when absent and

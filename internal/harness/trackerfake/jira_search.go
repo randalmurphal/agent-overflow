@@ -37,15 +37,12 @@ func readPageToken(scope, token string) (int, error) {
 // tokenPage is a token-paged page of issues from offset: the page, the
 // next token and whether it is the last.
 func (c *jiraCall) tokenPage(issues []*JiraIssue, scope string, offset, size int, sel fieldSelection) ([]any, string, bool) {
-	end := min(offset+size, len(issues))
+	page, next := tokenWindow(issues, scope, offset, size)
 	out := []any{}
-	for _, is := range issues[min(offset, len(issues)):end] {
+	for _, is := range page {
 		out = append(out, c.s.issueJSON(is, sel, c.viewer))
 	}
-	if end >= len(issues) {
-		return out, "", true
-	}
-	return out, pageToken(scope, end), false
+	return out, next, next == ""
 }
 
 // searchSize is how many issues a search page holds: up to 5000 asked
@@ -201,9 +198,9 @@ func bulkChangelog(c *jiraCall) answer {
 			}
 		}
 	}
-	end := min(offset+size, len(all))
+	page, next := tokenWindow(all, scope, offset, size)
 	var logs []map[string]any
-	for _, h := range all[min(offset, len(all)):end] {
+	for _, h := range page {
 		if n := len(logs); n > 0 && logs[n-1]["issueId"] == h.issue {
 			logs[n-1]["changeHistories"] = append(logs[n-1]["changeHistories"].([]any), h.entry)
 			continue
@@ -211,8 +208,8 @@ func bulkChangelog(c *jiraCall) answer {
 		logs = append(logs, map[string]any{"issueId": h.issue, "changeHistories": []any{h.entry}})
 	}
 	out := map[string]any{"issueChangeLogs": orEmpty(logs)}
-	if end < len(all) {
-		out["nextPageToken"] = pageToken(scope, end)
+	if next != "" {
+		out["nextPageToken"] = next
 	}
 	return jsonAnswer(http.StatusOK, out)
 }

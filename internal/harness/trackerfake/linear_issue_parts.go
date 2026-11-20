@@ -13,37 +13,28 @@ type commentObj struct {
 	c *LinearComment
 }
 
-func (commentObj) typeName() string { return "Comment" }
+func (commentObj) typeName() string                { return "Comment" }
+func (o commentObj) value(name string) (any, bool) { return commentFields.get(o, name) }
 
-func (o commentObj) value(name string) (any, bool) {
-	c := o.c
-	switch name {
-	case "id":
-		return c.ID, true
-	case "issue":
-		return o.w.issueRef(c.Issue), true
-	case "parent":
-		if p := o.w.comment(c.Parent); p != nil {
-			return commentObj{o.w, p}, true
+var commentFields = fieldTable[commentObj]{
+	"id":    func(o commentObj) any { return o.c.ID },
+	"issue": func(o commentObj) any { return o.w.issueRef(o.c.Issue) },
+	"parent": func(o commentObj) any {
+		if p := o.w.comment(o.c.Parent); p != nil {
+			return commentObj{o.w, p}
 		}
-		return nil, true
-	case "user":
-		return o.w.userRef(c.User), true
-	case "body":
-		return c.Body, true
-	case "url":
-		is := o.w.issue(c.Issue)
-		return "https://linear.app/" + o.w.URLKey + "/issue/" + o.w.identifier(is) + "#comment-" + c.ID[:8], true
-	case "createdAt":
-		return c.CreatedAt, true
-	case "updatedAt":
-		return c.UpdatedAt, true
-	case "editedAt":
-		return c.EditedAt, true
-	case "resolvedAt":
-		return c.ResolvedAt, true
-	}
-	return nil, false
+		return nil
+	},
+	"user": func(o commentObj) any { return o.w.userRef(o.c.User) },
+	"body": func(o commentObj) any { return o.c.Body },
+	"url": func(o commentObj) any {
+		is := o.w.issue(o.c.Issue)
+		return "https://linear.app/" + o.w.URLKey + "/issue/" + o.w.identifier(is) + "#comment-" + o.c.ID[:8]
+	},
+	"createdAt":  func(o commentObj) any { return o.c.CreatedAt },
+	"updatedAt":  func(o commentObj) any { return o.c.UpdatedAt },
+	"editedAt":   func(o commentObj) any { return o.c.EditedAt },
+	"resolvedAt": func(o commentObj) any { return o.c.ResolvedAt },
 }
 
 type attachmentObj struct {
@@ -51,31 +42,19 @@ type attachmentObj struct {
 	a *LinearAttachment
 }
 
-func (attachmentObj) typeName() string { return "Attachment" }
+func (attachmentObj) typeName() string                { return "Attachment" }
+func (o attachmentObj) value(name string) (any, bool) { return attachmentFields.get(o, name) }
 
-func (o attachmentObj) value(name string) (any, bool) {
-	a := o.a
-	switch name {
-	case "id":
-		return a.ID, true
-	case "issue":
-		return o.w.issueRef(a.Issue), true
-	case "title":
-		return a.Title, true
-	case "subtitle":
-		return stringOrNil(a.Subtitle), true
-	case "url":
-		return a.URL, true
-	case "sourceType":
-		return stringOrNil(a.SourceType), true
-	case "creator":
-		return o.w.userRef(a.Creator), true
-	case "createdAt":
-		return a.CreatedAt, true
-	case "updatedAt":
-		return a.UpdatedAt, true
-	}
-	return nil, false
+var attachmentFields = fieldTable[attachmentObj]{
+	"id":         func(o attachmentObj) any { return o.a.ID },
+	"issue":      func(o attachmentObj) any { return o.w.issueRef(o.a.Issue) },
+	"title":      func(o attachmentObj) any { return o.a.Title },
+	"subtitle":   func(o attachmentObj) any { return stringOrNil(o.a.Subtitle) },
+	"url":        func(o attachmentObj) any { return o.a.URL },
+	"sourceType": func(o attachmentObj) any { return stringOrNil(o.a.SourceType) },
+	"creator":    func(o attachmentObj) any { return o.w.userRef(o.a.Creator) },
+	"createdAt":  func(o attachmentObj) any { return o.a.CreatedAt },
+	"updatedAt":  func(o attachmentObj) any { return o.a.UpdatedAt },
 }
 
 type relationObj struct {
@@ -83,55 +62,62 @@ type relationObj struct {
 	r *LinearRelation
 }
 
-func (relationObj) typeName() string { return "IssueRelation" }
+func (relationObj) typeName() string                { return "IssueRelation" }
+func (o relationObj) value(name string) (any, bool) { return relationFields.get(o, name) }
 
-func (o relationObj) value(name string) (any, bool) {
-	switch name {
-	case "id":
-		return o.r.ID, true
-	case "type":
-		return o.r.Type, true
-	case "issue":
-		return o.w.issueRef(o.r.Issue), true
-	case "relatedIssue":
-		return o.w.issueRef(o.r.Related), true
-	}
-	return nil, false
+var relationFields = fieldTable[relationObj]{
+	"id":           func(o relationObj) any { return o.r.ID },
+	"type":         func(o relationObj) any { return o.r.Type },
+	"issue":        func(o relationObj) any { return o.w.issueRef(o.r.Issue) },
+	"relatedIssue": func(o relationObj) any { return o.w.issueRef(o.r.Related) },
 }
 
 type historyObj struct{ h *LinearHistory }
 
-func (historyObj) typeName() string { return "IssueHistory" }
+func (historyObj) typeName() string                { return "IssueHistory" }
+func (o historyObj) value(name string) (any, bool) { return historyFields.get(o, name) }
 
-func (o historyObj) value(name string) (any, bool) {
-	h := o.h
-	ids := map[string]string{
-		"actorId": h.Actor, "fromStateId": h.FromState, "toStateId": h.ToState, "fromAssigneeId": h.FromAssignee,
-		"toAssigneeId": h.ToAssignee, "fromCycleId": h.FromCycle, "toCycleId": h.ToCycle, "fromProjectId": h.FromProject,
-		"toProjectId": h.ToProject, "fromParentId": h.FromParent, "toParentId": h.ToParent, "fromTeamId": h.FromTeam,
-		"toTeamId": h.ToTeam, "fromTitle": h.FromTitle, "toTitle": h.ToTitle, "id": h.ID,
-	}
-	if v, ok := ids[name]; ok {
-		return stringOrNil(v), true
-	}
-	nums := map[string]*float64{"fromEstimate": h.FromEstimate, "toEstimate": h.ToEstimate, "fromPriority": h.FromPriority, "toPriority": h.ToPriority}
-	if v, ok := nums[name]; ok {
-		return numOrNil(v), true
-	}
-	switch name {
-	case "createdAt", "updatedAt":
-		return h.CreatedAt, true
-	case "addedLabelIds":
-		return listOrNil(h.AddedLabels), true
-	case "removedLabelIds":
-		return listOrNil(h.RemovedLabels), true
-	case "archived":
-		if h.Archived == nil {
-			return nil, true
+// historyID is a history field holding an ID or text, null when unset.
+func historyID(f func(h *LinearHistory) string) func(historyObj) any {
+	return func(o historyObj) any { return stringOrNil(f(o.h)) }
+}
+
+// historyNum is a history field holding a number, null when unset.
+func historyNum(f func(h *LinearHistory) *float64) func(historyObj) any {
+	return func(o historyObj) any { return numOrNil(f(o.h)) }
+}
+
+var historyFields = fieldTable[historyObj]{
+	"id":              historyID(func(h *LinearHistory) string { return h.ID }),
+	"actorId":         historyID(func(h *LinearHistory) string { return h.Actor }),
+	"fromStateId":     historyID(func(h *LinearHistory) string { return h.FromState }),
+	"toStateId":       historyID(func(h *LinearHistory) string { return h.ToState }),
+	"fromAssigneeId":  historyID(func(h *LinearHistory) string { return h.FromAssignee }),
+	"toAssigneeId":    historyID(func(h *LinearHistory) string { return h.ToAssignee }),
+	"fromCycleId":     historyID(func(h *LinearHistory) string { return h.FromCycle }),
+	"toCycleId":       historyID(func(h *LinearHistory) string { return h.ToCycle }),
+	"fromProjectId":   historyID(func(h *LinearHistory) string { return h.FromProject }),
+	"toProjectId":     historyID(func(h *LinearHistory) string { return h.ToProject }),
+	"fromParentId":    historyID(func(h *LinearHistory) string { return h.FromParent }),
+	"toParentId":      historyID(func(h *LinearHistory) string { return h.ToParent }),
+	"fromTeamId":      historyID(func(h *LinearHistory) string { return h.FromTeam }),
+	"toTeamId":        historyID(func(h *LinearHistory) string { return h.ToTeam }),
+	"fromTitle":       historyID(func(h *LinearHistory) string { return h.FromTitle }),
+	"toTitle":         historyID(func(h *LinearHistory) string { return h.ToTitle }),
+	"fromEstimate":    historyNum(func(h *LinearHistory) *float64 { return h.FromEstimate }),
+	"toEstimate":      historyNum(func(h *LinearHistory) *float64 { return h.ToEstimate }),
+	"fromPriority":    historyNum(func(h *LinearHistory) *float64 { return h.FromPriority }),
+	"toPriority":      historyNum(func(h *LinearHistory) *float64 { return h.ToPriority }),
+	"createdAt":       func(o historyObj) any { return o.h.CreatedAt },
+	"updatedAt":       func(o historyObj) any { return o.h.CreatedAt },
+	"addedLabelIds":   func(o historyObj) any { return listOrNil(o.h.AddedLabels) },
+	"removedLabelIds": func(o historyObj) any { return listOrNil(o.h.RemovedLabels) },
+	"archived": func(o historyObj) any {
+		if o.h.Archived == nil {
+			return nil
 		}
-		return *h.Archived, true
-	}
-	return nil, false
+		return *o.h.Archived
+	},
 }
 
 func numOrNil(n *float64) any {
@@ -153,18 +139,12 @@ type spanObj struct {
 	start, end time.Time
 }
 
-func (spanObj) typeName() string { return "IssueStateSpan" }
+func (spanObj) typeName() string                { return "IssueStateSpan" }
+func (o spanObj) value(name string) (any, bool) { return spanFields.get(o, name) }
 
-func (o spanObj) value(name string) (any, bool) {
-	switch name {
-	case "id":
-		return o.id, true
-	case "stateId":
-		return o.state, true
-	case "startedAt":
-		return o.start, true
-	case "endedAt":
-		return o.end, true
-	}
-	return nil, false
+var spanFields = fieldTable[spanObj]{
+	"id":        func(o spanObj) any { return o.id },
+	"stateId":   func(o spanObj) any { return o.state },
+	"startedAt": func(o spanObj) any { return o.start },
+	"endedAt":   func(o spanObj) any { return o.end },
 }

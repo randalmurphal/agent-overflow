@@ -10,42 +10,6 @@ import (
 	"time"
 )
 
-// connObj is one page of a connection.
-type connObj struct {
-	nodes   []gqlObject
-	hasNext bool
-	end     string
-}
-
-func (connObj) typeName() string { return "Connection" }
-
-func (c connObj) value(name string) (any, bool) {
-	switch name {
-	case "nodes":
-		return c.nodes, true
-	case "pageInfo":
-		return pageInfoObj(c), true
-	}
-	return nil, false
-}
-
-type pageInfoObj connObj
-
-func (pageInfoObj) typeName() string { return "PageInfo" }
-
-func (p pageInfoObj) value(name string) (any, bool) {
-	switch name {
-	case "hasNextPage":
-		return p.hasNext, true
-	case "endCursor":
-		if p.end == "" {
-			return nil, true
-		}
-		return p.end, true
-	}
-	return nil, false
-}
-
 // archivable is an object a connection leaves out unless includeArchived
 // is set: an archived entity, or a trashed issue (measured for issues).
 type archivable interface{ archived() bool }
@@ -53,15 +17,15 @@ type archivable interface{ archived() bool }
 // disableable is a user a connection leaves out unless includeDisabled.
 type disableable interface{ disabled() bool }
 
-// sortable is an object with sort keys: a sort field's value.
+// sortable is an object with sort keys (sortTables): a sort field's
+// value.
 type sortable interface {
 	sortKey(field string) (float64, bool)
 }
 
-// connection pages list by the arguments a connection takes: filter,
-// includeArchived, includeDisabled, sort, first and after, each consumed
-// from args.
-func (r *gqlRun) connection(owner gqlObject, name string, list []gqlObject, args map[string]any) (connObj, *gqlErr) {
+// connection pages list, a connection of schema type typ, by the
+// arguments in connectionArgs, each consumed from args.
+func (r *gqlRun) connection(typ string, owner gqlObject, name string, list []gqlObject, args map[string]any) (connObj, *gqlErr) {
 	includeArchived, _ := take(args, "includeArchived")
 	includeDisabled, _ := take(args, "includeDisabled")
 	var kept []gqlObject
@@ -78,10 +42,7 @@ func (r *gqlRun) connection(owner gqlObject, name string, list []gqlObject, args
 		f, _ := filter.(map[string]any)
 		kept = slices.DeleteFunc(kept, func(o gqlObject) bool { return !r.matches(o, f) })
 	}
-	keyOf, err := r.order(owner, name, kept, args)
-	if err != nil {
-		return connObj{}, err
-	}
+	keyOf := r.order(owner, name, kept, args)
 	first := 50
 	if v, ok := take(args, "first"); ok {
 		first = int(toFloat(v))
@@ -97,7 +58,7 @@ func (r *gqlRun) connection(owner gqlObject, name string, list []gqlObject, args
 	}
 	start := 0
 	if after, ok := take(args, "after"); ok {
-		key, id, okc := readCursor(after.(string))
+		key, id, okc := readCursor(str(after))
 		if !okc {
 			return connObj{}, &gqlErr{code: "INVALID_INPUT", message: "Invalid cursor", userError: true}
 		}
@@ -113,7 +74,7 @@ func (r *gqlRun) connection(owner gqlObject, name string, list []gqlObject, args
 	if !chargedByResults(owner, name) {
 		r.cost += first - (end - start)
 	}
-	page := connObj{nodes: kept[start:end], hasNext: end < len(kept)}
+	page := connObj{typ: typ, nodes: kept[start:end], hasNext: end < len(kept)}
 	if end > start {
 		last := kept[end-1]
 		page.end = cursorOf(keyOf(last), objID(last))
@@ -133,9 +94,9 @@ func chargedByResults(owner gqlObject, name string) bool {
 	return name == "issues" || name == "searchIssues" || name == "children"
 }
 
-// order sorts list by the sort argument (issues), else keeps its order,
-// and returns each object's keyset key.
-func (r *gqlRun) order(owner gqlObject, name string, list []gqlObject, args map[string]any) (func(gqlObject) []float64, *gqlErr) {
+// order sorts list by the sort argument (sortSpec), else keeps its
+// order, and returns each object's keyset key.
+func (r *gqlRun) order(owner gqlObject, name string, list []gqlObject, args map[string]any) func(gqlObject) []float64 {
 	index := map[string]float64{}
 	for i, o := range list {
 		index[objID(o)] = float64(i)
@@ -143,40 +104,30 @@ func (r *gqlRun) order(owner gqlObject, name string, list []gqlObject, args map[
 	keyOf := func(o gqlObject) []float64 { return []float64{index[objID(o)]} }
 	sortArg, ok := take(args, "sort")
 	if !ok {
-		return keyOf, nil
+		return keyOf
 	}
-	entries, _ := sortArg.([]any)
-	if len(entries) != 1 {
-		r.fail("sort of %s.%s with %d entries", owner.typeName(), name, len(entries))
-		return keyOf, nil
+	field, descending, problem := sortSpec(sortArg)
+	if problem != "" {
+		r.fail("%s.%s: %s", owner.typeName(), name, problem)
+		return keyOf
 	}
-	spec, _ := entries[0].(map[string]any)
-	if len(spec) != 1 {
-		r.fail("sort entry %v", spec)
-		return keyOf, nil
+	sign := 1.0
+	if descending {
+		sign = -1
 	}
-	for field, dir := range spec {
-		d, _ := dir.(map[string]any)
-		order, _ := d["order"].(string)
-		if len(d) != 1 || (order != "Ascending" && order != "Descending") {
-			r.fail("sort %s %v is not implemented", field, d)
-			return keyOf, nil
+	keyOf = func(o gqlObject) []float64 {
+		var k float64
+		s, ok := o.(sortable)
+		if ok {
+			k, ok = s.sortKey(field)
 		}
-		sign := 1.0
-		if order == "Descending" {
-			sign = -1
+		if !ok {
+			r.fail("sort of %s by %s is not implemented", o.typeName(), field)
 		}
-		keyOf = func(o gqlObject) []float64 {
-			s, _ := o.(sortable)
-			k, ok := s.sortKey(field)
-			if !ok {
-				r.fail("sort by %s is not implemented", field)
-			}
-			return []float64{sign * k}
-		}
+		return []float64{sign * k}
 	}
 	slices.SortStableFunc(list, func(a, b gqlObject) int { return cmpKey(keyOf(a), objID(a), keyOf(b), objID(b)) })
-	return keyOf, nil
+	return keyOf
 }
 
 func cmpKey(a []float64, aid string, b []float64, bid string) int {
@@ -190,8 +141,7 @@ func cmpKey(a []float64, aid string, b []float64, bid string) int {
 
 func objID(o gqlObject) string {
 	v, _ := o.value("id")
-	s, _ := v.(string)
-	return s
+	return str(v)
 }
 
 type cursor struct {
@@ -229,8 +179,9 @@ func toFloat(v any) float64 {
 }
 
 // matches evaluates a filter input object on o: and, or, and per field a
-// comparator or a nested filter, read through o's fields. A filter key
-// or comparator the fake does not implement is unhandled.
+// comparator or a nested filter, read through o's field table. The
+// pre-pass has refused a filter key or comparator the tables lack; a
+// failure here is the two disagreeing.
 func (r *gqlRun) matches(o gqlObject, filter map[string]any) bool {
 	for key, cond := range filter {
 		if cond == nil {
@@ -275,7 +226,7 @@ func (r *gqlRun) compare(what string, v any, c map[string]any) bool {
 		// team {null: true}, read above, returns them); a comparator on
 		// an unset scalar is read below.
 		for op := range c {
-			if !slices.Contains(linearComparators, op) {
+			if _, ok := comparators[op]; !ok {
 				return false
 			}
 		}
@@ -288,6 +239,9 @@ func (r *gqlRun) compare(what string, v any, c map[string]any) bool {
 			return false
 		}
 		return slices.ContainsFunc(v, func(o gqlObject) bool { return r.matches(o, some) })
+	case []string:
+		r.fail("filter of the list %s is not implemented", what)
+		return false
 	}
 	for op, want := range c {
 		if !r.compareScalar(what, op, v, want) {
@@ -297,52 +251,21 @@ func (r *gqlRun) compare(what string, v any, c map[string]any) bool {
 	return true
 }
 
-// linearComparators are the scalar comparators compareScalar implements.
-var linearComparators = []string{"eq", "neq", "in", "nin", "eqIgnoreCase", "gte", "gt", "lte", "lt"}
-
 func (r *gqlRun) compareScalar(what, op string, v, want any) bool {
-	if t, ok := v.(time.Time); ok {
-		if t.IsZero() {
-			v = nil
-		} else {
-			v = float64(t.UnixMilli())
-		}
+	if _, ok := v.(time.Time); ok {
 		if s, ok := want.(string); ok {
 			w, err := time.Parse(time.RFC3339Nano, s)
 			if err != nil {
 				r.fail("filter of %s: %q is not a time", what, s)
 				return false
 			}
-			want = float64(w.UnixMilli())
+			want = w
 		}
 	}
-	if n, ok := want.(json.Number); ok {
-		want = toFloat(n)
+	f, ok := comparators[op]
+	if !ok {
+		r.fail("comparator %s of %s is not implemented", op, what)
+		return false
 	}
-	if n, ok := want.(int64); ok {
-		want = float64(n)
-	}
-	switch op {
-	case "eq":
-		return v == want
-	case "neq":
-		return v != want
-	case "in", "nin":
-		list, _ := want.([]any)
-		hit := slices.ContainsFunc(list, func(x any) bool { return x == v || toFloat(x) == v })
-		return hit == (op == "in")
-	case "eqIgnoreCase":
-		s, _ := v.(string)
-		w, _ := want.(string)
-		return strings.EqualFold(s, w)
-	case "gte", "gt", "lte", "lt":
-		a, aok := v.(float64)
-		b, bok := want.(float64)
-		if !aok || !bok {
-			return false
-		}
-		return map[string]bool{"gte": a >= b, "gt": a > b, "lte": a <= b, "lt": a < b}[op]
-	}
-	r.fail("comparator %s of %s is not implemented", op, what)
-	return false
+	return f(normalize(v), normalize(want))
 }

@@ -28,7 +28,7 @@ func (m mutationRoot) createComment(r *gqlRun, args map[string]any) (any, *gqlEr
 	w.Comments = append(w.Comments, LinearComment{
 		ID: linearID(r.e), Issue: is.ID, Parent: str(parent), User: w.Viewer, Body: str(body), CreatedAt: r.now, UpdatedAt: r.now,
 	})
-	return payloadObj{"CommentPayload", "comment", commentObj{w, &w.Comments[len(w.Comments)-1]}}, nil
+	return commentObj{w, &w.Comments[len(w.Comments)-1]}, nil
 }
 
 func (m mutationRoot) updateComment(r *gqlRun, args map[string]any) (any, *gqlErr) {
@@ -46,7 +46,7 @@ func (m mutationRoot) updateComment(r *gqlRun, args map[string]any) (any, *gqlEr
 		}
 		c.Body, c.EditedAt, c.UpdatedAt = str(body), r.now, r.now
 	}
-	return payloadObj{"CommentPayload", "comment", commentObj{w, c}}, nil
+	return commentObj{w, c}, nil
 }
 
 func (m mutationRoot) deleteComment(r *gqlRun, args map[string]any) (any, *gqlErr) {
@@ -55,7 +55,7 @@ func (m mutationRoot) deleteComment(r *gqlRun, args map[string]any) (any, *gqlEr
 		return nil, notFound("Comment")
 	}
 	m.w.Comments = slices.DeleteFunc(m.w.Comments, func(c LinearComment) bool { return c.ID == id })
-	return payloadObj{typ: "DeletePayload"}, nil
+	return nil, nil
 }
 
 func (m mutationRoot) createRelation(r *gqlRun, args map[string]any) (any, *gqlErr) {
@@ -73,7 +73,7 @@ func (m mutationRoot) createRelation(r *gqlRun, args map[string]any) (any, *gqlE
 		return nil, inputErr("An issue cannot be related to itself")
 	}
 	w.Relations = append(w.Relations, LinearRelation{ID: linearID(r.e), Type: str(typ), Issue: a.ID, Related: b.ID})
-	return payloadObj{"IssueRelationPayload", "issueRelation", relationObj{w, &w.Relations[len(w.Relations)-1]}}, nil
+	return relationObj{w, &w.Relations[len(w.Relations)-1]}, nil
 }
 
 func (m mutationRoot) deleteRelation(r *gqlRun, args map[string]any) (any, *gqlErr) {
@@ -82,7 +82,7 @@ func (m mutationRoot) deleteRelation(r *gqlRun, args map[string]any) (any, *gqlE
 		return nil, notFound("IssueRelation")
 	}
 	m.w.Relations = slices.DeleteFunc(m.w.Relations, func(x LinearRelation) bool { return x.ID == id })
-	return payloadObj{typ: "DeletePayload"}, nil
+	return nil, nil
 }
 
 // createAttachment links a URL to an issue; a URL the issue already has
@@ -105,14 +105,14 @@ func (m mutationRoot) createAttachment(r *gqlRun, args map[string]any) (any, *gq
 	for i := range w.Attachments {
 		if a := &w.Attachments[i]; a.Issue == is.ID && a.URL == str(url) {
 			a.Title, a.Subtitle, a.UpdatedAt = str(title), str(subtitle), r.now
-			return payloadObj{"AttachmentPayload", "attachment", attachmentObj{w, a}}, nil
+			return attachmentObj{w, a}, nil
 		}
 	}
 	w.Attachments = append(w.Attachments, LinearAttachment{
 		ID: linearID(r.e), Issue: is.ID, Title: str(title), Subtitle: str(subtitle), URL: str(url), SourceType: "api",
 		Creator: w.Viewer, CreatedAt: r.now, UpdatedAt: r.now,
 	})
-	return payloadObj{"AttachmentPayload", "attachment", attachmentObj{w, &w.Attachments[len(w.Attachments)-1]}}, nil
+	return attachmentObj{w, &w.Attachments[len(w.Attachments)-1]}, nil
 }
 
 // startCycle starts the team's upcoming cycle at midnight today in the
@@ -153,5 +153,5 @@ func (m mutationRoot) startCycle(r *gqlRun, args map[string]any) (any, *gqlErr) 
 			}
 		}
 	}
-	return payloadObj{"CyclePayload", "cycle", cycleObj{w, c}}, nil
+	return cycleObj{w, c}, nil
 }

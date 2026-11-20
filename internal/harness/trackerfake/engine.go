@@ -93,6 +93,10 @@ type Engine struct {
 
 	mu     sync.Mutex
 	closed bool
+	// gen counts the worlds the engine has held. Reset, and a Seed that
+	// replaces a tenant, start a new one; a request held across that is
+	// dropped with nothing applied.
+	gen uint64
 	// last is the latest clock reading handed out.
 	last time.Time
 	// ids generates the numeric IDs of new records; it keeps counting
@@ -144,9 +148,10 @@ func (e *Engine) reserveID(id int64) {
 }
 
 // Seed adds the fixture's tenants, replacing any already seeded under the
-// same site or workspace key. A fixture the engine cannot hold (a
-// reference to something it lacks, an ID twice) is refused whole and
-// changes nothing.
+// same site or workspace key; a request held when a tenant is replaced
+// ends with its connection closed and nothing applied. A fixture the
+// engine cannot hold (a reference to something it lacks, an ID twice) is
+// refused whole and changes nothing.
 func (e *Engine) Seed(f Fixture) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -157,11 +162,12 @@ func (e *Engine) Seed(f Fixture) error {
 }
 
 // Reset drops every tenant, fault, held request and logged request. A
-// held request ends with its connection closed and nothing applied. IDs
-// keep counting.
+// held request ends with its connection closed and nothing applied, even
+// one a release already let go. IDs keep counting.
 func (e *Engine) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.gen++
 	clear(e.jira)
 	clear(e.linear)
 	e.faults.reset()

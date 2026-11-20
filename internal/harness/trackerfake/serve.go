@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 )
 
@@ -46,7 +47,22 @@ type exchange struct {
 	// secrets are the credentials the request presented, scrubbed from
 	// what is logged.
 	secrets []string
-	entry   Request
+	// gen is the engine generation the request arrived in.
+	gen uint64
+	// undo puts back what the running handler changed; nil when no
+	// handler is running.
+	undo func()
+	// entry is the request's log entry as the pipeline fills it in;
+	// logEntry makes what the log keeps of it.
+	entry Request
+}
+
+// rollback puts back what the running handler changed, if one is running.
+func (x *exchange) rollback() {
+	if x.undo != nil {
+		x.undo()
+		x.undo = nil
+	}
 }
 
 // match is a route and its handler, or why the request is unhandled.
@@ -95,29 +111,51 @@ func (e *Engine) serve(o Origin, svc service, w http.ResponseWriter, r *http.Req
 	x.body = body
 	x.recordBody()
 
-	e.mu.Lock()
-	a, held := e.decide(svc, x, readErr)
-	entry := e.record(x, a, held != nil)
-	e.mu.Unlock()
+	var a answer
+	var held *hold
+	var entry Request
+	e.locked(func() {
+		x.gen = e.gen
+		a, held = e.guarded(svc, x, func() (answer, *hold) { return e.decide(svc, x, readErr) })
+		entry = e.record(x, a, held != nil)
+	})
 	e.notify(entry)
 	if held != nil {
 		select {
 		case <-held.done:
 		case <-r.Context().Done():
 		}
-		e.mu.Lock()
-		switch {
-		case held.drop || r.Context().Err() != nil:
-			a = answer{abort: true}
-			x.entry.Detail = "the hold ended with the connection closed and nothing applied"
-		default:
-			a = e.redecide(svc, x)
-		}
-		entry = e.complete(entry, x, a)
-		e.mu.Unlock()
+		e.locked(func() {
+			a, _ = e.guarded(svc, x, func() (answer, *hold) { return e.resume(svc, x, held), nil })
+			entry = e.complete(entry, x, a)
+		})
 		e.notify(entry)
 	}
 	write(w, a)
+}
+
+// locked runs f under mu: the one place the pipeline takes the lock,
+// released by defer whatever f does.
+func (e *Engine) locked(f func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	f()
+}
+
+// guarded runs f, the part of the pipeline that runs tracker code. A
+// panic there is the fake's own defect: what the handler changed is
+// rolled back, the request is answered unhandled with the panic and its
+// stack, and the engine keeps serving. Callers hold mu.
+func (e *Engine) guarded(svc service, x *exchange, f func() (answer, *hold)) (a answer, h *hold) {
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		x.rollback()
+		a, h = e.unhandled(svc, x, fmt.Sprintf("trackerfake panicked: %v\n%s", p, debug.Stack())), nil
+	}()
+	return f()
 }
 
 // decide answers x, or names the hold it waits on. Callers hold mu.
@@ -136,13 +174,22 @@ func (e *Engine) decide(svc service, x *exchange, readErr error) (answer, *hold)
 	return e.dispatch(svc, x, true)
 }
 
-// redecide answers a request a released hold kept, against the state
-// as it is now, with no fault applied again. Callers hold mu.
-func (e *Engine) redecide(svc service, x *exchange) answer {
-	x.entry.Route, x.entry.Detail = "", ""
-	if e.closed {
+// resume answers a request its hold let go. It is dropped, its
+// connection closed with nothing applied, when the hold dropped it, its
+// client left, or the world it arrived in is gone: the engine closed, or
+// a Reset or a Seed that replaced a tenant started a new generation.
+// Otherwise it is answered against the state as it is now, with no fault
+// applied again. Callers hold mu.
+func (e *Engine) resume(svc service, x *exchange, h *hold) answer {
+	switch {
+	case h.drop || x.r.Context().Err() != nil:
+		x.entry.Detail = "the hold ended with the connection closed and nothing applied"
+		return answer{abort: true}
+	case e.closed || e.gen != x.gen:
+		x.entry.Detail = "the engine was reset, reseeded or closed while the request was held: connection closed, nothing applied"
 		return answer{abort: true}
 	}
+	x.entry.Route, x.entry.Detail = "", ""
 	a, _ := e.dispatch(svc, x, false)
 	return a
 }
@@ -184,10 +231,20 @@ func (e *Engine) dispatch(svc service, x *exchange, faults bool) (answer, *hold)
 	return answer{abort: true}, nil
 }
 
-// run runs a route's handler, giving an unhandled answer the tracker's
-// shape.
+// run runs a route's handler in the transaction txn.go describes: an
+// unhandled answer or a refusal (status 400 or more) is rolled back, as
+// guarded rolls back a panic. Callers hold mu.
 func (e *Engine) run(svc service, x *exchange, m match) answer {
+	undo, err := e.save(x)
+	if err != nil {
+		return e.unhandled(svc, x, err.Error())
+	}
+	x.undo = undo
 	a := m.run()
+	if a.unhandled != "" || a.status >= http.StatusBadRequest {
+		x.rollback()
+	}
+	x.undo = nil
 	if a.unhandled != "" {
 		return e.unhandled(svc, x, a.unhandled)
 	}
@@ -222,7 +279,7 @@ func (e *Engine) record(x *exchange, a answer, held bool) Request {
 		x.entry.Fault = FaultHold
 	}
 	e.settle(x, a)
-	return e.log.add(x.entry.scrubbed(e.secrets(x)))
+	return e.log.add(e.logEntry(x))
 }
 
 // complete replaces a held request's entry with how it was answered.
@@ -231,7 +288,7 @@ func (e *Engine) complete(entry Request, x *exchange, a answer) Request {
 	x.entry.Held = false
 	x.entry.Fault = FaultHold
 	e.settle(x, a)
-	out := x.entry.scrubbed(e.secrets(x))
+	out := e.logEntry(x)
 	out.Seq, out.At = entry.Seq, entry.At
 	e.log.update(out)
 	return out
@@ -267,7 +324,7 @@ func (e *Engine) notify(entry Request) {
 }
 
 // recordBody puts a JSON body, or a multipart upload's file names, in
-// the entry.
+// the entry; logEntry bounds both.
 func (x *exchange) recordBody() {
 	if len(x.body) == 0 {
 		return
@@ -276,7 +333,7 @@ func (x *exchange) recordBody() {
 	switch {
 	case mediaType == "multipart/form-data":
 		x.entry.Files = multipartNames(x.body, params["boundary"])
-	case len(x.body) <= maxLoggedBody && json.Valid(x.body):
+	case json.Valid(x.body):
 		x.entry.Body = json.RawMessage(bytes.TrimSpace(x.body))
 	}
 }

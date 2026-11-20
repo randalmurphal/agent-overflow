@@ -15,12 +15,12 @@ client contract it answers is
 | Concern | Files |
 |---|---|
 | Engine, seed, reset, clock, IDs | `engine.go`, `fixture.go` |
-| Request pipeline: offline, credential, route, fault, handler, log | `serve.go`, `faults.go`, `log.go`, `auth.go` |
+| Request pipeline: offline, credential, route, fault, handler, log | `serve.go`, `txn.go`, `faults.go`, `log.go`, `auth.go` |
 | Shared REST route matching | `routes.go` |
 | Jira routes and handlers | `jira_routes.go` (the whole table), `jira*.go`; JQL in `jql.go` |
 | Tempo | `tempo.go`, `tempo_worklogs.go`, `tempo_fixture.go` |
-| Linear GraphQL executor | `linear.go`, `linear_exec.go`, `linear_conn.go` |
-| Linear objects, reads and writes | `linear_objects.go`, `linear_issue*.go`, `linear_roots.go`, `linear_writes.go`, `linear_records.go` |
+| Linear GraphQL executor and its pre-pass | `linear.go`, `linear_exec.go`, `linear_check.go`, `linear_conn.go` |
+| Linear tables: fields, comparators, sorts, roots, mutations, inputs | `linear_types.go`, `linear_objects.go`, `linear_issue*.go`, `linear_roots.go`, `linear_writes.go`, `linear_records.go` |
 
 ## Answer rules
 
@@ -33,13 +33,26 @@ client contract it answers is
   tracker's error shape, recorded with `Unhandled` and a `Detail` naming
   what is missing. That covers a route, a method, a query parameter not
   in the route's list, a JSON body member (bodies decode strictly), a JQL
-  clause outside the grammar in `jql.go`, a Linear field, argument or
-  filter key the executor does not read, and a Linear document or
-  variables the schema refuses (`linearschema.DocumentProblems`,
-  `VariableProblems`). Tests fail on any entry of `Engine.Unhandled`.
+  clause outside the grammar in `jql.go`, a Linear document or variables
+  the schema refuses (`linearschema.DocumentProblems`,
+  `VariableProblems`), and any Linear field, argument, directive,
+  fragment, filter key, comparator, sort or input member the executor's
+  tables lack. The pre-pass (`checkOperation`) checks the last against
+  the same tables the resolvers read, before anything runs, so the
+  answer does not depend on what the fixture holds. Tests fail on any
+  entry of `Engine.Unhandled`.
+- A panic in tracker code is the fake's defect: the pipeline recovers
+  it, rolls back, answers unhandled naming it and keeps serving.
 - A well-formed request for something the fixture lacks answers the
-  tracker's own not-found or refusal and changes nothing. A write
-  applies all or nothing.
+  tracker's own not-found or refusal and changes nothing. Every handler
+  runs in a transaction the pipeline owns (`txn.go`): an unhandled
+  answer, a refusal (400 or more) or a panic puts back the tenant, the
+  ID counter and the clock. A Linear mutation refused with an error
+  rolls back alone; the document's other mutations stand.
+- A null Linear input member clears a field the schema lets be null and
+  is refused for one the schema declares non-null (an issue's state,
+  team, title, priority, sort orders, labels); an empty ID counts as
+  null.
 - Every write is stamped with the engine clock (`Options.Now`, never
   moving back) and records what the tracker records: Jira changelog
   items and `updated`, Tempo `updatedAt`, Linear `updatedAt`, history and
@@ -52,10 +65,15 @@ client contract it answers is
   into the creation and add no entry (measured: folded at 2m30s,
   recorded at 3m).
   Later changes add one entry per update with every changed value.
-- No answer repeats a credential: the log drops `Authorization` and
-  replaces every known or presented credential with `<redacted>`, and an
-  unhandled answer's reason is scrubbed the same way. Credentials are at
-  least 8 characters so the replacement never hits ordinary text.
+- Each paging style has one windowing helper over every record a read
+  matched: Jira's `offsetWindow` (`offsetPage`, `listPage`) and
+  `tokenWindow`, Tempo's `page`, Linear's `connection`.
+- No log entry or unhandled answer repeats a credential. `logEntry` is
+  the only way an entry is made: it drops `Authorization`, replaces every
+  known or presented credential with `<redacted>` in every text and in
+  every decoded JSON string, number and key, and bounds each member at
+  64 KiB (text cut, JSON left out, each named in `Omitted`). Credentials
+  are at least 8 characters so the replacement never hits ordinary text.
 
 ## Tenants and faults
 
@@ -65,7 +83,10 @@ client contract it answers is
 - A fault matches by origin and route name (`Request.Route`: `"GET
   rest/api/3/issue/{issue}"`, `"GET 4/worklogs/{id}"`, or a Linear
   operation name). Faults apply after the credential and route checks.
-  `Reset` and `Close` drop held requests with nothing applied.
+- `Reset`, `Close` and a `Seed` that replaces a tenant end held requests
+  with their connections closed and nothing applied, including one a
+  release already let go: a request carries the engine generation it
+  arrived in and is dropped when that is gone.
 - `Servers` owns one serve goroutine per origin and counts the requests
   being answered; `Servers.Close` waits for both. A held request waits on
   its hold, its client's context or `Reset`/`Close`.
@@ -75,17 +96,23 @@ client contract it answers is
 1. Jira or Tempo: one row in the route table (`jira_routes.go` or
    `tempo.go`) with its method, pattern and accepted query parameters,
    and one handler. Linear: the executor serves any schema-valid
-   operation; add the fields, arguments or mutation the operation reads
-   to the objects in `linear_*.go`.
+   operation; add a row for each field the operation reads to its type's
+   table, a mutation to `mutations` and its input members to
+   `linearInputs`. `TestLinearTablesMatchTheSchema` checks every row
+   against the schema.
 2. Note the evidence for each behavior beside it.
-3. Drive the client method through the conformance test in its package
+3. A write adds a refused request to `refusals` (`txn_test.go`), a paged
+   read a row to `pagedRows` (`paging_test.go`); each test's walk fails
+   for a route or connection with none.
+4. Drive the client method through the conformance test in its package
    (`internal/tracker/{jira,tempo,linear}/fake_*_test.go`), whose
    reflection walk fails for a Client method with no case. Linear's also
    fails for a registered operation that never ran.
-4. When a provider reads it, extend the provider scenario
+5. When a provider reads it, extend the provider scenario
    (`internal/tracker/{jira,linear}provider/fake_scenario_test.go`).
 
 Run `make go-test GO_TEST_PKGS='./internal/harness/trackerfake
 ./internal/tracker/jira ./internal/tracker/tempo ./internal/tracker/linear
-./internal/tracker/jiraprovider ./internal/tracker/linearprovider'
-GO_TEST_FLAGS='-race'` after a change here.
+./internal/tracker/linear/linearschema ./internal/tracker/jiraprovider
+./internal/tracker/linearprovider' GO_TEST_FLAGS='-race'` after a change
+here.

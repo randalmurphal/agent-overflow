@@ -319,26 +319,31 @@ func setEstimation(c *jiraCall) answer {
 	var stored any
 	switch {
 	case f.id == "timeoriginalestimate":
-		is.OriginalEstimate = nil
+		var secs *int64
 		if in.Value != nil {
-			secs, err := jiraDuration(*in.Value)
+			n, err := jiraDuration(*in.Value)
 			if err != nil {
 				return jiraErrors(http.StatusBadRequest, "The estimate is not a duration.")
 			}
-			is.OriginalEstimate, stored = &secs, estimateText(secs)
-			if is.RemainingEstimate == nil {
-				is.RemainingEstimate = &secs
-			}
+			secs, stored = &n, estimateText(n)
+		}
+		is.OriginalEstimate = secs
+		if secs != nil && is.RemainingEstimate == nil {
+			remaining := *secs
+			is.RemainingEstimate = &remaining
 		}
 	case f.kind == kindNumber:
-		delete(is.Values, f.id)
+		var n *float64
 		if in.Value != nil {
-			n, err := strconv.ParseFloat(*in.Value, 64)
+			v, err := strconv.ParseFloat(*in.Value, 64)
 			if err != nil {
 				return jiraErrors(http.StatusBadRequest, "The estimate is not a number.")
 			}
-			c.s.store(is, f, false, mustJSON(n))
-			stored = strconv.FormatFloat(n, 'f', -1, 64)
+			n, stored = &v, strconv.FormatFloat(v, 'f', -1, 64)
+		}
+		delete(is.Values, f.id)
+		if n != nil {
+			c.s.store(is, f, false, mustJSON(*n))
 		}
 	default:
 		return unhandledf("estimation in field %s of kind %d", f.id, f.kind)

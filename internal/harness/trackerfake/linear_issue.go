@@ -26,137 +26,114 @@ func (o issueObj) typeName() string {
 func (o issueObj) archived() bool { return !o.is.ArchivedAt.IsZero() || o.is.Trashed }
 
 func (o issueObj) sortKey(field string) (float64, bool) {
-	switch field {
-	case "updatedAt":
-		return float64(o.is.UpdatedAt.UnixMilli()), true
-	case "createdAt":
-		return float64(o.is.CreatedAt.UnixMilli()), true
-	case "manual":
-		return o.is.SortOrder, true
-	case "priority":
-		// No priority sorts after low (unverified).
-		if o.is.Priority == 0 {
-			return 5, true
-		}
-		return o.is.Priority, true
+	f, ok := issueSorts[field]
+	if !ok {
+		return 0, false
 	}
-	return 0, false
+	return f(o.is), true
 }
 
-func (o issueObj) value(name string) (any, bool) {
-	is, w := o.is, o.w
-	switch name {
-	case "id":
-		return is.ID, true
-	case "identifier":
-		return w.identifier(is), true
-	case "number":
-		return is.Number, true
-	case "title":
-		return is.Title, true
-	case "description":
-		return stringOrNil(is.Description), true
-	case "url":
-		return "https://linear.app/" + w.URLKey + "/issue/" + w.identifier(is) + "/" + slug(is.Title), true
-	case "branchName":
-		return strings.ToLower(w.identifier(is)) + "-" + slug(is.Title), true
-	case "priority":
-		return is.Priority, true
-	case "estimate":
-		return numOrNil(is.Estimate), true
-	case "sortOrder":
-		return is.SortOrder, true
-	case "prioritySortOrder":
-		return is.PrioritySortOrder, true
-	case "subIssueSortOrder":
-		return numOrNil(is.SubIssueSortOrder), true
-	case "team":
-		return w.teamRef(is.Team), true
-	case "state":
-		return w.stateRef(is.State), true
-	case "assignee":
-		return w.userRef(is.Assignee), true
-	case "creator":
-		return w.userRef(is.Creator), true
-	case "cycle":
-		return w.cycleRef(is.Cycle), true
-	case "project":
-		return w.projectRef(is.Project), true
-	case "parent":
-		return w.issueRef(is.Parent), true
-	case "labelIds":
-		return append([]string{}, is.Labels...), true
-	case "labels":
+func (o issueObj) value(name string) (any, bool) { return issueFields.get(o, name) }
+
+var issueFields = fieldTable[issueObj]{
+	"id":         func(o issueObj) any { return o.is.ID },
+	"identifier": func(o issueObj) any { return o.w.identifier(o.is) },
+	"number":     func(o issueObj) any { return o.is.Number },
+	"title":      func(o issueObj) any { return o.is.Title },
+	"description": func(o issueObj) any {
+		return stringOrNil(o.is.Description)
+	},
+	"url": func(o issueObj) any {
+		return "https://linear.app/" + o.w.URLKey + "/issue/" + o.w.identifier(o.is) + "/" + slug(o.is.Title)
+	},
+	"branchName":        func(o issueObj) any { return strings.ToLower(o.w.identifier(o.is)) + "-" + slug(o.is.Title) },
+	"priority":          func(o issueObj) any { return o.is.Priority },
+	"estimate":          func(o issueObj) any { return numOrNil(o.is.Estimate) },
+	"sortOrder":         func(o issueObj) any { return o.is.SortOrder },
+	"prioritySortOrder": func(o issueObj) any { return o.is.PrioritySortOrder },
+	"subIssueSortOrder": func(o issueObj) any { return numOrNil(o.is.SubIssueSortOrder) },
+	"team":              func(o issueObj) any { return o.w.teamRef(o.is.Team) },
+	"state":             func(o issueObj) any { return o.w.stateRef(o.is.State) },
+	"assignee":          func(o issueObj) any { return o.w.userRef(o.is.Assignee) },
+	"creator":           func(o issueObj) any { return o.w.userRef(o.is.Creator) },
+	"cycle":             func(o issueObj) any { return o.w.cycleRef(o.is.Cycle) },
+	"project":           func(o issueObj) any { return o.w.projectRef(o.is.Project) },
+	"parent":            func(o issueObj) any { return o.w.issueRef(o.is.Parent) },
+	"labelIds":          func(o issueObj) any { return append([]string{}, o.is.Labels...) },
+	"labels": func(o issueObj) any {
 		var out []gqlObject
-		for _, id := range is.Labels {
-			out = append(out, labelObj{w, w.label(id)})
+		for _, id := range o.is.Labels {
+			out = append(out, labelObj{o.w, o.w.label(id)})
 		}
-		return out, true
-	case "dueDate":
-		return stringOrNil(is.DueDate), true
-	case "createdAt":
-		return is.CreatedAt, true
-	case "updatedAt":
-		return is.UpdatedAt, true
-	case "startedAt":
-		return is.StartedAt, true
-	case "completedAt":
-		return is.CompletedAt, true
-	case "canceledAt":
-		return is.CanceledAt, true
-	case "archivedAt":
-		return is.ArchivedAt, true
-	case "trashed":
-		if !is.Trashed {
-			return nil, true
+		return out
+	},
+	"dueDate":     func(o issueObj) any { return stringOrNil(o.is.DueDate) },
+	"createdAt":   func(o issueObj) any { return o.is.CreatedAt },
+	"updatedAt":   func(o issueObj) any { return o.is.UpdatedAt },
+	"startedAt":   func(o issueObj) any { return o.is.StartedAt },
+	"completedAt": func(o issueObj) any { return o.is.CompletedAt },
+	"canceledAt":  func(o issueObj) any { return o.is.CanceledAt },
+	"archivedAt":  func(o issueObj) any { return o.is.ArchivedAt },
+	"trashed": func(o issueObj) any {
+		if !o.is.Trashed {
+			return nil
 		}
-		return true, true
-	}
-	return o.related(name)
-}
-
-// related is the issue's connections to other records.
-func (o issueObj) related(name string) (any, bool) {
-	is, w := o.is, o.w
-	var out []gqlObject
-	switch name {
-	case "children":
-		for i := range w.Issues {
-			if w.Issues[i].Parent == is.ID {
-				out = append(out, issueObj{w: w, is: &w.Issues[i]})
+		return true
+	},
+	"children": func(o issueObj) any {
+		var out []gqlObject
+		for i := range o.w.Issues {
+			if o.w.Issues[i].Parent == o.is.ID {
+				out = append(out, issueObj{w: o.w, is: &o.w.Issues[i]})
 			}
 		}
-	case "comments":
-		for i := range w.Comments {
-			if w.Comments[i].Issue == is.ID {
-				out = append(out, commentObj{w, &w.Comments[i]})
+		return out
+	},
+	"comments": func(o issueObj) any {
+		var out []gqlObject
+		for i := range o.w.Comments {
+			if o.w.Comments[i].Issue == o.is.ID {
+				out = append(out, commentObj{o.w, &o.w.Comments[i]})
 			}
 		}
-	case "attachments":
-		for i := range w.Attachments {
-			if w.Attachments[i].Issue == is.ID {
-				out = append(out, attachmentObj{w, &w.Attachments[i]})
+		return out
+	},
+	"attachments": func(o issueObj) any {
+		var out []gqlObject
+		for i := range o.w.Attachments {
+			if o.w.Attachments[i].Issue == o.is.ID {
+				out = append(out, attachmentObj{o.w, &o.w.Attachments[i]})
 			}
 		}
-	case "relations", "inverseRelations":
-		for i := range w.Relations {
-			r := &w.Relations[i]
-			if (name == "relations" && r.Issue == is.ID) || (name == "inverseRelations" && r.Related == is.ID) {
-				out = append(out, relationObj{w, r})
-			}
+		return out
+	},
+	"relations":        func(o issueObj) any { return o.relations(func(r *LinearRelation) string { return r.Issue }) },
+	"inverseRelations": func(o issueObj) any { return o.relations(func(r *LinearRelation) string { return r.Related }) },
+	"history": func(o issueObj) any {
+		var out []gqlObject
+		for i := range o.is.History {
+			out = append(out, historyObj{&o.is.History[i]})
 		}
-	case "history":
-		for i := range is.History {
-			out = append(out, historyObj{&is.History[i]})
-		}
-	case "stateHistory":
-		for _, sp := range w.stateSpans(is) {
+		return out
+	},
+	"stateHistory": func(o issueObj) any {
+		var out []gqlObject
+		for _, sp := range o.w.stateSpans(o.is) {
 			out = append(out, sp)
 		}
-	default:
-		return nil, false
+		return out
+	},
+}
+
+// relations are the relations whose end (side) is the issue.
+func (o issueObj) relations(side func(*LinearRelation) string) []gqlObject {
+	var out []gqlObject
+	for i := range o.w.Relations {
+		if r := &o.w.Relations[i]; side(r) == o.is.ID {
+			out = append(out, relationObj{o.w, r})
+		}
 	}
-	return out, true
+	return out
 }
 
 // stateSpans are the intervals the issue spent in each state, from its
