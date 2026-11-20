@@ -62,8 +62,8 @@ func (r ThreadRequest) RunOpen() bool {
 	return r.RunTotal == nil
 }
 
-// requestRunColumns is the run's six columns in scan order.
-const requestRunColumns = `run_base_tool_calls, run_base_tokens, run_base_turn_ms, run_tool_calls, run_tokens, run_turn_ms`
+// requestRunColumns is the run's seven columns in scan order.
+const requestRunColumns = `run_base_tool_calls, run_base_tokens, run_base_turn_ms, run_tool_calls, run_tokens, run_turn_ms, COALESCE(run_token, '')`
 
 // runFiguresOf is three scanned columns as figures, nil when the first is
 // NULL.
@@ -136,27 +136,29 @@ func tallyFiguresSQL(id, now string) [3]string {
 // tracks its run, ?25 now. The base is that of the caller's open run on
 // the same worker when one is open (the newest), so the request joins it;
 // else the given base; else, for a local send to a thread its caller
-// spawned, the target's tally now; else none, no run.
+// spawned, the target's tally now; else none, no run. A request that joins
+// a run records that run's first request (run_token); one that starts a
+// run records its own token.
 var insertThreadRequestSQL = func() string {
 	tally := tallyFiguresSQL("?6", "?25")
 	return `INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
 		    next_check, attempts, issue, lineage_only, created_at, updated_at, admit_until, target_computer_name,
-		    run_base_tool_calls, run_base_tokens, run_base_turn_ms)
+		    run_base_tool_calls, run_base_tokens, run_base_turn_ms, run_token)
 		 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-		        base.tc, base.tk, base.ms
+		        base.tc, base.tk, base.ms, CASE WHEN base.tc IS NOT NULL THEN COALESCE(base.rt, ?1) END
 		   FROM (SELECT 1) LEFT JOIN (
-		        SELECT tc, tk, ms FROM (
-		            SELECT o.run_base_tool_calls AS tc, o.run_base_tokens AS tk, o.run_base_turn_ms AS ms, 0 AS pick, o.created_at AS at
+		        SELECT tc, tk, ms, rt FROM (
+		            SELECT o.run_base_tool_calls AS tc, o.run_base_tokens AS tk, o.run_base_turn_ms AS ms, o.run_token AS rt, 0 AS pick, o.created_at AS at
 		              FROM thread_requests o INDEXED BY idx_thread_requests_run_open
 		             WHERE ?3 IN ('spawn', 'send') AND ?6 <> '' AND ?16 = 0
 		               AND o.caller_thread_id = ?2 AND ` + runOpenSQL("o") + `
 		               AND o.target_computer_id = ?5 AND o.target_thread_id = ?6 AND o.lineage_only = 0
 		            UNION ALL
-		            SELECT ?21, ?22, ?23, 1, 0 WHERE ?21 IS NOT NULL
+		            SELECT ?21, ?22, ?23, NULL, 1, 0 WHERE ?21 IS NOT NULL
 		            UNION ALL
-		            SELECT ` + tally[0] + `, ` + tally[1] + `, ` + tally[2] + `, 2, 0
+		            SELECT ` + tally[0] + `, ` + tally[1] + `, ` + tally[2] + `, NULL, 2, 0
 		             WHERE ?21 IS NULL AND ?24 = 1 AND ?3 = 'send' AND ?5 = '' AND ?6 <> ''
 		               AND ` + spawnerOfSQL("?6") + ` = ?2)
 		         ORDER BY pick, at DESC LIMIT 1) AS base`

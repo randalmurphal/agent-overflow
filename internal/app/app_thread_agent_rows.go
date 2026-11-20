@@ -412,10 +412,22 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		request := &requests[index].ThreadRequest
 		entries = append(entries, threadAgentEntry{request: request})
 		depth := requests[index].Depth
+		// A row in a spawn's place on a paired computer nests that spawn's
+		// thread there, whichever of its caller's requests the row shows.
+		spawn := *request
+		if node := requests[index].Node; node != "" && node != request.Token && request.TargetComputerID != "" {
+			row, found, err := a.store.GetThreadRequest(node)
+			if err != nil {
+				return ThreadAgentRows{}, nil, err
+			}
+			if found {
+				spawn = row
+			}
+		}
 		// A remote spawn at the last level still reads its thread's state;
 		// it nests none of its rows.
-		if request.RemoteListingReach() {
-			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request, ended: remoteSpawnEnded(*request, requests)})
+		if spawn.RemoteListingReach() {
+			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: spawn, shown: *request, ended: remoteSpawnEnded(spawn, *request)})
 		}
 	}
 	answers := a.remoteAgentAnswers(ctx, remote, maxDepth, peers)
@@ -429,7 +441,6 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		// row says (NestedHidden).
 		out.Hidden = out.Hidden || (remote[i].depth < maxDepth && answers[i].listing.Hidden)
 	}
-	out.Rows, entries = mergeAgentRuns(out.Rows, entries)
 	if len(out.Rows) > threadAgentRowLimit {
 		out.Rows, entries, out.Hidden = out.Rows[:threadAgentRowLimit], entries[:threadAgentRowLimit], true
 	}
@@ -438,19 +449,10 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 
 // remoteSpawnEnded reports whether a paired computer's spawn no longer
 // carries its worker into the listing, as the store reads a local spawn's
-// link (spawnActiveSQL): its own run ended, and none of its caller's sends
-// there listed beside it has a run open on the same thread.
-func remoteSpawnEnded(spawn store.ThreadRequest, requests []store.ThreadAgentRequest) bool {
-	if !spawn.RunEnded() {
-		return false
-	}
-	for _, request := range requests {
-		if request.Kind == store.ThreadRequestSend && request.RunOpen() && request.CallerThreadID == spawn.CallerThreadID &&
-			request.TargetComputerID == spawn.TargetComputerID && request.TargetThreadID == spawn.TargetThreadID {
-			return false
-		}
-	}
-	return true
+// link (spawnActiveSQL): its own run ended, and the request its row shows
+// is no send of its caller's whose run is open there.
+func remoteSpawnEnded(spawn, shown store.ThreadRequest) bool {
+	return spawn.RunEnded() && !(shown.Kind == store.ThreadRequestSend && shown.RunOpen())
 }
 
 // withholdApprovalDetail clears what an approval asks from the listing's

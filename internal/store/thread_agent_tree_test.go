@@ -709,9 +709,9 @@ func TestThreadAgentRowFramesNameTheWorkersAmongTheCallers(t *testing.T) {
 }
 
 // referenceAgentTree is the walk the listing replaced, one thread's own
-// rows at a time: each row, then, for a local spawn whose thread no
-// earlier row reached, that thread's rows one level down; a spawn at the
-// depth bound says whether its thread has rows.
+// rows at a time: each row, then, for a local spawn's row whose thread no
+// earlier row reached, that thread's rows one level down; a spawn's row at
+// the depth bound says whether its thread has rows.
 func referenceAgentTree(t *testing.T, s *Store, root string, depth int) []string {
 	t.Helper()
 	own := func(caller string) []ThreadAgentRequest {
@@ -728,8 +728,11 @@ func referenceAgentTree(t *testing.T, s *Store, root string, depth int) []string
 		for _, row := range own(caller) {
 			index := len(out)
 			out = append(out, fmt.Sprintf("%s@%d", row.Token, level))
+			// A send that stands in its spawn's place nests that spawn's
+			// thread, its own.
 			child := row.TargetThreadID
-			if row.Kind != ThreadRequestSpawn || child == "" || row.TargetComputerID != "" || visited[child] {
+			spawn := row.Kind == ThreadRequestSpawn || row.Node != row.Token
+			if !spawn || child == "" || row.TargetComputerID != "" || visited[child] {
 				continue
 			}
 			visited[child] = true
@@ -827,6 +830,53 @@ func TestListThreadAgentTreeMatchesTheWalkOnRandomForests(t *testing.T) {
 			if got := agentTreeEntries(rows); !slices.Equal(got, wantNamed) {
 				t.Fatalf("graph %d depth %d named %v:\n got %v\nwant %v", graph, depth, named.Tokens, got, wantNamed)
 			}
+		}
+	}
+}
+
+// Below a spawn whose run ended, a worker's row shows only what that run
+// left: a later run of the worker's own on a thread it spawned is someone
+// else's work, so the row shows the spawn, done, not that run's open send,
+// and a spawn settled before the window is no row for it; the named read
+// agrees.
+func TestARowBelowAnEndedRunShowsItsDoneSpawn(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		settled int64
+		want    []string
+	}{
+		{20_000, []string{"lead-mid@0", "mid-leaf@1"}},
+		{5_000, []string{"lead-mid@0"}},
+	} {
+		s := newTestStore(t)
+		for _, id := range []string{"lead", "mid", "leaf"} {
+			mustCreateThread(t, s, id)
+		}
+		ended := `UPDATE thread_requests SET run_tool_calls = 0, run_tokens = 0, run_turn_ms = 0 WHERE token = ?`
+		seedAgentRequest(t, s, "lead-mid", "lead", ThreadRequestSpawn, "mid", false, 100)
+		settleAgentRequest(t, s, "lead-mid", 20_000)
+		mustExec(t, s.db, ended, "lead-mid")
+		seedAgentRequest(t, s, "mid-leaf", "mid", ThreadRequestSpawn, "leaf", false, 110)
+		settleAgentRequest(t, s, "mid-leaf", c.settled)
+		mustExec(t, s.db, ended, "mid-leaf")
+		seedAgentRequest(t, s, "mid-later", "mid", ThreadRequestSend, "leaf", true, 120)
+		mustExec(t, s.db, `UPDATE thread_requests SET run_base_tool_calls = 0, run_base_tokens = 0, run_base_turn_ms = 0, run_token = token
+			WHERE token = 'mid-later'`)
+
+		rows, _, err := s.ListThreadAgentTree(agentTreeRead("lead", 4))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := agentTreeEntries(rows); !slices.Equal(got, c.want) {
+			t.Fatalf("settled at %d: rows %v; want %v", c.settled, got, c.want)
+		}
+		named := agentTreeRead("lead", 4)
+		named.Tokens = []string{"mid-later", "mid-leaf"}
+		if rows, _, err = s.ListThreadAgentTree(named); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := agentTreeEntries(rows), c.want[1:]; !slices.Equal(got, want) {
+			t.Fatalf("settled at %d: named rows %v; want %v", c.settled, got, want)
 		}
 	}
 }

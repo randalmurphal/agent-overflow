@@ -33,6 +33,9 @@ type threadAgentRemoteSlot struct {
 	index int
 	depth int
 	spawn store.ThreadRequest
+	// shown is the request the row shows: the spawn, or a send of a later
+	// run of its caller's there (store.ThreadAgentRequest.Node).
+	shown store.ThreadRequest
 	// ended says the spawn's run ended (remoteSpawnEnded): it nests only
 	// the rows its run left there, none of the work someone else's run
 	// does since.
@@ -96,21 +99,24 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	// row's nested_open says once recorded. A failed call is no news of
 	// rest: the last answer stands, which a refusal clears
 	// (noteAnswerLocked). It says where the thread is placed and what it
-	// waits on there too.
-	switch open := answer.listing.Open; {
-	case slot.spawn.RunEnded():
-		// Its run ended: what the thread does there now is not this row's.
-	case answer.listing.Worker != "":
-		parent.Worker = answer.listing.Worker
-	case open != nil && *open && parent.Worker == "":
-		parent.Worker = workerWaiting
-	}
-	peerSpawnReport(parent, slot.spawn, answer)
-	if parent.Worker == workerBlocked || parent.State == threadtools.RequestBlocked {
-		a.peerSpawnBlocked(parent, answer.listing)
-	}
-	if parent.open() && parent.BlockedOn == "" {
-		parent.Activity = answer.listing.Activity
+	// waits on there too. A send of a later run in the spawn's place keeps
+	// the state its own request reads (threadAgentView.row).
+	if slot.shown.Token == slot.spawn.Token {
+		switch open := answer.listing.Open; {
+		case slot.spawn.RunEnded():
+			// Its run ended: what the thread does there now is not this row's.
+		case answer.listing.Worker != "":
+			parent.Worker = answer.listing.Worker
+		case open != nil && *open && parent.Worker == "":
+			parent.Worker = workerWaiting
+		}
+		peerSpawnReport(parent, slot.spawn, answer)
+		if parent.Worker == workerBlocked || parent.State == threadtools.RequestBlocked {
+			a.peerSpawnBlocked(parent, answer.listing)
+		}
+		if parent.open() && parent.BlockedOn == "" {
+			parent.Activity = answer.listing.Activity
+		}
 	}
 	if answer.err != nil {
 		parent.NestedUnavailable = threadAgentPeerUnavailable(parent.Computer, answer.err)

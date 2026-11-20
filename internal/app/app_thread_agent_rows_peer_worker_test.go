@@ -288,7 +288,7 @@ func TestARemoteSpawnAtTheBoundSaysItsAgentsNestDeeper(t *testing.T) {
 	spawn := store.ThreadRequest{Token: "edge", Kind: store.ThreadRequestSpawn, TargetComputerID: "elsewhere", TargetThreadID: "there"}
 	for _, listed := range [][]ThreadAgentRow{nil, {{Token: "below", Kind: store.ThreadRequestSpawn, State: threadtools.RequestRunning}}} {
 		parent := ThreadAgentRow{Token: "edge", Depth: threadAgentRowDepth - 1}
-		rows, entries := f.app.nestPeerAgentRows(&parent, threadAgentRemoteSlot{depth: threadAgentRowDepth, spawn: spawn},
+		rows, entries := f.app.nestPeerAgentRows(&parent, threadAgentRemoteSlot{depth: threadAgentRowDepth, spawn: spawn, shown: spawn},
 			threadAgentPeerAnswer{listing: ThreadAgentRows{Rows: listed, Worker: workerRunning}}, threadAgentRowDepth)
 		if len(rows) != 0 || len(entries) != 0 || parent.Worker != workerRunning || parent.NestedHidden != (len(listed) > 0) {
 			t.Fatalf("with %d rows there: nested %v, parent %+v; want none nested, its state kept, and its rows said to nest deeper", len(listed), rows, parent)
@@ -305,12 +305,12 @@ func TestARemoteSpawnWhoseRunEndedNestsOnlyDoneRows(t *testing.T) {
 	f := newRequestFixture(t)
 	ended := store.ThreadRequest{Token: "done", CallerThreadID: "lead", Kind: store.ThreadRequestSpawn, TargetComputerID: "elsewhere", TargetThreadID: "there",
 		RunBase: &store.RunFigures{}, RunTotal: &store.RunFigures{ToolCalls: 1}}
-	if !remoteSpawnEnded(ended, nil) {
+	if !remoteSpawnEnded(ended, ended) {
 		t.Fatal("a spawn whose run ended still carries its worker")
 	}
-	send := store.ThreadAgentRequest{ThreadRequest: store.ThreadRequest{Token: "again", CallerThreadID: "lead", Kind: store.ThreadRequestSend,
-		TargetComputerID: "elsewhere", TargetThreadID: "there", RunBase: &store.RunFigures{ToolCalls: 1}}}
-	if remoteSpawnEnded(ended, []store.ThreadAgentRequest{send}) {
+	send := store.ThreadRequest{Token: "again", CallerThreadID: "lead", Kind: store.ThreadRequestSend,
+		TargetComputerID: "elsewhere", TargetThreadID: "there", RunBase: &store.RunFigures{ToolCalls: 1}}
+	if remoteSpawnEnded(ended, send) {
 		t.Fatal("a spawn whose caller has a run open on its thread carries nothing")
 	}
 	listed := []ThreadAgentRow{
@@ -319,7 +319,7 @@ func TestARemoteSpawnWhoseRunEndedNestsOnlyDoneRows(t *testing.T) {
 		{Token: "left", Kind: store.ThreadRequestSpawn, State: threadtools.RequestFinished},
 	}
 	parent := ThreadAgentRow{Token: "done", State: threadtools.RequestFinished}
-	rows, entries := f.app.nestPeerAgentRows(&parent, threadAgentRemoteSlot{depth: 1, spawn: ended, ended: true},
+	rows, entries := f.app.nestPeerAgentRows(&parent, threadAgentRemoteSlot{depth: 1, spawn: ended, shown: ended, ended: true},
 		threadAgentPeerAnswer{listing: ThreadAgentRows{Rows: listed, Worker: workerRunning}}, threadAgentRowDepth)
 	if len(rows) != 1 || rows[0].Token != "left" || rows[0].Depth != 1 || len(entries) != 1 || parent.Worker != "" || parent.open() {
 		t.Fatalf("nested %v, parent %+v; want the done row alone nested and the row closed", rows, parent)

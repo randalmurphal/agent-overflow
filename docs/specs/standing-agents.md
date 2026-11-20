@@ -1909,10 +1909,14 @@ closes up their spacing so the row holds at a phone width.
   send or ask with notify armed or a call parked on it. Reminders are
   wakes, not rows. A row is a run: a stretch of the worker's work from
   when it left rest for one of the caller's requests until it is at rest
-  again. Several of the caller's requests to one thread are one row
-  (`mergeAgentRuns`): of those listed, the oldest still open, which is the
-  run's first request, else the newest, in the place of the first, with
-  the worker's own rows nested under it. A send made while the caller's
+  again. The store reads one request per run before the listing's limit,
+  so a run takes one place in the listing, its counts and `Hidden`: a
+  request that joins a run records the run's first request
+  (`thread_requests.run_token`). A worker the caller spawned is one row in
+  its spawn's place, with the worker's own rows nested under it, showing
+  the caller's newest run on it: that run's oldest unsettled request,
+  else its first while it is open, else its newest settled. A request
+  that counts no run is a row of its own. A send made while the caller's
   run on that thread is open joins the run; a send to a thread the caller
   spawned after it rested starts a new run, and the earlier run's row
   stays in Past with its figures. A message that starts work on a worker
@@ -2261,8 +2265,10 @@ closes up their spacing so the row holds at a phone width.
   `ListThreadPastAgentRows` pages the rows,
   flat and newest settled first, ties by token: every spawn and ask it
   made, its sends with notify armed and its sends that counted a run,
-  with the total, one row per request: each run's row with that run's
-  figures. Each row is derived as an open one is. A page is at most 50
+  with the total, one row per run: the run's newest settled request,
+  with that run's figures, once none of its requests is unsettled; a
+  request that counts no run is a row of its own. The total and the
+  pages count runs. Each row is derived as an open one is. A page is at most 50
   rows, read from a
   cursor (settled time and token) through
   `idx_thread_requests_caller_settled` in index order, never offset or

@@ -191,9 +191,10 @@ func TestTwoSendsDuringOneRunAreOneRow(t *testing.T) {
 		t.Fatalf("after the window %+v; want nothing open", after.Rows)
 	}
 
-	// A later run, nobody's request, moves neither row.
+	// A later run, nobody's request, moves neither row. Past lists each run
+	// once: the sends' run by its newest settled send.
 	workerTurn(t, f.app, worker.ID, "t2", 3, 0)
-	for _, token := range []string{"runs-spawn", "runs-first", "runs-second"} {
+	for _, token := range []string{"runs-spawn", "runs-second"} {
 		row, ok := f.pastRow(t, f.caller.ID, token)
 		want := *ended.RunTotal
 		if token == "runs-spawn" {
@@ -202,6 +203,9 @@ func TestTwoSendsDuringOneRunAreOneRow(t *testing.T) {
 		if !ok || row.ToolCalls != want.ToolCalls || row.Tokens != want.Tokens || row.RuntimeMs != want.TurnMs {
 			t.Fatalf("Past row %s %+v (found %v); want its run's %+v", token, row, ok, want)
 		}
+	}
+	if got := f.pastTokens(t, f.caller.ID); len(got) != 2 {
+		t.Fatalf("Past %v; want the spawn's run and the sends' run, one row each", got)
 	}
 }
 

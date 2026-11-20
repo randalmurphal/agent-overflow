@@ -34,11 +34,13 @@ type PastAgentRequests struct {
 // pastAgentRowSQL is the request kinds a thread's past agent rows hold:
 // every spawn and ask, and a send whose wake was armed, less the spawns
 // whose thread is not at rest (agentTargetOpenSQL, with ?2 the held work).
-// A lineage row the retention sweep kept is one of them, with what the
-// sweep cleared gone.
+// A run is one row, its newest settled request once none is unsettled
+// (runLastSettledSQL); a request that tracks no run is a row of its own. A
+// lineage row the retention sweep kept is one of them, with what the sweep
+// cleared gone.
 var pastAgentRowSQL = `r.caller_thread_id = ?1 AND r.settled_at IS NOT NULL
 	   AND (r.kind IN ('spawn','ask') OR (r.kind = 'send' AND (r.notify = 1 OR r.run_base_tool_calls IS NOT NULL)))
-	   AND NOT ` + agentTargetOpenSQL("r")
+	   AND ` + runLastSettledSQL("r") + ` AND NOT ` + agentTargetOpenSQL("r")
 
 // ListThreadPastAgentRequests lists one page of the requests callerThreadID
 // made that its Agents segment lists as past: settled, newest settled

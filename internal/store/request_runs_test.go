@@ -29,10 +29,14 @@ func TestRequestRunsMigration(t *testing.T) {
 		t.Fatalf("the old row reads %s %q settled %d, base %v total %v; want it as it was, with no run", state, answer, settled, base, total)
 	}
 	var columns int
-	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('thread_requests') WHERE name LIKE 'run\_%' ESCAPE '\'`).Scan(&columns); err != nil || columns != 6 {
-		t.Fatalf("thread_requests has %d run columns, %v; want 6", columns, err)
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('thread_requests') WHERE name LIKE 'run\_%' ESCAPE '\'`).Scan(&columns); err != nil || columns != 7 {
+		t.Fatalf("thread_requests has %d run columns, %v; want 7", columns, err)
 	}
-	for _, name := range []string{"idx_thread_requests_run_open", "idx_thread_request_receipts_run_open"} {
+	var runToken *string
+	if err := db.QueryRow(`SELECT run_token FROM thread_requests WHERE token = 'old-spawn'`).Scan(&runToken); err != nil || runToken != nil {
+		t.Fatalf("the old row's run_token %v, %v; want none", runToken, err)
+	}
+	for _, name := range []string{"idx_thread_requests_run_open", "idx_thread_requests_run_token", "idx_thread_requests_run_heads", "idx_thread_request_receipts_run_open"} {
 		var index string
 		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&index); err != nil || index == "" {
 			t.Fatalf("%s: %q, %v", name, index, err)

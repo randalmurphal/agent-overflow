@@ -98,6 +98,24 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 			// The held work's spawns, a parked request's and a live
 			// thread's alike, are each a search of the spawn link.
 			assertPlanSearches(t, s, name, "ps", []string{"idx_thread_requests_spawn_link"}, read.query, read.args...)
+			// A row's run, its worker's newest run and a send's spawn are
+			// each a search by key: one request per run (ru, rs), the
+			// request a row shows (h, su, ss, sh) and the row a send falls
+			// in (nl, nr).
+			keyed := map[string]string{
+				"ru": "idx_thread_requests_run_token", "rs": "idx_thread_requests_run_token",
+				"su": "idx_thread_requests_run_token", "ss": "idx_thread_requests_run_token",
+				"h": "idx_thread_requests_run_heads", "sh": "sqlite_autoindex_thread_requests_1",
+				"nl": "idx_thread_requests_spawn_link", "nr": "idx_thread_requests_remote_spawn_target",
+			}
+			if read.name == "threadAgentTreeSQL" {
+				keyed["x"], keyed["nd"] = "sqlite_autoindex_thread_requests_1", "sqlite_autoindex_thread_requests_1"
+			} else {
+				keyed["nm"], keyed["n"], keyed["lm"] = "sqlite_autoindex_thread_requests_1", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_run_token"
+			}
+			for alias, index := range keyed {
+				assertPlanSearches(t, s, name, alias, []string{index}, read.query, read.args...)
+			}
 			text := planText(explainPlan(t, s, read.query, read.args...))
 			if read.name == "threadAgentTreeSQL" {
 				assertPlanSearches(t, s, name, "a", arm, read.query, read.args...)

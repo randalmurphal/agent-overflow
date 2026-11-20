@@ -194,6 +194,9 @@ type ThreadRequest struct {
 	// what the run did, set once the worker came to rest after it.
 	RunBase  *RunFigures `json:"-"`
 	RunTotal *RunFigures `json:"-"`
+	// RunToken is the token of the first request of the run this one
+	// counts, its own for that first, empty for a request that tracks none.
+	RunToken string `json:"-"`
 }
 
 // RemoteRequestSource is the thread a destination's receipts name for the
@@ -356,7 +359,7 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg, &r.AdmitUntil,
 		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName, &r.LinkEnd,
-		&run[0], &run[1], &run[2], &run[3], &run[4], &run[5],
+		&run[0], &run[1], &run[2], &run[3], &run[4], &run[5], &r.RunToken,
 	}, extra...)...)
 	r.RunBase, r.RunTotal = runFiguresOf(run[:3]), runFiguresOf(run[3:])
 	r.LateReplyExpired = lateReplyExpired != 0

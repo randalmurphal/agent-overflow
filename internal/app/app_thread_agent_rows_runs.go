@@ -18,10 +18,9 @@ import (
 // the spawner started. A send to the worker the caller spawned starts the
 // next run, or joins the one open, and is the row for it.
 //
-// The listing shows one row per worker, however many of the thread's
-// requests went to it (mergeAgentRuns): the oldest that is open, the run's
-// first request, else the newest, in the place of the first, under which
-// the worker's own rows nest.
+// The store reads one request per run and one row per worker the thread
+// spawned, before any limit (store.ListThreadAgentTree): the row takes the
+// spawn's place, with the worker's own rows nested under it.
 
 // threadAgentFigures is what a worker did over its life as one read saw
 // it: the open turn's time so far included, which turn is open named by its
@@ -155,73 +154,6 @@ func (a *App) remoteRunBase(row store.ThreadRequest) (*store.RunFigures, error) 
 		return &store.RunFigures{}, nil
 	}
 	return &store.RunFigures{ToolCalls: answer.listing.ToolCalls, Tokens: answer.listing.Tokens, TurnMs: answer.listing.RuntimeMs}, nil
-}
-
-// threadAgentRunKey names the worker a row's request went to, for
-// mergeAgentRuns: the caller, the ledger that holds the request, and the
-// thread on its computer. Empty for a row that is a worker of its own, an
-// ask's copy, or a request not yet given a thread.
-func threadAgentRunKey(row ThreadAgentRow) string {
-	if row.ThreadID == "" || (row.Kind != "spawn" && row.Kind != "send") {
-		return ""
-	}
-	return row.OwnerComputerID + "\x00" + row.CallerThreadID + "\x00" + row.ComputerID + "\x00" + row.ThreadID
-}
-
-// mergeAgentRuns keeps one row per worker of a listing in tree order, with
-// what stops it: of the rows of one caller to one thread, the oldest open,
-// which is the run's first request, else the newest, placed where the
-// first of them is (a spawn, whose worker's own rows follow it). That row
-// keeps what the first says of the rows under it, and a spawn's placement,
-// which the thread holds whichever request the row shows.
-func mergeAgentRuns(rows []ThreadAgentRow, entries []threadAgentEntry) ([]ThreadAgentRow, []threadAgentEntry) {
-	type run struct{ first, shown int }
-	runs := map[string]*run{}
-	merged := false
-	for index, row := range rows {
-		key := threadAgentRunKey(row)
-		if key == "" {
-			continue
-		}
-		r := runs[key]
-		if r == nil {
-			runs[key] = &run{first: index, shown: index}
-			continue
-		}
-		merged = true
-		// Siblings are oldest first: a later open row is younger than the
-		// open one kept, and a later closed one newer than the closed one.
-		if shown := rows[r.shown]; !shown.open() {
-			r.shown = index
-		}
-	}
-	if !merged {
-		return rows, entries
-	}
-	outRows := make([]ThreadAgentRow, 0, len(rows))
-	outEntries := make([]threadAgentEntry, 0, len(entries))
-	for index, row := range rows {
-		key := threadAgentRunKey(row)
-		r := runs[key]
-		if key == "" || r == nil {
-			outRows, outEntries = append(outRows, row), append(outEntries, entries[index])
-			continue
-		}
-		if index != r.first {
-			continue
-		}
-		first, shown := rows[r.first], rows[r.shown]
-		shown.Depth = first.Depth
-		shown.NestedHidden = shown.NestedHidden || first.NestedHidden
-		if shown.NestedUnavailable == "" {
-			shown.NestedUnavailable = first.NestedUnavailable
-		}
-		if shown.Kind != "spawn" && first.Kind == "spawn" {
-			shown.Placement, shown.Archived = first.Placement, first.Archived
-		}
-		outRows, outEntries = append(outRows, shown), append(outEntries, entries[r.shown])
-	}
-	return outRows, outEntries
 }
 
 // noteRunsMayBeOpen records that a request changed, which may have started
