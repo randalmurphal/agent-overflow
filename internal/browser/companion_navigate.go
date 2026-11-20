@@ -21,12 +21,17 @@ func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID P
 	if err := access.bound(); err != nil {
 		return PageInfo{}, err
 	}
+	return m.navigateUserAddress(ctx, access, OpenOptions{PageID: pageID}, address)
+}
+
+// navigateUserAddress is NavigateCompanion of the page opts names.
+func (m *Manager) navigateUserAddress(ctx context.Context, access Access, opts OpenOptions, address string) (PageInfo, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return PageInfo{}, fmt.Errorf("browser: address is required")
 	}
 	nav := &userNavigation{}
-	info, err := m.navigateCompanion(context.WithValue(ctx, userNavigationKey{}, nav), access, pageID, address)
+	info, err := m.navigateCompanion(context.WithValue(ctx, userNavigationKey{}, nav), access, opts, address)
 	if errors.Is(err, errNavigationAborted) && nav.wasStopped() {
 		return info, nil
 	}
@@ -70,7 +75,7 @@ func (p *managedPage) runUserNavigation(ctx context.Context) func() {
 	}
 }
 
-func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID PageID, address string) (PageInfo, error) {
+func (m *Manager) navigateCompanion(ctx context.Context, access Access, opts OpenOptions, address string) (PageInfo, error) {
 	target, isFile, err := fileAddress(address)
 	if err != nil {
 		return PageInfo{}, err
@@ -82,14 +87,14 @@ func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID P
 				return PageInfo{}, err
 			}
 		}
-		return m.OpenFile(ctx, access, path, OpenOptions{PageID: pageID})
+		return m.OpenFile(ctx, access, path, opts)
 	}
 	if filepath.IsAbs(address) {
-		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
+		return m.OpenFile(ctx, access, address, opts)
 	}
 	workspaceFile := filepath.Join(access.Workspace(), filepath.FromSlash(address))
 	if info, err := os.Stat(workspaceFile); err == nil && info.Mode().IsRegular() {
-		return m.OpenFile(ctx, access, workspaceFile, OpenOptions{PageID: pageID})
+		return m.OpenFile(ctx, access, workspaceFile, opts)
 	}
 	lower := strings.ToLower(address)
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
@@ -106,7 +111,7 @@ func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID P
 			address = "https://" + address
 		}
 	}
-	return m.Open(ctx, access, address, OpenOptions{PageID: pageID})
+	return m.Open(ctx, access, address, opts)
 }
 
 // fileTarget is the file a typed address names: a path in the backend's own

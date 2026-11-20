@@ -108,12 +108,7 @@ func (m *Manager) listTabsLocked(tb *threadBrowser, companion bool) []threadTab 
 func (m *Manager) hasTab(tb *threadBrowser, pageID PageID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, tab := range m.companionTabsLocked(tb) {
-		if tab.id == pageID {
-			return true
-		}
-	}
-	return false
+	return m.hasTabLocked(tb, pageID)
 }
 
 // livePageLocked finds a live page by id in any scope. The caller holds m.mu.

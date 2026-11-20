@@ -146,13 +146,18 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		}
 
 		// The commit waits for a jar switch writing the thread's saved copy:
-		// a restore is a change of the tabs it captured.
+		// a restore is a change of the tabs it captured. It replaces the
+		// record it was admitted for and no other (tabHold).
 		if err := m.lockStructure(ctx, access.tb); err != nil {
 			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, err), m.abandonPage(scope, p))
 		}
 		closing := m.closed
-		refused := access.admitLocked()
-		current := !closing && refused == nil && m.suspended[rec.id] == rec
+		held := m.heldLocked(access, tabHold{rec: rec})
+		refused := held
+		if errors.Is(held, errTabReplaced) {
+			refused = nil
+		}
+		current := !closing && held == nil
 		stale := current && !m.jarCurrentLocked(p)
 		if current && !stale {
 			delete(scope.creating, p)
@@ -195,11 +200,8 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 // is bound to holds, rec is still its page's record and its thread has no
 // jar teardown pending. The caller holds m.mu.
 func (m *Manager) restoreAdmissionLocked(access Access, rec *suspendedPage) error {
-	if err := access.admitLocked(); err != nil {
+	if err := m.heldLocked(access, tabHold{rec: rec}); err != nil {
 		return err
-	}
-	if m.suspended[rec.id] != rec {
-		return errPageNotFound
 	}
 	if len(jarTeardownLocked(rec.owner)) > 0 {
 		return errJarTeardown

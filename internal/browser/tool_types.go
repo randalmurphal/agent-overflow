@@ -31,6 +31,10 @@ type SnapshotElement struct {
 
 type OpenOptions struct {
 	PageID PageID
+	// tab, when set, is the one incarnation of a tab the open loads
+	// (tabHold), in place of PageID: an operation that crossed a wait
+	// after it found the page never resolves the tab by id again.
+	tab *tabHold
 }
 
 type TypeOptions struct {

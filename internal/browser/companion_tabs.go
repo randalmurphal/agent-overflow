@@ -134,7 +134,10 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 		m.reopenRead()
 	}
 	_, err = m.openUserTab(ctx, access, turn, claim.address, claim.label, claim.index, claim)
-	if errors.Is(err, errSelectionPassed) || errors.Is(err, errClaimVoid) {
+	if errors.Is(err, errSelectionPassed) || errors.Is(err, errClaimVoid) || errors.Is(err, errTabReplaced) {
+		// Nothing to report: the closed tab was forgotten, or the tab it
+		// opened was replaced before its address loaded, which then loads
+		// nowhere.
 		return nil
 	}
 	return err
@@ -170,9 +173,10 @@ func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pag
 	if errors.Is(err, errSelectionPassed) {
 		return nil
 	}
-	if errors.Is(err, errClaimVoid) {
+	if errors.Is(err, errClaimVoid) || errors.Is(err, errTabReplaced) {
 		// The thread's browsing was forgotten (a clear, a jar switch) after
-		// the duplicate read its source: it has nothing to duplicate.
+		// the duplicate read its source, or its new tab was replaced before
+		// the source's address loaded: it has nothing to duplicate.
 		return errPageNotFound
 	}
 	return err

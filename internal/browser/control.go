@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -130,22 +131,30 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 	if strings.IndexFunc(label, unicode.IsControl) >= 0 {
 		return PageInfo{}, fmt.Errorf("browser: page label cannot contain control characters")
 	}
-	p, _, err := m.resolvePage(ctx, access, pageID, false)
-	if err != nil {
-		return PageInfo{}, err
-	}
-	// A label is in the saved copy a jar switch writes.
-	if err := m.lockStructure(ctx, access.tb); err != nil {
-		return PageInfo{}, err
-	}
-	if holder := m.labelHolderLocked(access.tb, p.id, label); holder != "" {
+	// The label lands on the page the tab is when it commits, after any jar
+	// switch writing the saved copy that holds the label (lockHeld): a tab
+	// the switch suspended meanwhile is resolved, and restored, again.
+	for {
+		p, _, err := m.resolvePage(ctx, access, pageID, false)
+		if err != nil {
+			return PageInfo{}, err
+		}
+		err = m.lockHeld(ctx, access, tabHold{p: p})
+		if errors.Is(err, errTabReplaced) {
+			continue
+		}
+		if err != nil {
+			return PageInfo{}, err
+		}
+		if holder := m.labelHolderLocked(access.tb, p.id, label); holder != "" {
+			m.mu.Unlock()
+			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
+		}
+		info, _ := p.commitInfo(pageUpdate{Label: &label})
 		m.mu.Unlock()
-		return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
+		m.emitThreadState(access.ThreadID())
+		return info, nil
 	}
-	info, _ := p.commitInfo(pageUpdate{Label: &label})
-	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID())
-	return info, nil
 }
 
 func (m *Manager) NameSession(_ context.Context, access Access, name string) (SessionInfo, error) {
@@ -190,9 +199,6 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 				return SessionInfo{}, ambiguousPageError(tabs)
 			}
 		}
-		if !m.hasTab(access.tb, pageID) {
-			return SessionInfo{}, errPageNotFound
-		}
 	} else if pageID != "" {
 		return SessionInfo{}, fmt.Errorf("browser: page_id is only valid when visible is true")
 	}
@@ -204,6 +210,12 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 		return SessionInfo{}, err
 	}
 	tb := access.tb
+	// The tab shown is one the thread has in the hold that shows it: a
+	// close during the wait for a jar switch leaves nothing to show.
+	if visible != nil && *visible && !m.hasTabLocked(tb, pageID) {
+		m.mu.Unlock()
+		return SessionInfo{}, errPageNotFound
+	}
 	if visible != nil {
 		tb.session.Visible = *visible
 		if *visible {

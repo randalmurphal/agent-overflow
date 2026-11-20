@@ -16,7 +16,10 @@ mode. Product behavior and authority are defined in
   suspends them (`suspend.go`), and shutdown saves them for the next boot
   (`page_records.go`); see browser-tools.md for the lifecycle. Every path that
   acts on a page by id goes through `resolvePage` so a suspended page
-  restores under the navigation policy. Showing the companion (`Visibility`)
+  restores under the navigation policy, and one that waits after it (the
+  structural gate, an engine call) acts on the incarnation it resolved or
+  created, never on the id again (`tabHold`, checked by `heldLocked` in
+  the hold that commits). Showing the companion (`Visibility`)
   only checks the tab exists; the pane's selection restores it.
 - One manager owns one engine. Profiles are per cookie jar, pages are per
   thread, and every operation rechecks thread ownership. Closing the last page

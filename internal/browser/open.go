@@ -105,26 +105,33 @@ func (m *Manager) openFile(ctx context.Context, access Access, path string, expe
 
 // navigate loads targetURL in the page opts names, or a new one. check, when
 // set, runs in the page's operation lock immediately before the load and
-// refuses it with its error.
+// refuses it with its error. A page opts holds (OpenOptions.tab) is loaded
+// only while it is still its tab's (heldLocked), checked there too.
 func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions, check func() error) (PageInfo, error) {
-	p, err := m.pageForOpen(ctx, access, opts.PageID, true)
-	if err != nil {
+	var p *managedPage
+	var err error
+	if opts.tab != nil {
+		p = opts.tab.p
+	} else if p, err = m.pageForOpen(ctx, access, opts.PageID, true); err != nil {
 		return PageInfo{}, err
 	}
 	if err := m.lockPageForOperation(ctx, p); err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, m.heldOr(access, opts, err)
 	}
 	defer p.mu.Unlock()
 	defer p.runUserNavigation(ctx)()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	if err := m.heldOr(access, opts, nil); err != nil {
+		return PageInfo{}, err
+	}
 	if check != nil {
 		if err := check(); err != nil {
 			return PageInfo{}, err
 		}
 	}
 	if err := p.driver.Navigate(opCtx, targetURL); err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, m.heldOr(access, opts, err)
 	}
 	p.touch()
 	info, _, err := m.readInfo(opCtx, p, pageListing{})
@@ -133,6 +140,21 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	}
 	m.pageUsed(p)
 	return info, err
+}
+
+// heldOr answers why the page opts holds is no longer its tab's, or err
+// when it still is or opts holds none: an operation the page's close or
+// suspension ended answers the tab's change, not the cancel it caused.
+func (m *Manager) heldOr(access Access, opts OpenOptions, err error) error {
+	if opts.tab == nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if held := m.heldLocked(access, *opts.tab); held != nil {
+		return held
+	}
+	return err
 }
 
 // pageForOpen answers the page an open navigates: the requested one, or a new
