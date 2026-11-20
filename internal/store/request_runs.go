@@ -226,12 +226,18 @@ func endRunsTx(tx *sql.Tx, where string, figures [3]string, args ...any) (_ []en
 // StartNudgeRun records the run a nudge of threadID by byThreadID (empty
 // for the person) starts, as token, when threadID is an owned worker whose
 // spawner here is not archived, is not byThreadID, and has no run open on
-// it: the nudge then joins that run. It reports whether it recorded one. A
-// message that is no nudge, the common case, costs one read and no write.
+// it: the nudge then joins that run. A worker a paired computer's spawn
+// owns has its nudge run recorded on that spawn's link by the same rule
+// (startPeerNudgeRun). It reports whether it recorded one. A message that
+// is no nudge, the common case, costs one read and no write.
 func (s *Store) StartNudgeRun(token, threadID, byThreadID string) (bool, error) {
-	var nudges bool
-	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 `+nudgeLinkSQL("?1", "?2")+`)`, threadID, byThreadID).Scan(&nudges); err != nil {
+	var nudges, peer bool
+	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 `+nudgeLinkSQL("?1", "?2")+`),
+		    EXISTS (SELECT 1 `+peerNudgeLinkSQL("?1", "?2")+`)`, threadID, byThreadID).Scan(&nudges, &peer); err != nil {
 		return false, fmt.Errorf("store: read whether a message to %s is a nudge: %w", threadID, err)
+	}
+	if peer {
+		return s.startPeerNudgeRun(token, threadID, byThreadID)
 	}
 	if !nudges {
 		return false, nil
@@ -278,8 +284,12 @@ func nudgeLinkSQL(thread, by string) string {
 
 // DropNudgeRun deletes the run StartNudgeRun recorded as token, for a
 // nudge that started no work, unless a request of the spawner's joined it
-// since.
+// since. A nudge run on a paired computer's link is cleared from it
+// (dropPeerNudgeRun).
 func (s *Store) DropNudgeRun(token string) error {
+	if err := s.dropPeerNudgeRun(token); err != nil {
+		return err
+	}
 	rows, err := s.db.Query(`DELETE FROM thread_requests
 		 WHERE token = ?1 AND nudge = 1 AND run_tool_calls IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM thread_requests j INDEXED BY idx_thread_requests_run_token
@@ -304,12 +314,17 @@ func (s *Store) DropNudgeRun(token string) error {
 
 // endNudgeRunsTx ends the open nudge runs on threadID now, whatever its
 // rest, when it is no owned worker: a worker given a sidebar row is no
-// longer its spawner's outside the runs the spawner started.
+// longer its spawner's outside the runs the spawner started. That covers
+// the nudge run a paired computer's link here keeps for it.
 func endNudgeRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
+	now := nowMillis()
+	const unowned = `NOT EXISTS (SELECT 1 FROM threads nw WHERE nw.id = ?1 AND nw.placement = 'owned')`
+	if err := endReceiptNudgesTx(tx, `target_thread_id = ?1 AND `+unowned, threadID, now); err != nil {
+		return nil, err
+	}
 	tally := tallyFiguresSQL("?1", "?2")
-	return endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1 AND nudge = 1
-		AND NOT EXISTS (SELECT 1 FROM threads nw WHERE nw.id = ?1 AND nw.placement = 'owned')`,
-		[3]string{tally[0], tally[1], tally[2]}, threadID, nowMillis())
+	return endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1 AND nudge = 1 AND `+unowned,
+		[3]string{tally[0], tally[1], tally[2]}, threadID, now)
 }
 
 // noteRunsEnded reports each request whose run ended.
@@ -353,7 +368,8 @@ func (s *Store) EndThreadRequestRunsAtRest(threadID string, rest *RestGuard) (_ 
 // OpenRunThreads lists the threads on this computer that requests with an
 // open run went to, this computer's or, on their receipts, a paired
 // computer's, with one of those requests settled, for the rest pass: a
-// settled one's run ends on its worker's rest. Any is false when no run is
+// settled one's run ends on its worker's rest. A nudge's open run on a
+// paired computer's link counts as settled. Any is false when no run is
 // open on this computer at all.
 func (s *Store) OpenRunThreads() (settled []string, any bool, err error) {
 	rows, err := s.reader().Query(`SELECT thread, MAX(settled) FROM (
@@ -363,7 +379,11 @@ func (s *Store) OpenRunThreads() (settled []string, any bool, err error) {
 		  UNION ALL
 		  SELECT target_thread_id, settled_at IS NOT NULL
 		    FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_run_open
-		   WHERE run_open = 1 AND target_thread_id IS NOT NULL)
+		   WHERE run_open = 1 AND target_thread_id IS NOT NULL
+		  UNION ALL
+		  SELECT target_thread_id, 1
+		    FROM thread_request_receipts INDEXED BY idx_thread_request_receipts_nudge_open
+		   WHERE nudge_open = 1 AND target_thread_id IS NOT NULL)
 		 GROUP BY thread`)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: list the open runs: %w", err)
@@ -403,7 +423,8 @@ func (s *Store) CallerRunOpen(callerThreadID, computerID, threadID string) (bool
 
 // EndRemoteThreadRequestRuns ends the open runs of the settled requests to
 // threadID on computerID, whose computer answered that the thread is at
-// rest having done figures over its life.
+// rest having done figures over its life. A nudge's run there ends by that
+// computer's word on the nudge alone (RecordRemoteNudgeRun).
 func (s *Store) EndRemoteThreadRequestRuns(computerID, threadID string, figures RunFigures) (err error) {
 	action := "store: end the runs on " + threadID + " on " + computerID
 	if computerID == "" || threadID == "" {
@@ -413,7 +434,7 @@ func (s *Store) EndRemoteThreadRequestRuns(computerID, threadID string, figures 
 	// runs' index spares them the write.
 	var open bool
 	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_requests INDEXED BY idx_thread_requests_run_open
-		 WHERE `+runOpenSQL("thread_requests")+` AND target_computer_id = `+textParam("?1")+` AND target_thread_id = ?2)`,
+		 WHERE `+runOpenSQL("thread_requests")+` AND target_computer_id = `+textParam("?1")+` AND target_thread_id = ?2 AND nudge = 0)`,
 		computerID, threadID).Scan(&open); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
@@ -425,7 +446,7 @@ func (s *Store) EndRemoteThreadRequestRuns(computerID, threadID string, figures 
 		return fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
-	runs, err := endRunsTx(tx, `target_computer_id = `+textParam("?1")+` AND target_thread_id = ?2`,
+	runs, err := endRunsTx(tx, `target_computer_id = `+textParam("?1")+` AND target_thread_id = ?2 AND nudge = 0`,
 		[3]string{"?3", "?4", "?5"}, computerID, threadID, figures.ToolCalls, figures.Tokens, figures.TurnMs)
 	if err != nil {
 		return fmt.Errorf("%s: %w", action, err)
@@ -435,4 +456,85 @@ func (s *Store) EndRemoteThreadRequestRuns(computerID, threadID string, figures 
 	}
 	s.noteRunsEnded(runs)
 	return nil
+}
+
+// RecordRemoteNudgeRun records the nudge run the paired computer that holds
+// the thread of spawnToken, a spawn from here, reported on the spawn's link
+// there (ReceiptRunOf): the row StartNudgeRun writes for a worker here, of
+// the spawn's caller, its base what the worker had done when the run began
+// there. A nudge already recorded only has its run ended, once nudge.End
+// says it ended, with those figures less its base, as a run ends at the
+// worker's rest. Nothing is recorded for an archived caller, or for a nudge
+// that began before the retention floor, which the sweep would remove
+// again. It reports whether it wrote. Most answers repeat a nudge already
+// recorded: one read by key spares them the write.
+func (s *Store) RecordRemoteNudgeRun(spawnToken string, nudge NudgeRun) (_ bool, err error) {
+	action := "store: record the nudge run " + nudge.Token + " of spawn " + spawnToken
+	if nudge.Token == "" {
+		return false, nil
+	}
+	var open bool
+	err = s.reader().QueryRow(`SELECT run_tool_calls IS NULL FROM thread_requests WHERE token = ?1 AND nudge = 1`, nudge.Token).Scan(&open)
+	found := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	if found && (!open || nudge.End == nil) {
+		return false, nil
+	}
+	now := nowMillis()
+	if !found && nudge.StartedAt < now-int64(ThreadRequestRetentionDays)*24*60*60*1000 {
+		return false, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	var runs []endedRun
+	if found {
+		runs, err = endRunsTx(tx, `token = ?1 AND nudge = 1`, [3]string{"?2", "?3", "?4"},
+			nudge.Token, nudge.End.ToolCalls, nudge.End.Tokens, nudge.End.TurnMs)
+		if err != nil {
+			return false, fmt.Errorf("%s: %w", action, err)
+		}
+	} else {
+		var end []any
+		if e := nudge.End; e != nil {
+			end = []any{max(0, e.ToolCalls-nudge.Base.ToolCalls), max(0, e.Tokens-nudge.Base.Tokens), max(0, e.TurnMs-nudge.Base.TurnMs)}
+		} else {
+			end = []any{nil, nil, nil}
+		}
+		at := min(nudge.StartedAt, now)
+		rows, err := tx.Query(`INSERT INTO thread_requests (
+			    token, caller_thread_id, kind, target_computer_id, target_thread_id, target_thread_title, target_provider,
+			    target_computer_name, notify, state, answer_kind, created_at, updated_at, settled_at,
+			    run_base_tool_calls, run_base_tokens, run_base_turn_ms, run_tool_calls, run_tokens, run_turn_ms, run_token, nudge)
+			 SELECT ?1, sp.caller_thread_id, 'send', sp.target_computer_id, sp.target_thread_id, sp.target_thread_title, sp.target_provider,
+			        sp.target_computer_name, 0, 'finished', '', ?3, ?4, ?3, ?5, ?6, ?7, ?8, ?9, ?10, ?1, 1
+			   FROM thread_requests sp CROSS JOIN threads c ON c.id = sp.caller_thread_id
+			  WHERE sp.token = ?2 AND sp.kind = 'spawn' AND sp.target_computer_id <> '' AND sp.target_thread_id <> '' AND c.archived = 0
+			 ON CONFLICT(token) DO NOTHING
+			 RETURNING token, caller_thread_id`,
+			nudge.Token, spawnToken, at, now, nudge.Base.ToolCalls, nudge.Base.Tokens, nudge.Base.TurnMs, end[0], end[1], end[2])
+		if err != nil {
+			return false, fmt.Errorf("%s: %w", action, err)
+		}
+		for rows.Next() {
+			var run endedRun
+			if err := rows.Scan(&run.token, &run.caller); err != nil {
+				_ = rows.Close()
+				return false, fmt.Errorf("%s: scan: %w", action, err)
+			}
+			runs = append(runs, run)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return false, fmt.Errorf("%s: %w", action, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	s.noteRunsEnded(runs)
+	return len(runs) > 0, nil
 }

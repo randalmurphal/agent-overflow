@@ -27,7 +27,9 @@
 // window; its Agents row names the computer and opens it, and Show in
 // Sidebar places it there, which Remove from Sidebar in that computer's
 // window undoes; a window attached only to the spawner's computer names it
-// and can neither open nor place it. Its approval wakes the spawner here,
+// and can neither open nor place it. The person's message to it there once
+// its spawn's run ended is one nudge row of the spawner's here, counting
+// that run alone, that ends at its rest and wakes nothing. Its approval wakes the spawner here,
 // whose Agents row reads "waiting on" the spawner, whose wake row opens
 // it there, and whose reply answers it there; with the spawner's computer
 // stopped, it stays the spawner's and that reply answers it once the
@@ -53,7 +55,8 @@ import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
-import { backgroundShellSteps, openPast } from './agents-tray-helpers.js';
+import { backgroundShellSteps, heldSendIds, openPast, pastRow, pastTotal } from './agents-tray-helpers.js';
+import { toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 import {
   CODEX_STEER_NOT_STEERABLE,
   FOOTER_TOKEN_PATTERN,
@@ -1550,6 +1553,90 @@ test('a spawn on the other computer is owned there: no sidebar row, its Agents r
   }
   await advanceGate(remote, run.held!.mockId, 'owned-there-hold');
   await awaitTurnCompleted(remote, run.worker);
+});
+
+/** A Bash call the worker runs to its end: one top-level tool call. */
+function bashCall(id: string, command: string): string[] {
+  return [toolUseLine(`msg-${id}`, `tu-${id}`, 'Bash', { command }), toolResultLine(`tu-${id}`, 'ok')];
+}
+
+// The person's message to an owned worker over there whose spawn's run
+// ended is a nudge of its spawner here: one active row of the spawner's,
+// counting only that run, ended at the worker's rest there, and delivering
+// the spawner nothing (docs/specs/standing-agents.md, "Owned workers").
+test('a nudge to a rested owned worker over there is one row of its spawner here that wakes nothing', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'nudge-there-caller', ['Nudging caller']);
+  const callerId = caller.threadIds[0];
+  const there = await seed(remote, 'nudge-there-work', ['nudge-there sibling'], true);
+  await setScenario(remote, there.path, threadToolsScenario({
+    name: 'nudge-there-worker', provider: 'claude',
+    turns: [
+      { steps: [{ emitLines: [...bashCall('spawn-ls', 'ls'), ...bashCall('spawn-make', 'make')] }], text: 'Built it.' },
+      { steps: [{ emitLines: bashCall('nudge-lint', 'make lint') }, { gate: 'nudge-there-hold' }], text: 'Linted it.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'nudge-there-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it.', title: 'Nudged remote worker', computer_id: remoteID, project_id: there.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await home.rpc('StartSession', callerId);
+  await home.rpc('SendMessage', callerId, 'have the GPU computer build it', null);
+  const spawned = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawned.isError, spawned.text).toBe(false);
+  const { token: spawn, thread_id: worker } = spawned.value!;
+  // The worker answers and rests; its answer wakes the caller once.
+  await awaitTurnCompleted(remote, worker);
+  await awaitTurnCompleted(home, callerId);
+  await awaitTurnCompleted(home, callerId);
+  await expect.poll(() => placementThere(remote, worker)).toBe('owned');
+  await expect.poll(() => pastTotal(home, callerId), { timeout: 60_000 }).toBe(1);
+
+  await home.open(page);
+  const body = await openAgentsTray(page, callerId, 'desktop');
+  const open = body.locator('[data-testid="agent-tray-row"]:not([data-past])');
+  await expect(open).toHaveCount(0, { timeout: 60_000 });
+  const callerItems = (await home.rpc<unknown[]>('ListItems', callerId, false)).length;
+
+  // The person there continues it from its own pane.
+  await remote.rpc('SendMessage', worker, 'lint it too', null);
+  const hold = await awaitGate(remote, 'nudge-there-hold', there.path);
+  const nudgeRow = body.locator('[data-testid="agent-tray-row"][data-kind="nudge"]:not([data-past])');
+  await expect(nudgeRow).toHaveCount(1, { timeout: 60_000 });
+  await expect(open).toHaveCount(1);
+  await expect(nudgeRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(nudgeRow.getByTestId('agent-tray-row-state')).toHaveText('running');
+  await expect(nudgeRow.getByTestId('agent-tray-row-tools')).toHaveText('1 tool', { timeout: 60_000 });
+  await expect.poll(async () => (await home.rpc<{ open: number }>('GetThreadWorkerSummary', callerId)).open).toBe(1);
+  const nudge = await nudgeRow.getAttribute('data-token');
+  expect(nudge).toBeTruthy();
+  expect(nudge).not.toBe(spawn);
+  await page.mouse.move(800, 400);
+  await capture(page, 'nudge-remote-running.png', body);
+
+  // It ends at the worker's rest there: Past keeps it beside the spawn,
+  // each with its own run's figures, and the caller is delivered nothing.
+  const workerDone = awaitTurnCompleted(remote, worker);
+  await advanceGate(remote, hold.mockId, 'nudge-there-hold');
+  await workerDone;
+  await expect(open).toHaveCount(0, { timeout: 60_000 });
+  await expect.poll(() => pastTotal(home, callerId), { timeout: 60_000 }).toBe(2);
+  await openPast(page);
+  await expect(pastRow(page, nudge!).getByTestId('agent-tray-row-tools')).toHaveText('1 tool');
+  await expect(pastRow(page, spawn).getByTestId('agent-tray-row-tools')).toHaveText('2 tools');
+  await capture(page, 'nudge-remote-past.png', body);
+  expect(heldSendIds(home, callerId)).toEqual([]);
+  expect((await home.rpc<unknown[]>('ListItems', callerId, false)).length).toBe(callerItems);
 });
 
 const PROMPT_TOKEN = 'thread_reply, token (\\S+), once';

@@ -283,6 +283,30 @@ func TestANudgesRunIsNotEndedBeforeItsMessageLands(t *testing.T) {
 	}
 }
 
+// A nudged turn that ends before its message's send returns ends its run
+// once the send is over: the rest pass at the turn's end found the thread
+// held for the message and skipped it, and nothing else would read it.
+func TestANudgeWhoseTurnEndsBeforeItsSendReturnsEnds(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	worker := f.restedWorker(t, "quick-spawn", store.PlacementOwned)
+	f.app.sendMessageFn = func(threadID, _ string, _ []string) error {
+		workerTurn(t, f.app, threadID, "quick", 1, 30)
+		f.app.threadRequestsWG.Wait()
+		return nil
+	}
+	f.nudge(t, "the person", worker)
+	waitUntil(t, 10*time.Second, func() bool {
+		f.app.threadRequestsWG.Wait()
+		open, err := f.app.store.CallerRunOpen(f.caller.ID, "", worker.ID)
+		return err == nil && !open
+	})
+	if open := f.openRows(t, f.caller.ID); len(open) != 0 {
+		t.Fatalf("open rows %+v after the nudged turn ended", open)
+	}
+}
+
 // A nudge whose message is refused starts no work and records no run.
 func TestARefusedNudgeRecordsNoRun(t *testing.T) {
 	t.Parallel()

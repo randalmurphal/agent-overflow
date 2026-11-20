@@ -238,6 +238,26 @@ type ThreadAgentRows struct {
 	// with them, whoever runs the thread since (endRemoteRunsAtRest). Nil
 	// while a run is open, and from a computer that predates it.
 	RunEnd *ThreadAgentRunEnd `json:"runEnd,omitempty"`
+	// RunOpen says a run of the asking thread's on the listed thread is open
+	// there, its requests' or a nudge's: the asking computer then ends none
+	// of its runs on the thread for Open alone (endRemoteRunsAtRest). False
+	// from a computer that predates it, which reads as before.
+	RunOpen bool `json:"runOpen,omitempty"`
+	// Nudge is the latest nudge run of the listed thread's link to the
+	// asking spawn (store.ReceiptRunOf), which the asking computer records
+	// as its nudge row (store.RecordRemoteNudgeRun). Nil when there is none,
+	// and from a computer that predates it, whose nudges show no row.
+	Nudge *ThreadAgentNudge `json:"nudge,omitempty"`
+}
+
+// ThreadAgentNudge is a nudge's run on a paired computer's worker: its
+// token, when it began on that computer's clock, what the worker had done
+// over its life then, and once it ended, what it had done then.
+type ThreadAgentNudge struct {
+	Token     string             `json:"token"`
+	StartedAt int64              `json:"startedAt"`
+	Base      ThreadAgentRunEnd  `json:"base"`
+	End       *ThreadAgentRunEnd `json:"end,omitempty"`
 }
 
 // ThreadAgentRunEnd is what a thread had done over its life when a run on it

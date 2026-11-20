@@ -40,11 +40,11 @@ func restedRemoteRun(t *testing.T, pair *reachPair) (*agentPeerPair, string) {
 	return agentPair, child
 }
 
-// A remote worker that answered and rested is in its spawner's Past. Its
-// person continues it from its own pane there. The update finds it
-// running, and the spawner still lists no row for it, counts nothing,
-// keeps the spawn in Past and leaves the turn to Stop All.
-func TestARemoteWorkerContinuedThereStaysInItsSpawnersPast(t *testing.T) {
+// A remote owned worker that answered and rested is in its spawner's Past.
+// Its person continues it from its own pane there: a nudge. The update
+// finds it running, and the spawner lists the nudge's row for it, counts
+// it, keeps the spawn in Past, and Stop All stops it there.
+func TestARemoteWorkerContinuedThereIsANudgeRowOfItsSpawner(t *testing.T) {
 	t.Parallel()
 	pair := newReachPair(t)
 	agentPair, child := restedRemoteRun(t, pair)
@@ -64,21 +64,21 @@ func TestARemoteWorkerContinuedThereStaysInItsSpawnersPast(t *testing.T) {
 	view := newThreadAgentView(pair.source)
 	view.since = time.Now().Add(time.Second).UnixMilli()
 	listing, _, err := pair.source.threadAgentTreeDepth(t.Context(), view, pair.caller.ID, threadAgentRowDepth, threadAgentPeersCached)
-	if err != nil || len(listing.Rows) != 0 {
-		t.Fatalf("listing %+v, %v; want no row for the person's run there", listing.Rows, err)
+	if err != nil || len(listing.Rows) != 1 || listing.Rows[0].Kind != threadAgentKindNudge || !listing.Rows[0].open() {
+		t.Fatalf("listing %+v, %v; want the nudge's row, open, for the person's run there", listing.Rows, err)
 	}
-	if got, err := pair.source.GetThreadWorkerSummary(t.Context(), pair.caller.ID); err != nil || got.Open != 0 {
-		t.Fatalf("summary %+v, %v; want nothing counted", got, err)
+	if got, err := pair.source.GetThreadWorkerSummary(t.Context(), pair.caller.ID); err != nil || got.Open != 1 {
+		t.Fatalf("summary %+v, %v; want the nudged worker counted", got, err)
 	}
 	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("past = %+v, %v; want the spawn kept there", past, err)
 	}
-	if stops, err := pair.source.StopThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(stops) != 0 {
-		t.Fatalf("Stop All = %+v, %v; want nothing of the spawner's to stop", stops, err)
+	if stops, err := pair.source.StopThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(stops) != 1 || stops[0].Token != listing.Rows[0].Token {
+		t.Fatalf("Stop All = %+v, %v; want the nudge's row stopped", stops, err)
 	}
-	if !threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn {
-		t.Fatal("Stop All interrupted the person's turn there")
-	}
+	waitUntil(t, 10*time.Second, func() bool {
+		return !threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 }
 
 // The spawner sends a follow-up to its rested remote worker: its listing

@@ -107,9 +107,16 @@ func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64
 // releaseSpawnLinksTx ends, in tx, every link the condition where (over
 // thread_request_receipts, with args) selects, and returns the threads they
 // named, sorted: the trigger has made each owned one standalone, so the
-// caller announces their placement.
+// caller announces their placement. A link's open nudge run ends with it,
+// with its thread's figures over its life now.
 func releaseSpawnLinksTx(tx *sql.Tx, where string, args ...any) (released []string, err error) {
-	rows, err := tx.Query(`UPDATE thread_request_receipts SET spawn_link = 0, updated_at = ?
+	tally := tallyFiguresSQL("thread_request_receipts.target_thread_id", "?1")
+	ending := func(column, figure string) string {
+		return column + ` = CASE WHEN nudge_open = 1 THEN ` + figure + ` ELSE ` + column + ` END`
+	}
+	rows, err := tx.Query(`UPDATE thread_request_receipts SET spawn_link = 0, updated_at = ?1,
+		    `+ending("nudge_tool_calls", tally[0])+`, `+ending("nudge_tokens", tally[1])+`, `+ending("nudge_turn_ms", tally[2])+`,
+		    nudge_open = CASE WHEN nudge_open = 1 THEN 0 ELSE nudge_open END
 		 WHERE spawn_link = 1 AND `+where+`
 		 RETURNING COALESCE(target_thread_id, '')`, append([]any{nowMillis()}, args...)...)
 	if err != nil {

@@ -1,9 +1,9 @@
 package app
 
 // A worker on a paired computer follows the rule a local one does
-// (docs/specs/standing-agents.md, "At rest"): once its spawner's run on it
-// ended there, a run the person starts there puts its prompts to the person
-// there and holds its spawner here from rest no longer.
+// (docs/specs/standing-agents.md, "Owned workers"): once its spawner's run
+// on it ended there, a run the person starts there is a nudge, a run of the
+// spawner's that routes the worker's prompts to it and holds it from rest.
 
 import (
 	"context"
@@ -13,14 +13,14 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// The remote worker rested and the person there continues it. There its
-// prompts are the person's, and its answer to the spawner's computer says
-// what its spawner's run did when it ended. Here, the spawn's run ends with
-// those figures even when this computer had not heard of the rest before
-// the person started, and the spawner reads at rest while the worker runs.
-// A send of the spawner's starts a run there that routes the worker's
-// prompts to the spawner again.
-func TestARemoteWorkersLaterRunIsThePersonsThere(t *testing.T) {
+// The remote owned worker rested and the person there continues it: a
+// nudge. There its prompts route to the spawner, and its answer to the
+// spawner's computer says what its spawner's run did when it ended. Here,
+// the spawn's run ends with those figures even when this computer had not
+// heard of the rest before the person started, and the nudge's row holds
+// the spawner while the worker runs. A send of the spawner's routes the
+// worker's prompts to the spawner too.
+func TestARemoteWorkersLaterRunIsANudgeOfItsSpawner(t *testing.T) {
 	t.Parallel()
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
@@ -47,17 +47,13 @@ func TestARemoteWorkersLaterRunIsThePersonsThere(t *testing.T) {
 	if want := (store.RunFigures{ToolCalls: ended.End.ToolCalls, Tokens: ended.End.Tokens, TurnMs: ended.End.TurnMs}); *row.RunTotal != want {
 		t.Fatalf("the spawn's run %+v; want what its worker had done when it ended there, %+v", *row.RunTotal, want)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		unrest, err := pair.source.workerUnrest(pair.caller.ID)
-		return err == nil && unrest.unrest == ""
-	})
-	if rest, err := pair.source.threadRest(pair.caller.ID); err != nil || rest.unrest != "" {
-		t.Fatalf("the spawner reads %+v, %v; want it at rest while the person runs its worker there", rest, err)
+	if rest, err := pair.source.threadRest(pair.caller.ID); err != nil || rest.unrest != workerWaiting {
+		t.Fatalf("the spawner reads %+v, %v; want it waiting on the nudged worker there", rest, err)
 	}
 	read, err := pair.source.readRest([]string{pair.caller.ID})
 	defer read.done()
-	if err != nil || !read.rests(pair.caller.ID) {
-		t.Fatalf("the decision reads the spawner not at rest (%v); want it at rest", err)
+	if err != nil || read.rests(pair.caller.ID) {
+		t.Fatalf("the decision reads the spawner at rest (%v); want it held by the nudge's run", err)
 	}
 
 	pair.sendThere(t, child, "and the release notes")

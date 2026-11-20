@@ -281,7 +281,16 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 		return ThreadAgentRows{}, err
 	}
 	if run.End != nil {
-		listing.RunEnd = &ThreadAgentRunEnd{ToolCalls: run.End.ToolCalls, Tokens: run.End.Tokens, RuntimeMs: run.End.TurnMs}
+		listing.RunEnd = runEndOf(*run.End)
+	}
+	listing.RunOpen = run.Open
+	if nudge := run.Nudge; nudge != nil {
+		listing.Nudge = &ThreadAgentNudge{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: *runEndOf(nudge.Base)}
+		if nudge.End != nil {
+			listing.Nudge.End = runEndOf(*nudge.End)
+		} else {
+			listing.RunOpen = true
+		}
 	}
 	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, time.Now())
 	if err != nil {
@@ -310,6 +319,11 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	}
 	a.withholdApprovalDetail(ctx, &listing)
 	return listing, nil
+}
+
+// runEndOf is figures as the agent_rows answer carries them.
+func runEndOf(figures store.RunFigures) *ThreadAgentRunEnd {
+	return &ThreadAgentRunEnd{ToolCalls: figures.ToolCalls, Tokens: figures.Tokens, RuntimeMs: figures.TurnMs}
 }
 
 // stopThreadAgentWorkHere is agent_stop on this computer: one row of

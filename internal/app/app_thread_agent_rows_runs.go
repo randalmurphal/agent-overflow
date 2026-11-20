@@ -114,20 +114,49 @@ func (a *App) remoteRunWorker(row store.ThreadRequest) workerRest {
 // ended there, with what the thread had done over its life when they did
 // (ThreadAgentRows.RunEnd), whoever runs it since; or, from a computer
 // that does not say, when its answer says the thread is at rest, with what
-// it reported the thread did over its life. A computer that predates the
-// open state says nothing of rest, and its runs stay open: its rows read
-// as they did before runs were kept.
+// it reported the thread did over its life, unless it says a run is still
+// open there (RunOpen): a nudge's message on its way, not yet started. A
+// computer that predates the open state says nothing of rest, and its runs
+// stay open: its rows read as they did before runs were kept. The answer's
+// nudge run is recorded, or ended, after (recordRemoteNudge).
 func (a *App) endRemoteRunsAtRest(spawn store.ThreadRequest, listing ThreadAgentRows) error {
 	var figures store.RunFigures
 	switch {
 	case listing.RunEnd != nil:
-		figures = store.RunFigures{ToolCalls: listing.RunEnd.ToolCalls, Tokens: listing.RunEnd.Tokens, TurnMs: listing.RunEnd.RuntimeMs}
-	case listing.Open != nil && !*listing.Open:
+		figures = runFiguresOf(*listing.RunEnd)
+	case listing.Open != nil && !*listing.Open && !listing.RunOpen:
 		figures = store.RunFigures{ToolCalls: listing.ToolCalls, Tokens: listing.Tokens, TurnMs: listing.RuntimeMs}
 	default:
+		return a.recordRemoteNudge(spawn, listing)
+	}
+	if err := a.store.EndRemoteThreadRequestRuns(spawn.TargetComputerID, spawn.TargetThreadID, figures); err != nil {
+		return err
+	}
+	return a.recordRemoteNudge(spawn, listing)
+}
+
+// recordRemoteNudge records the nudge run a paired computer's answer
+// reports on its worker as the spawn's caller's nudge row here, the row a
+// nudge of a worker on this computer has, or ends it once the answer says
+// it ended (store.RecordRemoteNudgeRun). Nothing is delivered for it and
+// nobody is woken: the row is settled when written and owes nothing.
+func (a *App) recordRemoteNudge(spawn store.ThreadRequest, listing ThreadAgentRows) error {
+	nudge := listing.Nudge
+	if nudge == nil {
 		return nil
 	}
-	return a.store.EndRemoteThreadRequestRuns(spawn.TargetComputerID, spawn.TargetThreadID, figures)
+	run := store.NudgeRun{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: runFiguresOf(nudge.Base)}
+	if nudge.End != nil {
+		end := runFiguresOf(*nudge.End)
+		run.End = &end
+	}
+	_, err := a.store.RecordRemoteNudgeRun(spawn.Token, run)
+	return err
+}
+
+// runFiguresOf is figures an agent_rows answer carried.
+func runFiguresOf(end ThreadAgentRunEnd) store.RunFigures {
+	return store.RunFigures{ToolCalls: end.ToolCalls, Tokens: end.Tokens, TurnMs: end.RuntimeMs}
 }
 
 // remoteRunBase is where the run of row, a request to a paired computer
@@ -293,6 +322,10 @@ func (a *App) beginWork(ctx context.Context, threadID, by string, nudges bool) (
 		if token != "" {
 			a.noteRunsMayBeOpen()
 		}
+		// A rest pass that found the thread held here skipped it, and the
+		// thread may have rested meanwhile: a quick turn can end before its
+		// message's send returns, and nothing else may come to read it.
+		a.noteRestWaitsMayChange()
 	}, nil
 }
 

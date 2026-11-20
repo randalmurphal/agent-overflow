@@ -774,7 +774,17 @@ Ruling 36, as built:
     it as one row. A nudge during a run of the spawner's is part of that
     run, and a request of the spawner's made while a nudge's run is open
     joins it. A Stop of its row brings the worker to rest and tells the
-    spawner, as for a worker that outlived its spawn.
+    spawner, as for a worker that outlived its spawn. A worker a paired
+    computer's spawner owns is nudged by the same rule, its spawner the
+    link's source thread there: its computer keeps the nudge's run on the
+    spawn's link (`thread_request_receipts.nudge_*`), ends it at the
+    worker's rest, its sidebar row or the link's end, and reports the
+    latest one in its `agent_rows` answer (`ThreadAgentRows.Nudge`). The
+    spawner's computer records it as the same row of the spawner's,
+    under the same token, and ends it with the figures that answer gives
+    (`store.RecordRemoteNudgeRun`), across a restart of either computer;
+    a pairing that ends ends it there. A worker's computer that predates
+    it reports no nudge, and its worker's later work is no row there.
   - Its prompts go to the spawner whoever started the run
     (`store.SpawnOwnerOf`), and the worker reads `waiting on <spawner>`.
     One the spawner does not take now stays the spawner's: a wake that
@@ -1978,7 +1988,8 @@ closes up their spacing so the row holds at a phone width.
   at the worker's rest; here it ends when that computer's `agent_rows`
   answer says it ended, with the worker's figures then (`runEnd`),
   whatever the worker does since, or, from a computer that does not say,
-  when the answer says the thread is at rest. A row shows the
+  when the answer says the thread is at rest and no run of the spawner's
+  is open there (`runOpen`). A row shows the
   target's provider (a paired computer's from its acknowledgement), the
   kind, its title, its computer when it is not this
   one (an ask on this computer shows the thread asked, its title and
