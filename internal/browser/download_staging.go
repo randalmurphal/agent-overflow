@@ -473,7 +473,8 @@ func pruneEndedRun(runDir string) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.Type().IsRegular() || !(stagedName(name) || placingNamePattern.MatchString(name)) {
+		prunable := stagedName(name) || placingNamePattern.MatchString(name)
+		if !entry.Type().IsRegular() || !prunable {
 			continue
 		}
 		if err := root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
