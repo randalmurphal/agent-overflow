@@ -30,7 +30,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { addressOwner } from './browserAddressOwner';
   import { browserPaneThread } from './browserPaneThread';
-  import { browserPaneMountId } from '../../stores/browserCompanion.svelte';
+  import { browserPaneAttachment, browserPaneMountId, browserPaneState } from '../../stores/browserCompanion.svelte';
   import { browserSelectionsSent } from '../../stores/browserActionWire';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
@@ -100,8 +100,8 @@
 
   // A draft belongs to the tab that owns what the user types
   // (addressOwner: the tab a suggestion switch the user chose is on its way
-  // to, until it is shown or another selection supersedes it; otherwise the
-  // tab shown). The field shows its tab's draft while there is one, and the
+  // to, until it is shown, another selection supersedes it or the tab is
+  // gone; otherwise the tab shown). The field shows its tab's draft while there is one, and the
   // active tab's address otherwise. A page push never replaces a draft (its
   // page's address changing, the chosen switch shown); the owner becoming
   // another tab drops it, as a tab switch replaces an edit with the new
@@ -122,6 +122,14 @@
   $effect(() => {
     if (switching && !switching.observed && activePage?.id === switching.pageId) switching.observed = true;
   });
+  // The thread's tabs as the pane's admitted state lists them: a switch on
+  // its way to a tab the thread no longer has (another window closed it)
+  // owns nothing.
+  let tabs = $derived.by(() => {
+    const threadId = thread();
+    const pane = threadId ? browserPaneAttachment(threadId) : null;
+    return (pane && browserPaneState(pane)?.pages) || [];
+  });
   let fieldPageId = $derived(addressOwner(
     activePage?.id ?? null,
     switching && {
@@ -129,6 +137,7 @@
       observed: switching.observed,
       superseded: mount !== null && browserSelectionsSent(mount) > switching.sentAt,
     },
+    (pageId) => tabs.some((tab) => tab.id === pageId),
   ));
   $effect(() => {
     const url = pageAddress();

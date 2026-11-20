@@ -17,6 +17,17 @@ describe('addressOwner', () => {
     ['no tab shown and none pending: none', null, null, null],
     ['no tab shown and a switch on its way: its tab', null, pending('a'), 'a'],
   ] as const)('%s', (_case, active, selection, owner) => {
-    expect(addressOwner(active, selection)).toBe(owner);
+    expect(addressOwner(active, selection, () => true)).toBe(owner);
+  });
+
+  // A switch on its way to a tab the thread no longer has owns nothing,
+  // whatever else is true of it: the owner is always a tab that exists.
+  it.each([
+    ['on its way', 'b', pending('a'), 'b'],
+    ['on its way, no tab shown', null, pending('a'), null],
+    ['shown before it went', 'b', pending('a', true), 'b'],
+    ['superseded', 'b', pending('a', false, true), 'b'],
+  ] as const)('a switch to a tab that is gone, %s: the tab shown', (_case, active, selection, owner) => {
+    expect(addressOwner(active, selection, (pageId) => pageId !== 'a')).toBe(owner);
   });
 });

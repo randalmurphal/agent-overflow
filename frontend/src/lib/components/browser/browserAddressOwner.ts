@@ -4,9 +4,10 @@
 /**
  * A tab switch the user chose from the address suggestions. It is an
  * intent until its selection is observed (the state shows that tab
- * active) or superseded (the user made any later tab selection), or it is
- * answered without either (the switch did not happen); the address bar
- * drops it then.
+ * active), superseded (the user made any later tab selection) or
+ * impossible (the thread no longer has that tab), or it is answered
+ * without any of them (the switch did not happen); the address bar drops
+ * it then.
  */
 export interface PendingSelection {
   readonly pageId: string;
@@ -19,10 +20,16 @@ export interface PendingSelection {
 /**
  * The tab that owns what the user types: the tab a pending suggestion
  * switch is on its way to, since that gesture targeted it, until the
- * switch is observed or superseded; otherwise the active tab, the one the
- * user sees. Null with neither.
+ * switch is observed or superseded or the thread has no such tab
+ * (`hasTab`, the tabs as the state lists them now), so the owner is always
+ * a tab that exists; otherwise the active tab, the one the user sees. Null
+ * with neither.
  */
-export function addressOwner(activePageId: string | null, pending: PendingSelection | null): string | null {
-  if (pending && !pending.observed && !pending.superseded) return pending.pageId;
+export function addressOwner(
+  activePageId: string | null,
+  pending: PendingSelection | null,
+  hasTab: (pageId: string) => boolean,
+): string | null {
+  if (pending && !pending.observed && !pending.superseded && hasTab(pending.pageId)) return pending.pageId;
   return activePageId;
 }

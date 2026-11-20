@@ -269,6 +269,19 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(sent.at(-1)).toEqual({ kind: 'navigate', pageId: 'a', address: 'https://typed-on-a.test/' });
   });
 
+  // b chosen, its reply held, and another window closes b: the thread has
+  // no such tab any more, so the tab shown owns what the user types.
+  it('gives the tab shown what is typed once the chosen tab is gone', async () => {
+    const { input, onAct } = mount('state');
+    const sent = sendThroughThePane(onAct);
+    await chooseTabSuggestion(input);
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 'L.1', pages: [PAGES[0]] } as never);
+    await tick();
+    await type(input, 'https://typed-on-a.test/');
+    key(input, { key: 'Enter' });
+    expect(sent.at(-1)).toEqual({ kind: 'navigate', pageId: 'a', address: 'https://typed-on-a.test/' });
+  });
+
   // The switch the suggestion asked for did not happen: what was typed for
   // that tab goes with it, and the field shows the tab still active.
   it('drops what was typed for a tab switch that did not land', async () => {
