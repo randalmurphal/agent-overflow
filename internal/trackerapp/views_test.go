@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"slices"
@@ -204,35 +205,44 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 		c.Parent = "10004"
 		return tracker.Detail{Card: c}, nil
 	}
-	for _, path := range []string{"read through", "from the mirror"} {
-		v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+	for _, path := range []string{"read through", "checked", "the mirror's copy"} {
+		var v DetailView
+		var err error
+		switch path {
+		case "read through":
+			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+		case "checked":
+			m.p.updatedMovesWithDetail(cardsOf)
+			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+		default:
+			v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
+		}
 		if err != nil || v.Card.StatusSince != want || v.Card.Parent == nil {
 			t.Fatalf("detail %s: status since %d, parent %+v, %v", path, v.Card.StatusSince, v.Card.Parent, err)
 		}
 	}
-	if m.p.count("Detail") != 1 {
-		t.Fatalf("%d detail reads", m.p.count("Detail"))
+	if m.p.count("Detail") != 1 || m.p.count("Cards") != 1 {
+		t.Fatalf("%d detail reads, %d card reads", m.p.count("Detail"), m.p.count("Cards"))
 	}
 }
 
 // A detail shows when its status began only when the mirror's time
 // describes that status and stay: a detail read before the delta and
-// history caught up shows it unknown, read through and from the mirror,
-// and so does a detail read before a newer card was stored, whatever its
-// status (never current, so read through each time).
+// history caught up shows it unknown, read through and as the mirror's
+// copy, and so does a detail read before a newer card was stored,
+// whatever its status.
 func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		updated int64
 		status  tracker.StatusID
-		reads   int
 	}{
-		"another status":                  {updated: 1_799_000_100_000, status: "s2", reads: 1},
-		"the same status entered again":   {updated: 1_799_000_100_000, status: "s1", reads: 1},
-		"an older card of another status": {updated: 1_798_900_000_000, status: "s2", reads: 2},
+		"another status":                  {updated: 1_799_000_100_000, status: "s2"},
+		"the same status entered again":   {updated: 1_799_000_100_000, status: "s1"},
+		"an older card of another status": {updated: 1_798_900_000_000, status: "s2"},
 		// The issue may have left the status and come back between the two
 		// versions, so the mirror's time is a later stay's.
-		"an older card of the same status": {updated: 1_798_900_000_000, status: "s1", reads: 2},
+		"an older card of the same status": {updated: 1_798_900_000_000, status: "s1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -259,14 +269,17 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 				c.Status = tc.status
 				return tracker.Detail{Card: c}, nil
 			}
-			for range 2 {
-				v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
-				if err != nil || v.Card.StatusSince != 0 || v.Card.Updated != tc.updated {
-					t.Fatalf("detail after %d reads: status %s since %d, updated %d, %v", m.p.count("Detail"), v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, err)
+			for _, mirrored := range []bool{false, true} {
+				var v DetailView
+				var err error
+				if mirrored {
+					v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
+				} else {
+					v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 				}
-			}
-			if m.p.count("Detail") != tc.reads {
-				t.Fatalf("%d detail reads", m.p.count("Detail"))
+				if err != nil || v.Card.StatusSince != 0 || v.Card.Updated != tc.updated {
+					t.Fatalf("detail (mirror's copy %v): status %s since %d, updated %d, %v", mirrored, v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, err)
+				}
 			}
 		})
 	}
@@ -327,12 +340,40 @@ func detailOfCard(c tracker.Card) tracker.Detail {
 	}
 }
 
+// openDetail opens issue's detail through IssueDetail and fails on an
+// error.
+func (m *mirrorFixture) openDetail(t *testing.T, issue tracker.IssueID) (DetailView, Changes) {
+	t.Helper()
+	v, ch, err := m.svc.IssueDetail(t.Context(), m.conn.ID, issue, Interactive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v, ch
+}
+
+// cardsAnswering answers a card read with *c for the issues asked that it
+// is.
+func cardsAnswering(c *tracker.Card) func([]tracker.IssueID) (tracker.Cards, error) {
+	return func(asked []tracker.IssueID) (tracker.Cards, error) {
+		var out tracker.Cards
+		if slices.Contains(asked, c.ID) {
+			out.Cards = append(out.Cards, *c)
+		}
+		return out, nil
+	}
+}
+
+// On a tracker whose update time moves with its detail, a stored detail is
+// checked with one card read: served when the card's update time is the
+// stored detail's, read again when it moved, the mirror's card refreshed
+// by the check either way.
 func TestIssueDetail(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	m.seedBoard(t)
 	c := card("10001", 1_799_000_000_000)
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	m.p.updatedMovesWithDetail(cardsAnswering(&c))
 	v, ch, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 	if err != nil {
 		t.Fatal(err)
@@ -344,39 +385,83 @@ func TestIssueDetail(t *testing.T) {
 		v.Fields[0].Value.Kind != "option" || v.Fields[0].Value.Choices[0].Name != "Web" {
 		t.Fatalf("detail %+v, changes %+v", v, ch)
 	}
-	// Cached and current: no read.
-	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil || m.p.count("Detail") != 1 {
-		t.Fatalf("a current detail was read again (%d reads): %v", m.p.count("Detail"), err)
+	if m.p.count("Cards") != 0 {
+		t.Fatal("a detail the mirror did not hold was checked with a card read")
 	}
-	// The card moved on: read again, an hour later, which marks the
-	// stored detail opened then.
+	// The card did not move: the stored detail, no detail read.
+	v, ch, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+	if err != nil || m.p.count("Detail") != 1 || m.p.count("Cards") != 1 || len(ch.Details) != 0 || v.Description != "Body" {
+		t.Fatalf("an unchanged card: %d detail reads, %d card reads, changes %+v, %v", m.p.count("Detail"), m.p.count("Cards"), ch, err)
+	}
+	// The card moved: the detail is read again, an hour later, which marks
+	// it opened then, and the mirror's card is the one the check read.
 	later := m.now().Add(time.Hour)
 	m.svc.now = func() time.Time { return later }
-	m.p.set(func(p *scripted) {
-		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
-			return tracker.RowPage{Rows: []tracker.Row{row("10001", 1_799_000_000_500, "a")}, Next: cursorAfter("10001")}, nil
-		}
-	})
-	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	c.Updated = c.Updated.Add(500)
-	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil || m.p.count("Detail") != 2 {
-		t.Fatalf("a stale detail was not read (%d reads): %v", m.p.count("Detail"), err)
+	c.Updated, c.Title = c.Updated.Add(500*time.Millisecond), "Renamed"
+	v, ch, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+	if err != nil || m.p.count("Detail") != 2 || m.p.count("Cards") != 2 || v.Card.Title != "Renamed" ||
+		!slices.Equal(ch.Details, ids("10001")) || !slices.Equal(ch.Cards, ids("10001")) {
+		t.Fatalf("a moved card: %d detail reads, %d card reads, %q, changes %+v, %v", m.p.count("Detail"), m.p.count("Cards"), v.Card.Title, ch, err)
+	}
+	if held := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); held.Card.Updated != millis(c.Updated) || held.Card.Title != "Renamed" {
+		t.Fatalf("the mirror's card %+v", held.Card)
 	}
 	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli() || d.ReadAt != later.UnixMilli() {
 		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli(), err)
 	}
-	// An issue the mirror does not keep is read every time, never stored.
+	// A card the tracker does not return is no check: the detail is read.
+	m.p.set(func(p *scripted) {
+		p.cards = func([]tracker.IssueID) (tracker.Cards, error) { return tracker.Cards{}, nil }
+	})
+	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil || m.p.count("Detail") != 3 {
+		t.Fatalf("a card not returned: %d detail reads, %v", m.p.count("Detail"), err)
+	}
+	// An issue the mirror does not keep is read every time, never stored and
+	// never checked.
 	other := card("10009", 1_799_000_000_000)
 	m.p.set(func(p *scripted) {
 		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(other), nil }
 	})
 	for range 2 {
-		if _, ch, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10009", Interactive); err != nil || len(ch.Details) != 0 {
+		if _, ch, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10009", Interactive); err != nil || !ch.Empty() {
 			t.Fatalf("an unkept issue: %+v, %v", ch, err)
 		}
 	}
-	if m.p.count("Detail") != 4 {
-		t.Fatalf("%d detail reads", m.p.count("Detail"))
+	if m.p.count("Detail") != 5 || m.p.count("Cards") != 3 {
+		t.Fatalf("%d detail reads, %d card reads", m.p.count("Detail"), m.p.count("Cards"))
+	}
+	if _, _, err := m.svc.MirroredDetail(m.conn.ID, "10009"); !errors.Is(err, ErrNotMirrored) {
+		t.Fatalf("the mirror's copy of an unkept issue: %v", err)
+	}
+}
+
+// On a tracker whose update time does not move with its detail (Linear: a
+// comment leaves it), every open reads the detail: a comment added since
+// the last open shows though the card did not move, and an identical
+// document changes nothing.
+func TestADetailIsReadWhereItsUpdateTimeDoesNotMove(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	d := detailOfCard(card("10001", 1_799_000_000_000))
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return d, nil }
+	open := func() (DetailView, Changes) { t.Helper(); return m.openDetail(t, "10001") }
+	if _, ch := open(); !slices.Equal(ch.Details, ids("10001")) {
+		t.Fatalf("the first open changed %+v", ch)
+	}
+	if _, ch := open(); !ch.Empty() {
+		t.Fatalf("an identical document changed %+v", ch)
+	}
+	d.Comments.Comments = append([]tracker.Comment{{ID: "c2", Author: "acc-user1", Body: "A new comment", Created: d.Card.Updated}}, d.Comments.Comments...)
+	v, ch := open()
+	if len(v.Comments) != 2 || v.Comments[0].Body != "A new comment" || !slices.Equal(ch.Details, ids("10001")) {
+		t.Fatalf("after a comment: %d comments, changes %+v", len(v.Comments), ch)
+	}
+	if m.p.count("Detail") != 3 || m.p.count("Cards") != 0 {
+		t.Fatalf("%d detail reads, %d card reads", m.p.count("Detail"), m.p.count("Cards"))
+	}
+	if v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001"); err != nil || len(v.Comments) != 2 {
+		t.Fatalf("the mirror's copy: %d comments, %v", len(v.Comments), err)
 	}
 }
 
@@ -408,5 +493,88 @@ func TestIssueDetailFailure(t *testing.T) {
 	}
 	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("a detail of a connection turned off: %v", err)
+	}
+}
+
+// A check or a read that fails leaves the stored detail as it was and
+// returns the tracker's failure, settled as the connection's problem; the
+// mirror's copy still reads.
+func TestAFailedCheckKeepsTheStoredDetail(t *testing.T) {
+	t.Parallel()
+	for name, moved := range map[string]bool{"the card read": false, "the detail read after a moved card": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixture(t)
+			m.seedBoard(t)
+			c := card("10001", 1_799_000_000_000)
+			m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+			m.p.updatedMovesWithDetail(cardsAnswering(&c))
+			m.openDetail(t, "10001")
+			before, _, _ := m.storedDetail(t, "10001")
+			unavailable := &trackerapi.StatusError{Tracker: "jira", Status: 503}
+			m.p.set(func(p *scripted) {
+				if moved {
+					c.Updated = c.Updated.Add(time.Second)
+					p.detail = func(tracker.IssueID) (tracker.Detail, error) { return tracker.Detail{}, unavailable }
+					return
+				}
+				p.cards = func([]tracker.IssueID) (tracker.Cards, error) { return tracker.Cards{}, unavailable }
+			})
+			_, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+			if got, ok := errors.AsType[*trackerapi.StatusError](err); !ok || got.Status != 503 || m.problem() == "" {
+				t.Fatalf("a failed check: %v, problem %q", err, m.problem())
+			}
+			after, _, ok := m.storedDetail(t, "10001")
+			if !ok || after.ReadAt != before.ReadAt || !bytes.Equal(after.Data, before.Data) {
+				t.Fatalf("the stored detail changed: read %d, was %d", after.ReadAt, before.ReadAt)
+			}
+			v, readAt, err := m.svc.MirroredDetail(m.conn.ID, "10001")
+			if err != nil || readAt != before.ReadAt || v.Description != "Body" {
+				t.Fatalf("the mirror's copy: read %d, %q, %v", readAt, v.Description, err)
+			}
+		})
+	}
+}
+
+// A connection turned off while its tracker answers a check or a read
+// ends the read: nothing is stored and the call fails wrapping
+// ErrDisabled.
+func TestATurnOffDuringADetailReadEndsIt(t *testing.T) {
+	t.Parallel()
+	for _, call := range []string{"Cards", "Detail"} {
+		t.Run(call, func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixture(t)
+			m.seedBoard(t)
+			c := card("10001", 1_799_000_000_000)
+			off := func() {
+				if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
+					t.Error(err)
+				}
+			}
+			m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+				if call == "Detail" {
+					off()
+				}
+				return detailOfCard(c), nil
+			}
+			if call == "Cards" {
+				m.openDetail(t, "10001")
+				m.p.updatedMovesWithDetail(func(asked []tracker.IssueID) (tracker.Cards, error) {
+					off()
+					return cardsAnswering(&c)(asked)
+				})
+			}
+			reads := m.p.count("Detail")
+			if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); !errors.Is(err, ErrDisabled) {
+				t.Fatalf("a read the turn off overtook: %v", err)
+			}
+			if call == "Cards" && m.p.count("Detail") != reads {
+				t.Fatal("the detail was read after the check's write was refused")
+			}
+			if m.root() != 0 {
+				t.Fatal("the connection turned off kept a mirror")
+			}
+		})
 	}
 }

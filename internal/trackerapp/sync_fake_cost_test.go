@@ -112,16 +112,6 @@ func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit fu
 	s.measure(t, []unitCost{
 		{"delta, one changed issue", pin("delta one"), func(t *testing.T) { tickOK(t, s.svc, scope, BoardDue{Delta: true}) }},
 		{"history, one issue", pin("history one"), func(t *testing.T) { tickOK(t, s.svc, scope, BoardDue{History: true}) }},
-		{"detail, read through", pin("detail"), func(t *testing.T) {
-			if _, _, err := s.svc.IssueDetail(t.Context(), conn.ID, one, Interactive); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"detail, from the mirror", 0, func(t *testing.T) {
-			if _, _, err := s.svc.IssueDetail(t.Context(), conn.ID, one, Interactive); err != nil {
-				t.Fatal(err)
-			}
-		}},
 		// The provider reads history as final through the tracker's clock
 		// less a settling margin, so an issue edited within the margin stays
 		// due and each history tick reads it again until the margin passes.
@@ -135,6 +125,49 @@ func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit fu
 			must[BoardView](t)(s.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionBacklog}}))
 			must[SectionPage](t)(s.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil))
 		}},
+	})
+}
+
+// detailCosts measures the opens of one issue's detail, requests and store
+// statements: read with none stored, verified with nothing changed (a card
+// check where the tracker's update time moves with its detail, a detail
+// read otherwise), the mirror's copy, and opened again after a comment,
+// which must show.
+func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, one tracker.IssueID, pins map[string][2]int) {
+	t.Helper()
+	tc := func(name string, run func(t *testing.T)) tickCost {
+		p, ok := pins[name]
+		if !ok {
+			t.Fatalf("no pin for %s", name)
+		}
+		return tickCost{name: name, requests: p[0], stmts: p[1], run: run}
+	}
+	open := func(t *testing.T) DetailView {
+		t.Helper()
+		v, _, err := s.svc.IssueDetail(t.Context(), conn.ID, one, Interactive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	s.measureTicks(t, []tickCost{
+		tc("detail, none stored", func(t *testing.T) { open(t) }),
+		tc("detail, verified unchanged", func(t *testing.T) { open(t) }),
+		tc("detail, the mirror's copy", func(t *testing.T) {
+			if _, _, err := s.svc.MirroredDetail(conn.ID, one); err != nil {
+				t.Fatal(err)
+			}
+		}),
+	})
+	s.clock.advance(time.Minute)
+	applied(t, "comment", s.provider(conn.ID).AddComment(t.Context(), tracker.CommentInput{Issue: one, Markdown: "A new comment"}))
+	s.measureTicks(t, []tickCost{
+		tc("detail, after a comment", func(t *testing.T) {
+			v := open(t)
+			if !slices.ContainsFunc(v.Comments, func(c CommentView) bool { return strings.TrimSpace(c.Body) == "A new comment" }) {
+				t.Fatalf("the comment does not show: %+v", v.Comments)
+			}
+		}),
 	})
 }
 
@@ -152,7 +185,14 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	}
 	s.costs(t, conn, scope, edit, "10102", map[string]int{
 		"structure": 3, "structure again": 3, "reconcile missing": 3, "delta first": 1, "history batch": 2,
-		"delta none": 1, "reconcile held": 1, "delta one": 1, "history one": 2, "detail": 2,
+		"delta none": 1, "reconcile held": 1, "delta one": 1, "history one": 2,
+	})
+	// Jira's update time moves with its detail: a check is one card read
+	// (an issue bulk fetch), and a moved card adds the detail's two reads
+	// (the issue, its comments).
+	s.detailCosts(t, conn, "10102", map[string][2]int{
+		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 6},
+		"detail, the mirror's copy": {0, 5}, "detail, after a comment": {3, 6},
 	})
 }
 
@@ -170,7 +210,13 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 	}
 	s.costs(t, conn, scope, edit, tracker.IssueID(lid(61)), map[string]int{
 		"structure": 5, "structure again": 4, "reconcile missing": 3, "delta first": 1, "history batch": 1,
-		"delta none": 1, "reconcile held": 2, "delta one": 1, "history one": 1, "detail": 1,
+		"delta none": 1, "reconcile held": 2, "delta one": 1, "history one": 1,
+	})
+	// Linear's update time does not move with a comment: every open reads
+	// the detail, in one request, and reads no stored detail first.
+	s.detailCosts(t, conn, tracker.IssueID(lid(61)), map[string][2]int{
+		"detail, none stored": {1, 4}, "detail, verified unchanged": {1, 4},
+		"detail, the mirror's copy": {0, 5}, "detail, after a comment": {1, 4},
 	})
 }
 

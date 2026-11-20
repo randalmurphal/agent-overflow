@@ -18,7 +18,9 @@
 // (tick.go) runs the units of sync it is asked for (sync_*.go), each a
 // bounded amount of work, under a lock per scope, and returns, starting
 // no goroutine; views*.go are the pane's reads as the DTOs the app
-// binds. Turning a connection off detaches its mirror, and a tick that
+// binds. Those read the mirror alone, except IssueDetail: a stored detail
+// is current only when the tracker says so in that call, and
+// MirroredDetail is the stored copy for a first paint. Turning a connection off detaches its mirror, and a tick that
 // outlives its mirror, or names a board no project lists, stores nothing
 // and ends (unit.go); the cleanup drains what a detach, an unlisted board
 // or an unlinked issue leaves (cleanup.go).

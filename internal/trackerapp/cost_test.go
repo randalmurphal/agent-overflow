@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -184,6 +185,15 @@ func TestUnitCosts(t *testing.T) {
 	})
 }
 
+// plus is a and b's counts added.
+func plus(a, b map[string]int) map[string]int {
+	out := maps.Clone(a)
+	for k, n := range b {
+		out[k] += n
+	}
+	return out
+}
+
 func idsOfRows(rows []tracker.Row) []tracker.IssueID {
 	out := make([]tracker.IssueID, len(rows))
 	for i, r := range rows {
@@ -222,11 +232,14 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), scope, Background))
 	m.p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
 	issue := seeded[0].Card.ID
+	// The tracker's card of the issue, which its detail shows.
+	held := seeded[0].Card
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
 		d := realisticDetail()
-		d.Card = seeded[0].Card
+		d.Card = held
 		return d, nil
 	}
+	m.p.updatedMovesWithDetail(cardsAnswering(&held))
 	cs := newCountingStore(m.st)
 	m.svc.store = cs
 	// The service holds the connection from the seeding tick: a tick or a
@@ -249,6 +262,9 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Every detail answer reads the names it shows and the mirror's card of
+	// the issue with its parent's.
+	view := map[string]int{"GetMirrorCatalog": 1, "ListMirrorCards": 1}
 	costTable(t, m, cs, []struct {
 		name string
 		run  func(t *testing.T)
@@ -268,14 +284,38 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			map[string]int{},
 			with(map[string]int{"ListMirrorOffBoardLinkedIssues": 1, "RecordMirrorSyncAttempt": 1}),
 		}},
-		{"detail, read through", detail, costOf{
+		{"detail, none stored", detail, costOf{
 			map[string]int{"Detail": 1},
-			with(map[string]int{"GetMirrorRoot": 1, "GetMirrorDetail": 1, "StoreMirrorDetail": 1, "GetMirrorCatalog": 1, "ListMirrorCards": 1}),
+			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetail": 1})),
+		}},
+		{"detail, verified unchanged", detail, costOf{
+			map[string]int{"Cards": 1},
+			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "TouchMirrorDetail": 1})),
+		}},
+		{"detail, verified changed", func(t *testing.T) {
+			held.Updated = held.Updated.Add(time.Minute)
+			detail(t)
+		}, costOf{
+			map[string]int{"Cards": 1, "Detail": 1},
+			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "StoreMirrorDetail": 1})),
 		}},
 		// No run: no sync state read, no client.
-		{"detail, from the mirror", detail, costOf{
+		{"detail, the mirror's copy", func(t *testing.T) {
+			if _, _, err := m.svc.MirroredDetail(m.conn.ID, issue); err != nil {
+				t.Fatal(err)
+			}
+		}, costOf{
 			map[string]int{},
-			map[string]int{"GetMirrorRoot": 1, "GetMirrorDetail": 1, "ListMirrorCards": 2, "TouchMirrorDetail": 1, "GetMirrorCatalog": 1},
+			plus(view, map[string]int{"GetMirrorRoot": 1, "GetMirrorDetail": 1, "TouchMirrorDetail": 1}),
+		}},
+		// A tracker whose update time does not move with its detail: read
+		// every time, with no stored detail read first.
+		{"detail, unverifiable", func(t *testing.T) {
+			m.p.set(func(p *scripted) { p.caps.DetailMovesUpdated = false })
+			detail(t)
+		}, costOf{
+			map[string]int{"Detail": 1},
+			with(plus(view, map[string]int{"StoreMirrorDetail": 1})),
 		}},
 		{"board view, three sections", func(t *testing.T) {
 			must[BoardView](t)(m.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
@@ -297,27 +337,39 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 	})
 }
 
-// A detail served from the mirror builds no client and makes no call.
-func TestCachedDetailBuildsNoClient(t *testing.T) {
+// The mirror's copy of a detail builds no client and makes no call, marks
+// the detail opened, and is not mirrored when the mirror holds no detail
+// of the issue.
+func TestMirroredDetailBuildsNoClient(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
-	m.p.changedRows = pagedDelta(t, []tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	m.p.changedRows = pagedDelta(t, []tracker.Row{row("10001", 1_799_000_000_000, "a"), row("10002", 1_799_000_000_000, "b")})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
 		return tracker.Detail{Card: card("10001", 1_799_000_000_000)}, nil
 	}
-	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
-		t.Fatal(err)
-	}
+	m.openDetail(t, "10001")
+	later := m.now().Add(time.Hour)
 	svc := must[*Service](t)(New(Deps{
-		Store: m.st, Changed: func() {}, CredentialsDir: m.creds, Origin: APIOrigin, Version: "1", Now: time.Now, Life: t.Context(),
+		Store: m.st, Changed: func() {}, CredentialsDir: m.creds, Origin: APIOrigin, Version: "1", Now: func() time.Time { return later }, Life: t.Context(),
 	}))
 	svc.makeProvider = func(store.TrackerConnection, *clients, *clients) (tracker.Provider, error) {
-		t.Error("a provider was built for a detail the mirror holds")
+		t.Error("a provider was built for the mirror's copy of a detail")
 		return m.p, nil
 	}
-	if _, _, err := svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
-		t.Fatal(err)
+	stored, _, _ := m.storedDetail(t, "10001")
+	v, readAt, err := svc.MirroredDetail(m.conn.ID, "10001")
+	if err != nil || v.Card.ID != "10001" || readAt != stored.ReadAt {
+		t.Fatalf("the mirror's copy %+v read at %d (stored %d): %v", v.Card, readAt, stored.ReadAt, err)
+	}
+	if opened, _, _ := m.storedDetail(t, "10001"); opened.OpenedAt != later.UnixMilli() {
+		t.Fatalf("the mirror's copy left the detail opened at %d", opened.OpenedAt)
+	}
+	if _, _, err := svc.MirroredDetail(m.conn.ID, "10002"); !errors.Is(err, ErrNotMirrored) {
+		t.Fatalf("a kept issue with no detail: %v", err)
+	}
+	if _, _, err := svc.MirroredDetail(m.conn.ID, ""); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("no issue: %v", err)
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
@@ -379,13 +431,16 @@ func TestDetailReadBoundsItsHistory(t *testing.T) {
 		}
 		return d, nil
 	}
-	for range 2 {
-		v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
-		if err != nil || len(v.History) != maxDetailEvents || v.HistoryFrom != millis(base.Add(10*time.Minute)) {
-			t.Fatalf("%d events from %d, %v", len(v.History), v.HistoryFrom, err)
+	for _, mirrored := range []bool{false, true} {
+		var v DetailView
+		var err error
+		if mirrored {
+			v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
+		} else {
+			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		}
-	}
-	if m.p.count("Detail") != 1 {
-		t.Fatalf("%d detail reads", m.p.count("Detail"))
+		if err != nil || len(v.History) != maxDetailEvents || v.HistoryFrom != millis(base.Add(10*time.Minute)) {
+			t.Fatalf("mirror's copy %v: %d events from %d, %v", mirrored, len(v.History), v.HistoryFrom, err)
+		}
 	}
 }

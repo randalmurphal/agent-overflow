@@ -44,7 +44,9 @@ func New(c *linear.Client) (*Provider, error) {
 
 // Capabilities are none of the optional ones: Linear has no issue types,
 // no custom fields, no move screens, generates its cycles and holds links
-// rather than files.
+// rather than files. Nor DetailMovesUpdated: a comment does not move an
+// issue's `updatedAt` (docs/references/tracker-api-measurements.md,
+// Linear).
 func (p *Provider) Capabilities() tracker.Capabilities { return tracker.Capabilities{} }
 
 // Time is nil: Linear has no time tracking.

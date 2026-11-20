@@ -78,8 +78,9 @@ a field that is empty for the other.
   provider resolves text and reports a value it cannot match.
 - **Capabilities** say what a connection supports beyond what every
   tracker does: issue types, custom fields, moves that take fields, sprint
-  writes and attachments. Time tracking is the presence of a time tracker,
-  not a flag.
+  writes and attachments, and whether an issue's update time moves with
+  everything its detail shows. Time tracking is the presence of a time
+  tracker, not a flag.
 
 ### Provider
 
@@ -96,7 +97,13 @@ this is its shape.
   rows for a set of IDs; cards for a set of IDs with no board; status,
   sprint, estimate and assignee changes for a set of issues.
 - Detail: one issue's detail; pages of its comments; the moves its
-  workflow allows now; a download of one of its attachments.
+  workflow allows now; a download of one of its attachments. On Jira a
+  comment, a link, an attachment and a worklog each move the issue's
+  update time; on Linear a comment does not
+  ([measured](../references/tracker-api-measurements.md)). The capability
+  `DetailMovesUpdated` says which, and covers only the issue's own
+  changes: a linked issue's title and status and a workflow edit move
+  nothing.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -315,6 +322,15 @@ Plus, per connection: the issues linked to threads, and the detail of the
 200 most recently opened issues the mirror holds. An issue outside every
 listed board is read from the tracker when asked for and is not kept unless
 a thread links it.
+
+A stored detail is current only when the tracker says so in the call that
+opens it (`IssueDetail`). Where the issue's update time moves with its
+detail, that is one card read of the issue, stored as the card resource,
+whose update time equals that of the stored detail's card; otherwise, or
+when the mirror holds no detail, the detail is read and stored. A failed
+check leaves the stored detail as it is. `MirroredDetail` returns the
+stored detail and when it was read, with no tracker call, for a first
+paint before the check answers.
 
 An issue stays while it is on a listed board or a thread this computer owns
 links it on that connection's site. It is absent to every read at once

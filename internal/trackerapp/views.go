@@ -10,7 +10,7 @@ import (
 
 // The pane's reads of the mirror, as the DTOs the app binds. They read
 // the store only, each bounded as the store's reads are, and never call a
-// tracker. Names come from the mirror's catalog; an ID it does not hold
+// tracker, except IssueDetail (views_detail.go). Names come from the mirror's catalog; an ID it does not hold
 // reads with no name. A read is several store reads, not one snapshot: a
 // board's counts and pages may disagree by a sync that landed between
 // them, and the next event carries the change.

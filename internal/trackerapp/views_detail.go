@@ -107,25 +107,23 @@ type DetailView struct {
 	Moves        []MoveView       `json:"moves"`
 }
 
-// IssueDetail is issue's detail on connection id. A detail the mirror
-// holds whose card is not older than the mirror's card of the issue is
-// current and is returned from the mirror, marked as opened now, with no
-// client built and no tracker call. Any other is read from the tracker
-// (the detail resource read): stored when the mirror keeps the issue,
-// returned either way. A tracker failure is settled as the connection's
-// problem and returned, the transport's typed error reachable through
-// errors.As. A connection turned off or removed fails wrapping
-// ErrDisabled or ErrNotFound.
+// IssueDetail is issue's detail on connection id as the tracker says it is
+// in this call. On a tracker whose update time moves with everything a
+// detail shows (tracker.Capabilities.DetailMovesUpdated), a detail the
+// mirror holds is checked with the issue's card (the cards resource read,
+// which refreshes the mirror's card too): it is returned, marked opened
+// now, when the card's update time is that of the stored detail's card,
+// and the detail is read otherwise. On any other tracker, or with no
+// detail stored, the detail is read (the detail resource read): stored
+// when the mirror keeps the issue, returned either way. Changes are what
+// the call stored. A tracker failure leaves the stored detail as it is
+// (MirroredDetail reads it), is settled as the connection's problem and is
+// returned, the transport's typed error reachable through errors.As. A
+// connection turned off or removed fails wrapping ErrDisabled or
+// ErrNotFound.
 func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
 	if issue == "" {
 		return DetailView{}, Changes{}, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
-	}
-	if err := ctx.Err(); err != nil {
-		return DetailView{}, Changes{}, err
-	}
-	v, ok, err := s.cachedDetail(id, issue)
-	if err != nil || ok {
-		return v, Changes{}, err
 	}
 	r, err := s.start(ctx, id, u)
 	if err != nil {
@@ -135,18 +133,14 @@ func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.Issu
 	var d tracker.Detail
 	var ch Changes
 	// The linked scope's sync state carries the root's sweep the detail's
-	// write names.
+	// and the card's writes name.
 	r.scope = Scope{Connection: id}
 	readErr := r.startErr
 	if readErr == nil {
 		readErr = r.readState()
 	}
 	if readErr == nil {
-		readErr = r.againIfSwept(func() error {
-			var err error
-			d, ch, err = r.detail(issue)
-			return err
-		})
+		d, ch, readErr = r.verifiedDetail(issue)
 	}
 	var out Outcome
 	callErr, stop, err := r.failed(&out, readErr)
@@ -162,62 +156,95 @@ func (s *Service) IssueDetail(ctx context.Context, id string, issue tracker.Issu
 	if out.Failure != nil {
 		return DetailView{}, ch, readErr
 	}
-	v, err = s.detailView(r.root, d, nil)
+	v, err := s.detailView(r.root, d)
 	return v, ch, err
 }
 
-// cachedDetail is issue's detail as the mirror holds it, when it is
-// current.
-func (s *Service) cachedDetail(id string, issue tracker.IssueID) (DetailView, bool, error) {
-	root, err := s.readRoot(id)
-	if errors.Is(err, ErrNotMirrored) {
-		return DetailView{}, false, nil
+// verifiedDetail is issue's detail as the tracker says it is now, and what
+// reading it stored (IssueDetail).
+func (r *run) verifiedDetail(issue tracker.IssueID) (tracker.Detail, Changes, error) {
+	read := func() (tracker.Detail, Changes, error) {
+		var d tracker.Detail
+		var ch Changes
+		err := r.againIfSwept(func() error {
+			var err error
+			d, ch, err = r.detail(issue)
+			return err
+		})
+		return d, ch, err
 	}
+	if !r.p.Capabilities().DetailMovesUpdated {
+		return read()
+	}
+	held, _, ok, err := r.s.storedDetail(r.root, issue)
 	if err != nil {
-		return DetailView{}, false, err
+		return tracker.Detail{}, Changes{}, err
 	}
-	defer s.leave()
-	d, card, ok, err := s.currentDetail(root, issue)
-	if err != nil || !ok {
-		return DetailView{}, false, err
+	if !ok {
+		return read()
 	}
-	v, err := s.detailView(root, d, &card)
-	return v, true, err
+	c, found, ch, err := r.card(issue)
+	if err != nil {
+		return tracker.Detail{}, ch, err
+	}
+	if !found || millis(c.Updated) != millis(held.Card.Updated) {
+		d, dch, err := read()
+		ch.add(dch)
+		return d, ch, err
+	}
+	if _, err := r.s.store.TouchMirrorDetail(r.root, string(issue), millis(r.s.now())); err != nil {
+		return tracker.Detail{}, ch, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
+	}
+	return held, ch, nil
 }
 
-// currentDetail is issue's stored detail when it is current, with the
-// mirror's card of the issue, marked as opened now.
-func (s *Service) currentDetail(root int64, issue tracker.IssueID) (tracker.Detail, store.MirrorCard, bool, error) {
-	m, ok, err := s.store.GetMirrorDetail(root, string(issue))
+// MirroredDetail is issue's detail on connection id as the mirror holds
+// it, for a first paint before IssueDetail answers, with when its read
+// began (Unix milliseconds). It builds no client and makes no tracker
+// call, and marks the detail opened now. It fails wrapping ErrNotMirrored
+// when the mirror holds no detail of the issue that this version reads.
+func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, int64, error) {
+	if issue == "" {
+		return DetailView{}, 0, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
+	}
+	root, err := s.readRoot(id)
 	if err != nil {
-		return tracker.Detail{}, store.MirrorCard{}, false, fmt.Errorf("trackerapp: read the detail of %s from the mirror: %w", issue, err)
+		return DetailView{}, 0, err
 	}
-	if !ok {
-		return tracker.Detail{}, store.MirrorCard{}, false, nil
-	}
-	d, ok := detailOf(m)
-	if !ok {
-		return tracker.Detail{}, store.MirrorCard{}, false, nil
-	}
-	cards, err := s.store.ListMirrorCards(root, []string{string(issue)})
-	if err != nil {
-		return tracker.Detail{}, store.MirrorCard{}, false, fmt.Errorf("trackerapp: read issue %s from the mirror: %w", issue, err)
-	}
-	if len(cards) == 0 || cards[0].UpdatedAt > millis(d.Card.Updated) {
-		return tracker.Detail{}, store.MirrorCard{}, false, nil
+	defer s.leave()
+	d, readAt, ok, err := s.storedDetail(root, issue)
+	switch {
+	case err != nil:
+		return DetailView{}, 0, err
+	case !ok:
+		return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s", ErrNotMirrored, issue)
 	}
 	if _, err := s.store.TouchMirrorDetail(root, string(issue), millis(s.now())); err != nil && !errors.Is(err, store.ErrTrackerCacheGone) {
-		return tracker.Detail{}, store.MirrorCard{}, false, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
+		return DetailView{}, 0, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
 	}
-	return d, cards[0], true, nil
+	v, err := s.detailView(root, d)
+	return v, readAt, err
+}
+
+// storedDetail is issue's detail as the mirror holds it, with when its read
+// began; ok is false when the mirror holds none this version reads.
+func (s *Service) storedDetail(root int64, issue tracker.IssueID) (tracker.Detail, int64, bool, error) {
+	m, ok, err := s.store.GetMirrorDetail(root, string(issue))
+	if err != nil {
+		return tracker.Detail{}, 0, false, fmt.Errorf("trackerapp: read the detail of %s from the mirror: %w", issue, err)
+	}
+	if !ok {
+		return tracker.Detail{}, 0, false, nil
+	}
+	d, ok := detailOf(m)
+	return d, m.ReadAt, ok, nil
 }
 
 // detailView is d as a view, its names from its own catalog and, for the
 // IDs that leaves out, the mirror's, with when its status began (only
 // when the mirror's card describes the version d shows, statusSinceOf) and
-// its parent's key and title from the mirror's cards. held is the mirror's
-// card of the issue when the caller has read it.
-func (s *Service) detailView(root int64, d tracker.Detail, held *store.MirrorCard) (DetailView, error) {
+// its parent's key and title from the mirror's cards.
+func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
 	var users, statuses idSet
 	users.add(string(d.Card.Assignee))
 	statuses.add(string(d.Card.Status))
@@ -246,7 +273,7 @@ func (s *Service) detailView(root int64, d tracker.Detail, held *store.MirrorCar
 	for _, st := range d.Statuses {
 		names.statuses[string(st.ID)] = st
 	}
-	card, err := s.detailCard(root, d, held, names)
+	card, err := s.detailCard(root, d, names)
 	if err != nil {
 		return DetailView{}, err
 	}
@@ -289,22 +316,14 @@ func (s *Service) detailView(root int64, d tracker.Detail, held *store.MirrorCar
 	return v, nil
 }
 
-// detailCard is d's card as a view: the issue's card (unless held) and
-// its parent's read from the mirror in one lookup.
-func (s *Service) detailCard(root int64, d tracker.Detail, held *store.MirrorCard, names catalogNames) (CardView, error) {
+// detailCard is d's card as a view: the issue's card and its parent's
+// read from the mirror in one lookup.
+func (s *Service) detailCard(root int64, d tracker.Detail, names catalogNames) (CardView, error) {
 	card := cardView(d.Card, names)
-	var want []string
-	if held == nil {
-		want = append(want, string(d.Card.ID))
-	} else {
-		card.StatusSince = statusSinceOf(*held, d.Card)
-	}
+	want := []string{string(d.Card.ID)}
 	if d.Card.Parent != "" {
 		card.Parent = &ParentView{ID: string(d.Card.Parent)}
 		want = append(want, string(d.Card.Parent))
-	}
-	if len(want) == 0 {
-		return card, nil
 	}
 	cards, err := s.store.ListMirrorCards(root, want)
 	if err != nil {

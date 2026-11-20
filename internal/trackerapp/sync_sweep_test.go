@@ -112,3 +112,25 @@ func TestDetailReadsAgainAfterASweep(t *testing.T) {
 		t.Fatalf("stored detail %+v, %v, %v", d, ok, err)
 	}
 }
+
+// A detail check whose card write a sweep overtook reads the card again
+// once, and serves the stored detail of the issue it still keeps.
+func TestADetailCheckReadsItsCardAgainAfterASweep(t *testing.T) {
+	t.Parallel()
+	m, _ := sweepFixture(t)
+	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
+		return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
+	}
+	m.openDetail(t, "10005")
+	reads := 0
+	m.p.updatedMovesWithDetail(func(asked []tracker.IssueID) (tracker.Cards, error) {
+		if reads++; reads == 1 {
+			m.sweep(t, "thread-b")
+		}
+		return cardsOf(asked)
+	})
+	v, _ := m.openDetail(t, "10005")
+	if reads != 2 || v.Card.ID != "10005" || m.p.count("Detail") != 1 {
+		t.Fatalf("detail %+v after %d card reads, %d detail reads", v.Card, reads, m.p.count("Detail"))
+	}
+}

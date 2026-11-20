@@ -28,6 +28,8 @@ type scripted struct {
 	history     func(tracker.HistoryQuery) (tracker.History, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
+	// caps are the tracker's capabilities; none unless a test sets them.
+	caps tracker.Capabilities
 }
 
 var errUnscripted = errors.New("test: unscripted provider call")
@@ -69,6 +71,22 @@ func (p *scripted) count(name string) int {
 		}
 	}
 	return n
+}
+
+// Capabilities are p.caps; asking makes no call.
+func (p *scripted) Capabilities() tracker.Capabilities {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.caps
+}
+
+// updatedMovesWithDetail makes p a tracker whose update time moves with
+// its detail, as Jira's does, whose card read answers cards.
+func (p *scripted) updatedMovesWithDetail(cards func([]tracker.IssueID) (tracker.Cards, error)) {
+	p.set(func(p *scripted) {
+		p.caps.DetailMovesUpdated = true
+		p.cards = cards
+	})
 }
 
 func (p *scripted) ChangedRows(ctx context.Context, q tracker.DeltaQuery) (tracker.RowPage, error) {

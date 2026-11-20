@@ -24,6 +24,17 @@ type Capabilities struct {
 	// Attachments: issues hold uploaded files, and Markdown bodies may
 	// embed local images (Jira).
 	Attachments bool
+	// DetailMovesUpdated: every change to the issue that its Detail shows
+	// (a field, the description, a comment, a link, an attachment, a
+	// status change) moves the issue's update time, so a stored Detail
+	// whose card has the update time of the issue's card read now is
+	// current. It does not cover what belongs to another issue or to the
+	// workflow: a linked issue's title and status, and the moves a
+	// workflow edit changes. Jira, measured: a comment, a link, an
+	// attachment and a worklog each move `updated`. Linear has none: a
+	// comment leaves `updatedAt` as it was. See
+	// docs/references/tracker-api-measurements.md.
+	DetailMovesUpdated bool
 }
 
 // FieldScope is where a field's values are asked for: an existing issue,

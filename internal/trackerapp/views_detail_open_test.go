@@ -36,7 +36,8 @@ func (m *mirrorFixture) storedDetail(t *testing.T, issue string) (store.MirrorDe
 }
 
 // A first open reads the detail through and stores it, opened when its
-// read began; the next open is served from the mirror.
+// read began; the next open, on a tracker whose update time moves with
+// its detail, checks the card and serves the stored detail, opened again.
 func TestAFirstOpenStoresTheDetail(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -46,14 +47,20 @@ func TestAFirstOpenStoresTheDetail(t *testing.T) {
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
 		return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
 	}
+	m.p.updatedMovesWithDetail(cardsOf)
+	var opened []int64
 	for range 2 {
 		if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
 			t.Fatal(err)
 		}
+		sd, _, ok := m.storedDetail(t, "10001")
+		if !ok || sd.ReadAt == 0 || sd.OpenedAt < sd.ReadAt {
+			t.Fatalf("stored %v (opened %d, read %d)", ok, sd.OpenedAt, sd.ReadAt)
+		}
+		opened = append(opened, sd.OpenedAt)
 	}
-	sd, _, ok := m.storedDetail(t, "10001")
-	if !ok || m.p.count("Detail") != 1 || sd.ReadAt == 0 || sd.OpenedAt < sd.ReadAt {
-		t.Fatalf("stored %v (opened %d, read %d), %d detail reads", ok, sd.OpenedAt, sd.ReadAt, m.p.count("Detail"))
+	if m.p.count("Detail") != 1 || m.p.count("Cards") != 1 || opened[1] <= opened[0] {
+		t.Fatalf("%d detail reads, %d card reads, opened %v", m.p.count("Detail"), m.p.count("Cards"), opened)
 	}
 }
 
