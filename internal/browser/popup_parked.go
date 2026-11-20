@@ -140,7 +140,7 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 	openers = mergeOpeners(openers, event.Openers)
 	m.mu.Lock()
 	d := &parkedDownload{start: event, scope: m.profileScopeLocked(event.Profile)}
-	authority := m.openerAuthorityLocked(append([]ids.PageHandle{event.Popup}, openers...))
+	authority := m.openerAuthorityLocked(append([]ids.PageHandle{event.Popup}, m.popupLineage(event.Popup, openers)...))
 	m.mu.Unlock()
 	d.file = m.downloadFileOf(d.scope, event.ID)
 	if m.downloadsToArtifacts() {
@@ -318,17 +318,8 @@ func (m *Manager) stopParked(d *parkedDownload, discard downloadDiscard) {
 
 // fateTarget answers the page that takes the downloads of popup handle:
 // its tab while listed, else (never listed, or closed since by any path)
-// its nearest listed opener, or nil. Its openers are those its engine
-// named and, past them, the chain its admission and its ancestors' keep
-// (popupadmit.Registry.Ancestors), which is whole while the popup or a
-// popup of it is live, so a popup of a popup that went still finds the
-// tab that opened its parent. A popup whose admission is no longer known
-// has only the openers its engine named.
+// its nearest listed opener, or nil (popupLineage).
 func (m *Manager) fateTarget(handle ids.PageHandle, fate popupFate) *managedPage {
-	openers := fate.openers
-	for _, ancestor := range m.admissions.Ancestors(handle).Chain() {
-		openers = mergeOpeners(openers, []ids.PageHandle{ancestor})
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fate.listed != "" {
@@ -336,7 +327,7 @@ func (m *Manager) fateTarget(handle ids.PageHandle, fate popupFate) *managedPage
 			return p
 		}
 	}
-	for _, opener := range openers {
+	for _, opener := range m.popupLineage(handle, fate.openers) {
 		if p := m.listedPageLocked(opener); p != nil {
 			return p
 		}
@@ -369,6 +360,24 @@ func (m *Manager) dropParked() []downloadDiscard {
 	}
 	m.parked, m.parkedIDs, m.popupFates = nil, nil, nil
 	return discards
+}
+
+// popupLineage answers the pages that opened popup handle, nearest first,
+// each once: named, the openers its engine named, then the whole chain
+// its admission and its ancestors' keep (popupadmit.Registry.Ancestors),
+// which is whole while the popup or a popup of it is live, so a popup of
+// a popup that went still finds the tab that opened its parent however
+// many handoffs ago. The registry bounds that chain by what is live;
+// maxPopupOpeners bounds only the openers an engine names. A popup whose
+// admission is no longer known has only named.
+func (m *Manager) popupLineage(handle ids.PageHandle, named []ids.PageHandle) []ids.PageHandle {
+	lineage := slices.Clone(named)
+	for _, ancestor := range m.admissions.Ancestors(handle).Chain() {
+		if !slices.Contains(lineage, ancestor) {
+			lineage = append(lineage, ancestor)
+		}
+	}
+	return lineage
 }
 
 // mergeOpeners appends to openers those of more it lacks, in order,

@@ -320,6 +320,42 @@ func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
 	}
 }
 
+// A serial chain of popups, each opening the next and closing its parent
+// while the root tab stays, is longer than any list of openers an engine
+// names: the download of the last one, whose attach fails, still goes to
+// the root tab, the only listed page of its chain, which the popups'
+// admissions keep however many handoffs ago it opened the first.
+func TestALongPopupChainsDownloadFindsItsRootTab(t *testing.T) {
+	manager, engine, _, root := newAdoptionManager(t)
+	parent := root
+	for i := range maxPopupOpeners + 1 {
+		child := ids.PageHandle(fmt.Sprintf("popup-%d", i))
+		manager.adoptPopup(engine.popup(parent, child))
+		if !listed(manager, child) {
+			t.Fatalf("popup %d was not listed", i)
+		}
+		if parent != root {
+			manager.removeClosedPage(parent)
+		}
+		parent = child
+	}
+	release := engine.gate("last")
+	engine.mu.Lock()
+	engine.failing["last"] = true
+	engine.mu.Unlock()
+	done := make(chan struct{})
+	go func() { manager.adoptPopup(engine.popup(parent, "last")); close(done) }()
+	engine.awaitAttach(t, "last")
+	manager.removeClosedPage(parent)
+	// As a WebKit engine names it: by its immediate opener alone.
+	if !popupDownload(manager, engine, "last", "dl-1", parent) {
+		t.Fatal("the last popup's download was refused")
+	}
+	release()
+	<-done
+	wantDownloads(t, manager, root, "dl-1 in_progress 0")
+}
+
 // awaitAdmission waits until the admission of popup handle is decided:
 // listed, with its tab in the same hold, or ended.
 func awaitAdmission(t *testing.T, m *Manager, handle string) {
