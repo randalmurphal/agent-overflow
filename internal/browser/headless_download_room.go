@@ -18,6 +18,9 @@ type downloadFiles interface {
 	// handOver moves download id's finished file to where the Manager names
 	// it (downloadFileOf) and answers that path.
 	handOver(id downloadID) (string, error)
+	// withdraw removes the file handOver moved out for download id, if it
+	// is still there: the Manager did not take it.
+	withdraw(id downloadID)
 	// empty removes everything but the files of keep, whose ends are being
 	// reported.
 	empty(keep map[downloadID]bool)
@@ -27,24 +30,31 @@ type downloadFiles interface {
 }
 
 // downloadRoom is the directory one Chromium process writes its downloads
-// into: a directory of its own inside the profile's download directory,
-// which root holds open, so every removal and move happens inside that
-// directory whatever its path names meanwhile. A download the Manager
-// admitted that finishes is moved out to the name the Manager gave it
-// (handOver); nothing else in the room is ever the Manager's, so whatever
-// is left once the process has exited is removed with the room (close),
-// including a download whose start no handler processed.
+// into: a directory of its own inside the profile's download directory.
+// room holds the room itself open, so everything removed in it is removed
+// in that directory whatever its name names meanwhile, and the room's own
+// entry goes only while that name is still the room, as held, and empty
+// (removeHeldDir). parent holds the profile's download directory, where a
+// download the Manager admitted that finishes is moved out to the name the
+// Manager gave it (handOver). Nothing else in the room is ever the
+// Manager's, so whatever is left once the process has exited is removed
+// with the room (close), including a download whose start no handler
+// processed.
 type downloadRoom struct {
 	logf func(string, ...any)
-	// dir is the profile's download directory, which root holds, and name
-	// the room in it.
-	dir  string
-	root *os.Root
-	name string
+	// dir is the profile's download directory, which parent holds, and name
+	// the room in it, which room holds and held identifies.
+	dir    string
+	parent *os.Root
+	name   string
+	room   *os.Root
+	held   os.FileInfo
 
-	// mu orders the room's file work against close, which lets root go.
+	// mu orders the room's file work against close, which lets the roots
+	// go. handed is each file handOver moved out, as moved.
 	mu     sync.Mutex
 	closed bool
+	handed map[downloadID]os.FileInfo
 }
 
 // openDownloadRoom makes a new room in dir, made if it is missing, for one
@@ -53,15 +63,23 @@ func openDownloadRoom(dir string, logf func(string, ...any)) (*downloadRoom, err
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create the download directory: %w", err)
 	}
-	root, err := os.OpenRoot(dir)
+	parent, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("browser: open the download directory: %w", err)
 	}
 	name := "chromium-" + rand.Text()
-	if err := root.Mkdir(name, 0o700); err != nil {
-		return nil, errors.Join(fmt.Errorf("browser: create the browser's download directory: %w", err), root.Close())
+	if err := parent.Mkdir(name, 0o700); err != nil {
+		return nil, errors.Join(fmt.Errorf("browser: create the browser's download directory: %w", err), parent.Close())
 	}
-	return &downloadRoom{logf: logf, dir: dir, root: root, name: name}, nil
+	room, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("browser: open the browser's download directory: %w", err), parent.Remove(name), parent.Close())
+	}
+	held, err := room.Stat(".")
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("browser: read the browser's download directory: %w", err), room.Close(), parent.Remove(name), parent.Close())
+	}
+	return &downloadRoom{logf: logf, dir: dir, parent: parent, name: name, room: room, held: held, handed: map[downloadID]os.FileInfo{}}, nil
 }
 
 // path is the room's directory, where Chromium is told to write.
@@ -88,13 +106,15 @@ func (r *downloadRoom) discard(id downloadID) {
 		r.logf("%v", err)
 		return
 	}
-	for _, file := range chromiumDownloadNames(filepath.Join(r.name, name)) {
-		if err := r.root.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	for _, file := range chromiumDownloadNames(name) {
+		if err := r.room.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			r.logf("browser: remove the file of download %s: %v", id, err)
 		}
 	}
 }
 
+// handOver moves the file out of the room only while the room's name is
+// still the room: a directory put at that name holds nothing of AO's.
 func (r *downloadRoom) handOver(id downloadID) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -105,10 +125,48 @@ func (r *downloadRoom) handOver(id downloadID) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := r.root.Rename(filepath.Join(r.name, name), name); err != nil {
+	if current, err := r.parent.Lstat(r.name); err != nil || !os.SameFile(r.held, current) {
+		return "", fmt.Errorf("browser: the browser's download directory %s was replaced", r.path())
+	}
+	if err := r.parent.Rename(filepath.Join(r.name, name), name); err != nil {
 		return "", fmt.Errorf("browser: move the finished download %s: %w", id, err)
 	}
+	moved, err := r.parent.Lstat(name)
+	if err != nil {
+		return "", fmt.Errorf("browser: read the finished download %s: %w", id, err)
+	}
+	r.handed[id] = moved
 	return filepath.Join(r.dir, name), nil
+}
+
+// withdraw removes the file handOver moved out only while its name still
+// holds that file.
+func (r *downloadRoom) withdraw(id downloadID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	moved, ok := r.handed[id]
+	delete(r.handed, id)
+	if r.closed || !ok {
+		return
+	}
+	name, err := downloadFileName(id)
+	if err != nil {
+		r.logf("%v", err)
+		return
+	}
+	current, err := r.parent.Lstat(name)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return
+	case err != nil:
+		r.logf("browser: read the file of download %s: %v", id, err)
+		return
+	case !os.SameFile(moved, current):
+		return
+	}
+	if err := r.parent.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		r.logf("browser: remove the file of download %s no page took: %v", id, err)
+	}
 }
 
 func (r *downloadRoom) empty(keep map[downloadID]bool) {
@@ -125,7 +183,13 @@ func (r *downloadRoom) empty(keep map[downloadID]bool) {
 			}
 		}
 	}
-	dir, err := r.root.Open(r.name)
+	r.removeEntriesLocked(kept)
+}
+
+// removeEntriesLocked removes everything in the room but kept, through the
+// room's own handle. The caller holds r.mu.
+func (r *downloadRoom) removeEntriesLocked(kept map[string]bool) {
+	dir, err := r.room.Open(".")
 	if err != nil {
 		r.logf("browser: open the browser's download directory: %v", err)
 		return
@@ -141,7 +205,7 @@ func (r *downloadRoom) empty(keep map[downloadID]bool) {
 		if kept[entry.Name()] {
 			continue
 		}
-		if err := r.root.RemoveAll(filepath.Join(r.name, entry.Name())); err != nil {
+		if err := r.room.RemoveAll(entry.Name()); err != nil {
 			r.logf("browser: remove %s from the browser's download directory: %v", entry.Name(), err)
 		}
 	}
@@ -154,10 +218,14 @@ func (r *downloadRoom) close() {
 		return
 	}
 	r.closed = true
-	if err := r.root.RemoveAll(r.name); err != nil {
+	r.removeEntriesLocked(nil)
+	if err := r.room.Close(); err != nil {
+		r.logf("browser: close the browser's download directory: %v", err)
+	}
+	if _, err := removeHeldDir(r.path(), r.held); err != nil {
 		r.logf("browser: remove the browser's download directory %s: %v", r.path(), err)
 	}
-	if err := r.root.Close(); err != nil {
+	if err := r.parent.Close(); err != nil {
 		r.logf("browser: close the download directory: %v", err)
 	}
 }
