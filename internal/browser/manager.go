@@ -282,7 +282,9 @@ type Manager struct {
 	// (fileRevealer). A test replaces it with a recorder.
 	revealFileInFileManager func(ctx context.Context, path string) error
 	// downloadAdmitting is a test seam run between a download start's page
-	// lookup and its admission. Production leaves it nil.
+	// lookup and its admission, and for a popup's parked download in the
+	// m.mu hold that decides its page and lists it (placeParked).
+	// Production leaves it nil.
 	downloadAdmitting func()
 }
 

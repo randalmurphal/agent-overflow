@@ -430,7 +430,7 @@ func TestStopInterruptsEveryDiscardOfARetirementUnderWay(t *testing.T) {
 		t.Fatalf("the discard arriving after the retirement completed answered %v", err)
 	}
 	engine.pages.mu.Lock()
-	kept := len(engine.pages.interrupted)
+	kept := len(engine.pages.debts)
 	engine.pages.mu.Unlock()
 	if kept != 0 {
 		t.Fatalf("the engine keeps %d interrupted retirements past their completion", kept)
@@ -495,7 +495,7 @@ func TestStopInterruptsEveryDiscardOfARetirementStillQueued(t *testing.T) {
 		t.Fatalf("the discard arriving after Stop returned answered %v", err)
 	}
 	engine.pages.mu.Lock()
-	kept := len(engine.pages.interrupted)
+	kept := len(engine.pages.debts)
 	engine.pages.mu.Unlock()
 	if kept != 0 {
 		t.Fatalf("the engine keeps %d interrupted retirements past Stop", kept)
