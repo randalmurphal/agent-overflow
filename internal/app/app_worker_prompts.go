@@ -539,11 +539,12 @@ func (a *App) drainWorkerPrompts(ctx context.Context, timeout time.Duration) err
 }
 
 // closeWorkerPrompts is shutdown's join of the prompts' queue, before
-// SQLite closes: nothing queued from here on runs, and what was queued
-// finishes.
+// SQLite closes: nothing queued from here on runs, what was queued
+// finishes, and no timer to offer a prompt again is left armed.
 func (a *App) closeWorkerPrompts(ctx context.Context, timeout time.Duration) error {
 	a.workerPrompts.gate.Lock()
 	a.workerPrompts.closed = true
 	a.workerPrompts.gate.Unlock()
+	a.workerPrompts.stopOffers()
 	return a.drainWorkerPrompts(ctx, timeout)
 }

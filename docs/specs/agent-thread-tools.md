@@ -2074,7 +2074,8 @@ also returns a prompt its thread did not take at once, keeps the prompt
 the spawner's: the worker reads waiting on the spawner, the person there
 can answer it in the worker and is not asked, and the prompt is listed
 again under a new token after a wait of a minute, doubled with each
-return up to 30 minutes. The prompts a call names as held renew the
+return up to 30 minutes; its owner changes report the spawn when the
+wait ends, not when the prompt is given back. The prompts a call names as held renew the
 lease of a destination on an older version, which gives a prompt to its
 person two minutes after it was routed or last named. `agent_owner_op` carries what archiving or
 deleting the spawner owes the worker, sent until that computer answers.

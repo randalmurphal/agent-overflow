@@ -133,7 +133,8 @@ func peerPromptOfferDelay(returns int) time.Duration {
 // worker's prompts are still that spawn's thread's (promptLinkStands), the
 // prompt stays its, routed there and read as waiting on it, and is
 // registered again under a new token that agent_rows lists once the wait
-// runs out (peerPromptOfferDelay): that computer takes a new token as a new
+// runs out (peerPromptOfferDelay), when that computer is told to read it:
+// that computer takes a new token as a new
 // prompt, and forgets the old one once it is no longer listed. Any other is
 // handed back.
 func (a *App) offerPeerPromptAgain(token string) error {
@@ -142,9 +143,7 @@ func (a *App) offerPeerPromptAgain(token string) error {
 		a.handBackWorkerPrompt(token)
 		return nil
 	}
-	offered, ok := a.workerPrompts.reoffer(token, func(returns int) time.Time {
-		return time.Now().Add(peerPromptOfferDelay(returns))
-	})
+	offered, ok := a.workerPrompts.reoffer(token, peerPromptOfferDelay)
 	if !ok {
 		// Answered, closed or moved meanwhile: that transition is its.
 		return nil
@@ -296,9 +295,9 @@ func peerPromptWire(title string, prompt workerPrompt) ThreadAgentPrompt {
 // heldFor is the routed prompts of workerID held for the spawn spawnToken
 // names and offered now, in the order they were registered.
 func (w *workerPrompts) heldFor(spawnToken, workerID string) []workerPrompt {
-	now := time.Now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	now := w.clockLocked().Now()
 	var held []workerPrompt
 	for _, prompt := range w.byToken {
 		if prompt.remote != nil && prompt.remote.spawnToken == spawnToken && prompt.workerID == workerID && prompt.state == workerPromptRouted &&

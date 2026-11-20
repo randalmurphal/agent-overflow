@@ -91,6 +91,13 @@ type workerPrompts struct {
 	async asyncQuestionRoutes
 	// remote is the prompts paired computers' workers put to threads here.
 	remote remoteWorkerPrompts
+	// offers holds, by token, the stop of each timer that tells a paired
+	// computer a prompt it gave back is listed again (reoffer), until it
+	// fires or the registration closes; offersStopped is set at shutdown.
+	offers        map[string]func() bool
+	offersStopped bool
+	// clock is the time reoffer and heldFor read, nil for the wall clock.
+	clock promptClock
 }
 
 // run queues job on the prompts' serial queue, unless shutdown closed it:
@@ -125,16 +132,14 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(workerPrompt) bool) (
 	}
 	if previous := w.byToken[w.current[prompt.key()]]; previous != nil {
 		if previous.state == workerPromptRouted {
-			previous.state, previous.closedAt = workerPromptSettled, now
-			previous.noteOwner()
+			w.closeLocked(previous, now)
 		}
 		retired := *previous
 		replaced = &retired
 	}
 	for token, existing := range w.byToken {
 		if existing.state == workerPromptRouted && !open(*existing) {
-			existing.state, existing.closedAt = workerPromptSettled, now
-			existing.noteOwner()
+			w.closeLocked(existing, now)
 		}
 		if !existing.closedAt.IsZero() && now.Sub(existing.closedAt) > workerPromptRetention {
 			delete(w.byToken, token)
@@ -148,6 +153,15 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(workerPrompt) bool) (
 	w.current[stored.key()] = stored.token
 	stored.noteOwner()
 	return stored, replaced
+}
+
+// closeLocked settles a routed registration at now: it stops the timer
+// that would offer it again (reoffer) and tells the paired computer it is
+// held for.
+func (w *workerPrompts) closeLocked(prompt *workerPrompt, now time.Time) {
+	prompt.state, prompt.closedAt = workerPromptSettled, now
+	w.disarmLocked(prompt.token)
+	prompt.noteOwner()
 }
 
 func (p *workerPrompt) noteOwner() {
@@ -184,8 +198,7 @@ func (w *workerPrompts) settle(workerID, requestID string, upTo provider.PromptO
 	if prompt == nil || prompt.occurrence > upTo || prompt.state != workerPromptRouted {
 		return workerPrompt{}, false
 	}
-	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
-	prompt.noteOwner()
+	w.closeLocked(prompt, time.Now())
 	return *prompt, true
 }
 
@@ -200,8 +213,7 @@ func (w *workerPrompts) settleWorker(workerID string) []workerPrompt {
 		if prompt.workerID != workerID || prompt.async || prompt.state != workerPromptRouted {
 			continue
 		}
-		prompt.state, prompt.closedAt = workerPromptSettled, now
-		prompt.noteOwner()
+		w.closeLocked(prompt, now)
 		closed = append(closed, *prompt)
 	}
 	return closed
@@ -220,34 +232,100 @@ func (w *workerPrompts) settleToken(token string) (workerPrompt, bool) {
 	if prompt == nil || prompt.state != workerPromptRouted {
 		return workerPrompt{}, false
 	}
-	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
-	prompt.noteOwner()
+	w.closeLocked(prompt, time.Now())
 	return *prompt, true
 }
 
 // reoffer registers again, under a fresh token, the routed prompt held for
 // a paired computer under token, and closes that registration: a routed
 // one is its prompt's current one (add). The new hold counts one more
-// return and is listed from offerAt(returns). It returns the new
-// registration, and false when token names no such prompt.
-func (w *workerPrompts) reoffer(token string, offerAt func(returns int) time.Time) (workerPrompt, bool) {
+// return and is listed once wait(returns) has passed. Nothing tells that
+// computer to read now, which could only find the prompt gone: a timer
+// tells it at that time (offerDue), stopped when the new registration
+// closes first. It returns the new registration, and false when token
+// names no such prompt.
+func (w *workerPrompts) reoffer(token string, wait func(returns int) time.Duration) (workerPrompt, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	prompt := w.byToken[token]
-	if prompt == nil || prompt.remote == nil || prompt.state != workerPromptRouted {
+	if prompt == nil || prompt.remote == nil || prompt.state != workerPromptRouted || w.offersStopped {
 		return workerPrompt{}, false
 	}
-	now := time.Now()
+	clock := w.clockLocked()
+	now := clock.Now()
 	prompt.state, prompt.closedAt = workerPromptSettled, now
+	w.disarmLocked(token)
 	fresh := *prompt
 	hold := *prompt.remote
 	hold.returns++
-	hold.registeredAt, hold.offerAt = now, offerAt(hold.returns)
+	delay := wait(hold.returns)
+	hold.registeredAt, hold.offerAt = now, now.Add(delay)
 	fresh.token, fresh.state, fresh.closedAt, fresh.remote = newThreadRequestToken(), workerPromptRouted, time.Time{}, &hold
 	w.byToken[fresh.token] = &fresh
 	w.current[fresh.key()] = fresh.token
-	fresh.noteOwner()
+	if w.offers == nil {
+		w.offers = make(map[string]func() bool)
+	}
+	w.offers[fresh.token] = clock.AfterFunc(delay, func() { w.offerDue(fresh.token) })
 	return fresh, true
+}
+
+// offerDue tells the paired computer a prompt is held for that it is
+// listed now, when its registration is still the prompt's current one and
+// open: a closed or replaced registration was told when it changed, and
+// after shutdown the prompt goes with the process.
+func (w *workerPrompts) offerDue(token string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.offers, token)
+	prompt := w.byToken[token]
+	if w.offersStopped || prompt == nil || w.current[prompt.key()] != token || prompt.state != workerPromptRouted {
+		return
+	}
+	prompt.noteOwner()
+}
+
+// disarmLocked stops the timer that would offer the registration under
+// token again (reoffer), for a registration that closed.
+func (w *workerPrompts) disarmLocked(token string) {
+	if stop := w.offers[token]; stop != nil {
+		stop()
+		delete(w.offers, token)
+	}
+}
+
+// stopOffers stops every timer reoffer armed, and arms none from here on,
+// for shutdown.
+func (w *workerPrompts) stopOffers() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.offersStopped = true
+	for token := range w.offers {
+		w.disarmLocked(token)
+	}
+}
+
+// promptClock is the registry's time for the prompts it offers a paired
+// computer again: the wall clock, or a test's.
+type promptClock interface {
+	Now() time.Time
+	// AfterFunc runs f after d on its own goroutine and returns its stop.
+	AfterFunc(d time.Duration, f func()) (stop func() bool)
+}
+
+type wallPromptClock struct{}
+
+func (wallPromptClock) Now() time.Time { return time.Now() }
+
+func (wallPromptClock) AfterFunc(d time.Duration, f func()) func() bool {
+	return time.AfterFunc(d, f).Stop
+}
+
+func (w *workerPrompts) clockLocked() promptClock {
+	if w.clock == nil {
+		return wallPromptClock{}
+	}
+	return w.clock
 }
 
 // beginAnswer claims a routed prompt for the agent's answer.
@@ -299,6 +377,7 @@ func (w *workerPrompts) endAnswer(token string, state workerPromptState) (worker
 		return *prompt, true, handBack
 	}
 	prompt.closedAt = time.Now()
+	w.disarmLocked(token)
 	return *prompt, false, false
 }
 
