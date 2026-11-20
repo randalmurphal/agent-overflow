@@ -172,9 +172,14 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1, Intent: 1}, false},
 		{BrowserCompanionAction{Kind: "close-others", PageID: "p", Mount: "m", Select: 2, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "close-right", PageID: "p"}, false},
-		{BrowserCompanionAction{Kind: "move", PageID: "p", Index: 1, Mount: "m", Select: 1, Epoch: 1}, true},
-		{BrowserCompanionAction{Kind: "move", PageID: "p", Index: 1}, false},
-		{BrowserCompanionAction{Kind: "move", Index: 1, Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Beside: "q", Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Beside: "q", After: true, Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Beside: "q"}, false},
+		{BrowserCompanionAction{Kind: "move", Beside: "q", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "move", PageID: "p", Beside: "p", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Beside: "q", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", After: true, Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "reload", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "reload"}, false},
 		{BrowserCompanionAction{Kind: "reload", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
@@ -268,6 +273,9 @@ func TestEveryCompanionKindHasAHandler(t *testing.T) {
 		}
 		if spec.kind == kindJar {
 			action.Jar = "none"
+		}
+		if spec.kind == kindMove {
+			action.Beside = "other"
 		}
 		if _, err := parseCompanionAction(action); err != nil {
 			t.Fatalf("%s: the probe does not parse: %v", name, err)
@@ -383,7 +391,7 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "close", PageID: second},
 		{Kind: "close-others", PageID: second},
 		{Kind: "close-right", PageID: first},
-		{Kind: "move", PageID: first, Index: 99},
+		{Kind: "move", PageID: first, Beside: second, After: true},
 		{Kind: "show-browser"},
 	} {
 		late.Mount, late.Epoch, late.Select = pane.mount, 1, 2

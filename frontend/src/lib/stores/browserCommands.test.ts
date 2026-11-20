@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearCommandRegistry, getCommand, runCommand, type CommandContext } from './commandRegistry.svelte';
+import { clearCommandRegistry, getCommand, offeredCommands, runCommand, type CommandContext } from './commandRegistry.svelte';
 import { isBrowserPaneFocused, registerBrowserCommands, browserPaneReservesChord } from './browserCommands.svelte';
 import {
   applyBrowserCompanionState,
@@ -83,17 +83,71 @@ describe('browser commands', () => {
       expect(evaluateWhen(when, { browserPaneFocused: true, overlayOpen: false } as never), id).toBe(true);
       expect(evaluateWhen(when, { browserPaneFocused: false, overlayOpen: false } as never), id).toBe(false);
       expect(evaluateWhen(when, { browserPaneFocused: true, overlayOpen: true } as never), id).toBe(false);
+      const offered = (flags: Record<string, boolean>) =>
+        evaluateWhen(when, flags as never) && (!command!.offeredWhen || evaluateWhen(parseWhen(command!.offeredWhen), flags as never));
       // A pane not attached yet sends nothing and its chrome is inert:
-      // none is offered there.
-      expect(evaluateWhen(when, { browserPaneFocused: true, browserPaneUnattached: true, browserAddressUnavailable: true, overlayOpen: false } as never), id)
-        .toBe(false);
-      // A shown tab that takes no address takes no focus there and no reload.
-      expect(evaluateWhen(when, { browserPaneFocused: true, browserAddressUnavailable: true, overlayOpen: false } as never), id)
-        .toBe(id !== 'browser.focusAddress' && id !== 'browser.reload');
-      // With no closed tab there is nothing to reopen.
-      expect(evaluateWhen(when, { browserPaneFocused: true, browserNoClosedTab: true, overlayOpen: false } as never), id)
-        .toBe(id !== 'browser.reopenTab');
+      // none runs or is offered there.
+      const unattached = { browserPaneFocused: true, browserPaneUnattached: true, browserAddressUnavailable: true, overlayOpen: false };
+      expect(evaluateWhen(when, unattached as never), id).toBe(false);
+      expect(offered(unattached), id).toBe(false);
+      // A shown tab that takes no address takes no focus there, and the
+      // palette offers no reload of it; a reload the user presses is
+      // decided for the tab it names (reloadTarget).
+      const noAddress = { browserPaneFocused: true, browserAddressUnavailable: true, overlayOpen: false };
+      expect(evaluateWhen(when, noAddress as never), id).toBe(id !== 'browser.focusAddress');
+      expect(offered(noAddress), id).toBe(id !== 'browser.focusAddress' && id !== 'browser.reload');
+      // With no closed tab in the state the palette offers no reopen; a
+      // reopen pressed runs, as a close on its way may make one.
+      const noClosed = { browserPaneFocused: true, browserNoClosedTab: true, overlayOpen: false };
+      expect(evaluateWhen(when, noClosed as never), id).toBe(true);
+      expect(offered(noClosed), id).toBe(id !== 'browser.reopenTab');
     }
+  });
+
+  it('the palette offers reload and reopen by the state the window shows', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
+    focusPane('browser-main');
+    const ids = () => offeredCommands(ctx()).map((command) => command.id).filter((id) => COMMANDS.includes(id));
+    expect(ids()).toEqual(COMMANDS.filter((id) => id !== 'browser.reopenTab'));
+    pushState('n', ['a'], { closedTabs: 1, pages: [{ ...page('n'), creating: true }] });
+    expect(ids()).toEqual(COMMANDS.filter((id) => id !== 'browser.focusAddress' && id !== 'browser.reload'));
+  });
+
+  // Mod+W and then Mod+Shift+T before the close's state arrives: the state
+  // still shows no closed tab, but the close on its way makes one, so the
+  // reopen is sent, numbered after it, and the backend decides at its turn.
+  it('sends a reopen pressed right after a close whose state has not arrived', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
+    focusPane('browser-main');
+    act.mockImplementation(() => new Promise(() => {}));
+    expect(ctx().flags.browserNoClosedTab).toBe(true);
+    // What Mod+W runs (pane.close) on the browser pane.
+    expect(closeFocusedBrowserTab()).toBe(true);
+    expect(dispatchKey(key({ key: 'T', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(true);
+    expect(act.mock.calls.map(([, action]) => [action.kind, action.select])).toEqual([['close', 1], ['reopen', 2]]);
+  });
+
+  // A reload chord pressed in page a arrives after b became active while
+  // b is still being created: the reload is a's, which takes one.
+  it('reloads the page a replayed chord came from while the tab shown cannot reload', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
+    focusPane('browser-main');
+    pushState('n', ['a', 'n'], { pages: [page('a'), { ...page('n'), creating: true }] });
+    expect(ctx().flags.browserAddressUnavailable).toBe(true);
+    const dispatcher = (event: KeyboardEvent): void => {
+      dispatchKey(event, ctx(), { isMac: false });
+    };
+    window.addEventListener('keydown', dispatcher);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: THREAD, mount: 'mount-1', pageId: 'a', accelerator: { key: 'r', ctrl: true } } as never);
+    } finally {
+      window.removeEventListener('keydown', dispatcher);
+    }
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'a' }));
+    // Pressed in the window, it names the tab shown, which cannot reload yet.
+    act.mockClear();
+    dispatchKey(key({ key: 'r', ctrlKey: true }), ctx(), { isMac: false });
+    expect(act).not.toHaveBeenCalled();
   });
 
   // The flags say what the keyboard's pane has: an attachment, a shown tab

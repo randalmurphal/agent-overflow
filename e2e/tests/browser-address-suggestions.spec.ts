@@ -5,8 +5,13 @@
 // closes the list before it reverts the field. A tab suggestion switches to
 // that tab; any other navigates the field's tab. A cookie jar switch forgets
 // the recent addresses. A dev server started in the thread's terminal after
-// the pane opened is found by the scan the field's focus runs.
+// the pane opened is found by the scan the field's focus runs. A draft
+// belongs to its tab: a tab switch shows the new tab's address and Enter
+// then navigates that tab to it, while text typed after choosing a tab
+// suggestion, before the switch is answered, is that tab's draft.
 import { connect } from 'node:net';
+import type { Page } from '@playwright/test';
+import type { HarnessApp } from '../src/harness.js';
 import { unusedPort } from '../src/ports.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -150,3 +155,107 @@ function listening(port: number): Promise<boolean> {
     socket.once('error', () => resolve(false));
   });
 }
+
+const BROWSER_COMPANION_DO = 197228034;
+
+interface Navigation { pageId: string; address: string }
+
+/**
+ * The pane's navigations as they leave for the backend, and, once `hold`
+ * names a kind, the first frame of that kind held until `release`.
+ */
+async function watchWire(page: Page) {
+  const wire: { navigations: Navigation[]; hold?: string; held?: string; send?: (message: string) => void } = { navigations: [] };
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    wire.send = (message) => server.send(message);
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      const action = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1] : null;
+      if (action?.kind === 'navigate') wire.navigations.push({ pageId: action.pageId, address: action.address });
+      if (action && wire.hold === action.kind && wire.held === undefined) {
+        wire.held = String(message);
+        return;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => socket.send(message));
+  });
+  return {
+    navigations: () => wire.navigations,
+    hold: (kind: string) => { wire.hold = kind; },
+    held: () => wire.held !== undefined,
+    release: () => wire.send?.(wire.held ?? ''),
+  };
+}
+
+/** A thread with a tab on each of `urls`, the last active. */
+async function seedTabs(harness: HarnessApp, title: string, urls: string[]): Promise<{ threadId: string; ids: string[] }> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'browser-drafts', repo: {}, threads: [{ title, turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }] }],
+  });
+  const threadId = seed.projects[0].threadIds[0];
+  await harness.rpc('StartSession', threadId);
+  const ids: string[] = [];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    ids.push(opened.activePageId ?? '');
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  return { threadId, ids };
+}
+
+async function tabState(harness: HarnessApp, threadId: string): Promise<{ active: string; urls: string[] }> {
+  const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+  return { active: state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '', urls: state.pages?.map((tab) => tab.url) ?? [] };
+}
+
+test('a draft typed on a tab is not submitted to the tab switched to', async ({ harness, page }) => {
+  const wire = await watchWire(page);
+  const urls = ['https://example.test/one', 'https://example.test/two'];
+  const { threadId, ids } = await seedTabs(harness, 'Browser draft switch', urls);
+  await harness.open(page);
+  await page.getByText('Browser draft switch').click();
+  const pane = page.getByTestId('browser-pane');
+  const address = pane.getByRole('textbox', { name: 'Address' });
+  await expect(pane.getByTestId('browser-tab')).toHaveCount(2);
+  await expect(address).toHaveValue(urls[1]);
+
+  await address.click();
+  await address.fill('https://unsubmitted-for-two.test/');
+  await page.keyboard.press('Control+Tab');
+  await expect.poll(async () => (await tabState(harness, threadId)).active).toBe(urls[0]);
+  await expect(address).toHaveValue(urls[0]);
+  await address.press('Enter');
+  await expect.poll(() => wire.navigations()).toEqual([{ pageId: ids[0], address: urls[0] }]);
+  expect((await tabState(harness, threadId)).urls).toEqual(urls);
+});
+
+test("text typed after choosing a tab suggestion is that tab's draft", async ({ harness, page }) => {
+  const wire = await watchWire(page);
+  const urls = ['https://example.test/one', 'https://example.test/two'];
+  const { threadId, ids } = await seedTabs(harness, 'Browser draft suggestion', urls);
+  await harness.open(page);
+  await page.getByText('Browser draft suggestion').click();
+  const pane = page.getByTestId('browser-pane');
+  const address = pane.getByRole('textbox', { name: 'Address' });
+  await expect(address).toHaveValue(urls[1]);
+
+  wire.hold('activate');
+  await address.click();
+  await address.pressSequentially('one');
+  const rows = page.getByTestId('browser-address-suggestions').getByRole('option');
+  await expect(rows).toHaveCount(1);
+  await address.press('ArrowDown');
+  await address.press('Enter');
+  await expect.poll(() => wire.held()).toBe(true);
+  // The switch is on its way; the user starts the address for that tab.
+  await address.fill('https://next.test/');
+  wire.release();
+  await expect.poll(async () => (await tabState(harness, threadId)).active).toBe(urls[0]);
+  await expect(pane.getByTestId('browser-tab').nth(0)).toHaveAttribute('aria-selected', 'true');
+  await expect(address).toHaveValue('https://next.test/');
+  await expect(address).toBeFocused();
+  await address.press('Enter');
+  await expect.poll(() => wire.navigations()).toEqual([{ pageId: ids[0], address: 'https://next.test/' }]);
+});

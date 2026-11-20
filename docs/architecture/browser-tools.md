@@ -382,8 +382,10 @@ behave as a desktop browser's:
   Enter, Escape and taking a suggestion leave the address for the page
   (`leaveAddress` in `BrowserPane.svelte`): the page area takes DOM focus
   and the page gets the keyboard through a focus intent (see
-  [Keyboard and focus](keyboard-focus.md#focus-intents)). Switching tabs
-  replaces an edit with the new tab's address.
+  [Keyboard and focus](keyboard-focus.md#focus-intents)). An edit is a
+  draft of the tab it was typed for, the active tab or the one a chosen tab
+  suggestion is switching to, and Enter navigates only that tab. A page
+  push leaves it; switching tabs replaces it with the new tab's address.
 - Typing in the address opens a suggestion list
   (`BrowserAddressSuggestions.svelte`, matching in `browserAddressMatch.ts`):
   the thread's other open tabs (taking one switches to it), the dev servers
@@ -549,7 +551,12 @@ behave as a desktop browser's:
   bar's reload name their tab too. Before the pane's attach answers, the
   commands that send are not available (`browserPaneUnattached`): the
   palette does not offer them, and their chords stay the pane's and do
-  nothing.
+  nothing. The palette offers reload and reopen by the state the window
+  shows (a shown tab that takes an address, a closed tab), but a command
+  the user issues is decided for the tab it names, never by a state that
+  the pane's commands still on their way will change: reload runs when
+  its tab takes an address, and reopen is sent, numbered, for the Manager
+  to answer at its turn (`browserCommands.svelte.ts` AVAILABLE_WHEN).
 - The app reload chord, `mod+r`, is handed to the pane while it is
   focused and a command runs for it there
   ([keyboard and focus](keyboard-focus.md#the-app-reload-chord)).

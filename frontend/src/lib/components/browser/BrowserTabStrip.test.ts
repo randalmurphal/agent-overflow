@@ -222,7 +222,34 @@ describe('<BrowserTabStrip>', () => {
     expect(indicators).toHaveLength(1);
     expect(target.contains(indicators[0])).toBe(true);
     await fireEvent.drop(target, { dataTransfer: transfer });
-    expect(onAct).toHaveBeenCalledWith({ kind: 'move', pageId: 'a', index: 2 });
+    expect(onAct).toHaveBeenCalledWith({ kind: 'move', pageId: 'a', beside: 'c', after: true });
     expect(view.queryByTestId('browser-tab-drop-indicator')).toBeNull();
+  });
+
+  // The drop names the tab it lands beside, never a position in the strip
+  // the user saw, and a drop either side of the tab itself sends nothing.
+  it('names the tab a dropped tab lands beside, and sends nothing for a drop beside itself', async () => {
+    const { view, onAct } = mount([page('a'), page('b'), page('c'), page('d')]);
+    const transfer = {
+      data: new Map<string, string>(),
+      types: [] as string[],
+      setData(type: string, value: string) { this.data.set(type, value); this.types.push(type); },
+      getData(type: string) { return this.data.get(type) ?? ''; },
+      effectAllowed: '', dropEffect: '',
+    };
+    // The test DOM's drag events carry no pointer position, so each drop
+    // lands on the right half of the tab it is over.
+    const dropOn = async (dragged: string, on: string) => {
+      await fireEvent.dragStart(tabOf(view, dragged), { dataTransfer: transfer });
+      const target = tabOf(view, on);
+      await fireEvent.dragOver(target, { dataTransfer: transfer });
+      await fireEvent.drop(target, { dataTransfer: transfer });
+    };
+    await dropOn('a', 'c');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'move', pageId: 'a', beside: 'c', after: true });
+    onAct.mockClear();
+    await dropOn('b', 'b');
+    await dropOn('b', 'a');
+    expect(onAct).not.toHaveBeenCalled();
   });
 });

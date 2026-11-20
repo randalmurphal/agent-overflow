@@ -94,17 +94,28 @@
     return activePage?.url === 'about:blank' ? '' : (activePage?.url ?? '');
   }
 
-  // The field shows the page's address until the user edits it. From that
-  // edit the field is the user's draft, and nothing the page pushes replaces
-  // it (its address changing, another tab becoming active, a tab switch
-  // answered) until the user commits the draft (Enter, a suggestion) or
-  // abandons it (Escape, leaving the field); then the field takes the page's
-  // address again. This effect is the one place the field takes it.
-  let draft = $state(false);
+  // A draft belongs to a tab: the field's tab when the user edited it,
+  // which is the active tab, or the tab a suggestion switch the user chose
+  // is on its way to (`switchingTo`), since that gesture targeted it. The
+  // field shows its tab's draft while there is one, and the active tab's
+  // address otherwise. A page push never replaces a draft (its page's
+  // address changing, the chosen switch answered); the field's tab becoming
+  // another drops it, as a tab switch replaces an edit with the new tab's
+  // address. Enter submits a draft to its own tab, and committing it (Enter,
+  // a suggestion) or abandoning it (Escape, leaving the field) gives the
+  // field back to the page. This effect is the one place the field takes
+  // the page's address.
+  let draft: { pageId: string; text: string } | null = $state(null);
+  let switchingTo: string | null = $state(null);
+  let fieldPageId = $derived(switchingTo ?? activePage?.id ?? null);
   $effect(() => {
     const url = pageAddress();
-    if (draft) return;
-    untrack(() => showAddress(url));
+    const pageId = fieldPageId;
+    if (draft && draft.pageId === pageId) return;
+    untrack(() => {
+      draft = null;
+      showAddress(url);
+    });
   });
 
   /**
@@ -157,18 +168,19 @@
       // The field's press: neither a find bar nor a running turn behind it
       // takes it (the app dispatcher declines a prevented event).
       event.preventDefault();
-      draft = false;
+      draft = null;
       onLeave();
       return;
     }
     // Until the pane knows the page it shows there is none to name, and a
     // navigation naming none opens a new page. Enter with Alt, Ctrl or Meta
-    // is an app chord (alt+shift+enter maximizes the pane).
-    const pageId = pageIdOf(activePage?.id);
+    // is an app chord (alt+shift+enter maximizes the pane). A draft goes to
+    // its own tab; an unedited field navigates the active tab to its text.
+    const pageId = pageIdOf(draft?.pageId ?? activePage?.id);
     if (isLocalEnter(event) && pageId) {
       event.preventDefault();
-      const target = address;
-      draft = false;
+      const target = draft?.text ?? address;
+      draft = null;
       onLeave();
       void onAct(browserAction.navigate(pageId, target));
     }
@@ -184,15 +196,19 @@
   let leaveAfterSwitch: FocusIntent | null = null;
   onDestroy(() => leaveAfterSwitch?.end());
   function takeSuggestion(suggestion: AddressSuggestion): void {
-    const pageId = pageIdOf(activePage?.id);
+    const pageId = pageIdOf(fieldPageId);
     if (!pageId || !input) return;
-    draft = false;
+    draft = null;
     const suggested = pageIdOf(suggestion.pageId);
     if (suggested) {
       const field = input;
       const intent = intendFocus({ holdsFocus: (node) => field.contains(node), holdsPress: () => false });
       leaveAfterSwitch = intent;
+      switchingTo = suggested;
       void onAct(browserAction.select(suggested)).then(() => {
+        // Answered: the pane has applied the switch, or shows why it did
+        // not, and the field's tab is the active one again.
+        if (switchingTo === suggested) switchingTo = null;
         intent.land(() => {
           if (document.activeElement === field) onLeave();
         });
@@ -241,12 +257,13 @@
     onfocus={onFocus}
     onblur={() => {
       addressFocused = false;
-      draft = false;
+      draft = null;
       pressFocusing = false;
       suggestions?.close();
     }}
     oninput={(event) => {
-      draft = true;
+      const pageId = fieldPageId;
+      draft = pageId ? { pageId, text: event.currentTarget.value } : null;
       leaveAfterSwitch?.end();
       suggestions?.input(event.currentTarget.value);
     }}

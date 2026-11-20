@@ -104,18 +104,27 @@ describe('<BrowserAddressBar>', () => {
     expect(onLeave).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps an edit over the page changing and another tab becoming active, until the field is left', async () => {
+  it("keeps an edit over its own page changing, and shows another tab's address once that tab is active", async () => {
     const { view, input } = mount();
     input.focus();
     await fireEvent.input(input, { target: { value: 'half typed' } });
-    await view.rerender({ activePage: page({ title: 'Page a, loaded' }) as never });
+    await view.rerender({ activePage: page({ title: 'Page a, loaded', url: 'https://example.test/a2' }) as never });
     expect(input.value).toBe('half typed');
     await view.rerender({ activePage: page({ id: 'b', url: 'https://example.test/b' }) as never });
-    expect(input.value).toBe('half typed');
-    expect(document.activeElement).toBe(input);
-    input.blur();
-    await tick();
     expect(input.value).toBe('https://example.test/b');
+    expect(document.activeElement).toBe(input);
+  });
+
+  // A draft belongs to the tab it was typed on: after a switch, Enter
+  // navigates the tab now shown to its own address, never to the draft.
+  it("does not submit a tab's draft to the tab switched to", async () => {
+    const { view, input, onAct } = mount(page({ id: 'b', url: 'https://example.test/b' }));
+    input.focus();
+    await fireEvent.input(input, { target: { value: 'https://unsubmitted-for-b.test/' } });
+    await view.rerender({ activePage: page() as never });
+    await tick();
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'navigate', pageId: 'a', address: URL_A });
   });
 
   it('puts the page address back when the field loses focus with an edit, on a settled tab and after a switch', async () => {

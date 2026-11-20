@@ -48,7 +48,8 @@
   // one) while this window may host the thread's browser: its tabs are the
   // home computer's, so a thread another computer claims too shows none.
   // Before the attach answers the strip shows them in the inert chrome.
-  let threadState = $derived(ctx.threadId && canUseNativeBrowser(ctx.threadId) ? browserThreadState(ctx.threadId) : null);
+  let mayHost = $derived(ctx.threadId ? canUseNativeBrowser(ctx.threadId) : false);
+  let threadState = $derived(mayHost && ctx.threadId ? browserThreadState(ctx.threadId) : null);
   let actionError = $derived(ctx.threadId ? browserActionError(ctx.threadId) : '');
   let findCleanupError = $derived(ctx.threadId ? browserFindCleanupError(ctx.threadId) : '');
   let pages = $derived(threadState?.pages ?? []);
@@ -63,9 +64,13 @@
   let pane = $derived(ctx.threadId ? browserPaneAttachment(ctx.threadId) : null);
   let attached = $derived(pane !== null);
 
+  // The pane's mount, held only while this window may host the thread's
+  // browser: losing that (the owner moving, or two computers claiming the
+  // thread) releases it, which detaches the native view the mount
+  // presents, and a verified owner again attaches afresh.
   $effect(() => {
     const threadId = ctx.threadId;
-    if (!threadId) return;
+    if (!threadId || !mayHost) return;
     attachment = attachBrowserCompanion(threadId);
     return () => {
       attachment?.release();

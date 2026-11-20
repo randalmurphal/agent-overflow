@@ -186,6 +186,27 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(onLeave).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe('https://next.test/');
+    // The text was typed for the tab the suggestion chose, and goes there.
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'navigate', pageId: 'b', address: 'https://next.test/' });
+  });
+
+  // The switch the suggestion asked for did not happen: what was typed for
+  // that tab goes with it, and the field shows the tab still active.
+  it('drops what was typed for a tab switch that did not land', async () => {
+    let finish: () => void = () => {};
+    const { input, onAct } = mount('state');
+    onAct.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(1));
+    key(input, { key: 'ArrowDown' });
+    key(input, { key: 'Enter' });
+    await type(input, 'https://next.test/');
+    finish();
+    await Promise.resolve();
+    await tick();
+    expect(input.value).toBe('https://example.test/a');
   });
 
   it('keeps the draft over the page address changing until the user leaves the field', async () => {
@@ -217,12 +238,15 @@ describe('<BrowserAddressSuggestions>', () => {
     const { input } = mount('state');
     input.focus();
     await type(input, 'https://draft.test/');
-    seed('b');
+    applyBrowserCompanionState({
+      kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 'L.1',
+      pages: [page('a', 'https://example.test/moved', 'Page a'), PAGES[1]],
+    } as never);
     await tick();
     expect(input.value).toBe('https://draft.test/');
     key(input, { key: 'Escape' });
     await tick();
-    expect(input.value).toBe('http://localhost:5173/settings');
+    expect(input.value).toBe('https://example.test/moved');
   });
 
   it('does not leave the field after a tab switch once another control was pressed', async () => {

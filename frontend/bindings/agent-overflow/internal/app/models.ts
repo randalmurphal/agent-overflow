@@ -908,11 +908,19 @@ export class BrowserCompanionAction {
     "address"?: string;
 
     /**
-     * Index is the target tab position for "move" and the relative step for
-     * "step" (1 next, -1 previous, wrapping). Not omitempty: index 0 (move to
-     * the front) is a real value.
+     * Index is the relative step for "step" (1 next, -1 previous,
+     * wrapping).
      */
     "index": number;
+
+    /**
+     * Beside and After are where a "move" drops PageID: beside the tab
+     * Beside, after it when After and before it otherwise. The Manager
+     * resolves the position from that neighbor at the move's turn
+     * (Manager.MoveCompanionPage).
+     */
+    "beside"?: string;
+    "after"?: boolean;
 
     /**
      * Jar is the cookie jar for "jar": worktree, project, thread or private.

@@ -109,15 +109,16 @@ export interface CommandFlags {
   browserPaneUnattached: boolean;
   /**
    * True while the keyboard's target is a browser pane whose address field
-   * cannot take focus or a reload (browserActions#isBrowserAddressUnavailable):
-   * its chrome is inert until the attach answers, and a shown tab still being
-   * created, or one that failed to open, takes no address. Negative, as
-   * noPaneTarget.
+   * cannot take focus (browserActions#isBrowserAddressUnavailable): its
+   * chrome is inert until the attach answers, and a shown tab still being
+   * created, or one that failed to open, takes no address or reload.
+   * Negative, as noPaneTarget.
    */
   browserAddressUnavailable: boolean;
   /**
-   * True while the keyboard's target is a browser pane whose thread has no
-   * closed tab to reopen. Negative, as noPaneTarget.
+   * True while the keyboard's target is a browser pane whose thread's state
+   * shows no closed tab to reopen. The palette's only: a close on its way
+   * may make one. Negative, as noPaneTarget.
    */
   browserNoClosedTab: boolean;
   /**
@@ -173,8 +174,18 @@ export interface Command {
   label: string;
   description?: string;
   icon?: string;
-  /** When expression (parsed when the command is registered; see below). */
+  /**
+   * When expression (parsed when the command is registered; see below):
+   * whether the command runs, from a chord, the palette or a caller.
+   */
   when?: string;
+  /**
+   * A further when expression the palette requires before it offers the
+   * command: what the command would act on, as the window's state shows it
+   * now. A command that runs is decided by `when` alone, so a state that
+   * commands already on their way will change never refuses it.
+   */
+  offeredWhen?: string;
   /**
    * When true, the command's keybinding fires even when focus sits inside
    * an INPUT / TEXTAREA / contentEditable element. App.svelte filters
@@ -191,13 +202,15 @@ export interface Command {
 
 interface RegisteredCommand extends Command {
   whenAst: WhenNode | null;
+  offeredAst: WhenNode | null;
 }
 
 const commands: Map<string, RegisteredCommand> = $state(new Map());
 
 export function registerCommand(cmd: Command): void {
   const whenAst = cmd.when ? tryParseWhen(cmd.when) : null;
-  commands.set(cmd.id, { ...cmd, whenAst });
+  const offeredAst = cmd.offeredWhen ? tryParseWhen(cmd.offeredWhen) : null;
+  commands.set(cmd.id, { ...cmd, whenAst, offeredAst });
 }
 
 export function unregisterCommand(id: string): void {
@@ -213,18 +226,17 @@ export function getCommand(id: string): Command | undefined {
 }
 
 /**
- * Returns the commands whose `when` expression evaluates true in the current
- * context. Commands without a `when` are always enabled.
+ * The commands the palette offers in the current context: those whose
+ * `when` and `offeredWhen` expressions both evaluate true. A command
+ * without either is always offered.
  */
-export function enabledCommands(ctx: CommandContext): Command[] {
+export function offeredCommands(ctx: CommandContext): Command[] {
   const out: Command[] = [];
   const flags = (ctx.flags ?? ctx) as CommandFlags;
   for (const cmd of commands.values()) {
-    if (!cmd.whenAst) {
-      out.push(cmd);
-      continue;
-    }
-    if (evaluateWhen(cmd.whenAst, flags)) out.push(cmd);
+    if (cmd.whenAst && !evaluateWhen(cmd.whenAst, flags)) continue;
+    if (cmd.offeredAst && !evaluateWhen(cmd.offeredAst, flags)) continue;
+    out.push(cmd);
   }
   return out;
 }

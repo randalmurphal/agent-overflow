@@ -148,6 +148,7 @@ describe('<BrowserPane> suspended pages', () => {
     const chrome = view.getByTestId('browser-pane-chrome');
     await waitFor(() => expect(chrome.inert).toBe(false));
     expect(view.getAllByTestId('browser-tab')).toHaveLength(2);
+    const detach = setBindingMock('BrowserCompanionPaneDetach', vi.fn(async () => {}));
     stageBackend({ id: 'remote', backendId: 'remote' });
     try {
       noteThread(THREAD, HOME_BACKEND, 4);
@@ -155,6 +156,13 @@ describe('<BrowserPane> suspended pages', () => {
       await tick();
       expect(chrome.inert).toBe(true);
       expect(view.queryAllByTestId('browser-tab')).toHaveLength(0);
+      // The mount goes with the ownership, which takes the native view down.
+      await waitFor(() => expect(detach).toHaveBeenCalledWith('mount-1'));
+      // This computer owns it again: the pane attaches afresh.
+      const attach = setBindingMock('BrowserCompanionPaneAttach', vi.fn(async () => ({ id: 'mount-2', state: state([page('a', false), page('b', false)]) })));
+      noteThread(THREAD, HOME_BACKEND, 5);
+      await waitFor(() => expect(chrome.inert).toBe(false));
+      expect(attach).toHaveBeenCalledTimes(1);
     } finally {
       forgetThread(THREAD);
       forgetBackendEntities('remote');

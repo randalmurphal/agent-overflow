@@ -147,6 +147,10 @@
   const TAB_DRAG_MIME = 'application/x-ao-browser-tab';
   let dragPageId = $state('');
   let dropSlot = $state(-1);
+  // Whether the drop is after the tab before the slot (its right half, or
+  // the strip's empty space) rather than before the tab at it: the tab the
+  // pointer is over is the neighbor the move names.
+  let dropAfter = false;
 
   function tabDragStart(event: DragEvent, pageId: string): void {
     if (!event.dataTransfer) return;
@@ -161,7 +165,8 @@
     event.dataTransfer.dropEffect = 'move';
     const tab = event.currentTarget as HTMLElement;
     const rect = tab.getBoundingClientRect();
-    dropSlot = event.clientX < rect.left + rect.width / 2 ? index : index + 1;
+    dropAfter = !(event.clientX < rect.left + rect.width / 2);
+    dropSlot = dropAfter ? index + 1 : index;
   }
 
   function stripDragOver(event: DragEvent): void {
@@ -172,21 +177,24 @@
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     dropSlot = pages.length;
+    dropAfter = true;
   }
 
   function tabDrop(event: DragEvent): void {
     const pageId = event.dataTransfer?.getData(TAB_DRAG_MIME) ?? '';
     const slot = dropSlot;
+    const after = dropAfter;
     dragPageId = '';
     dropSlot = -1;
     if (!pageId || slot < 0) return;
     event.preventDefault();
     const from = pages.findIndex((page) => page.id === pageId);
-    if (from < 0) return;
-    // The backend's move index addresses the list WITHOUT the moved tab.
-    const to = from < slot ? slot - 1 : slot;
-    if (to === from) return;
-    actOnPage(pageId, (id) => browserAction.move(id, to));
+    // A slot either side of the tab itself leaves it where it is.
+    if (from < 0 || slot === from || slot === from + 1) return;
+    // The move names the tab it was dropped beside, which the backend finds
+    // at the move's turn.
+    const beside = pageIdOf(after ? pages[slot - 1]?.id : pages[slot]?.id);
+    if (beside) actOnPage(pageId, (id) => browserAction.move(id, beside, after));
   }
 
   // An action on the tab `raw` names; a blank id names none, and nothing is sent.

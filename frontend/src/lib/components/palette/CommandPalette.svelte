@@ -21,7 +21,7 @@
 
   import { tick } from 'svelte';
   import { closePalette, isPaletteOpen } from '../../stores/palette.svelte';
-  import { enabledCommands, type CommandContext } from '../../stores/commandRegistry.svelte';
+  import { offeredCommands, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
@@ -83,7 +83,7 @@
       : null,
   );
   let allCommands = $derived(
-    activeContext ? enabledCommands(activeContext) : CLOSED_COMMANDS,
+    activeContext ? offeredCommands(activeContext) : CLOSED_COMMANDS,
   );
 
   let results: PaletteRow[] = $derived.by(() => {

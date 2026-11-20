@@ -19,7 +19,7 @@ import {
   browserThreadState,
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
-import { addressFocusIntent, takeAddressFocus } from './browserAddressFocus.svelte';
+import { addressFocusIntent, armAddressFocus, settleAddressFocus, takeAddressFocus } from './browserAddressFocus.svelte';
 import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, getPane, resetPanesForTest } from './panes.svelte';
@@ -617,11 +617,15 @@ describe('opening a browser tab', () => {
     expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
   });
 
-  // A second new tab while the first is unanswered joins its request: the
-  // first answer, ready or refused, does not withdraw it, and the pane takes
-  // it at the newer tab it shows.
+  // Two New Tab presses, the second made while the first is unanswered:
+  // each press's request belongs to the tab it opens. In the order the
+  // backend sends them, the first tab is created and becomes ready while the
+  // second press is due, and its answer names it, which the pane reads with
+  // the first tab shown; then the second tab is created, becomes ready, and
+  // its answer names it. Only the second tab takes the focus: the second
+  // press moved the user on from the first.
   for (const firstFails of [false, true]) {
-    it(`focuses the newer tab when the older ${firstFails ? 'fails' : 'answers'} first`, async () => {
+    it(`focuses the second new tab when the first ${firstFails ? 'fails' : 'becomes ready'} first`, async () => {
       const answers: Array<(pageId: string) => void> = [];
       setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve, reject) => {
         answers.push((pageId) => {
@@ -629,23 +633,46 @@ describe('opening a browser tab', () => {
           else resolve({ kind: 'state', threadId: THREAD, activePageId: pageId, visible: true, pages: [tab(pageId)], pageId });
         });
       })));
+      // What the pane does with each state it shows: asks for the focus.
+      const shown = (id: string, extra: Record<string, unknown> = {}) => takeAddressFocus(THREAD, { id, ...extra });
       const first = openBrowserTab(THREAD, { focusAddress: true });
       await vi.waitFor(() => expect(answers).toHaveLength(1));
+      expect(shown('a', { creating: true })).toBe(false);
       // The user presses New again.
       window.dispatchEvent(new Event('pointerdown'));
       const second = openBrowserTab(THREAD, { focusAddress: true });
       await vi.waitFor(() => expect(answers).toHaveLength(2));
+      expect(shown('a', firstFails ? { error: 'refused' } : {})).toBe(false);
       answers[0](firstFails ? '' : 'a');
       await first;
-      expect(addressFocusIntent(THREAD)).toEqual(firstFails ? [] : ['a']);
-      // The first tab shown while the second is due keeps the request.
-      if (!firstFails) expect(takeAddressFocus(THREAD, { id: 'other' })).toBe(false);
+      // The pane reads the answer with the first tab still shown.
+      expect(shown('a', firstFails ? { error: 'refused' } : {})).toBe(false);
+      expect(addressFocusIntent(THREAD)).toEqual([]);
+      expect(shown('b', { creating: true })).toBe(false);
+      expect(shown('b')).toBe(false);
       answers[1]('b');
       await second;
-      expect(addressFocusIntent(THREAD)).toEqual(firstFails ? ['b'] : ['a', 'b']);
-      expect(takeAddressFocus(THREAD, { id: 'b' })).toBe(true);
+      expect(addressFocusIntent(THREAD)).toEqual(['b']);
+      expect(shown('b')).toBe(true);
+      expect(addressFocusIntent(THREAD)).toBeNull();
     });
   }
+
+  // Two header shows converge on one tab, which only the answer of the show
+  // that opened it names: they share one request, and that tab takes it.
+  it('shares one focus request between overlapping header shows', async () => {
+    const answers: Array<(pageId: string) => void> = [];
+    setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve) => {
+      answers.push((pageId) => resolve({ kind: 'state', threadId: THREAD, activePageId: 'n', visible: true, pages: [tab('n')], pageId }));
+    })));
+    const ticket = armAddressFocus(THREAD, 'show');
+    window.dispatchEvent(new Event('pointerdown'));
+    const joined = armAddressFocus(THREAD, 'show');
+    expect(joined.request).toBe(ticket.request);
+    settleAddressFocus(ticket, 'n');
+    settleAddressFocus(joined, '');
+    expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(true);
+  });
 
   it('drops the focus when another tab is shown first', async () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => ({

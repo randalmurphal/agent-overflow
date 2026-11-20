@@ -208,7 +208,7 @@ async function openTab(
   sink: BrowserPaneAttachment | null,
   send: () => Promise<BrowserActionAnswer>,
 ): Promise<BrowserActionFailure | null> {
-  const focus = options.focusAddress ? armAddressFocus(threadId) : null;
+  const focus = options.focusAddress ? armAddressFocus(threadId, 'new-tab') : null;
   const { failure, state } = await runAction(sink, send);
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
@@ -412,7 +412,7 @@ async function hideBrowserFromHeader(threadId: string): Promise<void> {
 async function showBrowserFromHeader(threadId: string): Promise<void> {
   if (!browserSourcePaneShown(threadId)) return;
   if (canUseNativeBrowser(threadId) && !canPresentNativeBrowser(threadId)) return;
-  const focus = armAddressFocus(threadId);
+  const focus = armAddressFocus(threadId, 'show');
   const { failure, state } = await actForThread(threadId, browserAction.showBrowser());
   settleAddressFocus(focus, failure ? '' : (state?.pageId ?? ''));
   // An older backend refuses the kind ("unsupported companion action").
