@@ -150,12 +150,11 @@ func (r *run) historyFinal(d store.MirrorHistoryDue, completeTo time.Time, began
 // storeHistories stores hs, the whole history of each issue of one read,
 // in one store call, and returns the issues whose stored history changed,
 // sorted. A history the store finds superseded (a later read stored one)
-// or of an issue it no longer keeps changes nothing and is no failure.
+// or of an issue it no longer keeps changes nothing and is no failure. A
+// store call that failed part way changed the histories it reports, which
+// are returned with its error.
 func (r *run) storeHistories(hs []store.MirrorHistory) ([]tracker.IssueID, error) {
 	results, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs)
-	if err != nil {
-		return nil, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
-	}
 	var changed []tracker.IssueID
 	for _, res := range results {
 		if res.Changed {
@@ -163,5 +162,8 @@ func (r *run) storeHistories(hs []store.MirrorHistory) ([]tracker.IssueID, error
 		}
 	}
 	slices.Sort(changed)
+	if err != nil {
+		return changed, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
+	}
 	return changed, nil
 }

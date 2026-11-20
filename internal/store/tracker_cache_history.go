@@ -318,11 +318,17 @@ func newMirrorHistoryInput(h MirrorHistory) (mirrorHistoryInput, error) {
 // issue's history in one more (replaceStagedHistory). No transaction
 // deletes more than clearMirrorChunk changes, and no read sees part of a
 // history. sweep is the root's sweep captured before the reads
-// (ErrTrackerCacheSwept).
+// (ErrTrackerCacheSwept). A call that fails after a transaction of it
+// committed returns, with the error, the outcomes so far: Changed for
+// every history a committed transaction changed, and for a staged history
+// whose write had begun, which may not have completed. The caller tells
+// those changes whatever it does about the error; the other outcomes of a
+// failed call say nothing.
 func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHistory) ([]MirrorHistoryResult, error) {
 	if len(histories) > mirrorHistoryBatch || sweep <= 0 {
 		return nil, fmt.Errorf("%w: %d histories, over %d, or no sweep", ErrInvalidTrackerCache, len(histories), mirrorHistoryBatch)
 	}
+	// A refusal below is of the input: nothing was written.
 	inputs := make([]mirrorHistoryInput, len(histories))
 	results := make([]MirrorHistoryResult, len(histories))
 	index := make(map[string]int, len(histories))
@@ -340,6 +346,9 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	action := fmt.Sprintf("store: replace tracker mirror %d histories", rootID)
 	var staged []mirrorHistoryInput
 	for pending := inputs; len(pending) > 0; {
+		// What the transactions before this one committed: a transaction
+		// that fails rolls back, and its outcomes with it.
+		committed := slices.Clone(results)
 		var err error
 		err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
 			var stage []mirrorHistoryInput
@@ -348,7 +357,7 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 			return err
 		})
 		if err != nil {
-			return nil, err
+			return committed, err
 		}
 	}
 	if len(staged) == 0 {
@@ -360,7 +369,7 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	defer s.mirrorCleanup.Unlock()
 	for _, in := range staged {
 		if err := s.replaceStagedHistory(rootID, sweep, in, &results[index[in.h.IssueID]]); err != nil {
-			return nil, err
+			return results, err
 		}
 	}
 	return results, nil

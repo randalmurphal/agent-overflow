@@ -108,10 +108,11 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 		return out, fmt.Errorf("trackerapp: list the issues of board %s: %w", board, call(err))
 	}
 	result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), lifetime, idStrings(listing.IDs), listing.Complete, read)
+	// A reconcile that failed part way removed what it reports.
+	out.Changes.add(Changes{Removed: issueIDs(result.Removed)})
 	if err != nil {
 		return out, fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
 	}
-	out.Changes.add(Changes{Removed: issueIDs(result.Removed)})
 	missing := issueIDsInOrder(result.Missing)
 	if limit := reconcileBatches * readBatch; len(missing) > limit {
 		missing, out.More = missing[:limit], true

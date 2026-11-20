@@ -378,7 +378,10 @@ var (
 // latest removal, so no read that began earlier adds a row the listing
 // leaves out. An incomplete listing removes nothing. An issue left with no
 // row and no link becomes unkept. The board must be listed in lifetime
-// (ErrTrackerCacheUnlisted).
+// (ErrTrackerCacheUnlisted). A call that fails after a transaction of it
+// committed returns, with the error, the rows those transactions removed
+// and no Missing: the caller tells the removals whatever it does about
+// the error.
 func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt int64) (result MirrorReconcile, err error) {
 	if readAt <= 0 {
 		return MirrorReconcile{}, fmt.Errorf("%w: a listing needs the time its read began", ErrInvalidTrackerCache)
@@ -396,23 +399,22 @@ func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int6
 	}
 	action := fmt.Sprintf("store: reconcile tracker mirror %d board %s", rootID, boardID)
 	for batch := 0; ; batch++ {
-		removed := 0
+		// What this transaction found and removed, taken only once it commits.
+		var missing, removed []string
 		err = s.mirrorBoardWrite(rootID, boardID, lifetime, action, true, func(tx *sql.Tx, board mirrorBoard) error {
 			if batch == 0 {
 				var err error
-				if result.Missing, err = queryIDs(tx, mirrorReconcileMissingSQL, rootID, boardID, readAt, encoded); err != nil {
+				if missing, err = queryIDs(tx, mirrorReconcileMissingSQL, rootID, boardID, readAt, encoded); err != nil {
 					return fmt.Errorf("find missing rows: %w", err)
 				}
 			}
 			if !complete {
 				return nil
 			}
-			ids, err := queryIDs(tx, mirrorReconcileRemoveSQL, rootID, boardID, readAt, encoded)
-			if err != nil {
+			var err error
+			if removed, err = queryIDs(tx, mirrorReconcileRemoveSQL, rootID, boardID, readAt, encoded); err != nil {
 				return fmt.Errorf("remove unlisted rows: %w", err)
 			}
-			removed = len(ids)
-			result.Removed = append(result.Removed, ids...)
 			if readAt > board.rowsRemovedAt {
 				if _, err := tx.Exec(mirrorRowsRemovedAtSQL, rootID, readAt, boardID); err != nil {
 					return fmt.Errorf("record the removal: %w", err)
@@ -421,9 +423,14 @@ func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int6
 			return nil
 		})
 		if err != nil {
-			return MirrorReconcile{}, err
+			slices.Sort(result.Removed)
+			return MirrorReconcile{Removed: result.Removed}, err
 		}
-		if removed < clearMirrorChunk {
+		if batch == 0 {
+			result.Missing = missing
+		}
+		result.Removed = append(result.Removed, removed...)
+		if len(removed) < clearMirrorChunk {
 			break
 		}
 	}
