@@ -2,6 +2,8 @@ package browser
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -103,7 +105,11 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 			mu.Lock()
 			delete(open, conn)
 			mu.Unlock()
-			conn.Close()
+			// A hang-up may have closed it already. This goroutine can
+			// outlive the test, so it logs rather than reports to t.
+			if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Printf("close the fake CDP connection: %v", err)
+			}
 		}()
 		for {
 			payload, err := wsutil.ReadClientText(conn)
@@ -173,7 +179,9 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 			mu.Lock()
 			defer mu.Unlock()
 			for conn := range open {
-				conn.Close()
+				if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					t.Errorf("hang up the fake CDP connection: %v", err)
+				}
 			}
 		},
 	}
