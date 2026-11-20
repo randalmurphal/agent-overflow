@@ -24,6 +24,8 @@ import { getTransportHelloFor } from './transportStatus.svelte';
 import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { userFacingError } from '../utils/userFacingError';
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { addErrorToast } from './toast.svelte';
 
 // The browser pane's state store. The pane surface itself is an empty host
@@ -272,7 +274,7 @@ export function nativeBrowserRefusal(threadId: string): Error | null {
  * engine (the hello's `browser` capability) and the browser is turned on.
  * The chat header's browser button renders on this, tabs or not.
  */
-export function canOpenNativeBrowser(threadId: string): boolean {
+function canOpenNativeBrowser(threadId: string): boolean {
   if (!canUseNativeBrowser(threadId)) return false;
   if (!(getTransportHelloFor(HOME_BACKEND)?.capabilities.includes('browser') ?? false)) return false;
   return getSettings(HOME_BACKEND).browserEnabled;
@@ -361,6 +363,16 @@ export function browserPaneAttachment(threadId: string): BrowserPaneAttachment |
  */
 export function isCurrentBrowserPane(pane: BrowserPaneAttachment): boolean {
   return store.snapshot(pane.threadId)?.pane === pane && canUseNativeBrowser(pane.threadId);
+}
+
+/**
+ * The thread's state with pages, as the pane attached at `pane` may show it:
+ * its tabs, downloads and jar are the home computer's browser data, so the
+ * pane's surfaces read them only through its validated attachment, and only
+ * while `pane` is still the one browserPaneAttachment answers. Reactive.
+ */
+export function browserPaneState(pane: BrowserPaneAttachment): Readonly<BrowserCompanionEvent> | null {
+  return browserPaneAttachment(pane.threadId) === pane ? browserCompanionState(pane.threadId) : null;
 }
 
 /** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
@@ -579,12 +591,20 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   return read;
 }
 
-/** Reads the thread's state unless this connection knows it; never throws. */
+/**
+ * Reads the thread's state unless this connection knows it; never throws.
+ * A failure leaves the thread unknown for the next caller to read again; a
+ * lost connection is the connection banner's to show, and any other
+ * failure is reported as a diagnostic.
+ */
 export function hydrateBrowserCompanionState(threadId: string): void {
   if (!threadId) return;
   // Callers run this from $effect bodies, where an escaping throw tears
-  // down the component's effects; a failure is retried by the next caller.
-  readBrowserCompanionState(threadId).catch(() => {});
+  // down the component's effects.
+  readBrowserCompanionState(threadId).catch((err: unknown) => {
+    if (isPassiveConnectionFailure(err)) return;
+    reportFrontendDiagnostic('A browser state read failed', userFacingError(err));
+  });
 }
 
 /**

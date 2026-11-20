@@ -272,12 +272,10 @@ html.light {
      text, retry icons), so the utility keeps its name and is redefined
      onto our own keyframes instead of Tailwind's.
 
-     STEPPED, not smooth, and that half is load-bearing. The original
-     smooth pulse forced a GPU present every vsync — on a 165Hz panel
-     one 6px dot was a standing 165 presents/sec client that stuttered
-     OTHER apps (2026-07-04 incident; re-measured 2026-08-23 at 63/s
-     smooth vs 7.3/s stepped). Eight values per half-cycle reads as the
-     same breath and presents 8/s.
+     STEPPED, not smooth. A smooth pulse forces a GPU present every
+     vsync: on a 165Hz panel one 6px dot is a standing 165 presents/sec
+     client that stutters other apps. Eight values per half-cycle reads
+     as the same breath and presents 8/s.
 
      A CSS animation rather than a JS style write, because opacity is
      compositable: Blink promotes the element for a KNOWN animation and
@@ -285,31 +283,15 @@ html.light {
      recalc, no paint and no layerize. An inline style write is just a
      style change on an unpromoted element, so every tick drags the
      whole document through recalc → paint → layerize → commit. That
-     cost is per TICK, not per element: the 2026-08-24 spike measured 4
-     dots and 40 dots at the same 58.9ms/5s, against 0.0ms for the CSS
-     form at either count.
+     cost is per tick, not per element: 4 dots and 40 dots cost the same
+     58.9ms/5s, against 0.0ms for the CSS form at either count.
 
-     History, because this flipped five times and the last two were
-     mine to un-do. 5c860a15 armed a JS ticker; 1633dcea disarmed it on
-     an Animation-in-scroller present-policy theory; 2026-08-24
-     measured that theory as binary and document-wide
-     (present-policy-arms.mjs) and moved the pulse here, to CSS
-     keyframes. 2026-08-25 flipped it away twice on a LAYER COUNT: a
-     running opacity animation promotes its element
-     (kActiveOpacityAnimation), and under fleet load 18 of the app's 26
-     layers were 6px dots. First replacement (f3552fb8) wrote root
-     custom properties and regressed springs to 2fps — a root
-     custom-property write invalidates the whole document. Second
-     (da78203a) wrote each dot's opacity inline, and `probe frames` on
-     the live app put the bill at ~31ms/s: 9 full paint lifecycles a
-     second (181 Layerize / 244 Paint / 181 Commit per 20s), about
-     three quarters of the idle renderer main thread. Both flips were
-     counting layers instead of costing them — the promotion those 18
-     layers cost was already measured on 2026-08-24 at +1 layer per dot
-     with no overlap cascade and 34.30 → 34.31MB of texture across a
-     0→30 dot sweep. Trading ~31ms/s of main thread for 0.01MB is the
-     one trade this app's perf work is not allowed to make. Layers are
-     not free by assumption; these ones were measured, and they are.
+     The running animation promotes each dot to its own layer
+     (kActiveOpacityAnimation). That costs one layer per dot with no
+     overlap cascade and a negligible texture budget; the alternatives
+     cost more. A root custom-property write invalidates the whole
+     document, and a per-dot inline opacity write runs a full paint
+     lifecycle on every tick.
 
      Wall-clock phase comes from utils/ambientPhase.ts, so dots that
      mount at different times breathe together.

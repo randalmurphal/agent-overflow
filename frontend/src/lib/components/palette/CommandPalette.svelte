@@ -92,14 +92,10 @@
     const matches = fuzzyFilter(query.trim(), candidates);
     return matches.map((m) => ({
       command: m.item,
-      shortcut: shortcutFor(m.item.id),
+      shortcut: chordHintForCommand(m.item.id),
       indices: m.indices,
     }));
   });
-
-  function shortcutFor(id: string): string | null {
-    return chordHintForCommand(id);
-  }
 
   $effect(() => {
     // Clamp active index when results shrink.

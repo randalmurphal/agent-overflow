@@ -20,7 +20,9 @@
 // closes nothing; once the browser is uncovered it closes the page it was
 // pressed in, also after the user selected another tab meanwhile. Mod+W and
 // then the x of the same tab close one tab, whichever reaches the backend
-// first.
+// first. A tab dragged after a close to the right that has not reached the
+// backend yet moves once that close has closed the tabs the user saw to its
+// right.
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -495,4 +497,61 @@ test('the keyboard close and the x of the same tab close one tab', async ({ harn
   await expect.poll(() => answered.size).toBe(2);
   expect(await tabURLs(harness, threadId)).toEqual(urls.slice(1));
   await expect(tabs).toHaveCount(3);
+});
+
+// Close Tabs to the Right on two, then one dragged after two before the
+// close reaches the backend: the move takes its place after the close in
+// the pane's order, so the close reads the strip the user saw, closes
+// three, and one survives behind two.
+test('a tab dragged after a close to the right waits for it', async ({ harness, page }) => {
+  // The close's frame, held, and the way to the backend it goes by.
+  const wire: { held?: string; send?: (message: string) => void } = {};
+  const sent: string[] = [];
+  const answered = new Set<string>();
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    wire.send = (message) => server.send(message);
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      const kind = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1]?.kind : '';
+      if (kind === 'close-right' || kind === 'move') {
+        sent.push(frame.id);
+        if (kind === 'close-right') {
+          wire.held = String(message);
+          return;
+        }
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      socket.send(message);
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc' && sent.includes(frame.id)) answered.add(frame.id);
+    });
+  });
+  const threadId = await seedBrowserThread(harness, 'Browser move after close');
+  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three'];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser move after close').click();
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(3);
+
+  await tabs.nth(1).click({ button: 'right' });
+  const menu = page.getByRole('menu', { name: 'Tab actions' });
+  await menu.getByTestId('browser-tab-menu-close-right').click();
+  await expect.poll(() => wire.held !== undefined).toBe(true);
+  // Dropped on the right half of two, one lands after it.
+  const target = await tabs.nth(1).boundingBox();
+  if (!target) throw new Error('tab two has no box');
+  await tabs.nth(0).dragTo(tabs.nth(1), { targetPosition: { x: target.width * 0.75, y: target.height / 2 } });
+  await expect.poll(() => sent.length).toBe(2);
+  wire.send?.(wire.held ?? '');
+  await expect.poll(() => answered.size).toBe(2);
+  expect(await tabURLs(harness, threadId)).toEqual([urls[1], urls[0]]);
+  await expect(tabs).toHaveCount(2);
 });

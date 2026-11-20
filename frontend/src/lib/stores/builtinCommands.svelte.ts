@@ -40,7 +40,7 @@ import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closePaneById } from './companionPanes.svelte';
-import { closeFocusedBrowserTab, isBrowserPaneUnattached } from './browserActions';
+import { closeFocusedBrowserTab, isBrowserAddressUnavailable, isBrowserClosedTabMissing, isBrowserPaneUnattached } from './browserActions';
 import { isReplayingBrowserPageChord } from './browserPageChords';
 import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
 import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
@@ -1244,6 +1244,8 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     compactLayout: isCompactLayout(),
     noPaneTarget: paneCommandTarget() === null,
     browserPaneUnattached: isBrowserPaneUnattached(),
+    browserAddressUnavailable: isBrowserAddressUnavailable(),
+    browserNoClosedTab: isBrowserClosedTabMissing(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

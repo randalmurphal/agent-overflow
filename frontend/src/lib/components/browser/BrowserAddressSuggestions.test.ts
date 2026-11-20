@@ -30,12 +30,13 @@ function push(jar: string, recentGen: string, activePageId = 'a'): void {
   applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId, visible: true, jar, recentGen, pages: PAGES } as never);
 }
 
-function mount(activePage = PAGES[0]) {
+/** Mounts the row on `activePage`, or with 'state' on the page the thread's admitted state shows, as the pane does. */
+function mount(activePage: (typeof PAGES)[number] | 'state' = PAGES[0]) {
   const onAct = vi.fn(async (..._args: unknown[]) => {});
   const onLeave = vi.fn();
   const view = render(BrowserAddressBarPaneHarness, {
     threadId: THREAD,
-    activePage: activePage as never,
+    activePage: activePage === 'state' ? undefined : (activePage as never),
     sizeLabel: '',
     promotePaneId: null,
     onAct,
@@ -166,7 +167,7 @@ describe('<BrowserAddressSuggestions>', () => {
 
   it('keeps what the user typed while a tab switch was answered', async () => {
     let finish: () => void = () => {};
-    const { input, onAct, onLeave } = mount();
+    const { input, onAct, onLeave } = mount('state');
     onAct.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
     input.focus();
     await type(input, 'settings');
@@ -176,12 +177,52 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(onAct).toHaveBeenCalledWith({ kind: 'activate', pageId: 'b' });
     // The field still has focus; the user starts another address.
     await type(input, 'https://next.test/');
+    // The switch's answer: the state with b active, then the reply.
+    seed('b');
+    await tick();
     finish();
     await Promise.resolve();
     await tick();
     expect(onLeave).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe('https://next.test/');
+  });
+
+  it('keeps the draft over the page address changing until the user leaves the field', async () => {
+    const { input } = mount('state');
+    input.focus();
+    await type(input, 'https://draft.test/');
+    applyBrowserCompanionState({
+      kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 'L.1',
+      pages: [page('a', 'https://example.test/moved', 'Page a'), PAGES[1]],
+    } as never);
+    await tick();
+    expect(input.value).toBe('https://draft.test/');
+    input.blur();
+    await tick();
+    expect(input.value).toBe('https://example.test/moved');
+  });
+
+  it('follows the page while focused with no edit, keeping the text selected', async () => {
+    const { input } = mount('state');
+    input.focus();
+    input.select();
+    seed('b');
+    await tick();
+    expect(input.value).toBe('http://localhost:5173/settings');
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, input.value.length]);
+  });
+
+  it('Escape abandons the draft for the address the page has now', async () => {
+    const { input } = mount('state');
+    input.focus();
+    await type(input, 'https://draft.test/');
+    seed('b');
+    await tick();
+    expect(input.value).toBe('https://draft.test/');
+    key(input, { key: 'Escape' });
+    await tick();
+    expect(input.value).toBe('http://localhost:5173/settings');
   });
 
   it('does not leave the field after a tab switch once another control was pressed', async () => {
@@ -447,6 +488,19 @@ describe('<BrowserAddressSuggestions>', () => {
       await tick();
       expect(recent).not.toHaveBeenCalled();
       expect(rowText()).toEqual([]);
+    });
+
+    it('offers none of the home computer\'s open tabs', async () => {
+      stageBackend({ id: 'remote', backendId: 'remote' });
+      noteThread(THREAD, HOME_BACKEND, 4);
+      const { input } = mount();
+      input.focus();
+      await type(input, 'local');
+      await waitFor(() => expect(rowText()).toContain('tab http://localhost:5173/settings'));
+      noteThread(THREAD, 'remote', 4);
+      await type(input, 'locall');
+      await type(input, 'local');
+      expect(rowText().filter((row) => row.startsWith('tab '))).toEqual([]);
     });
 
     it('drops an answer that arrives after the claim', async () => {

@@ -2,7 +2,9 @@
 
 This directory is the only place that turns layout items into mounted panes.
 `PaneHost.svelte` owns pane selection and lazy companion mounting;
-`PaneFrame.svelte` owns the common frame and title controls.
+each pane renders its own header from the shared title controls
+(`PaneTitleHandle.svelte`, `PaneHeaderLine.svelte`, `PaneCloseButton.svelte`,
+`PanePromoteButton.svelte`).
 
 Tool panes (`pulls`, `workflows`) have no ThreadPane. `ToolPane.svelte` loads
 the tool body lazily and the body renders `ToolPaneHeader.svelte`, whose title

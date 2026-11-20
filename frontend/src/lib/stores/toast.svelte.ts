@@ -75,11 +75,6 @@ export function withdrawToastAction(id: string): void {
   toasts = toasts.map((toast) => toast.id === id ? { ...toast, action: undefined } : toast);
 }
 
-/** Whether the toast is still on screen. */
-export function toastShowing(id: string): boolean {
-  return toasts.some((toast) => toast.id === id);
-}
-
 // An actionable failure may remain until retried or explicitly dismissed.
 function startTimer(id: string, duration: number): void {
   if (duration <= 0 || timers.has(id)) return;

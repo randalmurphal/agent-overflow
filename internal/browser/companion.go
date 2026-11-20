@@ -11,14 +11,27 @@ import (
 
 // MoveCompanionPage places one of the thread's tabs, in any state, at
 // index in tab order (clamped). Moving a tab is not a touch. A suspended
-// page's new position is saved with it.
-func (m *Manager) MoveCompanionPage(access Access, pageID PageID, index int) error {
+// page's new position is saved with it. From a pane it carries its numbered
+// place in the pane's order (ctx, WithSelection) and moves the tab in the
+// m.mu hold that ends its turn, so a close that reads the strip's order
+// (close to the right) acts on the order the user saw when they asked for
+// it; a passed turn moves nothing.
+func (m *Manager) MoveCompanionPage(ctx context.Context, access Access, pageID PageID, index int) error {
 	if err := access.bound(); err != nil {
 		return err
 	}
 	pageID = pageID.trim()
-	if err := m.lockStructure(context.Background(), access.tb); err != nil {
+	turn, err := m.selectionTurn(ctx, access)
+	if err != nil {
 		return err
+	}
+	defer turn.Release()
+	if err := m.lockStructure(ctx, access.tb); err != nil {
+		return err
+	}
+	if turn.Commit() == turnorder.Passed {
+		m.mu.Unlock()
+		return nil
 	}
 	if err := access.admitLocked(); err != nil {
 		m.mu.Unlock()

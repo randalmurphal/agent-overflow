@@ -46,9 +46,12 @@ export interface BrowserPaneRectSenderOptions {
   onFailure: (mount: string, error: unknown) => void;
   /** Whether a refusal means the backend no longer has the mount. */
   isMountGone: (error: unknown) => boolean;
-  maxRetries?: number;
-  retryDelayMs?: number;
 }
+
+/** Retries after a failed send before the sender gives up on a report. */
+const RETRY_LIMIT = 3;
+/** The first retry's delay; each later retry waits twice as long. */
+const RETRY_DELAY_MS = 100;
 
 export interface BrowserPaneRectSender {
   report(mount: string, rect: SequencedPaneRect): void;
@@ -81,8 +84,6 @@ export function browserPaneRectKey(r: BrowserPaneRectReport): string {
 }
 
 export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOptions): BrowserPaneRectSender {
-  const maxRetries = options.maxRetries ?? 3;
-  const retryDelayMs = options.retryDelayMs ?? 100;
   const mounts = new Map<string, MountState>();
 
   function start(mount: string, state: MountState, item: Pending): void {
@@ -117,7 +118,7 @@ export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOption
     // no later report may be skipped as already delivered.
     state.acceptedKey = '';
     state.failures += 1;
-    if (state.failures > maxRetries) {
+    if (state.failures > RETRY_LIMIT) {
       state.failures = 0;
       state.current = null;
       options.onFailure(mount, error);
@@ -134,7 +135,7 @@ export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOption
         state.next = null;
         start(mount, state, retry);
       },
-      retryDelayMs * 2 ** (state.failures - 1),
+      RETRY_DELAY_MS * 2 ** (state.failures - 1),
     );
   }
 

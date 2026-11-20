@@ -5,7 +5,7 @@
   import VenetianMask from '@lucide/svelte/icons/venetian-mask';
   import { setBrowserJar } from '../../stores/browserActions';
   import type { BrowserJar } from '../../stores/browserActionWire';
-  import { browserCompanionState, browserPaneAttachment, isCurrentBrowserPane, type BrowserPaneAttachment } from '../../stores/browserCompanion.svelte';
+  import { browserPaneAttachment, browserPaneState, isCurrentBrowserPane, type BrowserPaneAttachment } from '../../stores/browserCompanion.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import Icon from '../primitives/Icon.svelte';
@@ -32,7 +32,10 @@
 
   const thread = browserPaneThread();
   let threadId = $derived(thread());
-  let browser = $derived(threadId ? browserCompanionState(threadId) : null);
+  // Read through the pane's attachment (browserPaneState), as the switch is
+  // sent from it.
+  let pane = $derived(threadId ? browserPaneAttachment(threadId) : null);
+  let browser = $derived(pane ? browserPaneState(pane) : null);
   let current = $derived(JARS.find((jar) => jar.kind === browser?.jar) ?? JARS[0]);
   // The open tabs the confirmation names; whether to ask is the backend's.
   let openTabs = $derived((browser?.pages ?? []).filter((page) => !page.suspended && !page.error).length);

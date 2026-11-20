@@ -268,13 +268,6 @@
     // offset beyond the shrunken strip; timeline reconciliation still waits
     // for its separate two-frame settle below.
     reconcilePaneHostGeometry();
-    if (typeof requestAnimationFrame === 'undefined') {
-      // No-rAF environments get the timeline reconcile only — the whole
-      // reveal machinery (paneStripReveal) is rAF-driven, so
-      // the appearance snap below is deliberately unreachable here.
-      const handle = setTimeout(reconcilePaneHostLayout, 32);
-      return () => clearTimeout(handle);
-    }
 
     // The strip just appeared at scrollLeft 0. Bring the focused pane
     // into view instantly: there is no prior position worth gliding from,

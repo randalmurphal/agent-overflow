@@ -1,9 +1,8 @@
 <script lang="ts">
   import { isLocalEnter } from '../../utils/localEnter';
-  // A single row inside a <Menu>. Consumes roving tabindex from Menu —
-  // the parent sets `tabindex` on these via the DOM, so we don't render
-  // a baseline tabindex here (Menu takes care of it on mount + keyboard
-  // nav). Checkbox items expose aria-checked and participate in the same
+  // A single row inside a <Menu>. It renders `tabindex={-1}`, and Menu
+  // sets the roving 0 on the focused row through the DOM (on mount and on
+  // keyboard navigation, re-asserted after each re-render). Checkbox items expose aria-checked and participate in the same
   // keyboard navigation as ordinary actions.
   //
   // The `onSelect` callback is what Menu consumers actually care about;

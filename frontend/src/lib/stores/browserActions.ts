@@ -1,4 +1,4 @@
-import { type BrowserCompanionEvent } from './bindings';
+import { type BrowserCompanionEvent, type BrowserPageInfo } from './bindings';
 import {
   browserCompanionState,
   browserPaneAttachment,
@@ -208,14 +208,14 @@ async function openTab(
   sink: BrowserPaneAttachment | null,
   send: () => Promise<BrowserActionAnswer>,
 ): Promise<BrowserActionFailure | null> {
-  const request = options.focusAddress ? armAddressFocus(threadId) : 0;
+  const focus = options.focusAddress ? armAddressFocus(threadId) : null;
   const { failure, state } = await runAction(sink, send);
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
   // The answer names the tab; none when it failed or was closed, and the
   // failed tab shows why.
-  if (request) settleAddressFocus(threadId, request, failure ? '' : (state?.pageId ?? ''));
+  if (focus) settleAddressFocus(focus, failure ? '' : (state?.pageId ?? ''));
   return failure;
 }
 
@@ -285,6 +285,32 @@ export function isBrowserPaneUnattached(): boolean {
 }
 
 /**
+ * Whether `page` takes an address: a tab being created, or one that failed
+ * to open, has no page to navigate or reload yet. A crashed tab (suspended,
+ * with its error) does: it reloads or goes elsewhere.
+ */
+export function tabTakesAddress(page: Readonly<BrowserPageInfo> | null): boolean {
+  return !!page && page.creating !== true && !(page.error && !page.suspended);
+}
+
+/**
+ * Whether the keyboard's target is a browser pane whose address field
+ * cannot take focus: its chrome is inert until the attach answers, and its
+ * shown tab may take no address (tabTakesAddress). A reload needs the same.
+ * Reactive.
+ */
+export function isBrowserAddressUnavailable(): boolean {
+  const focused = focusedBrowser();
+  return focused !== null && (focused.pane === null || !tabTakesAddress(browserShownPage(focused.state)));
+}
+
+/** Whether the keyboard's target is a browser pane whose thread has no closed tab to reopen. Reactive. */
+export function isBrowserClosedTabMissing(): boolean {
+  const focused = focusedBrowser();
+  return focused !== null && (focused.state?.closedTabs ?? 0) === 0;
+}
+
+/**
  * What a press of the chat header's browser button means, chosen from what
  * the button shows when pressed (browserHeaderButton): hide the pane this
  * layout shows, or show the thread's browser.
@@ -334,8 +360,9 @@ export function browserHeaderIntent(threadId: string): BrowserHeaderIntent {
 /**
  * Carries out a header press. Every press sends: the Manager converges two
  * shows (ShowCompanion), and a repeated press's effects are settled where
- * they are produced. Its address focus request replaces the one before it
- * (armAddressFocus), and a refusal already on screen in a toast is not
+ * they are produced. Its address focus request joins one whose answer is
+ * still due, so the focus belongs to the tab the presses opened, whichever
+ * answer names it (armAddressFocus), and a refusal already on screen in a toast is not
  * raised again (toastHeaderFailure). A refusal reaches a toast, since a
  * hidden pane has no banner.
  */
@@ -385,9 +412,9 @@ async function hideBrowserFromHeader(threadId: string): Promise<void> {
 async function showBrowserFromHeader(threadId: string): Promise<void> {
   if (!browserSourcePaneShown(threadId)) return;
   if (canUseNativeBrowser(threadId) && !canPresentNativeBrowser(threadId)) return;
-  const request = armAddressFocus(threadId);
+  const focus = armAddressFocus(threadId);
   const { failure, state } = await actForThread(threadId, browserAction.showBrowser());
-  settleAddressFocus(threadId, request, failure ? '' : (state?.pageId ?? ''));
+  settleAddressFocus(focus, failure ? '' : (state?.pageId ?? ''));
   // An older backend refuses the kind ("unsupported companion action").
   if (failure) toastHeaderFailure(failure);
 }

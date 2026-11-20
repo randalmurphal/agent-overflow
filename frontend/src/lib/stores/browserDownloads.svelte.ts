@@ -1,15 +1,16 @@
+import { untrack } from 'svelte';
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
 import { actInPane, browserCompanionAct, type BrowserActionFailure } from './browserActions';
 import { browserAction, downloadIdOf, type DownloadKind, type ThreadAction } from './browserActionWire';
 import {
-  browserCompanionState,
   browserPaneOpen,
+  browserPaneState,
   browserThreadSnapshot,
   canUseNativeBrowser,
   observeBrowserCompanion,
   type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
-import { addErrorToast, addToast, toastShowing, withdrawToastAction } from './toast.svelte';
+import { addErrorToast, addToast, getToasts, withdrawToastAction, type ToastAction } from './toast.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
@@ -36,11 +37,17 @@ interface OfferedAction {
   readonly launch: string;
 }
 
-// The offered actions by toast id; one leaves as its action is withdrawn or
-// with its toast. An offer whose thread the window stopped watching stays:
-// no state withdraws it, and its action answers that the download is gone
-// when the list no longer resolves it.
-const offered = new Map<string, OfferedAction>();
+// A finished download's toast action carries its offer, so the offer goes
+// with the toast's action: dismissed, expired or withdrawn. An offer whose
+// thread the window stopped watching stays while its toast does: no state
+// withdraws it, and its action answers that the download is gone when the
+// list no longer resolves it.
+const OFFER: unique symbol = Symbol('download offer');
+type OfferAction = ToastAction & { readonly [OFFER]: OfferedAction };
+
+function offerOf(action: ToastAction | undefined): OfferedAction | null {
+  return action && OFFER in action ? (action as OfferAction)[OFFER] : null;
+}
 
 function homeLaunch(): string {
   return getTransportHelloFor(HOME_BACKEND)?.launchId ?? '';
@@ -60,13 +67,11 @@ function stateDropsOffer(offer: OfferedAction, state: BrowserCompanionEvent, lau
 observeBrowserCompanion({
   stateAdmitted: (event) => {
     const launch = homeLaunch();
-    for (const [toastId, offer] of offered) {
-      if (offer.threadId !== event.threadId || !stateDropsOffer(offer, event, launch)) continue;
-      offered.delete(toastId);
-      withdrawToastAction(toastId);
+    for (const toast of untrack(getToasts)) {
+      const offer = offerOf(toast.action);
+      if (offer && offer.threadId === event.threadId && stateDropsOffer(offer, event, launch)) withdrawToastAction(toast.id);
     }
   },
-  resetForTest: () => offered.clear(),
 });
 
 /**
@@ -80,19 +85,14 @@ function announcementResolves(offer: OfferedAction): boolean {
   return held.status !== 'known' || !stateDropsOffer(offer, held.snapshot, offer.launch);
 }
 
-function offerAction(toastId: string, offer: OfferedAction): void {
-  for (const id of offered.keys()) if (!toastShowing(id)) offered.delete(id);
-  offered.set(toastId, offer);
-}
-
 /** The backend's answer for a download its list no longer has (internal/app browserDownloadUnavailableCode). */
 function downloadUnavailable(err: unknown): boolean {
   return err instanceof TransportError && err.code === 'browser_download_unavailable';
 }
 
-/** The thread's downloads, newest first; empty for none. */
-export function browserDownloads(threadId: string): BrowserDownload[] {
-  return browserCompanionState(threadId)?.downloads ?? [];
+/** The downloads of the thread `pane` is attached for, newest first; empty for none (browserPaneState). */
+export function browserDownloads(pane: BrowserPaneAttachment): BrowserDownload[] {
+  return browserPaneState(pane)?.downloads ?? [];
 }
 
 export function downloadRunning(download: BrowserDownload): boolean {
@@ -100,7 +100,7 @@ export function downloadRunning(download: BrowserDownload): boolean {
 }
 
 /** How many steps a progress indicator moves through. */
-export const DOWNLOAD_PROGRESS_STEPS = 8;
+const DOWNLOAD_PROGRESS_STEPS = 8;
 
 /**
  * The received share of the running downloads with a known size, rounded
@@ -228,11 +228,12 @@ export function announceBrowserDownload(event: BrowserCompanionEvent): void {
       addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS);
       return;
     }
-    const toastId = addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {
+    const action: OfferAction = {
       label: 'Show in folder',
       run: () => void revealBrowserDownload({ kind: 'thread', threadId }, download.id),
-    });
-    offerAction(toastId, offer);
+      [OFFER]: offer,
+    };
+    addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, action);
     return;
   }
   const message = `${download.name} did not download: ${download.error || 'unknown error'}`;

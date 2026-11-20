@@ -258,7 +258,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case kindStep:
 		err = m.StepCompanionPage(ctx, access, cmd.index)
 	case kindMove:
-		err = m.MoveCompanionPage(access, cmd.page, cmd.index)
+		err = m.MoveCompanionPage(ctx, access, cmd.page, cmd.index)
 	case kindShow:
 		visible := true
 		_, err = m.Visibility(ctx, access, &visible, cmd.page)

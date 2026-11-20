@@ -32,10 +32,11 @@
 
   const thread = browserPaneThread();
   let threadId = $derived(thread());
-  let downloads = $derived(threadId ? browserDownloads(threadId) : []);
-  // The pane's attachment the list's actions are sent from; none before the
-  // attach answers, when the chrome is unavailable.
+  // The pane's attachment the list is read through and its actions are sent
+  // from; none before the attach answers, when the chrome is unavailable, or
+  // while this window may not host the thread's browser.
   let pane = $derived(threadId ? browserPaneAttachment(threadId) : null);
+  let downloads = $derived(pane ? browserDownloads(pane) : []);
   let source = $derived<DownloadActionSource | null>(pane ? { kind: 'pane', pane } : null);
   let running = $derived(downloads.filter(downloadRunning).length);
   let step = $derived(downloadProgressStep(downloads));

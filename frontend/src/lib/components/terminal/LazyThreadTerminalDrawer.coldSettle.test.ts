@@ -49,7 +49,6 @@ describe('LazyThreadTerminalDrawer cold-open scroll settle', () => {
     const cold = makeSurface();
     const { unmount } = render(LazyThreadTerminalDrawer, {
       surface: cold as never,
-      manual: true,
     });
     await waitFor(() => expect(cold.settleAfterAsyncMount).toHaveBeenCalledTimes(1));
     // Pin the upper bound too: waitFor resolves the instant the count first hits
@@ -64,7 +63,7 @@ describe('LazyThreadTerminalDrawer cold-open scroll settle', () => {
     // setShowTerminal's own open lease, so onMount early-returns and we must
     // NOT settle again (a redundant re-pin would fight the open lease).
     const warm = makeSurface();
-    const { container } = render(LazyThreadTerminalDrawer, { surface: warm as never, manual: true });
+    const { container } = render(LazyThreadTerminalDrawer, { surface: warm as never });
     // Positive half of the contract: the cached drawer is seeded into `Drawer` at
     // $state init, so it mounts SYNCHRONOUSLY — it's already in the DOM on the
     // first render with no async import to await. That's what lets the warm reopen

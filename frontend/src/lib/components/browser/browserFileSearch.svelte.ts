@@ -29,7 +29,7 @@ export interface BrowserFileSearch {
   dispose(): void;
 }
 
-export function joinWorkspacePath(root: string, relative: string): string {
+function joinWorkspacePath(root: string, relative: string): string {
   return root.endsWith('/') ? root + relative : `${root}/${relative}`;
 }
 

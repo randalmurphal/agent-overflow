@@ -58,7 +58,9 @@ vi.mock('../../stores/bindings', () => ({
   CloseTerminal: vi.fn(async () => {
     await calls.close;
   }),
-  ListTerminals: vi.fn(async () => []),
+  // The list a surface reads as it mounts, held unanswered: these tests
+  // drive the tabs themselves, and the mount neither lists nor opens one.
+  ListTerminals: vi.fn(() => new Promise(() => {})),
   RefreshTerminal: vi.fn(async () => {}),
   TerminalOpenOptions: class TerminalOpenOptions {
     cwd?: string;
@@ -146,7 +148,6 @@ describe('TerminalSurface focus follows the active tab', () => {
 
     const { getByTestId, queryByTestId } = render(TerminalSurface, {
       surface: makeSurface() as never,
-      manual: true,
     });
     await tick();
     // Mounting with no focus intent must NOT steal focus into the body.
@@ -165,7 +166,6 @@ describe('TerminalSurface focus follows the active tab', () => {
   it('focuses the freshly-opened body when the ＋ button is clicked', async () => {
     const { getByTestId } = render(TerminalSurface, {
       surface: makeSurface() as never,
-      manual: true,
     });
     await tick();
     expect(terminalFocusCalls).toEqual([]);
@@ -184,7 +184,6 @@ describe('TerminalSurface focus follows the active tab', () => {
 
     const { getByTestId } = render(TerminalSurface, {
       surface: makeSurface() as never,
-      manual: true,
     });
     await tick();
     expect(terminalFocusCalls).toEqual([]);
@@ -202,7 +201,6 @@ describe('TerminalSurface focus follows the active tab', () => {
 
     const { getByTestId } = render(TerminalSurface, {
       surface: makeSurface() as never,
-      manual: true,
     });
     await tick();
     expect(terminalFocusCalls).toEqual([]);
@@ -230,7 +228,7 @@ describe('TerminalSurface focus follows the active tab', () => {
     handle.addTab(terminalSummary('t1', 'thread-A'));
     handle.addTab(terminalSummary('t2', 'thread-A')); // addTab activates t2
 
-    render(TerminalSurface, { surface: makeSurface() as never, manual: true });
+    render(TerminalSurface, { surface: makeSurface() as never });
     await tick();
     expect(terminalFocusCalls).toEqual([]);
 
@@ -254,7 +252,7 @@ describe('TerminalSurface focus follows the active tab', () => {
     latch.request();
     const surface = makeSurface({ consumeFocusRequest: latch.consumeFocusRequest });
 
-    render(TerminalSurface, { surface: surface as never, manual: true });
+    render(TerminalSurface, { surface: surface as never });
     await tick();
 
     expect(terminalFocusCalls).toEqual(['t1']);
@@ -296,7 +294,7 @@ describe('TerminalSurface focus follows the active tab', () => {
       const latch = paneLatch();
       latch.request();
       between();
-      render(TerminalSurface, { target: own, props: { surface: makeSurface({ consumeFocusRequest: latch.consumeFocusRequest }) as never, manual: true } });
+      render(TerminalSurface, { target: own, props: { surface: makeSurface({ consumeFocusRequest: latch.consumeFocusRequest }) as never } });
       await tick();
       for (const frame of frames.splice(0)) frame(0);
     }
@@ -312,11 +310,11 @@ describe('TerminalSurface focus follows the active tab', () => {
       expect(terminalFocusCalls).toEqual([]);
     });
 
-    // The reviewer's case: the frame is already pending when the dialog takes focus.
+    // The frame is already pending when the dialog takes focus.
     it('is canceled by a dialog focused while its frame is pending', async () => {
       const latch = paneLatch();
       latch.request();
-      render(TerminalSurface, { target: own, props: { surface: makeSurface({ consumeFocusRequest: latch.consumeFocusRequest }) as never, manual: true } });
+      render(TerminalSurface, { target: own, props: { surface: makeSurface({ consumeFocusRequest: latch.consumeFocusRequest }) as never } });
       await tick();
       expect(frames.length).toBeGreaterThan(0);
       dialogInput.focus();
@@ -332,7 +330,7 @@ describe('TerminalSurface focus follows the active tab', () => {
       let answer: () => void = () => {};
       calls.open = new Promise<void>((resolve) => { answer = resolve; });
       calls.openId = 't9';
-      const { getByTestId } = render(TerminalSurface, { target: own, props: { surface: makeSurface() as never, manual: true } });
+      const { getByTestId } = render(TerminalSurface, { target: own, props: { surface: makeSurface() as never } });
       await tick();
       await fireEvent.click(getByTestId('terminal-open'));
       dialogInput.focus();
@@ -348,7 +346,7 @@ describe('TerminalSurface focus follows the active tab', () => {
       seededHandle().addTab(terminalSummary('t2', 'thread-A'));
       let answer: () => void = () => {};
       calls.close = new Promise<void>((resolve) => { answer = resolve; });
-      const { getByTestId } = render(TerminalSurface, { target: own, props: { surface: makeSurface() as never, manual: true } });
+      const { getByTestId } = render(TerminalSurface, { target: own, props: { surface: makeSurface() as never } });
       await tick();
       await fireEvent.click(getByTestId('terminal-tab-close-t2'));
       dialogInput.focus();

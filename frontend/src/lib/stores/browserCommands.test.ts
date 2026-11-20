@@ -27,9 +27,9 @@ function page(id: string) {
 }
 
 let seq = 0;
-function pushState(activePageId: string, ids = ['a', 'b', 'c']): void {
+function pushState(activePageId: string, ids = ['a', 'b', 'c'], more: { closedTabs?: number; pages?: unknown[] } = {}): void {
   seq += 1;
-  applyBrowserCompanionState({ kind: 'state', threadId: THREAD, seq, activePageId, visible: true, pages: ids.map(page) } as never);
+  applyBrowserCompanionState({ kind: 'state', threadId: THREAD, seq, activePageId, visible: true, pages: ids.map(page), ...more } as never);
 }
 
 function ctx(): CommandContext {
@@ -83,11 +83,35 @@ describe('browser commands', () => {
       expect(evaluateWhen(when, { browserPaneFocused: true, overlayOpen: false } as never), id).toBe(true);
       expect(evaluateWhen(when, { browserPaneFocused: false, overlayOpen: false } as never), id).toBe(false);
       expect(evaluateWhen(when, { browserPaneFocused: true, overlayOpen: true } as never), id).toBe(false);
-      // A pane not attached yet sends nothing: the commands that send are
-      // not offered there.
-      expect(evaluateWhen(when, { browserPaneFocused: true, browserPaneUnattached: true, overlayOpen: false } as never), id)
-        .toBe(id === 'browser.focusAddress');
+      // A pane not attached yet sends nothing and its chrome is inert:
+      // none is offered there.
+      expect(evaluateWhen(when, { browserPaneFocused: true, browserPaneUnattached: true, browserAddressUnavailable: true, overlayOpen: false } as never), id)
+        .toBe(false);
+      // A shown tab that takes no address takes no focus there and no reload.
+      expect(evaluateWhen(when, { browserPaneFocused: true, browserAddressUnavailable: true, overlayOpen: false } as never), id)
+        .toBe(id !== 'browser.focusAddress' && id !== 'browser.reload');
+      // With no closed tab there is nothing to reopen.
+      expect(evaluateWhen(when, { browserPaneFocused: true, browserNoClosedTab: true, overlayOpen: false } as never), id)
+        .toBe(id !== 'browser.reopenTab');
     }
+  });
+
+  // The flags say what the keyboard's pane has: an attachment, a shown tab
+  // that takes an address, a closed tab.
+  it('read each command\'s needs from the keyboard\'s pane', async () => {
+    focusPane('browser-main');
+    expect(ctx().flags).toMatchObject({ browserPaneUnattached: true, browserAddressUnavailable: true, browserNoClosedTab: true });
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
+    expect(ctx().flags).toMatchObject({ browserPaneUnattached: false, browserAddressUnavailable: false, browserNoClosedTab: true });
+    pushState('n', ['a'], { closedTabs: 1, pages: [{ ...page('n'), creating: true }] });
+    expect(ctx().flags).toMatchObject({ browserAddressUnavailable: true, browserNoClosedTab: false });
+    pushState('n', ['a'], { pages: [{ ...page('n'), error: 'refused' }] });
+    expect(ctx().flags.browserAddressUnavailable).toBe(true);
+    // A crashed tab reloads.
+    pushState('n', ['a'], { pages: [{ ...page('n'), error: 'crashed', suspended: true }] });
+    expect(ctx().flags.browserAddressUnavailable).toBe(false);
+    focusPane('main');
+    expect(ctx().flags).toMatchObject({ browserPaneUnattached: false, browserAddressUnavailable: false, browserNoClosedTab: false });
   });
 
   it('ship the desktop-browser chords, scoped to the browser pane', () => {
@@ -130,6 +154,7 @@ describe('browser commands', () => {
   });
 
   it('reopen asks the backend for the last closed tab, from the chord too', async () => {
+    pushState('b', ['a', 'b', 'c'], { closedTabs: 1 });
     await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     runCommand('browser.reopenTab', ctx());
@@ -148,7 +173,7 @@ describe('browser commands', () => {
     focusPane('browser-main');
     runCommand('browser.newTab', ctx());
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new', mount: 'mount-1', select: 1 }));
-    expect(addressFocusIntent(THREAD)).toBe('');
+    expect(addressFocusIntent(THREAD)).toEqual([]);
   });
 
   // Before its attach answers a pane has no place in its mount's order:
@@ -157,9 +182,12 @@ describe('browser commands', () => {
   // a tab nor the pane. Its chords stay the pane's.
   it('send nothing from a pane whose attach has not answered, say so, and leave Mod+W untaken', () => {
     focusPane('browser-main');
-    for (const id of ['browser.newTab', 'browser.reload', 'browser.nextTab', 'browser.prevTab', 'browser.reopenTab']) {
+    const focus = vi.fn();
+    registerBrowserAddressBar(THREAD, focus);
+    for (const id of COMMANDS) {
       expect(runCommand(id, ctx()), id).toBe(false);
     }
+    expect(focus).not.toHaveBeenCalled();
     expect(act).not.toHaveBeenCalled();
     expect(browserPaneReservesChord(key({ key: 'r', ctrlKey: true }), ctx())).toBe(true);
     expect(dispatchKey(key({ key: 'r', ctrlKey: true }), ctx(), { isMac: false })).toBe(false);
@@ -167,7 +195,8 @@ describe('browser commands', () => {
     expect(closeFocusedBrowserTab()).toBe(false);
   });
 
-  it('focus address focuses the mounted pane\'s bar, and nothing once it is gone', () => {
+  it('focus address focuses the mounted pane\'s bar, and nothing once it is gone', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     const focus = vi.fn();
     const release = registerBrowserAddressBar(THREAD, focus);

@@ -131,8 +131,8 @@
   }
 
   // Bubbled menuitem-select from a descendant item inside the submenu
-  // closes the submenu. Combined with the parent Menu's own handler for
-  // the same event, the full stack collapses on selection.
+  // closes the submenu. The parent menu's own dismissal belongs to its
+  // caller, which closes it from the item's onSelect.
   // The custom event isn't part of HTML's typed handler list, so we
   // attach it via addEventListener once the wrapper mounts.
   let submenuWrapperEl: HTMLDivElement | undefined = $state(undefined);
