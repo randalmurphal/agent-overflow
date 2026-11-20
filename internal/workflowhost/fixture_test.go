@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/workflow/def"
@@ -41,12 +40,15 @@ import (
 type fakeHost struct {
 	startSession           func(context.Context, string) error
 	startSessionTakingLock func(context.Context, string) error
-	stopSession            func(string) error
-	sessionActive          func(string) bool
-	subscribe              func(string, func(string, provider.ProviderEvent)) func()
-	send                   func(context.Context, string, string, json.RawMessage, func(DispatchIdentity)) error
-	createThread           func(ThreadSpec) (store.Thread, error)
-	assistantTexts         func(string) ([]string, error)
+	// startSessionProvingResume defaults to startSessionTakingLock: a start
+	// that succeeds is proven.
+	startSessionProvingResume func(context.Context, string) error
+	stopSession               func(string) error
+	sessionActive             func(string) bool
+	subscribe                 func(string, func(string, provider.ProviderEvent)) func()
+	send                      func(context.Context, string, string, json.RawMessage, func(DispatchIdentity)) error
+	createThread              func(ThreadSpec) (store.Thread, error)
+	assistantTexts            func(string) ([]string, error)
 	// dataStore lets the default CreateWorkflowThread persist a real row, so a
 	// start that runs past thread creation has a thread id its own store can
 	// resolve. newTestRunner wires it to the runner's store.
@@ -59,9 +61,6 @@ type fakeHost struct {
 	emit           func(eventchan.Channel, any)
 	requireEngine  func() (*engine.Engine, error)
 	lifeCtx        context.Context
-	// claudeProjectsDir is the fixture's own <temp home>/.claude/projects.
-	// Never the developer's: newTestRunner points it at a t.TempDir().
-	claudeProjectsDir string
 
 	observerMu     sync.Mutex
 	observers      map[string]map[int]func(string, provider.ProviderEvent)
@@ -80,6 +79,13 @@ func (h *fakeHost) StartSessionTakingLock(ctx context.Context, threadID string) 
 		return nil
 	}
 	return h.startSessionTakingLock(ctx, threadID)
+}
+
+func (h *fakeHost) StartSessionProvingResume(ctx context.Context, threadID string) error {
+	if h.startSessionProvingResume != nil {
+		return h.startSessionProvingResume(ctx, threadID)
+	}
+	return h.StartSessionTakingLock(ctx, threadID)
 }
 
 func (h *fakeHost) StopSession(threadID string) error {
@@ -261,15 +267,6 @@ func (h *fakeHost) RequireWorkflowEngine() (*engine.Engine, error) {
 	return h.requireEngine()
 }
 
-// ClaudeProjectsDir answers with the fixture's own temp home, so nothing in
-// this package can read the developer's real ~/.claude/projects.
-func (h *fakeHost) ClaudeProjectsDir() (string, error) {
-	if h.claudeProjectsDir == "" {
-		return "", errors.New("fakeHost: no claude projects dir configured")
-	}
-	return h.claudeProjectsDir, nil
-}
-
 func (h *fakeHost) ProcessReaper() procutil.Reaper { return procutiltest.Reaper() }
 
 func (h *fakeHost) LifeCtx() context.Context {
@@ -287,22 +284,16 @@ var errNoEngineInTest = errors.New("workflowhost test: no engine wired")
 // (or that it failed) assign `runner.interrupt` themselves.
 func newTestRunner(t *testing.T, host *fakeHost, dataStore *store.Store, profiles engine.ProfileSource) *Runner {
 	t.Helper()
-	// The runner never spawns — every process it would start is behind a host
-	// seam — but the continuation preflight reads a provider home directly
-	// (`claude.ScanSessionLeaf`). Detaching HOME here is what keeps that read off
-	// the developer's real `~/.claude`, and the poisoned binary is the tripwire
-	// if a path ever does reach for a CLI.
-	isolation := kerneltest.IsolateSpawns(t)
+	// The runner never spawns: every process it would start is behind a host
+	// seam. Detaching HOME keeps any provider-home read off the developer's
+	// real one, and the poisoned binary is the tripwire if a path ever does
+	// reach for a CLI.
+	kerneltest.IsolateSpawns(t)
 	if host == nil {
 		host = &fakeHost{}
 	}
 	if host.dataStore == nil {
 		host.dataStore = dataStore
-	}
-	if host.claudeProjectsDir == "" {
-		// The preflight's transcript read is INJECTED now, so the isolated
-		// home is what it resolves against rather than whatever $HOME says.
-		host.claudeProjectsDir = sessionfork.ProjectsDirForHome(isolation.Home)
 	}
 	return New(host, dataStore, t.TempDir(), profiles, func(context.Context, string, Interrupt) error { return nil })
 }

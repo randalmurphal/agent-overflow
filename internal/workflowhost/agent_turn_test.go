@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -16,24 +17,48 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
+// A cold resume is proven by the provider's start alone. Only the provider's
+// report that the conversation is gone makes the context unavailable; any
+// other failure is the start's own. Neither keeps the temporary schema.
 func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider string
-		start    func(context.Context, string) error
+		name        string
+		provider    string
+		start       func(context.Context, string) error
+		unavailable bool
+		cancelled   bool
 	}{
 		{
-			name: "claude transcript missing", provider: string(provider.Claude),
+			name: "claude has no such conversation", provider: string(provider.Claude), unavailable: true,
 			start: func(context.Context, string) error {
-				return fmt.Errorf("Claude start must not run after the transcript preflight failed")
+				return fmt.Errorf("%w: No conversation found with session ID: provider-session", claude.ErrSessionNotFound)
 			},
 		},
 		{
-			name: "codex rejects cursor", provider: string(provider.Codex),
+			name: "codex rejects cursor", provider: string(provider.Codex), unavailable: true,
 			start: func(context.Context, string) error {
 				return fmt.Errorf("spawn Codex: %w", &codex.RPCError{
 					Method: "thread/resume", Code: -32600, Message: "no rollout found for thread id provider-session",
 				})
+			},
+		},
+		{
+			name: "claude initialized on another session", provider: string(provider.Claude),
+			start: func(context.Context, string) error {
+				return fmt.Errorf("%w: --resume named provider-session", claude.ErrResumedOtherSession)
+			},
+		},
+		{
+			name: "claude exited before init", provider: string(provider.Claude),
+			start: func(context.Context, string) error {
+				return errors.New("claude: the process exited before it initialized")
+			},
+		},
+		{
+			name: "cancelled while claude loads", provider: string(provider.Claude), cancelled: true,
+			start: func(ctx context.Context, _ string) error {
+				<-ctx.Done()
+				return fmt.Errorf("claude: wait for the session to initialize: %w", ctx.Err())
 			},
 		},
 	}
@@ -43,16 +68,30 @@ func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 				ID: "cold-context-" + strings.ReplaceAll(tc.name, " ", "-"), Mode: "workflow",
 				Provider: tc.provider, SessionRef: "provider-session", WorkspacePath: t.TempDir(),
 			}
-			runner := newTestRunner(t, &fakeHost{startSessionTakingLock: tc.start}, nil, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			start := tc.start
+			if tc.cancelled {
+				// Cancelled while the provider loads, after the runner's own
+				// check of ctx.
+				start = func(ctx context.Context, threadID string) error {
+					cancel()
+					return tc.start(ctx, threadID)
+				}
+			}
+			runner := newTestRunner(t, &fakeHost{startSessionProvingResume: start}, nil, nil)
 
 			started, err := runner.ensureReusableWorkflowSession(
-				t.Context(), thread, json.RawMessage(`{"type":"object"}`),
+				ctx, thread, json.RawMessage(`{"type":"object"}`),
 			)
-			if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
-				t.Fatalf("availability = started %v, err %v; want unavailable", started, err)
+			if started || err == nil || errors.Is(err, engine.ErrProviderContextUnavailable) != tc.unavailable {
+				t.Fatalf("availability = started %v, err %v; want unavailable %v", started, err, tc.unavailable)
+			}
+			if tc.cancelled && !strings.Contains(err.Error(), "startup cancelled") {
+				t.Fatalf("cancelled availability = %v, want a cancelled start", err)
 			}
 			if schema := runner.schemaForThread(thread.ID); len(schema) != 0 {
-				t.Fatalf("failed preflight retained temporary schema: %s", schema)
+				t.Fatalf("failed proof retained temporary schema: %s", schema)
 			}
 		})
 	}

@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
-	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/engine"
@@ -123,8 +121,12 @@ func (r *Runner) createPreparedWorkflowThread(spec ThreadSpec) (preparedWorkflow
 
 // ensureReusableWorkflowSession makes provider-context availability a fact,
 // not an inference from a non-empty database cursor. A live process is proof
-// on its own. Cold Claude resumes are preflighted against the transcript; cold
-// Codex resumes are proven by its synchronous thread/resume handshake.
+// on its own. A cold resume is proven by the provider's own start: Codex's
+// synchronous thread/resume handshake, or a Claude process reporting that it
+// loaded the session it resumed. Only a provider's report that the conversation does not
+// exist makes the context unavailable; every other failure is the start's.
+// A failed proof leaves no temporary schema behind, and the host stops the
+// session its start registered.
 func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
 	if r.host.SessionActive(thread.ID) {
 		return false, nil
@@ -136,36 +138,22 @@ func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store
 	if err := ctx.Err(); err != nil {
 		return false, fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
-	if thread.Provider == string(provider.Claude) {
-		projectsDir, dirErr := r.host.ClaudeProjectsDir()
-		if dirErr != nil {
-			return false, fmt.Errorf("workflow runner: resolve Claude projects dir: %w", dirErr)
-		}
-		leaf, err := claude.ScanSessionLeaf(projectsDir, thread.ResolvedSessionRef(), thread.WorkspacePath)
-		if errors.Is(err, sessionfork.ErrSessionFileNotFound) {
-			return false, errors.Join(engine.ErrProviderContextUnavailable,
-				fmt.Errorf("workflow runner: Claude session %q has no transcript", thread.ResolvedSessionRef()))
-		}
-		if err != nil {
-			return false, fmt.Errorf("workflow runner: validate Claude session %q: %w", thread.ResolvedSessionRef(), err)
-		}
-		if leaf.CanonicalLeafUUID == "" {
-			return false, errors.Join(engine.ErrProviderContextUnavailable,
-				fmt.Errorf("workflow runner: Claude session %q has no resumable transcript leaf", thread.ResolvedSessionRef()))
-		}
-	}
-
 	if err := r.registerTemporarySchema(thread.ID, schema); err != nil {
 		return false, err
 	}
-	if err := r.host.StartSessionTakingLock(ctx, thread.ID); err != nil {
-		r.removeTemporarySchema(thread.ID)
-		if codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows) {
-			return false, errors.Join(engine.ErrProviderContextUnavailable, err)
-		}
+	err := r.host.StartSessionProvingResume(ctx, thread.ID)
+	if err == nil {
+		return true, nil
+	}
+	r.removeTemporarySchema(thread.ID)
+	switch {
+	case errors.Is(err, claude.ErrSessionNotFound) || codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows):
+		return false, errors.Join(engine.ErrProviderContextUnavailable, err)
+	case ctx.Err() != nil:
+		return false, fmt.Errorf("workflow runner: startup cancelled: %w", err)
+	default:
 		return false, fmt.Errorf("workflow runner: resume provider session %q: %w", thread.ID, err)
 	}
-	return true, nil
 }
 
 func (r *Runner) registerTemporarySchema(threadID string, schema json.RawMessage) error {

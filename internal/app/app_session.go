@@ -43,15 +43,44 @@ const codexAccountReadTimeout = 8 * time.Second
 // per-thread action lock and the join on somebody else's in-flight start.
 // Once the spawn itself begins it runs to completion.
 func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error {
+	_, err := a.startRegisteredSessionTakingLock(ctx, threadID)
+	return err
+}
+
+func (a *App) startRegisteredSessionTakingLock(ctx context.Context, threadID string) (session, error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return session{}, ErrShuttingDown
 	}
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {
-		return fmt.Errorf("start session for thread %s: %w", threadID, err)
+		return session{}, fmt.Errorf("start session for thread %s: %w", threadID, err)
 	}
 	defer unlock()
-	return a.startSession(ctx, threadID)
+	return a.startRegisteredSession(ctx, threadID)
+}
+
+// startSessionProvingResume starts the thread's session through
+// startSessionTakingLock's door, then waits for the provider to report how
+// the start of the session it registered ended (sessionruntime.Entry.
+// AwaitStart). The wait holds no app lock and reads nothing from the
+// provider's transcript. ctx bounds it; the workflow runner's start
+// deadline is what bounds it there (internal/workflowhost/start_watchdog.go).
+// A start it cannot prove is torn down as a dead pre-init session, so it
+// leaves no session registered; a close that fails is returned instead of
+// the start's outcome, since a process may outlive it.
+func (a *App) startSessionProvingResume(ctx context.Context, threadID string) error {
+	started, err := a.startRegisteredSessionTakingLock(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	outcome := started.AwaitStart(ctx)
+	if outcome == nil {
+		return nil
+	}
+	if err := a.teardownDeadPreInitSession(threadID, started.Token); err != nil {
+		return fmt.Errorf("start of thread %s failed (%v), and %w", threadID, outcome, err)
+	}
+	return outcome
 }
 
 // buildSessionOptions composes the provider-agnostic SessionOptions bundle
@@ -1299,19 +1328,21 @@ func (a *App) codexResendAfterInterrupt(
 	}
 }
 
-// teardownDeadPreInitSession reaps a session that reported a hard error
-// result before ever reaching init: it cannot serve sends (for example,
-// a fork start's resume cursor is unusable) and would otherwise linger
-// alive forever — Claude does not exit after a failed
-// --resume-session-at validation. The orphan error item persisted by
-// triage is the user-facing surface; this teardown stops the useless
-// process, hands any queued sends back to the composer draft, and
-// sweeps the failed send's pending state so the next send lazy-starts
-// fresh.
+// teardownDeadPreInitSession reaps a session whose start failed before
+// it initialized: the provider reported a startup failure
+// (provider.IsStartupFailure; for example a fork start's resume cursor is
+// unusable, or the conversation to resume is gone), or a caller that
+// waited on the start could not prove it (startSessionProvingResume). It
+// cannot serve sends and could otherwise linger alive forever: Claude
+// does not exit after a failed --resume-session-at validation. The orphan
+// error item persisted by triage is the user-facing surface; this
+// teardown stops the useless process, hands any queued sends back to the
+// composer draft, and sweeps the failed send's pending state so the next
+// send lazy-starts fresh. It returns the close's failure.
 //
-// Runs on its own goroutine (see sessionEventHandler) because the
-// caller is the thread's event worker and closing the session drains
-// that worker's queue.
+// The event handler runs it on its own goroutine (see
+// sessionEventHandler) because the caller is the thread's event worker
+// and closing the session drains that worker's queue.
 // Two guards keep it from harming a user retry that races in:
 //
 //   - The token-guarded unregister means a retry that already replaced
@@ -1334,14 +1365,14 @@ func (a *App) codexResendAfterInterrupt(
 // Not routed through teardownAndCloseSession: that helper's
 // unconditional CleanupThread is exactly what must not run here once a
 // replacement has claimed the thread.
-func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
+func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) error {
 	var epoch uint64
 	if a.triage != nil {
 		epoch = a.triage.ThreadEpoch(threadID)
 	}
 	sess, ok := a.sessionManager().unregister(threadID, sessionToken)
 	if !ok {
-		return
+		return nil
 	}
 	a.emitProviderSessionDisconnected(threadID, sess.Provider)
 	if a.triage != nil {
@@ -1372,8 +1403,9 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 		}
 	}
 	if err := a.closeProviderSession(threadID, sess); err != nil {
-		log.Printf("app: teardown dead pre-init session for thread %s: %v", threadID, err)
+		return fmt.Errorf("teardown dead pre-init session for thread %s: %w", threadID, err)
 	}
+	return nil
 }
 
 // teardownAndCloseSession runs the per-thread triage cleanup

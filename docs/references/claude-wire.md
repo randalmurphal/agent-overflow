@@ -597,8 +597,10 @@ with the user's own and run beside them:
   with no source, then the contexts joined by newlines (2.1.261 to
   2.1.283, read from the bundle). The transcript keeps every earlier
   run's block, so a request after a resume carries the start's block too.
-- A print-mode process yields its first `system/init` before it reads
-  any input. A print-mode resume adds its hooks' messages to the loaded
+- A print-mode process runs its start's hooks before it reads any input
+  (2.1.88 awaits them inside its resume load); its first `system/init`
+  comes with its first input
+  ([§Start outcome](#start-outcome-before-the-first-input)). A print-mode resume adds its hooks' messages to the loaded
   conversation in memory, not to the transcript (read from the bundle).
 - Each run also writes `attachment` rows to the session JSONL: a
   `hook_success` per hook (`hookName` `SessionStart:<source>`) and one
@@ -5371,6 +5373,58 @@ resume) is therefore not a hazard.
 
 ---
 
+## Start outcome before the first input
+
+Read from the 2.1.88 source and the 2.1.325 bundle; not spike-verified.
+
+- A print-mode `--resume` writes no `system/init` until it takes its
+  first input. 2.1.88 yields init only inside `submitMessage`
+  (`QueryEngine.ts:540`), once per input. The 2.1.325 bundle has two
+  init yields, both in its per-input submit; one runs before input
+  processing, but only for an orphaned permission or a handed-off turn.
+- The resume load finishes before the message loop starts, and the
+  message loop is what answers control requests. 2.1.88 awaits
+  `loadInitialMessages` (`cli/print.ts:686`) before `runHeadlessStreaming`
+  (`:864`) starts the structured-input loop (`:2816`). 2.1.325 starts its
+  loop from the loaded messages and logs `cli_message_loop_started`
+  there. So a process's first `control_response`, success or error,
+  proves the load returned, and a load that fails writes its error
+  `result` before any answer. This ordering is version-sensitive: a CLI
+  that answered control requests while it loaded would answer before a
+  not-found error.
+- A load that fails writes `result{subtype:"error_during_execution",
+  num_turns:0, errors:[...]}`. 2.1.88 then exits
+  (`gracefulShutdownSync(1)`, `cli/print.ts:5100`); 2.1.170 and later
+  keep the process alive.
+
+What each "nothing to resume" shape does:
+
+| Transcript | CLI behavior | AO outcome |
+|---|---|---|
+| No file, an empty file, or furniture rows only | The load returns nothing: `No conversation found with session ID: <id>` (2.1.88 `cli/print.ts:5084-5100`, which treats an empty load like a missing one; 2.1.325 returns nothing for a zero-size file) | Not found |
+| An id that is no session id | `--resume requires a valid session ID or session title ...` | Not found |
+| System or attachment rows only, such as a lone compact boundary | No user or assistant leaf, so the load returns nothing and the CLI reports no conversation. A 2.1.325 cleared-to-empty session, and its fallback when no leaf is found, may load instead; unverified | Not found, unless the CLI loads it |
+| A crash tail whose user prompt survives the filters | Resumes with that history | Reusable |
+| A chain the resume filters drop entirely (only dangling `tool_use`, thinking-only or whitespace-only assistant rows, or a broken chain), or a session cleared to empty | 2.1.325 proceeds on a local id with an empty context and answers as loaded; 2.1.88 errors unless a resume hook adds messages | Reusable on 2.1.325: open |
+
+The last row is open: AO cannot yet tell an empty-context load from a
+real one before the first send. A spike would have to show that
+`get_context_usage` before any input reports zero user, assistant,
+tool-call and tool-result tokens in `messageBreakdown` for such a resume
+and nonzero for a real one, makes no API call, and holds across the
+versions AO supports.
+
+AO enforcement: `Session.AwaitStart` resolves from the read loop. A
+`system/init` on the session `--resume` named, or the CLI's answer to an
+`mcp_status` control request it sends, proves the load; a pre-init error
+`result` is a startup failure, and only the two "not found" messages
+above are `ErrSessionNotFound`. The read loop marks that `result`
+`FailureReasonStartup`, which the App reads to reap the session. The wait
+is bounded only by its caller's context; the workflow runner's start
+deadline bounds it there.
+
+---
+
 ## Session JSONL: active-branch semantics (`--resume` / `--resume-session-at`)
 
 Not a wire shape, but the on-disk contract for
@@ -5420,8 +5474,8 @@ nothing from the transcript, so the CLI's own default leaf decides. Only
 a pinned fork start passes a cursor, which `ResolveForkResumeCursor`
 validates against a branch index and repairs when the CLI would reject
 it (off-branch OR filter-dropped, next section). `ScanSessionLeaf`
-applies the same repair to the leaf it reports for a mid-turn fork cut
-and the workflow resume preflight. `sessionfork` re-chains deferred
+applies the same repair to the leaf it reports for a mid-turn fork cut.
+`sessionfork` re-chains deferred
 api_error tails so fork output keeps its writable tail on-branch.
 `internal/provider/claude/sessionleaf_branch.go` mirrors the row table
 above via `sessionfork.TranscriptTypes`.

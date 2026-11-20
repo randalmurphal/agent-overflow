@@ -1,6 +1,8 @@
 package sessionruntime
 
 import (
+	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +46,23 @@ func (e Entry) ProviderSession() provider.Session {
 		return e.ClaudeTUI
 	default:
 		return nil
+	}
+}
+
+// AwaitStart waits for the provider to report how this session's start
+// ended (claude.Session.AwaitStart). A Codex session registers only after
+// its synchronous thread/start or thread/resume handshake answered, so its
+// start is already proven. claude-tui reports no start outcome.
+func (e Entry) AwaitStart(ctx context.Context) error {
+	switch {
+	case e.Claude != nil:
+		return e.Claude.AwaitStart(ctx)
+	case e.Codex != nil:
+		return nil
+	case e.ClaudeTUI != nil:
+		return errors.New("a claude-tui session reports no start outcome")
+	default:
+		return errors.New("the start registered no provider session")
 	}
 }
 

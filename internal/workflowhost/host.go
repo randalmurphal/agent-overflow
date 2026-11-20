@@ -45,9 +45,17 @@ import (
 // `SessionActive` is a bare liveness question rather than the App's session
 // handle: both callers here discard the handle and read only the boolean, so
 // the seam asks exactly what the runner decides on.
+//
+// `StartSessionProvingResume` is `StartSessionTakingLock` followed by the
+// provider's own report of how that start ended: a Claude process that
+// loaded the session it resumed, or the failure that stopped it first
+// (`claude.ErrSessionNotFound` when the conversation is gone). A failed proof
+// stops the session that start registered. Codex proves the same thing inside
+// the start, with its synchronous `thread/resume`.
 type SessionHost interface {
 	StartSession(ctx context.Context, threadID string) error
 	StartSessionTakingLock(ctx context.Context, threadID string) error
+	StartSessionProvingResume(ctx context.Context, threadID string) error
 	StopSession(threadID string) error
 	SessionActive(threadID string) bool
 }
@@ -117,15 +125,6 @@ type ProcessLifetime interface {
 	ProcessReaper() procutil.Reaper
 }
 
-// ProviderHomeSource answers where the process's provider state lives. It is a
-// capability of the process, not of this package: an isolated boot (--harness /
-// --soak) and a test fixture both pin a provider home that is not $HOME, and a
-// runner that resolved `~/.claude/projects` itself would read the developer's
-// real transcripts there. See App.providerHome.
-type ProviderHomeSource interface {
-	ClaudeProjectsDir() (string, error)
-}
-
 // Host composes the seams above into the single field the runner holds.
 // Composition rather than one flat interface is what keeps each capability
 // nameable on its own, and is what the move of the runner into this package
@@ -139,7 +138,6 @@ type Host interface {
 	EventEmitter
 	EngineSource
 	ProcessLifetime
-	ProviderHomeSource
 }
 
 // DispatchIdentity is the credential identity held stable across one provider

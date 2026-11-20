@@ -706,8 +706,8 @@ lifecycle:
    is echoed and never mirrored as a user entry, like the CLI.
 3. **Each accepted user envelope appends a minimal provider transcript** under
    the harness's redirected `.claude` home. This is durable mock context, not
-   app state: restarting the backend against the same data root exercises the
-   production cold-resume preflight without reading a real provider home.
+   app state: restarting the backend against the same data root exercises a
+   production cold resume without reading a real provider home.
 
 Scenarios must still frame their own assistant content: a
 `stream_event message_start` carrying the assistant message id before
