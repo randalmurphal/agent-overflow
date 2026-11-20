@@ -203,7 +203,7 @@ func TestRenumberIssuesRefusesAliases(t *testing.T) {
 		ids  []string
 		want string
 	}{
-		"identifier":           {[]string{uuid1, "WEB-1"}, `"WEB-1", not an issue ID`},
+		"identifier":           {[]string{uuid1, "WEB-1"}, `"WEB-1" is not an issue ID`},
 		"uppercase":            {[]string{strings.ToUpper(uuid1)}, "not an issue ID"},
 		"braces":               {[]string{"{" + uuid1 + "}"}, "not an issue ID"},
 		"no hyphens":           {[]string{strings.ReplaceAll(uuid1, "-", "")}, "not an issue ID"},
@@ -211,7 +211,7 @@ func TestRenumberIssuesRefusesAliases(t *testing.T) {
 		"hex where hyphens go": {[]string{strings.ReplaceAll(uuid1, "-", "0")}, "not an issue ID"},
 		"too long":             {[]string{uuid1 + "0"}, "not an issue ID"},
 		"empty":                {[]string{""}, "not an issue ID"},
-		"listed twice":         {[]string{uuid1, uuid2, uuid1}, uuid1 + " twice"},
+		"listed twice":         {[]string{uuid1, uuid2, uuid1}, uuid1 + " is named twice"},
 		"non-hex lowercase g":  {[]string{"6f1c2a3g-0000-4000-8000-000000000001"}, "not an issue ID"},
 	} {
 		_, err := c.RenumberIssues(context.Background(), RenumberInput{IssueIDs: tc.ids})
@@ -259,24 +259,5 @@ func TestMoveIssue(t *testing.T) {
 	}
 	if _, err := c.MoveIssue(ctx, MoveInput{IssueID: "WEB-1", Field: OrderField(9)}); err == nil {
 		t.Error("unknown field accepted")
-	}
-}
-
-// A renumbering that fails part way returns the issues it stored and
-// says how far it got.
-func TestRenumberIssuesPartialFailure(t *testing.T) {
-	t.Parallel()
-	f := newFake(t,
-		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"` + uuid1 + `","input":{"sortOrder":1}}`, Body: issueResult(lineartest.IssueJSON(uuid1, "WEB-1", "2026-11-02T10:00:00.000Z", 1))},
-		lineartest.Exchange{Op: "UpdateIssue", Vars: `{"id":"` + uuid2 + `","input":{"sortOrder":2}}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
-	)
-	got, err := f.client(t).RenumberIssues(context.Background(), RenumberInput{
-		Field: OrderSort, IssueIDs: []string{uuid1, uuid2, uuid3}, Before: f64(0), After: f64(4),
-	})
-	if err == nil || len(got) != 1 || got[0].Identifier != "WEB-1" {
-		t.Fatalf("renumber: %+v %v", got, err)
-	}
-	if !strings.Contains(err.Error(), "1 of 3 issues renumbered") || WriteNotApplied(err) {
-		t.Errorf("error %v", err)
 	}
 }

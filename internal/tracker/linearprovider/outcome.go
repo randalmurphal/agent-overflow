@@ -14,19 +14,25 @@ import (
 // by the client's mutation outcome table:
 //
 //   - nil: applied;
+//   - a part of a write of several that nothing settled
+//     (*linear.OutcomeUnknownError): unknown, whatever its causes say;
 //   - the client refused the input before sending (trackerapi.ErrInvalidInput):
 //     refused as invalid;
 //   - the request never left (*trackerapi.NotSentError: the call ended,
 //     the rate gate was shut, the client was closed) or Linear's rate
 //     limit refused it (*trackerapi.RateLimitedError): not sent, since
 //     nobody judged it;
-//   - linear.WriteNotApplied: a present success: false, an HTTP 4xx, or
-//     user errors with no payload: refused by the tracker;
+//   - linear.WriteNotApplied: a present success: false, an HTTP 4xx, user
+//     errors with no payload, or a part a read after its failed request
+//     found unchanged: refused by the tracker;
 //   - anything else, a success: true without the stored entity included:
 //     unknown.
 func outcome(err error) tracker.Outcome {
 	if err == nil {
 		return tracker.Applied()
+	}
+	if _, ok := errors.AsType[*linear.OutcomeUnknownError](err); ok {
+		return tracker.Unknown(err)
 	}
 	if errors.Is(err, trackerapi.ErrInvalidInput) {
 		return tracker.Refused(tracker.Refusal{Reason: tracker.ReasonInvalid, Message: err.Error(), Err: err})
@@ -46,6 +52,9 @@ func outcome(err error) tracker.Outcome {
 // refusalMessage is Linear's own reason for a refusal: its errors'
 // messages, or the transport's reading of the answer.
 func refusalMessage(err error) string {
+	if e, ok := errors.AsType[*linear.UnchangedError](err); ok {
+		return "Linear did not apply it: the request that carried it failed (" + refusalMessage(e.Write) + ")"
+	}
 	if e, ok := errors.AsType[*linear.Error](err); ok && len(e.Errors) > 0 {
 		msgs := make([]string, 0, len(e.Errors))
 		for _, g := range e.Errors {

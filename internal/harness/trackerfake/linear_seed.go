@@ -220,6 +220,11 @@ func (w *linearWorkspace) seedIssues(e *Engine) error {
 		if is.Parent != "" && w.issue(is.Parent) == nil {
 			return fmt.Errorf("issue %s has parent %q, which the workspace lacks", w.identifier(&is), is.Parent)
 		}
+		for _, k := range is.FormerKeys {
+			if held := w.issue(k); held == nil || held.ID != is.ID {
+				return fmt.Errorf("issue %s has former identifier %q, which is not an identifier no other issue holds", w.identifier(&is), k)
+			}
+		}
 	}
 	for i := range w.Comments {
 		c := &w.Comments[i]
@@ -313,17 +318,24 @@ func (w *linearWorkspace) relation(id string) *LinearRelation {
 	return findBy(w.Relations, func(r *LinearRelation) bool { return r.ID == id })
 }
 
-// issue finds an issue by ID or identifier, the key's case ignored.
+// issue finds an issue by ID or identifier, the key's case ignored: its
+// current identifier, or else one it had before it moved team.
 func (w *linearWorkspace) issue(ref string) *LinearIssue {
 	key, num, ok := strings.Cut(ref, "-")
 	n, err := strconv.ParseFloat(num, 64)
 	byIdentifier := ok && err == nil && !strings.Contains(num, "-")
-	return findBy(w.Issues, func(is *LinearIssue) bool {
+	current := findBy(w.Issues, func(is *LinearIssue) bool {
 		if is.ID == ref {
 			return true
 		}
 		t := w.team(is.Team)
 		return byIdentifier && is.Number == n && t != nil && strings.EqualFold(t.Key, key)
+	})
+	if current != nil || !byIdentifier {
+		return current
+	}
+	return findBy(w.Issues, func(is *LinearIssue) bool {
+		return slices.ContainsFunc(is.FormerKeys, func(k string) bool { return strings.EqualFold(k, ref) })
 	})
 }
 

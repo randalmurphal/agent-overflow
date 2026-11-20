@@ -51,6 +51,34 @@ func TestDocumentsMatchSchema(t *testing.T) {
 	}
 }
 
+// Every document a family can send, for each n from 1 to its max, is
+// valid against the schema, a mutation with no string literal, and
+// declares exactly the variables its aliases use.
+func TestFamilyDocumentsMatchSchema(t *testing.T) {
+	t.Parallel()
+	if len(families) == 0 {
+		t.Fatal("no families registered")
+	}
+	for name, f := range families {
+		if registered[name].text != f.docs[len(f.docs)-1].text {
+			t.Errorf("%s: the registered document is not the family's largest", name)
+		}
+		for i, op := range f.docs {
+			if p := linearschema.DocumentProblems(op.text, op.name); len(p) > 0 {
+				t.Errorf("%s for %d: %s", name, i+1, strings.Join(p, "; "))
+				continue
+			}
+			doc, _ := parser.ParseQuery(&ast.Source{Input: op.text})
+			if o := doc.Operations[0]; o.Operation != ast.Mutation || !op.mutation || len(o.SelectionSet) != i+1 {
+				t.Errorf("%s for %d: a %s of %d fields", name, i+1, o.Operation, len(o.SelectionSet))
+			}
+			if strings.Contains(op.text, `"`) {
+				t.Errorf("%s for %d: the document holds a string literal", name, i+1)
+			}
+		}
+	}
+}
+
 // The schema check refuses what it is there to refuse.
 func TestDocumentProblemsRefuses(t *testing.T) {
 	t.Parallel()

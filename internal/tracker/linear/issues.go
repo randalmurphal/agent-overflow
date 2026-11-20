@@ -3,23 +3,33 @@ package linear
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 // Page sizes of the issue reads. Linear charges a page of issues by the
-// issues it returns, about 4.5 points each with their labels (measured),
-// not by the page size; its answer carries the descriptions, so its body
-// may run to issueBodyBytes. The single-issue
-// read costs about 900 by the documented rule, which Linear applies to
-// nested connections: 50 comments at 4, 50 children at 2.4, 25
-// attachments at 4 and 25 relations each way at 6. A relation page costs
-// about 600.
+// issues it returns (8 points for 42 issues with their labels at first:
+// 100 and at first: 250, measured), not by the page size, so a list
+// walked to its end pages at maxIssuePage. Lists carry no descriptions;
+// a page's body bound stays issueBodyBytes for an issue whose 250 nested
+// labels and long title run large. A history page is charged by its
+// first (203 points at 50, 403 at 100, 1,003 at 250, measured), so its
+// cost per entry falls with the page and it pages at the largest. The
+// single-issue read costs about 286 points with its comments,
+// attachments and relations (measured), plus its history page and its
+// team's states. It nests detailHistoryPage entries (403 points), which
+// holds the whole history of most issues; a longer one continues at
+// historyPage. A comment page and a relation page are charged by first
+// by the documented rule. The single-issue read nests 50 of its team's
+// states: a catalog connection, charged by first, where a team rarely
+// has more than a dozen.
 const (
-	issuePage      = 100
-	issueBodyBytes = 32 << 20
-	commentPage    = 100
-	historyPage    = 100
-	relationPage   = 100
+	issuePage         = maxIssuePage
+	issueBodyBytes    = 32 << 20
+	commentPage       = 100
+	historyPage       = maxIssuePage
+	detailHistoryPage = 100
+	relationPage      = 100
 )
 
 // IssueOrder orders a list of issues.
@@ -27,20 +37,28 @@ type IssueOrder int
 
 const (
 	// OrderManual is the manual order of board columns and the backlog:
-	// SortOrder, lowest first.
+	// SortOrder, lowest first. A rank changes it, so a walk of more than
+	// one page in this order can skip or repeat issues: a page cursor
+	// follows its issue (measured).
 	OrderManual IssueOrder = iota
 	// OrderPriority is by priority, urgent first, then PrioritySortOrder
 	// within a priority.
 	OrderPriority
-	OrderUpdatedNewest
 	OrderCreatedNewest
-	// orderUpdatedOldest is the polling order.
+	// OrderCreatedOldest is by creation time, oldest first: an order no
+	// change moves an issue in, so a walk by cursor neither skips nor
+	// repeats one, and an issue created during the walk comes last.
+	OrderCreatedOldest
+	// orderUpdatedOldest and orderUpdatedNewest are the orders of a
+	// walk by position (poll.go): an update moves an issue in them, so
+	// no page in them follows a Linear cursor, and only the walks by
+	// position use them.
 	orderUpdatedOldest
+	orderUpdatedNewest
 )
 
-// maxIssuePage is the largest page the package asks for. Linear's schema
-// and pagination guide state no maximum; it served issues at 250
-// (measured).
+// maxIssuePage is the largest page Linear serves, outer or nested:
+// first: 251 answers INVALID_INPUT (measured).
 const maxIssuePage = 250
 
 // IssueQuery selects and orders issues.
@@ -48,8 +66,8 @@ type IssueQuery struct {
 	Filter          IssueFilter
 	Order           IssueOrder
 	IncludeArchived bool
-	// Limit is the page size, 1 to 250; zero means 100. A page's cost
-	// grows with it.
+	// Limit is the page size, 1 to 250; zero means 250. Linear charges a
+	// page by what it returns, so a larger page costs no more.
 	Limit int
 }
 
@@ -86,12 +104,14 @@ func (o IssueOrder) sort() ([]issueSort, error) {
 		return []issueSort{{Manual: asc}}, nil
 	case OrderPriority:
 		return []issueSort{{Priority: asc}}, nil
-	case OrderUpdatedNewest:
-		return []issueSort{{UpdatedAt: desc}}, nil
 	case OrderCreatedNewest:
 		return []issueSort{{CreatedAt: desc}}, nil
+	case OrderCreatedOldest:
+		return []issueSort{{CreatedAt: asc}}, nil
 	case orderUpdatedOldest:
 		return []issueSort{{UpdatedAt: asc}}, nil
+	case orderUpdatedNewest:
+		return []issueSort{{UpdatedAt: desc}}, nil
 	}
 	return nil, fmt.Errorf("unknown IssueOrder %d", o)
 }
@@ -115,6 +135,9 @@ func issueVars(q IssueQuery, after string) (issuesVars, error) {
 	sort, err := q.Order.sort()
 	if err != nil {
 		return issuesVars{}, err
+	}
+	if after != "" && (q.Order == orderUpdatedOldest || q.Order == orderUpdatedNewest) {
+		return issuesVars{}, fmt.Errorf("a walk in update order pages by position, not by a page cursor")
 	}
 	first, err := pageSize(q.Limit)
 	if err != nil {
@@ -143,8 +166,9 @@ var opIssuePositions = newQuery("IssuePositions", "page", `query IssuePositions(
 `+positionFields)
 
 // ListIssuePositions is ListIssues for a caller that needs only each
-// issue's ID and manual order: about 1.2 points an issue against
-// ListIssues's 10, and no descriptions in the answer.
+// issue's ID, manual order and team: about 4 points a page against
+// ListIssues's 8 (measured for 48 issues with id and updatedAt, and for
+// 42 with card fields), and about 90 bytes an issue against 1 KB.
 func (c *Client) ListIssuePositions(ctx context.Context, q IssueQuery, after string) (Page[IssuePosition], error) {
 	vars, err := issueVars(q, after)
 	if err != nil {
@@ -154,19 +178,21 @@ func (c *Client) ListIssuePositions(ctx context.Context, q IssueQuery, after str
 }
 
 var opIssueSummary = newQuery("IssueSummary", "issue", `query IssueSummary($id: String!) {
-  issue(id: $id) { ...IssueFields }
+  issue(id: $id) { ...DescribedFields }
 }
-`+issueFields)
+`+describedFields+issueFields)
 
 // IssueSummary returns one issue by its ID or its identifier, archived or
-// not, without what Issue adds: about 10 points against Issue's 286. A
-// missing or invisible issue matches trackerapi.ErrNotFound.
-func (c *Client) IssueSummary(ctx context.Context, idOrIdentifier string) (*Issue, error) {
+// not, with its description and without what Issue adds: one object
+// with its labels, a few points against Issue's thousand and more. A
+// missing or invisible issue matches
+// trackerapi.ErrNotFound.
+func (c *Client) IssueSummary(ctx context.Context, idOrIdentifier string) (*DescribedIssue, error) {
 	if idOrIdentifier == "" {
 		return nil, invalid(opIssueSummary.name, "an issue ID or identifier is required")
 	}
 	var data struct {
-		Issue *wireIssue `json:"issue"`
+		Issue *wireDescribed `json:"issue"`
 	}
 	if _, err := c.call(ctx, opIssueSummary, idVars{idOrIdentifier}, &data); err != nil {
 		return nil, err
@@ -185,7 +211,7 @@ type SearchQuery struct {
 	// TeamID limits the search to one team; empty searches every team.
 	TeamID          string
 	IncludeArchived bool
-	// Limit is the page size, 1 to 250; zero means 100.
+	// Limit is the page size, 1 to 250; zero means 250.
 	Limit int
 }
 
@@ -218,9 +244,12 @@ func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) 
 	return fetchPage(ctx, c, opSearchIssues, vars, wireIssue.typed)
 }
 
+// opIssue reads one issue with everything its view shows. Its team's
+// states are aliased stateTeam beside the fragment's team so the two
+// selections decode apart.
 var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
   issue(id: $id) {
-    ...IssueFields
+    ...DescribedFields
     project { id name }
     parent { ...IssueRefFields }
     children(first: 50) { nodes { ...IssueRefFields } pageInfo { hasNextPage } }
@@ -228,9 +257,11 @@ var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
     attachments(first: 25) { nodes { ...AttachmentFields } pageInfo { hasNextPage } }
     relations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
     inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
+    history(first: `+strconv.Itoa(detailHistoryPage)+`) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
+    stateTeam: team { states(first: 50) { nodes { ...StateFields } pageInfo { hasNextPage } } }
   }
 }
-`+issueFields+issueRefFields+commentFields+attachmentFields+relationFields)
+`+describedFields+issueFields+issueRefFields+commentFields+attachmentFields+relationFields+historyFields+stateFields).withMaxBody(issueBodyBytes)
 
 // namedRef is a related entity selected as { id name }.
 type namedRef struct {
@@ -238,8 +269,13 @@ type namedRef struct {
 	Name string `json:"name"`
 }
 
+// stateTeam is an issue's team as a document selects its states.
+type stateTeam struct {
+	States connection[wireState] `json:"states"`
+}
+
 type wireIssueDetail struct {
-	wireIssue
+	wireDescribed
 	// Project shadows the fragment's project { id } with its name.
 	Project          *namedRef                  `json:"project"`
 	Parent           *wireIssueRef              `json:"parent"`
@@ -248,6 +284,8 @@ type wireIssueDetail struct {
 	Attachments      connection[wireAttachment] `json:"attachments"`
 	Relations        connection[wireRelation]   `json:"relations"`
 	InverseRelations connection[wireRelation]   `json:"inverseRelations"`
+	History          connection[wireHistory]    `json:"history"`
+	StateTeam        *stateTeam                 `json:"stateTeam"`
 }
 
 type idVars struct {
@@ -255,9 +293,10 @@ type idVars struct {
 }
 
 // Issue returns one issue by its ID or its identifier, such as WEB-1,
-// archived or not, with its relations read to their end: one request,
-// and one more for each further page of relations either way. A missing
-// or invisible issue matches trackerapi.ErrNotFound.
+// archived or not, with its description, the first pages of what its
+// view shows, its team's states and its relations read to their end:
+// one request, and one more for each further page of relations either
+// way. A missing or invisible issue matches trackerapi.ErrNotFound.
 func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail, error) {
 	if idOrIdentifier == "" {
 		return nil, invalid("Issue", "an issue ID or identifier is required")
@@ -272,7 +311,7 @@ func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail
 	if data.Issue == nil {
 		return nil, fmt.Errorf("linear %s: the answer holds no issue", opIssue.name)
 	}
-	d, err := data.Issue.detail(r.Usage)
+	d, err := data.Issue.detail(r)
 	if err != nil {
 		return nil, err
 	}
@@ -290,8 +329,8 @@ func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail
 }
 
 // detail types the answer of the single-issue read, its relations aside.
-func (w *wireIssueDetail) detail(usage Usage) (*IssueDetail, error) {
-	d := &IssueDetail{Issue: w.typed(), Parent: w.Parent.typedPtr()}
+func (w *wireIssueDetail) detail(r reply) (*IssueDetail, error) {
+	d := &IssueDetail{DescribedIssue: w.typed(), Parent: w.Parent.typedPtr()}
 	// The detail's parent and project selections shadow the fragment's
 	// { id } ones.
 	if d.Parent != nil {
@@ -304,10 +343,20 @@ func (w *wireIssueDetail) detail(usage Usage) (*IssueDetail, error) {
 	if d.Children, d.MoreChildren, err = firstPage(opIssue, w.Children, wireIssueRef.typed); err != nil {
 		return nil, err
 	}
-	if d.Comments, err = page(opIssue, w.Comments, usage, wireComment.typed); err != nil {
+	if d.Comments, err = page(opIssue, w.Comments, r.Usage, wireComment.typed); err != nil {
 		return nil, err
 	}
 	if d.Attachments, d.MoreAttachments, err = firstPage(opIssue, w.Attachments, wireAttachment.typed); err != nil {
+		return nil, err
+	}
+	if d.History, err = page(opIssue, w.History, r.Usage, wireHistory.typed); err != nil {
+		return nil, err
+	}
+	d.Comments.Served, d.History.Served = r.Served, r.Served
+	if w.StateTeam == nil {
+		return nil, fmt.Errorf("linear %s: the answer holds no team", opIssue.name)
+	}
+	if d.States, d.MoreStates, err = firstPage(opIssue, w.StateTeam.States, wireState.typed); err != nil {
 		return nil, err
 	}
 	return d, nil
@@ -329,6 +378,8 @@ var opIssueInverseRelations = newQuery("IssueInverseRelations", "node", `query I
 
 // relations are the relations of first, the page the single-issue read
 // held, and of every page after it, which op reads for the issue id.
+// Relations page in Linear's default order, by creation, which no
+// change moves a relation in.
 func (c *Client) relations(ctx context.Context, op operation, id string, first connection[wireRelation]) ([]Relation, error) {
 	p, err := page(opIssue, first, Usage{}, wireRelation.typed)
 	if err != nil {
@@ -361,8 +412,9 @@ var opIssueComments = newQuery("IssueComments", "node", `query IssueComments($id
 `+commentFields)
 
 // IssueComments returns the page of an issue's comments after the cursor
-// after, newest first (Linear's default order); replies carry their
-// ParentID. Issue holds the first page and its EndCursor.
+// after, newest first (Linear's default order, by creation, which an
+// edit does not move a comment in); replies carry their ParentID. Issue
+// holds the first page and its EndCursor.
 func (c *Client) IssueComments(ctx context.Context, issueID, after string) (Page[Comment], error) {
 	if issueID == "" {
 		return Page[Comment]{}, invalid("IssueComments", "an issue ID is required")
@@ -375,10 +427,12 @@ var opIssueHistory = newQuery("IssueHistory", "node", `query IssueHistory($id: S
     page: history(first: $first, after: $after) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
   }
 }
-`+historyFields)
+`+historyFields).withMaxBody(issueBodyBytes)
 
 // IssueHistory returns the page of an issue's recorded changes after the
-// cursor after, newest first (Linear's default order).
+// cursor after, newest first (Linear's default order, by creation: an
+// entry recorded during a walk comes before its cursor and is left to
+// the next read).
 // Changes made in a window after creation that ends between 2m30s and 3m
 // (measured by TestLiveHistoryFoldBisect) are folded into the creation,
 // not entries, and an entry can be recorded a few seconds after its

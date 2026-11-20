@@ -34,6 +34,10 @@ type IssueFilter struct {
 	Labels []string
 	// UpdatedSince selects issues updated at or after it.
 	UpdatedSince time.Time
+	// AnyOf selects issues that at least one of its filters selects
+	// (Linear's or, measured to be accepted); each must select something
+	// out. An empty AnyOf selects nothing out.
+	AnyOf []IssueFilter
 }
 
 // Match selects issues by a related entity: one of IDs, or none when
@@ -72,8 +76,9 @@ type (
 		In []int `json:"in"`
 	}
 	idComparator struct {
-		Eq string   `json:"eq,omitempty"`
-		In []string `json:"in,omitempty"`
+		Eq  string   `json:"eq,omitempty"`
+		In  []string `json:"in,omitempty"`
+		Nin []string `json:"nin,omitempty"`
 	}
 	stateFilterInput struct {
 		ID   *idComparator `json:"id,omitempty"`
@@ -83,7 +88,10 @@ type (
 		Some *entityFilter `json:"some"`
 	}
 	dateComparator struct {
-		Gte string `json:"gte"`
+		Gte string `json:"gte,omitempty"`
+		Gt  string `json:"gt,omitempty"`
+		Lte string `json:"lte,omitempty"`
+		Lt  string `json:"lt,omitempty"`
 	}
 )
 
@@ -159,6 +167,20 @@ func (f IssueFilter) input() (*issueFilterInput, error) {
 	}
 	if !f.UpdatedSince.IsZero() {
 		add(issueFilterInput{UpdatedAt: &dateComparator{Gte: formatTime(f.UpdatedSince)}})
+	}
+	if len(f.AnyOf) > 0 {
+		or := make([]issueFilterInput, 0, len(f.AnyOf))
+		for i, sub := range f.AnyOf {
+			in, err := sub.input()
+			if err != nil {
+				return nil, fmt.Errorf("AnyOf[%d]: %w", i, err)
+			}
+			if in == nil {
+				return nil, fmt.Errorf("AnyOf[%d] selects every issue", i)
+			}
+			or = append(or, *in)
+		}
+		add(issueFilterInput{Or: or})
 	}
 	if len(and) == 0 {
 		return nil, nil

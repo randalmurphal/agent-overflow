@@ -239,7 +239,7 @@ type Dialect interface {
 | The request never left: unusable client, bad request, gate closed, the call ended while waiting to send, or any failure before the transport held a connection (dial, name lookup, proxy, TLS) | `*NotSentError` wrapping the cause |
 | 401 after the credential was read again, or an answer the dialect marks as a refused login | `*AuthError` |
 | 429, or the dialect's limit, once retries are spent or for a background call | `*RateLimitedError{Until}` |
-| Any other status of 400 or above, or a 3xx answering a write | `*StatusError{Method, URL, Status, Message, Fields, Body, Location}`: the URL redacted, the body bounded to 4 KiB, `Fields` the per-field messages. A 404 matches `errors.Is(err, ErrNotFound)`. |
+| Any other status of 400 or above, or a 3xx answering a write | `*StatusError{Method, URL, Status, Message, Fields, Body, Location, Header}`: the URL redacted, the body bounded to 4 KiB, `Fields` the per-field messages, `Header` the answer headers `Options.ErrorHeaders` names. A 404 matches `errors.Is(err, ErrNotFound)`. |
 | Timeout, reset, a body cut short | `*TransientError` wrapping the cause. A write's 4xx whose body is cut short stays the status's error, with the body that arrived. |
 | A body over its bound | `*BodyTooLargeError` |
 | A 2xx whose credential was dropped while its body was read, so the body cannot be checked for it | `ErrCredentialChanged`, returned with a `Response` that has the status, header and `CredentialMark` and no body. A write it answered has an unknown outcome. |
@@ -308,12 +308,18 @@ problem on that record, which stays usable.
   nothing is refused, and one that asks only for stored values sends
   nothing and says so.
 - **Identity.** Jira answers some paths with a 404 when the credential is
-  bad. After a 404 the client asks who it is signed in as, with a check
-  that starts after the 404 arrived, and reports a refused credential as
-  `*trackerapi.AuthError`. The check vouches for the 404 only when both
-  answers carry the same `CredentialMark`; otherwise the 404 is
-  unconfirmed and the caller runs the call again. Concurrent 404s share
-  checks; nothing is reused over time.
+  bad, and answers a search sent with no credential 200 with no issues.
+  Every answer made for an account names it in `X-AAccountId`
+  ([measured](../references/tracker-api-measurements.md#jira-cloud)), so
+  a 404, or an answer that leaves out what was asked for (an empty
+  search, a bulk read missing issues), is the user's when it carries the
+  header, with nothing more sent. One without it gets a sign-in check
+  that starts after the answer arrived: a refused credential is
+  `*trackerapi.AuthError`. The check vouches for the answer only when
+  both carry the same `CredentialMark`; otherwise a 404 is an
+  `*UnconfirmedError`, an answer that left something out an
+  `*UnprovenError`, and the caller runs the call again. Concurrent
+  answers share checks; nothing is reused over time.
 - **Rate budget.** `Options.OnAnswer` receives, for every answer, the rate
   limit headers Atlassian documents for Jira Cloud and nothing else.
 - **Boards.** Boards by project, type and name, a board's configuration

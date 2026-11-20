@@ -61,7 +61,7 @@ func TestSearchIssues(t *testing.T) {
 	f := newFake(t,
 		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login \"page\" OR *","teamId":"team-web","first":50}`,
 			Body: lineartest.Data(lineartest.PageJSON([]string{hit}, true, "s1"))},
-		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login","first":100,"after":"s1","includeArchived":true}`,
+		lineartest.Exchange{Op: "SearchIssues", Vars: `{"term":"login","first":250,"after":"s1","includeArchived":true}`,
 			Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
 	)
 	c := f.client(t)

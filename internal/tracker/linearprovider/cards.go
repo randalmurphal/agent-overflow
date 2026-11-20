@@ -10,10 +10,10 @@ import (
 	"agent-overflow/internal/tracker/linear"
 )
 
-// idChunk is the most IDs one read by ID names: one page of Linear's
-// largest size. Linear charges a page of issues by the issues it returns
-// (measured), about 10 points each by its documented rule, so a full
-// chunk costs about 2,500, under the 10,000-point cap of one query.
+// idChunk is the most IDs or identifiers one read by key names: one page
+// of Linear's largest size. Linear charged a page of 42 issues with card
+// fields 8 points at first 100 and at 250 (measured), so a full chunk
+// costs no more than a short one.
 const idChunk = 250
 
 // priorityNames are Linear's fixed priorities by value.
@@ -156,28 +156,34 @@ func issueIDs(ids []tracker.IssueID) (valid []string, invalid []tracker.IssueID)
 }
 
 // issuesByID reads the issues ids names that filter also selects, in
-// requests of idChunk IDs, each read to its end. Archived issues come
-// only with includeArchived.
+// requests of idChunk IDs. Archived issues come only with
+// includeArchived.
 func (p *Provider) issuesByID(ctx context.Context, ids []string, filter linear.IssueFilter, includeArchived bool) ([]linear.Issue, error) {
-	var out []linear.Issue
-	for chunk := range slices.Chunk(ids, idChunk) {
+	return byKeys(ctx, ids, func(ctx context.Context, chunk []string) (linear.Page[linear.Issue], error) {
 		f := filter
 		f.IDs = chunk
-		issues, err := p.listAll(ctx, linear.IssueQuery{Filter: f, IncludeArchived: includeArchived, Limit: len(chunk)}, 0)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, issues...)
-	}
-	return out, nil
+		return p.c.ListIssues(ctx, linear.IssueQuery{Filter: f, IncludeArchived: includeArchived, Limit: len(chunk)}, "")
+	})
 }
 
-// listAll reads every page of q; maxPages bounds the walk (zero is no
-// bound) and a walk it cuts short fails with errTooLong.
-func (p *Provider) listAll(ctx context.Context, q linear.IssueQuery, maxPages int) ([]linear.Issue, error) {
-	return walk(ctx, func(ctx context.Context, after string) (linear.Page[linear.Issue], error) {
-		return p.c.ListIssues(ctx, q, after)
-	}, maxPages)
+// byKeys reads what read lists for each chunk of idChunk keys, one page
+// a chunk. Each key names at most one issue (an ID, or an identifier,
+// which one issue holds at a time) and the page is as large as the
+// chunk, so a page holds every issue its keys name and no walk by
+// cursor follows; a page that says otherwise fails the read.
+func byKeys[T any](ctx context.Context, keys []string, read func(context.Context, []string) (linear.Page[T], error)) ([]T, error) {
+	var out []T
+	for chunk := range slices.Chunk(keys, idChunk) {
+		page, err := read(ctx, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("linearprovider: list issues: %w", err)
+		}
+		if page.HasNextPage && len(page.Items) < len(chunk) {
+			return nil, fmt.Errorf("linearprovider: list issues: %d keys answered with more than one page", len(chunk))
+		}
+		out = append(out, page.Items...)
+	}
+	return out, nil
 }
 
 // walk reads every page read returns, from the first, until one says no

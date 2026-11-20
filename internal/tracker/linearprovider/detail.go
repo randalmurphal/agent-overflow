@@ -14,10 +14,11 @@ import (
 // comments, every relation each way, its team's states as moves, its due
 // date and project as fields, and its whole history with every ID named.
 // Linear's attachments are links, not files, so there are none. The
-// project's name and its labels' names come with the issue; the labels
-// it does not name and the users, cycles, projects, teams and parent
-// issues its history names are read by exactly their IDs, each kind only
-// when something names one.
+// project's name, its labels' names, its team's states and its newest
+// 250 history entries come with the issue in one request; the labels it
+// does not name and the users, cycles, projects, teams and parent issues
+// its history names are read by exactly their IDs, each kind only when
+// something names one.
 func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.Detail, error) {
 	if issue == "" {
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail: %w: no issue named", tracker.ErrInvalidInput)
@@ -26,11 +27,16 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	if err != nil {
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail of %s: %w", issue, err)
 	}
-	states, err := p.teamStates(ctx, d.TeamID)
-	if err != nil {
+	states := d.States
+	if d.MoreStates {
+		if states, err = p.c.WorkflowStates(ctx, d.TeamID); err != nil {
+			return tracker.Detail{}, fmt.Errorf("linearprovider: workflow states of team %s: %w", d.TeamID, err)
+		}
+	}
+	if states, err = boardStates(states); err != nil {
 		return tracker.Detail{}, err
 	}
-	entries, err := p.allHistory(ctx, d.ID)
+	entries, err := p.restOfHistory(ctx, d.ID, d.History)
 	if err != nil {
 		return tracker.Detail{}, err
 	}
@@ -57,24 +63,24 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	return out, nil
 }
 
-// allHistory is every history entry of an issue, newest first.
-func (p *Provider) allHistory(ctx context.Context, id string) ([]linear.HistoryEntry, error) {
-	var out []linear.HistoryEntry
-	after := ""
-	for {
-		page, err := p.c.IssueHistory(ctx, id, after)
-		if err != nil {
+// restOfHistory is every history entry of an issue, newest first: first,
+// the page its detail held, and every page after it. History pages in
+// Linear's order of creation, which no change moves an entry in.
+func (p *Provider) restOfHistory(ctx context.Context, id string, first linear.Page[linear.HistoryEntry]) ([]linear.HistoryEntry, error) {
+	out := first.Items
+	page := first
+	for page.HasNextPage {
+		after := page.EndCursor
+		var err error
+		if page, err = p.c.IssueHistory(ctx, id, after); err != nil {
 			return nil, fmt.Errorf("linearprovider: history of %s: %w", id, err)
 		}
 		out = append(out, page.Items...)
-		if !page.HasNextPage {
-			return out, nil
-		}
-		if page.EndCursor == after {
+		if page.HasNextPage && page.EndCursor == after {
 			return nil, fmt.Errorf("linearprovider: history of %s: the page cursor did not advance", id)
 		}
-		after = page.EndCursor
 	}
+	return out, nil
 }
 
 func link(issueID string, r linear.Relation) tracker.Link {
@@ -101,21 +107,31 @@ func moves(states []linear.WorkflowState, current string) []tracker.Move {
 }
 
 // Moves are the issue's team's states other than its own: Linear lets an
-// issue move to any of them.
+// issue move to any of them. The issue and its team's states are one
+// read.
 func (p *Provider) Moves(ctx context.Context, issue tracker.IssueID) ([]tracker.Move, error) {
-	is, err := p.summary(ctx, issue)
+	scope, states, err := p.issueStates(ctx, issue)
 	if err != nil {
 		return nil, err
 	}
-	states, err := p.teamStates(ctx, is.TeamID)
-	if err != nil {
-		return nil, err
-	}
-	return moves(states, is.StateID), nil
+	return moves(states, scope.StateID), nil
 }
 
-// summary is one issue without its detail.
-func (p *Provider) summary(ctx context.Context, issue tracker.IssueID) (*linear.Issue, error) {
+// issueStates is an issue's scope with its team's states in board order.
+func (p *Provider) issueStates(ctx context.Context, issue tracker.IssueID) (linear.IssueScope, []linear.WorkflowState, error) {
+	if issue == "" {
+		return linear.IssueScope{}, nil, fmt.Errorf("linearprovider: %w: no issue named", tracker.ErrInvalidInput)
+	}
+	scope, states, err := p.c.IssueStates(ctx, string(issue))
+	if err != nil {
+		return linear.IssueScope{}, nil, fmt.Errorf("linearprovider: read issue %s with its team's states: %w", issue, err)
+	}
+	states, err = boardStates(states)
+	return scope, states, err
+}
+
+// summary is one issue with its description, without its detail.
+func (p *Provider) summary(ctx context.Context, issue tracker.IssueID) (*linear.DescribedIssue, error) {
 	if issue == "" {
 		return nil, fmt.Errorf("linearprovider: %w: no issue named", tracker.ErrInvalidInput)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/tracker"
@@ -16,13 +17,31 @@ import (
 // neighbor is issue n as a rank's neighbor.
 func neighbor(n int) tracker.IssueID { return tracker.IssueID(issueID(n)) }
 
-// orderX expects the update of issue n to sortOrder v.
-func orderX(n int, v float64, answer lineartest.Exchange) lineartest.Exchange {
-	answer.Op, answer.Vars = "UpdateIssue", js(map[string]any{"id": issueID(n), "input": map[string]any{"sortOrder": v}})
+// renumberX expects the aliased update of issues ns to sortOrders vs,
+// answered with each issue at its value unless answer has a body.
+func renumberX(ns []int, vs []float64, answer lineartest.Exchange) lineartest.Exchange {
+	vars := map[string]any{}
+	var parts []string
+	for i, n := range ns {
+		vars[fmt.Sprintf("id%d", i)] = issueID(n)
+		vars[fmt.Sprintf("input%d", i)] = map[string]any{"sortOrder": vs[i]}
+		parts = append(parts, fmt.Sprintf(`"i%d":{"success":true,"value":%s}`, i, issue(n, vs[i]).JSON()))
+	}
+	answer.Op, answer.Vars = "RenumberIssues", js(vars)
 	if answer.Body == "" && !answer.Reset {
-		answer.Body = applied(issue(n, v).JSON())
+		answer.Body = `{"data":{` + strings.Join(parts, ",") + `}}`
 	}
 	return answer
+}
+
+// readBackX expects the read that settles a failed write of issues,
+// answered with them as they stand.
+func readBackX(issues ...lineartest.Issue) lineartest.Exchange {
+	var ids []string
+	for _, is := range issues {
+		ids = append(ids, is.ID)
+	}
+	return issuesX(byIDVars(ids, nil, true), issues...)
 }
 
 // spread is linear.Spread for a test's expectations.
@@ -35,16 +54,17 @@ func spread(t *testing.T, lo, hi *float64, n int) []float64 {
 	return vs
 }
 
-// manualX is one page of the team's manual order, by ID and order alone.
+// manualX is one page of the team's issues by ID and order alone, oldest
+// created first.
 func manualX(after string, more bool, cursor string, issues ...lineartest.Issue) lineartest.Exchange {
-	v := map[string]any{"first": rankPage, "sort": []any{map[string]any{"manual": map[string]string{"order": "Ascending"}}},
+	v := map[string]any{"first": rankPage, "sort": []any{map[string]any{"createdAt": map[string]string{"order": "Ascending"}}},
 		"filter": map[string]any{"and": []any{map[string]any{"team": map[string]any{"id": map[string]any{"in": []string{web}}}}}}}
 	if after != "" {
 		v["after"] = after
 	}
 	var nodes []string
 	for _, is := range issues {
-		nodes = append(nodes, js(map[string]any{"id": is.ID, "sortOrder": is.SortOrder}))
+		nodes = append(nodes, positionJSON(is))
 	}
 	return lineartest.Exchange{Op: "IssuePositions", Vars: js(v), Body: lineartest.Data(lineartest.PageJSON(nodes, more, cursor))}
 }
@@ -60,16 +80,16 @@ func ids(ns ...int) []string {
 
 // Rank reads the issues and neighbors on the board with their current
 // values, then sends the values the client spreads between the
-// neighbors' current values, one update per issue in order, each naming
-// the issue's row and card. Neighbors a caller saw at 1 and 3 that now
-// stand at 10 and 20 rank between 10 and 20. An ID that is not an issue
-// ID, a neighbor's included, is refused before any request.
+// neighbors' current values in one aliased update, each issue its own
+// part naming the issue's row and card. Neighbors a caller saw at 1 and
+// 3 that now stand at 10 and 20 rank between 10 and 20. An ID that is
+// not an issue ID, a neighbor's included, is refused before any request.
 func TestRank(t *testing.T) {
 	t.Parallel()
 	vs := spread(t, f64(10), f64(20), 2)
 	p, _ := newProvider(t,
 		onBoardX(ids(1, 2, 8, 9), issue(1, 0), issue(2, 0), issue(8, 10), issue(9, 20)),
-		orderX(1, vs[0], lineartest.Exchange{}), orderX(2, vs[1], lineartest.Exchange{}),
+		renumberX([]int{1, 2}, vs, lineartest.Exchange{}),
 		onBoardX(ids(1, 9), issue(1, 0), issue(9, -math.MaxFloat64)),
 	)
 	ctx := context.Background()
@@ -100,17 +120,19 @@ func TestRank(t *testing.T) {
 	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Next: neighbor(9)}), "1:rank:refused(invalid)")
 }
 
-// Neighbors that no longer stand in the order the input names refuse
-// the whole rank as stale with nothing sent: swapped values, or equal
-// values that Linear lists Next first.
-func TestRankRefusesSwappedNeighbors(t *testing.T) {
+// Neighbors whose values are swapped refuse the whole rank as stale with
+// nothing sent. Neighbors at equal values stand in the order the input
+// names: the run after Prev, Next included, is renumbered.
+func TestRankNeighborOrder(t *testing.T) {
 	t.Parallel()
 	prev, next, moving := issue(8, 20), issue(9, 10), issue(1, 0)
 	tiedPrev, tiedNext := issue(8, 5), issue(9, 5)
+	vs := spread(t, f64(5), nil, 2)
 	p, _ := newProvider(t,
 		onBoardX(ids(1, 2, 8, 9), moving, issue(2, 0), prev, next),
 		onBoardX(ids(1, 8, 9), moving, tiedPrev, tiedNext),
 		manualX("", false, "", tiedNext, tiedPrev, moving),
+		renumberX([]int{1, 9}, vs, lineartest.Exchange{}),
 	)
 	ctx := context.Background()
 	in := []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2))}
@@ -119,7 +141,7 @@ func TestRankRefusesSwappedNeighbors(t *testing.T) {
 	if ref, _ := r.Parts[0].Outcome.Refusal(); ref.Message != "issue "+issueID(8)+" no longer stands before issue "+issueID(9) {
 		t.Errorf("refusal %q", ref.Message)
 	}
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Prev: neighbor(8), Next: neighbor(9)}), "1:rank:refused(stale)")
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Prev: neighbor(8), Next: neighbor(9)}), "1:rank:applied 9:rank:applied")
 }
 
 // An issue that left the board is refused as stale and the others are
@@ -128,23 +150,23 @@ func TestRankRefusesSwappedNeighbors(t *testing.T) {
 func TestRankChecksTheBoard(t *testing.T) {
 	t.Parallel()
 	afterPrev := spread(t, f64(1), nil, 1)
+	beforeNext := spread(t, nil, f64(3), 1)
 	elsewhere := issue(1, 0)
 	elsewhere.Team = app
-	beforeNext := spread(t, nil, f64(3), 1)
 	p, _ := newProvider(t,
 		// Issue 2 moved to another team: only issue 1 is ranked.
 		onBoardX(ids(1, 2, 8), issue(1, 0), issue(8, 1)),
-		orderX(1, afterPrev[0], lineartest.Exchange{}),
+		renumberX([]int{1}, afterPrev, lineartest.Exchange{}),
 		// The neighbor moved: nothing is sent.
 		onBoardX(ids(1, 9), issue(1, 0)),
 		// Next alone.
 		onBoardX(ids(1, 9), issue(1, 0), issue(9, 3)),
-		orderX(1, beforeNext[0], lineartest.Exchange{}),
+		renumberX([]int{1}, beforeNext, lineartest.Exchange{}),
 		// Every issue moved; an answer naming an issue of another team
 		// does not put it on the board.
 		onBoardX(ids(1, 8), elsewhere, issue(8, 1)),
 		// The read fails.
-		lineartest.Exchange{Op: "Issues", Vars: byIDVars(ids(1, 8), []string{web}, false), Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
+		lineartest.Exchange{Op: "IssuePositions", Vars: byIDVars(ids(1, 8), []string{web}, false), Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
 	)
 	ctx := context.Background()
 	one, two := tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2))
@@ -159,10 +181,11 @@ func TestRankChecksTheBoard(t *testing.T) {
 	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Prev: neighbor(8)}), "1:rank:not sent")
 }
 
-// With no room between the neighbors, Rank reads the manual order to its
-// end or the first issue with room, and renumbers the moving issues and
-// every crowded issue after Prev, each a part naming its row and card;
-// it stops at the first update not applied.
+// With no room between the neighbors, Rank reads the team's order by
+// creation, sorts it by value, and renumbers the moving issues and every
+// crowded issue after Prev up to the first with room, in one request,
+// each a part naming its row and card. A failed request is settled per
+// issue by a read.
 func TestRankNoRoom(t *testing.T) {
 	t.Parallel()
 	tight := math.Nextafter(1, 2)
@@ -171,19 +194,26 @@ func TestRankNoRoom(t *testing.T) {
 	board := onBoardX(ids(1, 8, 9), moving, prev, crowded)
 	vs := spread(t, f64(1), f64(3), 2)
 	atEnd := spread(t, f64(1), nil, 2)
+	foreign := issue(6, tight)
+	foreign.Team = app
 	p, _ := newProvider(t,
-		// Renumbered up to the first issue with room, across pages.
-		board, manualX("", true, "r1", prev, crowded), manualX("r1", false, "", roomy, moving),
-		orderX(1, vs[0], lineartest.Exchange{}), orderX(9, vs[1], lineartest.Exchange{}),
-		// The second update's answer is lost.
+		// Renumbered up to the first issue with room, the order read
+		// across pages in creation order; an issue answered as another
+		// team's is not in the run.
+		board, manualX("", true, "r1", roomy, crowded, foreign), manualX("r1", false, "", moving, prev),
+		renumberX([]int{1, 9}, vs, lineartest.Exchange{}),
+		// The request fails; the read after it finds the first applied
+		// and the second not.
 		board, manualX("", false, "", prev, crowded, roomy, moving),
-		orderX(1, vs[0], lineartest.Exchange{}), orderX(9, vs[1], lineartest.Exchange{Status: 500, Body: `{"errors":[{"message":"boom"}]}`}),
-		// The first is refused; the second is not sent.
+		renumberX([]int{1, 9}, vs, lineartest.Exchange{Status: 500, Body: `{"errors":[{"message":"boom"}]}`}),
+		readBackX(issue(1, vs[0]), crowded),
+		// Refused, and the read finds neither applied.
 		board, manualX("", false, "", prev, crowded, roomy, moving),
-		orderX(1, vs[0], lineartest.Exchange{Status: 400, Body: inputBody}),
+		renumberX([]int{1, 9}, vs, lineartest.Exchange{Status: 400, Body: inputBody}),
+		readBackX(moving, crowded),
 		// The crowded run reaches the end of the list.
 		board, manualX("", false, "", moving, prev, crowded),
-		orderX(1, atEnd[0], lineartest.Exchange{}), orderX(9, atEnd[1], lineartest.Exchange{}),
+		renumberX([]int{1, 9}, atEnd, lineartest.Exchange{}),
 		// Prev left the board after the check.
 		board, manualX("", false, "", crowded, roomy),
 	)
@@ -194,13 +224,13 @@ func TestRankNoRoom(t *testing.T) {
 	if !reflect.DeepEqual(r.Parts[1].Changed, []tracker.Resource{tracker.RowOf(web, nine), tracker.CardOf(nine)}) {
 		t.Errorf("the renumbered neighbor's part names %+v", r.Parts[1].Changed)
 	}
-	expectResult(t, p.Rank(ctx, in), "1:rank:applied 9:rank:unknown")
-	expectResult(t, p.Rank(ctx, in), "1:rank:refused(tracker) 9:rank:not sent")
+	expectResult(t, p.Rank(ctx, in), "1:rank:applied 9:rank:refused(tracker)")
+	expectResult(t, p.Rank(ctx, in), "1:rank:refused(tracker) 9:rank:refused(tracker)")
 	expectResult(t, p.Rank(ctx, in), "1:rank:applied 9:rank:applied")
 	expectResult(t, p.Rank(ctx, in), "1:rank:refused(stale)")
 }
 
-// A crowded run that reaches past the read's bound is refused, and
+// A crowded run in a team longer than the read's bound is refused, and
 // nothing is sent.
 func TestRankNoRoomPastBound(t *testing.T) {
 	t.Parallel()

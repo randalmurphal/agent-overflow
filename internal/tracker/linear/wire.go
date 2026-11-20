@@ -92,30 +92,24 @@ func (w wireState) typed() WorkflowState {
 const cycleFields = `fragment CycleFields on Cycle {
   id number name description team { id } startsAt endsAt completedAt archivedAt
   isActive isFuture isPast isNext isPrevious progress
-  scopeHistory completedScopeHistory inProgressScopeHistory issueCountHistory completedIssueCountHistory
 }`
 
 type wireCycle struct {
-	ID                         string     `json:"id"`
-	Number                     float64    `json:"number"`
-	Name                       string     `json:"name"`
-	Description                string     `json:"description"`
-	Team                       *ref       `json:"team"`
-	StartsAt                   time.Time  `json:"startsAt"`
-	EndsAt                     time.Time  `json:"endsAt"`
-	CompletedAt                *time.Time `json:"completedAt"`
-	ArchivedAt                 *time.Time `json:"archivedAt"`
-	IsActive                   bool       `json:"isActive"`
-	IsFuture                   bool       `json:"isFuture"`
-	IsPast                     bool       `json:"isPast"`
-	IsNext                     bool       `json:"isNext"`
-	IsPrevious                 bool       `json:"isPrevious"`
-	Progress                   float64    `json:"progress"`
-	ScopeHistory               []float64  `json:"scopeHistory"`
-	CompletedScopeHistory      []float64  `json:"completedScopeHistory"`
-	InProgressScopeHistory     []float64  `json:"inProgressScopeHistory"`
-	IssueCountHistory          []float64  `json:"issueCountHistory"`
-	CompletedIssueCountHistory []float64  `json:"completedIssueCountHistory"`
+	ID          string     `json:"id"`
+	Number      float64    `json:"number"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Team        *ref       `json:"team"`
+	StartsAt    time.Time  `json:"startsAt"`
+	EndsAt      time.Time  `json:"endsAt"`
+	CompletedAt *time.Time `json:"completedAt"`
+	ArchivedAt  *time.Time `json:"archivedAt"`
+	IsActive    bool       `json:"isActive"`
+	IsFuture    bool       `json:"isFuture"`
+	IsPast      bool       `json:"isPast"`
+	IsNext      bool       `json:"isNext"`
+	IsPrevious  bool       `json:"isPrevious"`
+	Progress    float64    `json:"progress"`
 }
 
 func (w wireCycle) typed() Cycle {
@@ -123,9 +117,7 @@ func (w wireCycle) typed() Cycle {
 		ID: w.ID, Number: int(w.Number), Name: w.Name, Description: w.Description, TeamID: w.Team.id(),
 		StartsAt: w.StartsAt, EndsAt: w.EndsAt, CompletedAt: w.CompletedAt, ArchivedAt: w.ArchivedAt,
 		IsActive: w.IsActive, IsFuture: w.IsFuture, IsPast: w.IsPast, IsNext: w.IsNext, IsPrevious: w.IsPrevious,
-		Progress: w.Progress, ScopeHistory: w.ScopeHistory, CompletedScopeHistory: w.CompletedScopeHistory,
-		InProgressScopeHistory: w.InProgressScopeHistory, IssueCountHistory: w.IssueCountHistory,
-		CompletedIssueCountHistory: w.CompletedIssueCountHistory,
+		Progress: w.Progress,
 	}
 }
 

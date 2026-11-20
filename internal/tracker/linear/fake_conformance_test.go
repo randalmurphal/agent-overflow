@@ -2,6 +2,7 @@ package linear
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -273,7 +274,8 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		d := answered(f.c.Issue(f.ctx, "WEB-1")).must(t)
 		want(t, d.ID == cfIssue1 && d.ProjectName == "Website" && len(d.Children) == 1 && d.Children[0].Identifier == "WEB-3" &&
 			len(d.Comments.Items) == 1 && len(d.Attachments) == 1 && len(d.Relations) == 1 &&
-			d.Estimate != nil && *d.Estimate == 3 && d.Priority == PriorityHigh && slices.Equal(d.LabelIDs, []string{cfBug}),
+			d.Estimate != nil && *d.Estimate == 3 && d.Priority == PriorityHigh && slices.Equal(d.LabelIDs, []string{cfBug}) &&
+			len(d.History.Items) == 1 && !d.History.HasNextPage && d.History.Served.Equal(cfStart) && len(d.States) == 5 && !d.MoreStates,
 			"issue %+v", d)
 		// Past the first page of relations each way, the detail reads the
 		// rest with IssueRelations and IssueInverseRelations.
@@ -288,6 +290,43 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		}
 		d = answered(f.c.Issue(f.ctx, "WEB-1")).must(t)
 		want(t, len(d.Relations) == 61, "relations %d", len(d.Relations))
+	},
+	"IssueStates": func(t *testing.T, f *conformanceEnv) {
+		scope, ss, err := f.c.IssueStates(f.ctx, "WEB-3")
+		want(t, err == nil && scope == (IssueScope{IssueID: cfIssue3, TeamID: cfTeam, StateID: cfStarted}) && len(ss) == 5, "scope %+v states %+v %v", scope, ss, err)
+	},
+	"IssueMembers": func(t *testing.T, f *conformanceEnv) {
+		scope, us, err := f.c.IssueMembers(f.ctx, cfIssue1)
+		want(t, err == nil && scope.TeamID == cfTeam && len(us) == 2, "scope %+v members %+v %v", scope, us, err)
+	},
+	"IssueLabels": func(t *testing.T, f *conformanceEnv) {
+		scope, ls, err := f.c.IssueLabels(f.ctx, cfIssue1)
+		ids := make([]string, 0, len(ls))
+		for _, l := range ls {
+			ids = append(ids, l.ID)
+		}
+		slices.Sort(ids)
+		want(t, err == nil && scope.TeamID == cfTeam && slices.Equal(ids, []string{cfBug, cfFeature}), "scope %+v labels %v %v", scope, ids, err)
+	},
+	"IssueTeam": func(t *testing.T, f *conformanceEnv) {
+		it := answered(f.c.IssueTeam(f.ctx, "WEB-2")).must(t)
+		want(t, it.IssueID == cfIssue2 && !it.Archived && it.Team.ID == cfTeam && it.Team.Estimation.Scale == EstimateFibonacci, "issue team %+v", it)
+	},
+	"CyclePositions": func(t *testing.T, f *conformanceEnv) {
+		q := IssueQuery{Filter: IssueFilter{Teams: []string{cfTeam}, IDs: []string{cfIssue1, cfIssue3, fid(99)}}, Limit: 3}
+		c, p, err := f.c.CyclePositions(f.ctx, cfUpcoming, q)
+		want(t, err == nil && c.ID == cfUpcoming && c.IsFuture && len(p.Items) == 2 && !p.HasNextPage, "cycle %+v positions %+v %v", c, p, err)
+		_, _, err = f.c.CyclePositions(f.ctx, fid(99), q)
+		want(t, errors.Is(err, trackerapi.ErrNotFound), "a missing cycle: %v", err)
+	},
+	"SetCycle": func(t *testing.T, f *conformanceEnv) {
+		ws := answered(f.c.SetCycle(f.ctx, []string{cfIssue2, cfIssue3}, cfUpcoming)).must(t)
+		want(t, len(ws) == 2 && ws[0].Err == nil && ws[1].Err == nil && ws[1].Issue.CycleID == cfUpcoming &&
+			f.issue(t, cfIssue2).Cycle == cfUpcoming && f.issue(t, cfIssue3).Cycle == cfUpcoming, "set %+v", ws)
+		// A missing issue fails the batch whole; the read after it finds
+		// each issue unchanged.
+		ws = answered(f.c.SetCycle(f.ctx, []string{cfIssue2, fid(99)}, cfActive)).must(t)
+		want(t, len(ws) == 2 && WriteNotApplied(ws[0].Err) && WriteNotApplied(ws[1].Err) && f.issue(t, cfIssue2).Cycle == cfUpcoming, "failed batch %+v", ws)
 	},
 	"IssueSummary": func(t *testing.T, f *conformanceEnv) {
 		is := answered(f.c.IssueSummary(f.ctx, cfIssue3)).must(t)
@@ -307,7 +346,7 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		for _, h := range hs {
 			byID[h.IssueID] = h
 		}
-		want(t, len(byID) == 2 && len(byID[cfIssue1].Entries) == 1 && byID[cfIssue1].TeamID == cfTeam, "histories %+v", hs)
+		want(t, len(byID) == 2 && len(byID[cfIssue1].Entries) == 1 && byID[cfIssue1].TeamID == cfTeam && byID[cfIssue1].Served.Equal(cfStart), "histories %+v", hs)
 	},
 	"IssueStateSpans": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.IssueStateSpans(f.ctx, cfIssue1, "")).must(t)
@@ -324,7 +363,7 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 	},
 	"ListIssuePositions": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.ListIssuePositions(f.ctx, IssueQuery{Filter: IssueFilter{Teams: []string{cfTeam}}}, "")).must(t)
-		want(t, len(p.Items) == 3 && p.Items[0].ID == cfIssue1 && p.Items[2].SortOrder == 300, "positions %+v", p.Items)
+		want(t, len(p.Items) == 3 && p.Items[0].ID == cfIssue1 && p.Items[2].SortOrder == 300 && p.Items[1].TeamID == cfTeam, "positions %+v", p.Items)
 	},
 	"SearchIssues": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.SearchIssues(f.ctx, SearchQuery{Term: "login", TeamID: cfTeam}, "")).must(t)
@@ -379,9 +418,13 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 	},
 	"RenumberIssues": func(t *testing.T, f *conformanceEnv) {
 		after := 300.0
-		is := answered(f.c.RenumberIssues(f.ctx, RenumberInput{Field: OrderSort, IssueIDs: []string{cfIssue2, cfIssue1}, After: &after})).must(t)
-		want(t, len(is) == 2 && is[0].SortOrder < is[1].SortOrder && is[1].SortOrder < after &&
-			f.issue(t, cfIssue1).SortOrder == is[1].SortOrder, "renumbered %+v", is)
+		ws := answered(f.c.RenumberIssues(f.ctx, RenumberInput{Field: OrderSort, IssueIDs: []string{cfIssue2, cfIssue1}, After: &after})).must(t)
+		want(t, len(ws) == 2 && ws[0].Err == nil && ws[1].Err == nil && ws[0].Issue.SortOrder < ws[1].Issue.SortOrder && ws[1].Issue.SortOrder < after &&
+			f.issue(t, cfIssue1).SortOrder == ws[1].Issue.SortOrder, "renumbered %+v", ws)
+		// A missing issue at one alias fails the document whole; the read
+		// after it finds the other issue unchanged.
+		ws = answered(f.c.RenumberIssues(f.ctx, RenumberInput{Field: OrderSort, IssueIDs: []string{cfIssue3, fid(99)}, Before: &after})).must(t)
+		want(t, len(ws) == 2 && WriteNotApplied(ws[0].Err) && WriteNotApplied(ws[1].Err) && f.issue(t, cfIssue3).SortOrder == 300, "failed renumber %+v", ws)
 	},
 	"PollIssues": func(t *testing.T, f *conformanceEnv) {
 		first := answered(f.c.PollIssues(f.ctx, PollQuery{TeamID: cfTeam})).must(t)
@@ -390,11 +433,32 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		}
 		f.clock.advance(time.Minute)
 		answered(f.c.UpdateIssue(f.ctx, cfIssue3, UpdateIssueInput{Title: Set("Login tests, all browsers")})).must(t)
-		delta := answered(f.c.PollIssues(f.ctx, PollQuery{TeamID: cfTeam, From: first.Next})).must(t)
-		// The poll repeats the issues updated at its floor, by its contract;
-		// past them it holds exactly the issue that changed.
-		fresh := slices.DeleteFunc(slices.Clone(delta.Items), func(is Issue) bool { return is.UpdatedAt.Equal(first.Next.Floor) })
-		want(t, slices.Equal(identifiers(fresh), []string{"WEB-3"}) && !delta.Restarted, "delta %v restarted %v", identifiers(delta.Items), delta.Restarted)
+		delta := answered(f.c.PollIssues(f.ctx, PollQuery{TeamID: cfTeam, From: first.Next.Resume()})).must(t)
+		// Resumed exactly, the poll holds exactly the issue that changed,
+		// and the walk's start is the fake's clock.
+		want(t, slices.Equal(identifiers(delta.Items), []string{"WEB-3"}) && delta.Next.Walk.Start.Equal(cfStart.Add(time.Minute)),
+			"delta %v walk %+v", identifiers(delta.Items), delta.Next.Walk)
+		// An issue the cursor leaves out by ID comes back once updated
+		// again, though no newer issue moved the floor.
+		f.clock.advance(time.Minute)
+		answered(f.c.UpdateIssue(f.ctx, cfIssue3, UpdateIssueInput{Title: Set("Login tests, every browser")})).must(t)
+		again := answered(f.c.PollIssues(f.ctx, PollQuery{TeamID: cfTeam, From: delta.Next})).must(t)
+		want(t, slices.Equal(identifiers(again.Items), []string{"WEB-3"}), "updated again %v", identifiers(again.Items))
+	},
+	"RecentIssues": func(t *testing.T, f *conformanceEnv) {
+		q := RecentQuery{Filter: IssueFilter{Teams: []string{cfTeam}}, Limit: 2}
+		first := answered(f.c.RecentIssues(f.ctx, q)).must(t)
+		want(t, slices.Equal(identifiers(first.Items), []string{"WEB-1", "WEB-2"}) && first.HasNextPage &&
+			first.Next.Ceiling.Equal(f.issue(t, cfIssue2).UpdatedAt) && slices.Equal(first.Next.AtCeiling, []string{cfIssue2}),
+			"first page %v next %+v", identifiers(first.Items), first.Next)
+		// The page's last issue is updated between pages: it moves to the
+		// front, behind the walk, and the issue after it is neither
+		// skipped nor joined by one delivered already.
+		f.clock.advance(time.Minute)
+		answered(f.c.UpdateIssue(f.ctx, cfIssue2, UpdateIssueInput{Title: Set("Add site search")})).must(t)
+		q.From = first.Next
+		rest := answered(f.c.RecentIssues(f.ctx, q)).must(t)
+		want(t, slices.Equal(identifiers(rest.Items), []string{"WEB-3"}) && !rest.HasNextPage, "rest %v", identifiers(rest.Items))
 	},
 	"Comment": func(t *testing.T, f *conformanceEnv) {
 		c := answered(f.c.Comment(f.ctx, cfComment)).must(t)

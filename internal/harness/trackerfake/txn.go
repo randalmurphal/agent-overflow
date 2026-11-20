@@ -11,9 +11,12 @@ import (
 // and clock are saved, and when it answers unhandled, refuses (status 400
 // or more) or panics they are put back, so the request changes nothing a
 // Snapshot, a later ID or a later stamp could show. A Linear mutation
-// runs in one of its own, since Linear resolves each root mutation on
-// its own. The cost is one JSON encoding of the tenant per handler run,
-// and one decoding when it is rolled back.
+// document is saved once more by the executor (Engine.execute), which
+// puts the workspace back when any of the document's mutations fails
+// with an error, though the answer is 200: Linear then applies none of
+// them (measured). The cost is one JSON encoding of the tenant per
+// handler run, a second for a mutation document, and one decoding for
+// each roll back.
 
 // save is the undo of what a handler run for x may change. Callers hold
 // mu.

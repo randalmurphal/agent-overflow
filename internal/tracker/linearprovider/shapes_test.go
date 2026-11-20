@@ -3,6 +3,7 @@ package linearprovider
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -168,11 +169,11 @@ func TestWriteInputShapes(t *testing.T) {
 	t.Parallel()
 	c := lineartest.NewComment()
 	c.Issue = issueID(1)
-	states := statesX(web, lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web})
+	states := issueStatesX(issueID(1), "state-todo", lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web})
 	ref := func(n int) lineartest.IssueRef { return lineartest.IssueRef{ID: issueID(n), Identifier: "WEB"} }
 	p, _ := newProvider(t,
 		updateX(issueID(1), `{"title":"T"}`, applied(issue(1, 1).JSON())),
-		summaryX(issueID(1), issue(1, 1)), states, updateX(issueID(1), `{"stateId":"s-done"}`, applied(issue(1, 1).JSON())),
+		states, updateX(issueID(1), `{"stateId":"s-done"}`, applied(issue(1, 1).JSON())),
 		commentX(c),
 		commentX(c), lineartest.Exchange{Op: "UpdateComment", Vars: `{"id":"comment-2","input":{"body":"New"}}`, Body: applied(c.JSON())},
 		lineartest.Exchange{Op: "CreateRelation", Vars: `{"input":{"issueId":"` + issueID(1) + `","relatedIssueId":"` + issueID(2) + `","type":"duplicate"}}`,
@@ -222,19 +223,19 @@ func TestWriteInputShapes(t *testing.T) {
 
 // A delta with no cursor and no start polls every issue of the team; a
 // walk that ends on an empty page after a page that promised more ends
-// with More false and a cursor that starts the next walk at the last
+// with More false and a cursor that resumes the next walk after the last
 // update delivered.
 func TestChangedRowsWalkEnds(t *testing.T) {
 	t.Parallel()
-	all := js(map[string]any{"first": 100, "sort": []any{map[string]any{"updatedAt": map[string]string{"order": "Ascending"}}},
+	all := js(map[string]any{"first": 250, "sort": []any{map[string]any{"updatedAt": map[string]string{"order": "Ascending"}}},
 		"filter": map[string]any{"and": []any{map[string]any{"team": map[string]any{"id": map[string]any{"in": []string{web}}}}}}})
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	last := issue(1, 1)
 	last.UpdatedAt = "2026-11-03T08:00:00.000Z"
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Issues", Vars: all, Body: page()},
-		lineartest.Exchange{Op: "Issues", Vars: pollVars(start, ""), Body: lineartest.Data(lineartest.PageJSON([]string{last.JSON()}, true, "c1"))},
-		lineartest.Exchange{Op: "Issues", Vars: pollVars(start, "c1"), Body: page()},
+		lineartest.Exchange{Op: "Issues", Vars: pollVars(start), Body: lineartest.Data(lineartest.PageJSON([]string{last.JSON()}, true, "c1"))},
+		lineartest.Exchange{Op: "Issues", Vars: pollVars(mustTime(last.UpdatedAt), issueID(1)), Body: page()},
 	)
 	ctx := context.Background()
 	if pg, err := p.ChangedRows(ctx, tracker.DeltaQuery{Board: web}); err != nil || len(pg.Rows) != 0 || pg.More {
@@ -250,7 +251,7 @@ func TestChangedRowsWalkEnds(t *testing.T) {
 	}
 	var cur cursorJSON
 	want := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
-	if err := json.Unmarshal(pg.Next, &cur); err != nil || !cur.Since.Equal(want) || !cur.Floor.Equal(want) || cur.After != "" {
+	if err := json.Unmarshal(pg.Next, &cur); err != nil || !cur.Floor.Equal(want) || !slices.Equal(cur.AtFloor, []string{issueID(1)}) || cur.Walk != nil {
 		t.Errorf("cursor after the walk %s %v", pg.Next, err)
 	}
 }

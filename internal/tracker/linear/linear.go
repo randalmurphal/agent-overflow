@@ -65,20 +65,22 @@ type Client struct {
 // BaseURL that is not https unless its host is a loopback IP address.
 func New(opts Options) (*Client, error) {
 	if opts.Workspace == "" {
-		return newClient(opts, nil)
+		return newClient(opts, nil, nil)
 	}
 	if opts.Credentials == nil {
 		return nil, errors.New("linear: Options.Credentials is required")
 	}
-	c, err := newClient(opts, nil)
+	c, err := newClient(opts, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	// The client that checks a key answers to the same origin, records
-	// its answers' budget in c's Usage, and is bound to nothing.
+	// The client that checks a key answers to the same origin over c's
+	// connections, so the check and the call it admits share one TLS
+	// handshake; it records its answers' budget in c's Usage and is bound
+	// to nothing.
 	check := opts
-	check.Workspace, check.Credentials = "", &candidate{}
-	checker, err := newClient(check, c.observeAnswer)
+	check.Workspace, check.Credentials, check.Proxy = "", &candidate{}, nil
+	checker, err := newClient(check, c.observeAnswer, c.http)
 	if err != nil {
 		c.Close()
 		return nil, err
@@ -88,9 +90,11 @@ func New(opts Options) (*Client, error) {
 }
 
 // newClient builds a Client; observe, when set, records its answers'
-// budget headers in place of its own Usage. With opts.Workspace set, its
-// transport reads the key through a boundSource the caller completes.
-func newClient(opts Options, observe func(int, http.Header)) (*Client, error) {
+// budget headers in place of its own Usage, and peer, when set, is the
+// transport whose connections it sends over (opts.Proxy then nil). With
+// opts.Workspace set, its transport reads the key through a boundSource
+// the caller completes.
+func newClient(opts Options, observe func(int, http.Header), peer *trackerapi.Client) (*Client, error) {
 	base := opts.BaseURL
 	if base == "" {
 		base = DefaultBaseURL
@@ -104,7 +108,7 @@ func newClient(opts Options, observe func(int, http.Header)) (*Client, error) {
 		c.bound = &boundSource{want: opts.Workspace, inner: opts.Credentials}
 		source = c.bound
 	}
-	hc, err := trackerapi.New(trackerapi.Options{
+	topts := trackerapi.Options{
 		Name:          "linear",
 		BaseURL:       base,
 		Version:       opts.Version,
@@ -113,7 +117,14 @@ func newClient(opts Options, observe func(int, http.Header)) (*Client, error) {
 		Proxy:         opts.Proxy,
 		OnAnswer:      observe,
 		ReportHeaders: usageHeaders,
-	})
+	}
+	var hc *trackerapi.Client
+	var err error
+	if peer != nil {
+		hc, err = trackerapi.NewSharing(peer, topts)
+	} else {
+		hc, err = trackerapi.New(topts)
+	}
 	if err != nil {
 		return nil, err
 	}

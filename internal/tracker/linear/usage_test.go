@@ -61,7 +61,7 @@ func TestPageUsageIsItsOwnAnswer(t *testing.T) {
 	t.Parallel()
 	page := lineartest.Data(lineartest.PageJSON([]string{lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)}, false, "c9"))
 	vars := func(after string) string {
-		return `{"first":100,"after":"` + after + `","sort":[{"manual":{"order":"Ascending"}}]}`
+		return `{"first":250,"after":"` + after + `","sort":[{"manual":{"order":"Ascending"}}]}`
 	}
 	otherDone := make(chan struct{})
 	headersSent := make(chan struct{})

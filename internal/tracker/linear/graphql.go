@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -20,21 +23,38 @@ type graphqlRequest struct {
 	Variables     any    `json:"variables,omitempty"`
 }
 
-type envelope struct {
-	Data   json.RawMessage `json:"data"`
-	Errors []wireError     `json:"errors"`
+// payload is a mutation's result as its document aliases it: its
+// success, of whatever JSON type Linear sent, and the entity aliased
+// "value".
+type payload[T any] struct {
+	Success any `json:"success"`
+	Value   *T  `json:"value"`
 }
 
-// payload is a mutation's result as its document aliases it; its
-// success is read by readPayload.
-type payload[T any] struct {
-	Value *T `json:"value"`
+// mutationData is a mutation answer's data: the root field aliased
+// "result".
+type mutationData[T any] struct {
+	Result *payload[T] `json:"result"`
 }
+
+func (d *mutationData[T]) state() payloadState {
+	if d.Result == nil {
+		return payloadNone
+	}
+	return successState(d.Result.Success)
+}
+
+// payloadStater is a mutation answer's data, which says the write's
+// outcome. Every mutation's out implements it.
+type payloadStater interface{ state() payloadState }
 
 // reply is what a call reports beside its data.
 type reply struct {
 	Usage  Usage
 	Status int
+	// Served is Linear's clock when it answered, from the answer's Date
+	// header; zero when the answer carried none that parses.
+	Served time.Time
 }
 
 // answer is the answer an error is built from. scrub removes the
@@ -45,9 +65,9 @@ type answer struct {
 	scrub  func(string) string
 }
 
-// call sends op with vars and decodes the answer's data into out. Its
-// errors name the operation; the transport's stay reachable through
-// errors.As.
+// call sends op with vars and decodes the answer's data into out in one
+// pass over the body. A mutation's out is a payloadStater. Its errors
+// name the operation; the transport's stay reachable through errors.As.
 func (c *Client) call(ctx context.Context, op operation, vars, out any) (reply, error) {
 	resp, err := c.http.Do(ctx, trackerapi.Request{
 		Method:       http.MethodPost,
@@ -61,30 +81,78 @@ func (c *Client) call(ctx context.Context, op operation, vars, out any) (reply, 
 	}
 	// The client's Usage was recorded by observeAnswer; this answer's
 	// own is read from its headers so a page keeps it under concurrency.
-	r := reply{Usage: usageOf(resp.Header), Status: resp.Status}
+	r := reply{Usage: usageOf(resp.Header), Status: resp.Status, Served: servedAt(resp.Header)}
 	a := answer{op: op, status: resp.Status, scrub: resp.Scrub}
-	var env envelope
-	if err := json.Unmarshal(resp.Body, &env); err != nil {
+	present, wire, err := decodeAnswer(resp.Body, out)
+	if err != nil {
 		return r, a.decodeError("decode the answer", err)
 	}
 	outcome := payloadNone
-	if op.mutation {
-		outcome = readPayload(env.Data)
+	if op.mutation && present {
+		outcome = out.(payloadStater).state()
 	}
-	if len(env.Errors) > 0 || (op.mutation && outcome != payloadSucceeded) {
-		return r, c.failure(a, env.Errors, outcome, nil)
+	if len(wire) > 0 || (op.mutation && outcome != payloadSucceeded) {
+		return r, c.failure(a, wire, outcome, nil)
 	}
-	if absent(env.Data) {
+	if !present {
 		return r, &Error{Op: op.name, Status: resp.Status}
-	}
-	if err := json.Unmarshal(env.Data, out); err != nil {
-		return r, a.decodeError("decode the answer's data", err)
 	}
 	return r, nil
 }
 
-func absent(raw json.RawMessage) bool {
-	return len(raw) == 0 || bytes.Equal(raw, []byte("null"))
+// servedAt is the time an answer's Date header names, zero when it has
+// none that parses.
+func servedAt(h http.Header) time.Time {
+	t, err := http.ParseTime(h.Get("Date"))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// decodeOptions read an answer as encoding/json does where Linear's
+// answers could differ: text that is not valid UTF-8 becomes U+FFFD and
+// a repeated member keeps its last value.
+var decodeOptions = jsonv2.JoinOptions(jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
+
+// decodeAnswer reads a GraphQL answer in one pass: its errors, and its
+// data straight into out, so the data is never held as raw bytes.
+// present reports data that is neither absent nor null; out is
+// untouched when it is not.
+func decodeAnswer(body []byte, out any) (present bool, wire []wireError, err error) {
+	dec := jsontext.NewDecoder(bytes.NewBuffer(body), decodeOptions)
+	if tok, err := dec.ReadToken(); err != nil {
+		return false, nil, err
+	} else if tok.Kind() != '{' {
+		return false, nil, errors.New("the answer is not a JSON object")
+	}
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return false, nil, err
+		}
+		switch name.String() {
+		case "data":
+			if dec.PeekKind() == 'n' {
+				_, err = dec.ReadToken()
+				present = false
+				break
+			}
+			present = true
+			err = jsonv2.UnmarshalDecode(dec, out, decodeOptions)
+		case "errors":
+			err = jsonv2.UnmarshalDecode(dec, &wire, decodeOptions)
+		default:
+			err = dec.SkipValue()
+		}
+		if err != nil {
+			return false, nil, err
+		}
+	}
+	if _, err := dec.ReadToken(); err != nil {
+		return false, nil, err
+	}
+	return present, wire, nil
 }
 
 // payloadState is what a mutation answer's data says about the write.
@@ -94,33 +162,15 @@ const (
 	// payloadNone is no result: data or the result absent or null.
 	payloadNone payloadState = iota
 	// payloadUnsaid is a result without a boolean success: missing,
-	// null or malformed.
+	// null or another type.
 	payloadUnsaid
 	payloadFailed    // success: false
 	payloadSucceeded // success: true
 )
 
-// readPayload reads the success of a mutation answer's result.
-func readPayload(data json.RawMessage) payloadState {
-	if absent(data) {
-		return payloadNone
-	}
-	var d struct {
-		Result json.RawMessage `json:"result"`
-	}
-	if json.Unmarshal(data, &d) != nil {
-		return payloadUnsaid
-	}
-	if absent(d.Result) {
-		return payloadNone
-	}
-	var p struct {
-		Success any `json:"success"`
-	}
-	if json.Unmarshal(d.Result, &p) != nil {
-		return payloadUnsaid
-	}
-	switch p.Success {
+// successState reads a payload's success as decoded into an any.
+func successState(v any) payloadState {
+	switch v {
 	case true:
 		return payloadSucceeded
 	case false:
@@ -133,9 +183,7 @@ func readPayload(data json.RawMessage) payloadState {
 // the payload holds none. call returns no error only for a payload
 // that says success: true; failure classifies every other answer.
 func mutate[T any](ctx context.Context, c *Client, op operation, vars any) (*T, error) {
-	var data struct {
-		Result *payload[T] `json:"result"`
-	}
+	var data mutationData[T]
 	if _, err := c.call(ctx, op, vars, &data); err != nil {
 		return nil, err
 	}
@@ -174,15 +222,16 @@ func (c *Client) transportError(op operation, err error) error {
 	if !ok {
 		return fmt.Errorf("linear %s: %w", op.name, err)
 	}
-	var env envelope
-	if json.Unmarshal([]byte(statusErr.Body), &env) != nil || len(env.Errors) == 0 {
+	var data mutationData[json.RawMessage]
+	present, wire, derr := decodeAnswer([]byte(statusErr.Body), &data)
+	if derr != nil || len(wire) == 0 {
 		return fmt.Errorf("linear %s: %w", op.name, err)
 	}
 	outcome := payloadNone
-	if op.mutation {
-		outcome = readPayload(env.Data)
+	if op.mutation && present {
+		outcome = data.state()
 	}
-	return c.failure(answer{op: op, status: statusErr.Status, scrub: statusErr.Scrub}, env.Errors, outcome, err)
+	return c.failure(answer{op: op, status: statusErr.Status, scrub: statusErr.Scrub}, wire, outcome, err)
 }
 
 // failure builds the error of a GraphQL answer that failed: one with

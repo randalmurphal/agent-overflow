@@ -84,7 +84,7 @@ func scenarioWorkspace() trackerfake.LinearWorkspace {
 				Cycle: scActive, Labels: []string{scBug}, Priority: 2, Estimate: &scThree, SortOrder: 100, CreatedAt: at(-18), UpdatedAt: at(-1)},
 			{ID: scIssue2, Team: scTeam, Number: 2, Title: "Add search", State: scBacklog, Creator: scUser2, SortOrder: 200, CreatedAt: at(-17), UpdatedAt: at(-2)},
 			{ID: scIssue3, Team: scTeam, Number: 3, Title: "Login tests", State: scStarted, Creator: scUser1, SortOrder: 300,
-				CreatedAt: at(-16), UpdatedAt: at(-3), StartedAt: at(-3)},
+				CreatedAt: at(-16), UpdatedAt: at(-3), StartedAt: at(-3), FormerKeys: []string{"OPS-7"}},
 		},
 		Comments: []trackerfake.LinearComment{{ID: scComment, Issue: scIssue1, User: scUser2, Body: "Looks good", CreatedAt: at(-2)}},
 	}
@@ -235,7 +235,9 @@ func TestFakeScenario(t *testing.T) {
 	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, tracker.IssueID(scIssue1), "")); len(cs.Comments) != 1 {
 		t.Fatalf("comments %+v", cs)
 	}
-	if l := scenarioMust[tracker.KeyLookup](t)(s.p.Lookup(s.ctx, []string{"WEB-2", "WEB-99"})); len(l.Found) != 1 || !slices.Equal(l.Unmatched, []string{"WEB-99"}) {
+	// An identifier an issue had before it moved team still finds it.
+	if l := scenarioMust[tracker.KeyLookup](t)(s.p.Lookup(s.ctx, []string{"WEB-2", "ops-7", "WEB-99"})); len(l.Found) != 2 ||
+		l.Found[1].Key != "ops-7" || l.Found[1].Card.Key != "WEB-3" || !slices.Equal(l.Unmatched, []string{"WEB-99"}) {
 		t.Fatalf("lookup %+v", l)
 	}
 	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "login", Limit: 10})); len(sp.Cards) != 2 {

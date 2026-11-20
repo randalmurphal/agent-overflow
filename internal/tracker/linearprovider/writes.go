@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Every write runs its input's Check first and refuses what it cannot
@@ -89,7 +90,7 @@ func (p *Provider) Edit(ctx context.Context, in tracker.EditInput) tracker.Resul
 		return unsupported(tracker.StepEdit, "local images in Markdown", in.Issue)
 	}
 	r := &resolver{p: p}
-	var current *linear.Issue
+	var current *linear.DescribedIssue
 	if needsTeam(in.Fields) || slices.ContainsFunc(in.Fields, func(e tracker.FieldEdit) bool { return e.Value.Form() == tracker.EditMarkdown }) {
 		is, err := p.summary(ctx, in.Issue)
 		if err != nil {
@@ -126,9 +127,10 @@ func (p *Provider) Move(ctx context.Context, in tracker.MoveInput) tracker.Resul
 }
 
 // SetEstimate sets the estimate of an issue of the team in.Board: a
-// value on the team's scale, or none. It reads the issue within the
-// board and the team first, and refuses an issue not on the board, a
-// team without estimates and a value off its scale.
+// value on the team's scale, or none. It reads the issue with its team
+// first, in one request, and refuses an issue not on the board (gone,
+// archived or of another team), a team without estimates and a value
+// off its scale.
 func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tracker.Result {
 	step := tracker.StepEstimate
 	if err := in.Check(); err != nil {
@@ -137,20 +139,20 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 	if !linear.IsIssueID(string(in.Issue)) {
 		return notIssueID(step, in.Issue, in.Issue)
 	}
-	on, err := p.onBoard(ctx, in.Board, []string{string(in.Issue)})
-	if err != nil {
-		return beforeWrite(step, err, in.Issue)
-	}
-	if _, ok := on[string(in.Issue)]; !ok {
+	it, err := p.c.IssueTeam(ctx, string(in.Issue))
+	switch {
+	case errors.Is(err, trackerapi.ErrNotFound):
+		r := notOnBoard(in.Issue, in.Board)
+		r.Err = fmt.Errorf("%w: %w", r.Err, err)
+		return tracker.Refuse(step, r, in.Issue)
+	case err != nil:
+		return beforeWrite(step, fmt.Errorf("linearprovider: read issue %s with its team: %w", in.Issue, err), in.Issue)
+	case it.Archived || it.Team.ID != string(in.Board):
 		return tracker.Refuse(step, notOnBoard(in.Issue, in.Board), in.Issue)
-	}
-	t, err := p.team(ctx, string(in.Board))
-	if err != nil {
-		return beforeWrite(step, err, in.Issue)
 	}
 	value := linear.Null[int]()
 	if in.Value != nil {
-		v, ok := onScale(estimate(t.Estimation), *in.Value)
+		v, ok := onScale(estimate(it.Team.Estimation), *in.Value)
 		if !ok {
 			return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%v is not an estimate on board %s", *in.Value, in.Board)}, in.Issue)
 		}
@@ -174,11 +176,13 @@ func onScale(e tracker.Estimate, v float64) (int, bool) {
 }
 
 // MoveToSprint moves issues into the cycle in.Sprint, or out of any cycle
-// when it is empty, one update each in order. It reads the cycle and the
-// issues within the board first: a cycle that is not the board's or is
-// closed refuses the move, and an issue not on the board is refused while
-// the others proceed. It stops at the first update not applied; the
-// issues after it are not sent.
+// when it is empty, with one batch update per 50 issues, in order. It
+// reads the cycle and the issues within the board first, in one request
+// for up to 250 issues (cycleAndBoard): a cycle that is
+// not the board's or is closed refuses the move, and an issue not on the
+// board is refused while the others proceed. Each part is the client's
+// outcome for its issue, settled by a read after a failed request; the
+// issues after a request with a part not applied are not sent.
 func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput) tracker.Result {
 	step := tracker.StepSprintMove
 	if err := in.Check(); err != nil {
@@ -188,46 +192,31 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	if len(bad) > 0 {
 		return notIssueID(step, bad[0], in.Issues...)
 	}
-	cycle := linear.Null[string]()
-	if in.Sprint != "" {
-		if err := p.openCycle(ctx, in.Board, in.Sprint); err != nil {
-			return editRefusal(step, err, in.Issues...)
-		}
-		cycle = linear.Set(string(in.Sprint))
-	}
-	on, err := p.onBoard(ctx, in.Board, ids)
+	on, err := p.cycleAndBoard(ctx, in.Board, in.Sprint, ids)
 	if err != nil {
-		return beforeWrite(step, err, in.Issues...)
+		return editRefusal(step, err, in.Issues...)
 	}
 	var out tracker.Result
-	var failed tracker.IssueID
-	for _, id := range in.Issues {
-		_, isOn := on[string(id)]
-		switch {
-		case !isOn:
-			out.Parts = append(out.Parts, tracker.Part{Issue: id, Step: step, Outcome: tracker.Refused(notOnBoard(id, in.Board))})
-		case failed != "":
-			out.Parts = append(out.Parts, notSentAfter(step, failed, []tracker.IssueID{id})...)
-		default:
-			_, err := p.c.UpdateIssue(ctx, string(id), linear.UpdateIssueInput{CycleID: cycle})
-			out.Parts = append(out.Parts, part(id, step, err, tracker.RowOf(in.Board, id), tracker.CardOf(id), tracker.DetailOf(id)))
-			if err != nil {
-				failed = id
-			}
+	var moving []string
+	for _, id := range ids {
+		if _, isOn := on[id]; isOn {
+			moving = append(moving, id)
+		} else {
+			out.Parts = append(out.Parts, tracker.Part{Issue: tracker.IssueID(id), Step: step, Outcome: tracker.Refused(notOnBoard(tracker.IssueID(id), in.Board))})
 		}
 	}
-	return out
-}
-
-// notSentAfter are the parts of issues not sent because the part of
-// failed was not applied.
-func notSentAfter(step tracker.Step, failed tracker.IssueID, rest []tracker.IssueID) []tracker.Part {
-	why := fmt.Errorf("linearprovider: not sent: the write of issue %s before it was not applied", failed)
-	parts := make([]tracker.Part, 0, len(rest))
-	for _, id := range rest {
-		parts = append(parts, tracker.Part{Issue: id, Step: step, Outcome: tracker.NotSent(why)})
+	if len(moving) == 0 {
+		return out
 	}
-	return parts
+	written, err := p.c.SetCycle(ctx, moving, string(in.Sprint))
+	if err != nil {
+		return tracker.Invalid(step, err, in.Issues...)
+	}
+	for _, w := range written {
+		id := tracker.IssueID(w.IssueID)
+		out.Parts = append(out.Parts, part(id, step, w.Err, tracker.RowOf(in.Board, id), tracker.CardOf(id), tracker.DetailOf(id)))
+	}
+	return out
 }
 
 // CreateSprint is refused: Linear generates cycles from team settings.

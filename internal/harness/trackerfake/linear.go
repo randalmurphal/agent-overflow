@@ -131,8 +131,7 @@ func linearErrors(status int, errs ...gqlErr) answer {
 
 // spend records a request of cost points in the workspace's hourly
 // window and returns the usage headers Linear sends on every answer
-// (measured). The cost is one point per object answered plus a catalog
-// connection's unfilled page (chargedByResults).
+// (measured). The cost is linearCost's.
 func (w *linearWorkspace) spend(now time.Time, cost int) http.Header {
 	if now.Sub(w.usage.start) >= linearWindow {
 		w.usage = linearUsage{start: now}

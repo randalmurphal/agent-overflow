@@ -152,6 +152,7 @@ var refusals = map[string]call{
 	// A Linear mutation's refusal answers 200 with an error at the field.
 	"issueCreate":                  linearReq("M", `mutation M { issueCreate(input: {teamId: "t1", title: "New", stateId: "missing"}) { success } }`),
 	"issueUpdate":                  linearReq("M", `mutation M { issueUpdate(id: "i1", input: {title: "Changed", labelIds: ["missing"]}) { success } }`),
+	"issueBatchUpdate":             linearReq("M", `mutation M { issueBatchUpdate(ids: ["i1", "missing"], input: {title: "Changed"}) { success } }`),
 	"issueArchive":                 linearReq("M", `mutation M { issueArchive(id: "missing") { success } }`),
 	"issueUnarchive":               linearReq("M", `mutation M { issueUnarchive(id: "missing") { success } }`),
 	"issueDelete":                  linearReq("M", `mutation M { issueDelete(id: "missing") { success } }`),
@@ -202,19 +203,18 @@ func TestEveryRefusalChangesNothing(t *testing.T) {
 	}
 }
 
-// TestLinearMutationsResolveOnTheirOwn: a refused mutation changes
-// nothing while the document's other mutations stand.
-func TestLinearMutationsResolveOnTheirOwn(t *testing.T) {
+// TestLinearMutationDocumentRollsBackWhole: a document with a refused
+// mutation changes nothing, its other mutations included (measured:
+// three aliased issueUpdate fields, the middle one naming a missing
+// issue, answered data null and applied neither other).
+func TestLinearMutationDocumentRollsBackWhole(t *testing.T) {
 	g, twin := newRig(t, txnFixture()), newRig(t, txnFixture())
 	rec := g.do(linearReq("M", `mutation M {
 		a: issueUpdate(id: "i1", input: {title: "A"}) { success }
 		b: issueUpdate(id: "i2", input: {title: "B", labelIds: ["missing"]}) { success }
 	}`))
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"path":["b"]`) {
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"path":["b"]`) || !strings.Contains(rec.Body.String(), `"data":null`) {
 		t.Fatalf("answered %d %s", rec.Code, rec.Body)
-	}
-	if rec := twin.do(linearReq("M", `mutation M { issueUpdate(id: "i1", input: {title: "A"}) { success } }`)); rec.Code != 200 {
-		t.Fatalf("twin answered %d %s", rec.Code, rec.Body)
 	}
 	sameWorld(t, g, twin)
 }

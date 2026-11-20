@@ -37,7 +37,6 @@ type gqlRun struct {
 	filters   map[*ast.Field]*filterExpr
 	errors    []gqlErr
 	unhandled string
-	cost      int
 	now       time.Time
 }
 
@@ -77,12 +76,25 @@ func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 	r := &gqlRun{e: e, w: w, s: s, vars: vars, filters: filters, now: e.now()}
 	w.clock = r.now
 	var root gqlObject = queryRoot{w}
+	undo := func() {}
 	if op.Operation == ast.Mutation {
 		root = mutationRoot{w}
+		var err error
+		if undo, err = e.saveLinear(w); err != nil {
+			return unhandledf("%v", err)
+		}
 	}
 	data, nulled := r.selectFields(root, op.SelectionSet, nil)
 	if r.unhandled != "" {
 		return unhandledf("%s", r.unhandled)
+	}
+	// Measured: three aliased issueUpdate fields with the middle one
+	// naming a missing issue answered data null with the error at that
+	// alias, and neither other update was applied. So a mutation
+	// document with any error changes nothing (one case measured; the
+	// fake applies it to every document).
+	if op.Operation == ast.Mutation && len(r.errors) > 0 {
+		undo()
 	}
 	body := map[string]any{"data": data}
 	if nulled {
@@ -96,9 +108,13 @@ func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 		body["errors"] = list
 	}
 	a := jsonAnswer(http.StatusOK, body)
-	for k, v := range w.spend(r.now, r.cost+1) {
+	for k, v := range w.spend(r.now, r.linearCost(op)) {
 		a.header[k] = v
 	}
+	// Every HTTP answer carries Date (RFC 9110); the fake's is its own
+	// clock, so a client that takes the tracker's time from it follows
+	// the fake's clock and not the computer's.
+	a.header.Set("Date", r.now.UTC().Format(http.TimeFormat))
 	return a
 }
 
@@ -170,7 +186,6 @@ func (r *gqlRun) collectFields(typ string, set ast.SelectionSet) []collected {
 // answered, so each mutation of a document runs.
 func (r *gqlRun) selectFields(obj gqlObject, set ast.SelectionSet, path []any) (out map[string]any, nulled bool) {
 	out = map[string]any{}
-	r.cost++
 	for _, c := range r.collectFields(obj.typeName(), set) {
 		f := c.fields[0]
 		var sub ast.SelectionSet

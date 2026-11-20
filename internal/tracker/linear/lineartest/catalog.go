@@ -122,8 +122,7 @@ func (c Cycle) JSON() string {
 		"id": c.ID, "number": c.Number, "name": orNull(c.Name), "description": nil, "team": ref(c.Team),
 		"startsAt": c.StartsAt, "endsAt": c.EndsAt, "completedAt": orNull(c.CompletedAt), "archivedAt": nil,
 		"isActive": c.Active, "isFuture": c.Future, "isPast": c.Past, "isNext": false, "isPrevious": c.Previous,
-		"progress": 0.5, "scopeHistory": []float64{3, 5}, "completedScopeHistory": []float64{0, 2},
-		"inProgressScopeHistory": []float64{1, 1}, "issueCountHistory": []float64{2, 3}, "completedIssueCountHistory": []float64{0, 1},
+		"progress": 0.5,
 	})
 }
 
@@ -217,6 +216,13 @@ type Detail struct {
 	Relations, InverseRelations []string
 	RelationCursor              string
 	InverseRelationCursor       string
+	// History is the newest entries; a history cursor, when set, says
+	// more follow. States are the team's states (State JSON), and
+	// MoreStates says the team has more.
+	History       []string
+	HistoryCursor string
+	States        []string
+	MoreStates    bool
 }
 
 // DetailJSON is i with d, as the single-issue read answers it.
@@ -235,7 +241,9 @@ func DetailJSON(i Issue, d Detail) string {
 		`,"comments":` + ConnectionJSON(d.Comments, d.MoreComments, d.CommentCursor) +
 		`,"attachments":` + ConnectionJSON(d.Attachments, d.MoreAttachments, "") +
 		`,"relations":` + ConnectionJSON(d.Relations, d.RelationCursor != "", d.RelationCursor) +
-		`,"inverseRelations":` + ConnectionJSON(d.InverseRelations, d.InverseRelationCursor != "", d.InverseRelationCursor) + `}`
+		`,"inverseRelations":` + ConnectionJSON(d.InverseRelations, d.InverseRelationCursor != "", d.InverseRelationCursor) +
+		`,"history":` + ConnectionJSON(d.History, d.HistoryCursor != "", d.HistoryCursor) +
+		`,"stateTeam":{"states":` + ConnectionJSON(d.States, d.MoreStates, "") + `}}`
 }
 
 // IssueChangesJSON is one node of the batched history read: an issue's

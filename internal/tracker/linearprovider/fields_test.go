@@ -46,9 +46,13 @@ func TestChoices(t *testing.T) {
 		{ID: "app-1", Name: "Use bot", Active: true, App: true},
 		{ID: "user-3", Name: "Other", DisplayName: "user3", Active: true},
 	}
+	var nodes []string
+	for _, u := range members {
+		nodes = append(nodes, u.JSON())
+	}
 	p, _ := newProvider(t,
-		summaryX(issueID(1), issue(1, 1)),
-		membersX(web, members...),
+		lineartest.Exchange{Op: "IssueMembers", Vars: `{"id":"` + issueID(1) + `","first":100}`, Body: lineartest.Data(`"issue":{"id":"` + issueID(1) +
+			`","state":{"id":"state-todo"},"team":{"id":"` + web + `","page":` + lineartest.ConnectionJSON(nodes, false, "") + `}}`)},
 		membersX(web, members...),
 		labelsX(web, lineartest.Label{ID: "l-1", Name: "Bug"}, lineartest.Label{ID: "l-g", Name: "Bugs area", IsGroup: true}, lineartest.Label{ID: "l-2", Name: "Feature"}),
 		lineartest.Exchange{Op: "Projects", Vars: `{"first":100,"filter":{"accessibleTeams":{"some":{"id":{"eq":"` + web + `"}}}}}`,

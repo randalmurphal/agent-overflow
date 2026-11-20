@@ -256,7 +256,7 @@ func (l *live) checkList(team Team, ids []string) {
 
 func (l *live) checkPoll(team Team, since time.Time, ids []string) {
 	l.step("PollIssues", func(ctx context.Context) error {
-		q := PollQuery{TeamID: team.ID, IncludeArchived: true, From: PollCursor{Since: since}}
+		q := PollQuery{TeamID: team.ID, IncludeArchived: true, From: Restart(since)}
 		found := 0
 		var last time.Time
 		for {
@@ -273,7 +273,7 @@ func (l *live) checkPoll(team Team, since time.Time, ids []string) {
 					found++
 				}
 			}
-			l.t.Logf("poll page: %d issues, next %+v, restarted %t", len(p.Items), p.Next, p.Restarted)
+			l.t.Logf("poll page: %d issues, next %+v", len(p.Items), p.Next)
 			if !p.HasNextPage {
 				break
 			}
@@ -287,25 +287,24 @@ func (l *live) checkPoll(team Team, since time.Time, ids []string) {
 }
 
 // checkCursorAcrossClients measures whether a poll cursor one client
-// received continues the walk in another, as a restarted sync loop does
-// with a stored PollCursor: it reads the walk's end cursor, updates an
-// issue the walk already delivered, and continues from that cursor in a
-// second client. The updated issue moves past the cursor, so the second
-// client must deliver it without restarting.
+// returned continues the walk in another, as a restarted sync loop does
+// with a stored PollCursor: it walks to the end, updates an issue the
+// walk already delivered, and resumes from the walk's last cursor in a
+// second client, which must deliver the update.
 func (l *live) checkCursorAcrossClients(team Team, since time.Time, issue *Issue) {
 	var from PollCursor
 	if !l.step("PollIssues for a cursor", func(ctx context.Context) error {
-		q := PollQuery{TeamID: team.ID, IncludeArchived: true, From: PollCursor{Since: since}}
+		q := PollQuery{TeamID: team.ID, IncludeArchived: true, From: Restart(since)}
 		for {
 			p, err := l.c.PollIssues(ctx, q)
 			if err != nil {
 				return err
 			}
 			if !p.HasNextPage {
-				if p.EndCursor == "" {
-					return errors.New("the last page carries no end cursor")
+				if p.Next.Walk == nil || p.Next.Walk.Start.IsZero() {
+					l.t.Logf("the walk's first answer carried no Date")
 				}
-				from = PollCursor{Since: q.From.Since, After: p.EndCursor, Floor: p.Next.Floor}
+				from = p.Next.Resume()
 				return nil
 			}
 			q.From = p.Next
@@ -331,10 +330,7 @@ func (l *live) checkCursorAcrossClients(team Team, since time.Time, issue *Issue
 		if err != nil {
 			return err
 		}
-		l.t.Logf("continued walk: %d issues, restarted %t", len(p.Items), p.Restarted)
-		if p.Restarted {
-			return errors.New("Linear refused the cursor another client received")
-		}
+		l.t.Logf("continued walk: %d issues", len(p.Items))
 		for _, got := range p.Items {
 			if got.ID == issue.ID && !got.UpdatedAt.Before(updated.UpdatedAt) {
 				return nil
@@ -407,8 +403,15 @@ func (l *live) checkUpdate(team Team, viewer *Viewer, issue *Issue) {
 	}
 	l.step("UpdateIssue", func(ctx context.Context) error {
 		got, err := l.c.UpdateIssue(ctx, issue.ID, in)
-		if err == nil && (got.Priority != PriorityHigh || got.AssigneeID != viewer.User.ID || got.Description != "") {
+		if err == nil && (got.Priority != PriorityHigh || got.AssigneeID != viewer.User.ID) {
 			err = fmt.Errorf("stored %+v", got)
+		}
+		if err != nil {
+			return err
+		}
+		read, err := l.c.IssueSummary(ctx, issue.ID)
+		if err == nil && read.Description != "" {
+			err = fmt.Errorf("stored description %q", read.Description)
 		}
 		return err
 	})

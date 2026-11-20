@@ -74,7 +74,6 @@ func preReads() []preRead {
 	open := lineartest.Cycle{ID: "cycle-1", Number: 1, Name: "Cycle 1", Team: web, StartsAt: at, EndsAt: "2026-11-16T00:00:00.000Z", Active: true}
 	team := lineartest.NewTeam("WEB")
 	start := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
-	statesOp := statesX(web)
 	sprint := func(call func(context.Context, *Provider) tracker.Result) preRead {
 		return preRead{label: "none", call: call}
 	}
@@ -85,15 +84,15 @@ func preReads() []preRead {
 		{"Create", "own request", nil, lineartest.Exchange{Op: "CreateIssue", Vars: `{"input":{"teamId":"` + web + `","title":"x"}}`}, goneAt("issueCreate", "Team"), create(nil)},
 		{"Edit", "issue", nil, summaryX(issueID(1), issue(1, 1)), notFound, edit(description)},
 		{"Edit", "labels", []lineartest.Exchange{summaryX(issueID(1), issue(1, 1))}, labelsX(web), emptyPage, edit(labels)},
-		{"Move", "issue", nil, summaryX(issueID(1), issue(1, 1)), notFound, move},
-		{"Move", "states", []lineartest.Exchange{summaryX(issueID(1), issue(1, 1))}, statesOp, emptyPage, move},
-		{"SetEstimate", "board check", nil, onBoardX(ids(1)), emptyPage, estimate},
-		{"SetEstimate", "team", []lineartest.Exchange{onBoardX(ids(1), issue(1, 1))}, teamX(team), goneAt("team", "Team"), estimate},
+		{"Move", "issue and states", nil, issueStatesX(issueID(1), "state-todo"), notFound, move},
+		{"SetEstimate", "issue and team", nil, issueTeamX(1, team, false), notFound, estimate},
 		{"Rank", "board check", nil, onBoardX(ids(1, 8)), emptyPage, rank},
 		{"Rank", "manual order", []lineartest.Exchange{onBoardX(ids(1, 8, 9), issue(1, 0), issue(8, 1), issue(9, math.Nextafter(1, 2)))},
 			manualX("", false, ""), emptyPage, crowded},
-		{"MoveToSprint", "cycle", nil, cycleX(open), goneAt("cycle", "Cycle"), toSprint},
-		{"MoveToSprint", "board check", []lineartest.Exchange{cycleX(open)}, onBoardX(ids(1)), emptyPage, toSprint},
+		{"MoveToSprint", "cycle and board", nil, cyclePositionsX(open, ids(1)), goneAt("cycle", "Cycle"), toSprint},
+		{"MoveToSprint", "board, no cycle", nil, onBoardX(ids(1)), emptyPage, func(ctx context.Context, p *Provider) tracker.Result {
+			return p.MoveToSprint(ctx, tracker.SprintMoveInput{Board: web, Issues: []tracker.IssueID{one}})
+		}},
 		{"AddComment", "own request", nil, lineartest.Exchange{Op: "CreateComment", Vars: `{"input":{"issueId":"` + issueID(1) + `","body":"x"}}`},
 			goneAt("commentCreate", "Issue"), func(ctx context.Context, p *Provider) tracker.Result {
 				return p.AddComment(ctx, tracker.CommentInput{Issue: one, Markdown: "x"})

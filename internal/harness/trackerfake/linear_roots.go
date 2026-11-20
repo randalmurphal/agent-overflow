@@ -92,8 +92,19 @@ var queryLists = fieldTable[queryRoot]{
 		return listOf(q.w.Projects, func(p *LinearProject) gqlObject { return projectObj{q.w, p} })
 	},
 	"issues": func(q queryRoot) any {
-		return listOf(q.w.Issues, func(is *LinearIssue) gqlObject { return issueObj{w: q.w, is: is} })
+		var out []gqlObject
+		for i := range q.w.Issues {
+			if is := &q.w.Issues[i]; q.w.shown(is) {
+				out = append(out, issueObj{w: q.w, is: is})
+			}
+		}
+		return out
 	},
+}
+
+// shown reports whether lists show is now (LinearIssue.ShownAt).
+func (w *linearWorkspace) shown(is *LinearIssue) bool {
+	return is.ShownAt.IsZero() || !is.ShownAt.After(w.clock)
 }
 
 // byID is a root read of one record by its id argument: the record's
@@ -159,7 +170,7 @@ func (q queryRoot) search(_ *gqlRun, args map[string]any) (any, *gqlErr) {
 	for i := range w.Issues {
 		is := &w.Issues[i]
 		text := strings.ToLower(w.identifier(is) + " " + is.Title + " " + is.Description)
-		if strings.Contains(text, t) && (team == nil || team == is.Team) {
+		if strings.Contains(text, t) && (team == nil || team == is.Team) && w.shown(is) {
 			hits = append(hits, is)
 		}
 	}
@@ -190,6 +201,7 @@ func mutationOf(input string, payload payloadFields, run func(mutationRoot, *gql
 var mutations = map[string]rootField[mutationRoot]{
 	"issueCreate":                  mutationOf("IssueCreateInput", "issue", mutationRoot.createIssue),
 	"issueUpdate":                  mutationOf("IssueUpdateInput", "issue", mutationRoot.updateIssue, "id"),
+	"issueBatchUpdate":             mutationOf("IssueUpdateInput", "issues", mutationRoot.batchUpdate, "ids"),
 	"issueArchive":                 mutationOf("", "entity", mutationRoot.archiveIssue, "id"),
 	"issueUnarchive":               mutationOf("", "entity", mutationRoot.unarchiveIssue, "id"),
 	"issueDelete":                  mutationOf("", "", mutationRoot.deleteIssue, "id", "permanentlyDelete"),
@@ -202,22 +214,16 @@ var mutations = map[string]rootField[mutationRoot]{
 	"cycleStartUpcomingCycleToday": mutationOf("", "cycle", mutationRoot.startCycle, "id"),
 }
 
-// argField runs a mutation in its own transaction: a mutation Linear
-// refuses with an error changes nothing, while the document's other
-// mutations stand, as each root mutation field resolves on its own.
+// argField runs a mutation. One that fails with an error fails its whole
+// document: the executor puts back what every mutation of it changed
+// (Engine.execute).
 func (m mutationRoot) argField(r *gqlRun, f *ast.Field, args map[string]any) (any, *gqlErr, bool) {
 	spec, ok := mutations[f.Name]
 	if !ok {
 		return nil, nil, false
 	}
-	undo, err := r.e.saveLinear(m.w)
-	if err != nil {
-		r.fail("%v", err)
-		return nil, nil, true
-	}
 	entity, gerr := spec.run(m, r, args)
 	if gerr != nil {
-		undo()
 		return nil, gerr, true
 	}
 	return payloadObj{typ: f.Definition.Type.Name(), field: spec.payload, entity: entity}, nil, true

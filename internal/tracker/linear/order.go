@@ -238,43 +238,18 @@ type RenumberInput struct {
 	After    *float64
 }
 
-// RenumberIssues writes Spread values to the run, one issue update each,
-// in order. IssueIDs are issue IDs (Issue.ID, a lowercase UUID), never
-// identifiers such as WEB-1, so that each issue has one spelling; any
-// other form, or an ID listed twice, is refused before any request. It
-// returns the issues as stored; on failure they are the ones updated
-// before it, and the failed update's own outcome is the error's
-// (WriteNotApplied). Linear has no update that sets distinct values on
-// several issues at once.
-func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue, error) {
-	seen := make(map[string]bool, len(in.IssueIDs))
-	for _, id := range in.IssueIDs {
-		switch {
-		case !IsIssueID(id):
-			return nil, invalid("RenumberIssues", "IssueIDs holds %q, not an issue ID (a lowercase UUID)", id)
-		case seen[id]:
-			return nil, invalid("RenumberIssues", "IssueIDs names %s twice", id)
+// of is the issue's value of f; f is one set accepts.
+func (f OrderField) of(is Issue) float64 {
+	switch f {
+	case OrderPrioritySort:
+		return is.PrioritySortOrder
+	case OrderSubIssueSort:
+		if is.SubIssueSortOrder == nil {
+			return math.NaN()
 		}
-		seen[id] = true
+		return *is.SubIssueSortOrder
 	}
-	if err := in.Field.set(&issueInput{}, 0); err != nil {
-		return nil, invalid("RenumberIssues", "%w", err)
-	}
-	values, err := Spread(in.Before, in.After, len(in.IssueIDs))
-	if err != nil {
-		return nil, invalid("RenumberIssues", "%w", err)
-	}
-	out := make([]Issue, 0, len(in.IssueIDs))
-	for i, id := range in.IssueIDs {
-		var w issueInput
-		_ = in.Field.set(&w, values[i]) // checked above
-		issue, err := c.updateIssue(ctx, id, w)
-		if err != nil {
-			return out, fmt.Errorf("linear RenumberIssues: %d of %d issues renumbered: %w", i, len(in.IssueIDs), err)
-		}
-		out = append(out, *issue)
-	}
-	return out, nil
+	return is.SortOrder
 }
 
 // IsIssueID reports a UUID in Linear's spelling of its IDs: 36

@@ -133,6 +133,30 @@ var teamFields = fieldTable[teamObj]{
 		}
 		return out
 	},
+	// states are the team's workflow states, as workflowStates filtered
+	// by the team lists them (documented: "The states that define the
+	// workflow associated with the team").
+	"states": func(o teamObj) any {
+		var out []gqlObject
+		for i := range o.w.States {
+			if s := &o.w.States[i]; s.Team == o.t.ID {
+				out = append(out, stateObj{o.w, s})
+			}
+		}
+		return out
+	},
+	// labels are the labels the team owns, not the workspace's
+	// (unverified: documented only as "Labels associated with the
+	// team").
+	"labels": func(o teamObj) any {
+		var out []gqlObject
+		for i := range o.w.Labels {
+			if l := &o.w.Labels[i]; l.Team == o.t.ID {
+				out = append(out, labelObj{o.w, l})
+			}
+		}
+		return out
+	},
 }
 
 type stateObj struct {

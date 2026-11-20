@@ -3,8 +3,10 @@ package linearprovider
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker"
@@ -116,7 +118,7 @@ func teamX(t lineartest.Team) lineartest.Exchange {
 // onBoardX expects the read of ids within team web, answered with
 // issues.
 func onBoardX(ids []string, issues ...lineartest.Issue) lineartest.Exchange {
-	return issuesX(byIDVars(ids, []string{web}, false), issues...)
+	return positionsX(byIDVars(ids, []string{web}, false), false, "", issues...)
 }
 
 func membersX(team string, users ...lineartest.User) lineartest.Exchange {
@@ -225,6 +227,25 @@ func expectResult(t *testing.T, r tracker.Result, want string) {
 }
 
 func f64(v float64) *float64 { return &v }
+
+// issueStatesX expects the read of issue id, in state, with team web's
+// states.
+func issueStatesX(id, state string, states ...lineartest.State) lineartest.Exchange {
+	var nodes []string
+	for _, s := range states {
+		nodes = append(nodes, s.JSON())
+	}
+	return lineartest.Exchange{Op: "IssueStates", Vars: `{"id":"` + id + `"}`, Body: lineartest.Data(`"issue":{"id":"` + id + `","state":{"id":"` + state + `"},` +
+		`"team":{"id":"` + web + `","page":` + lineartest.ConnectionJSON(nodes, false, "") + `}}`)}
+}
+
+// dateAt is an answer header naming t as Linear's clock; noDate is one
+// that names none.
+func dateAt(t time.Time) func() http.Header {
+	return func() http.Header { return http.Header{"Date": {t.UTC().Format(http.TimeFormat)}} }
+}
+
+func noDate() http.Header { return http.Header{"Date": nil} }
 
 // notFound is Linear's answer to a read of an issue that does not exist.
 const notFound = `{"data":null,"errors":[{"message":"Entity not found: Issue","path":["issue"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`

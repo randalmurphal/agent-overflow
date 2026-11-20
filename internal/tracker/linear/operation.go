@@ -48,6 +48,41 @@ func register(op operation) operation {
 	return op
 }
 
+// family is a mutation document made for n issues at once: the same
+// operation name, with one root field per issue aliased i0 to i(n-1),
+// each with variables of its own. Its text depends on n alone, never on
+// a caller's values, and every document for n from 1 to max is made once
+// when the package initializes, so the schema test checks each one
+// (families).
+type family struct {
+	name string
+	// docs holds the document for n issues at n-1.
+	docs []operation
+}
+
+// families holds every family by name; its largest document is also in
+// registered, so the checks by operation name cover it.
+var families = map[string]family{}
+
+// newMutationFamily makes and registers a family of mutations.
+func newMutationFamily(name string, max int, text func(n int) string) family {
+	f := family{name: name, docs: make([]operation, max)}
+	for n := 1; n <= max; n++ {
+		f.docs[n-1] = operation{name: name, text: text(n), mutation: true}
+	}
+	register(f.docs[max-1])
+	families[name] = f
+	return f
+}
+
+// op is the family's document for n issues, 1 to its max.
+func (f family) op(n int) operation {
+	if n < 1 || n > len(f.docs) {
+		panic(fmt.Sprintf("linear: %s for %d issues, outside 1 to %d", f.name, n, len(f.docs)))
+	}
+	return f.docs[n-1]
+}
+
 // withMaxBody is op with a larger answer bound.
 func (op operation) withMaxBody(n int64) operation {
 	op.maxBody = n

@@ -133,32 +133,43 @@ type LinearProject struct {
 // Priority is 0 (none) to 4 (low). History is its change history, oldest
 // first; writes add to it as Linear does (see AGENTS.md).
 type LinearIssue struct {
-	ID                string          `json:"id"`
-	Team              string          `json:"team"`
-	Number            float64         `json:"number,omitempty"`
-	Title             string          `json:"title"`
-	Description       string          `json:"description,omitempty"`
-	Priority          float64         `json:"priority,omitempty"`
-	Estimate          *float64        `json:"estimate,omitempty"`
-	SortOrder         float64         `json:"sortOrder,omitempty"`
-	PrioritySortOrder float64         `json:"prioritySortOrder,omitempty"`
-	SubIssueSortOrder *float64        `json:"subIssueSortOrder,omitempty"`
-	State             string          `json:"state,omitempty"`
-	Assignee          string          `json:"assignee,omitempty"`
-	Creator           string          `json:"creator,omitempty"`
-	Cycle             string          `json:"cycle,omitempty"`
-	Project           string          `json:"project,omitempty"`
-	Parent            string          `json:"parent,omitempty"`
-	Labels            []string        `json:"labels,omitempty"`
-	DueDate           string          `json:"dueDate,omitempty"`
-	CreatedAt         time.Time       `json:"createdAt,omitzero"`
-	UpdatedAt         time.Time       `json:"updatedAt,omitzero"`
-	StartedAt         time.Time       `json:"startedAt,omitzero"`
-	CompletedAt       time.Time       `json:"completedAt,omitzero"`
-	CanceledAt        time.Time       `json:"canceledAt,omitzero"`
-	ArchivedAt        time.Time       `json:"archivedAt,omitzero"`
-	Trashed           bool            `json:"trashed,omitempty"`
-	History           []LinearHistory `json:"history,omitempty"`
+	ID                string    `json:"id"`
+	Team              string    `json:"team"`
+	Number            float64   `json:"number,omitempty"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description,omitempty"`
+	Priority          float64   `json:"priority,omitempty"`
+	Estimate          *float64  `json:"estimate,omitempty"`
+	SortOrder         float64   `json:"sortOrder,omitempty"`
+	PrioritySortOrder float64   `json:"prioritySortOrder,omitempty"`
+	SubIssueSortOrder *float64  `json:"subIssueSortOrder,omitempty"`
+	State             string    `json:"state,omitempty"`
+	Assignee          string    `json:"assignee,omitempty"`
+	Creator           string    `json:"creator,omitempty"`
+	Cycle             string    `json:"cycle,omitempty"`
+	Project           string    `json:"project,omitempty"`
+	Parent            string    `json:"parent,omitempty"`
+	Labels            []string  `json:"labels,omitempty"`
+	DueDate           string    `json:"dueDate,omitempty"`
+	CreatedAt         time.Time `json:"createdAt,omitzero"`
+	UpdatedAt         time.Time `json:"updatedAt,omitzero"`
+	StartedAt         time.Time `json:"startedAt,omitzero"`
+	CompletedAt       time.Time `json:"completedAt,omitzero"`
+	CanceledAt        time.Time `json:"canceledAt,omitzero"`
+	ArchivedAt        time.Time `json:"archivedAt,omitzero"`
+	Trashed           bool      `json:"trashed,omitempty"`
+	// FormerKeys are the identifiers the issue had in the teams it moved
+	// from, oldest first; a move adds one. issue(id:) still answers one
+	// and an identifier filter does not match it (unverified: inferred
+	// from Linear's app, which redirects an old identifier).
+	FormerKeys []string        `json:"formerKeys,omitempty"`
+	History    []LinearHistory `json:"history,omitempty"`
+	// ShownAt, when set, is when lists (issues, searchIssues) first show
+	// the issue: before it they leave it out, as a search index that
+	// lists an update late would. A read by ID shows it at once. This
+	// models the lag tracker.DeltaOverlap allows for; how long Linear's
+	// lists lag, if at all, is unverified.
+	ShownAt time.Time `json:"shownAt,omitzero"`
 }
 
 // LinearHistory is one entry of an issue's history: the actor and each

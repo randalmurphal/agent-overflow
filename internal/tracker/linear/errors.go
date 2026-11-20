@@ -50,11 +50,13 @@ func (e GraphQLError) String() string {
 // key of the resource a call asked for, does not exist or is not visible
 // to the key. Linear has no code of its own for it: it answers
 // INPUT_ERROR with a message starting "Entity not found" at that path
-// (measured; docs/references/tracker-api-measurements.md). The same
+// (measured for an issue; docs/references/tracker-api-measurements.md),
+// or "Could not find referenced", the fake's message for a missing
+// comment, relation, cycle or team (unverified against Linear). The same
 // message deeper in the answer is a related entity, not the resource.
 func (e GraphQLError) notFound(root string) bool {
 	return root != "" && e.Code == CodeInput && len(e.Path) == 1 && e.Path[0] == root &&
-		strings.HasPrefix(e.rawMessage, "Entity not found")
+		(strings.HasPrefix(e.rawMessage, "Entity not found") || strings.HasPrefix(e.rawMessage, "Could not find referenced"))
 }
 
 // wireError is a GraphQL error as sent.
@@ -156,10 +158,54 @@ func (e *Error) Is(target error) bool {
 	return target == trackerapi.ErrNotFound && e.notFound
 }
 
+// UnchangedError is an issue's part of a write of several that failed,
+// which the read made right after the failure found without what was
+// written, or did not list: Linear did not apply it. Write is the failed
+// request's error.
+type UnchangedError struct {
+	IssueID string
+	// Listed is false when the read did not list the issue at all.
+	Listed bool
+	Write  error
+}
+
+func (e *UnchangedError) Error() string {
+	state := "does not hold the value written"
+	if !e.Listed {
+		state = "is not listed"
+	}
+	return fmt.Sprintf("linear: issue %s %s after the write failed: %v", e.IssueID, state, e.Write)
+}
+
+func (e *UnchangedError) Unwrap() error { return e.Write }
+
+// OutcomeUnknownError is an issue's part of a write of several that was
+// sent and failed, and whose read meant to settle it failed too: nothing
+// proves whether Linear applied it, whatever Write and Read say of their
+// own requests, so WriteNotApplied is false for it.
+type OutcomeUnknownError struct {
+	IssueID     string
+	Write, Read error
+}
+
+func (e *OutcomeUnknownError) Error() string {
+	return fmt.Sprintf("linear: the outcome of the write of issue %s is unknown: the write failed (%v) and the read after it failed (%v)",
+		e.IssueID, e.Write, e.Read)
+}
+
+func (e *OutcomeUnknownError) Unwrap() []error { return []error{e.Write, e.Read} }
+
 // WriteNotApplied reports whether err, the error of one write, proves
-// Linear did not apply it: trackerapi.WriteNotApplied, or an *Error with
-// Refused set. Any other failure leaves the outcome unknown.
+// Linear did not apply it: trackerapi.WriteNotApplied, an *Error with
+// Refused set, or an *UnchangedError. An *OutcomeUnknownError and any
+// other failure leave the outcome unknown.
 func WriteNotApplied(err error) bool {
+	if _, ok := errors.AsType[*OutcomeUnknownError](err); ok {
+		return false
+	}
+	if _, ok := errors.AsType[*UnchangedError](err); ok {
+		return true
+	}
 	if e, ok := errors.AsType[*Error](err); ok && e.Refused {
 		return true
 	}

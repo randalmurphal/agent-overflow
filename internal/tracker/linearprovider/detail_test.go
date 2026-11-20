@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 )
 
 func historiesVars(ids ...string) string {
-	return js(map[string]any{"filter": map[string]any{"and": []any{map[string]any{"id": map[string]any{"in": ids}}}}, "first": 10, "entries": 50})
+	return js(map[string]any{"filter": map[string]any{"and": []any{map[string]any{"id": map[string]any{"in": ids}}}}, "first": len(ids), "entries": 250})
 }
 
 // History maps state, cycle, assignee and estimate entries oldest first,
@@ -32,15 +31,13 @@ func TestHistory(t *testing.T) {
 		lineartest.HistoryEntry{ID: "h2", CreatedAt: "2026-11-03T09:00:00.000Z", Actor: "user-1", ToEstimate: f64(2), FromCycle: "c1", ToCycle: "c2"}.JSON(),
 		lineartest.HistoryEntry{ID: "h1", CreatedAt: "2026-11-02T09:00:00.000Z", Actor: "user-1", FromState: "s-todo", ToState: "s-doing", ToAssignee: "user-1"}.JSON(),
 	}
-	// The clock moves an hour once the read is answered, so a CompleteTo
-	// taken after the read would show it.
-	began := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
-	var clock atomic.Int64
-	clock.Store(began.UnixNano())
+	// Linear's clock, the answer's Date, is half an hour after this
+	// computer's.
+	local := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	served := local.Add(30 * time.Minute)
 	p, _ := newProvider(t, lineartest.Exchange{Op: "IssueHistories", Vars: historiesVars(issueID(1), issueID(2)),
-		Body:       page(lineartest.IssueChangesJSON(issueID(1), web, created, entries, false, "")),
-		BeforeBody: func() { clock.Add(int64(time.Hour)) }})
-	p.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+		Body: page(lineartest.IssueChangesJSON(issueID(1), web, created, entries, false, "")), HeaderFn: dateAt(served)})
+	p.now = func() time.Time { return local }
 	h, err := p.History(context.Background(), tracker.HistoryQuery{
 		Issues: []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2)), "WEB-3"},
 		Boards: []tracker.BoardID{web},
@@ -53,11 +50,11 @@ func TestHistory(t *testing.T) {
 	}
 	ih := h.Issues[0]
 	// Complete from the measured fold's upper bound after creation, final
-	// through the settle margin before the read began.
+	// through the settle margin before Linear answered.
 	if want := time.Date(2026, 11, 1, 9, 3, 0, 0, time.UTC); !ih.CompleteFrom.Equal(want) {
 		t.Errorf("complete from %v, want %v", ih.CompleteFrom, want)
 	}
-	if want := began.Add(-2 * time.Minute); !ih.CompleteTo.Equal(want) {
+	if want := served.Add(-2 * time.Minute); !ih.CompleteTo.Equal(want) {
 		t.Errorf("complete to %v, want %v", ih.CompleteTo, want)
 	}
 	if len(ih.Status) != 1 || ih.Status[0].From != "s-todo" || ih.Status[0].To != "s-doing" || ih.Status[0].Author != "user-1" {
@@ -103,32 +100,23 @@ func TestDetail(t *testing.T) {
 	self := lineartest.IssueRef{ID: issueID(1), Identifier: "WEB-1", Title: "T", State: "s-todo"}
 	other := lineartest.IssueRef{ID: issueID(2), Identifier: "WEB-2", Title: "Other", State: "s-done"}
 	third := lineartest.IssueRef{ID: issueID(3), Identifier: "WEB-3", Title: "Third", State: "s-todo"}
+	history := detailHistory()
 	detail := lineartest.DetailJSON(is, lineartest.Detail{
 		ProjectName: "Launch",
 		Comments:    []string{lineartest.NewComment().JSON()}, MoreComments: true, CommentCursor: "cc1",
 		Relations:        []string{lineartest.RelationJSON("rel-1", "blocks", self, other)},
 		RelationCursor:   "r1",
 		InverseRelations: []string{lineartest.RelationJSON("rel-2", "similar", other, self)},
+		History:          history[:2], HistoryCursor: "h-c1",
+		States: []string{lineartest.State{ID: "s-todo", Name: "Todo", Type: "unstarted", Team: web}.JSON(),
+			lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}.JSON()},
 	})
-	archived := true
-	history := []string{
-		lineartest.HistoryEntry{ID: "h3", CreatedAt: "2026-11-04T09:00:00.000Z", Archived: &archived, FromPriority: f64(0), ToPriority: f64(2),
-			FromTeam: app, ToTeam: web}.JSON(),
-		lineartest.HistoryEntry{ID: "h2", CreatedAt: "2026-11-03T09:00:00.000Z", Actor: "user-1", FromParent: issueID(2), AddedLabelIDs: []string{"label-bug"},
-			RemovedLabelIDs: []string{"label-gone"}, FromTitle: "Old", ToTitle: "New", FromProject: "project-0", ToProject: "project-1"}.JSON(),
-		lineartest.HistoryEntry{ID: "h1", CreatedAt: "2026-11-02T09:00:00.000Z", Actor: "user-1", FromState: "s-done", ToState: "s-todo",
-			ToAssignee: "user-1", ToCycle: "c1", FromProject: "", ToProject: "project-1", ToEstimate: f64(3)}.JSON(),
-	}
 	parent := issue(2, 2)
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + detail + `}}`},
 		lineartest.Exchange{Op: "IssueRelations", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"r1"}`,
 			Body: nodePage(lineartest.RelationJSON("rel-3", "related", self, third))},
-		statesX(web, lineartest.State{ID: "s-todo", Name: "Todo", Type: "unstarted", Team: web},
-			lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}),
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":100}`,
-			Body: `{"data":{` + lineartest.NodePageJSON(history[:2], true, "h-c1") + `}}`},
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"h-c1"}`, Body: nodePage(history[2])},
+		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":250,"after":"h-c1"}`, Body: nodePage(history[2])},
 		labelsByIDX([]string{"label-gone"}),
 		byIDX("UsersByID", []string{"user-1"}, lineartest.User{ID: "user-1", Name: "User 1"}.JSON()),
 		byIDX("CyclesByID", []string{"c1"}, lineartest.Cycle{ID: "c1", Number: 7, Team: web, StartsAt: at, EndsAt: at, Active: true}.JSON()),
@@ -140,6 +128,25 @@ func TestDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkDetail(t, d)
+}
+
+// detailHistory is TestDetail's history, newest first.
+func detailHistory() []string {
+	archived := true
+	return []string{
+		lineartest.HistoryEntry{ID: "h3", CreatedAt: "2026-11-04T09:00:00.000Z", Archived: &archived, FromPriority: f64(0), ToPriority: f64(2),
+			FromTeam: app, ToTeam: web}.JSON(),
+		lineartest.HistoryEntry{ID: "h2", CreatedAt: "2026-11-03T09:00:00.000Z", Actor: "user-1", FromParent: issueID(2), AddedLabelIDs: []string{"label-bug"},
+			RemovedLabelIDs: []string{"label-gone"}, FromTitle: "Old", ToTitle: "New", FromProject: "project-0", ToProject: "project-1"}.JSON(),
+		lineartest.HistoryEntry{ID: "h1", CreatedAt: "2026-11-02T09:00:00.000Z", Actor: "user-1", FromState: "s-done", ToState: "s-todo",
+			ToAssignee: "user-1", ToCycle: "c1", FromProject: "", ToProject: "project-1", ToEstimate: f64(3)}.JSON(),
+	}
+}
+
+// checkDetail checks what TestDetail's script makes of its issue.
+func checkDetail(t *testing.T, d tracker.Detail) {
+	t.Helper()
 	if d.Card.Key != "WEB-1" || d.Card.Labels[0].Name != "Bug" || d.Description != "Steps" || d.URL == "" ||
 		!d.HistoryFrom.Equal(time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC).Add(creationFold)) {
 		t.Errorf("detail %+v", d)
@@ -173,17 +180,38 @@ func TestDetail(t *testing.T) {
 	}
 }
 
-// A detail with no labels, project or named changes reads no catalog.
+// A detail with no labels, project or named changes, its team's states
+// and history on their first page, is one request, the first of a
+// provider or any later one alike.
 func TestDetailReadsOnlyWhatItNames(t *testing.T) {
 	t.Parallel()
 	is := issue(1, 1)
+	detail := lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + lineartest.DetailJSON(is, lineartest.Detail{
+		States: []string{lineartest.State{ID: "state-todo", Name: "Todo", Type: "unstarted", Team: web}.JSON()},
+	}) + `}}`}
+	p, _ := newProvider(t, detail, detail)
+	for range 2 {
+		d, err := p.Detail(context.Background(), tracker.IssueID(issueID(1)))
+		if err != nil || d.Moves != nil || d.Comments.Next != "" || !d.Fields[1].Value.Empty() || len(d.Statuses) != 1 {
+			t.Errorf("detail %+v %v", d, err)
+		}
+	}
+}
+
+// A team with more states than the detail's nested page holds is read
+// with WorkflowStates.
+func TestDetailManyStates(t *testing.T) {
+	t.Parallel()
+	todo := lineartest.State{ID: "state-todo", Name: "Todo", Type: "unstarted", Team: web}
+	done := lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}
 	p, _ := newProvider(t,
-		lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + lineartest.DetailJSON(is, lineartest.Detail{}) + `}}`},
-		statesX(web, lineartest.State{ID: "state-todo", Name: "Todo", Type: "unstarted", Team: web}),
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":100}`, Body: nodePage()},
+		lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + lineartest.DetailJSON(issue(1, 1), lineartest.Detail{
+			States: []string{todo.JSON()}, MoreStates: true,
+		}) + `}}`},
+		statesX(web, todo, done),
 	)
 	d, err := p.Detail(context.Background(), tracker.IssueID(issueID(1)))
-	if err != nil || d.Moves != nil || d.Comments.Next != "" || !d.Fields[1].Value.Empty() {
+	if err != nil || len(d.Statuses) != 2 || len(d.Moves) != 1 {
 		t.Errorf("detail %+v %v", d, err)
 	}
 }
@@ -194,8 +222,7 @@ func TestCommentsAndMoves(t *testing.T) {
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "IssueComments", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"cc1"}`,
 			Body: `{"data":{` + lineartest.NodePageJSON([]string{c.JSON()}, true, "cc2") + `}}`},
-		summaryX(issueID(1), issue(1, 1)),
-		statesX(web, lineartest.State{ID: "state-todo", Name: "Todo", Type: "unstarted", Team: web},
+		issueStatesX(issueID(1), "state-todo", lineartest.State{ID: "state-todo", Name: "Todo", Type: "unstarted", Team: web},
 			lineartest.State{ID: "s-doing", Name: "Doing", Type: "started", Team: web},
 			lineartest.State{ID: "s-backlog", Name: "Backlog", Type: "backlog", Team: web}),
 	)

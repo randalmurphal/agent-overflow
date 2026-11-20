@@ -6,11 +6,12 @@ import (
 )
 
 // Page sizes of the catalog reads, each well under Linear's 10,000-point
-// cap per query: a team costs about 6 points, a state 2, a user 2, a
-// label 3, a project 4 and a cycle 4 (its histories are scalar lists).
-// Linear charges a catalog connection by its page size, not by what it
-// returns: a cycles read at 50 that returned nothing cost 441 points
-// (measured). A KeptSince read selects the active cycle, the upcoming
+// cap per query: a node costs a point for each object it selects, so a
+// team about 4, a state 2, a user 1, a label 3 and a cycle 2 (fitted to
+// labels by ID and teams by key, measured). Linear charges a catalog
+// connection by its page size, not by what it returns: a cycles read at
+// 50 that returned nothing cost 441 points, when it also selected the
+// cycles' scope histories (measured). A KeptSince read selects the active cycle, the upcoming
 // ones and those inside the window, so it takes a smaller page; a longer
 // list pages on.
 const (

@@ -12,10 +12,10 @@ func TestListIssuesVariables(t *testing.T) {
 	t.Parallel()
 	page := lineartest.Data(lineartest.PageJSON([]string{lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)}, true, "c1"))
 	f := newFake(t,
-		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["team-web"]}}},{"state":{"id":{"in":["state-todo"]}}}]}}`, Body: page},
-		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"after":"c1","sort":[{"priority":{"order":"Ascending"}}],"includeArchived":true}`, Body: page},
-		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"sort":[{"updatedAt":{"order":"Descending"}}]}`, Body: page},
-		lineartest.Exchange{Op: "Issues", Vars: `{"first":100,"sort":[{"createdAt":{"order":"Descending"}}]}`, Body: page},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["team-web"]}}},{"state":{"id":{"in":["state-todo"]}}}]}}`, Body: page},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"after":"c1","sort":[{"priority":{"order":"Ascending"}}],"includeArchived":true}`, Body: page},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"sort":[{"createdAt":{"order":"Descending"}}]}`, Body: page},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"sort":[{"createdAt":{"order":"Ascending"}}],"filter":{"and":[{"or":[{"and":[{"state":{"type":{"in":["started"]}}}]},{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}]}]}}`, Body: page},
 	)
 	c := f.client(t)
 	ctx := context.Background()
@@ -30,11 +30,19 @@ func TestListIssuesVariables(t *testing.T) {
 		after string
 	}{
 		{IssueQuery{Order: OrderPriority, IncludeArchived: true}, "c1"},
-		{IssueQuery{Order: OrderUpdatedNewest}, ""},
 		{IssueQuery{Order: OrderCreatedNewest}, ""},
+		{IssueQuery{Order: OrderCreatedOldest, Filter: IssueFilter{AnyOf: []IssueFilter{
+			{StateTypes: []StateType{StateStarted}}, {UpdatedSince: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)},
+		}}}, ""},
 	} {
 		if _, err := c.ListIssues(ctx, q.q, q.after); err != nil {
 			t.Fatal(err)
+		}
+	}
+	// No page in an order an update changes follows a page cursor.
+	for _, o := range []IssueOrder{orderUpdatedOldest, orderUpdatedNewest} {
+		if _, err := issueVars(IssueQuery{Order: o}, "c1"); err == nil {
+			t.Errorf("order %d paged by cursor", o)
 		}
 	}
 	if _, err := c.ListIssues(ctx, IssueQuery{Order: 99}, ""); err == nil {
@@ -50,7 +58,7 @@ func TestListIssuesVariables(t *testing.T) {
 func TestPageInfoChecked(t *testing.T) {
 	t.Parallel()
 	node := lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)
-	vars := `{"first":100,"sort":[{"manual":{"order":"Ascending"}}]}`
+	vars := `{"first":250,"sort":[{"manual":{"order":"Ascending"}}]}`
 	for name, info := range map[string]string{
 		"missing hasNextPage": `{"endCursor":"c1"}`,
 		"null hasNextPage":    `{"hasNextPage":null,"endCursor":"c1"}`,
@@ -84,8 +92,8 @@ func TestIssueDetail(t *testing.T) {
 	f := newFake(t,
 		lineartest.Exchange{Op: "Issue", Vars: `{"id":"WEB-1"}`, Body: `{"data":{"issue":` + detail + `}}`},
 		lineartest.Exchange{Op: "IssueComments", Vars: `{"id":"issue-1","first":100,"after":"cc1"}`, Body: `{"data":{"node":{` + lineartest.PageJSON([]string{commentJSON}, false, "cc2") + `}}}`},
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"issue-1","first":100}`, Body: `{"data":{"node":{` + lineartest.PageJSON([]string{history}, false, "") + `}}}`},
-		lineartest.Exchange{Op: "IssueStateSpans", Vars: `{"id":"issue-1","first":100}`, Body: `{"data":{"node":{` + lineartest.PageJSON([]string{span}, false, "") + `}}}`},
+		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"issue-1","first":250}`, Body: `{"data":{"node":{` + lineartest.PageJSON([]string{history}, false, "") + `}}}`},
+		lineartest.Exchange{Op: "IssueStateSpans", Vars: `{"id":"issue-1","first":250}`, Body: `{"data":{"node":{` + lineartest.PageJSON([]string{span}, false, "") + `}}}`},
 	)
 	c := f.client(t)
 	ctx := context.Background()

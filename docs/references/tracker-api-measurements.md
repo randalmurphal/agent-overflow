@@ -233,6 +233,23 @@ Other:
 - Measured the same day. A 1.98 MB search answer with descriptions and
   comments (259 KB compressed) held no `\u` escape: `<`, `>` and `&` are
   sent as themselves and text outside ASCII as UTF-8.
+- Measured the same day, on who an answer was made for. Every answer to
+  a request with a valid token carried `X-AAccountId`, equal to
+  `myself.accountId`: a search, a board configuration, a board issue list
+  and a 404 for an issue that does not exist. No answer to a request with
+  no credential carried it: a search answered 200 with no issues and no
+  login-reason header, an issue read 404, `myself` and a board issue list
+  401. So an empty 200 or a 404 without the header was answered to nobody,
+  and one with it was answered to that account. Answers to a wrong or
+  revoked token were not measured.
+- Measured the same day. A sprint ID that names nothing in JQL answers 400
+  on the board issue list and 200 with no issues on `search/jql`. 500 IDs
+  in one `id in (...)` clause (3.3 KB) returned all 500 on both. Of 100
+  issues in sprints, the 3 whose newest change was a sprint change alone
+  had `updated` within two seconds of it, so a sprint change moves
+  `updated`. A board configuration's `location.id` is a string. An
+  embedded changelog with fewer than 100 entries reports `maxResults`
+  equal to the number embedded (20 of 20).
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
@@ -374,7 +391,20 @@ Source for schema facts: the
   issues gave them three distinct `updatedAt` values. A filter takes
   `updatedAt: {gte: ...}` together with `id: {nin: [...]}` under an
   oldest-update-first sort and leaves the named issues out (48 issues, 46
-  with two named).
+  with two named), and takes that floor with
+  `or: [{updatedAt: {gt: ...}}, {id: {nin: [...]}}]` beside it. Under
+  `sort: [{updatedAt: {order: Descending}}]` the mirrored filter,
+  `updatedAt: {lte: ...}` with
+  `or: [{updatedAt: {lt: ...}}, {id: {nin: [...]}}]`, continued a walk of
+  six issues exactly: after two were delivered, the next page was the
+  other four in order.
+- Measured the same day with throwaway issues. A walk ordered by creation
+  pages by cursor safely: with six open issues read two at a time, the
+  continuation was right after the cursor's issue was completed (leaving
+  the filter), after the next cursor's issue was trashed, and after an
+  earlier issue left the filter. In a document of several aliased
+  `issue(id:)` fields that name nothing, the answer reports only the first
+  as an error, so the missing ones cannot be told apart in one request.
 
 ## Tempo
 

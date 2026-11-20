@@ -96,6 +96,7 @@ var issueMembers = []issueMember{
 			return notFound("Team")
 		}
 		if t.ID != is.Team {
+			is.FormerKeys = append(is.FormerKeys, r.w.identifier(is))
 			is.Team, is.Number, is.State = t.ID, r.w.nextNumber(t.ID), t.DefaultState
 		}
 		return nil
@@ -362,6 +363,60 @@ func (m mutationRoot) updateIssue(r *gqlRun, args map[string]any) (any, *gqlErr)
 	}
 	w.record(r.e, &before, is, w.Viewer, r.now)
 	return issueObj{w: w, is: is}, nil
+}
+
+// linearMaxBatch is the most issues issueBatchUpdate takes (measured: 51
+// IDs answer INVALID_INPUT).
+const linearMaxBatch = 50
+
+// batchUpdate applies one IssueUpdateInput to every issue ids names and
+// answers with them (measured). A missing ID fails the whole batch with
+// INPUT_ERROR "id not found" and changes none (measured; argField's
+// transaction puts back the issues already changed). Three issues got
+// three distinct update times (measured); here each issue after the
+// first is stamped a millisecond after the one before (unverified), and
+// the engine's clock moves past the last stamp so it never goes back.
+func (m mutationRoot) batchUpdate(r *gqlRun, args map[string]any) (any, *gqlErr) {
+	w := m.w
+	raw, _ := take(args, "ids")
+	ids, _ := raw.([]any)
+	if len(ids) > linearMaxBatch {
+		return nil, &gqlErr{code: "INVALID_INPUT", message: "Argument Validation Error",
+			presentable: fmt.Sprintf("ids must contain at most %d items", linearMaxBatch), userError: true}
+	}
+	if len(ids) == 0 {
+		return nil, inputErr("No issue IDs given") // unverified
+	}
+	in := r.input(args, "IssueUpdateInput")
+	out := make([]gqlObject, 0, len(ids))
+	at := r.now
+	for i, v := range ids {
+		is := w.issue(str(v))
+		if is == nil {
+			return nil, inputErr("id not found")
+		}
+		before := *is
+		before.Labels = slices.Clone(is.Labels)
+		if err := r.setIssue(in, is); err != nil {
+			return nil, err
+		}
+		at = r.now.Add(time.Duration(i) * time.Millisecond)
+		if is.State != before.State {
+			w.stamp(is, at)
+		}
+		w.record(r.e, &before, is, w.Viewer, at)
+		out = append(out, issueObj{w: w, is: is})
+	}
+	in.done()
+	r.e.last = maxTime(r.e.last, at)
+	return out, nil
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func (m mutationRoot) archiveIssue(r *gqlRun, args map[string]any) (any, *gqlErr) {

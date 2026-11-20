@@ -64,6 +64,7 @@ var nullBases = map[string]struct {
 }{
 	"issueCreate":         {"", map[string]any{"teamId": "t1", "title": "New"}},
 	"issueUpdate":         {`id: "i1", `, map[string]any{}},
+	"issueBatchUpdate":    {`ids: ["i1"], `, map[string]any{}},
 	"commentCreate":       {"", map[string]any{"issueId": "i1", "body": "Hello"}},
 	"commentUpdate":       {`id: "c1", `, map[string]any{"body": "Edited"}},
 	"issueRelationCreate": {"", map[string]any{"issueId": "i1", "relatedIssueId": "i2", "type": "related"}},

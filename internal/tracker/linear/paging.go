@@ -45,7 +45,9 @@ func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any,
 	if conn == nil {
 		return Page[T]{}, fmt.Errorf("linear %s: the answer holds no page", op.name)
 	}
-	return page(op, *conn, r.Usage, typed)
+	p, err := page(op, *conn, r.Usage, typed)
+	p.Served = r.Served
+	return p, err
 }
 
 // collect pages op to the end, for a list whose whole size a caller

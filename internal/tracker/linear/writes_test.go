@@ -273,7 +273,7 @@ func TestRelationsLinksAndCycles(t *testing.T) {
 		t.Fatalf("link %+v %v", att, err)
 	}
 	cy, err := c.StartUpcomingCycle(ctx, "cycle-2")
-	if err != nil || !cy.IsActive || cy.Number != 2 || cy.ScopeHistory[0] != 3 {
+	if err != nil || !cy.IsActive || cy.Number != 2 || cy.Progress != 0.5 {
 		t.Fatalf("cycle %+v %v", cy, err)
 	}
 }

@@ -85,16 +85,44 @@ func (p *Provider) CreateFields(_ context.Context, project tracker.ProjectID, is
 // create's project.
 func (p *Provider) scopeTeam(ctx context.Context, scope tracker.FieldScope) (string, error) {
 	if issue, ok := scope.Issue(); ok {
-		is, err := p.summary(ctx, issue)
+		it, err := p.c.IssueTeam(ctx, string(issue))
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("linearprovider: read issue %s with its team: %w", issue, err)
 		}
-		return is.TeamID, nil
+		return it.Team.ID, nil
 	}
+	return createTeam(scope)
+}
+
+// createTeam is the team of a create's scope.
+func createTeam(scope tracker.FieldScope) (string, error) {
 	if project, issueType, ok := scope.Create(); ok && issueType == "" {
 		return string(project), nil
 	}
 	return "", fmt.Errorf("linearprovider: %w: the scope names no issue and no project without an issue type", tracker.ErrInvalidInput)
+}
+
+// scopeCatalog is a catalog of a field scope's team: for an issue, read
+// with the issue by withIssue in one request; for a create, read by
+// ofTeam.
+func scopeCatalog[T any](ctx context.Context, scope tracker.FieldScope, what string,
+	withIssue func(context.Context, string) (linear.IssueScope, []T, error), ofTeam func(context.Context, string) ([]T, error)) ([]T, error) {
+	if issue, ok := scope.Issue(); ok {
+		_, items, err := withIssue(ctx, string(issue))
+		if err != nil {
+			return nil, fmt.Errorf("linearprovider: read issue %s with its team's %s: %w", issue, what, err)
+		}
+		return items, nil
+	}
+	team, err := createTeam(scope)
+	if err != nil {
+		return nil, err
+	}
+	items, err := ofTeam(ctx, team)
+	if err != nil {
+		return nil, fmt.Errorf("linearprovider: %s of team %s: %w", what, team, err)
+	}
+	return items, nil
 }
 
 // pickLimit is the most rows a pick list returns. The pick lists read
@@ -115,16 +143,12 @@ func capped[T any](rows []T) ([]T, bool) {
 // out, whose name, display name or email starts with text, case
 // ignored; every one for empty text, up to pickLimit.
 func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) (tracker.UserList, error) {
-	team, err := p.scopeTeam(ctx, scope)
-	if err != nil {
-		return tracker.UserList{}, err
-	}
-	members, err := p.assignable(ctx, team)
+	members, err := scopeCatalog(ctx, scope, "members", p.c.IssueMembers, p.c.TeamMembers)
 	if err != nil {
 		return tracker.UserList{}, err
 	}
 	var out []tracker.User
-	for _, u := range members {
+	for _, u := range people(members) {
 		if hasPrefixFold(u.Name, text) || hasPrefixFold(u.DisplayName, text) || hasPrefixFold(u.Email, text) {
 			out = append(out, user(u))
 		}
@@ -139,7 +163,12 @@ func (p *Provider) assignable(ctx context.Context, team string) ([]linear.User, 
 	if err != nil {
 		return nil, fmt.Errorf("linearprovider: members of team %s: %w", team, err)
 	}
-	return slices.DeleteFunc(members, func(u linear.User) bool { return !u.Active || u.App }), nil
+	return people(members), nil
+}
+
+// people are the active members among members that are not apps.
+func people(members []linear.User) []linear.User {
+	return slices.DeleteFunc(members, func(u linear.User) bool { return !u.Active || u.App })
 }
 
 // Choices are the values field takes in scope whose name starts with
@@ -162,11 +191,7 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 	case tracker.FieldTitle, tracker.FieldDescription, tracker.FieldParent, FieldDueDate:
 		return tracker.ChoiceList{}, nil
 	case tracker.FieldAssignee:
-		team, err := p.scopeTeam(ctx, scope)
-		if err != nil {
-			return tracker.ChoiceList{}, err
-		}
-		users, err := p.AssignableUsers(ctx, tracker.OnCreate(tracker.ProjectID(team), ""), text)
+		users, err := p.AssignableUsers(ctx, scope, text)
 		if err != nil {
 			return tracker.ChoiceList{}, err
 		}
@@ -175,15 +200,11 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 		}
 		return tracker.ChoiceList{Choices: out, More: users.More}, nil
 	case tracker.FieldLabels:
-		team, err := p.scopeTeam(ctx, scope)
+		labels, err := scopeCatalog(ctx, scope, "labels", p.c.IssueLabels, p.c.Labels)
 		if err != nil {
 			return tracker.ChoiceList{}, err
 		}
-		labels, err := p.applicableLabels(ctx, team)
-		if err != nil {
-			return tracker.ChoiceList{}, err
-		}
-		for _, l := range labels {
+		for _, l := range applicable(labels) {
 			keep(l.ID, l.Name)
 		}
 	case FieldProject:
@@ -212,7 +233,13 @@ func (p *Provider) applicableLabels(ctx context.Context, team string) ([]linear.
 	if err != nil {
 		return nil, fmt.Errorf("linearprovider: labels of team %s: %w", team, err)
 	}
-	return slices.DeleteFunc(labels, func(l linear.Label) bool { return l.IsGroup }), nil
+	return applicable(labels), nil
+}
+
+// applicable are the labels among labels an issue can carry: groups
+// left out.
+func applicable(labels []linear.Label) []linear.Label {
+	return slices.DeleteFunc(labels, func(l linear.Label) bool { return l.IsGroup })
 }
 
 // teamProjects are the projects team's issues can join.

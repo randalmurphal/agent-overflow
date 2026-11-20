@@ -1,6 +1,7 @@
 package linearprovider
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,30 +12,31 @@ import (
 )
 
 // Bounds of the read Rank makes when its neighbors leave no room: the
-// team's manual order by ID and order alone, rankPage issues a page, at
-// most rankPages pages (2,500 issues, about 3,000 points by Linear's
-// documented rule).
+// team's issues by ID and order alone, rankPage issues a page, at most
+// rankPages pages (10,000 issues, the listing's bound, about 4 points a
+// page, measured for a page of IDs).
 const (
-	rankPage  = 250
-	rankPages = 10
+	rankPage  = listingPage
+	rankPages = listingPages
 )
 
 // Rank places issues, in order, between two neighbors in the team's
 // manual order (sortOrder, which every board column and the backlog
-// share) with one update per issue. It checks every ID, the neighbors'
-// with the issues', before any request, then reads the issues and the
-// neighbors within the board, with their current sortOrder: a neighbor
-// not on the board refuses the rank, as does a Prev that no longer
-// stands before Next, and an issue not on the board is refused while the
-// others are ranked. The values come from the client's Spread of the
-// neighbors' current values. When no values fit between them
-// (linear.ErrNoRoom), it reads the manual order again from the start,
+// share) with aliased updates, 50 to a request. It checks every ID, the
+// neighbors' with the issues', before any request, then reads the
+// positions of the issues and the neighbors within the board: a
+// neighbor not on the board refuses the rank, as does a Prev that no
+// longer stands before Next, and an issue not on the board is refused
+// while the others are ranked. The values come from the client's Spread
+// of the neighbors' current values. When no values fit between them
+// (linear.ErrNoRoom), it reads the manual order again (crowdedRun),
 // since Linear may have spread the values itself, and renumbers the run
 // from just after Prev up to the first issue with room above Prev,
 // through the client's RenumberIssues: the issues ranked first, then
-// those it moved to make room, each its own part. It stops at the first
-// update not applied; the rest are not sent. The refused parts come
-// first, as they were judged before anything was sent.
+// those it moved to make room, each its own part by the client's
+// outcome for it; the issues after a request with a part not applied
+// are not sent. The refused parts come first, as they were judged
+// before anything was sent.
 func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Result {
 	step := tracker.StepRank
 	if err := in.Check(); err != nil {
@@ -115,65 +117,80 @@ func (p *Provider) rankOnBoard(ctx context.Context, in tracker.RankInput, moving
 // renumber after prev: moving, then every following issue up to the
 // first whose value leaves room for the run above prev's, with the
 // values around the run (hi nil at the end of the list). A next, when
-// named, listed before prev refuses the rank as stale: equal values
-// leave the order to Linear's listing.
+// named, whose value is below prev's refuses the rank as stale.
+//
+// A rank changes the manual order, and a page cursor follows its issue
+// (measured), so a walk in that order could skip or repeat issues
+// ranked meanwhile. The order is therefore read by creation, which
+// nothing changes, and sorted here by value, prev first among equal
+// values and the rest by ID; an issue answered as another team's is not
+// on the board, and a team longer than the bound refuses the rank.
 func (p *Provider) crowdedRun(ctx context.Context, board tracker.BoardID, prev, next tracker.IssueID, moving []string) ([]string, *float64, *float64, error) {
-	q := linear.IssueQuery{Filter: linear.IssueFilter{Teams: []string{string(board)}}, Order: linear.OrderManual, Limit: rankPage}
-	var lo *float64
-	run := slices.Clone(moving)
-	after := ""
-	for range rankPages {
-		page, err := p.c.ListIssuePositions(ctx, q, after)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("linearprovider: read the manual order of %s: %w", board, err)
-		}
-		for _, is := range page.Items {
-			switch {
-			case lo == nil && next != "" && is.ID == string(next):
-				return nil, nil, nil, refusedf(tracker.ReasonStale, "issue %s no longer stands before issue %s", prev, next)
-			case lo == nil && is.ID == string(prev):
-				v := is.SortOrder
-				lo = &v
-			case lo == nil || slices.Contains(moving, is.ID):
-			default:
-				hi := is.SortOrder
-				if _, err := linear.Spread(lo, &hi, len(run)); err == nil {
-					return run, lo, &hi, nil
-				}
-				run = append(run, is.ID)
-			}
-		}
-		if !page.HasNextPage {
-			if lo == nil {
-				return nil, nil, nil, refusedf(tracker.ReasonStale, "issue %s is no longer on the board", prev)
-			}
-			return run, lo, nil, nil
-		}
-		after = page.EndCursor
+	q := linear.IssueQuery{Filter: linear.IssueFilter{Teams: []string{string(board)}}, Order: linear.OrderCreatedOldest, Limit: rankPage}
+	all, err := walk(ctx, func(ctx context.Context, after string) (linear.Page[linear.IssuePosition], error) {
+		return p.c.ListIssuePositions(ctx, q, after)
+	}, rankPages)
+	switch {
+	case errors.Is(err, errTooLong):
+		return nil, nil, nil, refusedf(tracker.ReasonInvalid, "no room near issue %s, and board %s holds more than %d issues to renumber among", prev, board, rankPage*rankPages)
+	case err != nil:
+		return nil, nil, nil, fmt.Errorf("linearprovider: read the manual order of %s: %w", board, err)
 	}
-	return nil, nil, nil, refusedf(tracker.ReasonInvalid, "no room near issue %s within the first %d issues of the board", prev, rankPage*rankPages)
+	all = slices.DeleteFunc(all, func(is linear.IssuePosition) bool { return is.TeamID != string(board) })
+	at := slices.IndexFunc(all, func(is linear.IssuePosition) bool { return is.ID == string(prev) })
+	if at < 0 {
+		return nil, nil, nil, refusedf(tracker.ReasonStale, "issue %s is no longer on the board", prev)
+	}
+	lo := all[at].SortOrder
+	notPrev := func(is linear.IssuePosition) int {
+		if is.ID == string(prev) {
+			return 0
+		}
+		return 1
+	}
+	slices.SortFunc(all, func(a, b linear.IssuePosition) int {
+		return cmp.Or(cmp.Compare(a.SortOrder, b.SortOrder), cmp.Compare(notPrev(a), notPrev(b)), cmp.Compare(a.ID, b.ID))
+	})
+	run := slices.Clone(moving)
+	seenPrev := false
+	for _, is := range all {
+		switch {
+		case is.ID == string(prev):
+			seenPrev = true
+		case !seenPrev:
+			if is.ID == string(next) {
+				return nil, nil, nil, refusedf(tracker.ReasonStale, "issue %s no longer stands before issue %s", prev, next)
+			}
+		case slices.Contains(moving, is.ID):
+		default:
+			hi := is.SortOrder
+			if _, err := linear.Spread(&lo, &hi, len(run)); err == nil {
+				return run, &lo, &hi, nil
+			}
+			run = append(run, is.ID)
+		}
+	}
+	return run, &lo, nil, nil
 }
 
 // renumber gives the run Spread values between lo and hi through the
-// client, one part per issue in order: those stored applied, the one
-// that failed by its outcome, the rest not sent. Each names the issue's
-// row on board and its card, which every board sharing the team's order
-// draws.
+// client, one part per issue in order, each by the client's outcome for
+// it. Each names the issue's row on board and its card, which every
+// board sharing the team's order draws.
 func (p *Provider) renumber(ctx context.Context, board tracker.BoardID, run []string, lo, hi *float64) tracker.Result {
 	step := tracker.StepRank
-	stored, err := p.c.RenumberIssues(ctx, linear.RenumberInput{Field: linear.OrderSort, IssueIDs: run, Before: lo, After: hi})
-	var out tracker.Result
+	issues := make([]tracker.IssueID, len(run))
 	for i, id := range run {
-		issue := tracker.IssueID(id)
-		switch {
-		case i < len(stored):
-			out.Parts = append(out.Parts, part(issue, step, nil, tracker.RowOf(board, issue), tracker.CardOf(issue)))
-		case i == len(stored) && err != nil:
-			out.Parts = append(out.Parts, part(issue, step, err, tracker.RowOf(board, issue), tracker.CardOf(issue)))
-		default:
-			failed := tracker.IssueID(run[len(stored)])
-			out.Parts = append(out.Parts, notSentAfter(step, failed, []tracker.IssueID{issue})...)
-		}
+		issues[i] = tracker.IssueID(id)
+	}
+	written, err := p.c.RenumberIssues(ctx, linear.RenumberInput{Field: linear.OrderSort, IssueIDs: run, Before: lo, After: hi})
+	if err != nil {
+		return tracker.Invalid(step, err, issues...)
+	}
+	var out tracker.Result
+	for _, w := range written {
+		issue := tracker.IssueID(w.IssueID)
+		out.Parts = append(out.Parts, part(issue, step, w.Err, tracker.RowOf(board, issue), tracker.CardOf(issue)))
 	}
 	return out
 }

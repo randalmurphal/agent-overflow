@@ -2,20 +2,24 @@ package linear
 
 import "time"
 
-// issueSelection is what every read of an issue selects. Linear charges
-// a page of issues by the issues it returns, about 3 points each
-// (measured). Related entities are selected by ID, and their names are
-// read by ID for the IDs a result names, with two exceptions nested in
-// the issue because they cost less than a second request. The team's
-// estimate scale is a scalar on an object already selected, so a list of
-// rows tells whether their estimates count without reading the team. The
-// labels' names cost about 1.5 points an issue whatever the nested page
-// size or the labels it holds (measured), so the page is maxIssuePage:
+// issueSelection is what every read of an issue selects. It leaves out
+// the description, which is most of an issue's bytes (two thirds of a
+// list page of ordinary issues, measured on the fake) and which only the
+// single-issue reads carry (describedFields). Linear charged a page of
+// 42 issues with these fields 8 points at first 100 and at 250
+// (measured).
+// Related entities are selected by ID, and their names are read by ID
+// for the IDs a result names, with two exceptions nested in the issue
+// because they cost less than a second request. The team's estimate
+// scale is a scalar on an object already selected, so a list of rows
+// tells whether their estimates count without reading the team. The
+// labels' names cost a page a few points whatever the nested page size
+// or the labels it holds (measured), so the page is maxIssuePage:
 // only an issue with more labels than that, or with one the list leaves
 // out, needs LabelsByID.
 // labelIds stays the complete set.
 const issueSelection = `
-  id identifier number title description url branchName
+  id identifier number title url branchName
   priority estimate sortOrder prioritySortOrder subIssueSortOrder
   team { id issueEstimationType } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
   labelIds labels(first: 250) { nodes { id name } }
@@ -28,12 +32,25 @@ const issueFields = `fragment IssueFields on Issue {` + issueSelection + `}`
 // own with the same fields, which wireIssue decodes too.
 const issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + issueSelection + `}`
 
+// describedFields is issueSelection with the description, for the reads
+// of one issue whose callers show or compare it.
+const describedFields = `fragment DescribedFields on Issue { ...IssueFields description }`
+
+// wireDescribed is an issue as describedFields selects it.
+type wireDescribed struct {
+	wireIssue
+	Description string `json:"description"`
+}
+
+func (w wireDescribed) typed() DescribedIssue {
+	return DescribedIssue{Issue: w.wireIssue.typed(), Description: w.Description}
+}
+
 type wireIssue struct {
 	ID                string     `json:"id"`
 	Identifier        string     `json:"identifier"`
 	Number            float64    `json:"number"`
 	Title             string     `json:"title"`
-	Description       string     `json:"description"`
 	URL               string     `json:"url"`
 	BranchName        string     `json:"branchName"`
 	Priority          float64    `json:"priority"`
@@ -87,7 +104,7 @@ func (t *issueTeam) scale() EstimateScale {
 
 func (w wireIssue) typed() Issue {
 	return Issue{
-		ID: w.ID, Identifier: w.Identifier, Number: int(w.Number), Title: w.Title, Description: w.Description,
+		ID: w.ID, Identifier: w.Identifier, Number: int(w.Number), Title: w.Title,
 		URL: w.URL, BranchName: w.BranchName, Priority: Priority(w.Priority), Estimate: w.Estimate,
 		SortOrder: w.SortOrder, PrioritySortOrder: w.PrioritySortOrder, SubIssueSortOrder: w.SubIssueSortOrder,
 		TeamID: w.Team.id(), TeamEstimateScale: w.Team.scale(), StateID: w.State.id(), AssigneeID: w.Assignee.id(), CreatorID: w.Creator.id(),
@@ -98,14 +115,17 @@ func (w wireIssue) typed() Issue {
 	}
 }
 
-const positionFields = `fragment PositionFields on Issue { id sortOrder }`
+const positionFields = `fragment PositionFields on Issue { id sortOrder team { id } }`
 
 type wirePosition struct {
 	ID        string  `json:"id"`
 	SortOrder float64 `json:"sortOrder"`
+	Team      *ref    `json:"team"`
 }
 
-func (w wirePosition) typed() IssuePosition { return IssuePosition(w) }
+func (w wirePosition) typed() IssuePosition {
+	return IssuePosition{ID: w.ID, SortOrder: w.SortOrder, TeamID: w.Team.id()}
+}
 
 const issueRefFields = `fragment IssueRefFields on Issue { id identifier title state { id } }`
 

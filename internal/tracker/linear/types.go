@@ -10,6 +10,9 @@ type Page[T any] struct {
 	HasNextPage bool
 	// Usage is what the answer reported about the rate limits.
 	Usage Usage
+	// Served is Linear's clock when it answered the page, from the
+	// answer's Date header; zero when it carried none.
+	Served time.Time
 }
 
 // User is a workspace member, or an app user.
@@ -112,9 +115,9 @@ type WorkflowState struct {
 	ArchivedAt  *time.Time
 }
 
-// Cycle is one cycle of a team. The histories hold one entry per day
-// from the cycle's first day, aligned by index, and are team-wide; scope
-// can change after the start, so they are not a commitment snapshot.
+// Cycle is one cycle of a team. Linear's per-day scope and completion
+// histories are not read: they are team-wide and not a commitment
+// snapshot, so nothing built on the client uses them.
 type Cycle struct {
 	ID          string
 	Number      int
@@ -131,12 +134,7 @@ type Cycle struct {
 	IsNext      bool
 	IsPrevious  bool
 	// Progress runs from 0 to 1 as Linear computes it.
-	Progress                   float64
-	ScopeHistory               []float64
-	CompletedScopeHistory      []float64
-	InProgressScopeHistory     []float64
-	IssueCountHistory          []float64
-	CompletedIssueCountHistory []float64
+	Progress float64
 }
 
 // Label is an issue label. TeamID is empty for a workspace label.
@@ -187,18 +185,18 @@ const (
 	PriorityLow    Priority = 4
 )
 
-// Issue is an issue as lists and polls carry it. Related entities are
-// named by ID; empty means none.
+// Issue is an issue as lists, polls and writes carry it: everything but
+// its description, which DescribedIssue adds. Related entities are named
+// by ID; empty means none.
 type Issue struct {
 	ID string
 	// Identifier, such as WEB-1, changes when the issue moves team.
-	Identifier  string
-	Number      int
-	Title       string
-	Description string // Markdown
-	URL         string
-	BranchName  string
-	Priority    Priority
+	Identifier string
+	Number     int
+	Title      string
+	URL        string
+	BranchName string
+	Priority   Priority
 	// Estimate is nil when the issue is not estimated; zero is an
 	// estimate.
 	Estimate *float64
@@ -236,6 +234,13 @@ type Issue struct {
 	Trashed bool
 }
 
+// DescribedIssue is an issue with its Markdown description, as the reads
+// of one issue carry it.
+type DescribedIssue struct {
+	Issue
+	Description string
+}
+
 // LabelRef is a label as an issue names it.
 type LabelRef struct {
 	ID   string `json:"id"`
@@ -247,6 +252,9 @@ type LabelRef struct {
 type IssuePosition struct {
 	ID        string
 	SortOrder float64
+	// TeamID is the issue's team, for a caller that checks the issue is
+	// still the team's.
+	TeamID string
 }
 
 // IssueRef names a related issue.
@@ -257,13 +265,14 @@ type IssueRef struct {
 	StateID    string
 }
 
-// IssueDetail is one issue with what its view shows. Comments, children
-// and attachments hold their first page, and a More flag or HasNextPage
-// reports that there are more: further comments come from IssueComments
-// and further children from ListIssues with a Parent filter. Relations
-// are complete.
+// IssueDetail is one issue with what its view shows. Comments, children,
+// attachments, history and its team's states hold their first page, and
+// a More flag or HasNextPage reports that there are more: further
+// comments come from IssueComments, history from IssueHistory, states
+// from WorkflowStates and children from ListIssues with a Parent filter.
+// Relations are complete.
 type IssueDetail struct {
-	Issue
+	DescribedIssue
 	// ProjectName is the name of the issue's project; empty for none.
 	ProjectName     string
 	Parent          *IssueRef
@@ -276,6 +285,13 @@ type IssueDetail struct {
 	// each read to its end: Issue is the side the relation was created
 	// from.
 	Relations []Relation
+	// History is the newest page of the issue's history, newest first.
+	History Page[HistoryEntry]
+	// States are the workflow states of the issue's team, archived ones
+	// left out, in Linear's order; MoreStates reports a team with more
+	// than the page holds.
+	States     []WorkflowState
+	MoreStates bool
 }
 
 // Comment is a comment on an issue. ParentID names the comment it

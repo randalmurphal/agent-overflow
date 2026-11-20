@@ -55,8 +55,9 @@ client contract it answers is
   tracker's own not-found or refusal and changes nothing. Every handler
   runs in a transaction the pipeline owns (`txn.go`): an unhandled
   answer, a refusal (400 or more) or a panic puts back the tenant, the
-  ID counter and the clock. A Linear mutation refused with an error
-  rolls back alone; the document's other mutations stand.
+  ID counter and the clock. A Linear document with a mutation refused
+  with an error rolls back whole and answers null data, as measured for
+  aliased `issueUpdate` and for `issueBatchUpdate` with a missing issue.
 - A null Linear input member clears a field the schema lets be null and
   is refused for one the schema declares non-null (an issue's state,
   team, title, priority, sort orders, labels); an empty ID counts as

@@ -198,13 +198,14 @@ func TestIssueRelationsReadToTheEnd(t *testing.T) {
 	}
 }
 
-// The lean list sends ListIssues's variables and types IDs and orders.
+// The lean list sends ListIssues's variables and types IDs, orders and
+// teams.
 func TestListIssuePositions(t *testing.T) {
 	t.Parallel()
 	f := newFake(t, lineartest.Exchange{Op: "IssuePositions", Vars: `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["team-web"]}}}]}}`,
-		Body: lineartest.Data(lineartest.PageJSON([]string{`{"id":"issue-1","sortOrder":-2.5}`}, true, "p1"))})
+		Body: lineartest.Data(lineartest.PageJSON([]string{`{"id":"issue-1","sortOrder":-2.5,"team":{"id":"team-web"}}`}, true, "p1"))})
 	p, err := f.client(t).ListIssuePositions(context.Background(), IssueQuery{Filter: IssueFilter{Teams: []string{"team-web"}}, Limit: 250}, "")
-	if err != nil || len(p.Items) != 1 || p.Items[0] != (IssuePosition{ID: "issue-1", SortOrder: -2.5}) || !p.HasNextPage || p.EndCursor != "p1" {
+	if err != nil || len(p.Items) != 1 || p.Items[0] != (IssuePosition{ID: "issue-1", SortOrder: -2.5, TeamID: "team-web"}) || !p.HasNextPage || p.EndCursor != "p1" {
 		t.Fatalf("page %+v %v", p, err)
 	}
 	if _, err := f.client(t).ListIssuePositions(context.Background(), IssueQuery{Limit: 251}, ""); !errors.Is(err, trackerapi.ErrInvalidInput) {

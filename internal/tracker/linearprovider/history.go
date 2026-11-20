@@ -20,27 +20,28 @@ import (
 // unknown rather than guessed.
 const creationFold = 3 * time.Minute
 
-// settleMargin is how long before a history read began its changes are
-// taken as final. The live fold check saw an entry first recorded 5s
-// after its change; the margin is 24 times that, which also covers a
-// skew between this computer's clock and Linear's, since the caller
-// compares CompleteTo with Linear's update times. A larger margin costs
-// only a second read of an issue's history.
+// settleMargin is how long before a history read was answered its
+// changes are taken as final. The live fold check saw an entry first
+// recorded 5s after its change; the margin is 24 times that. A larger
+// margin costs only a second read of an issue's history.
 const settleMargin = 2 * time.Minute
 
 // History is the status, cycle, estimate and assignee changes of the
-// issues that exist and are visible, read ten issues per request. Each
-// is complete from creation plus creationFold and final through
-// settleMargin before the read began. An estimate change is reported on
-// the board of the team the issue was in after the change, when that
-// board is one q names. IDs that are not issue IDs name no issue and are
-// left out.
+// issues that exist and are visible, read 50 issues per request. Each is
+// complete from creation plus creationFold and final through
+// settleMargin before Linear answered the read that held its newest
+// entries, by Linear's own clock (the answer's Date), since the caller
+// compares CompleteTo with Linear's update times; the clock of this
+// computer, taken before the read, stands in only for an answer without
+// a Date. An estimate change is reported on the board of the team the
+// issue was in after the change, when that board is one q names. IDs
+// that are not issue IDs name no issue and are left out.
 func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker.History, error) {
 	ids, _ := issueIDs(q.Issues)
 	if len(ids) == 0 {
 		return tracker.History{}, nil
 	}
-	completeTo := p.now().Add(-settleMargin)
+	local := p.now()
 	all, err := p.c.IssueHistories(ctx, ids)
 	if err != nil {
 		return tracker.History{}, fmt.Errorf("linearprovider: history: %w", err)
@@ -48,7 +49,11 @@ func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	var out tracker.History
 	for _, ic := range all {
 		h := issueHistory(ic, q.Boards)
-		h.CompleteTo = completeTo
+		served := ic.Served
+		if served.IsZero() {
+			served = local
+		}
+		h.CompleteTo = served.Add(-settleMargin)
 		out.Issues = append(out.Issues, h)
 	}
 	return out, nil

@@ -77,7 +77,7 @@ func pagingLinear() LinearWorkspace {
 	for i := 1; i <= 3; i++ {
 		n := strconv.Itoa(i)
 		w.Teams = append(w.Teams, LinearTeam{ID: "t" + n, Key: []string{"WEB", "APP", "OPS"}[i-1], Name: "Team " + n})
-		w.Labels = append(w.Labels, LinearLabel{ID: "l" + n, Name: "Label " + n})
+		w.Labels = append(w.Labels, LinearLabel{ID: "l" + n, Name: "Label " + n, Team: "t1"})
 		w.Projects = append(w.Projects, LinearProject{ID: "p" + n + "-000000000000", Name: "Project " + n, Teams: []string{"t1"}})
 		w.Cycles = append(w.Cycles, LinearCycle{ID: "cy" + n, Team: "t1", Number: float64(i),
 			StartsAt: testStart.Add(time.Duration(i*14) * 24 * time.Hour), EndsAt: testStart.Add(time.Duration(i*14+14) * 24 * time.Hour)})
@@ -296,6 +296,8 @@ var pagedRows = map[string]pager{
 	"Query.projects":                                              linearPager("projects(%s) { nodes { id } pageInfo { hasNextPage endCursor } }", "data.projects.nodes[].id"),
 	"Query.issues":                                                linearPager("issues(%s) { nodes { id } pageInfo { hasNextPage endCursor } }", "data.issues.nodes[].id"),
 	"Query.searchIssues":                                          linearPager(`searchIssues(term: "issue", %s) { nodes { id } pageInfo { hasNextPage endCursor } }`, "data.searchIssues.nodes[].id"),
+	"Team.states":                                                 linearPager(`team(id: "t1") { states(%s) { nodes { id } pageInfo { hasNextPage endCursor } } }`, "data.team.states.nodes[].id"),
+	"Team.labels":                                                 linearPager(`team(id: "t1") { labels(%s) { nodes { id } pageInfo { hasNextPage endCursor } } }`, "data.team.labels.nodes[].id"),
 	"Team.members":                                                linearPager(`team(id: "t1") { members(%s) { nodes { id } pageInfo { hasNextPage endCursor } } }`, "data.team.members.nodes[].id"),
 	"Issue.labels":                                                linearPager(`issue(id: "i1") { labels(%s) { nodes { id } pageInfo { hasNextPage endCursor } } }`, "data.issue.labels.nodes[].id"),
 	"Issue.children":                                              linearPager(`issue(id: "i1") { children(%s) { nodes { id } pageInfo { hasNextPage endCursor } } }`, "data.issue.children.nodes[].id"),

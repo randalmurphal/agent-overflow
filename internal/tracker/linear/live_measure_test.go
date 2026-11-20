@@ -279,7 +279,7 @@ func (l *live) checkHistories(team Team, viewer *Viewer, states []WorkflowState,
 		if err != nil {
 			return err
 		}
-		rule, rerr := ruleCost(opIssueHistories.text, map[string]int{"first": historyBatchIssues, "entries": historyBatchEntries})
+		rule, rerr := ruleCost(opIssueHistories.text, map[string]int{"first": historyBatchIssues, "entries": historyPage})
 		l.measure("IssueHistories for 2 issues was charged %d points; the documented rule gives %.1f (rule error %v)", l.c.Usage().Complexity, rule, rerr)
 		var named []string
 		for _, h := range got {
@@ -392,7 +392,7 @@ func (l *live) checkArchivedAndTrashed(team Team, since time.Time, p *pair) {
 		return strings.Join(out, " and ")
 	}
 	l.step("PollIssues without archived", func(ctx context.Context) error {
-		q := PollQuery{TeamID: team.ID, From: PollCursor{Since: since}}
+		q := PollQuery{TeamID: team.ID, From: Restart(since)}
 		var all []Issue
 		for {
 			pg, err := l.c.PollIssues(ctx, q)

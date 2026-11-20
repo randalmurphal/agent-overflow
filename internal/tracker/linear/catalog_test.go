@@ -117,7 +117,7 @@ func TestCatalogReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	cycles, err := c.Cycles(ctx, CycleQuery{TeamID: "team-web", When: CyclesPast})
-	if err != nil || len(cycles) != 1 || !cycles[0].IsPast || cycles[0].Name != "Sprint 1" || len(cycles[0].CompletedIssueCountHistory) != 2 {
+	if err != nil || len(cycles) != 1 || !cycles[0].IsPast || cycles[0].Name != "Sprint 1" || cycles[0].Progress != 0.5 {
 		t.Fatalf("cycles %+v %v", cycles, err)
 	}
 	for _, q := range []CycleQuery{{TeamID: "team-web", When: CyclesActive, IncludeArchived: true}, {TeamID: "team-web", When: CyclesUpcoming}, {TeamID: "team-web"}} {

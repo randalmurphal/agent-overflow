@@ -61,6 +61,17 @@ func (r *gqlRun) connection(typ string, owner gqlObject, name string, list []gql
 		if !okc {
 			return connObj{}, &gqlErr{code: "INVALID_INPUT", message: "Invalid cursor", userError: true}
 		}
+		// Measured for issues: a cursor follows its record, meaning after
+		// where that record is now, not where it was when the page was
+		// read; a record updated between pages of an update-ordered walk
+		// moves to the end, and the walk continues from there. Assumed
+		// for every other connection (unverified), where it is the same
+		// whenever the order is by a value that does not change. A cursor
+		// whose record the list no longer holds continues after the place
+		// the record had (unverified).
+		if i := slices.IndexFunc(kept, func(o gqlObject) bool { return objID(o) == id }); i >= 0 {
+			key = keyOf(kept[i])
+		}
 		start = len(kept)
 		for i, o := range kept {
 			if cmpKey(keyOf(o), objID(o), key, id) > 0 {
@@ -70,27 +81,12 @@ func (r *gqlRun) connection(typ string, owner gqlObject, name string, list []gql
 		}
 	}
 	end := min(start+first, len(kept))
-	if !chargedByResults(owner, name) {
-		r.cost += first - (end - start)
-	}
 	page := connObj{typ: typ, nodes: kept[start:end], hasNext: end < len(kept)}
 	if end > start {
 		last := kept[end-1]
 		page.end = cursorOf(keyOf(last), objID(last))
 	}
 	return page, nil
-}
-
-// chargedByResults reports a connection Linear charges by the nodes it
-// returns: an issue list and any list nested in an issue. Every other
-// (catalog) connection is charged by its page size, first (measured, see
-// docs/references/tracker-api-measurements.md, Linear; the points per
-// node are the fake's own count, unverified against Linear's rules).
-func chargedByResults(owner gqlObject, name string) bool {
-	if _, ok := owner.(issueObj); ok {
-		return true
-	}
-	return name == "issues" || name == "searchIssues" || name == "children"
 }
 
 // order sorts list by the sort argument (sortSpec), else keeps its

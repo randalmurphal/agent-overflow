@@ -43,7 +43,11 @@ type Exchange struct {
 	Key    string
 	Status int // zero is 200
 	Header map[string]string
-	Body   string
+	// HeaderFn, when set, gives headers at the time the request arrives,
+	// set after Header; a nil value suppresses that header, so
+	// {"Date": nil} sends an answer without the Date the server adds.
+	HeaderFn func() http.Header
+	Body     string
 	// Respond, when set, answers instead of Body; it gets the request's
 	// variables.
 	Respond func(vars json.RawMessage) string
@@ -196,6 +200,11 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request, e *Exchange, var
 	}
 	for k, v := range e.Header {
 		w.Header().Set(k, v)
+	}
+	if e.HeaderFn != nil {
+		for k, v := range e.HeaderFn() {
+			w.Header()[k] = v
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	status := e.Status
