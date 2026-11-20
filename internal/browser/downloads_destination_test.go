@@ -197,7 +197,7 @@ func TestAPublishedDownloadNeverReplacesAFile(t *testing.T) {
 	// Another program creates a file at the free name just before the link.
 	var theirs string
 	linkDownload = func(staged, candidate string) error {
-		if theirs == "" {
+		if theirs == "" && !placing(candidate) {
 			theirs = candidate
 			if err := os.WriteFile(candidate, []byte("theirs"), 0o600); err != nil {
 				t.Errorf("take %s: %v", candidate, err)
@@ -243,7 +243,7 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 	}
 	var theirs string
 	renameDownload = func(staged, candidate string) error {
-		if theirs == "" {
+		if theirs == "" && !placing(candidate) {
 			theirs = candidate
 			if err := os.WriteFile(candidate, []byte("theirs"), 0o600); err != nil {
 				t.Errorf("take %s: %v", candidate, err)
@@ -284,7 +284,7 @@ func TestAnArtifactDownloadNeverReplacesAFileTakingItsName(t *testing.T) {
 	dir := manager.workspaceDownloadDir(workspace)
 	var theirs string
 	linkDownload = func(source, candidate string) error {
-		if theirs == "" {
+		if theirs == "" && !placing(candidate) {
 			theirs = candidate
 			if err := os.WriteFile(candidate, []byte("theirs"), 0o600); err != nil {
 				t.Errorf("take %s: %v", candidate, err)
@@ -439,8 +439,10 @@ func TestCloseWaitsForAPublishInFlight(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	linking, release := make(chan struct{}), make(chan struct{})
 	linkDownload = func(staged, candidate string) error {
-		close(linking)
-		<-release
+		if !placing(candidate) {
+			close(linking)
+			<-release
+		}
 		return os.Link(staged, candidate)
 	}
 	t.Cleanup(func() { linkDownload = os.Link })
@@ -696,8 +698,10 @@ func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	linking, release := make(chan struct{}), make(chan struct{})
 	linkDownload = func(staged, candidate string) error {
-		close(linking)
-		<-release
+		if !placing(candidate) {
+			close(linking)
+			<-release
+		}
 		return os.Link(staged, candidate)
 	}
 	t.Cleanup(func() { linkDownload = os.Link })
@@ -771,6 +775,67 @@ func TestACanceledOrFailedDownloadLeavesDownloadsAsItWas(t *testing.T) {
 			}
 			if names := folderNames(t, downloads); !slices.Equal(names, []string{"neighbor.bin"}) {
 				t.Fatalf("the Downloads folder holds %q, want only the neighbor", names)
+			}
+		})
+	}
+}
+
+// placing reports whether a placement's link or rename gives a file its
+// private name (placeNoReplace), which a seam standing for another program
+// at a public name lets through.
+func placing(candidate string) bool {
+	return strings.HasPrefix(filepath.Base(candidate), placingNamePrefix)
+}
+
+// A staged file swapped for other bytes between the publish's check of it
+// and its link is refused before it has a public name, by link and by
+// rename alike: the row fails, and the Downloads folder holds neither a
+// file under the download's name nor a private name, while the bytes put
+// at the staged name are not removed by the placement.
+func TestAStagedFileSwappedAsItIsPublishedNeverHasAPublicName(t *testing.T) {
+	for _, linking := range []bool{true, false} {
+		t.Run(fmt.Sprintf("linking %v", linking), func(t *testing.T) {
+			manager, _, access, page := newDownloadManager(t)
+			downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
+			swap := func(staged string) {
+				replacement := staged + ".swap"
+				if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
+					t.Error(err)
+				}
+				if err := os.Rename(replacement, staged); err != nil {
+					t.Error(err)
+				}
+			}
+			swapped := false
+			move := func(real func(string, string) error) func(string, string) error {
+				return func(staged, candidate string) error {
+					// The placement's first move, as the file leaves its
+					// staged name.
+					if !swapped {
+						swapped = true
+						swap(staged)
+					}
+					return real(staged, candidate)
+				}
+			}
+			if linking {
+				linkDownload = move(os.Link)
+			} else {
+				linkDownload = func(staged, candidate string) error {
+					return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: syscall.EPERM}
+				}
+				renameDownload = move(renameNoReplace)
+			}
+			t.Cleanup(func() { linkDownload, renameDownload = os.Link, renameNoReplace })
+			startDownload(t, manager, access, page, "published.txt", 10)
+			for _, name := range folderNames(t, downloads) {
+				if name != stagingDirName {
+					t.Fatalf("the Downloads folder holds %s", name)
+				}
+			}
+			got := threadDownloads(manager, access)[0]
+			if got.State != downloadStateFailed || !strings.Contains(got.Error, "changed before the download was saved") {
+				t.Fatalf("the download lists as %+v, want it failed for the swap", got)
 			}
 		})
 	}

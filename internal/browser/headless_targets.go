@@ -113,8 +113,8 @@ func (p *headlessProfile) browserEvent(m cdporder.Message, targets *headlessTarg
 // before the popup is listed) is offered again until a listed page owns
 // the frame, for up to ownerWait, and refused after (awaitOwner). One
 // whose popup's destroy was handled first still names it (downloadOwners).
-// A refused download's file in the profile's download directory is
-// removed once its end arrives or the browser has stopped.
+// Each download's files in the profile's download directory stay claimed
+// until its writer stops (downloadTracker).
 func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *headlessTargets) *downloadTracker {
 	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, p.engine.logf), p.removeDownloadFile)
 	downloads.popup = func(frame frameID) downloadStart {

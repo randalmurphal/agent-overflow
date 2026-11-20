@@ -7,6 +7,54 @@ import (
 	"testing"
 )
 
+// A download is cancellable from its start: a cancel made while the start
+// is admitted (an immediate cancel of the row the admission lists) is
+// taken, the download reports that cancel as its one end after its start,
+// and it neither stays running nor finishes.
+func TestAFakeDownloadCanceledDuringItsAdmissionEnds(t *testing.T) {
+	for _, flags := range [][]string{{"hold"}, nil} {
+		t.Run(fmt.Sprintf("flags %v", flags), func(t *testing.T) {
+			engine := newFakeEngine()
+			engine.saving = downloadsAsArtifacts
+			var profile *fakeProfile
+			var states []downloadState
+			var cancelErr error
+			engine.events = engineEvents{
+				DownloadStarted: func(start downloadStart) downloadAdmission {
+					cancelErr = profile.CancelDownload(start.ID)
+					return downloadAdmitted
+				},
+				DownloadProgress: func(progress downloadProgress) { states = append(states, progress.State) },
+			}
+			if err := engine.Start(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			opened, err := engine.NewProfile(t.Context(), profileOptions{Jar: "w", DownloadDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile = opened.(*fakeProfile)
+			defer func() { _ = profile.Dispose(context.Background()) }()
+			request, _ := fakeDownloadAddress(fakeDownloadURL("f.bin", 64, flags...))
+			if err := profile.download("frame", request); err != nil {
+				t.Fatal(err)
+			}
+			if cancelErr != nil {
+				t.Fatalf("the cancel made during the admission answered %v", cancelErr)
+			}
+			if len(states) != 1 || states[0] != downloadCanceled {
+				t.Fatalf("the download reported %q, want its cancel alone", states)
+			}
+			profile.mu.Lock()
+			running := len(profile.held)
+			profile.mu.Unlock()
+			if running != 0 {
+				t.Fatalf("the canceled download is still running in the engine")
+			}
+		})
+	}
+}
+
 // A download is cancellable from its first report: a cancel made while that
 // report is handled ends it, the engine reports the cancel as its one end,
 // and the download neither stays running nor finishes, whether it was to be

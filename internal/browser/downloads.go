@@ -80,11 +80,6 @@ func (m *Manager) releaseStagedDownload(id downloadID) {
 	}
 }
 
-func pathInside(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
-}
-
 // pageForFrame walks the registry the Manager owns and asks each driver whether
 // the frame is one of its own. Ownership stays here; frame bookkeeping does not.
 func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {

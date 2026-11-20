@@ -207,6 +207,19 @@ func jarSwitchError(err error) error {
 	return err
 }
 
+// browserDownloadUnavailableCode is the code of an action on a download the
+// thread's list no longer has; the window shows it as a notice.
+const browserDownloadUnavailableCode = "browser_download_unavailable"
+
+// downloadActionError is the answer to an action on one download: the
+// Manager's ErrDownloadUnavailable as a coded error, any other as it is.
+func downloadActionError(err error) error {
+	if errors.Is(err, appbrowser.ErrDownloadUnavailable) {
+		return errorsx.Public(browserDownloadUnavailableCode, "That download is no longer in this browser's list", err)
+	}
+	return err
+}
+
 // truncateKind bounds an unknown kind quoted back in an error.
 func truncateKind(kind string) string {
 	if runes := []rune(kind); len(runes) > 32 {

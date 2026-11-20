@@ -38,7 +38,7 @@ func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents)
 	}
 	return &webkitEngine{
 		configDir: configDir, window: opts.NativeWindow, events: events,
-		popups: make(map[ids.PageHandle]heldPopupView),
+		popups: newHeldPopups(),
 		pane:   make(map[uint64]webkitPaneState),
 	}
 }
@@ -54,7 +54,7 @@ type webkitEngine struct {
 	started bool
 
 	mu       sync.Mutex
-	popups   map[ids.PageHandle]heldPopupView
+	popups   *heldPopups
 	profiles map[uint64]*webkitProfile
 	pane     map[uint64]webkitPaneState
 	stopped  bool
@@ -100,12 +100,8 @@ func (e *webkitEngine) Stop() {
 	e.startMu.Lock()
 	e.started = false
 	e.startMu.Unlock()
+	orphans := e.popups.drain()
 	e.mu.Lock()
-	orphans := make([]unsafe.Pointer, 0, len(e.popups))
-	for handle, held := range e.popups {
-		orphans = append(orphans, held.view)
-		delete(e.popups, handle)
-	}
 	e.stopped = true
 	e.mu.Unlock()
 	// The window and its overlay stay: the SPA lives in it, and re-attaching
@@ -123,37 +119,28 @@ func (e *webkitEngine) Stop() {
 func (e *webkitEngine) holdPopup(view unsafe.Pointer, opener ids.PageHandle) (uint64, ids.PageHandle) {
 	n := webkitPageSeq.Add(1)
 	handle := pageHandle(n)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.popups[handle] = heldPopupView{view: view, opener: opener, n: n}
+	e.popups.hold(handle, heldPopupView{view: view, opener: opener, n: n})
 	return n, handle
 }
 
-// takePopup takes the held popup handle, for its attach or its discard.
+// takePopup takes the held popup handle, for its attach.
 func (e *webkitEngine) takePopup(handle ids.PageHandle) heldPopupView {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	held := e.popups[handle]
-	delete(e.popups, handle)
-	return held
+	return e.popups.take(handle)
 }
 
 // heldOpener answers the opener of the held popup handle, "" for none.
 func (e *webkitEngine) heldOpener(handle ids.PageHandle) ids.PageHandle {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.popups[handle].opener
+	return e.popups.opener(handle)
 }
 
 // DownloadSaving: WebKit writes into AO's directory and the Manager
 // publishes each finished file to the user's Downloads folder.
 func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
-func (e *webkitEngine) DiscardPage(_ context.Context, handle ids.PageHandle) error {
-	if held := e.takePopup(handle); held.view != nil {
-		return webkitCloseViewErr(held.view)
-	}
-	return nil
+// DiscardPage closes a held popup within ctx, and past it answers that the
+// close is pending while the engine still runs it (heldPopups.discard).
+func (e *webkitEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
+	return e.popups.discard(ctx, handle, webkitCloseViewSettled)
 }
 
 // OnUIThread is the Manager's cue (engineUIThread in driver.go) that every

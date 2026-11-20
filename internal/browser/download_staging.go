@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // The engines in this process (downloadsStaged) write each download into
@@ -34,7 +35,9 @@ import (
 // makes there goes through that handle (os.Root), so a run directory moved
 // aside or replaced by another never has a file of the replacement removed,
 // and a publish takes the staged file only while its path still names the
-// file in the held directory. The run directory holds an exclusive lock
+// file in the held directory. A run directory and the staging directory
+// are removed only as the directories they were, and only empty
+// (removeHeldDir), never a file put at their names. The run directory holds an exclusive lock
 // (runLockName) for as long as it exists. A process removes another run's
 // staged files only on positive evidence that the run ended: it takes that
 // run's lock (pruneStagingLocked). A run directory without its lock file,
@@ -59,6 +62,9 @@ type stagingRun struct {
 	lock *os.File
 	// files is the staged names of its running downloads.
 	files map[string]bool
+	// staging is the staging directory the run was made in, as it was
+	// then, which the run's end removes only while its path still names it.
+	staging os.FileInfo
 }
 
 // staging is the process's record of its run directories: the current run
@@ -106,7 +112,8 @@ func stageDownload() (string, error) {
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return "", fmt.Errorf("browser: create the download staging folder %s: %w", dir, err)
 	}
-	if err := checkStagingDir(dir); err != nil {
+	stagingInfo, err := checkStagingDir(dir)
+	if err != nil {
 		return "", err
 	}
 	if !staging.pruned[dir] {
@@ -121,7 +128,7 @@ func stageDownload() (string, error) {
 		run = nil
 	}
 	if run == nil {
-		if run, err = startStagingRun(dir); err != nil {
+		if run, err = startStagingRun(dir, stagingInfo); err != nil {
 			return "", err
 		}
 		staging.runs[dir] = run
@@ -135,8 +142,9 @@ func stageDownload() (string, error) {
 }
 
 // startStagingRun makes, locks and opens a run directory of this process
-// in the staging directory dir. The caller holds staging.mu.
-func startStagingRun(dir string) (*stagingRun, error) {
+// in the staging directory dir, whose identity is stagingInfo. The caller
+// holds staging.mu.
+func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 	base := "run-" + stagingToken()
 	var runDir string
 	for i := 0; ; i++ {
@@ -168,11 +176,41 @@ func startStagingRun(dir string) (*stagingRun, error) {
 	}
 	if err != nil {
 		_ = root.Remove(runLockName)
+		if held, statErr := root.Stat("."); statErr == nil {
+			_, _ = removeHeldDir(runDir, held)
+		}
 		_ = root.Close()
-		_ = os.Remove(runDir)
 		return nil, fmt.Errorf("browser: lock the download staging folder %s: %w", runDir, err)
 	}
-	return &stagingRun{dir: runDir, root: root, lock: lock, files: map[string]bool{}}, nil
+	return &stagingRun{dir: runDir, root: root, lock: lock, files: map[string]bool{}, staging: stagingInfo}, nil
+}
+
+// removeHeldDir removes the directory at path while it is still held, the
+// directory as it was found, and answers whether it did: never a file,
+// which rmdir refuses, never a directory with anything in it, and never
+// another directory put at the name since the identity was taken, which is
+// compared first. A directory swapped in between that comparison and the
+// rmdir is removed only if it is empty, so nothing put there is lost.
+func removeHeldDir(path string, held os.FileInfo) (bool, error) {
+	current, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !current.IsDir() || !os.SameFile(held, current) {
+		return false, nil
+	}
+	err = syscall.Rmdir(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTEMPTY), errors.Is(err, syscall.EEXIST):
+		// Gone already, or something in it keeps it.
+		return false, nil
+	}
+	return false, err
 }
 
 // inPlace reports whether the run's path still names its directory.
@@ -189,15 +227,14 @@ func (r *stagingRun) inPlace() bool {
 // only while its path names it, and lets go of the lock. The caller holds
 // staging.mu and the run has no staged file left.
 func (r *stagingRun) end() {
-	inPlace := r.inPlace()
+	held, heldErr := r.root.Stat(".")
 	if err := r.root.Remove(runLockName); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("browser: remove the download staging lock in %s: %v", r.dir, err)
 	}
-	if inPlace {
-		// rmdir removes an empty directory alone, never a file.
-		if err := os.Remove(r.dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("browser: remove the download staging folder %s: %v", r.dir, err)
-		}
+	if heldErr != nil {
+		log.Printf("browser: read the download staging folder %s: %v", r.dir, heldErr)
+	} else if _, err := removeHeldDir(r.dir, held); err != nil {
+		log.Printf("browser: remove the download staging folder %s: %v", r.dir, err)
 	}
 	if err := unlockRun(r.lock); err != nil {
 		log.Printf("browser: unlock the download staging folder %s: %v", r.dir, err)
@@ -210,16 +247,17 @@ func (r *stagingRun) end() {
 	}
 }
 
-// checkStagingDir verifies dir is a real directory, not a link to one.
-func checkStagingDir(dir string) error {
+// checkStagingDir verifies dir is a real directory, not a link to one,
+// and answers it.
+func checkStagingDir(dir string) (os.FileInfo, error) {
 	info, err := os.Lstat(dir)
 	if err != nil {
-		return fmt.Errorf("browser: the download staging folder: %w", err)
+		return nil, fmt.Errorf("browser: the download staging folder: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("browser: the download staging folder %s is not a folder (a link or a file is there), so nothing is saved through it", dir)
+		return nil, fmt.Errorf("browser: the download staging folder %s is not a folder (a link or a file is there), so nothing is saved through it", dir)
 	}
-	return nil
+	return info, nil
 }
 
 // stagedFileOf answers the staged file of a running download as it is in its
@@ -278,9 +316,9 @@ func releaseStaged(path string) {
 	}
 	run.end()
 	if staging.runs[stagingDir] == nil {
-		// rmdir removes an empty directory alone, never a file; another
-		// run's directory keeps it.
-		if err := os.Remove(stagingDir); err == nil {
+		// The staging directory the run was made in, only while its path
+		// still names it, and only empty: another run's directory keeps it.
+		if removed, _ := removeHeldDir(stagingDir, run.staging); removed {
 			delete(staging.pruned, stagingDir)
 		}
 	}
@@ -377,6 +415,12 @@ func pruneEndedRun(runDir string) {
 		log.Printf("browser: remove the ended run's lock in %s: %v", runDir, err)
 		return
 	}
-	// rmdir removes an empty directory alone: a file not AO's keeps it.
-	_ = os.Remove(runDir)
+	// The run directory it opened, only empty: a file not AO's keeps it.
+	held, err := root.Stat(".")
+	if err == nil {
+		_, err = removeHeldDir(runDir, held)
+	}
+	if err != nil {
+		log.Printf("browser: remove the ended download staging folder %s: %v", runDir, err)
+	}
 }

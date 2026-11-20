@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import type { BrowserDownload } from './bindings';
-import { resetBrowserCompanionForTest } from './browserCompanion.svelte';
+import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest } from './browserCompanion.svelte';
 import {
   announceBrowserDownload,
   downloadProgressStep,
@@ -10,13 +10,33 @@ import {
   downloadStatus,
 } from './browserDownloads.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
+import { TransportError, type TransportHello } from '../transport/wsClient';
 
 const THREAD = 'thread-1';
 
 function download(extra: Partial<BrowserDownload> = {}): BrowserDownload {
   return { id: 'd1', name: 'report.pdf', state: 'in_progress', receivedBytes: 0, ...extra } as BrowserDownload;
 }
+
+// A finished download announced at number 5 under list generation 1, the
+// list that resolves it then.
+function finished(extra: Partial<BrowserCompanionEvent> = {}): BrowserCompanionEvent {
+  return { kind: 'download', threadId: THREAD, download: download({ state: 'completed', receivedBytes: 10 }), downloadsGen: 1, seq: 5, ...extra };
+}
+
+// The thread's state numbered seq, showing list generation gen (0 for none).
+function state(seq: number, gen: number): BrowserCompanionEvent {
+  return { kind: 'state', threadId: THREAD, seq, downloadsGen: gen || undefined, pages: [] };
+}
+
+const hello = (launchId: string): TransportHello => ({
+  protocolVersion: 1, capabilities: [], backendId: 'home', backendName: 'home', serverTimeMs: 0,
+  clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0, launchId,
+});
+
+const showInFolder = () => getToasts()[0]?.action?.label;
 
 describe('browser downloads', () => {
   beforeEach(() => {
@@ -27,6 +47,7 @@ describe('browser downloads', () => {
     resetToastsForTest();
     resetBrowserCompanionForTest();
     setHostWindowFromBootstrap(true);
+    __setTransportHelloForTest(null);
   });
 
   it('steps the progress of the running downloads with a known size', () => {
@@ -60,7 +81,7 @@ describe('browser downloads', () => {
 
   it('announces a finished download with Show in folder, which reveals it', async () => {
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: THREAD, pages: [] })));
-    announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed', receivedBytes: 10 }) } as never);
+    announceBrowserDownload(finished());
     const toasts = getToasts();
     expect(toasts).toHaveLength(1);
     expect(toasts[0]).toMatchObject({ type: 'success', message: 'Downloaded report.pdf' });
@@ -81,10 +102,58 @@ describe('browser downloads', () => {
 
   it('puts a refused Show in folder from the toast in a toast when no pane is open', async () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => { throw new Error('browser: report.pdf is gone; downloads are removed after 7 days'); }));
-    announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed' }) } as never);
+    announceBrowserDownload(finished());
     getToasts()[0].action?.run();
     await vi.waitFor(() => expect(getToasts().some((toast) => toast.type === 'error')).toBe(true));
     expect(getToasts().find((toast) => toast.type === 'error')?.message).toContain('report.pdf is gone');
+  });
+
+  it('withdraws Show in folder when a later state shows the list cleared, keeping the toast', () => {
+    announceBrowserDownload(finished());
+    // A state read before the announcement (no list yet), and a later one
+    // of the same list, leave the action.
+    applyBrowserCompanionState(state(4, 0));
+    applyBrowserCompanionState(state(6, 1));
+    expect(showInFolder()).toBe('Show in folder');
+    applyBrowserCompanionState(state(7, 2));
+    expect(getToasts()).toMatchObject([{ type: 'success', message: 'Downloaded report.pdf' }]);
+    expect(getToasts()[0].action).toBeUndefined();
+  });
+
+  it('withdraws Show in folder when the thread\'s browser closed, which leaves no list', () => {
+    announceBrowserDownload(finished());
+    applyBrowserCompanionState(state(6, 0));
+    expect(getToasts()[0].action).toBeUndefined();
+  });
+
+  it('withdraws Show in folder when a restarted backend sends the thread\'s state', () => {
+    __setTransportHelloForTest(hello('launch-1'));
+    announceBrowserDownload(finished());
+    __setTransportHelloForTest(hello('launch-2'));
+    // The restart numbers from one again, under a generation that may repeat.
+    applyBrowserCompanionState(state(1, 1));
+    expect(getToasts()[0].action).toBeUndefined();
+  });
+
+  it('offers no Show in folder for a download its list no longer resolves when announced', () => {
+    announceBrowserDownload(finished({ downloadsGen: 0 }));
+    expect(getToasts()).toMatchObject([{ type: 'success', message: 'Downloaded report.pdf' }]);
+    expect(getToasts()[0].action).toBeUndefined();
+    resetToastsForTest();
+    // The clear's state overtook the announcement.
+    applyBrowserCompanionState(state(6, 2));
+    announceBrowserDownload(finished());
+    expect(getToasts()[0].action).toBeUndefined();
+  });
+
+  it('shows a notice, not an error, when Show in folder names a download no longer listed', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => {
+      throw new TransportError('browser_download_unavailable', "That download is no longer in this browser's list");
+    }));
+    announceBrowserDownload(finished());
+    getToasts()[0].action?.run();
+    await vi.waitFor(() => expect(getToasts().some((toast) => toast.type === 'info')).toBe(true));
+    expect(getToasts().some((toast) => toast.type === 'error')).toBe(false);
   });
 
   it('announces a failed download as an error with its reason', () => {

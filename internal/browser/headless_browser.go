@@ -24,14 +24,14 @@ type launchedBrowser struct {
 	allocCancel context.CancelFunc
 	process     *chromiumProcess
 	// downloads is the connection's download tracker: CancelDownload marks
-	// AO's cancels on it, and close settles its claims on files no page
-	// took once the process has stopped.
+	// AO's cancels on it, and close settles the claims it still holds on
+	// downloads' files once the process has stopped.
 	downloads *downloadTracker
 }
 
 // close ends the connection, then kills the browser and returns once nothing
-// it started can still write, then removes the files of the downloads no
-// page took. An error means some of it may still be running; the files go
+// it started can still write, then removes the files of the downloads the
+// tracker still holds. An error means some of it may still be running; the files go
 // anyway, since a writer still running writes to an unlinked file.
 func (b *launchedBrowser) close() error {
 	b.cancel()

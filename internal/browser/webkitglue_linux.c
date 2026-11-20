@@ -451,17 +451,24 @@ int ao_wk_view_focus_presented(void *view) {
 
 static uint64_t ao_download_seq = 0;
 
-// ao_downloads_alive counts the WebKitDownload objects not finalized yet
-// (ao_wk_downloads_alive).
-static gint ao_downloads_alive = 0;
+// ao_downloads_started and ao_downloads_freed count every WebKitDownload
+// WebKit started and every one finalized since the process began
+// (ao_wk_download_counts). Both only grow, so a reader sees a download
+// that came and went between two reads.
+static gint ao_downloads_started = 0;
+static gint ao_downloads_freed = 0;
 
 static void ao_download_gone(gpointer data, GObject *download) {
   (void)data;
   (void)download;
-  g_atomic_int_add(&ao_downloads_alive, -1);
+  g_atomic_int_inc(&ao_downloads_freed);
 }
 
-int ao_wk_downloads_alive(void) { return g_atomic_int_get(&ao_downloads_alive); }
+void ao_wk_download_counts(int *started, int *freed) {
+  // Freed first: a download is counted started before it can be freed.
+  *freed = g_atomic_int_get(&ao_downloads_freed);
+  *started = g_atomic_int_get(&ao_downloads_started);
+}
 
 // ao_download_destination hands the download to the Go side, which names
 // the staged file it is written to (the app's staging directory in the
@@ -557,7 +564,7 @@ static void ao_session_download_started(WebKitNetworkSession *session,
   // WebKitGTK 6.0 has no download -> session accessor, so the session the
   // destination callback needs travels on the download itself.
   g_object_set_data(G_OBJECT(download), AO_SESSION_KEY, session);
-  g_atomic_int_inc(&ao_downloads_alive);
+  g_atomic_int_inc(&ao_downloads_started);
   g_object_weak_ref(G_OBJECT(download), ao_download_gone, NULL);
   g_signal_connect(download, "decide-destination", G_CALLBACK(ao_download_destination), NULL);
   g_signal_connect(download, "received-data", G_CALLBACK(ao_download_received), NULL);

@@ -190,8 +190,9 @@ void ao_wk_free(void *pointer);
 int ao_wk_download_decide(void *download, const char *path);
 void ao_wk_download_cancel(void *download);
 void ao_wk_download_unref(void *download);
-// ao_wk_downloads_alive is how many downloads WebKit made are not finalized
-// yet; safe from any thread.
-int ao_wk_downloads_alive(void);
+// ao_wk_download_counts sets how many downloads WebKit started and how many
+// it finalized since the process began; both only grow, and it is safe
+// from any thread.
+void ao_wk_download_counts(int *started, int *freed);
 
 #endif

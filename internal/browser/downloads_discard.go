@@ -105,19 +105,27 @@ func (m *Manager) removeDownloadFile(f downloadFile) (int64, error) {
 		m.releaseStagedDownload(f.id)
 		return 0, nil
 	case artifactDownloadFile:
-		info, statErr := os.Lstat(f.path)
-		if errors.Is(statErr, fs.ErrNotExist) {
-			return 0, nil
+		// Every name Chromium writes it under, its partial file too.
+		var remaining int64
+		var errs []error
+		for _, name := range chromiumDownloadNames(f.path) {
+			info, statErr := os.Lstat(name)
+			if errors.Is(statErr, fs.ErrNotExist) {
+				continue
+			}
+			err := os.Remove(name)
+			switch {
+			case err == nil || errors.Is(err, fs.ErrNotExist):
+			case statErr != nil:
+				// Its size is unknown: it keeps what it reserved.
+				remaining += maxDownloadBytes
+				errs = append(errs, err, statErr)
+			default:
+				remaining += info.Size()
+				errs = append(errs, err)
+			}
 		}
-		err := os.Remove(f.path)
-		if err == nil || errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
-		}
-		if statErr != nil {
-			// Its size is unknown: it keeps what it reserved.
-			return maxDownloadBytes, errors.Join(err, statErr)
-		}
-		return info.Size(), err
+		return min(remaining, maxDownloadBytes), errors.Join(errs...)
 	}
 	panic(fmt.Sprintf("browser: download file kind %d", f.kind))
 }

@@ -134,8 +134,9 @@ Every engine reports a popup before anything else of it, and any page's
 close and crash as it observes them, holding none back: the Manager
 records each in the popup's admission (`popupadmit`) before it acts, and
 the listing's one commit decides the tab (a close refuses it, a crash
-alone lists it as a crashed tab from its first push, also when its attach
-then fails); a listed page's close and crash run in report order
+alone lists it as a crashed tab from its first push, also when a step of
+its setup then fails: every setup step's error comes back to that commit,
+`commitPopup` in `popup_listing.go`); a listed page's close and crash run in report order
 (`engine_pages.go`). An admission is kept while its popup is pending or
 listed or a popup of it is, so a download finds the nearest open
 ancestor however many popups come and go; only ended ones go to a bounded
@@ -186,7 +187,9 @@ for unmatched events (`cdp_targets.go`).
 All GTK/WebKit and AppKit/WKWebView calls go through `uiThread`
 (`native_uithread.go`, a `uicall.Thread`): `Run` for an operation, which
 never runs it after it answered withdrawn, and `Release` for giving up
-what is held, which is never withdrawn. Nothing else in this package posts
+what is held, which is never withdrawn; a popup's discard settles through
+`Settle` and answers within its caller's context that the close is pending
+(`native_popups.go`). Nothing else in this package posts
 to the UI thread; the forbidigo rule in `.golangci.yml` refuses any other
 call of Wails' `Invoke*`. Do not call `uiThread` while holding a lock
 reachable from a native callback. A closure posted to the UI thread
@@ -230,7 +233,8 @@ writes only inside the app's private staging directory there, into the
 file the Manager names as the download starts (`download_staging.go`),
 and the Manager moves the finished file beside it without copying
 (`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
-never replacing a file; WebView2 saves there itself and only a regular
+never replacing a file, and only once a private name there is seen to
+hold the download's file (`placeNoReplace`); WebView2 saves there itself and only a regular
 file of the reported size is openable (`engineSavedDownload`, whose
 comment states the limit). Close waits for a publish under way.
 Headless Chromium alone keeps downloads as artifacts with quota
@@ -273,10 +277,13 @@ its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a
 lost report or cancel never leaves a row running; headless Chromium's arrive over
-CDP (`headless_downloads.go`), which keeps each download from its start to
-its end, and the file of one the Manager did not take until its end
-arrives or the browser has stopped, then removes it. Preserve the denial of sensitive website
-permissions.
+CDP (`headless_downloads.go`), which keeps each download, with a claim on
+its partial and its final file, from its start until its writer stops:
+its end hands an admitted download's file to the Manager and removes a
+refused one's, and the browser process's exit removes every one still
+held. It decides under its lock and runs every report out of it, to the
+Manager or the filesystem, after the lock, in order. Preserve the denial
+of sensitive website permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and
 ephemeral profiles must remain distinct; a private jar is always ephemeral.

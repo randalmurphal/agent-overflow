@@ -741,6 +741,18 @@ func wkCloseViewErr(view unsafe.Pointer) error {
 	return focusReleaseError(<-released)
 }
 
+// wkCloseViewSettled closes the view on the main thread and answers how
+// its focus handoff ended once the close ran, however long the thread
+// takes (uicall.Thread.Settle): errWKUnavailable only when the loop went
+// away first. A discard's receipt runs it (heldPopups.discard).
+func wkCloseViewSettled(view unsafe.Pointer) error {
+	var code C.int
+	if !uiThread.Settle(func() { code = C.ao_wkv_view_close(view) }) {
+		return errWKUnavailable
+	}
+	return focusReleaseError(int(code))
+}
+
 func wkSetViewSize(view wkView, width, height int) error {
 	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_set_size(view, C.int(width), C.int(height)) })
 }

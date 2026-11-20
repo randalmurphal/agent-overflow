@@ -10,7 +10,8 @@
 // view operation, a constructor, a cancel), never runs it once it answered
 // withdrawn; Release, for an action that gives up something already held
 // (a view's close, a reference's unref, a decision's answer), is never
-// withdrawn, because a release that never runs leaks.
+// withdrawn, because a release that never runs leaks. Settle is Release
+// for work that owns the release's outcome and waits for it to run.
 //
 // Only the engine's adapter, which builds the Thread from the loop's post,
 // may call that post (the forbidigo rule in .golangci.yml).
@@ -112,17 +113,44 @@ func (t *Thread) Release(action func()) bool {
 	return t.dispatch(action)
 }
 
+// Settle is Release for a caller that owns the release's outcome: it waits
+// for action however long the loop takes, past the timeout, and answers
+// true once action ran; false only when the loop is gone, before it ran,
+// and then never runs it. Call it off the UI thread from work that may
+// outlast its caller's deadline (a discard the caller stopped waiting
+// for), never from a caller with a deadline of its own.
+func (t *Thread) Settle(action func()) bool {
+	done, posted := t.post1(action)
+	if !posted {
+		return false
+	}
+	for {
+		timer := time.NewTimer(t.timeout)
+		select {
+		case <-done:
+			timer.Stop()
+			return true
+		case <-timer.C:
+		}
+		if !t.alive() {
+			// The loop went away with action still queued; it never runs.
+			select {
+			case <-done:
+				return true
+			default:
+				return false
+			}
+		}
+	}
+}
+
 // dispatch posts fn and answers whether it ran within the timeout; when it
 // answers false, fn may still run later.
 func (t *Thread) dispatch(fn func()) bool {
-	if !t.alive() {
+	done, posted := t.post1(fn)
+	if !posted {
 		return false
 	}
-	done := make(chan struct{})
-	t.post(func() {
-		defer close(done)
-		fn()
-	})
 	timer := time.NewTimer(t.timeout)
 	defer timer.Stop()
 	select {
@@ -131,4 +159,18 @@ func (t *Thread) dispatch(fn func()) bool {
 	case <-timer.C:
 		return false
 	}
+}
+
+// post1 posts fn while the loop is there, answering a channel closed once
+// fn ran, and whether it was posted.
+func (t *Thread) post1(fn func()) (<-chan struct{}, bool) {
+	if !t.alive() {
+		return nil, false
+	}
+	done := make(chan struct{})
+	t.post(func() {
+		defer close(done)
+		fn()
+	})
+	return done, true
 }

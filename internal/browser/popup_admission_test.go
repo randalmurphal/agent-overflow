@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -25,6 +26,19 @@ func (p historyGatePage) HistoryState(ctx context.Context) (bool, bool, error) {
 	p.reached <- "history " + p.handle
 	<-p.gate
 	return p.handledPage.HistoryState(ctx)
+}
+
+// failingSizePage is an adopted popup's fake page whose first sizing, a
+// setup step after its attach, runs report (the ends the engine reports
+// meanwhile) and then fails.
+type failingSizePage struct {
+	*handledPage
+	report func()
+}
+
+func (p failingSizePage) SetViewport(context.Context, int, int) error {
+	p.report()
+	return errors.New("the page's process went away")
 }
 
 // A close or crash an engine reports of a popup decides its tab at the
@@ -57,7 +71,7 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 		{"a crash, then a close", []string{"crash", "close"}, none, none, crashed},
 		{"a close, then a crash", []string{"close", "crash"}, none, none, none},
 	}
-	stages := []string{"during its attach", "during an attach that fails", "during its history read", "after its listing"}
+	stages := []string{"during its attach", "during an attach that fails", "during a sizing that fails", "during its history read", "after its listing"}
 	for _, stage := range stages {
 		for _, trace := range traces {
 			t.Run(stage+"/"+trace.name, func(t *testing.T) {
@@ -114,6 +128,14 @@ func TestAPopupsEndsDecideItsTab(t *testing.T) {
 					engine.awaitAttach(t, "popup")
 					report()
 					release()
+				case "during a sizing that fails":
+					// A setup step after the attach fails as an attach
+					// failure does: its admission decides.
+					want = trace.unattached
+					engine.wrap = func(driver pageDriver) pageDriver {
+						return failingSizePage{handledPage: driver.(*handledPage), report: report}
+					}
+					manager.popupOpened(engine.popup(opener, "popup"))
 				case "during its history read":
 					engine.wrap = func(driver pageDriver) pageDriver {
 						return historyGatePage{handledPage: driver.(*handledPage), reached: engine.reached, gate: history}
@@ -318,6 +340,42 @@ func TestAPendingPopupsChainOutlivesTurnover(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("the finished download's file is gone: %v", err)
 	}
+}
+
+// A serial chain of popups, each opening the next and closing its parent
+// while the root tab stays, is longer than any list of openers an engine
+// names: the download of the last one, whose attach fails, still goes to
+// the root tab, the only listed page of its chain, which the popups'
+// admissions keep however many handoffs ago it opened the first.
+func TestALongPopupChainsDownloadFindsItsRootTab(t *testing.T) {
+	manager, engine, _, root := newAdoptionManager(t)
+	parent := root
+	for i := range maxPopupOpeners + 1 {
+		child := ids.PageHandle(fmt.Sprintf("popup-%d", i))
+		manager.adoptPopup(engine.popup(parent, child))
+		if !listed(manager, child) {
+			t.Fatalf("popup %d was not listed", i)
+		}
+		if parent != root {
+			manager.removeClosedPage(parent)
+		}
+		parent = child
+	}
+	release := engine.gate("last")
+	engine.mu.Lock()
+	engine.failing["last"] = true
+	engine.mu.Unlock()
+	done := make(chan struct{})
+	go func() { manager.adoptPopup(engine.popup(parent, "last")); close(done) }()
+	engine.awaitAttach(t, "last")
+	manager.removeClosedPage(parent)
+	// As a WebKit engine names it: by its immediate opener alone.
+	if !popupDownload(manager, engine, "last", "dl-1", parent) {
+		t.Fatal("the last popup's download was refused")
+	}
+	release()
+	<-done
+	wantDownloads(t, manager, root, "dl-1 in_progress 0")
 }
 
 // awaitAdmission waits until the admission of popup handle is decided:

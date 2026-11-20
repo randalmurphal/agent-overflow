@@ -16,7 +16,10 @@ import (
 // (downloads_thread.go): cancel, clear, reveal and open. Each resolves its
 // row by its DownloadKey in the list as it stands.
 
-var errDownloadNotFound = errors.New("browser: that download is no longer in this browser's list")
+// ErrDownloadUnavailable is the answer to an action on a download the
+// thread's list no longer resolves: it was cleared, the thread's browser
+// closed, or the app restarted since it was announced.
+var ErrDownloadUnavailable = errors.New("browser: that download is no longer in this browser's list")
 
 func (m *Manager) threadDownload(access Access, id DownloadKey) (threadDownload, error) {
 	if err := access.End(); err != nil {
@@ -29,7 +32,7 @@ func (m *Manager) threadDownload(access Access, id DownloadKey) (threadDownload,
 			return *item, nil
 		}
 	}
-	return threadDownload{}, errDownloadNotFound
+	return threadDownload{}, ErrDownloadUnavailable
 }
 
 // CancelThreadDownload is the pane's cancel for a running download. It only
@@ -94,7 +97,7 @@ func (m *Manager) ClearThreadDownloads(access Access) error {
 	}
 	m.downloadsMu.Lock()
 	if list := access.tb.downloads; list != nil {
-		list.clear()
+		list.clear(m.nextDownloadGenLocked())
 	}
 	m.downloadsMu.Unlock()
 	m.emitThreadState(access.ThreadID)

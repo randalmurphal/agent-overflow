@@ -138,18 +138,31 @@ func (p *headlessProfile) CancelDownload(id downloadID) error {
 	return nil
 }
 
-// removeDownloadFile removes the file Chromium names by download id in
-// the download directory, for a download the Manager did not take
-// (downloadTracker), once nothing writes it: a download that finished
-// before its cancel took effect left its whole file there. No caller
-// waits on it, so a failure is logged.
+// removeDownloadFile removes every file Chromium names by download id in
+// the download directory (chromiumDownloadNames), for a download whose
+// claim the tracker settles once nothing writes it (downloadTracker): a
+// download that finished before its cancel took effect left its whole
+// file there, and one whose browser exited mid-download its partial. No
+// caller waits on it, so a failure is logged.
 func (p *headlessProfile) removeDownloadFile(id downloadID) {
 	if p.downloadDir == "" {
 		return
 	}
-	if err := os.Remove(filepath.Join(p.downloadDir, filepath.Base(string(id)))); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		p.engine.logf("browser: profile %s: remove the file of download %s no page took: %v", p.handle, id, err)
+	for _, name := range chromiumDownloadNames(filepath.Join(p.downloadDir, filepath.Base(string(id)))) {
+		if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			p.engine.logf("browser: profile %s: remove the file of download %s: %v", p.handle, id, err)
+		}
 	}
+}
+
+// chromiumPartialSuffix is the suffix of the file Chromium writes a
+// download into until it finishes and renames it to path.
+const chromiumPartialSuffix = ".crdownload"
+
+// chromiumDownloadNames answers the names Chromium writes the download
+// whose final file is path under: its partial file, then path.
+func chromiumDownloadNames(path string) []string {
+	return []string{path + chromiumPartialSuffix, path}
 }
 
 // Dispose destroys the profile and everything in it: cancelling the browser

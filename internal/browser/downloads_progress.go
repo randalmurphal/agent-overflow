@@ -126,14 +126,14 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 				entry.Error = err.Error()
 			}
 		} else if entry.source.kind == artifactDownloadFile && p.authority != nil {
-			// The engine writes into its jar's directory; the finished file
-			// moves to the page's workspace's.
-			source := event.FilePath
-			if source == "" {
-				source = entry.source.path
-			}
-			if !pathInside(filepath.Dir(entry.source.path), source) {
-				end, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
+			// The engine writes into its jar's directory the file the row
+			// has owned since its admission (entry.source), and that file
+			// alone moves to the page's workspace's. A report naming
+			// another file is refused, and the row's own file goes.
+			source := entry.source.path
+			if event.FilePath != "" && filepath.Clean(event.FilePath) != source {
+				log.Printf("browser: download %s reported finished in %s, not its file %s; refused", event.ID, event.FilePath, source)
+				end, entry.Error = downloadStateFailed, "browser returned a download path other than the file it was given"
 			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
 				end, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
@@ -226,7 +226,12 @@ func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, 
 // waits for it (waitPublishes). The caller holds p's download log, which
 // this releases.
 func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold, entry *DownloadInfo, event downloadProgress) {
-	source := m.stagedPath(event.ID)
+	// The staged file the row has owned since its admission (entry.source)
+	// is the one published.
+	source := ""
+	if entry.source.kind == stagedDownloadFile {
+		source = m.stagedPath(entry.source.id)
+	}
 	failure := ""
 	switch {
 	case source == "":

@@ -114,3 +114,32 @@ func TestTheStagingPruneTakesOnlyEndedRuns(t *testing.T) {
 		t.Fatalf("the new download stages in another run's directory: %s", staged)
 	}
 }
+
+// The last release of a staging directory's runs removes the run directory
+// and the staging directory only as they were: a regular file put at
+// either's old name after the directory was moved aside stays.
+func TestTheLastStagingReleaseRemovesOnlyItsOwnDirectories(t *testing.T) {
+	for _, moved := range []string{"the staging directory", "the run directory"} {
+		t.Run(moved, func(t *testing.T) {
+			downloads := testDownloadsFolder(t)
+			staged, err := stageDownload()
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := filepath.Join(downloads, stagingDirName)
+			if moved == "the run directory" {
+				old = filepath.Dir(staged)
+			}
+			if err := os.Rename(old, filepath.Join(filepath.Dir(old), "aside")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(old, []byte("the user's"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			releaseStaged(staged)
+			if got, err := os.ReadFile(old); err != nil || string(got) != "the user's" {
+				t.Fatalf("the file at %s reads %q, %v", old, got, err)
+			}
+		})
+	}
+}

@@ -454,7 +454,13 @@ behave as a desktop browser's:
   cancel push at once, byte progress at most once a second per thread. A
   download that settles other than by the user's cancel is announced once
   (a Kind `download` event): a toast with Show in folder when it finished,
-  an error toast with the reason otherwise. `canceled` means AO stopped it:
+  an error toast with the reason otherwise. Show in folder stays on the
+  toast while the list resolves the download: each list has a generation
+  that Clear list and the thread's close change (`DownloadsGen`), and a
+  state numbered after the announcement with another one, or from a
+  restarted backend, takes the action off. An action on a download the
+  list no longer has answers `browser_download_unavailable`, shown as a
+  notice. `canceled` means AO stopped it:
   the user (settled by the engine's own report, so a finish that beats the
   cancel keeps its file; a repeated cancel never withdraws the first), under
   headless Chromium a quota or its size, or its page leaving by any path (a
