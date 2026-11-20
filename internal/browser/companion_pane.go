@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"agent-overflow/internal/browser/turnorder"
 	"agent-overflow/internal/paneplace"
@@ -248,7 +247,6 @@ func (m *Manager) notePaneSizeLocked(tb *threadBrowser, rect PaneRect) bool {
 	}
 	info.PaneW, info.PaneH = w, h
 	info.resolveViewport()
-	info.UpdatedAt = time.Now()
 	return !info.ViewportSet
 }
 

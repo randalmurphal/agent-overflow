@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"agent-overflow/internal/keybindings"
 )
@@ -206,8 +205,7 @@ type SessionInfo struct {
 	PaneH int `json:"paneHeight,omitempty"`
 	// Jar is the cookie jar the thread's pages open in (jar.go): worktree,
 	// project, thread or private.
-	Jar       string    `json:"jar"`
-	UpdatedAt time.Time `json:"-"`
+	Jar string `json:"jar"`
 	// jarGen advances with every change of Jar; a page opened under an
 	// older generation is not admitted (jarCurrentLocked).
 	jarGen uint64

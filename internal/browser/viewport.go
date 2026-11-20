@@ -83,7 +83,6 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 		m.mu.Unlock()
 		return SessionInfo{}, fmt.Errorf("browser: viewport action must be get, set, or reset")
 	}
-	info.UpdatedAt = time.Now()
 	access.tb.session = info
 	m.mu.Unlock()
 	if err := m.applyThreadViewport(access.ThreadID()); err != nil {

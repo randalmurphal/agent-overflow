@@ -94,7 +94,6 @@ func (m *Manager) selectTabWhere(access Access, turn *turnorder.Turn, pick func(
 	found := &tabs[at]
 	pageID := found.id
 	tb.session.ActivePageID = string(pageID)
-	tb.session.UpdatedAt = time.Now()
 	m.mu.Unlock()
 	if found.live != nil {
 		found.live.touch()
@@ -183,7 +182,6 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 		return SessionInfo{}, err
 	}
 	access.tb.session.Name = name
-	access.tb.session.UpdatedAt = time.Now()
 	info := access.tb.session
 	m.mu.Unlock()
 	m.emitThreadState(access.ThreadID())
@@ -233,7 +231,6 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 		if *visible {
 			tb.session.ActivePageID = string(pageID)
 		}
-		tb.session.UpdatedAt = time.Now()
 	}
 	info := tb.session
 	m.mu.Unlock()
@@ -294,7 +291,6 @@ func (m *Manager) ensureActivePage(tb *threadBrowser, pageID PageID) bool {
 		return false
 	}
 	tb.session.ActivePageID = string(pageID)
-	tb.session.UpdatedAt = time.Now()
 	return true
 }
 
@@ -320,7 +316,6 @@ func (m *Manager) repairActivePageLocked(tb *threadBrowser) {
 	if tb.session.activePage() == "" {
 		tb.session.Visible = false
 	}
-	tb.session.UpdatedAt = time.Now()
 }
 
 // recentTabLocked is the most recently used of tabs, "" for none: the tab

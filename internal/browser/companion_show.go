@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/browser/turnorder"
 )
@@ -68,7 +67,6 @@ func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome
 			return ShowPassed, "", nil
 		}
 		tb.session.ActivePageID, tb.session.Visible = string(pageID), true
-		tb.session.UpdatedAt = time.Now()
 		m.mu.Unlock()
 		m.emitThreadState(access.ThreadID())
 		m.syncPanePresentation(access.ThreadID())

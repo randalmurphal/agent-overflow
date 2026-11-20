@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"time"
 
 	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/browser/turnorder"
@@ -181,7 +180,6 @@ func (m *Manager) reserveTabLocked(ctx context.Context, access Access, turn *tur
 	}
 	if user {
 		tb.session.ActivePageID, tb.session.Visible = string(p.id), true
-		tb.session.UpdatedAt = time.Now()
 	}
 	return r, nil
 }

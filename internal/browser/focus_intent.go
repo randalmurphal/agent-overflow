@@ -62,7 +62,6 @@ const (
 
 // pageFocusIntent is one mount's current intent.
 type pageFocusIntent struct {
-	thread    ThreadID
 	mount     MountID
 	pageID    PageID
 	id        uint64
@@ -125,7 +124,7 @@ func (m *Manager) FocusCompanionPage(access Access, mount MountID, pageID PageID
 	if focus.intent != nil {
 		focus.intent.withdrawn.Store(true)
 	}
-	focus.intent = &pageFocusIntent{thread: access.ThreadID(), mount: mount, pageID: pageID, id: intent, armed: time.Now()}
+	focus.intent = &pageFocusIntent{mount: mount, pageID: pageID, id: intent, armed: time.Now()}
 	m.mu.Unlock()
 	m.applyFocusIntent(access.ThreadID())
 	return nil

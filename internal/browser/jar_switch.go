@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // SetJar sets the cookie jar the thread's pages open in (jar.go) and saves
@@ -278,7 +277,6 @@ func (sw *jarSwitch) commitLocked(m *Manager) []switchClose {
 	tb := sw.tb
 	info := &tb.session
 	info.Jar, info.jarGen, info.privateJar = sw.kind, info.jarGen+1, ""
-	info.UpdatedAt = time.Now()
 	// The recent addresses and closed tabs were the old jar's browsing; an
 	// open still running in it records nothing (recordRecentAddress). The
 	// switch's push carries both.
