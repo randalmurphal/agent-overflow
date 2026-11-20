@@ -386,7 +386,7 @@ func BenchmarkMirrorHistoryDue(b *testing.B) {
 		b.Fatal(err)
 	}
 	measureMirror(b, func(int) error {
-		_, _, err := s.ListMirrorHistoryDue(root, "", testNow)
+		_, _, err := s.ListMirrorHistoryDue(root, testNow)
 		return err
 	})
 }

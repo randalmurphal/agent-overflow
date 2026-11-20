@@ -42,8 +42,8 @@ type MirrorStore interface {
 	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt int64) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory) ([]store.MirrorHistoryResult, error)
-	ListMirrorHistoryDue(rootID int64, after string, now int64) ([]store.MirrorHistoryDue, bool, error)
-	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) ([]store.MirrorDetailWrite, error)
+	ListMirrorHistoryDue(rootID int64, now int64) ([]store.MirrorHistoryDue, bool, error)
+	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error)
 	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error)
 
 	GetMirrorDetail(rootID int64, issueID string) (store.MirrorDetail, bool, error)

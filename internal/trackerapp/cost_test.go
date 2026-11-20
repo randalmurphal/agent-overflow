@@ -286,11 +286,11 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		run  func(t *testing.T)
 		want costOf
 	}{
-		// 120 due: two listing pages (100, 20), reads of 50, 50 and 20, each
-		// stored in one write; the boards come with the listing.
+		// 120 due: one listing, reads of 50, 50 and 20, each stored in one
+		// write; the boards come with the listing.
 		{"history, 120 due", tick(BoardDue{History: true}), costOf{
 			map[string]int{"History": 3},
-			with(map[string]int{"ListMirrorHistoryDue": 2, "ReplaceMirrorHistories": 3}),
+			with(map[string]int{"ListMirrorHistoryDue": 1, "ReplaceMirrorHistories": 3}),
 		}},
 		{"history, nothing due", tick(BoardDue{History: true}), costOf{
 			map[string]int{},

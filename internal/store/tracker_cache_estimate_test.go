@@ -127,7 +127,7 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 		if got := mirrorDue(t, s, root); got == "[]" {
 			t.Fatalf("%s: nothing due after the row was read again", step.name)
 		}
-		due, _, err := s.ListMirrorHistoryDue(root, "", testNow)
+		due, _, err := s.ListMirrorHistoryDue(root, testNow)
 		if err != nil || len(due) != 1 {
 			t.Fatalf("%s: due after the row was read again = %+v, %v", step.name, due, err)
 		}

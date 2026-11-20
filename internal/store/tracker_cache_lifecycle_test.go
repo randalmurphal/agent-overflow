@@ -343,7 +343,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "10001")
 	// The reset moved the receipt past the history's write: a history
 	// listed before the reset is superseded, one listed since is stored.
-	if due, _, err := s.ListMirrorHistoryDue(root, "", testNow); err != nil || !reflect.DeepEqual(due, []MirrorHistoryDue{{IssueID: "10001", UpdatedAt: 5, Receipt: 2}}) {
+	if due, _, err := s.ListMirrorHistoryDue(root, testNow); err != nil || !reflect.DeepEqual(due, []MirrorHistoryDue{{IssueID: "10001", UpdatedAt: 5, Receipt: 2}}) {
 		t.Fatalf("history due = %v, %v; want the issue kept again", due, err)
 	}
 	stale := listedAt(s, root, statusHistory("10001", 3), 1)

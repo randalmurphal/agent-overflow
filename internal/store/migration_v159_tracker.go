@@ -99,6 +99,10 @@ package store
 //     history_for: an issue updated later than history_for is due at once,
 //     one waiting is due once its wait is over (mirrorHistoryDue), and the
 //     history covers the card when it is final for its update time.
+//     idx_tracker_cache_issues_history_waiting keys a waiting issue by the
+//     end of its wait and idx_tracker_cache_issues_history_answered by its
+//     answer, so a due read seeks those past their wait and those answered
+//     after the reader's now, and never visits one inside its wait.
 //     history_receipt counts the history writes admitted and the cleanup's
 //     resets: a write names the count its read was listed at and is
 //     superseded once it moved.
@@ -107,8 +111,9 @@ package store
 //     changed (estimate_reset_at), since estimate changes are read per
 //     board;
 //     history_boards_rev is the boards_rev the stored history was read
-//     for, so an issue is history-due while it is behind
-//     (idx_tracker_cache_issues_history_due). history_gen is the generation of changes that is the
+//     for, so an issue is history-due while it is behind;
+//     idx_tracker_cache_issues_history_due holds the issues due for a new
+//     version or boards. history_gen is the generation of changes that is the
 //     issue's history; history_dirty marks an issue whose other
 //     generations, staged or replaced, the history write or
 //     FinishMirrorCleanup has yet to delete
@@ -278,7 +283,11 @@ CREATE TABLE tracker_cache_issues (
  PRIMARY KEY (root_id, issue_id)
 );
 CREATE INDEX idx_tracker_cache_issues_history_due ON tracker_cache_issues(root_id, issue_id)
- WHERE history_for < updated_at OR history_wait > 0 OR history_boards_rev < boards_rev;
+ WHERE history_for < updated_at OR history_boards_rev < boards_rev;
+CREATE INDEX idx_tracker_cache_issues_history_waiting ON tracker_cache_issues(root_id, history_answered_at + history_wait)
+ WHERE history_wait > 0;
+CREATE INDEX idx_tracker_cache_issues_history_answered ON tracker_cache_issues(root_id, history_answered_at)
+ WHERE history_wait > 0;
 CREATE INDEX idx_tracker_cache_issues_boardless ON tracker_cache_issues(root_id, issue_id) WHERE board_rows = 0;
 CREATE INDEX idx_tracker_cache_issues_history_dirty ON tracker_cache_issues(root_id, issue_id) WHERE history_dirty = 1;
 CREATE INDEX idx_tracker_cache_issues_parent ON tracker_cache_issues(root_id, parent_id) WHERE parent_id <> '';

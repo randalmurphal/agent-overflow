@@ -35,7 +35,7 @@ var mirrorPoolReads = map[string]int{
 	// sized by the work pending.
 	"FinishMirrorCleanup":         2,
 	"finishMirrorHistoryStagings": 1, // the dirty histories, likewise
-	"ListMirrorHistoryDue":        1, // a page of the history-due index
+	"ListMirrorHistoryDue":        1, // a page of the history-due indexes, each a seek of due issues alone
 	"probeMirrorHistory":          2, // one issue's removals, and a chunk of its changes by key
 }
 

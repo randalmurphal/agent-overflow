@@ -105,12 +105,12 @@ func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.Mir
 	return c.Store.ReplaceMirrorHistories(root, sweep, hs)
 }
 
-func (c *countingStore) ListMirrorHistoryDue(root int64, after string, now int64) ([]store.MirrorHistoryDue, bool, error) {
+func (c *countingStore) ListMirrorHistoryDue(root int64, now int64) ([]store.MirrorHistoryDue, bool, error) {
 	c.count("ListMirrorHistoryDue")
-	return c.Store.ListMirrorHistoryDue(root, after, now)
+	return c.Store.ListMirrorHistoryDue(root, now)
 }
 
-func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) ([]store.MirrorDetailWrite, error) {
+func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
 	c.count("StoreMirrorDetails")
 	return c.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
 }

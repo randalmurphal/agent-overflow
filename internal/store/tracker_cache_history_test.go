@@ -231,47 +231,20 @@ func TestMirrorStatusSinceComesFromTheHistory(t *testing.T) {
 	}
 }
 
-// The issues due a history read are the kept ones with none and those
-// updated after the update theirs was read for, by ID from a keyset, a
-// page at a time.
-func TestListMirrorHistoryDue(t *testing.T) {
-	t.Parallel()
-	s, _, root := newMirror(t)
-	rows := make([]MirrorRow, 0, mirrorHistoryDuePage+3)
-	for i := range mirrorHistoryDuePage + 3 {
-		rows = append(rows, webRow(fmt.Sprintf("1%04d", i), 9, "a"))
-	}
-	writeMirrorBoard(t, s, root, "10", rows)
-	for id, readFor := range map[string]int64{"10000": 9, "10001": 8, "10002": 9} {
-		if _, err := replaceHistory(s, root, MirrorHistory{IssueID: id, For: readFor}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	first, more, err := s.ListMirrorHistoryDue(root, "", testNow)
-	if err != nil || !more || len(first) != mirrorHistoryDuePage || first[0].IssueID != "10001" || first[1].IssueID != "10003" {
-		t.Fatalf("first page = %d IDs from %v, more %v, %v; want %d from 10001, 10003", len(first), first[:2], more, err, mirrorHistoryDuePage)
-	}
-	rest, more, err := s.ListMirrorHistoryDue(root, first[len(first)-1].IssueID, testNow)
-	if err != nil || more || !reflect.DeepEqual(rest, []MirrorHistoryDue{{IssueID: "10102", Boards: []string{"10"}, BoardsRev: 1, UpdatedAt: 9}}) {
-		t.Fatalf("second page = %v, %v, %v", rest, more, err)
-	}
-	// An unkept issue is not due; an update after the history makes one due.
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: 2})); err != nil {
-		t.Fatal(err)
-	}
-	if due, _, err := s.ListMirrorHistoryDue(root, "", testNow); err != nil || due[0].IssueID != "10003" {
-		t.Fatalf("after 10001 became unkept = %v, %v", due[:1], err)
-	}
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10000", 10, "a")), nil)
-	if due, _, err := s.ListMirrorHistoryDue(root, "", testNow); err != nil || due[0].IssueID != "10000" {
-		t.Fatalf("after an update = %v, %v", due[:1], err)
-	}
-}
-
 func mustDetailWrite(t *testing.T, what string, got MirrorDetailWrite, err error, want MirrorDetailWrite) {
 	t.Helper()
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s = %+v, %v; want %+v", what, got, err, want)
+	}
+}
+
+// mustDetailStore stores one document of issue (StoreMirrorDetails) and
+// requires its outcome and the details the write dropped.
+func mustDetailStore(t *testing.T, s *Store, root int64, what, issue string, openedAt, readAt int64, want MirrorDetailWrite, dropped ...string) {
+	t.Helper()
+	got, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{IssueID: issue, Data: []byte(`{}`)}}, openedAt, readAt)
+	if wantAll := (MirrorDetailWrites{Docs: []MirrorDetailWrite{want}, Dropped: dropped}); err != nil || !reflect.DeepEqual(got, wantAll) {
+		t.Fatalf("%s = %+v, %v; want %+v", what, got, err, wantAll)
 	}
 }
 
@@ -354,7 +327,7 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 
 // The root keeps the mirrorDetailCap most recently opened details; a new
 // one that is itself the least recently opened is dropped at once and
-// reported as not stored.
+// reported as not stored, and not as dropped: it was never held.
 func TestMirrorDetailKeepsTheMostRecentlyOpened(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -369,10 +342,8 @@ func TestMirrorDetailKeepsTheMostRecentlyOpened(t *testing.T) {
 	}
 	got, err := s.ConfirmMirrorDetail(root, oldest, 1000)
 	mustDetailWrite(t, "reopening the oldest", got, err, MirrorDetailWrite{Stored: true})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10200", 1001, 1001, []byte(`{}`))
-	mustDetailWrite(t, "one over the cap", got, err, MirrorDetailWrite{Stored: true, Changed: true, Dropped: []string{"10001"}})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10201", 50, 50, []byte(`{}`))
-	mustDetailWrite(t, "a new detail older than all", got, err, MirrorDetailWrite{Dropped: []string{"10201"}})
+	mustDetailStore(t, s, root, "one over the cap", "10200", 1001, 1001, MirrorDetailWrite{Stored: true, Changed: true}, "10001")
+	mustDetailStore(t, s, root, "a new detail older than all", "10201", 50, 50, MirrorDetailWrite{})
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details`, fmt.Sprint(mirrorDetailCap))
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id IN ('10001', '10201')`, "0")
 }
@@ -561,24 +532,5 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	}
 	if n := countMirrorRows(t, s.db)["tracker_cache_changes"]; n != stored {
 		t.Fatalf("refused batches left %d changes; want %d", n, stored)
-	}
-}
-
-// A due issue carries the boards the mirror shows it on; one only a link
-// keeps has none.
-func TestMirrorHistoryDueCarriesItsBoards(t *testing.T) {
-	t.Parallel()
-	s, jira, root := newMirror(t)
-	for _, board := range []string{"10", "11", "12"} {
-		writeMirrorBoard(t, s, root, board, []MirrorRow{webRow("10001", 9, "a")})
-	}
-	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "12")
-	linkIssue(t, s, "linked", "10005")
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10005", 9)}, MirrorCatalog{}, 1); err != nil {
-		t.Fatal(err)
-	}
-	due, more, err := s.ListMirrorHistoryDue(root, "", testNow)
-	if want := []MirrorHistoryDue{{IssueID: "10001", Boards: []string{"10", "12"}, BoardsRev: 3, UpdatedAt: 9}, {IssueID: "10005", UpdatedAt: 9}}; err != nil || more || !reflect.DeepEqual(due, want) {
-		t.Fatalf("due = %+v, %v, %v\nwant %+v", due, more, err, want)
 	}
 }

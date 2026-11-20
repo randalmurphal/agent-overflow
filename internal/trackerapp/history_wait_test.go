@@ -312,7 +312,7 @@ func (h *historyScript) dueAgree(t *testing.T, at time.Duration) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	due, _, err := h.m.st.ListMirrorHistoryDue(h.m.root(), "", now)
+	due, _, err := h.m.st.ListMirrorHistoryDue(h.m.root(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestHistoryFirstSyncOfOldIssuesIsFinal(t *testing.T) {
 		issues[i] = tracker.IssueID(strconv.Itoa(20001 + i))
 	}
 	h := newHistoryScriptOf(t, 0, true, issues, 3)
-	due, _, err := h.m.st.ListMirrorHistoryDue(h.m.root(), "", h.m.svc.steady().Add(24*time.Hour).UnixMilli())
+	due, _, err := h.m.st.ListMirrorHistoryDue(h.m.root(), h.m.svc.steady().Add(24*time.Hour).UnixMilli())
 	if err != nil || len(due) != 0 {
 		t.Fatalf("issues waiting a day after the first sync: %+v, %v", due, err)
 	}

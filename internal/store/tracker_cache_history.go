@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -23,9 +22,6 @@ const (
 var mirrorChangeKinds = map[string]int{MirrorChangeStatus: 1, MirrorChangeSprint: 2, MirrorChangeEstimate: 3, MirrorChangeAssignee: 4}
 
 const (
-	// mirrorHistoryDuePage bounds one ListMirrorHistoryDue read: two read
-	// batches of histories.
-	mirrorHistoryDuePage = 100
 	// mirrorHistoryBatch bounds the histories one ReplaceMirrorHistories
 	// call takes.
 	mirrorHistoryBatch = 50
@@ -535,77 +531,4 @@ func markChangedHistories(write []mirrorHistoryRow, index map[string]int, result
 		return listed, nil
 	}
 	return encodeMirrorJSON(write)
-}
-
-// MirrorHistoryDue is an issue due a history read, with the boards the
-// mirror shows it on, sorted (none for an issue only a link keeps), and the
-// revision of that set the read names (MirrorHistory.BoardsRev). UpdatedAt
-// is the issue's update time, the version the read is for
-// (MirrorHistory.For). For, AnsweredAt and Wait are the stored history's
-// (zero: none), which tell the caller whether its read can be final.
-// Receipt is what the write of the read names (MirrorHistory.Receipt).
-type MirrorHistoryDue struct {
-	IssueID          string
-	Boards           []string
-	BoardsRev        int64
-	UpdatedAt        int64
-	For              int64
-	AnsweredAt, Wait int64
-	Receipt          int64
-}
-
-// mirrorHistoryDue is the one rule for an issue i due a history read, in a
-// statement whose ?3 is now by the caller's steady clock (Unix ms). Each
-// comparison stays in one domain. An issue updated later than the update
-// time its stored history was read for (history_for, zero for none) is due
-// at once, as is one read for fewer of its boards: versions and revisions
-// the mirror wrote. An issue whose read was not final (history_wait over
-// zero) is due once history_wait has elapsed since its answer arrived,
-// both times the caller's; an answer that arrived after now, which only a
-// later process's clock stepped back gives, makes it due at once rather
-// than wait out the step. The first term is the predicate of
-// idx_tracker_cache_issues_history_due, so a read walks that index and
-// tests the rest on the issues it holds: those due and those waiting.
-func mirrorHistoryDue(i string) string {
-	return `(` + i + `.history_for < ` + i + `.updated_at OR ` + i + `.history_wait > 0 OR ` + i + `.history_boards_rev < ` + i + `.boards_rev)
-	  AND (` + i + `.history_for < ` + i + `.updated_at OR ` + i + `.history_boards_rev < ` + i + `.boards_rev
-	    OR ?3 < ` + i + `.history_answered_at OR ?3 - ` + i + `.history_answered_at >= ` + i + `.history_wait)`
-}
-
-// mirrorHistoryDueSQL lists the due issues of root ?1 after ?2 at ?3.
-var mirrorHistoryDueSQL = `SELECT i.issue_id,
-	  (SELECT json_group_array(b.board_id) FROM tracker_cache_board_issues b
-	    WHERE b.root_id = i.root_id AND b.issue_id = i.issue_id AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `), i.boards_rev,
-	  i.updated_at, i.history_for, i.history_answered_at, i.history_wait, i.history_receipt
-	FROM tracker_cache_issues i
-	WHERE i.root_id = ?1 AND ` + mirrorHistoryDue("i") + ` AND i.issue_id > ?2 AND ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
-	ORDER BY i.issue_id LIMIT ` + strconv.Itoa(mirrorHistoryDuePage+1)
-
-// ListMirrorHistoryDue lists, by issue ID after after, up to
-// mirrorHistoryDuePage kept issues of rootID due a history read at now,
-// the caller's steady clock in Unix milliseconds (mirrorHistoryDue): the
-// issues whose history sync reads next, each with its boards. more
-// reports that issues follow the last one, so a walk of n pages is n reads.
-func (s *Store) ListMirrorHistoryDue(rootID int64, after string, now int64) (due []MirrorHistoryDue, more bool, err error) {
-	err = scanMirrorRows(s.reader(), mirrorHistoryDueSQL, []any{rootID, after, now}, func(r rowScanner) error {
-		var d MirrorHistoryDue
-		var boards []byte
-		if err := r.Scan(&d.IssueID, &boards, &d.BoardsRev, &d.UpdatedAt, &d.For, &d.AnsweredAt, &d.Wait, &d.Receipt); err != nil {
-			return err
-		}
-		if len(boards) > 2 {
-			if err := json.Unmarshal(boards, &d.Boards); err != nil {
-				return fmt.Errorf("decode issue %s boards: %w", d.IssueID, err)
-			}
-		}
-		due = append(due, d)
-		return nil
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("store: list tracker mirror %d history due: %w", rootID, err)
-	}
-	if len(due) > mirrorHistoryDuePage {
-		return due[:mirrorHistoryDuePage], true, nil
-	}
-	return due, false, nil
 }

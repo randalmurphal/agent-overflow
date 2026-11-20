@@ -461,8 +461,11 @@ and writes share:
   is due once more, so each change costs two reads at any poll interval,
   and a first sync reads each issue once when the answers carry a Date and
   twice when they do not (`mirrorHistoryDue`, one rule for the list and
-  `MirrorSync.HistoryDue`). The wait is measured on the service's steady
-  clock, the wall clock at its start plus the monotonic time since, so a
+  `MirrorSync.HistoryDue`). Neither read visits an issue inside its wait:
+  the sync state probes for the first due issue, and a unit lists its
+  at most 200 in one read, those past their wait first, so each costs
+  the page, not how many issues wait or are due. The wait is measured
+  on the service's steady clock, the wall clock at its start plus the monotonic time since, so a
   wall-clock step while it runs moves no wait. After a restart a stored
   answer proves no elapsed time: an answer that looks to come after now
   is due at once, and the read after an earlier process's answer is final

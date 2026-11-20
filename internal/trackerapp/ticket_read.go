@@ -353,13 +353,13 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 	if err != nil {
 		return Changes{}, fmt.Errorf("trackerapp: store the details of %d issues: %w", len(docs), err)
 	}
-	for i, w := range written {
+	out.Dropped = issueIDs(written.Dropped)
+	for i, w := range written.Docs {
 		rd := read[i]
 		if w.Changed {
 			out.Details = append(out.Details, rd.issue)
 			rd.stored = true
 		}
-		out.Dropped = unite(out.Dropped, issueIDs(w.Dropped))
 		switch {
 		case !w.Stored:
 			rd.check.held = rd.detail

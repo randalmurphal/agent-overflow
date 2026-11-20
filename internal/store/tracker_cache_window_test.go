@@ -25,8 +25,7 @@ func TestMirrorReopenedDetailRefusesReadsFromBeforeTheOpening(t *testing.T) {
 		}
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
-	got, err = s.StoreMirrorDetail(root, sweep, "10000", 400, 300, []byte(`{"v":"stale"}`))
-	mustDetailWrite(t, "opened again, its read earlier", got, err, MirrorDetailWrite{Stored: true, Superseded: true, Dropped: []string{"10001"}})
+	mustDetailStore(t, s, root, "opened again, its read earlier", "10000", 400, 300, MirrorDetailWrite{Stored: true, Superseded: true}, "10001")
 	got, err = s.StoreMirrorDetail(root, sweep, "10000", 0, 20, []byte(`{"v":"old"}`))
 	mustDetailWrite(t, "a read from before the eviction", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if d, ok, err := s.GetMirrorDetail(root, "10000"); err != nil || ok {
@@ -36,8 +35,7 @@ func TestMirrorReopenedDetailRefusesReadsFromBeforeTheOpening(t *testing.T) {
 	mustDetailWrite(t, "a read from the opening", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	assertRows(t, s.db, `SELECT opened_at || ' ' || read_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "400 400 now")
 
-	got, err = s.StoreMirrorDetail(root, sweep, "10201", 500, 450, []byte(`{"v":"old"}`))
-	mustDetailWrite(t, "an opening later than its own read", got, err, MirrorDetailWrite{Stored: true, Superseded: true, Dropped: []string{"10002"}})
+	mustDetailStore(t, s, root, "an opening later than its own read", "10201", 500, 450, MirrorDetailWrite{Stored: true, Superseded: true}, "10002")
 	assertRows(t, s.db, `SELECT opened_at || ' ' || read_at || ' ' || (data IS NULL) FROM tracker_cache_issue_details WHERE issue_id = '10201'`, "500 500 1")
 }
 

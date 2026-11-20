@@ -74,7 +74,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },
-		func() error { _, _, err := s.ListMirrorHistoryDue(root, "", testNow); return err },
+		func() error { _, _, err := s.ListMirrorHistoryDue(root, testNow); return err },
 		func() error { _, _, err := s.GetMirrorDetail(root, "10001"); return err },
 		func() error { _, err := s.ListMirrorDetailStates(root, []string{"10001", "10002"}); return err },
 		func() error {
@@ -200,7 +200,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"WHERE i.history_dirty = 1", "SCAN i USING INDEX idx_tracker_cache_issues_history_dirty",
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
 	{"EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = ?1", "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
-		"the partial index holds only the issues due a history read, and the probe stops at the first one kept"},
+		"every entry of the partial index is due a history read, and the probe stops at the first one kept"},
+	{"FROM tracker_cache_issues i\n\t\t  WHERE i.root_id = ?1 AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
+		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?1 AND board_id IN (", "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's issues once, " +
 			"where an index by status would cost every card write"},
@@ -262,8 +264,6 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		}
 	}
 	for name, read := range map[string]struct{ query, index string }{
-		"history due":       {mirrorHistoryDueSQL, "idx_tracker_cache_issues_history_due (root_id=? AND issue_id>?)"},
-		"history due probe": {mirrorSyncStateSQL, "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)"},
 		"sweep candidates":  {mirrorSweepCandidatesSQL, "idx_tracker_cache_issues_boardless (root_id=? AND issue_id>?)"},
 		"cleanup probe":     {mirrorCleanupPendingSQL, "idx_tracker_cache_boards_retired"},
 		"listing check":     {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},

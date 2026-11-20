@@ -301,15 +301,13 @@ type MirrorSync struct {
 // scope's sync state and, for a board listed through a live root and not
 // retired, the board's lifetime, due state (mirrorBoard.structureDueAt),
 // estimate reset and structure read, and whether a kept issue is due a
-// history read at ?3: the first entry of
-// idx_tracker_cache_issues_history_due that the due rule and the keep rule
-// admit, so a root with none due or waiting probes an empty index range,
-// and one with issues waiting reads those.
+// history read at ?3 (mirrorHistoryDueExistsSQL): a probe per arm of the
+// due rule that stops at the first kept issue, so issues waiting out their
+// wait cost nothing.
 var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep, 0),
 	  coalesce(bl.lifetime, 0), coalesce((SELECT iif(max(p.named_at) >= bl.read_at, max(p.named_at), 0) FROM tracker_cache_board_unexplained p
 	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0), coalesce(bl.estimate_reset_at, 0), coalesce(bl.read_at, 0),
-	  EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = ?1
-	    AND ` + mirrorHistoryDue("hd") + ` AND ` + mirrorIssueKept("hd.root_id", "hd.issue_id") + `),
+	  ` + mirrorHistoryDueExistsSQL("?3") + `,
 	  s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0),
 	  coalesce(s.reconciled_at, 0), coalesce(s.failed_at, 0), coalesce(s.failure_kind, ''), coalesce(s.failure_message, '')
 	FROM (SELECT 1)

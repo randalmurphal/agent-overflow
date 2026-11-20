@@ -36,20 +36,15 @@ func historyDueFixture(t *testing.T, n int) *mirrorFixture {
 	return m
 }
 
-func (m *mirrorFixture) historyDue(t *testing.T) int {
+// historyDue is how many issues the due listing lists, a unit's
+// historyBatch*historyBatches at most, and whether more are due.
+func (m *mirrorFixture) historyDue(t *testing.T) (int, bool) {
 	t.Helper()
-	n := 0
-	for after := ""; ; {
-		due, more, err := m.st.ListMirrorHistoryDue(m.root(), after, m.svc.steady().UnixMilli())
-		if err != nil {
-			t.Fatal(err)
-		}
-		n += len(due)
-		if !more || len(due) == 0 {
-			return n
-		}
-		after = due[len(due)-1].IssueID
+	due, more, err := m.st.ListMirrorHistoryDue(m.root(), m.svc.steady().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
 	}
+	return len(due), more
 }
 
 // A linked round runs its connection's ticks while a unit reports More,
@@ -64,17 +59,17 @@ func TestALinkedRoundRunsWhileMoreRemains(t *testing.T) {
 	}{
 		// Ticks of at most historyBatches requests each: 2 for 201 issues,
 		// 6 for 1,001. Each tick reads its sync state, lists the due issues
-		// a listing page at a time and writes each batch; the first also
-		// reads the linked issues and records the cards unit's read. The
-		// calls are store accessor calls, each one statement or transaction.
-		{201, 5, "GetMirrorSync:2 ListMirrorHistoryDue:3 ListMirrorOffBoardLinkedIssues:1 RecordMirrorSyncAttempt:1 ReplaceMirrorHistories:5"},
-		{1001, 21, "GetMirrorSync:6 ListMirrorHistoryDue:11 ListMirrorOffBoardLinkedIssues:1 RecordMirrorSyncAttempt:1 ReplaceMirrorHistories:21"},
+		// once and writes each batch; the first also reads the linked issues
+		// and records the cards unit's read. The calls are store accessor
+		// calls, each one statement or transaction.
+		{201, 5, "GetMirrorSync:2 ListMirrorHistoryDue:2 ListMirrorOffBoardLinkedIssues:1 RecordMirrorSyncAttempt:1 ReplaceMirrorHistories:5"},
+		{1001, 21, "GetMirrorSync:6 ListMirrorHistoryDue:6 ListMirrorOffBoardLinkedIssues:1 RecordMirrorSyncAttempt:1 ReplaceMirrorHistories:21"},
 	} {
 		t.Run(fmt.Sprint(c.due), func(t *testing.T) {
 			t.Parallel()
 			m := historyDueFixture(t, c.due)
-			if got := m.historyDue(t); got != c.due {
-				t.Fatalf("%d issues due", got)
+			if listed, more := m.historyDue(t); listed != historyBatch*historyBatches || !more {
+				t.Fatalf("%d issues listed due, more %v", listed, more)
 			}
 			cs := newCountingStore(m.st)
 			m.svc.store = cs
@@ -82,8 +77,8 @@ func TestALinkedRoundRunsWhileMoreRemains(t *testing.T) {
 			m.svc.linkedRound(t.Context())
 			provider, stored := countsOf(m.p.callsInOrder()[calls:]), cs.take()
 			t.Logf("a round over %d due: provider %s, store %s", c.due, describeCounts(provider), describeCounts(stored))
-			if got := m.historyDue(t); got != 0 {
-				t.Fatalf("%d issues left due", got)
+			if listed, more := m.historyDue(t); listed != 0 || more {
+				t.Fatalf("%d issues left due, more %v", listed, more)
 			}
 			delete(stored, "ListTrackerConnections")
 			if provider["History"] != c.requests || len(provider) != 1 || describeCounts(stored) != c.store {
@@ -126,7 +121,7 @@ func TestALinkedRoundStopsWhereItMust(t *testing.T) {
 			if got := int(calls.Load()); got != historyBatches {
 				t.Fatalf("the round made %d history reads after it was to stop at %d", got, historyBatches)
 			}
-			if got := m.historyDue(t); got == 0 {
+			if listed, _ := m.historyDue(t); listed == 0 {
 				t.Fatal("nothing left due")
 			}
 		})

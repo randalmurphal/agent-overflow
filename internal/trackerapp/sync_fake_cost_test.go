@@ -398,7 +398,7 @@ func TestFakeJiraLargeBoardCosts(t *testing.T) {
 		edited = append(edited, tracker.IssueID(fmt.Sprint(20000+i*7)))
 	}
 	s.largeCosts(t, Scope{Connection: conn.ID, Board: "1"}, func() { s.editTitles(t, conn.ID, edited) }, map[string][2]int{
-		"first sync": {6, 8}, "history backfill": {8, 7}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 3},
+		"first sync": {6, 8}, "history backfill": {8, 6}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 3},
 	})
 }
 
@@ -422,6 +422,6 @@ func TestFakeLinearLargeBoardCosts(t *testing.T) {
 		edited = append(edited, tracker.IssueID(lid(1000+i*7)))
 	}
 	s.largeCosts(t, Scope{Connection: conn.ID, Board: tracker.BoardID(lid(10))}, func() { s.editTitles(t, conn.ID, edited) }, map[string][2]int{
-		"first sync": {10, 8}, "history backfill": {4, 7}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 3},
+		"first sync": {10, 8}, "history backfill": {4, 6}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 3},
 	})
 }

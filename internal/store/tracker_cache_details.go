@@ -25,14 +25,23 @@ type MirrorDetail struct {
 	row, sweep int64
 }
 
-// MirrorDetailWrite is what a detail write did: whether the issue's detail
-// is held after it (Stored), whether its document changed, whether the
-// document was superseded by one from a read that began later, and the
-// issues whose details it dropped to keep the mirrorDetailCap most
-// recently opened, the written issue's own included when it is the oldest.
+// MirrorDetailWrite is what a detail write did for one issue, as its
+// transaction committed: whether the issue's detail is held after it
+// (Stored), whether its document changed, and whether the document was
+// superseded by one from a read that began later.
 type MirrorDetailWrite struct {
 	Stored, Changed, Superseded bool
-	Dropped                     []string
+}
+
+// MirrorDetailWrites is what StoreMirrorDetails did, as its transaction
+// committed: each document's outcome, in the order of its documents, and
+// the issues whose details it dropped to keep the mirrorDetailCap most
+// recently opened, sorted. Dropped names only details held before the
+// write: a new detail the cap drops in the same write was never held, and
+// its outcome says so (Stored false).
+type MirrorDetailWrites struct {
+	Docs    []MirrorDetailWrite
+	Dropped []string
 }
 
 // mirrorDetailEvictSQL drops the details of a root beyond the
@@ -133,13 +142,15 @@ type MirrorDetailDoc struct {
 	Data    []byte
 }
 
-// StoreMirrorDetail is StoreMirrorDetails of one document.
+// StoreMirrorDetail is StoreMirrorDetails of one document, returning its
+// outcome alone: a caller that must learn which other details the write
+// dropped calls StoreMirrorDetails.
 func (s *Store) StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt, readAt int64, data []byte) (MirrorDetailWrite, error) {
 	out, err := s.StoreMirrorDetails(rootID, sweep, []MirrorDetailDoc{{IssueID: issueID, Data: data}}, openedAt, readAt)
 	if err != nil {
 		return MirrorDetailWrite{}, err
 	}
-	return out[0], nil
+	return out.Docs[0], nil
 }
 
 // StoreMirrorDetails stores, in one transaction, the documents of docs
@@ -154,79 +165,87 @@ func (s *Store) StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt,
 // than the opening (Superseded otherwise), so a document read before its
 // detail was dropped (the cap) or swept does not come back. sweep is the
 // root's sweep captured before the read (ErrTrackerCacheSwept). Each
-// document costs its state read and at most one write; a new detail drops
-// those beyond the mirrorDetailCap most recently opened. The results are
-// in docs' order.
-func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, openedAt, readAt int64) (results []MirrorDetailWrite, err error) {
+// document costs its state read and at most one write; a write that
+// started a detail then drops, in one statement after every document is
+// written, those beyond the mirrorDetailCap most recently opened, and the
+// outcomes are of the committed state: a document the cap dropped, by an
+// opening of the same write or another, is not Stored.
+func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, openedAt, readAt int64) (out MirrorDetailWrites, err error) {
 	if len(docs) == 0 || readAt <= 0 || openedAt < 0 || sweep <= 0 {
-		return nil, fmt.Errorf("%w: a detail write needs documents, the time their read began and the root's sweep", ErrInvalidTrackerCache)
+		return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write needs documents, the time their read began and the root's sweep", ErrInvalidTrackerCache)
 	}
 	for i, d := range docs {
 		if d.IssueID == "" || slices.ContainsFunc(docs[:i], func(o MirrorDetailDoc) bool { return o.IssueID == d.IssueID }) {
-			return nil, fmt.Errorf("%w: a detail write names each of its issues once", ErrInvalidTrackerCache)
+			return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write names each of its issues once", ErrInvalidTrackerCache)
 		}
 	}
 	action := fmt.Sprintf("store: store tracker mirror %d details of %d issues", rootID, len(docs))
 	err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
-		results = make([]MirrorDetailWrite, len(docs))
+		out = MirrorDetailWrites{Docs: make([]MirrorDetailWrite, len(docs))}
+		started := make([]bool, len(docs))
 		for i, d := range docs {
-			if err := storeMirrorDetailTx(tx, rootID, d.IssueID, openedAt, readAt, mirrorData(d.Data), &results[i]); err != nil {
+			var err error
+			if started[i], err = storeMirrorDetailTx(tx, rootID, d.IssueID, openedAt, readAt, mirrorData(d.Data), &out.Docs[i]); err != nil {
 				return fmt.Errorf("issue %s: %w", d.IssueID, err)
 			}
+		}
+		if !slices.Contains(started, true) {
+			return nil
+		}
+		dropped, err := queryIDs(tx, mirrorDetailEvictSQL, rootID)
+		if err != nil {
+			return fmt.Errorf("drop details: %w", err)
+		}
+		for i, d := range docs {
+			if !slices.Contains(dropped, d.IssueID) {
+				continue
+			}
+			out.Docs[i].Stored, out.Docs[i].Changed = false, false
+			if started[i] {
+				dropped = slices.DeleteFunc(dropped, func(id string) bool { return id == d.IssueID })
+			}
+		}
+		if len(dropped) > 0 {
+			slices.Sort(dropped)
+			out.Dropped = dropped
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return MirrorDetailWrites{}, err
 	}
-	return results, nil
+	return out, nil
 }
 
-// storeMirrorDetailTx is StoreMirrorDetails of one document.
-func storeMirrorDetailTx(tx *sql.Tx, rootID int64, issueID string, openedAt, readAt int64, data []byte, result *MirrorDetailWrite) error {
+// storeMirrorDetailTx is StoreMirrorDetails of one document before the
+// cap's eviction, reporting whether it started a detail the mirror did not
+// hold.
+func storeMirrorDetailTx(tx *sql.Tx, rootID int64, issueID string, openedAt, readAt int64, data []byte, result *MirrorDetailWrite) (started bool, err error) {
 	st, err := readMirrorDetailTx(tx, rootID, issueID, data)
 	switch {
 	case err != nil:
-		return err
+		return false, err
 	case !st.kept || (!st.held && openedAt == 0):
-		return nil
+		return false, nil
 	case st.held && (st.readAt > readAt || !st.differs):
 		// A later read's document, or the same one: the opening and the
 		// read time move forward, a narrow write that the opened index
 		// reads only when the opening moves.
 		result.Stored, result.Superseded = true, st.readAt > readAt && st.differs
 		if st.readAt >= readAt && st.openedAt >= openedAt {
-			return nil
+			return false, nil
 		}
 		if _, err := tx.Exec(mirrorDetailMoveSQL, rootID, issueID, readAt, openedAt); err != nil {
-			return fmt.Errorf("record the detail's read: %w", err)
+			return false, fmt.Errorf("record the detail's read: %w", err)
 		}
-		return nil
+		return false, nil
 	}
 	if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, issueID, readAt, data, openedAt); err != nil {
-		return fmt.Errorf("write detail: %w", err)
+		return false, fmt.Errorf("write detail: %w", err)
 	}
 	result.Stored, result.Changed = true, st.held || readAt >= openedAt
 	result.Superseded = !result.Changed
-	if !st.held {
-		return evictMirrorDetailsTx(tx, rootID, issueID, result)
-	}
-	return nil
-}
-
-// evictMirrorDetailsTx drops the details beyond the cap after a new one,
-// reporting whether the new one itself went.
-func evictMirrorDetailsTx(tx *sql.Tx, rootID int64, issueID string, result *MirrorDetailWrite) error {
-	dropped, err := queryIDs(tx, mirrorDetailEvictSQL, rootID)
-	if err != nil {
-		return fmt.Errorf("drop details: %w", err)
-	}
-	slices.Sort(dropped)
-	result.Dropped = dropped
-	if slices.Contains(dropped, issueID) {
-		result.Stored, result.Changed = false, false
-	}
-	return nil
+	return !st.held, nil
 }
 
 // GetMirrorDetail reads the stored document of an issue the mirror keeps,

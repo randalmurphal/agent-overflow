@@ -29,40 +29,35 @@ const (
 // it is not due again until its card moves. Which issues are due is the
 // store's rule (store ListMirrorHistoryDue), on the steady clock: an issue
 // that changed is read at once and, when that read is not final for its
-// update (historyFinal), once more a settle margin after its answer.
+// update (historyFinal), once more a settle margin after its answer. One
+// listing gives the unit its issues, a page the size of historyBatches
+// reads; each read either clears its issues' due state or is superseded
+// by a write that did, so the next tick's listing reaches the issues
+// behind them.
 func (r *run) history() (UnitResult, error) {
 	var out UnitResult
-	after, reads, now := "", 0, r.steadyAt()
-	for {
-		due, more, err := r.s.store.ListMirrorHistoryDue(r.root, after, now)
-		if err != nil {
-			return out, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
-		}
-		for batch := range slices.Chunk(due, historyBatch) {
-			if reads == historyBatches {
-				out.More = true
-				return out, nil
-			}
-			reads++
-			err := r.againIfSwept(func() error {
-				ch, err := r.historyOf(batch)
-				out.Changes.add(ch)
-				return err
-			})
-			if err != nil {
-				return out, err
-			}
-		}
-		if !more || len(due) == 0 {
-			return out, nil
-		}
+	due, more, err := r.s.store.ListMirrorHistoryDue(r.root, r.steadyAt())
+	if err != nil {
+		return out, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
+	}
+	reads := 0
+	for batch := range slices.Chunk(due, historyBatch) {
 		if reads == historyBatches {
-			// The next page is known to hold due issues: no read to learn it.
 			out.More = true
 			return out, nil
 		}
-		after = due[len(due)-1].IssueID
+		reads++
+		err := r.againIfSwept(func() error {
+			ch, err := r.historyOf(batch)
+			out.Changes.add(ch)
+			return err
+		})
+		if err != nil {
+			return out, err
+		}
 	}
+	out.More = more
+	return out, nil
 }
 
 // historyOf reads and stores the history of the issues of due.
