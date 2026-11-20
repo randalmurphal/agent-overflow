@@ -80,8 +80,9 @@ export class CompanionEvent {
      * Find rides a Kind "find" event: a page's search ended without its
      * owner asking (navigation, a tab switch, a hidden pane, the page
      * closing, another owner's start), so a find bar showing it closes.
-     * A Kind "escape" event names only ThreadID and PageID: a bare Escape
-     * was pressed in that page while a pane showed it, and the page kept it.
+     * A Kind "escape" event names only ThreadID, PageID and Mount, the pane
+     * mount showing the page: a bare Escape was pressed in that page while
+     * a pane showed it, and the page kept it.
      * A Kind "teardown" event names ThreadID, PageID and Error: a page that
      * already left the tab set failed to close or to release its profile.
      */
@@ -225,9 +226,10 @@ export class FindState {
     "document": number;
 
     /**
-     * Session is the generation: it increases with every find action and
-     * end across the Manager, so an answer older than an end is
-     * recognizably stale.
+     * Session is the generation, from one counter across the Manager: a
+     * start, a stop and every end take a new one, and a step that succeeds
+     * keeps its search's, so an answer older than an end is recognizably
+     * stale.
      */
     "session": number;
 
@@ -331,6 +333,12 @@ export class PageInfo {
      * call on it, or presenting it, reloads its URL.
      */
     "suspended"?: boolean;
+
+    /**
+     * ReadError rides only a page listing (Pages): reading a live page
+     * failed, and its URL and title are the last the Manager knew.
+     */
+    "readError"?: string;
 
     /**
      * The fields below ride only the companion state (threadState); a tool
