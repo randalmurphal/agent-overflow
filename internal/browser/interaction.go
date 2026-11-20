@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -263,20 +264,27 @@ func (m *Manager) waitForPage(ctx context.Context, p *managedPage, urlPattern, l
 func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before navigationMark, urlPattern, loadState string) error {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	// readErr is the last read's failure. A page in the middle of a
+	// navigation can fail one; it is no evidence either way, so the wait
+	// reads again, and a wait that ends on one says so.
+	var readErr error
 	for {
-		// A mark the engine cannot read is empty, not an error: an unreadable
-		// location differs from the one recorded before the action, which is
-		// itself evidence the page moved.
-		current, _ := p.driver.NavigationMark(ctx)
-		changed := current.URL != before.URL
-		if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
-			changed = true
-		}
-		if changed {
-			return m.waitForPage(ctx, p, urlPattern, loadState)
+		current, err := p.driver.NavigationMark(ctx)
+		readErr = err
+		if err == nil {
+			changed := current.URL != before.URL
+			if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
+				changed = true
+			}
+			if changed {
+				return m.waitForPage(ctx, p, urlPattern, loadState)
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if readErr != nil {
+				return errors.Join(ctx.Err(), fmt.Errorf("read the page's navigation: %w", readErr))
+			}
 			return ctx.Err()
 		case <-ticker.C:
 		}
