@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -17,8 +18,9 @@ import (
 	"agent-overflow/internal/tracker/linearprovider"
 )
 
-// Store is the tracker connection accessors the service uses.
+// Store is the tracker connection and mirror accessors the service uses.
 type Store interface {
+	MirrorStore
 	CreateTrackerConnection(c store.NewTrackerConnection) (store.TrackerConnection, error)
 	GetTrackerConnection(id string) (store.TrackerConnection, error)
 	ListTrackerConnections() ([]store.TrackerConnection, error)
@@ -80,6 +82,11 @@ type Service struct {
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
 	opMu sync.Mutex
+	// holds keeps, by connection, what a tick reuses so that it reads
+	// nothing but its scope's sync state: the row, the mirror root and the
+	// provider (unit.go). Every change to a connection made through the
+	// service drops them all (forgetHolds), as does Stop. Guarded by opMu.
+	holds map[string]*connHold
 
 	// mu guards the registry below. It is held only for map and flag
 	// operations, never across a store call, a file or a tracker call.
@@ -94,13 +101,30 @@ type Service struct {
 	problems map[string]Failure
 	stopped  bool
 	inflight sync.WaitGroup
+	// locks are the scope and history locks of the ticks in flight
+	// (tick.go); unexplained the references each scope's last structure
+	// read left unexplained (unexplained.go), unexplainedUse their write
+	// counter.
+	locks          map[lockKey]*scopeLock
+	unexplained    map[Scope]*unexplainedSet
+	unexplainedUse uint64
+
+	// logf records what fails after the operation that caused it has
+	// succeeded: a mirror's drain. Tests replace it.
+	logf func(format string, args ...any)
 
 	// beforePublish, set only by tests, runs in settle between its record
 	// and the publication, where Stop may overtake a settlement.
 	beforePublish func()
+	// makeProvider builds the provider of a connection in use from its
+	// client; tests replace it with a scripted provider.
+	makeProvider func(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error)
 }
 
-// New makes the service. It refuses a missing dependency.
+// New makes the service. It refuses a missing dependency, and reads,
+// builds and starts nothing else: a client is built on a connection's
+// first use, and the drain of mirrors a turn off or removal left is the
+// app's call to FinishMirrorCleanup.
 func New(deps Deps) (*Service, error) {
 	switch {
 	case deps.Store == nil, deps.Changed == nil, deps.Origin == nil, deps.Now == nil, deps.Life == nil:
@@ -117,6 +141,9 @@ func New(deps Deps) (*Service, error) {
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
 		digestKey: key,
 		clients:   map[string]*clients{}, problems: map[string]Failure{},
+		locks: map[lockKey]*scopeLock{}, unexplained: map[Scope]*unexplainedSet{}, holds: map[string]*connHold{},
+		makeProvider: buildProvider,
+		logf:         log.Printf,
 	}, nil
 }
 
@@ -127,6 +154,9 @@ func (s *Service) Stop() {
 	for _, c := range s.halt() {
 		c.close()
 	}
+	s.opMu.Lock()
+	s.forgetHolds()
+	s.opMu.Unlock()
 	s.inflight.Wait()
 }
 
@@ -139,6 +169,7 @@ func (s *Service) halt() map[string]*clients {
 	open := s.clients
 	s.clients = map[string]*clients{}
 	clear(s.problems)
+	clear(s.unexplained)
 	return open
 }
 
@@ -182,12 +213,14 @@ func (s *Service) use(row store.TrackerConnection) (*clients, error) {
 // which ends its calls in flight, and its problem is forgotten. A Jira
 // connection takes the Tempo connection that belongs to it along, since
 // a provider made while both were in use holds both clients; the Tempo
-// row is left as it is, and its next use builds a new client. It reports
-// whether a problem was forgotten. The caller holds opMu.
+// row is left as it is, and its next use builds a new client. The
+// connection's unexplained references go with it. It reports whether a
+// problem was forgotten. The caller holds opMu.
 func (s *Service) stopUsing(id string) bool {
 	s.mu.Lock()
 	_, had := s.problems[id]
 	delete(s.problems, id)
+	s.forgetUnexplainedLocked(id)
 	var closing []*clients
 	for cid, c := range s.clients {
 		if cid == id || c.parentID == id {
@@ -383,29 +416,59 @@ func (s *Service) Provider(ctx context.Context, id string) (tracker.Provider, er
 	if err != nil {
 		return nil, err
 	}
+	p, _, err := s.providerLocked(row)
+	return p, err
+}
+
+// providerLocked is the provider of connection row, with the client of
+// the connection itself that its calls are stamped on (begin). The caller
+// holds opMu and read row under it.
+func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider, *clients, error) {
 	if row.Kind == store.TrackerKindTempo {
-		return nil, fmt.Errorf("%w: %s", ErrNoProvider, id)
+		return nil, nil, fmt.Errorf("%w: %s", ErrNoProvider, row.ID)
 	}
 	c, err := s.use(row)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var timeClients *clients
+	if row.Kind == store.TrackerKindJira {
+		timeRow, ok, err := s.tempoOf(row.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok && timeRow.Enabled {
+			if timeClients, err = s.use(timeRow); err != nil {
+				return nil, nil, fmt.Errorf("trackerapp: the Tempo connection of %s: %w", row.ID, err)
+			}
+		}
+	}
+	p, err := s.makeProvider(row, c, timeClients)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, c, nil
+}
+
+// buildProvider is the provider over c, the client of connection row, and
+// for a Jira connection tempo, its Tempo connection's client or nil.
+func buildProvider(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error) {
 	if row.Kind == store.TrackerKindLinear {
-		return linearprovider.New(c.linear)
+		p, err := linearprovider.New(c.linear)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 	opts := jiraprovider.Options{Jira: c.jira, Site: row.Site}
-	timeRow, ok, err := s.tempoOf(id)
+	if tempo != nil {
+		opts.Tempo = tempo.tempo
+	}
+	p, err := jiraprovider.New(opts)
 	if err != nil {
 		return nil, err
 	}
-	if ok && timeRow.Enabled {
-		t, err := s.use(timeRow)
-		if err != nil {
-			return nil, fmt.Errorf("trackerapp: the Tempo connection of %s: %w", id, err)
-		}
-		opts.Tempo = t.tempo
-	}
-	return jiraprovider.New(opts)
+	return p, nil
 }
 
 // tempoOf reads the Tempo connection that belongs to Jira connection id.

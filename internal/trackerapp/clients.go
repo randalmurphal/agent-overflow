@@ -208,11 +208,3 @@ func (p parentIssues) IDs(ctx context.Context, keys []string) (map[string]int64,
 	}
 	return jiraprovider.TempoIssues(c).IDs(ctx, keys)
 }
-
-func (p parentIssues) Keys(ctx context.Context, ids []int64) (map[int64]string, error) {
-	c, err := p.s.jiraClient(p.parentID)
-	if err != nil {
-		return nil, err
-	}
-	return jiraprovider.TempoIssues(c).Keys(ctx, ids)
-}

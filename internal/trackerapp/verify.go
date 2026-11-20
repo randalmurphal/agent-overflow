@@ -71,6 +71,7 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 
 	s.opMu.Lock()
 	out, moved, err := s.settleVerification(row, at, file, verification, callErr)
+	s.forgetHolds()
 	s.opMu.Unlock()
 	if moved {
 		s.changed()

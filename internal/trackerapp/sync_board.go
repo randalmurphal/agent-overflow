@@ -1,0 +1,143 @@
+package trackerapp
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+
+	"agent-overflow/internal/tracker"
+)
+
+// Bounds of one unit in a tick. A unit that reaches its bound stops with
+// UnitResult.More; the next tick that names it continues where the mirror
+// says.
+const (
+	// deltaPages is the most pages of changed rows one delta reads.
+	deltaPages = 10
+	// reconcileBatches is the most batches of missing rows one reconcile
+	// reads, readBatch issues each.
+	reconcileBatches = 10
+)
+
+// delta is the delta unit of board (SyncBoard), from the cursor of the
+// sync state the tick read at its start. A page with no rows still stores
+// the cursor it returned, which moves the next walk's start; a page with
+// no rows that returned the cursor it started from is not written: the
+// read the tick records admits that cursor.
+func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
+	var out UnitResult
+	ch, err := r.boardHeld(board)
+	out.Changes.add(ch)
+	if err != nil {
+		return out, err
+	}
+	lifetime, err := r.lifetime(board)
+	if err != nil {
+		return out, err
+	}
+	var cursor tracker.Cursor
+	if len(r.state.Cursor) > 0 {
+		cursor = r.state.Cursor
+	}
+	n := newRefs()
+	for pages := 0; ; pages++ {
+		if pages == deltaPages {
+			out.More = true
+			break
+		}
+		q := tracker.DeltaQuery{Board: board, From: cursor, Start: r.window()}
+		read := r.readAt()
+		r.calls++
+		page, err := r.p.ChangedRows(r.ctx, q)
+		if err != nil && pages == 0 && cursor != nil && errors.Is(err, tracker.ErrInvalidInput) {
+			// A cursor of an encoding the provider no longer reads: the walk
+			// starts over from the history window.
+			q.From, cursor = nil, nil
+			read = r.readAt()
+			r.calls++
+			page, err = r.p.ChangedRows(r.ctx, q)
+		}
+		if err != nil {
+			return out, fmt.Errorf("trackerapp: read the changed rows of board %s: %w", board, call(err))
+		}
+		m, err := mirrorRows(board, page.Rows, nil, page.Catalog, read)
+		if err != nil {
+			return out, err
+		}
+		m.Lifetime = lifetime
+		if len(m.Rows) > 0 || cursor == nil || !bytes.Equal(page.Next, cursor) {
+			stored, err := r.s.store.WriteMirrorRowPage(r.root, m, page.Next)
+			if err != nil {
+				return out, fmt.Errorf("trackerapp: store a page of board %s: %w", board, err)
+			}
+			ch := changesOf(stored)
+			n.add(page.Rows, ch)
+			out.Changes.add(ch)
+		}
+		cursor = page.Next
+		if !page.More {
+			break
+		}
+	}
+	return out, r.cascade(board, n, &out)
+}
+
+// reconcile is the reconcile unit of board (SyncBoard).
+func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
+	var out UnitResult
+	ch, err := r.boardHeld(board)
+	out.Changes.add(ch)
+	if err != nil {
+		return out, err
+	}
+	lifetime, err := r.lifetime(board)
+	if err != nil {
+		return out, err
+	}
+	read := r.readAt()
+	r.calls++
+	listing, err := r.p.BoardIssues(r.ctx, board, r.window())
+	if err != nil {
+		return out, fmt.Errorf("trackerapp: list the issues of board %s: %w", board, call(err))
+	}
+	result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), lifetime, idStrings(listing.IDs), listing.Complete, read)
+	if err != nil {
+		return out, fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
+	}
+	out.Changes.add(Changes{Removed: issueIDs(result.Removed)})
+	missing := issueIDsInOrder(result.Missing)
+	if limit := reconcileBatches * readBatch; len(missing) > limit {
+		missing, out.More = missing[:limit], true
+	}
+	n := newRefs()
+	ch, err = r.boardRows(board, missing, n)
+	out.Changes.add(ch)
+	if err != nil {
+		return out, err
+	}
+	return out, r.cascade(board, n, &out)
+}
+
+// boardHeld makes sure the mirror holds board's structure, which the store
+// requires before the board's rows. The store shows a board's sync state
+// only once it holds the structure, so a state the tick found means no
+// read is needed.
+func (r *run) boardHeld(board tracker.BoardID) (Changes, error) {
+	if r.stored {
+		return Changes{}, nil
+	}
+	ch, err := r.ensureStructure(board)
+	if err == nil {
+		r.stored = true
+	}
+	return ch, err
+}
+
+// issueIDsInOrder is ids as issue IDs, in their order.
+func issueIDsInOrder(ids []string) []tracker.IssueID {
+	out := make([]tracker.IssueID, len(ids))
+	for i, id := range ids {
+		out[i] = tracker.IssueID(id)
+	}
+	return out
+}

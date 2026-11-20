@@ -1,0 +1,277 @@
+package trackerapp
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
+)
+
+// The mirror is filled by resource, and each resource has one read that
+// sync and writes share: it reads from the tracker, stores through the
+// store and returns what the store changed. A read of many issues is made
+// in batches of readBatch, each read and stored before the next, so a
+// failure keeps the batches already stored.
+
+// readBatch is the most issues one provider read and one store
+// transaction take.
+const readBatch = 100
+
+// mirrorRows is rows as one store page of board's rows, read from readAt.
+func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.IssueID, catalog tracker.Catalog, readAt int64) (store.MirrorRowPage, error) {
+	page := store.MirrorRowPage{BoardID: string(board), Missing: idStrings(missing), Rows: make([]store.MirrorRow, 0, len(rows)), ReadAt: readAt}
+	for _, row := range rows {
+		m, err := mirrorRow(row)
+		if err != nil {
+			return store.MirrorRowPage{}, err
+		}
+		page.Rows = append(page.Rows, m)
+	}
+	var err error
+	page.Catalog, err = mirrorCatalog(catalog)
+	return page, err
+}
+
+// boardRows reads board's rows of issues and stores them; the issues the
+// board no longer lists lose their row. n, when not nil, gathers what the
+// stored rows name. The board's structure must be in the mirror
+// (store.ErrTrackerCacheNoBoard otherwise).
+func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, n *refs) (Changes, error) {
+	var out Changes
+	lifetime, err := r.lifetime(board)
+	if err != nil {
+		return out, err
+	}
+	for batch := range slices.Chunk(issues, readBatch) {
+		read := r.readAt()
+		r.calls++
+		rows, err := r.p.BoardRows(r.ctx, board, batch)
+		if err != nil {
+			return out, fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
+		}
+		page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
+		if err != nil {
+			return out, err
+		}
+		page.Lifetime = lifetime
+		stored, err := r.s.store.WriteMirrorRows(r.root, page)
+		if err != nil {
+			return out, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
+		}
+		ch := changesOf(stored)
+		if n != nil {
+			n.add(rows.Rows, ch)
+		}
+		out.add(ch)
+	}
+	return out, nil
+}
+
+// cards reads the cards of issues with no board and stores those of the
+// issues the mirror keeps. An issue the tracker does not return keeps
+// what the mirror holds of it.
+func (r *run) cards(issues []tracker.IssueID) (Changes, error) {
+	var out Changes
+	for batch := range slices.Chunk(issues, readBatch) {
+		err := r.againIfSwept(func() error {
+			ch, err := r.cardsOf(batch)
+			out.add(ch)
+			return err
+		})
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+// cardsOf reads and stores the cards of one batch of issues.
+func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
+	readAt := r.readAt()
+	r.calls++
+	read, err := r.p.Cards(r.ctx, batch)
+	if err != nil {
+		return Changes{}, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
+	}
+	cards := make([]store.MirrorCard, 0, len(read.Cards))
+	for _, c := range read.Cards {
+		m, err := mirrorCard(c)
+		if err != nil {
+			return Changes{}, err
+		}
+		cards = append(cards, m)
+	}
+	catalog, err := mirrorCatalog(read.Catalog)
+	if err != nil {
+		return Changes{}, err
+	}
+	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, readAt)
+	if err != nil {
+		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
+	}
+	return changesOf(stored), nil
+}
+
+// againIfSwept runs read, a read of content outside a board and its
+// writes, and runs it once more when the store refused a write because a
+// sweep ran since the run captured the root's sweep (the content may
+// describe an issue's earlier lifetime): after reading the sweep again.
+func (r *run) againIfSwept(read func() error) error {
+	err := read()
+	if !errors.Is(err, store.ErrTrackerCacheSwept) {
+		return err
+	}
+	st, _, err := r.s.store.GetMirrorSync(r.root, string(r.scope.Board))
+	if err != nil {
+		return fmt.Errorf("trackerapp: read the sweep of the mirror of %s again: %w", r.row.ID, err)
+	}
+	r.state.Sweep = st.Sweep
+	return read()
+}
+
+// detail reads issue's detail, which a person opened, and stores it,
+// opened and read at the time the read began, in one write when the
+// mirror keeps the issue; it returns the detail either way.
+func (r *run) detail(issue tracker.IssueID) (tracker.Detail, Changes, error) {
+	read := r.readAt()
+	r.calls++
+	d, err := r.p.Detail(r.ctx, issue)
+	if err != nil {
+		return tracker.Detail{}, Changes{}, fmt.Errorf("trackerapp: read the detail of %s: %w", issue, call(err))
+	}
+	if d.Card.ID != issue {
+		return tracker.Detail{}, Changes{}, fmt.Errorf("trackerapp: the detail of %s: %w", issue,
+			call(fmt.Errorf("the tracker answered with issue %q", d.Card.ID)))
+	}
+	boundHistory(&d)
+	data, err := mirrorDetail(d)
+	if err != nil {
+		return tracker.Detail{}, Changes{}, err
+	}
+	stored, err := r.s.store.StoreMirrorDetail(r.root, r.state.Sweep, string(issue), read, read, data)
+	if err != nil {
+		return tracker.Detail{}, Changes{}, fmt.Errorf("trackerapp: store the detail of %s: %w", issue, err)
+	}
+	var out Changes
+	if stored.Changed {
+		out.Details = []tracker.IssueID{issue}
+	}
+	out.Dropped = issueIDs(stored.Dropped)
+	return d, out, nil
+}
+
+// structure reads board's structure and stores it.
+func (r *run) structure(board tracker.BoardID) (Changes, error) {
+	lifetime, err := r.lifetime(board)
+	if err != nil {
+		return Changes{}, err
+	}
+	read := r.readAt()
+	r.calls++
+	st, err := r.p.Structure(r.ctx, board, r.window())
+	if err != nil {
+		return Changes{}, fmt.Errorf("trackerapp: read the structure of board %s: %w", board, call(err))
+	}
+	if st.Board.ID != board {
+		return Changes{}, fmt.Errorf("trackerapp: the structure of board %s: %w", board,
+			call(fmt.Errorf("the tracker answered with board %q", st.Board.ID)))
+	}
+	m, err := mirrorStructure(st, read)
+	if err != nil {
+		return Changes{}, err
+	}
+	m.Lifetime = lifetime
+	stored, err := r.s.store.ReplaceMirrorStructure(r.root, m)
+	if err != nil {
+		return Changes{}, fmt.Errorf("trackerapp: store the structure of board %s: %w", board, err)
+	}
+	r.held = nil
+	if board == r.scope.Board {
+		r.structured, r.stored = true, true
+	}
+	return Changes{Structure: stored.Changed}, nil
+}
+
+// ensureStructure reads board's structure when the mirror does not hold
+// it, since the store refuses rows of a board it does not know.
+func (r *run) ensureStructure(board tracker.BoardID) (Changes, error) {
+	_, ok, err := r.board(board)
+	if err != nil {
+		return Changes{}, err
+	}
+	if ok {
+		return Changes{}, nil
+	}
+	return r.structure(board)
+}
+
+// lacking is what of n the mirror lacks: the statuses and users its
+// catalog does not hold and the sprints board's structure does not list.
+func (r *run) lacking(board tracker.BoardID, n *refs) (*refs, error) {
+	out := newRefs()
+	users, statuses := sortedKeys(n.users), sortedKeys(n.statuses)
+	for len(users)+len(statuses) > 0 {
+		u, st := users[:min(len(users), readBatch)], statuses[:min(len(statuses), readBatch)]
+		users, statuses = users[len(u):], statuses[len(st):]
+		c, err := r.s.store.GetMirrorCatalog(r.root, u, st)
+		if err != nil {
+			return nil, fmt.Errorf("trackerapp: read the mirror's catalog: %w", err)
+		}
+		for _, id := range u {
+			out.users[id] = true
+		}
+		for _, id := range st {
+			out.statuses[id] = true
+		}
+		for _, held := range c.Users {
+			delete(out.users, held.ID)
+		}
+		for _, held := range c.Statuses {
+			delete(out.statuses, held.ID)
+		}
+	}
+	if len(n.sprints) == 0 {
+		return out, nil
+	}
+	st, ok, err := r.board(board)
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]bool, len(st.Sprints))
+	if ok {
+		for _, sp := range st.Sprints {
+			held[sp.ID] = true
+		}
+	}
+	for id := range n.sprints {
+		if !held[id] {
+			out.sprints[id] = true
+		}
+	}
+	return out, nil
+}
+
+// board is board's structure as the mirror holds it, read once a run
+// until the run stores a structure.
+func (r *run) board(board tracker.BoardID) (store.MirrorStructure, bool, error) {
+	if r.held != nil && r.held.board == board {
+		return r.held.st, r.held.ok, nil
+	}
+	st, ok, err := r.s.store.GetMirrorBoard(r.root, string(board))
+	if err != nil {
+		return store.MirrorStructure{}, false, fmt.Errorf("trackerapp: read board %s from the mirror: %w", board, err)
+	}
+	r.held = &heldBoard{board: board, st: st, ok: ok}
+	return st, ok, nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}

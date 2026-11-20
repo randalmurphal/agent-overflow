@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/linear/lineartest"
 	"agent-overflow/internal/tracker/tempo"
@@ -114,6 +115,31 @@ func (f *fixture) addTempo(parent string) Connection {
 
 func (f *fixture) addLinear() Connection {
 	return f.add(NewConnection{Kind: store.TrackerKindLinear, Site: "https://linear.app/example/"})
+}
+
+// listBoards makes boards the whole list of boards an app project lists
+// through connection id, one project a connection, as a person picking
+// the boards of a project would; the mirror syncs only listed boards.
+func (f *fixture) listBoards(id string, boards ...tracker.BoardID) {
+	f.t.Helper()
+	listBoards(f.t, f.st, id, boards...)
+}
+
+func listBoards(tb testing.TB, st *store.Store, id string, boards ...tracker.BoardID) {
+	tb.Helper()
+	project := store.Project{ID: "boards-" + id, Path: "/tmp/boards-" + id, Name: "boards", CreatedAt: 1, UpdatedAt: 1}
+	if _, err := st.GetProject(project.ID); err != nil {
+		if _, err := st.CreateProject(project); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	list := make([]store.ProjectTrackerBoard, len(boards))
+	for i, b := range boards {
+		list[i] = store.ProjectTrackerBoard{ConnectionID: id, BoardID: string(b)}
+	}
+	if _, err := st.ReplaceProjectTrackerBoards(project.ID, list); err != nil {
+		tb.Fatalf("list boards %v: %v", boards, err)
+	}
 }
 
 // writeToken puts contents in conn's key file, as the person pasting a

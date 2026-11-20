@@ -17,6 +17,7 @@ func (s *Service) change(op func() (bool, error)) error {
 	defer s.leave()
 	s.opMu.Lock()
 	moved, err := op()
+	s.forgetHolds()
 	s.opMu.Unlock()
 	if moved {
 		s.changed()
@@ -80,22 +81,46 @@ func (s *Service) SetTokenExpiry(id string, expiresAt int64) (Connection, error)
 
 // SetEnabled turns connection id on or off. Off keeps the row and the key
 // file and stops using the connection: its client is closed, ending its
-// calls in flight, and its problem is forgotten. On builds the client
-// again on next use.
+// calls in flight, its problem is forgotten and its mirror is detached
+// with opMu held, so no tick begun before the change can write into the
+// mirror of a later turn on. The detached mirror is then drained with
+// opMu released (cleanup.go); a drain that fails is logged and the change
+// stands. A detach that fails returns the connection as turned off with
+// an error: turning it off again retries. On builds the client again on
+// next use, and the next tick makes a new mirror.
 func (s *Service) SetEnabled(id string, enabled bool) (Connection, error) {
-	var out Connection
-	err := s.change(func() (bool, error) {
-		row, changed, err := s.store.SetTrackerConnectionEnabled(id, enabled)
-		if err != nil {
-			return false, s.writeError(id, "turn on or off", err)
-		}
-		if !row.Enabled && s.stopUsing(id) {
-			changed = true
-		}
-		out = s.view(row)
-		return changed, nil
-	})
+	if err := s.enter(); err != nil {
+		return Connection{}, err
+	}
+	defer s.leave()
+	out, changed, detached, err := s.setEnabled(id, enabled)
+	if changed {
+		s.changed()
+	}
+	if detached {
+		s.cleanupAfter("turning off connection " + id)
+	}
 	return out, err
+}
+
+func (s *Service) setEnabled(id string, enabled bool) (_ Connection, changed, detached bool, _ error) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	defer s.forgetHolds()
+	row, changed, err := s.store.SetTrackerConnectionEnabled(id, enabled)
+	if err != nil {
+		return Connection{}, false, false, s.writeError(id, "turn on or off", err)
+	}
+	if row.Enabled {
+		return s.view(row), changed, false, nil
+	}
+	if s.stopUsing(id) {
+		changed = true
+	}
+	if err := s.detachMirror(id); err != nil {
+		return s.view(row), changed, false, fmt.Errorf("trackerapp: connection %s is turned off, but its mirror stays attached until it is turned off again: %w", id, err)
+	}
+	return s.view(row), changed, true, nil
 }
 
 // update applies one row write to connection id and returns the row.
@@ -121,12 +146,15 @@ func (s *Service) writeError(id, what string, err error) error {
 }
 
 // Remove stops using connection id and the Tempo connection that belongs
-// to it, removes their key files and then deletes their rows. A key file
-// that cannot be removed stops the removal with the rows kept, so a step
-// that fails leaves a row with a missing key file, never a key file with
-// no row; removing again finishes it.
+// to it, removes their key files and then deletes their rows, which
+// detaches the mirror; the mirror is drained after (cleanup.go), and a
+// drain that fails is logged with the removal standing. A key file that
+// cannot be removed stops the removal with the rows kept, so a step that
+// fails leaves a row with a missing key file, never a key file with no
+// row; removing again finishes it.
 func (s *Service) Remove(id string) error {
-	return s.change(func() (bool, error) {
+	deleted := false
+	err := s.change(func() (bool, error) {
 		row, err := s.get(id)
 		if err != nil {
 			return false, err
@@ -149,11 +177,18 @@ func (s *Service) Remove(id string) error {
 				return true, fmt.Errorf("trackerapp: remove the key file of connection %s: %w", r.ID, err)
 			}
 		}
+		// The store detaches the connection's mirror root with the row, so
+		// a tick still running stores nothing more.
 		if _, err := s.store.DeleteTrackerConnection(id); err != nil {
 			return true, fmt.Errorf("trackerapp: delete connection %s: %w", id, err)
 		}
+		deleted = true
 		return true, nil
 	})
+	if deleted {
+		s.cleanupAfter("removing connection " + id)
+	}
+	return err
 }
 
 // PrepareKeyFile makes connection id's key file, empty and owner-only,

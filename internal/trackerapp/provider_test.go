@@ -278,9 +278,6 @@ func TestTempoLooksIssuesUpThroughItsJiraConnection(t *testing.T) {
 	if _, err := issues.IDs(t.Context(), []string{"WEB-1"}); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("IDs through a Jira connection turned off = %v", err)
 	}
-	if _, err := issues.Keys(t.Context(), []int64{1}); !errors.Is(err, ErrDisabled) {
-		t.Fatalf("Keys through a Jira connection turned off = %v", err)
-	}
 	if f.inUse(jira.ID) || len(f.jira.Requests()) != 0 {
 		t.Fatalf("a lookup through a connection turned off reached %v", f.jira.Requests())
 	}
