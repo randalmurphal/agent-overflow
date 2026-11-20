@@ -159,3 +159,30 @@ func TestCloseDisposesInlineOnTheUIThread(t *testing.T) {
 		}
 	}
 }
+
+// Close ends the saved tabs: a save asked for after it, as the work of a
+// page's reported crash that Close does not join asks, is refused and
+// leaves the copy Close wrote as it is.
+func TestASaveAfterCloseWritesNothing(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+	mustOpen(t, manager, access, "https://example.test/")
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := manager.recordPath("thread")
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the close saved no tabs: %v", err)
+	}
+	// With its tabs gone from memory, a save would remove the file.
+	manager.mu.Lock()
+	clear(manager.suspended)
+	manager.mu.Unlock()
+	if err := manager.persistThreads([]ThreadID{"thread"}); !errors.Is(err, errRecordsClosed) {
+		t.Fatalf("a save after the close answered %v, want %v", err, errRecordsClosed)
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, saved) {
+		t.Fatalf("a save after the close changed the saved tabs: %q, %v", after, err)
+	}
+}

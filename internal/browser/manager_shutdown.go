@@ -120,6 +120,7 @@ func (m *Manager) Close() error {
 	m.findClosed = true
 	m.findGate.Unlock()
 	m.findWork.Wait()
+	m.closeRecords()
 	// Last: the publishes it waited for wrote through the artifact root.
 	return errors.Join(err, m.closeArtifacts())
 }

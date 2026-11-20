@@ -133,12 +133,14 @@ type Manager struct {
 	// recordDir holds the durable copy of the suspended pages, one file per
 	// thread (page_records.go). persistMu orders its writes: each takes its
 	// snapshot under mu while holding persistMu, so an older snapshot never
-	// replaces a newer one.
-	recordDir string
-	persistMu sync.Mutex
-	idleTimer *time.Timer
-	eventSink func(CompanionEvent)
-	panes     map[MountID]paneMount
+	// replaces a newer one. recordsClosed, guarded by persistMu, is set by
+	// Close, after which nothing writes there (writeRecordFile).
+	recordDir     string
+	persistMu     sync.Mutex
+	recordsClosed bool
+	idleTimer     *time.Timer
+	eventSink     func(CompanionEvent)
+	panes         map[MountID]paneMount
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq uint64
 	// recentGen is the forget generation of the threads' recent addresses,
