@@ -147,3 +147,48 @@ func TestTheLastStagingReleaseRemovesOnlyItsOwnDirectories(t *testing.T) {
 		})
 	}
 }
+
+// A run directory made and then not opened goes again only while its name
+// still holds that directory: a file put at the name stays, and so does
+// anything at it when the directory could not be read as it was made.
+func TestAnUnopenedRunRemovesOnlyTheDirectoryItMade(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run-aaaaaaaaaaaa")
+	if err := os.Mkdir(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	made, err := os.Lstat(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := abandonUnopenedRun(runDir, made, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("the run directory it made stayed: %v", err)
+	}
+
+	if err := os.Mkdir(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	made, err = os.Lstat(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(runDir); err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, runDir)
+	if err := abandonUnopenedRun(runDir, made, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(runDir); err != nil || string(got) != "x" {
+		t.Fatalf("the file put at the run's name reads %q, %v", got, err)
+	}
+	if err := abandonUnopenedRun(runDir, nil, os.ErrPermission); err == nil {
+		t.Fatal("a run read as nothing when made answered no error")
+	}
+	if got, err := os.ReadFile(runDir); err != nil || string(got) != "x" {
+		t.Fatalf("with no identity the file at the run's name reads %q, %v", got, err)
+	}
+}

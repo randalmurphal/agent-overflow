@@ -171,15 +171,12 @@ func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 		name = fmt.Sprintf("%s-%d", base, i)
 	}
 	runDir := filepath.Join(dir, name)
+	// The directory this call made, for its removal if it cannot be opened.
+	made, madeErr := parent.Lstat(name)
 	root, err := parent.OpenRoot(name)
 	if err != nil {
-		// The directory it made goes again, as no run's; one with anything
-		// in it stays.
 		failure := fmt.Errorf("browser: open the download staging folder %s: %w", runDir, err)
-		if rmErr := parent.Remove(name); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
-			return nil, errors.Join(failure, fmt.Errorf("browser: remove the download staging folder %s: %w", runDir, rmErr))
-		}
-		return nil, failure
+		return nil, errors.Join(failure, abandonUnopenedRun(runDir, made, madeErr))
 	}
 	lock, err := root.OpenFile(runLockName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -200,6 +197,21 @@ func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 		return nil, errors.Join(append(errs, abandonRun(runDir, root))...)
 	}
 	return &stagingRun{dir: runDir, root: root, lock: lock, files: map[string]bool{}, staging: stagingInfo}, nil
+}
+
+// abandonUnopenedRun removes the run directory startStagingRun made at
+// runDir and could not open, only while runDir still names that directory,
+// made (its identity read as it was made, or madeErr), and only empty
+// (removeHeldDir): anything else at the name stays, as it may not be AO's.
+// Without the identity nothing is removed, and the answer says so.
+func abandonUnopenedRun(runDir string, made os.FileInfo, madeErr error) error {
+	if madeErr != nil {
+		return fmt.Errorf("browser: the download staging folder %s stays: it could not be read as it was made: %w", runDir, madeErr)
+	}
+	if _, err := removeHeldDir(runDir, made); err != nil {
+		return fmt.Errorf("browser: remove the download staging folder %s: %w", runDir, err)
+	}
+	return nil
 }
 
 // abandonRun removes the run directory startStagingRun made at runDir and
