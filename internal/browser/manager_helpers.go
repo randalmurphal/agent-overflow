@@ -64,15 +64,6 @@ func (m *Manager) pageByHandleLocked(handle ids.PageHandle) *managedPage {
 	return nil
 }
 
-func (m *Manager) workspaceForPage(pageID PageID) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if p, _ := m.livePageLocked(pageID); p != nil {
-		return p.access.Workspace
-	}
-	return ""
-}
-
 // threadPageCountLocked counts the tabs of the thread lifetime tb, live, suspended and
 // pending, and its pages still closing: a suspended page holds no engine
 // resource but keeps its slot in the thread's page cap, which is what bounds
