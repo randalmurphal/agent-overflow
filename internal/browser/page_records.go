@@ -81,7 +81,7 @@ func (m *Manager) writeRecordFilesLocked(threadIDs []ThreadID) error {
 	m.mu.Lock()
 	files := make([]pageRecordFile, 0, len(threadIDs))
 	for _, threadID := range threadIDs {
-		files = append(files, m.recordFileLocked(threadID, false))
+		files = append(files, m.recordFileLocked(threadID))
 	}
 	m.mu.Unlock()
 	var errs []error
@@ -94,22 +94,17 @@ func (m *Manager) writeRecordFilesLocked(threadIDs []ThreadID) error {
 }
 
 // recordFileLocked is the saved copy of the thread as its current lifetime
-// is: its suspended pages and, with withLive, its live pages as the records
-// a suspension makes of them (recordOf). A thread with no current lifetime
+// is: its suspended pages. A thread with no current lifetime
 // saves nothing, which removes its file. The copy on disk is one name for
 // every lifetime of the thread, so it is only ever written from the current
 // one, in persistMu order: an earlier lifetime's cleanup, or a save it
 // asks for, writes the current lifetime's tabs. The caller holds m.mu.
-func (m *Manager) recordFileLocked(threadID ThreadID, withLive bool) pageRecordFile {
+func (m *Manager) recordFileLocked(threadID ThreadID) pageRecordFile {
 	file := pageRecordFile{Version: pageRecordVersion, ThreadID: string(threadID)}
 	tb := m.currentLocked(threadID)
 	for _, tab := range m.threadTabsLocked(tb) {
-		rec := tab.rec
-		if rec == nil && withLive && tab.live != nil {
-			rec = recordOf(tab.live, tab.live.cachedInfo())
-		}
-		if rec != nil {
-			file.Pages = append(file.Pages, rec.saved())
+		if tab.rec != nil {
+			file.Pages = append(file.Pages, tab.rec.saved())
 		}
 	}
 	if tb != nil {
