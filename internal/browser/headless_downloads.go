@@ -161,14 +161,17 @@ type cancelMark struct{}
 // (awaitOwner) has begun, and ended why that wait ended while an offer was
 // under way. canceled is whether an AO cancel reached it before its end
 // report ran, which then withdraws what the Manager did not take of its
-// file.
+// file. endReceived is whether Chromium's end of it was received, set at
+// that receipt whatever its state, held or delivered; d is forgotten once
+// its end report returns.
 type trackedDownload struct {
-	state    trackedState
-	held     *cdpbrowser.EventDownloadProgress
-	cancel   *cancelMark
-	waiting  bool
-	ended    waitEnd
-	canceled bool
+	state       trackedState
+	held        *cdpbrowser.EventDownloadProgress
+	cancel      *cancelMark
+	waiting     bool
+	ended       waitEnd
+	canceled    bool
+	endReceived bool
 }
 
 // to moves d to next along the edges of the state machine, which panics
@@ -324,11 +327,12 @@ func (t *downloadTracker) startLocked(event cdpbrowser.EventDownloadWillBegin, d
 }
 
 // endReported is the EndReported of d's start: whether its end was
-// received and its end report has not run yet.
+// received (endReceived), in whatever state, and its end report has not
+// returned, which forgets d.
 func (t *downloadTracker) endReported(guid downloadID, d *trackedDownload) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.downloads[guid] == d && d.state == trackedEnding
+	return t.downloads[guid] == d && d.endReceived
 }
 
 // admitLocked makes d the Manager's, whatever its wait did meanwhile: a
@@ -486,6 +490,11 @@ func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 	if d == nil {
 		return
 	}
+	if event.State != cdpbrowser.DownloadProgressStateInProgress {
+		// Its end is the Manager's from here, held or delivered
+		// (EndReported).
+		d.endReceived = true
+	}
 	switch d.state {
 	case trackedAwaiting, trackedOffered, trackedOffering:
 		d.held = &event
@@ -506,15 +515,16 @@ func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
 // is sent, and answers the undo for a cancel Chromium refused, which
 // withdraws only the mark this call made. An admitted download is
 // canceling from here; one the Manager has not answered yet keeps the mark
-// for its admission (admitLocked). One whose end was received answers
-// ended, with no cancel to send: its end report settles it, and what that
-// report leaves of its file is withdrawn. Any other marks nothing.
+// for its admission (admitLocked). One whose end was received, held or
+// delivered, answers ended, with no cancel to send: its end report settles
+// it, and what that report leaves of its file is withdrawn. Any other
+// marks nothing.
 func (t *downloadTracker) canceling(guid downloadID) (undo func(), ended bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	d := t.downloads[guid]
 	switch {
-	case d != nil && d.state == trackedEnding:
+	case d != nil && d.endReceived:
 		d.canceled = true
 		return func() {}, true
 	case d == nil || d.cancel != nil:

@@ -17,19 +17,21 @@ import (
 // process's do: the tracker reports to the Manager, writes into a room in
 // the jar's download directory, and the jar's profile cancels through it,
 // Chromium accepting every cancel. A sibling tab keeps the jar open when
-// the tab the downloads begin in closes. handOver can be held at gate.
+// the tab the downloads begin in closes. handOver can be held at gate, and
+// the admission's answer, after the Manager listed the row, at admitGate.
 type trackerManagerRig struct {
-	t       *testing.T
-	manager *Manager
-	access  Access
-	page    PageInfo
-	frame   string
-	jarDir  string
-	tracker *downloadTracker
-	room    *downloadRoom
-	gate    chan struct{}
-	in      chan struct{}
-	cancels chan downloadID
+	t         *testing.T
+	manager   *Manager
+	access    Access
+	page      PageInfo
+	frame     string
+	jarDir    string
+	tracker   *downloadTracker
+	room      *downloadRoom
+	gate      chan struct{}
+	admitGate chan struct{}
+	in        chan struct{}
+	cancels   chan downloadID
 }
 
 // gatedRoom is a room whose handOver waits at its rig's gate, when set,
@@ -79,7 +81,14 @@ func newTrackerManagerRig(t *testing.T) *trackerManagerRig {
 	}
 	r.room = room
 	r.tracker = newDownloadTracker(engineEvents{
-		DownloadStarted:  manager.downloadStarted,
+		DownloadStarted: func(start downloadStart) downloadAdmission {
+			admission := manager.downloadStarted(start)
+			if gate := r.admitGate; gate != nil {
+				r.in <- struct{}{}
+				<-gate
+			}
+			return admission
+		},
 		DownloadProgress: manager.downloadProgress,
 	}, func(downloadID) {}, gatedRoom{downloadRoom: room, rig: r})
 	t.Cleanup(r.tracker.stop)
@@ -153,28 +162,66 @@ func TestATabClosedDuringAFinishedDownloadsHandoffKeepsTheDownload(t *testing.T)
 	}
 	close(r.gate)
 	<-ended
+	r.wantKept("G-done", content)
+}
+
+// wantKept checks that download guid is listed completed and openable with
+// content in the workspace, nothing of it left in the jar's directory, and
+// no cancel sent.
+func (r *trackerManagerRig) wantKept(guid string, content []byte) {
+	r.t.Helper()
 	got := r.listed()
 	if got.State != downloadStateCompleted || !got.Openable {
-		t.Fatalf("the download is listed %+v, want completed and openable", got)
+		r.t.Fatalf("the download is listed %+v, want completed and openable", got)
 	}
 	item, err := r.manager.threadDownload(r.access, DownloadKey(got.ID))
 	if err != nil {
-		t.Fatal(err)
+		r.t.Fatal(err)
 	}
 	if saved, err := os.ReadFile(item.path); err != nil || !bytes.Equal(saved, content) {
-		t.Fatalf("the saved file reads %q, %v", saved, err)
+		r.t.Fatalf("the saved file reads %q, %v", saved, err)
 	}
-	if left := leftIn(t, r.room.path()); len(left) != 0 {
-		t.Fatalf("the room holds %q", left)
+	if left := leftIn(r.t, r.room.path()); len(left) != 0 {
+		r.t.Fatalf("the room holds %q", left)
 	}
-	if _, err := os.Lstat(filepath.Join(r.jarDir, "G-done")); !os.IsNotExist(err) {
-		t.Fatalf("the handed-over file stayed in the jar's directory: %v", err)
+	if _, err := os.Lstat(filepath.Join(r.jarDir, guid)); !os.IsNotExist(err) {
+		r.t.Fatalf("the handed-over file stayed in the jar's directory: %v", err)
 	}
 	select {
 	case id := <-r.cancels:
-		t.Fatalf("the finished download %s was canceled", id)
+		r.t.Fatalf("the finished download %s was canceled", id)
 	default:
 	}
+}
+
+// A completion Chromium reports while the Manager's admission of the
+// download is still being answered, its row already listed, is the
+// Manager's from its receipt: a tab closed before the answer leaves the
+// row to that completion.
+func TestATabClosedDuringItsDownloadsAdmissionKeepsTheFinishedDownload(t *testing.T) {
+	r := newTrackerManagerRig(t)
+	content := []byte("the whole file")
+	if err := os.WriteFile(filepath.Join(r.room.path(), "G-adm"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.admitGate = make(chan struct{})
+	begun := make(chan struct{})
+	go func() {
+		defer close(begun)
+		r.tracker.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "G-adm", FrameID: cdp.FrameID(r.frame), URL: "https://example.test/G-adm", SuggestedFilename: "G-adm.txt"})
+	}()
+	select {
+	case <-r.in:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admission never began")
+	}
+	r.tracker.progress(cdpbrowser.EventDownloadProgress{GUID: "G-adm", ReceivedBytes: float64(len(content)), TotalBytes: float64(len(content)), State: cdpbrowser.DownloadProgressStateCompleted})
+	if err := r.manager.ClosePage(t.Context(), r.access, PageID(r.page.ID)); err != nil {
+		t.Fatal(err)
+	}
+	close(r.admitGate)
+	<-begun
+	r.wantKept("G-adm", content)
 }
 
 // A tab closed while its download runs cancels it, and its file goes once
