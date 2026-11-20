@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -89,7 +90,12 @@ func xdgDownloadDir(home string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("browser: read the user folders: %w", err)
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		// Read-only: what was read stands, so a failed close is logged.
+		if err := file.Close(); err != nil {
+			log.Printf("browser: close the user folders file %s: %v", file.Name(), err)
+		}
+	}()
 	found := ""
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -178,18 +184,19 @@ var errNoReplaceRename = errors.New("this platform has no rename that refuses to
 // of the suggested one and its " (1)", " (2)" variants, as browsers name
 // them, and answers the published path and file. It never replaces a file
 // (placeNoReplace). Both names stay within one directory tree, so nothing
-// is ever copied and nothing partial ever has a public name. The caller's release of the staged file
-// (releaseStaged) removes a linked file's staged name. Where the filesystem
-// has neither, the download fails with the reason.
+// is ever copied and nothing partial ever has a public name. The caller's
+// release of the staged file (releaseStaged) removes a linked file's
+// staged name. Where the filesystem has neither hard links nor a rename
+// that refuses to replace, the download fails with the reason.
 func publishDownload(staged, suggested string) (path string, file os.FileInfo, err error) {
-	info, downloads, err := stagedFileOf(staged)
+	source, downloads, err := stagedFileOf(staged)
 	if err != nil {
 		return "", nil, err
 	}
 	name := safeArtifactName(suggested, "download")
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	return placeNoReplace(staged, info, downloads, "the Downloads folder", func(i int) string {
+	return placeNoReplace(source, downloads, "the Downloads folder", func(i int) string {
 		if i == 0 {
 			return name
 		}
@@ -197,20 +204,34 @@ func publishDownload(staged, suggested string) (path string, file os.FileInfo, e
 	})
 }
 
-// placeNoReplace gives the regular file source, whose Lstat is info, the
-// first name in dir that nobody holds, of name(0), name(1), ..., and
-// answers its path and file. The file takes a private name in dir first
-// (placingName), and only once that name is checked to hold info's file
-// does it take a public one, so a public name never shows other bytes: a
-// file swapped in at source meanwhile is refused with nothing public made,
-// and its private name undone. It never replaces a file: it hard-links, or,
-// on a filesystem that refuses hard links, renames with a rename that
+// placeSource is a regular file to place (placeNoReplace): its path, its
+// identity as checked where it is held, and its directory, held open,
+// where its private name is made and removed.
+type placeSource struct {
+	path string
+	info os.FileInfo
+	dir  *os.Root
+}
+
+// placeNoReplace gives the regular file source the first name in dir that
+// nobody holds, of name(0), name(1), ..., and answers its path and
+// source's identity, the one identity the caller trusts: never what a name
+// answers afterwards. The file takes a private name beside source first
+// (placingName), where the recovery of source's owner removes it if the
+// placement never finishes, and only once that name is checked, in the
+// held directory, to hold source's file does it take a public one. A file
+// swapped in at source meanwhile is refused with nothing public made, and
+// its private name undone. The public name is checked to hold source's
+// file too: one that holds anything else, swapped in at it or reached
+// through a directory moved meanwhile, fails the placement and stays as it
+// is, since it may not be AO's. It never replaces a file: it hard-links,
+// or, on a filesystem that refuses hard links, renames with a rename that
 // refuses to replace; either way a name that is taken (EEXIST) moves on to
 // the next, so two placements at once never take one name. A link leaves
 // source's own name for the caller to remove. where names dir in an error.
-func placeNoReplace(source string, info os.FileInfo, dir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
-	place := placement{move: linkDownload, linking: true, where: where, dir: dir}
-	private, err := place.private(source, info)
+func placeNoReplace(source placeSource, dir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
+	place := placement{source: source, move: linkDownload, linking: true, where: where}
+	private, err := place.private()
 	if err != nil {
 		return "", nil, err
 	}
@@ -219,92 +240,100 @@ func placeNoReplace(source string, info os.FileInfo, dir, where string, name fun
 		err := place.move(private, candidate)
 		switch {
 		case err == nil:
+			placed, err := os.Lstat(candidate)
 			place.dropPrivate(private)
-			moved, err := os.Lstat(candidate)
+			if err == nil && os.SameFile(placed, source.info) {
+				return candidate, source.info, nil
+			}
 			if err != nil {
 				return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 			}
-			return candidate, moved, nil
+			return "", nil, fmt.Errorf("browser: %s changed as the download was saved there, so the download is not saved", candidate)
 		case errors.Is(err, fs.ErrExist):
 		default:
-			place.undo(private, source)
+			place.undo(private)
 			return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 		}
 	}
-	place.undo(private, source)
+	place.undo(private)
 	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxNameVariants, name(0), dir)
 }
 
-// placingNamePrefix starts the private name a file takes in its
-// destination before its public one (placeNoReplace).
+// placingNamePrefix starts the private name a file takes beside its source
+// before its public one (placeNoReplace).
 const placingNamePrefix = ".agent-overflow-placing-"
 
-// placingName is a fresh private name in a destination.
+// placingNamePattern matches a private name placingName makes.
+var placingNamePattern = regexp.MustCompile(`^` + regexp.QuoteMeta(placingNamePrefix) + `[0-9a-f]{16}$`)
+
+// placingName is a fresh private name.
 func placingName() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:]) // crypto/rand does not fail on supported platforms
+	// crypto/rand.Read never answers an error: it ends the process.
+	_, _ = rand.Read(b[:])
 	return placingNamePrefix + hex.EncodeToString(b[:])
 }
 
-// placement is one placeNoReplace: how it moves the file (a hard link, or a
-// no-replace rename where links are refused), into dir.
+// placement is one placeNoReplace of source: how it moves the file (a hard
+// link, or a no-replace rename where links are refused).
 type placement struct {
+	source  placeSource
 	move    func(from, to string) error
 	linking bool
 	where   string
-	dir     string
 }
 
-// private gives source a private name in dir and answers it, once that
-// name is seen to hold info's file. A refused link switches the placement
-// to renames.
-func (p *placement) private(source string, info os.FileInfo) (string, error) {
+// private gives the source a private name beside it and answers its path,
+// once the held directory shows that name holding the source's file. A
+// refused link switches the placement to renames.
+func (p *placement) private() (string, error) {
 	for range maxNameVariants {
-		private := filepath.Join(p.dir, placingName())
-		err := p.move(source, private)
+		name := placingName()
+		private := filepath.Join(filepath.Dir(p.source.path), name)
+		err := p.move(p.source.path, private)
 		switch {
 		case err == nil:
-			held, err := os.Lstat(private)
-			if err == nil && os.SameFile(held, info) {
+			held, err := p.source.dir.Lstat(name)
+			if err == nil && os.SameFile(held, p.source.info) {
 				return private, nil
 			}
-			p.undo(private, source)
-			if err != nil {
+			p.undo(private)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return "", fmt.Errorf("browser: save in %s: %w", p.where, err)
 			}
-			return "", fmt.Errorf("browser: %s changed before the download was saved, so it is not saved", source)
+			return "", fmt.Errorf("browser: %s changed before the download was saved, so it is not saved", p.source.path)
 		case errors.Is(err, fs.ErrExist):
 		case p.linking && linksRefused(err):
 			p.move, p.linking = renameDownload, false
 		case !p.linking && noReplaceRenameRefused(err):
-			return "", fmt.Errorf("browser: %s %s supports neither hard links nor renames that refuse to replace a file, so the download is not saved there: %w", p.where, p.dir, err)
+			return "", fmt.Errorf("browser: %s %s supports neither hard links nor renames that refuse to replace a file, so the download is not saved there: %w", p.where, filepath.Dir(p.source.path), err)
 		default:
 			return "", fmt.Errorf("browser: save in %s: %w", p.where, err)
 		}
 	}
-	return "", fmt.Errorf("browser: no private name is free in %s", p.dir)
+	return "", fmt.Errorf("browser: no private name is free beside %s", p.source.path)
 }
 
-// dropPrivate removes the private name a link left once the file has its
-// public one; a rename left none.
+// dropPrivate removes, through the held directory, the private name a link
+// left once the file has its public one; a rename left none.
 func (p *placement) dropPrivate(private string) {
 	if !p.linking {
 		return
 	}
-	if err := os.Remove(private); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := p.source.dir.Remove(filepath.Base(private)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("browser: remove the private name %s: %v", private, err)
 	}
 }
 
 // undo ends a placement that gives the file no public name: a link's
 // private name goes, and a rename's file goes back to source.
-func (p *placement) undo(private, source string) {
+func (p *placement) undo(private string) {
 	if p.linking {
 		p.dropPrivate(private)
 		return
 	}
-	if err := renameDownload(private, source); err != nil {
-		log.Printf("browser: return %s to %s: %v", private, source, err)
+	if err := renameDownload(private, p.source.path); err != nil {
+		log.Printf("browser: return %s to %s: %v", private, p.source.path, err)
 	}
 }
 

@@ -54,10 +54,11 @@ func TestReleasingAStagedFileNeverRemovesAReplacementsFile(t *testing.T) {
 	}
 }
 
-// The prune of a staging directory removes the staged files of a run only
-// once it takes that run's lock: a live run's stay, as do a run directory
-// with no lock file, anything not a staged name, and the files an earlier
-// release left directly in the staging directory.
+// The prune of a staging directory removes the staged files and the
+// private names of unfinished publishes of a run only once it takes that
+// run's lock: a live run's stay, as do a run directory with no lock file,
+// anything not a staged or private name, and the files an earlier release
+// left directly in the staging directory.
 func TestTheStagingPruneTakesOnlyEndedRuns(t *testing.T) {
 	downloads := testDownloadsFolder(t)
 	staging := filepath.Join(downloads, stagingDirName)
@@ -67,10 +68,13 @@ func TestTheStagingPruneTakesOnlyEndedRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A publish the ended runs did not finish left a private name.
+	private := placingNamePrefix + "0123456789abcdef"
 	writeFiles(t,
-		filepath.Join(live, runLockName), filepath.Join(live, "dl-1"),
+		filepath.Join(live, runLockName), filepath.Join(live, "dl-1"), filepath.Join(live, private),
 		filepath.Join(ended, runLockName), filepath.Join(ended, "dl-1"), filepath.Join(ended, "dl-1.wkdownload"), filepath.Join(ended, "notes.txt"), filepath.Join(ended, "dl-1.bak"),
-		filepath.Join(emptied, runLockName), filepath.Join(emptied, "dl-7"),
+		filepath.Join(ended, placingNamePrefix+"notes"),
+		filepath.Join(emptied, runLockName), filepath.Join(emptied, "dl-7"), filepath.Join(emptied, private),
 		filepath.Join(unlocked, "dl-1"),
 		filepath.Join(staging, "dl-1"), filepath.Join(staging, "dl-0123456789ab-7"),
 	)
@@ -93,10 +97,10 @@ func TestTheStagingPruneTakesOnlyEndedRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer releaseStaged(staged)
-	if got := folderNames(t, live); !slices.Equal(got, []string{runLockName, "dl-1"}) {
+	if got := folderNames(t, live); !slices.Equal(got, []string{private, runLockName, "dl-1"}) {
 		t.Errorf("the live run holds %q", got)
 	}
-	if got := folderNames(t, ended); !slices.Equal(got, []string{"dl-1.bak", "notes.txt"}) {
+	if got := folderNames(t, ended); !slices.Equal(got, []string{placingNamePrefix + "notes", "dl-1.bak", "notes.txt"}) {
 		t.Errorf("the ended run holds %q, want only the files AO never staged", got)
 	}
 	if _, err := os.Lstat(emptied); !os.IsNotExist(err) {

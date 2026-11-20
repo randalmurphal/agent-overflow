@@ -192,10 +192,21 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // placeArtifact moves a finished artifact download from the file its engine
 // wrote into dir under the first free variant of name, never replacing a
 // file: the downloads of a workspace's jars finish on their own engine
-// streams into one directory (placeNoReplace). A file over maxDownloadBytes
-// on disk is refused, whatever the engine reported.
-func placeArtifact(source, dir, name string) (string, os.FileInfo, error) {
-	info, err := os.Lstat(source)
+// streams into one directory (placeNoReplace). The file is taken as it is
+// in its directory, held open; its private name is made there, in the
+// artifact subtree the artifact prune removes with age. A file over
+// maxDownloadBytes on disk is refused, whatever the engine reported.
+func placeArtifact(source, dir, name string) (path string, file os.FileInfo, err error) {
+	held, err := os.OpenRoot(filepath.Dir(source))
+	if err != nil {
+		return "", nil, fmt.Errorf("browser: the downloaded file's folder: %w", err)
+	}
+	defer func() {
+		if closeErr := held.Close(); closeErr != nil {
+			log.Printf("browser: close the download folder %s: %v", filepath.Dir(source), closeErr)
+		}
+	}()
+	info, err := held.Lstat(filepath.Base(source))
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
 	}
@@ -205,12 +216,12 @@ func placeArtifact(source, dir, name string) (string, os.FileInfo, error) {
 	if info.Size() > maxDownloadBytes {
 		return "", nil, fmt.Errorf("download exceeds %d bytes", maxDownloadBytes)
 	}
-	path, file, err := placeNoReplace(source, info, dir, "the download directory", artifactNames(name))
+	path, file, err = placeNoReplace(placeSource{path: source, info: info, dir: held}, dir, "the download directory", artifactNames(name))
 	if err != nil {
 		return "", nil, err
 	}
 	// A link leaves the engine's name for the file, which goes.
-	if err := os.Remove(source); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := held.Remove(filepath.Base(source)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("browser: remove the download's engine file %s: %v", source, err)
 	}
 	return path, file, nil

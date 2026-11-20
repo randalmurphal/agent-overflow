@@ -617,8 +617,11 @@ func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
 			manager.removeClosedPage(opener)
 			manager.removeClosedPage("popup")
 			awaitRemoved(t, file)
-			if got := manager.artifactBytes.Used(); got != before {
-				t.Fatalf("%d artifact bytes are reserved, want %d", got, before)
+			// The reservation settles once the file is gone.
+			for deadline := time.Now().Add(hostedTestDeadline); manager.artifactBytes.Used() != before; time.Sleep(time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatalf("%d artifact bytes are reserved, want %d", manager.artifactBytes.Used(), before)
+				}
 			}
 		})
 	}

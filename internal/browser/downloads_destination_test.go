@@ -386,12 +386,7 @@ func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
 	}
 	manager.mu.Unlock()
 	awaitRemoved(t, filepath.Join(engineDir, filepath.Base(string(item.engineID))))
-	if got := authority.downloadBytes.Used(); got != workspaceBefore {
-		t.Fatalf("the workspace holds %d download bytes, want %d", got, workspaceBefore)
-	}
-	if got := manager.artifactBytes.Used(); got != artifactsBefore {
-		t.Fatalf("the artifact root holds %d bytes, want %d", got, artifactsBefore)
-	}
+	awaitCharged(t, manager, authority, workspaceBefore, artifactsBefore)
 }
 
 // With neither hard links nor a no-replace rename, or a staging directory
@@ -836,6 +831,83 @@ func TestAStagedFileSwappedAsItIsPublishedNeverHasAPublicName(t *testing.T) {
 			got := threadDownloads(manager, access)[0]
 			if got.State != downloadStateFailed || !strings.Contains(got.Error, "changed before the download was saved") {
 				t.Fatalf("the download lists as %+v, want it failed for the swap", got)
+			}
+		})
+	}
+}
+
+// A file put at the download's public name just after its link, before the
+// publish checks that name, is not taken as the download, staged or an
+// artifact: the row fails, the file put there stays as it is, and it is
+// not granted as the download.
+func TestAFileSwappedInAtThePublicNameIsNotTheDownload(t *testing.T) {
+	for _, saving := range []downloadSaving{downloadsStaged, downloadsAsArtifacts} {
+		t.Run(fmt.Sprint(saving), func(t *testing.T) {
+			manager, _, access, page := newDownloadManagerFor(t, saving)
+			public := ""
+			linkDownload = func(from, to string) error {
+				if err := os.Link(from, to); err != nil {
+					return err
+				}
+				if public == "" && !placing(to) {
+					public = to
+					replacement := to + ".swap"
+					if err := os.WriteFile(replacement, []byte("unrelated file"), 0o600); err != nil {
+						t.Error(err)
+					}
+					if err := os.Rename(replacement, to); err != nil {
+						t.Error(err)
+					}
+				}
+				return nil
+			}
+			t.Cleanup(func() { linkDownload = os.Link })
+			startDownload(t, manager, access, page, "report.txt", 10)
+			got := threadDownloads(manager, access)[0]
+			if got.State != downloadStateFailed || !strings.Contains(got.Error, "changed as the download was saved there") || got.Openable {
+				t.Fatalf("the download lists as %+v, want it failed for the swap", got)
+			}
+			if data, err := os.ReadFile(public); err != nil || string(data) != "unrelated file" {
+				t.Fatalf("the file put at %s reads %q, %v", public, data, err)
+			}
+			// The workspace's artifact directory, AO's own, opens by its
+			// directory; a file in the Downloads folder only by its row.
+			if _, err := manager.authorizeFile(access.Caller(), public); saving == downloadsStaged && err == nil {
+				t.Fatal("the file put at the public name opens as the download")
+			}
+		})
+	}
+}
+
+// A publish gives the file its private name beside its source, in the
+// run directory for a staged download and in the engine's directory for an
+// artifact, where the run's prune or the artifact prune finds it if the
+// publish never finishes; never in the folder it is published to.
+func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
+	for _, saving := range []downloadSaving{downloadsStaged, downloadsAsArtifacts} {
+		t.Run(fmt.Sprint(saving), func(t *testing.T) {
+			manager, _, access, page := newDownloadManagerFor(t, saving)
+			var private, source string
+			linkDownload = func(from, to string) error {
+				if placing(to) {
+					private, source = to, from
+				}
+				return os.Link(from, to)
+			}
+			t.Cleanup(func() { linkDownload = os.Link })
+			startDownload(t, manager, access, page, "report.txt", 10)
+			item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
+			if item.State != downloadStateCompleted {
+				t.Fatalf("the download lists as %+v", item.ThreadDownload)
+			}
+			if private == "" || filepath.Dir(private) != filepath.Dir(source) || filepath.Dir(private) == filepath.Dir(item.path) {
+				t.Fatalf("the private name %s is not beside the source %s, apart from %s", private, source, filepath.Dir(item.path))
+			}
+			if saving == downloadsStaged && !runDirPattern.MatchString(filepath.Base(filepath.Dir(private))) {
+				t.Fatalf("the private name %s is in no run directory", private)
+			}
+			if _, err := os.Lstat(private); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the private name %s stayed: %v", private, err)
 			}
 		})
 	}
