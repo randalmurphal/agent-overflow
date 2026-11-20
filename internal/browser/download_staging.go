@@ -171,12 +171,9 @@ func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 		name = fmt.Sprintf("%s-%d", base, i)
 	}
 	runDir := filepath.Join(dir, name)
-	// The directory this call made, for its removal if it cannot be opened.
-	made, madeErr := parent.Lstat(name)
-	root, err := parent.OpenRoot(name)
+	root, _, err := openMadeDir(parent, dir, name)
 	if err != nil {
-		failure := fmt.Errorf("browser: open the download staging folder %s: %w", runDir, err)
-		return nil, errors.Join(failure, abandonUnopenedRun(runDir, made, madeErr))
+		return nil, fmt.Errorf("browser: open the download staging folder: %w", err)
 	}
 	lock, err := root.OpenFile(runLockName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -199,17 +196,46 @@ func startStagingRun(dir string, stagingInfo os.FileInfo) (*stagingRun, error) {
 	return &stagingRun{dir: runDir, root: root, lock: lock, files: map[string]bool{}, staging: stagingInfo}, nil
 }
 
-// abandonUnopenedRun removes the run directory startStagingRun made at
-// runDir and could not open, only while runDir still names that directory,
-// made (its identity read as it was made, or madeErr), and only empty
-// (removeHeldDir): anything else at the name stays, as it may not be AO's.
-// Without the identity nothing is removed, and the answer says so.
-func abandonUnopenedRun(runDir string, made os.FileInfo, madeErr error) error {
-	if madeErr != nil {
-		return fmt.Errorf("browser: the download staging folder %s stays: it could not be read as it was made: %w", runDir, madeErr)
+// openingMadeDir is a test seam run by openMadeDir between reading the
+// directory it made and opening it.
+var openingMadeDir = func(path string) {}
+
+// openMadeDir opens the directory name its caller just made in parent, in
+// dir, and answers it with its identity: read through parent right after
+// the Mkdir, and the directory opened is refused unless it is that one, so
+// a directory put at the name meanwhile is never held. One it does not
+// hold is removed only while the name still holds the directory made, and
+// only empty (abandonMadeDir); every failure is in the answer.
+func openMadeDir(parent *os.Root, dir, name string) (*os.Root, os.FileInfo, error) {
+	path := filepath.Join(dir, name)
+	made, madeErr := parent.Lstat(name)
+	openingMadeDir(path)
+	root, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("browser: open %s: %w", path, err), abandonMadeDir(path, made, madeErr))
 	}
-	if _, err := removeHeldDir(runDir, made); err != nil {
-		return fmt.Errorf("browser: remove the download staging folder %s: %w", runDir, err)
+	opened, err := root.Stat(".")
+	if err == nil && madeErr == nil && os.SameFile(opened, made) {
+		return root, made, nil
+	}
+	failure := fmt.Errorf("browser: %s was replaced as it was made, so it is not used", path)
+	if err != nil {
+		failure = fmt.Errorf("browser: read %s: %w", path, err)
+	}
+	return nil, nil, errors.Join(failure, root.Close(), abandonMadeDir(path, made, madeErr))
+}
+
+// abandonMadeDir removes the directory a caller made at path and does not
+// hold, only while path still names that directory, made (its identity
+// read as it was made, or madeErr), and only empty (removeHeldDir):
+// anything else at the name stays, as it may not be AO's. Without the
+// identity nothing is removed, and the answer says so.
+func abandonMadeDir(path string, made os.FileInfo, madeErr error) error {
+	if madeErr != nil {
+		return fmt.Errorf("browser: %s stays: it could not be read as it was made: %w", path, madeErr)
+	}
+	if _, err := removeHeldDir(path, made); err != nil {
+		return fmt.Errorf("browser: remove %s: %w", path, err)
 	}
 	return nil
 }

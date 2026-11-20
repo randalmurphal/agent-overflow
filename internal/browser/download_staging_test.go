@@ -161,7 +161,7 @@ func TestAnUnopenedRunRemovesOnlyTheDirectoryItMade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := abandonUnopenedRun(runDir, made, nil); err != nil {
+	if err := abandonMadeDir(runDir, made, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(runDir); !os.IsNotExist(err) {
@@ -179,16 +179,76 @@ func TestAnUnopenedRunRemovesOnlyTheDirectoryItMade(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFiles(t, runDir)
-	if err := abandonUnopenedRun(runDir, made, nil); err != nil {
+	if err := abandonMadeDir(runDir, made, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(runDir); err != nil || string(got) != "x" {
 		t.Fatalf("the file put at the run's name reads %q, %v", got, err)
 	}
-	if err := abandonUnopenedRun(runDir, nil, os.ErrPermission); err == nil {
+	if err := abandonMadeDir(runDir, nil, os.ErrPermission); err == nil {
 		t.Fatal("a run read as nothing when made answered no error")
 	}
 	if got, err := os.ReadFile(runDir); err != nil || string(got) != "x" {
 		t.Fatalf("with no identity the file at the run's name reads %q, %v", got, err)
 	}
+}
+
+// swapAsMade moves each directory openMadeDir makes aside before it is
+// opened and puts another at its name holding a file of someone else's,
+// and answers the names swapped.
+func swapAsMade(t *testing.T) func() []string {
+	t.Helper()
+	var swapped []string
+	openingMadeDir = func(path string) {
+		if err := os.Rename(path, path+"-aside"); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Error(err)
+			return
+		}
+		writeFiles(t, filepath.Join(path, "theirs"))
+		swapped = append(swapped, path)
+	}
+	t.Cleanup(func() { openingMadeDir = func(string) {} })
+	return func() []string { return swapped }
+}
+
+// wantTheirsKept checks each swapped-in directory still holds its file.
+func wantTheirsKept(t *testing.T, swapped []string) {
+	t.Helper()
+	if len(swapped) == 0 {
+		t.Fatal("no directory was swapped in")
+	}
+	for _, path := range swapped {
+		if got, err := os.ReadFile(filepath.Join(path, "theirs")); err != nil || string(got) != "x" {
+			t.Fatalf("the file in the directory put at %s reads %q, %v", path, got, err)
+		}
+	}
+}
+
+// A run directory replaced between its making and its opening is not
+// held, and the directory put at its name keeps what is in it.
+func TestAStagingRunReplacedAsItIsMadeIsNotHeld(t *testing.T) {
+	dir := t.TempDir()
+	staging, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := swapAsMade(t)
+	if run, err := startStagingRun(dir, staging); err == nil {
+		t.Fatalf("held %s, a directory put at the run's name as it was made", run.dir)
+	}
+	wantTheirsKept(t, swapped())
+}
+
+// So is a headless browser's download room.
+func TestADownloadRoomReplacedAsItIsMadeIsNotHeld(t *testing.T) {
+	swapped := swapAsMade(t)
+	if room, err := openDownloadRoom(t.TempDir(), t.Logf); err == nil {
+		room.close()
+		t.Fatalf("held %s, a directory put at the room's name as it was made", room.path())
+	}
+	wantTheirsKept(t, swapped())
 }
