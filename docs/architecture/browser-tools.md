@@ -379,8 +379,10 @@ behave as a desktop browser's:
 - Focusing the address selects it; a second click places the caret. Enter
   (plain or with Shift) navigates; Escape puts the page's address back and
   moves focus to the page area. DOM focus only: the native page takes
-  keyboard focus from a click, as § Keyboard says. Switching tabs replaces
-  an edit with the new tab's address.
+  keyboard focus from a click, as § Keyboard says. An edit is a draft of
+  the tab it was typed for, the active tab or the one a chosen tab
+  suggestion is switching to, and Enter navigates only that tab. A page
+  push leaves it; switching tabs replaces it with the new tab's address.
 - Typing in the address opens a suggestion list
   (`BrowserAddressSuggestions.svelte`, matching in `browserAddressMatch.ts`):
   the thread's other open tabs (taking one switches to it), the dev servers
