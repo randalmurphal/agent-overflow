@@ -9,7 +9,9 @@ owns the frame protocol in `internal/webview2host`; the browser manager consumes
   package listens only on an ephemeral WSL loopback address for chromedp.
 - Never dial an address supplied by a tunnel frame or debugger response.
   `RewriteDebuggerURL` retains only the debugger path and substitutes the
-  endpoint's own scheme and address. Keep `chromedp.NoModifyURL`.
+  endpoint's own scheme and address. The browser manager dials that URL as
+  given (`cdporder.NewAllocator`, which behaves as `remote.NoModifyURL`);
+  never let chromedp re-read `/json/version`.
 - Bind a local connection to its stream before sending `open`, wait for
   `opened` before data, and split data at `TunnelChunkBytes`. Enforce
   `MaxTunnelFrameBytes` and `MaxTunnelStreams`.
