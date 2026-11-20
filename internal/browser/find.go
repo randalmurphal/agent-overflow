@@ -130,7 +130,9 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, 
 	var p *managedPage
 	var err error
 	if kind == FindStart {
-		p, err = m.findStartPage(ctx, access, pageID, owner)
+		// Within the action's deadline: a restore this start waits for goes
+		// on for its other waiters when the start stops waiting.
+		p, err = m.findStartPage(actionCtx, access, pageID, owner)
 	} else {
 		p, _, err = m.lookupOwnedPage(access, pageID)
 	}
