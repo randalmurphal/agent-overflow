@@ -353,3 +353,25 @@ func TestARestoreWaitsForItsThreadsJarTeardown(t *testing.T) {
 		expectWaiting(t, s, restored, release, suspended.ID, "thread:a")
 	})
 }
+
+// A label another tab holds is refused before the suspended tab it names
+// restores for it.
+func TestARefusedLabelRestoresNothing(t *testing.T) {
+	m, _ := newLifecycleManager(t)
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+	first := mustOpen(t, m, access, addr("first"))
+	second := mustOpen(t, m, access, addr("second"))
+	if _, err := m.LabelPage(t.Context(), access, PageID(first.ID), "docs"); err != nil {
+		t.Fatal(err)
+	}
+	suspendTab(t, m, access, second.ID)
+	if _, err := m.LabelPage(t.Context(), access, PageID(second.ID), "Docs"); err == nil {
+		t.Fatal("a label another tab holds was accepted")
+	}
+	m.mu.Lock()
+	_, suspended := m.suspended[PageID(second.ID)]
+	m.mu.Unlock()
+	if !suspended {
+		t.Fatal("a refused label restored the suspended tab")
+	}
+}

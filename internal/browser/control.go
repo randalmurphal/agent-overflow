@@ -131,6 +131,18 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 	if strings.IndexFunc(label, unicode.IsControl) >= 0 {
 		return PageInfo{}, fmt.Errorf("browser: page label cannot contain control characters")
 	}
+	pageID = pageID.trim()
+	taken := func(holder PageID) error {
+		return fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
+	}
+	// A label another tab holds is refused before a suspended tab restores
+	// for it, and again where it commits.
+	m.mu.Lock()
+	holder := m.labelHolderLocked(access.tb, pageID, label)
+	m.mu.Unlock()
+	if holder != "" {
+		return PageInfo{}, taken(holder)
+	}
 	// The label lands on the page the tab is when it commits, after any jar
 	// switch writing the saved copy that holds the label (lockHeld): a tab
 	// the switch suspended meanwhile is resolved, and restored, again.
@@ -148,7 +160,7 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 		}
 		if holder := m.labelHolderLocked(access.tb, p.id, label); holder != "" {
 			m.mu.Unlock()
-			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
+			return PageInfo{}, taken(holder)
 		}
 		info, _ := p.commitInfo(pageUpdate{Label: &label})
 		m.mu.Unlock()

@@ -90,7 +90,9 @@ const (
 
 // Find runs one find action of a pane mount's on a page of the thread's
 // companion. seq is the start's sequence, the sequence a step steps, or a
-// stop's bound. start runs only on the shown active page; next, previous and
+// stop's bound. start runs only on the shown active page, from a mount of
+// the bound lifetime, and restores a suspended page only once its mount,
+// sequence and page are admitted (findStartPage); next, previous and
 // stop never restore a suspended page, and stop answers for a page that is
 // gone as for one with no search, still ending the mount's search on the
 // thread's other pages.
@@ -128,7 +130,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, 
 	var p *managedPage
 	var err error
 	if kind == FindStart {
-		p, _, err = m.resolvePage(ctx, access, pageID, false)
+		p, err = m.findStartPage(ctx, access, pageID, owner)
 	} else {
 		p, _, err = m.lookupOwnedPage(access, pageID)
 	}
@@ -303,26 +305,58 @@ var (
 	errFindStale    = errors.New("browser: a find start's sequence must be above every start its pane mount made before")
 )
 
+// findStartPage answers the live page owner's start runs on, restoring a
+// suspended one only once the start is admissible
+// (findStartAdmissionLocked): a start on a page that is no tab of the
+// lifetime, or refused for its mount, its sequence or a page that is not
+// the shown one, restores nothing. The search's commit admits it again
+// (admitFindStart), since the restore waits.
+func (m *Manager) findStartPage(ctx context.Context, access Access, pageID PageID, owner findOwner) (*managedPage, error) {
+	m.mu.Lock()
+	err := errPageNotFound
+	live, _ := m.livePageLocked(pageID)
+	if rec := m.suspended[pageID]; (live != nil && live.owner == access.tb) || (rec != nil && rec.owner == access.tb) {
+		_, err = m.findStartAdmissionLocked(access.tb, pageID, owner)
+	}
+	m.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	p, _, err := m.resolvePage(ctx, access, pageID, false)
+	return p, err
+}
+
 // admitFindStart takes owner's start on a page of the thread lifetime tb,
-// or refuses it: the mount must be tb's (mountLocked), the start's sequence
-// above every start the mount made before, and the page tb's shown active
-// one. A start it takes raises the mount's sequence.
+// or refuses it (findStartAdmissionLocked). A start it takes raises the
+// mount's sequence.
 func (m *Manager) admitFindStart(tb *threadBrowser, pageID PageID, owner findOwner) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	pane, ok := m.mountLocked(tb, owner.mount)
-	if !ok {
-		return errFindNoMount
-	}
-	if owner.seq <= pane.findSeq {
-		return fmt.Errorf("%w: %d after %d", errFindStale, owner.seq, pane.findSeq)
-	}
-	if !tb.session.Visible || tb.session.activePage() != pageID {
-		return errFindNotShown
+	pane, err := m.findStartAdmissionLocked(tb, pageID, owner)
+	if err != nil {
+		return err
 	}
 	pane.findSeq = owner.seq
 	m.panes[owner.mount] = pane
 	return nil
+}
+
+// findStartAdmissionLocked answers owner's mount when its start on a page
+// of the thread lifetime tb is admissible: the mount is tb's
+// (mountLocked), the start's sequence is above every start the mount made
+// before, and the page is tb's shown active one. The caller holds m.mu.
+func (m *Manager) findStartAdmissionLocked(tb *threadBrowser, pageID PageID, owner findOwner) (paneMount, error) {
+	pane, ok := m.mountLocked(tb, owner.mount)
+	if !ok {
+		return pane, errFindNoMount
+	}
+	if owner.seq <= pane.findSeq {
+		return pane, fmt.Errorf("%w: %d after %d", errFindStale, owner.seq, pane.findSeq)
+	}
+	if !tb.session.Visible || tb.session.activePage() != pageID {
+		return pane, errFindNotShown
+	}
+	return pane, nil
 }
 
 // beginFindLocked opens a transition: it applies the ends submitted before
