@@ -49,17 +49,32 @@ func mountNamespaceInUse(dir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	entries, err := os.ReadDir("/proc")
+	return threadInMountNamespace("/proc", string(data))
+}
+
+// threadInMountNamespace reports whether any thread of a process under
+// proc, a procfs root, is in the mount namespace named want. It reads
+// every thread, not the process's own entry: a leader that has exited
+// names no namespace while its other threads are still in it. A process
+// that is gone or unreadable has no thread to read.
+func threadInMountNamespace(proc, want string) (bool, error) {
+	entries, err := os.ReadDir(proc)
 	if err != nil {
 		return false, err
 	}
-	want := string(data)
 	for _, entry := range entries {
 		if _, err := strconv.Atoi(entry.Name()); err != nil {
 			continue
 		}
-		if ns, err := os.Readlink(filepath.Join("/proc", entry.Name(), "ns", "mnt")); err == nil && ns == want {
-			return true, nil
+		tasks, err := os.ReadDir(filepath.Join(proc, entry.Name(), "task"))
+		if err != nil {
+			continue
+		}
+		for _, task := range tasks {
+			link := filepath.Join(proc, entry.Name(), "task", task.Name(), "ns", "mnt")
+			if ns, err := os.Readlink(link); err == nil && ns == want {
+				return true, nil
+			}
 		}
 	}
 	return false, nil

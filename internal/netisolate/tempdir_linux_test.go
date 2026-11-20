@@ -348,14 +348,27 @@ func mountSource(path string) (string, error) {
 	return source, nil
 }
 
+// processExited reports whether every thread of pid has exited. The
+// leader of a Go program turns zombie while its other threads are still
+// exiting, and those hold the process's open files, the run's locks among
+// them, until they are gone.
 func processExited(pid int) bool {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
 	if err != nil {
 		return true
 	}
-	text := string(data)
-	fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:])
-	return len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X")
+	for _, task := range tasks {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/stat", pid, task.Name()))
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:])
+		if len(fields) == 0 || (fields[0] != "Z" && fields[0] != "X") {
+			return false
+		}
+	}
+	return true
 }
 
 // lingeringRun is a launcher process (role) running the linger probe,

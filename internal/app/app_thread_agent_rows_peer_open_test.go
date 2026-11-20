@@ -242,15 +242,16 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		}
 	}
 
-	// A later answer finds the same.
+	// A later answer finds the same. The listing that carries it is the one
+	// judged: a read after it can outrun a computer's answer, which shows
+	// that computer as not answering.
 	before, _ := c.entryAt(0, c.spawns[0])
+	later := false
 	waitUntil(t, 20*time.Second, func() bool {
 		listing = read()
 		at, _ := c.entryAt(0, c.spawns[0])
-		return at.After(before)
+		later = later || at.After(before)
+		return later && open(listing)
 	})
-	if listing = read(); !open(listing) {
-		t.Fatalf("after a later answer the rows = %+v; want each still open", listing.Rows)
-	}
 	expectBoundedAsking()
 }

@@ -47,3 +47,40 @@ func TestMountNamespaceKeepsADirectory(t *testing.T) {
 		t.Fatalf("Sweep = %v, directory kept %v; want it removed without its namespace", err, exists(t, kept.Dir))
 	}
 }
+
+// TestAThreadOfAnExitedLeaderKeepsItsNamespace: a process whose leader
+// thread has exited names no namespace of its own, and its other threads
+// are still in it.
+func TestAThreadOfAnExitedLeaderKeepsItsNamespace(t *testing.T) {
+	proc := t.TempDir()
+	const want = "mnt:[4026532999]"
+	task := func(pid, tid, ns string) {
+		t.Helper()
+		dir := filepath.Join(proc, pid, "task", tid, "ns")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if ns == "" {
+			return
+		}
+		if err := os.Symlink(ns, filepath.Join(dir, "mnt")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The exited leader: its ns links do not resolve.
+	if err := os.MkdirAll(filepath.Join(proc, "100", "ns"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	task("100", "100", "")
+	task("200", "200", "mnt:[4026531841]")
+	if err := os.MkdirAll(filepath.Join(proc, "self"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if in, err := threadInMountNamespace(proc, want); err != nil || in {
+		t.Fatalf("in use = %v, %v; want no thread in the namespace yet", in, err)
+	}
+	task("100", "101", want)
+	if in, err := threadInMountNamespace(proc, want); err != nil || !in {
+		t.Fatalf("in use = %v, %v; want the live thread of the exited leader counted", in, err)
+	}
+}
