@@ -345,8 +345,12 @@ way, as the board's `rows_removed_at`, rows removed or not. A write from a
 read that began earlier is superseded, an identical read that began later
 moves `read_at` alone, and a duplicate from the same read writes nothing. A
 section page carries the board's revision; continuing it at another
-revision fails with `ErrTrackerCacheStale`. A card's status time is derived
-from the card and the stored history by every write of either.
+revision fails with `ErrTrackerCacheStale`. A board view's first paint
+reads structure, totals and first pages in one snapshot
+(`ReadMirrorBoardView`), so its totals and rows are one state. A card's
+status time is derived from the card and the stored history by every write
+of either. A detail's read time starts at its opening, so a document read
+before the opening is superseded.
 
 A board's backlog is its rows in no future or active sprint of that board
 whose status is not in the done or canceled group, by the group the mirror
@@ -384,10 +388,20 @@ and writes share:
   incomplete adds and never removes. It runs when a board is subscribed, on
   a slower cadence, and on request.
 - **Structure** is read when a board is subscribed, on a slower cadence,
-  and whenever a delta names a status, sprint or user the mirror lacks.
+  and while the board is structure-due. A row page that names a status,
+  sprint or user the mirror lacks, and that no complete structure read
+  marked unexplained, makes the board due in the page's own transaction
+  (`MirrorChanges.StructureDue`, durable as `MirrorSync.StructureDueAt`). A
+  structure from a read that began no earlier clears it; a failed read
+  leaves it due. A structure that changes the board's estimate unit clears
+  the cursor, and reads show each row read before it with an unknown
+  estimate until the walk reads it again.
 - **History** is read whole for an issue new to the mirror and again for
   an issue whose update time is later than the time its stored history is
-  final through, limited to the four change kinds. It is written in
+  final through, that gained a board row, or whose row was read again
+  after its board's estimate unit changed, limited to the four change
+  kinds. The caller sends `MirrorHistoryDue.BoardsRev` back as
+  `MirrorHistory.BoardsRev`. It is written in
   batches of up to 50 issues (`ReplaceMirrorHistories`). A caller sends an
   issue's whole history in one call, however long; one over 500 changes is
   staged in transactions of at most 500 and made the issue's history in

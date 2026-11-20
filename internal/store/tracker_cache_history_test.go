@@ -23,7 +23,7 @@ func webHistory(issue string) MirrorHistory {
 
 // replaceHistory writes one history, as a batch of one.
 func replaceHistory(s *Store, root int64, h MirrorHistory) (MirrorWrite, error) {
-	results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h})
+	results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}))
 	if err != nil {
 		return MirrorWrite{}, err
 	}
@@ -246,7 +246,7 @@ func TestListMirrorHistoryDue(t *testing.T) {
 		t.Fatalf("first page = %d IDs from %v, more %v, %v; want %d from 10001, 10003", len(first), first[:2], more, err, mirrorHistoryDuePage)
 	}
 	rest, more, err := s.ListMirrorHistoryDue(root, first[len(first)-1].IssueID)
-	if err != nil || more || !reflect.DeepEqual(rest, []MirrorHistoryDue{{IssueID: "10102", Boards: []string{"10"}}}) {
+	if err != nil || more || !reflect.DeepEqual(rest, []MirrorHistoryDue{{IssueID: "10102", Boards: []string{"10"}, BoardsRev: 1}}) {
 		t.Fatalf("second page = %v, %v, %v", rest, more, err)
 	}
 	// An unkept issue is not due; an update after the history makes one due.
@@ -269,9 +269,10 @@ func mustDetailWrite(t *testing.T, what string, got MirrorDetailWrite, err error
 	}
 }
 
-// An opening only moves the open time forward; a document is stored with
-// the time its read began, unless the stored one came from a read that
-// began later, and the time it was opened stays. A detail with no document
+// An opening only moves the open time forward, and the first is the
+// detail's read watermark; a document is stored with the time its read
+// began, unless the stored one came from a read that began later, and the
+// time it was opened stays. A detail with no document
 // reads as absent, as does that of an issue the mirror stops keeping.
 func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 	t.Parallel()
@@ -291,23 +292,23 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 	}
 	got, err = s.TouchMirrorDetail(root, "10001", 50)
 	mustDetailWrite(t, "earlier opening", got, err, MirrorDetailWrite{Stored: true})
-	if at := opened(); at != "100 0" {
+	if at := opened(); at != "100 100" {
 		t.Fatalf("after an earlier opening: %s", at)
 	}
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 80, []byte(`{"v":1}`))
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 180, []byte(`{"v":1}`))
 	mustDetailWrite(t, "document", got, err, MirrorDetailWrite{Stored: true, Changed: true})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 70, []byte(`{"v":0}`))
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":0}`))
 	mustDetailWrite(t, "earlier document", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 70, []byte(`{"v":1}`))
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":1}`))
 	mustDetailWrite(t, "identical earlier document", got, err, MirrorDetailWrite{Stored: true})
-	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 80, Data: []byte(`{"v":1}`)}) {
+	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 180, Data: []byte(`{"v":1}`)}) {
 		t.Fatalf("detail = %+v, %v, %v", d, ok, err)
 	}
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 90, []byte(`{"v":2}`))
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 190, []byte(`{"v":2}`))
 	mustDetailWrite(t, "later document", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	got, err = s.TouchMirrorDetail(root, "10001", 200)
 	mustDetailWrite(t, "later opening", got, err, MirrorDetailWrite{Stored: true})
-	if at := opened(); at != "200 90" {
+	if at := opened(); at != "200 190" {
 		t.Fatalf("after a later opening: %s", at)
 	}
 
@@ -376,7 +377,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	early := webHistory("10003")
 	early.CompleteTo = 15
 	commits := s.CommitCount()
-	results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{webHistory("10009"), early, webHistory("10002"), webHistory("10004"), webHistory("10001")})
+	results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{webHistory("10009"), early, webHistory("10002"), webHistory("10004"), webHistory("10001")}))
 	want := []MirrorHistoryResult{{IssueID: "10009", Unkept: true}, {IssueID: "10003", Superseded: true}, {IssueID: "10002", Changed: true},
 		{IssueID: "10004", Unkept: true}, {IssueID: "10001"}}
 	if err != nil || !reflect.DeepEqual(results, want) {
@@ -390,7 +391,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	mustReplaceHistory(t, s, root, statusHistory("10002", clearMirrorChunk), MirrorWrite{Changed: true})
 	recorder := recordMirrorWrites(t, s)
 	commits = s.CommitCount()
-	results, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{{IssueID: "10001", CompleteTo: 1000}, {IssueID: "10002", CompleteTo: 1000}})
+	results, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001", CompleteTo: 1000}, {IssueID: "10002", CompleteTo: 1000}}))
 	if err != nil || !reflect.DeepEqual(results, []MirrorHistoryResult{{IssueID: "10001", Changed: true}, {IssueID: "10002", Changed: true}}) {
 		t.Fatalf("emptying batch = %+v, %v", results, err)
 	}
@@ -408,7 +409,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 		"issue twice":        {webHistory("10001"), webHistory("10001")},
 		"one invalid":        {webHistory("10002"), {IssueID: "10001"}},
 	} {
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -431,7 +432,7 @@ func TestMirrorHistoryDueCarriesItsBoards(t *testing.T) {
 		t.Fatal(err)
 	}
 	due, more, err := s.ListMirrorHistoryDue(root, "")
-	if want := []MirrorHistoryDue{{IssueID: "10001", Boards: []string{"10", "12"}}, {IssueID: "10005"}}; err != nil || more || !reflect.DeepEqual(due, want) {
+	if want := []MirrorHistoryDue{{IssueID: "10001", Boards: []string{"10", "12"}, BoardsRev: 3}, {IssueID: "10005"}}; err != nil || more || !reflect.DeepEqual(due, want) {
 		t.Fatalf("due = %+v, %v, %v\nwant %+v", due, more, err, want)
 	}
 }

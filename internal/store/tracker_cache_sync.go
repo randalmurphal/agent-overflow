@@ -270,21 +270,26 @@ type MirrorSyncFailure struct {
 // is the root's sweep, set for every scope, ok or not: the caller captures
 // it before reading content outside a board (cards, details, histories)
 // and names it in the write, so nothing read before an issue was swept is
-// stored after it is kept again (ErrTrackerCacheSwept).
+// stored after it is kept again (ErrTrackerCacheSwept). StructureDueAt,
+// set for a board listed or not, is the latest read of a row page that
+// named a status, user or sprint the mirror lacked and no structure read
+// marked unexplained: a structure read that began no earlier clears it
+// (zero: none due).
 type MirrorSync struct {
-	Lifetime     int64
-	Sweep        int64
-	Cursor       []byte
-	ReadAt       int64
-	ReconciledAt int64
-	Failure      MirrorSyncFailure
+	Lifetime       int64
+	Sweep          int64
+	StructureDueAt int64
+	Cursor         []byte
+	ReadAt         int64
+	ReconciledAt   int64
+	Failure        MirrorSyncFailure
 }
 
 // mirrorSyncStateSQL reads whether the root is live (NULL: no root), a
 // scope's sync state and, for a board listed through a live root and not
 // retired, the board's lifetime.
 var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep, 0),
-	  coalesce(bl.lifetime, 0), s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0),
+	  coalesce(bl.lifetime, 0), coalesce(bl.structure_due_at, 0), s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0),
 	  coalesce(s.reconciled_at, 0), coalesce(s.failed_at, 0), coalesce(s.failure_kind, ''), coalesce(s.failure_message, '')
 	FROM (SELECT 1)
 	LEFT JOIN tracker_cache_roots rt ON rt.id = ?1
@@ -304,7 +309,7 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string) (MirrorSync, bool, e
 	var st MirrorSync
 	var live sql.NullBool
 	var ok bool
-	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID).Scan(&live, &st.Sweep, &st.Lifetime, &ok,
+	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID).Scan(&live, &st.Sweep, &st.Lifetime, &st.StructureDueAt, &ok,
 		&st.Cursor, &st.ReadAt, &st.ReconciledAt, &st.Failure.At, &st.Failure.Kind, &st.Failure.Message)
 	if err == nil && !live.Bool {
 		err = ErrTrackerCacheGone
@@ -313,7 +318,7 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string) (MirrorSync, bool, e
 		return MirrorSync{}, false, fmt.Errorf("store: read tracker mirror %d sync of board %q: %w", rootID, boardID, err)
 	}
 	if !ok {
-		return MirrorSync{Lifetime: st.Lifetime, Sweep: st.Sweep}, false, nil
+		return MirrorSync{Lifetime: st.Lifetime, Sweep: st.Sweep, StructureDueAt: st.StructureDueAt}, false, nil
 	}
 	return st, true, nil
 }

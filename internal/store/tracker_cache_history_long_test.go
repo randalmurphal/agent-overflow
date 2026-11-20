@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 )
 
@@ -59,8 +60,8 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		recorder.reset()
 		var results []MirrorHistoryResult
 		var err error
-		sweep := currentSweep(s, root)
-		statements := countMirrorStatements(t, func() { results, err = s.ReplaceMirrorHistories(root, sweep, []MirrorHistory{step.history}) })
+		sweep, histories := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{step.history})
+		statements := countMirrorStatements(t, func() { results, err = s.ReplaceMirrorHistories(root, sweep, histories) })
 		if err != nil || len(results) != 1 || results[0].Changed != step.changed {
 			t.Fatalf("%s: %+v, %v", step.name, results, err)
 		}
@@ -96,7 +97,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 		{"after the switch", `BEFORE DELETE ON tracker_cache_changes WHEN OLD.gen = 1 AND OLD.seq = 2000`,
 			"10 to 6010 since 10 other 3000 dirty 1",
 			func(s *Store, root int64) error {
-				_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{longHistory("10001", 10, 9000)})
+				_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}))
 				return err
 			}},
 	} {
@@ -109,7 +110,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 			next = longHistory("10001", 5000, 7000)
 		}
 		mustExec(t, s.db, fmt.Sprintf(`CREATE TRIGGER test_stop_staging %s BEGIN SELECT RAISE(ABORT, 'stopped'); END`, stop.trigger))
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{next}); err == nil {
+		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next})); err == nil {
 			t.Fatalf("%s: the staging was not stopped", stop.name)
 		}
 		if got := mirrorHistoryShown(t, s); got != stop.shown {
@@ -129,4 +130,36 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 			t.Errorf("%s: after the finish %d changes of other generations, dirty %d, %v", stop.name, other, dirty, err)
 		}
 	}
+}
+
+// mirrorProbeMaxBytes bounds what comparing a history with the stored one
+// allocates beyond the input: a chunk of changes, its encoding and what
+// the comparison reads back, whatever the history's length.
+const mirrorProbeMaxBytes = 512 << 10
+
+// Comparing a long history with the stored one works a chunk at a time and
+// stops at the chunk holding the first difference: a 100,000-change history
+// whose first change differs allocates no more than mirrorProbeMaxBytes.
+func TestMirrorHistoryProbeStopsAtTheFirstDifference(t *testing.T) {
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	mustReplaceHistory(t, s, root, longHistory("10001", 11, 1), MirrorWrite{Changed: true})
+	in, err := newMirrorHistoryInput(longHistory("10001", 100000, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe mirrorHistoryProbe
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	probe, err = s.probeMirrorHistory(root, in, 0)
+	runtime.ReadMemStats(&after)
+	if err != nil || !probe.differs {
+		t.Fatalf("probe = %+v, %v; want a difference", probe.differs, err)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > mirrorProbeMaxBytes {
+		t.Errorf("the probe allocated %d bytes; want at most %d", allocated, mirrorProbeMaxBytes)
+	}
+	t.Logf("the probe allocated %d bytes", allocated)
 }

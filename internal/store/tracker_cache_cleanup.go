@@ -36,6 +36,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
 	{"tracker_cache_sprints", "board_id, sprint_id"},
+	{"tracker_cache_board_unexplained", "board_id, kind, ref_id"},
 	{"tracker_cache_issues", "rowid"},
 	{"tracker_cache_boards", "rowid"},
 	{"tracker_cache_worklogs", "rowid"},
@@ -49,7 +50,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 // order, before it deletes the board.
 var mirrorBoardTables = []string{
 	"tracker_cache_board_issues", "tracker_cache_board_column_statuses",
-	"tracker_cache_board_columns", "tracker_cache_sprints",
+	"tracker_cache_board_columns", "tracker_cache_sprints", "tracker_cache_board_unexplained",
 }
 
 // mirrorRootChunkSQL deletes one batch of a detached root's rows from each

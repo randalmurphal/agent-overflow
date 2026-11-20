@@ -22,7 +22,7 @@ var (
 	// mirrorHistoryProbeSQL reads, of a chunk ?2 of a history's changes at
 	// the issue's generation, those the stored history lacks or holds
 	// otherwise.
-	mirrorHistoryProbeSQL = `SELECT c.value ->> 'k', c.value ->> 'q', s.root_id IS NOT NULL FROM json_each(?2) c
+	mirrorHistoryProbeSQL = `SELECT c.key, s.root_id IS NOT NULL FROM json_each(?2) c
 		LEFT JOIN tracker_cache_changes s ON s.root_id = ?1 AND s.issue_id = c.value ->> 'i' AND s.gen = c.value ->> 'g'
 		  AND s.kind = c.value ->> 'k' AND s.seq = c.value ->> 'q'
 		WHERE s.root_id IS NULL OR s.at IS NOT c.value ->> 't' OR s.author_id IS NOT c.value ->> 'a'
@@ -36,10 +36,10 @@ var (
 		  UNION ALL
 		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND gen > ?3)
 		LIMIT ` + fmt.Sprint(clearMirrorChunk) + `)`
-	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4 and
-	// final through ?5, the issue's history, deriving its status time
-	// from it.
-	mirrorHistorySwitchSQL = `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_to = ?5,
+	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4, final
+	// through ?5 and read for boards revision ?6, the issue's history,
+	// deriving its status time from it.
+	mirrorHistorySwitchSQL = `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_to = ?5, history_boards_rev = ?6,
 		status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{issue: "tracker_cache_issues.issue_id",
 		status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
 		createdAt: "tracker_cache_issues.created_at", from: "?4", to: "?5", gen: "?3"}) + `
@@ -47,8 +47,9 @@ var (
 )
 
 // mirrorHistoryProbe is how a history compares with the stored one: the
-// changes the stored history holds otherwise (differs), those it lacks, and
-// whether it holds changes the history does not (extra).
+// changes the stored history holds otherwise (differs), those it lacks (at
+// most clearMirrorChunk and one), and whether it holds changes the history
+// does not (extra).
 type mirrorHistoryProbe struct {
 	differs, extra bool
 	missing        []mirrorChangeRow
@@ -73,8 +74,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 			return fmt.Errorf("%s: %w", action, err)
 		}
 	}
-	sameTimes := st.storedFrom == in.h.CompleteFrom && st.storedTo == in.h.CompleteTo
-	if sameTimes && st.removes == 0 {
+	if st.sameTimes(in) && st.removes == 0 {
 		probe, err := s.probeMirrorHistory(rootID, in, st.gen)
 		if err != nil {
 			return fmt.Errorf("%s: %w", action, err)
@@ -105,9 +105,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	if !probe.differs && !probe.extra && len(probe.missing) <= clearMirrorChunk {
-		return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-			return finishMirrorHistoryInPlaceTx(tx, rootID, in, st.gen, probe.missing)
-		})
+		return s.finishMirrorHistoryInPlace(rootID, in, st.gen, probe.missing, action)
 	}
 	return s.stageMirrorHistory(rootID, in, st.gen, action)
 }
@@ -129,7 +127,7 @@ func (s *Store) stagedHistoryState(rootID int64, in mirrorHistoryInput, result *
 	case !ok || !st.kept:
 		result.Unkept, result.Superseded = true, false
 		return st, false, nil
-	case in.h.CompleteTo < st.storedTo:
+	case st.supersedes(in):
 		result.Unkept, result.Superseded = false, true
 		return st, false, nil
 	}
@@ -138,11 +136,12 @@ func (s *Store) stagedHistoryState(rootID int64, in mirrorHistoryInput, result *
 }
 
 // probeMirrorHistory compares in's changes with the issue's stored history
-// at generation gen, a read of clearMirrorChunk changes at a time.
+// at generation gen, a read of clearMirrorChunk changes at a time, each
+// copied and encoded alone, and stops after the chunk that shows the
+// history cannot be kept in place: no caller acts on more than that.
 func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int64) (mirrorHistoryProbe, error) {
-	row, changes := in.at(gen)
 	var probe mirrorHistoryProbe
-	listed, err := encodeMirrorJSON([]mirrorHistoryRow{row})
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{in.rowAt(gen)})
 	if err != nil {
 		return probe, err
 	}
@@ -152,28 +151,24 @@ func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 		return probe, fmt.Errorf("count changes to remove: %w", err)
 	}
 	probe.extra = removes > 0
-	type key struct{ kind, seq int }
-	at := make(map[key]int, len(changes))
-	for i, c := range changes {
-		at[key{c.Kind, c.Seq}] = i
-	}
-	// It stops once the history cannot be kept in place: no caller acts on
-	// more than that.
-	for start := 0; start < len(changes) && !probe.differs && !probe.extra && len(probe.missing) <= clearMirrorChunk; start += clearMirrorChunk {
-		chunk, err := encodeMirrorJSON(changes[start:min(start+clearMirrorChunk, len(changes))])
+	chunk := make([]mirrorChangeRow, 0, clearMirrorChunk)
+	for start := 0; start < len(in.changes) && !probe.differs && !probe.extra && len(probe.missing) <= clearMirrorChunk; start += clearMirrorChunk {
+		chunk = in.chunkAt(gen, start, chunk)
+		encoded, err := encodeMirrorJSON(chunk)
 		if err != nil {
 			return probe, err
 		}
-		err = scanMirrorRows(s.reader(), mirrorHistoryProbeSQL, []any{rootID, chunk}, func(r rowScanner) error {
-			var k key
+		err = scanMirrorRows(s.reader(), mirrorHistoryProbeSQL, []any{rootID, encoded}, func(r rowScanner) error {
+			var i int
 			var stored bool
-			if err := r.Scan(&k.kind, &k.seq, &stored); err != nil {
+			if err := r.Scan(&i, &stored); err != nil {
 				return err
 			}
-			if stored {
+			switch {
+			case stored:
 				probe.differs = true
-			} else {
-				probe.missing = append(probe.missing, changes[at[k]])
+			case !probe.differs && len(probe.missing) <= clearMirrorChunk:
+				probe.missing = append(probe.missing, chunk[i])
 			}
 			return nil
 		})
@@ -184,45 +179,47 @@ func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 	return probe, nil
 }
 
-// finishMirrorHistoryInPlaceTx adds the missing changes of a history whose
+// finishMirrorHistoryInPlace adds the missing changes of a history whose
 // stored changes it otherwise holds, writes its times and clears
-// history_dirty, in one transaction.
-func finishMirrorHistoryInPlaceTx(tx *sql.Tx, rootID int64, in mirrorHistoryInput, gen int64, missing []mirrorChangeRow) error {
-	if len(missing) > 0 {
-		rows, err := encodeMirrorJSON(missing)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, rows); err != nil {
-			return fmt.Errorf("add changes: %w", err)
-		}
-	}
-	row, _ := in.at(gen)
-	listed, err := encodeMirrorJSON([]mirrorHistoryRow{row})
+// history_dirty, in one transaction; what it writes is encoded before.
+func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, gen int64, missing []mirrorChangeRow, action string) error {
+	rows, err := encodeMirrorJSON(missing)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(mirrorHistoryTimesSQL, rootID, listed); err != nil {
-		return fmt.Errorf("write history times: %w", err)
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{in.rowAt(gen)})
+	if err != nil {
+		return err
 	}
-	if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID); err != nil {
-		return fmt.Errorf("clear the staging mark: %w", err)
-	}
-	return nil
+	return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+		if len(missing) > 0 {
+			if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, rows); err != nil {
+				return fmt.Errorf("add changes: %w", err)
+			}
+		}
+		if _, err := tx.Exec(mirrorHistoryTimesSQL, rootID, listed); err != nil {
+			return fmt.Errorf("write history times: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID); err != nil {
+			return fmt.Errorf("clear the staging mark: %w", err)
+		}
+		return nil
+	})
 }
 
 // stageMirrorHistory writes in's changes to generation gen+1 a chunk per
 // transaction, makes it the issue's history, and deletes the old one.
 func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, gen int64, action string) error {
 	next := gen + 1
-	_, changes := in.at(next)
-	for start := 0; start < len(changes); start += clearMirrorChunk {
-		chunk, err := encodeMirrorJSON(changes[start:min(start+clearMirrorChunk, len(changes))])
+	chunk := make([]mirrorChangeRow, 0, clearMirrorChunk)
+	for start := 0; start < len(in.changes); start += clearMirrorChunk {
+		chunk = in.chunkAt(next, start, chunk)
+		encoded, err := encodeMirrorJSON(chunk)
 		if err != nil {
 			return err
 		}
 		err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-			if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, chunk); err != nil {
+			if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, encoded); err != nil {
 				return fmt.Errorf("stage changes: %w", err)
 			}
 			return nil
@@ -232,7 +229,7 @@ func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 		}
 	}
 	err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.CompleteTo); err != nil {
+		if _, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.CompleteTo, in.h.BoardsRev); err != nil {
 			return fmt.Errorf("make the staged history the issue's: %w", err)
 		}
 		return nil

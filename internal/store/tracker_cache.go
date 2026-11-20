@@ -184,6 +184,10 @@ type mirrorBoard struct {
 	readAt int64
 	// rowsRemovedAt is when the latest read that found rows gone began.
 	rowsRemovedAt int64
+	// structureDueAt is the board's structure_due_at.
+	structureDueAt int64
+	// marked reports that the board holds unexplained references.
+	marked bool
 }
 
 // mirrorBoardWriteSQL reads, in one statement, whether a root is live,
@@ -191,7 +195,8 @@ type mirrorBoard struct {
 // state of the board's lifetime ?3.
 const mirrorBoardWriteSQL = `SELECT r.connection_id IS NOT NULL,
 	  EXISTS (SELECT 1 FROM project_tracker_boards p WHERE p.connection_id = r.connection_id AND p.board_id = ?2),
-	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0)
+	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0), coalesce(b.structure_due_at, 0),
+	  EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u WHERE u.root_id = ?1 AND u.board_id = ?2)
 	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = ?3
 	WHERE r.id = ?1`
 
@@ -213,7 +218,8 @@ func (s *Store) mirrorBoardWrite(rootID int64, boardID string, lifetime int64, a
 	defer rollbackTx(tx, action, &err)
 	var live, listed, retired bool
 	var board mirrorBoard
-	err = tx.QueryRow(mirrorBoardWriteSQL, rootID, boardID, lifetime).Scan(&live, &listed, &retired, &board.readAt, &board.rowsRemovedAt)
+	err = tx.QueryRow(mirrorBoardWriteSQL, rootID, boardID, lifetime).Scan(&live, &listed, &retired, &board.readAt, &board.rowsRemovedAt,
+		&board.structureDueAt, &board.marked)
 	board.stored = board.readAt > 0
 	switch {
 	case errors.Is(err, sql.ErrNoRows) || err == nil && !live:

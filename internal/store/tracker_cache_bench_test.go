@@ -139,7 +139,7 @@ func fillBenchMirror(s *Store) error {
 			for i := first; i < min(first+mirrorHistoryBatch, benchBoardIssues); i++ {
 				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
 			}
-			if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch); err != nil {
+			if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch)); err != nil {
 				return err
 			}
 		}
@@ -336,9 +336,14 @@ func BenchmarkMirrorReplaceHistory(b *testing.B) {
 		b.Run(fmt.Sprint(n, "-issues"), func(b *testing.B) {
 			s, root := openBenchMirror(b)
 			batch, sweep := make([]MirrorHistory, n), currentSweep(s, root)
+			revs := make([]int64, n)
+			for k, h := range dueHistories(s, root, batch) {
+				revs[k] = h.BoardsRev
+			}
 			measureMirror(b, func(i int) error {
 				for k := range batch {
 					batch[k] = benchHistory(benchIssueID(0, k), int64(2000+i), 20)
+					batch[k].BoardsRev = revs[k]
 				}
 				_, err := s.ReplaceMirrorHistories(root, sweep, batch)
 				return err

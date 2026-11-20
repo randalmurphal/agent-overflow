@@ -231,8 +231,10 @@ type MirrorIssueRow struct {
 }
 
 // mirrorIssueRowsSQL reads a page of an issue's rows on the boards the
-// mirror shows, by board ID after ?3, from the primary key.
-var mirrorIssueRowsSQL = `SELECT b.board_id, b.order_key, b.estimate FROM tracker_cache_board_issues b
+// mirror shows, by board ID after ?3, from the primary key; a row read no
+// later than its board's estimate definition last changed has no estimate.
+var mirrorIssueRowsSQL = `SELECT b.board_id, b.order_key, iif(b.read_at <= (SELECT r.estimate_reset_at FROM tracker_cache_boards r
+	  WHERE r.root_id = b.root_id AND r.board_id = b.board_id), NULL, b.estimate) FROM tracker_cache_board_issues b
 	WHERE b.root_id = ?1 AND b.issue_id = ?2 AND b.board_id > ?3 AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
 	ORDER BY b.board_id LIMIT ` + strconv.Itoa(mirrorIssueRowsPage+1)
 

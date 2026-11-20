@@ -202,7 +202,7 @@ func TestStoreMirrorDetailRecordsTheOpening(t *testing.T) {
 		statements, writes int
 		state              string
 	}{
-		{"new, opened", "10001", 100, 80, `{"v":1}`, MirrorDetailWrite{Stored: true, Changed: true}, 4, 1, "100 80 1"},
+		{"new, opened", "10001", 80, 80, `{"v":1}`, MirrorDetailWrite{Stored: true, Changed: true}, 4, 1, "80 80 1"},
 		{"opened again", "10001", 200, 80, `{"v":1}`, MirrorDetailWrite{Stored: true}, 3, 1, "200 80 1"},
 		{"the same again", "10001", 200, 80, `{"v":1}`, MirrorDetailWrite{Stored: true}, 2, 0, "200 80 1"},
 		{"earlier document, opened", "10001", 300, 70, `{"v":0}`, MirrorDetailWrite{Stored: true, Superseded: true}, 3, 1, "300 80 1"},
@@ -210,7 +210,7 @@ func TestStoreMirrorDetailRecordsTheOpening(t *testing.T) {
 		{"earlier opening", "10001", 250, 95, `{"v":2}`, MirrorDetailWrite{Stored: true, Changed: true}, 3, 1, "300 95 2"},
 		{"earlier opening, same document read later", "10001", 150, 99, `{"v":2}`, MirrorDetailWrite{Stored: true}, 3, 1, "300 99 2"},
 		{"new, no opening", "10002", 0, 60, `{"v":1}`, MirrorDetailWrite{}, 2, 0, "none"},
-		{"new, opened later", "10002", 70, 60, `{"v":1}`, MirrorDetailWrite{Stored: true, Changed: true}, 4, 1, "70 60 1"},
+		{"new, opened", "10002", 60, 60, `{"v":1}`, MirrorDetailWrite{Stored: true, Changed: true}, 4, 1, "60 60 1"},
 	} {
 		recorder.reset()
 		var got MirrorDetailWrite

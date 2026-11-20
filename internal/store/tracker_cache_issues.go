@@ -51,6 +51,9 @@ type MirrorChanges struct {
 	Unkept []string
 	// Catalog reports a changed user or status.
 	Catalog bool
+	// StructureDue reports that the board is due a structure read after a
+	// row page write (MirrorSync.StructureDueAt).
+	StructureDue bool
 }
 
 // mirrorCardRow is a card as the card statements read it from JSON, with

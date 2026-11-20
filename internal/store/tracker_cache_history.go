@@ -52,10 +52,15 @@ type MirrorChange struct {
 
 // MirrorHistory is one issue's changes, each kind oldest first, of any
 // number. They are complete from CompleteFrom (zero: from the issue's
-// creation) and final through CompleteTo, which is always set.
+// creation) and final through CompleteTo, which is always set. BoardsRev
+// is the issue's MirrorHistoryDue.BoardsRev the read was asked with: a
+// history read for an earlier set of boards than the stored one is
+// superseded, and one read for an earlier set than the issue's leaves it
+// due.
 type MirrorHistory struct {
 	IssueID                  string
 	CompleteFrom, CompleteTo int64
+	BoardsRev                int64
 	Changes                  []MirrorChange
 }
 
@@ -123,11 +128,12 @@ type mirrorChangeRow struct {
 // it: its change count per kind (index kind-1), the generation it is
 // written to, and its times.
 type mirrorHistoryRow struct {
-	Issue  string `json:"i"`
-	Gen    int64  `json:"g"`
-	Counts [4]int `json:"n"`
-	From   int64  `json:"f"`
-	To     int64  `json:"t"`
+	Issue     string `json:"i"`
+	Gen       int64  `json:"g"`
+	Counts    [4]int `json:"n"`
+	From      int64  `json:"f"`
+	To        int64  `json:"t"`
+	BoardsRev int64  `json:"b"`
 }
 
 // MirrorHistoryResult is what a history write did for one issue: whether
@@ -183,7 +189,7 @@ var mirrorRemovalsSQL = func() string {
 var (
 	// mirrorHistoryStateSQL reads, per listed issue the mirror holds, what
 	// admission needs and how many stored changes the history would remove.
-	mirrorHistoryStateSQL = `SELECT h.value ->> 'i', i.history_from, i.history_to, i.history_gen, i.history_dirty, ` +
+	mirrorHistoryStateSQL = `SELECT h.value ->> 'i', i.history_from, i.history_to, i.history_boards_rev, i.history_gen, i.history_dirty, ` +
 		mirrorIssueKept("i.root_id", "i.issue_id") + `, ` + mirrorRemovalsSQL + `
 		FROM json_each(?2) h CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = h.value ->> 'i'`
 	mirrorChangesUpsertSQL = `INSERT INTO tracker_cache_changes(root_id, issue_id, gen, kind, seq, at, author_id, board_id,
@@ -205,15 +211,15 @@ var (
 	// mirrorHistoryTimesSQL writes each listed issue's times and derives
 	// its status time from its stored history, finding each issue by key
 	// from the list; an UPDATE FROM the list would walk the root's issues.
-	mirrorHistoryTimesSQL = `UPDATE tracker_cache_issues SET (history_from, history_to, status_since) = (` + mirrorHistoryTimesOfSQL + `)
+	mirrorHistoryTimesSQL = `UPDATE tracker_cache_issues SET (history_from, history_to, history_boards_rev, status_since) = (` + mirrorHistoryTimesOfSQL + `)
 		WHERE root_id = ?1 AND issue_id IN (SELECT value ->> 'i' FROM json_each(?2))
-		  AND (history_from, history_to, status_since) IS NOT (` + mirrorHistoryTimesOfSQL + `)
+		  AND (history_from, history_to, history_boards_rev, status_since) IS NOT (` + mirrorHistoryTimesOfSQL + `)
 		RETURNING issue_id`
 )
 
 // mirrorHistoryTimesOfSQL reads the times the list holds for the issue
 // being updated, and the status time they give its card.
-var mirrorHistoryTimesOfSQL = `SELECT h.value ->> 'f', h.value ->> 't', ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{
+var mirrorHistoryTimesOfSQL = `SELECT h.value ->> 'f', h.value ->> 't', h.value ->> 'b', ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{
 	issue: "tracker_cache_issues.issue_id", status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
 	createdAt: "tracker_cache_issues.created_at", from: "(h.value ->> 'f')", to: "(h.value ->> 't')",
 	gen: "tracker_cache_issues.history_gen"}) + ` FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id`
@@ -226,22 +232,36 @@ type mirrorHistoryInput struct {
 	changes []mirrorChangeRow
 }
 
-// at returns in's rows and changes for generation gen.
-func (in mirrorHistoryInput) at(gen int64) (mirrorHistoryRow, []mirrorChangeRow) {
+// rowAt returns in's row for generation gen.
+func (in mirrorHistoryInput) rowAt(gen int64) mirrorHistoryRow {
 	row := in.row
 	row.Gen = gen
-	changes := slices.Clone(in.changes)
-	for i := range changes {
-		changes[i].Gen = gen
+	return row
+}
+
+// chunkAt copies into buf, for generation gen, the clearMirrorChunk changes
+// of in from start, or those left.
+func (in mirrorHistoryInput) chunkAt(gen int64, start int, buf []mirrorChangeRow) []mirrorChangeRow {
+	buf = append(buf[:0], in.changes[start:min(start+clearMirrorChunk, len(in.changes))]...)
+	for i := range buf {
+		buf[i].Gen = gen
 	}
-	return row, changes
+	return buf
+}
+
+// setGen sets the generation of in's own changes, for a batch write that
+// writes them whole.
+func (in mirrorHistoryInput) setGen(gen int64) {
+	for i := range in.changes {
+		in.changes[i].Gen = gen
+	}
 }
 
 func newMirrorHistoryInput(h MirrorHistory) (mirrorHistoryInput, error) {
-	if h.IssueID == "" || h.CompleteTo <= 0 || h.CompleteFrom < 0 {
+	if h.IssueID == "" || h.CompleteTo <= 0 || h.CompleteFrom < 0 || h.BoardsRev < 0 {
 		return mirrorHistoryInput{}, fmt.Errorf("%w: a history needs its issue and the time it is final through", ErrInvalidTrackerCache)
 	}
-	in := mirrorHistoryInput{h: h, row: mirrorHistoryRow{Issue: h.IssueID, From: h.CompleteFrom, To: h.CompleteTo},
+	in := mirrorHistoryInput{h: h, row: mirrorHistoryRow{Issue: h.IssueID, From: h.CompleteFrom, To: h.CompleteTo, BoardsRev: h.BoardsRev},
 		changes: make([]mirrorChangeRow, len(h.Changes))}
 	for i, c := range h.Changes {
 		if err := c.check(); err != nil {
@@ -348,7 +368,7 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 		switch {
 		case !ok || !st.kept:
 			continue
-		case in.h.CompleteTo < st.storedTo:
+		case st.supersedes(in):
 			result.Unkept, result.Superseded = false, true
 			continue
 		case st.dirty || len(in.changes) > clearMirrorChunk || st.removes > clearMirrorChunk:
@@ -360,8 +380,8 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 		result.Unkept = false
 		removeBudget -= st.removes
 		writeBudget -= len(in.changes)
-		row, rowChanges := in.at(st.gen)
-		write, changes = append(write, row), append(changes, rowChanges...)
+		in.setGen(st.gen)
+		write, changes = append(write, in.rowAt(st.gen)), append(changes, in.changes...)
 	}
 	return nil, staged, writeMirrorHistoriesTx(tx, rootID, write, changes, index, results)
 }
@@ -369,9 +389,20 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 // mirrorHistoryState is an issue's stored history as a write of it reads
 // it.
 type mirrorHistoryState struct {
-	storedFrom, storedTo, gen int64
-	dirty, kept               bool
-	removes                   int
+	storedFrom, storedTo, storedBoardsRev, gen int64
+	dirty, kept                                bool
+	removes                                    int
+}
+
+// supersedes reports that the stored history is later than in: final
+// through a later time, or read for a later set of the issue's boards.
+func (st mirrorHistoryState) supersedes(in mirrorHistoryInput) bool {
+	return in.h.CompleteTo < st.storedTo || in.h.BoardsRev < st.storedBoardsRev
+}
+
+// sameTimes reports that in has the stored history's times and boards.
+func (st mirrorHistoryState) sameTimes(in mirrorHistoryInput) bool {
+	return st.storedFrom == in.h.CompleteFrom && st.storedTo == in.h.CompleteTo && st.storedBoardsRev == in.h.BoardsRev
 }
 
 // readMirrorHistoryStatesTx reads mirrorHistoryStateSQL for the encoded
@@ -381,7 +412,7 @@ func readMirrorHistoryStatesTx(q sqlQueryer, rootID int64, listed string) (map[s
 	err := scanMirrorRows(q, mirrorHistoryStateSQL, []any{rootID, listed}, func(r rowScanner) error {
 		var id string
 		var st mirrorHistoryState
-		err := r.Scan(&id, &st.storedFrom, &st.storedTo, &st.gen, &st.dirty, &st.kept, &st.removes)
+		err := r.Scan(&id, &st.storedFrom, &st.storedTo, &st.storedBoardsRev, &st.gen, &st.dirty, &st.kept, &st.removes)
 		states[id] = st
 		return err
 	})
@@ -426,31 +457,34 @@ func writeMirrorHistoriesTx(tx *sql.Tx, rootID int64, write []mirrorHistoryRow, 
 }
 
 // MirrorHistoryDue is an issue due a history read, with the boards the
-// mirror shows it on, sorted (none for an issue only a link keeps).
+// mirror shows it on, sorted (none for an issue only a link keeps), and the
+// revision of that set the read names (MirrorHistory.BoardsRev).
 type MirrorHistoryDue struct {
-	IssueID string
-	Boards  []string
+	IssueID   string
+	Boards    []string
+	BoardsRev int64
 }
 
 // mirrorHistoryDueSQL states the predicate of
 // idx_tracker_cache_issues_history_due, so the read walks that index.
 var mirrorHistoryDueSQL = `SELECT i.issue_id,
 	  (SELECT json_group_array(b.board_id) FROM tracker_cache_board_issues b
-	    WHERE b.root_id = i.root_id AND b.issue_id = i.issue_id AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `)
+	    WHERE b.root_id = i.root_id AND b.issue_id = i.issue_id AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `), i.boards_rev
 	FROM tracker_cache_issues i
-	WHERE i.root_id = ?1 AND i.history_to < i.updated_at AND i.issue_id > ?2 AND ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
+	WHERE i.root_id = ?1 AND (i.history_to < i.updated_at OR i.history_boards_rev < i.boards_rev) AND i.issue_id > ?2 AND ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	ORDER BY i.issue_id LIMIT ` + strconv.Itoa(mirrorHistoryDuePage+1)
 
 // ListMirrorHistoryDue lists, by issue ID after after, up to
 // mirrorHistoryDuePage kept issues of rootID whose update time is later
-// than the time their stored history is final through, or that have none:
+// than the time their stored history is final through, that have none, or
+// whose stored history was read for fewer of their boards' estimates:
 // the issues whose history sync reads next, each with its boards. more
 // reports that issues follow the last one, so a walk of n pages is n reads.
 func (s *Store) ListMirrorHistoryDue(rootID int64, after string) (due []MirrorHistoryDue, more bool, err error) {
 	err = scanMirrorRows(s.reader(), mirrorHistoryDueSQL, []any{rootID, after}, func(r rowScanner) error {
 		var d MirrorHistoryDue
 		var boards []byte
-		if err := r.Scan(&d.IssueID, &boards); err != nil {
+		if err := r.Scan(&d.IssueID, &boards, &d.BoardsRev); err != nil {
 			return err
 		}
 		if len(boards) > 2 {

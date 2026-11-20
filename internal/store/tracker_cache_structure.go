@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 )
 
@@ -88,7 +89,10 @@ type MirrorSprint struct {
 // MirrorStructure is one read of a board's structure. ReadAt is when the
 // read began, and Lifetime the board's lifetime its caller captured before
 // the read (MirrorSync.Lifetime); GetMirrorBoard leaves ReadAt and the
-// catalog empty.
+// catalog empty. Complete reports that the tracker said the read listed
+// everything the board's rows can name: a status, user or sprint they name
+// that it did not supply is then marked unexplained, and no longer makes
+// the board due a structure read (MirrorSync.StructureDueAt).
 type MirrorStructure struct {
 	Board    MirrorBoard
 	Columns  []MirrorColumn
@@ -96,6 +100,7 @@ type MirrorStructure struct {
 	Catalog  MirrorCatalog
 	ReadAt   int64
 	Lifetime int64
+	Complete bool
 }
 
 func (c MirrorCatalog) check() error {
@@ -171,7 +176,7 @@ func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result
 			return nil
 		}
 		var err error
-		result.Changed, err = replaceMirrorStructureTx(tx, rootID, st, board.readAt)
+		result.Changed, err = replaceMirrorStructureTx(tx, rootID, st, board)
 		return err
 	})
 	if err != nil {
@@ -227,7 +232,7 @@ const (
 		RETURNING sprint_id`
 )
 
-func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, storedReadAt int64) (bool, error) {
+func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, board mirrorBoard) (bool, error) {
 	b := st.Board
 	changed, err := upsertMirrorCatalogTx(tx, rootID, st.Catalog, st.ReadAt)
 	if err != nil {
@@ -252,14 +257,15 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, stor
 			return false, err
 		}
 	}
+	boardChanged, err := writeMirrorBoardTx(tx, rootID, st)
+	if err != nil {
+		return false, err
+	}
+	changed = changed || boardChanged
 	steps := []struct {
 		what, query string
 		args        []any
 	}{
-		{"write board", `UPDATE tracker_cache_boards SET project_id = ?3, name = ?4, plans_sprints = ?5, estimate_unit = ?6, data = ?7
-			WHERE root_id = ?1 AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
-			   OR plans_sprints IS NOT ?5 OR estimate_unit IS NOT ?6 OR data IS NOT ?7)
-			RETURNING board_id`, []any{rootID, b.ID, b.ProjectID, b.Name, boolToInt(b.PlansSprints), b.EstimateUnit, mirrorData(b.Data)}},
 		{"upsert columns", mirrorColumnsUpsertSQL, []any{rootID, b.ID, lists[0]}},
 		{"upsert column statuses", mirrorColumnStatusesUpsertSQL, []any{rootID, b.ID, lists[1]}},
 		{"remove column statuses", mirrorColumnStatusesRemoveSQL, []any{rootID, b.ID, lists[1]}},
@@ -275,15 +281,104 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, stor
 		}
 		changed = changed || stepChanged
 	}
-	// The read is the structure's latest, changed or not: a narrow write of
-	// the board row, which no index or trigger reads.
-	if st.ReadAt > storedReadAt {
-		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3 WHERE root_id = ?1 AND board_id = ?2 AND read_at < ?3`,
+	// The read is the structure's latest, changed or not, and covers a due
+	// state no later than it: a narrow write of the board row, which no
+	// index or trigger reads.
+	clearsDue := board.structureDueAt > 0 && st.ReadAt >= board.structureDueAt
+	if st.ReadAt > board.readAt || clearsDue {
+		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = max(read_at, ?3),
+			structure_due_at = iif(structure_due_at <= ?3, 0, structure_due_at) WHERE root_id = ?1 AND board_id = ?2`,
 			rootID, b.ID, st.ReadAt); err != nil {
 			return false, fmt.Errorf("record the structure's read: %w", err)
 		}
 	}
-	return changed, nil
+	return changed, markMirrorUnexplainedTx(tx, rootID, b.ID, board.marked, clearsDue && st.Complete)
+}
+
+// The unexplained-reference statements: ?1 root, ?2 board.
+const (
+	// mirrorUnexplainedSuppliedSQL removes the marks of references the
+	// mirror now holds.
+	mirrorUnexplainedSuppliedSQL = `DELETE FROM tracker_cache_board_unexplained WHERE root_id = ?1 AND board_id = ?2 AND CASE kind
+	  WHEN 1 THEN EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = ref_id)
+	  WHEN 2 THEN EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = ref_id)
+	  ELSE EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?2 AND sp.sprint_id = ref_id) END`
+	// mirrorUnexplainedMarkSQL marks every reference the board's rows name
+	// that the mirror lacks, walking the board's rows once a kind.
+	mirrorUnexplainedMarkSQL = `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id)
+	SELECT ?1, ?2, 1, i.status_id FROM tracker_cache_board_issues b
+	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
+	 WHERE b.root_id = ?1 AND b.board_id = ?2 AND i.status_id <> ''
+	   AND NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = i.status_id)
+	UNION ALL
+	SELECT ?1, ?2, 2, i.assignee_id FROM tracker_cache_board_issues b
+	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
+	 WHERE b.root_id = ?1 AND b.board_id = ?2 AND i.assignee_id <> ''
+	   AND NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = i.assignee_id)
+	UNION ALL
+	SELECT ?1, ?2, 3, m.sprint_id FROM tracker_cache_board_issues b
+	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = b.root_id AND m.issue_id = b.issue_id
+	 WHERE b.root_id = ?1 AND b.board_id = ?2
+	   AND NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?2 AND sp.sprint_id = m.sprint_id)
+	ON CONFLICT DO NOTHING`
+)
+
+// markMirrorUnexplainedTx keeps a board's unexplained references after a
+// structure write: a board with marks loses those the mirror now holds,
+// and a complete read that clears the board's due state replaces them with
+// what the board's rows name that the mirror lacks. A board with no marks
+// and no due state runs nothing.
+func markMirrorUnexplainedTx(tx *sql.Tx, rootID int64, boardID string, marked, mark bool) error {
+	switch {
+	case mark:
+		if _, err := tx.Exec(`DELETE FROM tracker_cache_board_unexplained WHERE root_id = ?1 AND board_id = ?2`, rootID, boardID); err != nil {
+			return fmt.Errorf("clear unexplained references: %w", err)
+		}
+		if _, err := tx.Exec(mirrorUnexplainedMarkSQL, rootID, boardID); err != nil {
+			return fmt.Errorf("mark unexplained references: %w", err)
+		}
+	case marked:
+		if _, err := tx.Exec(mirrorUnexplainedSuppliedSQL, rootID, boardID); err != nil {
+			return fmt.Errorf("remove supplied references: %w", err)
+		}
+	}
+	return nil
+}
+
+// mirrorBoardWriteRowSQL writes a board's own fields. A changed estimate
+// unit on a board whose structure is stored records the read as the
+// board's estimate reset (estimate_reset_at), which RETURNING reports.
+const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3, name = ?4, plans_sprints = ?5, estimate_unit = ?6, data = ?7,
+	    estimate_reset_at = iif(read_at > 0 AND estimate_unit IS NOT ?6, ?8, estimate_reset_at)
+	WHERE root_id = ?1 AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
+	   OR plans_sprints IS NOT ?5 OR estimate_unit IS NOT ?6 OR data IS NOT ?7)
+	RETURNING estimate_reset_at = ?8`
+
+// writeMirrorBoardTx writes the board's own fields and reports whether
+// they changed. A changed estimate definition also forgets the board's
+// cursor and fences every cursor read no later than the structure, so the
+// next walk reads every row again in the new definition: the rows read no
+// later than it show their estimates as unknown until then.
+func writeMirrorBoardTx(tx *sql.Tx, rootID int64, st MirrorStructure) (changed bool, err error) {
+	b := st.Board
+	var reset bool
+	err = tx.QueryRow(mirrorBoardWriteRowSQL, rootID, b.ID, b.ProjectID, b.Name, boolToInt(b.PlansSprints), b.EstimateUnit,
+		mirrorData(b.Data), st.ReadAt).Scan(&reset)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("write board: %w", err)
+	case !reset:
+		return true, nil
+	}
+	// A cursor is admitted from a read no earlier than cursor_read_at; one
+	// past the structure's read refuses those of its own millisecond too.
+	if _, err := tx.Exec(`UPDATE tracker_cache_sync SET cursor = NULL, cursor_read_at = max(cursor_read_at, ?3 + 1)
+		WHERE root_id = ?1 AND board_id = ?2`, rootID, b.ID, st.ReadAt); err != nil {
+		return false, fmt.Errorf("forget the cursor: %w", err)
+	}
+	return true, nil
 }
 
 type mirrorUserRow struct {

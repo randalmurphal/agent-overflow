@@ -65,7 +65,7 @@ func TestWriteMirrorRowPageReportsChanges(t *testing.T) {
 	assertMirrorChanges(t, "estimate", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Rows: []string{"10002"}})
 	page.Rows[0].Card.Sprints = []string{"22"}
 	assertMirrorChanges(t, "sprint left", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Cards: []string{"10001"}})
-	page.Rows[0].Card.Sprints = []string{"22", "23"}
+	page.Rows[0].Card.Sprints = []string{"22", "20"}
 	assertMirrorChanges(t, "sprint joined", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Cards: []string{"10001"}})
 	page.Rows[0].Card.Data = []byte(`{"title":"Renamed"}`)
 	assertMirrorChanges(t, "card data", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Cards: []string{"10001"}})

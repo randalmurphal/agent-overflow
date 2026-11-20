@@ -114,6 +114,23 @@ func currentSweep(s *Store, root int64) int64 {
 	return sweep
 }
 
+// dueHistories names, in each history with no BoardsRev, the boards
+// revision its issue has now, as a caller captures it from
+// ListMirrorHistoryDue; an issue the mirror lacks has none.
+func dueHistories(s *Store, root int64, hs []MirrorHistory) []MirrorHistory {
+	out := slices.Clone(hs)
+	for i := range out {
+		if out[i].BoardsRev != 0 {
+			continue
+		}
+		err := s.db.QueryRow(`SELECT boards_rev FROM tracker_cache_issues WHERE root_id = ? AND issue_id = ?`, root, out[i].IssueID).Scan(&out[i].BoardsRev)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			panic(err)
+		}
+	}
+	return out
+}
+
 // currentStructure, currentPage and currentAttempt name the board's
 // current lifetime in a write that names none.
 func currentStructure(s *Store, root int64, st MirrorStructure) MirrorStructure {
@@ -184,6 +201,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	t.Helper()
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+	mustExec(t, s.db, `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id) VALUES (?, '10', 3, '99')`, root)
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", CompleteTo: 5, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -459,11 +477,11 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
-			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{{IssueID: "10001", CompleteTo: 9}, {IssueID: "10009", CompleteTo: 9}})
+			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001", CompleteTo: 9}, {IssueID: "10009", CompleteTo: 9}}))
 			return err
 		},
 		"ReplaceMirrorHistories staged": func(root int64) error {
-			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)})
+			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}))
 			return err
 		},
 		"UpsertMirrorCards regroup": func(root int64) error {
@@ -504,7 +522,7 @@ var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
 	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
-	"ListMirrorOffBoardLinkedIssues",
+	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView",
 }
 
 // Every writer refuses a detached root, and a root that never existed,

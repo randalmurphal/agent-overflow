@@ -27,7 +27,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 			return err
 		}},
 		{"history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
-			_, err := s.ReplaceMirrorHistories(root, sweep, []MirrorHistory{history})
+			_, err := s.ReplaceMirrorHistories(root, sweep, dueHistories(s, root, []MirrorHistory{history}))
 			return err
 		}},
 		{"staged history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
@@ -131,7 +131,7 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 		BEGIN UPDATE tracker_cache_roots SET sweep = sweep + 1; END`)
 	short := MirrorHistory{IssueID: "10002", CompleteTo: 9, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
 	long := statusHistory("10001", clearMirrorChunk+100)
-	if _, err := s.ReplaceMirrorHistories(root, read, []MirrorHistory{long, short}); !errors.Is(err, ErrTrackerCacheSwept) {
+	if _, err := s.ReplaceMirrorHistories(root, read, dueHistories(s, root, []MirrorHistory{long, short})); !errors.Is(err, ErrTrackerCacheSwept) {
 		t.Fatalf("a staging after a sweep: %v; want it refused", err)
 	}
 	changes := func(issue string) string {
@@ -140,7 +140,7 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 	assertRows(t, s.db, changes("10001"), "0")
 	assertRows(t, s.db, changes("10002"), "1")
 	mustExec(t, s.db, `DROP TRIGGER test_sweep_between`)
-	if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{long}); err != nil {
+	if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{long})); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, changes("10001"), "1")

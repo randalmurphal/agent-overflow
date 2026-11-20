@@ -817,6 +817,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_board_columns', reason: 'a tracker board\'s column (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_board_column_statuses', reason: 'the statuses of a tracker board\'s column (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_sprints', reason: 'a tracker board\'s sprint (v159); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_board_unexplained', reason: 'a reference a tracker board\'s complete structure did not explain (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_issues', reason: 'a tracker issue\'s card (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_board_issues', reason: 'a tracker issue\'s row on a board (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_issue_sprints', reason: 'the sprints a tracker issue is in (v159); no app method syncs a tracker yet' },

@@ -86,18 +86,20 @@ const (
 	// is older than the stored one, it is new and the page may not add it,
 	// or a later read stored other content), to write (new and addable, or
 	// other content from a read no earlier), or to advance (identical
-	// content stored by an earlier read, whose read time alone moves).
+	// content stored by an earlier read, whose read time alone moves), and
+	// whether it names a reference the mirror lacks (mirrorRowLacksSQL).
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
 		    (b.root_id IS NULL AND NOT ?5) OR i.updated_at > c.value ->> 'u'
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    (b.root_id IS NULL AND ?5)
 		      OR (b.read_at <= ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
-		    b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e'
+		    b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e',
+		    ` + mirrorRowLacksSQL + `
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
 		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
 	// mirrorRowsAdvanceSQL moves the read time of the identical rows ?2
-	// (IDs): no index holds read_at and no trigger reads it.
+	// (IDs).
 	mirrorRowsAdvanceSQL = `UPDATE tracker_cache_board_issues SET read_at = ?4
 		WHERE root_id = ?1 AND board_id = ?3 AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?4`
 	mirrorRowsUpsertSQL = `INSERT INTO tracker_cache_board_issues(root_id, issue_id, board_id, order_key, estimate, read_at)
@@ -138,9 +140,11 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 			return err
 		}
 		if len(rows) > 0 {
-			if err := writeMirrorRowsTx(tx, rootID, page, encoded, addsRows, &changes); err != nil {
+			if err := writeMirrorRowsTx(tx, rootID, page, encoded, addsRows, board, &changes); err != nil {
 				return err
 			}
+		} else {
+			changes.StructureDue = board.structureDueAt > 0
 		}
 		if err := removeMirrorRowsTx(tx, rootID, page, board.rowsRemovedAt, &changes); err != nil {
 			return err
@@ -157,21 +161,40 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 	return changes, nil
 }
 
+// mirrorRowLacksSQL holds for a row c of board ?3 that names a status,
+// user or sprint the mirror has no row for and has not marked unexplained.
+const mirrorRowLacksSQL = `(c.value ->> 's' <> ''
+	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = c.value ->> 's')
+	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
+	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 1 AND u.ref_id = c.value ->> 's'))
+	    OR (c.value ->> 'a' <> ''
+	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = c.value ->> 'a')
+	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
+	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 2 AND u.ref_id = c.value ->> 'a'))
+	    OR EXISTS (SELECT 1 FROM json_each(c.value -> 'm') m
+	      WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?3 AND sp.sprint_id = m.value)
+	        AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
+	                         WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 3 AND u.ref_id = m.value))`
+
 // writeMirrorRowsTx stores the page's cards and rows: one statement sorts
 // the rows, then the card statements, the row upsert when a row is to be
-// written, and the read-time move when one is identical.
-func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, encoded string, addsRows bool, changes *MirrorChanges) error {
-	var write bool
+// written, and the read-time move when one is identical. A stored row
+// that names a reference the mirror lacks makes the board due a structure
+// read as of the page's read, one statement more.
+func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, encoded string, addsRows bool, board mirrorBoard,
+	changes *MirrorChanges) error {
+	var write, lacks bool
 	var advance []string
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, page.ReadAt, addsRows}, func(r rowScanner) error {
 		var id string
-		var superseded, writes, advances sql.NullBool
-		if err := r.Scan(&id, &superseded, &writes, &advances); err != nil {
+		var superseded, writes, advances, rowLacks sql.NullBool
+		if err := r.Scan(&id, &superseded, &writes, &advances, &rowLacks); err != nil {
 			return err
 		}
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
 		}
+		lacks = lacks || rowLacks.Bool && !superseded.Bool
 		write = write || writes.Bool
 		if advances.Bool {
 			advance = append(advance, id)
@@ -199,6 +222,13 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, encoded str
 			return fmt.Errorf("record the rows' read: %w", err)
 		}
 	}
+	if lacks && page.ReadAt > board.structureDueAt {
+		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET structure_due_at = ?3
+			WHERE root_id = ?1 AND board_id = ?2 AND structure_due_at < ?3`, rootID, page.BoardID, page.ReadAt); err != nil {
+			return fmt.Errorf("make the structure due: %w", err)
+		}
+	}
+	changes.StructureDue = lacks || board.structureDueAt > 0
 	return nil
 }
 
@@ -268,13 +298,10 @@ var (
 		WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_board_issues b
 		                   WHERE b.root_id = ?1 AND b.issue_id = l.value AND b.board_id = ?2)
 		ORDER BY l.key`
-	// mirrorReconcileRemoveSQL walks the board's rows in its order index,
-	// which leaves out read_at, and reads read_at by key (r) only for the
-	// rows the listing leaves out.
+	// mirrorReconcileRemoveSQL walks the board's rows in its order index.
 	mirrorReconcileRemoveSQL = `DELETE FROM tracker_cache_board_issues WHERE root_id = ?1 AND board_id = ?2 AND issue_id IN (
 		SELECT b.issue_id FROM tracker_cache_board_issues b
-		  CROSS JOIN tracker_cache_board_issues r ON r.root_id = b.root_id AND r.issue_id = b.issue_id AND r.board_id = b.board_id
-		 WHERE b.root_id = ?1 AND b.board_id = ?2 AND b.issue_id NOT IN (SELECT value FROM json_each(?4)) AND r.read_at <= ?3
+		 WHERE b.root_id = ?1 AND b.board_id = ?2 AND b.issue_id NOT IN (SELECT value FROM json_each(?4)) AND b.read_at <= ?3
 		 LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)
 		RETURNING issue_id`
 )

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
@@ -54,10 +55,20 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// shortened, identical, and a staging left for the cleanup.
 	for _, h := range []MirrorHistory{statusHistory("10002", clearMirrorChunk+100), statusHistory("10002", clearMirrorChunk+150),
 		statusHistory("10002", clearMirrorChunk+150), statusHistory("10002", 3)} {
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h}); err != nil {
+		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h})); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// A row naming a sprint the board lacks, and a complete structure read
+	// that marks it unexplained.
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10003", 5, "c", "98")}, ReadAt: 50}, nil)
+	complete := webStructure()
+	complete.ReadAt, complete.Complete = 51, true
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, complete)); err != nil {
+		t.Fatal(err)
+	}
+	assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_board_unexplained
+		WHERE root_id = %d AND board_id = '10' AND kind = 3 AND ref_id = '98'`, root), "1")
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
 	reads := []func() error{
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
@@ -76,6 +87,10 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
 		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, ""); return err },
 		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
+		func() error {
+			_, _, err := s.ReadMirrorBoardView(root, "10", []MirrorSection{{Kind: MirrorSectionBacklog}})
+			return err
+		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
 		reads = append(reads, func() error { _, err := s.ListMirrorSection(root, "10", section, MirrorRowKey{}); return err })
@@ -176,11 +191,6 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?1 AND board_id IN (", "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's issues once, " +
 			"where an index by status would cost every card write"},
-	{"INSERT INTO tracker_cache_boards(root_id, board_id)", "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=?)",
-		"the foreign key probe of a board lifetime's start, on a listing or a drain: the order index leaves out read_at, so it " +
-			"does not cover the cascade and the probe walks the root's board rows"},
-	{"DELETE FROM tracker_cache_boards WHERE root_id = ?1 AND board_id = ?2 AND retired = 1", "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=?)",
-		"the foreign key probe of a drained board's delete, whose rows the drain removed"},
 }
 
 func mirrorPlanLineAllowed(query, line string) bool {
