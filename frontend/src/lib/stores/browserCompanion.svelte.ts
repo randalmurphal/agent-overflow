@@ -272,7 +272,7 @@ export function nativeBrowserRefusal(threadId: string): Error | null {
  * engine (the hello's `browser` capability) and the browser is turned on.
  * The chat header's browser button renders on this, tabs or not.
  */
-export function canOpenNativeBrowser(threadId: string): boolean {
+function canOpenNativeBrowser(threadId: string): boolean {
   if (!canUseNativeBrowser(threadId)) return false;
   if (!(getTransportHelloFor(HOME_BACKEND)?.capabilities.includes('browser') ?? false)) return false;
   return getSettings(HOME_BACKEND).browserEnabled;

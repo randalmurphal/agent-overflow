@@ -1119,7 +1119,7 @@ describe('find.in-pane command', () => {
   });
 
   // A chord from the browser pane's native view is replayed on the window
-  // with the companion focused (browserCompanion.replayBrowserAccelerator)
+  // with the companion focused (browserPageChords.replayBrowserAccelerator)
   // while the document has no keyboard focus. The context is the source
   // thread pane's, whose terminal may still hold DOM focus: that focus is
   // stale and must not gate the chord, while a terminal the user is typing

@@ -3,7 +3,7 @@
 // is live only while that pane is the keyboard's (`browserPaneFocused`,
 // panes.svelte#paneCommandTarget), so the
 // chords keep their meaning elsewhere. A chord pressed in the native page
-// arrives as a replay after the pane was focused (browserCompanion.svelte.ts
+// arrives as a replay after the pane was focused (browserPageChords.ts
 // replayBrowserAccelerator). Closing a tab is `pane.close`. Each command is
 // available only while the pane has what it needs (AVAILABLE_WHEN): a
 // command that would do nothing is not offered in the palette, and running

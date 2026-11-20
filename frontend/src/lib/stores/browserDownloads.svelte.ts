@@ -100,7 +100,7 @@ export function downloadRunning(download: BrowserDownload): boolean {
 }
 
 /** How many steps a progress indicator moves through. */
-export const DOWNLOAD_PROGRESS_STEPS = 8;
+const DOWNLOAD_PROGRESS_STEPS = 8;
 
 /**
  * The received share of the running downloads with a known size, rounded
