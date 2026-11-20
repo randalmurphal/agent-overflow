@@ -192,7 +192,9 @@ func (p *wkProfile) newPageShell(hooks pageHooks, id uint64) (*wkPage, error) {
 		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel, slot: -1,
 	}
-	page.nativePageOps.view, page.nativePageOps.life = page, ctx
+	// The page's own view field is the WKWebView, so its nativeView is named
+	// through the embedded struct.
+	page.nativePageOps.view, page.life = page, ctx
 	page.handle = pageHandle(page.id)
 	wkPageByID.Store(page.id, page)
 	return page, nil

@@ -197,7 +197,9 @@ func (p *webkitProfile) newPageShell(hooks pageHooks, id uint64) (*webkitPage, e
 		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel,
 	}
-	page.nativePageOps.view, page.nativePageOps.life = page, ctx
+	// The page's own view field is the WebKitWebView, so its nativeView is
+	// named through the embedded struct.
+	page.nativePageOps.view, page.life = page, ctx
 	page.handle = pageHandle(page.id)
 	webkitPageByID.Store(page.id, page)
 	return page, nil
