@@ -76,6 +76,8 @@ type SprintList struct {
 	Sprints  []Sprint
 	Complete bool
 	Read     time.Time
+	// mark is the credential read the listing was drawn under.
+	mark trackerapi.CredentialMark
 }
 
 func cloneSprintList(l SprintList) SprintList {
@@ -114,8 +116,8 @@ func (c *Client) sprints(ctx context.Context, q SprintQuery) (SprintList, error)
 		v.Set("state", strings.Join(states, ","))
 	}
 	path := agilePath + "board/" + strconv.FormatInt(q.Board, 10) + "/sprint"
-	found, complete, read, err := offsetPages[sprintJSON](ctx, c, path, v, sprintPage, q.Limit)
-	out := SprintList{Sprints: make([]Sprint, 0, len(found)), Complete: complete, Read: read}
+	found, complete, seen, err := offsetPages[sprintJSON](ctx, c, path, v, sprintPage, q.Limit)
+	out := SprintList{Sprints: make([]Sprint, 0, len(found)), Complete: complete, Read: seen.date, mark: seen.mark}
 	for _, j := range found {
 		out.Sprints = append(out.Sprints, j.sprint())
 	}
@@ -150,7 +152,7 @@ func (c *Client) BoardSprints(ctx context.Context, board int64) (SprintList, err
 	if err != nil {
 		return l, err
 	}
-	c.sprintLists.put(epoch, board, l)
+	c.sprintLists.put(epoch, l.mark, board, l)
 	return l, nil
 }
 

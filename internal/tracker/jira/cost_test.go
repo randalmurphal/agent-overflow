@@ -129,8 +129,9 @@ func costCatalog(n int) []Field {
 // fields, and a lookup by ID in what it hands out, as every provider read
 // that needs the sprint field makes.
 func BenchmarkCatalogGet(b *testing.B) {
-	c := newCache[struct{}, *Catalog](1, nil)
-	c.put(c.epoch(), struct{}{}, newCatalog(costCatalog(1500)))
+	now := signedIn(b, nil).api.CredentialMark
+	c := newCache[struct{}, *Catalog](1, nil, now)
+	c.put(c.epoch(), now(), struct{}{}, newCatalog(costCatalog(1500)))
 	b.ReportAllocs()
 	for b.Loop() {
 		cat, ok := c.get(struct{}{})

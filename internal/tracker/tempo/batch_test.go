@@ -35,6 +35,7 @@ func TestApplyOutcomes(t *testing.T) {
 	record := Worklog{ID: 70, Issue: Issue{ID: 10002, Key: "WEB-2"}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
 		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "dev"}}}
 	f.On("POST", "/4/worklogs", nil, createBody(10001, "first"), 200, wl{id: 101, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600, desc: "first"}.json())
+	f.On("GET", "/4/worklogs/70", nil, "", 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600, attrs: [][2]string{{"_Category_", "dev"}}}.json())
 	f.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","timeSpentSeconds":5400,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`,
 		400, `{"errors":[{"message":"Period is closed"}]}`)

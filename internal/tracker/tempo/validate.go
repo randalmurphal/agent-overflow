@@ -60,6 +60,9 @@ const (
 	// IssueKept: Tempo applied an update but kept the worklog on its old
 	// issue instead of the one the change named.
 	IssueKept Code = "issue_kept"
+	// Changed: the worklog an update names no longer holds what its From
+	// has; read it again and build the change from that.
+	Changed Code = "changed"
 )
 
 // Check names a check that needs a read from Tempo. When the token may

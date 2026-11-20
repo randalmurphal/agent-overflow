@@ -143,9 +143,10 @@ func (t *jiraTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) trac
 }
 
 // EditWorklog changes a Jira worklog that still holds what From says,
-// keeping its start's time of day when it moves to another day. The read
-// that checks it is the last of the worklog before the write; the
-// author's zone (cached by the client) is read after it.
+// keeping its start's time of day when it moves to another day. The
+// worklog's read that checks it is the last request before the write
+// (see readWorklog); when another request came after it, the client
+// reads the worklog again.
 func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -154,16 +155,21 @@ func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) trac
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
 	days := editDays(in)
-	read, cur, loc, err := t.readWorklog(ctx, in.From)
+	read, cur, loc, last, err := t.readWorklog(ctx, in.From)
 	if err == nil && !sameWorklog(cur, in.From) {
 		err = stale(string(in.From.Issue), "worklog "+string(in.From.ID))
 	}
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), days...)
 	}
-	// The worklog was just read, so the client takes it as it is and reads
-	// it again only when the description names someone.
-	edit := jira.WorklogEdit{Issue: string(in.From.Issue), ID: string(in.From.ID), Current: &read, Markdown: in.Description, AcceptLoss: in.AcceptLoss}
+	edit := jira.WorklogEdit{Issue: string(in.From.Issue), ID: string(in.From.ID), Markdown: in.Description, AcceptLoss: in.AcceptLoss}
+	if last {
+		// Nothing was sent since the read, so the client takes it as it is
+		// and reads it again only when the description names someone.
+		edit.Current = &read
+	} else {
+		edit.From = &read
+	}
 	if in.Spent != nil {
 		edit.TimeSpent = *in.Spent
 	}
@@ -185,7 +191,7 @@ func (t *jiraTime) DeleteWorklog(ctx context.Context, in tracker.WorklogDelete) 
 	if err := checkWorklog(in.From); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
 	}
-	_, cur, _, err := t.readWorklog(ctx, in.From)
+	_, cur, _, _, err := t.readWorklog(ctx, in.From)
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), in.From.Day)
 	}
@@ -203,31 +209,49 @@ func checkWorklog(w tracker.Worklog) error {
 
 // readWorklog reads the worklog from names, as Jira holds it, and as a
 // neutral worklog in its author's zone, which it returns too. A worklog
-// whose own issue is not from's is refused.
-func (t *jiraTime) readWorklog(ctx context.Context, from tracker.Worklog) (jira.Worklog, tracker.Worklog, *time.Location, error) {
-	read, err := t.jira.Worklog(ctx, string(from.Issue), string(from.ID))
+// whose own issue is not from's is refused. The zone of from's author is
+// read first, so while the worklog is still that author's its read is
+// the last request readWorklog makes, which last reports; another
+// author's zone, or the zone when from names no author, is read after
+// it.
+func (t *jiraTime) readWorklog(ctx context.Context, from tracker.Worklog) (read jira.Worklog, cur tracker.Worklog, loc *time.Location, last bool, err error) {
+	var named *time.Location
+	if from.Author != "" {
+		if named, err = t.authorZone(ctx, string(from.Author), from.ID); err != nil {
+			return jira.Worklog{}, tracker.Worklog{}, nil, false, err
+		}
+	}
+	read, err = t.jira.Worklog(ctx, string(from.Issue), string(from.ID))
 	if err != nil {
-		return jira.Worklog{}, tracker.Worklog{}, nil, fmt.Errorf("jiraprovider: read worklog %s: %w", from.ID, err)
+		return jira.Worklog{}, tracker.Worklog{}, nil, false, fmt.Errorf("jiraprovider: read worklog %s: %w", from.ID, err)
 	}
 	if read.Author == nil || read.IssueID == "" {
-		return jira.Worklog{}, tracker.Worklog{}, nil, fmt.Errorf("jiraprovider: worklog %s names no author or issue", from.ID)
+		return jira.Worklog{}, tracker.Worklog{}, nil, false, fmt.Errorf("jiraprovider: worklog %s names no author or issue", from.ID)
 	}
-	author, err := t.jira.User(ctx, read.Author.AccountID)
-	if err != nil {
-		return jira.Worklog{}, tracker.Worklog{}, nil, fmt.Errorf("jiraprovider: the author of worklog %s: %w", from.ID, err)
+	loc, last = named, true
+	if named == nil || read.Author.AccountID != string(from.Author) {
+		if loc, err = t.authorZone(ctx, read.Author.AccountID, from.ID); err != nil {
+			return jira.Worklog{}, tracker.Worklog{}, nil, false, err
+		}
+		last = false
 	}
-	loc, err := zone(author)
-	if err != nil {
-		return jira.Worklog{}, tracker.Worklog{}, nil, err
-	}
-	cur, err := nativeWorklog(read, read.IssueID, loc)
+	cur, err = nativeWorklog(read, read.IssueID, loc)
 	if err == nil {
 		err = checkWorklogIssue(cur, from)
 	}
 	if err != nil {
-		return jira.Worklog{}, tracker.Worklog{}, nil, err
+		return jira.Worklog{}, tracker.Worklog{}, nil, false, err
 	}
-	return read, cur, loc, nil
+	return read, cur, loc, last, nil
+}
+
+// authorZone is the time zone of account, the author of worklog id.
+func (t *jiraTime) authorZone(ctx context.Context, account string, id tracker.WorklogID) (*time.Location, error) {
+	author, err := t.jira.User(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("jiraprovider: the author of worklog %s: %w", id, err)
+	}
+	return zone(author)
 }
 
 // nativeWorklog is w, a worklog of issue, as a neutral worklog whose day

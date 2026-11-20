@@ -120,8 +120,9 @@ type transitionPlan struct {
 // every field value, the screen's required fields, the comment and its
 // audience, and the images, read whole; then, as its last read, it reads
 // every rich text field it writes again and refuses with a *StaleError
-// when one changed meanwhile. Then it attaches the images and moves the
-// issue. On a service desk project the comment is added after
+// when one changed meanwhile. Then it attaches the images, checks again
+// when it did, so the check stays the last request before the move, and
+// moves the issue. On a service desk project the comment is added after
 // the move through the comment call, where its audience is set; elsewhere
 // it is part of the move. A failure after the first write is a
 // *StepError.
@@ -142,6 +143,11 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 	if len(tp.imgs) > 0 {
 		if ids, err = c.uploadImages(ctx, in.Issue, tp.imgs, tp.held, &res.Uploaded, StepTransition); err != nil {
 			return res, err
+		}
+		// The uploads came after the check; it runs again as the last
+		// request before the move.
+		if err := c.recheckRich(ctx, in.Issue, in.Issue, tp.values); err != nil {
+			return res, unsent(StepTransition, err)
 		}
 		if tp.comment != nil {
 			if tp.comment, err = copyDoc(tp.comment); err != nil {

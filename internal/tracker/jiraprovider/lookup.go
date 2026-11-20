@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -19,28 +18,20 @@ import (
 // as an issue ID.
 var keyShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 
-// searchChunk is the most keys one lookup search names: search returns
-// at most 100 issues a page with fields (measured).
-const searchChunk = 100
-
-// Lookup finds the issues keys name, searchChunk keys to a search. A
-// search finds an issue by any key it has had (measured: key in (<old
-// key>) returns the issue under its new key), so a key it does not
-// return as an issue's current key names an issue only when the search
-// also returned an issue no current key matched, a moved one. Then each
-// such key is read alone (the read of an old key answers with the
-// issue; Jira's 404 makes the key unmatched). Otherwise one more search
-// of just those keys settles them: none when it finds nothing, the
-// common case of mistyped or deleted keys, and else each is read alone
-// (two keys naming one issue, one by an old key). Measured on Jira
-// Cloud's search/jql, a key that names nothing is left out of a 200
-// answer with no warning, and a search with no credential answers 200
-// with no issues; the jira client takes an empty search as the user's
-// only when it names the account it was made for (X-AAccountId, on every
-// answer to a valid token) or a sign-in check shows it, so a lost
-// credential does not read as missing keys. A 400 naming one of the keys is handled too,
-// defensively (the documentation does not rule it out): the refused
-// search's keys are then read one by one.
+// Lookup finds the issues keys name with one bulk fetch of the keys of
+// an issue key's shape, with the card fields (MaxLookupKeys is within one
+// request's capacity, see jira.Client.BulkFetch). The bulk fetch finds an
+// issue by an old key and by a key in another case (documented) and
+// returns it under its current key, so an issue returned under a key
+// asked, case ignored, is that key's. Every key left over is read alone:
+// it is an old key of an issue, which the read answers with the issue, or
+// names nothing, which the read's 404 says (measured, the bulk fetch
+// leaves such a key out with no issueErrors entry, so only the read alone
+// tells the two apart). The jira client takes an answer that leaves
+// issues out, or a 404, as the user's only when it names the account it
+// was made for (X-AAccountId, on every answer to a valid token) or a
+// sign-in check shows it, so a lost credential does not read as missing
+// keys.
 func (p *Provider) Lookup(ctx context.Context, keys []string) (tracker.KeyLookup, error) {
 	if err := tracker.CheckLookupKeys(keys); err != nil {
 		return tracker.KeyLookup{}, err
@@ -57,8 +48,8 @@ func (p *Provider) Lookup(ctx context.Context, keys []string) (tracker.KeyLookup
 			shaped = append(shaped, k)
 		}
 	}
-	for chunk := range slices.Chunk(shaped, searchChunk) {
-		if err := p.lookupChunk(ctx, s, chunk, found, cat); err != nil {
+	if len(shaped) > 0 {
+		if err := p.lookupKeys(ctx, s, shaped, found, cat); err != nil {
 			return tracker.KeyLookup{}, err
 		}
 	}
@@ -74,29 +65,23 @@ func (p *Provider) Lookup(ctx context.Context, keys []string) (tracker.KeyLookup
 	return out, nil
 }
 
-// lookupChunk finds the issues of keys, recording them in found.
-func (p *Provider) lookupChunk(ctx context.Context, s site, keys []string, found map[string]tracker.Card, cat *catalog) error {
-	moved, err := p.searchKeys(ctx, s, keys, found, cat)
+// lookupKeys finds the issues of keys, recording each card under the key
+// asked.
+func (p *Provider) lookupKeys(ctx context.Context, s site, keys []string, found map[string]tracker.Card, cat *catalog) error {
+	res, err := p.jira.BulkFetch(ctx, keys, s.cardFields()...)
 	if err != nil {
-		return err
+		return fmt.Errorf("jiraprovider: look up %d keys: %w", len(keys), err)
 	}
-	var rest []string
-	for _, k := range keys {
-		if _, ok := found[k]; !ok {
-			rest = append(rest, k)
+	for _, is := range res.Issues {
+		i := slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(k, is.Key) })
+		if i < 0 {
+			continue // asked by an old key, which is read alone
 		}
-	}
-	if len(rest) == 0 {
-		return nil
-	}
-	if !moved {
-		// Only an old key of an issue another key named currently is left
-		// to find; a search of the rest says whether there is one.
-		if moved, err = p.searchKeys(ctx, s, rest, found, cat); err != nil || !moved {
+		if found[keys[i]], err = s.cardOf(is, cat); err != nil {
 			return err
 		}
 	}
-	for _, k := range rest {
+	for _, k := range keys {
 		if _, ok := found[k]; ok {
 			continue
 		}
@@ -112,49 +97,6 @@ func (p *Provider) lookupChunk(ctx context.Context, s site, keys []string, found
 		}
 	}
 	return nil
-}
-
-// searchKeys searches for keys and records each issue under the key
-// asked that is its current key, case ignored; moved reports an issue
-// returned that no key asked names currently, or a search Jira refused
-// with a 400 naming one of the keys, so that the keys not recorded are
-// read alone.
-func (p *Provider) searchKeys(ctx context.Context, s site, keys []string, found map[string]tracker.Card, cat *catalog) (moved bool, err error) {
-	res, err := p.jira.SearchAll(ctx, jira.SearchQuery{
-		JQL: "key in " + jira.QuoteJQLList(keys...), Fields: s.cardFields(), MaxResults: searchChunk,
-	}, 0)
-	if err != nil {
-		if namesKey(err, keys) {
-			return true, nil
-		}
-		return false, fmt.Errorf("jiraprovider: look up %d keys: %w", len(keys), err)
-	}
-	for _, is := range res.Issues {
-		i := slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(k, is.Key) })
-		if i < 0 {
-			moved = true // under its current key; an old key of it is read alone
-			continue
-		}
-		c, err := s.cardOf(is, cat)
-		if err != nil {
-			return false, err
-		}
-		found[keys[i]] = c
-	}
-	return moved, nil
-}
-
-// namesKey reports a 400 whose text names one of keys.
-func namesKey(err error, keys []string) bool {
-	se, ok := errors.AsType[*trackerapi.StatusError](err)
-	if !ok || se.Status != http.StatusBadRequest {
-		return false
-	}
-	text := strings.ToUpper(se.Message + " " + se.Body)
-	for _, m := range se.Fields {
-		text += " " + strings.ToUpper(m)
-	}
-	return slices.ContainsFunc(keys, func(k string) bool { return strings.Contains(text, strings.ToUpper(k)) })
 }
 
 // Search is one page of the cards q's text matches, most recently

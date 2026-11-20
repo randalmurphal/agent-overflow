@@ -179,7 +179,8 @@ type EditResult struct {
 // ApplyEdit sends an edit plan: it reads again every rich text field the
 // plan writes and every image it embeds, and refuses with a *StaleError
 // when one changed since the plan, before anything is sent; then it
-// attaches the images and writes the fields. A failure is a *StepError;
+// attaches the images, checks the fields again when it did (the uploads
+// are requests after the check), and writes the fields. A failure is a *StepError;
 // the result says what was done.
 func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error) {
 	var res EditResult
@@ -211,6 +212,11 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 	if len(p.images) > 0 {
 		if ids, err = c.uploadImages(ctx, p.issueID, p.images, held, &res.Uploaded, StepEdit); err != nil {
 			return res, err
+		}
+		// The uploads came after the check; it runs again as the last
+		// request before the write.
+		if err := c.recheck(ctx, p); err != nil {
+			return res, unsent(StepEdit, err)
 		}
 	}
 	fields, err := patchedFields(p.values, ids, false)

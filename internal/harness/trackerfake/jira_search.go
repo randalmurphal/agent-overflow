@@ -111,6 +111,25 @@ func countJQL(c *jiraCall) answer {
 	return jsonAnswer(http.StatusOK, map[string]any{"count": len(c.indexed(c.s.search(q)))})
 }
 
+// bulkFetchCapacity is the most issues a bulk fetch of fields takes, as
+// documented (docs/references/tracker-api-measurements.md): 1000 when
+// fields names 1 to 100 fields, none a wildcard, an exclusion or a field
+// of many values (comment, worklog, attachment), and 100 otherwise; the
+// fake takes no expand. Measured: 101 issues with no fields or with
+// comment refused with a 400, 250 with explicit card fields returned.
+func bulkFetchCapacity(fields []string) int {
+	if len(fields) == 0 || len(fields) > 100 {
+		return 100
+	}
+	for _, f := range fields {
+		switch {
+		case strings.HasPrefix(f, "*"), strings.HasPrefix(f, "-"), f == "comment", f == "worklog", f == "attachment":
+			return 100
+		}
+	}
+	return 1000
+}
+
 func bulkFetch(c *jiraCall) answer {
 	var in struct {
 		IssueIDsOrKeys []string `json:"issueIdsOrKeys"`
@@ -119,8 +138,8 @@ func bulkFetch(c *jiraCall) answer {
 	if err := c.decode(&in, false); err != nil {
 		return unhandledf("%v", err)
 	}
-	if len(in.IssueIDsOrKeys) == 0 || len(in.IssueIDsOrKeys) > 100 {
-		return jiraErrors(http.StatusBadRequest, "The number of issues must be between 1 and 100.")
+	if n := bulkFetchCapacity(in.Fields); len(in.IssueIDsOrKeys) == 0 || len(in.IssueIDsOrKeys) > n {
+		return jiraErrors(http.StatusBadRequest, fmt.Sprintf("The number of issues must be between 1 and %d.", n))
 	}
 	sel := parseFields(in.Fields, selectNavigable)
 	issues := []any{}

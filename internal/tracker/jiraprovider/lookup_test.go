@@ -3,6 +3,7 @@ package jiraprovider
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -27,56 +28,58 @@ func lookupSite(t *testing.T) *jiratest.Server {
 	return f
 }
 
-// TestLookup proves a key the issue had before it moved finds the issue
-// and a key that names nothing is unmatched, whether Jira answers the
-// search naming it with a warning or a 400.
+// TestLookup proves one bulk fetch of the shaped keys finds the issues
+// returned under a key asked, case ignored; that a key it leaves out is
+// read alone, finding an issue by its old key or nothing; and that two
+// keys of one issue, its old and its current one, both find it.
 func TestLookup(t *testing.T) {
-	for _, answer := range []string{"warned", "refused"} {
-		t.Run(answer, func(t *testing.T) {
-			f := lookupSite(t)
-			p := newProvider(t, f, nil)
-			f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-				if jql := bodyOf(t, b)["jql"]; jql != `key in ("web-1", "WEB-5", "WEB-9")` {
-					t.Errorf("jql %v", jql)
-				}
-				if answer == "refused" {
-					jiratest.Reply(400, `{"errorMessages":["An issue with key 'WEB-9' does not exist for field 'key'."]}`)(w, r, b)
-					return
-				}
-				jiratest.Reply(200, mustJSON(map[string]any{"isLast": true,
-					"issues":   []any{issue("10001", "WEB-1", updatedAt, nil), issue("10005", "APP-5", updatedAt, nil)},
-					"warnings": []any{map[string]any{"type": "x", "message": "The issue key 'WEB-9' for field 'key' is invalid."}}}))(w, r, b)
-			})
-			got, err := p.Lookup(t.Context(), []string{"web-1", "WEB-5", "WEB-9", "10001", "WEB_x"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var found []string
-			for _, m := range got.Found {
-				found = append(found, m.Key+"="+m.Card.Key)
-			}
-			if !slices.Equal(found, []string{"web-1=WEB-1", "WEB-5=APP-5"}) || !slices.Equal(got.Unmatched, []string{"WEB-9", "10001", "WEB_x"}) {
-				t.Errorf("found %v unmatched %v", found, got.Unmatched)
-			}
-			if n := f.Count("GET", "/rest/api/3/issue/10001"); n != 0 {
-				t.Error("a number was read as an issue ID")
-			}
-		})
+	f := lookupSite(t)
+	p := newProvider(t, f, nil)
+	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		v := bodyOf(t, b)
+		if keys := fmt.Sprint(v["issueIdsOrKeys"]); keys != "[web-1 WEB-5 WEB-9 APP-5]" {
+			t.Errorf("keys %v", keys)
+		}
+		if fields := fmt.Sprint(v["fields"]); !strings.Contains(fields, "summary") {
+			t.Errorf("fields %v", fields)
+		}
+		// As documented, the old key WEB-5 finds APP-5 under its current
+		// key; WEB-9 names nothing and is left out (measured).
+		jiratest.Reply(200, mustJSON(map[string]any{
+			"issues":      []any{issue("10001", "WEB-1", updatedAt, nil), issue("10005", "APP-5", updatedAt, nil)},
+			"issueErrors": []any{},
+		}))(w, r, b)
+	})
+	got, err := p.Lookup(t.Context(), []string{"web-1", "WEB-5", "WEB-9", "10001", "WEB_x", "APP-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, m := range got.Found {
+		found = append(found, m.Key+"="+m.Card.Key)
+	}
+	if !slices.Equal(found, []string{"web-1=WEB-1", "WEB-5=APP-5", "APP-5=APP-5"}) || !slices.Equal(got.Unmatched, []string{"WEB-9", "10001", "WEB_x"}) {
+		t.Errorf("found %v unmatched %v", found, got.Unmatched)
+	}
+	reads := map[string]int{"/rest/api/3/issue/web-1": 0, "/rest/api/3/issue/APP-5": 0, "/rest/api/3/issue/WEB-5": 1, "/rest/api/3/issue/WEB-9": 1, "/rest/api/3/issue/10001": 0}
+	for path, want := range reads {
+		if n := f.Count("GET", path); n != want {
+			t.Errorf("%s read alone %d times, want %d", path, n, want)
+		}
 	}
 }
 
-// TestLookupFailures proves a search refused for another reason, and a
-// single read that fails other than with a 404, fail the lookup.
+// TestLookupFailures proves a bulk fetch that fails, and a read alone
+// that fails other than with a 404, fail the lookup, and that a key the
+// bulk fetch could not return (an issueErrors entry) is read alone.
 func TestLookupFailures(t *testing.T) {
 	f := lookupSite(t)
 	p := newProvider(t, f, nil)
-	f.On("POST", searchPath, jiratest.Reply(400, `{"errorMessages":["The JQL is too long."]}`))
+	f.On("POST", bulkFetchPath, jiratest.Reply(400, `{"errorMessages":["Bad request."]}`))
 	if _, err := p.Lookup(t.Context(), []string{"WEB-1"}); err == nil {
-		t.Error("a refused search read as nothing found")
+		t.Error("a refused bulk fetch read as nothing found")
 	}
-	// A search that returns an issue no key asked names currently has
-	// WEB-2 read alone.
-	f.On("POST", searchPath, jiratest.Reply(200, page("", issue("10005", "APP-5", updatedAt, nil))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, `{"issues":[],"issueErrors":[{"id":"WEB-2","errorMessage":"retry"}]}`))
 	f.On("GET", "/rest/api/3/issue/WEB-2", jiratest.Reply(403, `{"errorMessages":["no"]}`))
 	if _, err := p.Lookup(t.Context(), []string{"WEB-2"}); err == nil {
 		t.Error("a refused read read as unmatched")

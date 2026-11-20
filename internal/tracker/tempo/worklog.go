@@ -217,6 +217,11 @@ func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {
 	if id <= 0 {
 		return Worklog{}, trackerapi.InvalidInput(fmt.Errorf("tempo: read worklog: %d is not a worklog ID", id))
 	}
+	return c.worklog(ctx, id)
+}
+
+// worklog reads worklog id.
+func (c *Client) worklog(ctx context.Context, id int64) (Worklog, error) {
 	var raw worklogJSON
 	resp, err := c.http.JSON(ctx, trackerapi.Request{Path: path("4/worklogs", strconv.FormatInt(id, 10))}, &raw)
 	if err != nil {

@@ -15,9 +15,35 @@ import (
 // return fewer when many fields are requested.
 const maxSearchPage = 5000
 
-// bulkFetchBatch is the most issues one bulk fetch asks for, the limit
-// for any field list.
-const bulkFetchBatch = 100
+// bulkFetchCapacity is the most issues one bulk fetch of fields may ask
+// for, as Jira documents it (docs/references/tracker-api-measurements.md):
+// 1000 when fields names 1 to 100 fields, none a wildcard (*all,
+// *navigable), an exclusion (-id) or a field of many values (comment,
+// worklog, attachment); 100 otherwise, and Jira refuses more with a 400.
+// The rule's other condition, no heavy expand, holds: BulkFetch sends no
+// expand. Measured: 101 issues with no fields or with comment refused,
+// 250 with the card fields (labels and the sprint field among them)
+// returned whole.
+func bulkFetchCapacity(fields []string) int {
+	if len(fields) == 0 || len(fields) > 100 {
+		return 100
+	}
+	for _, f := range fields {
+		switch {
+		case strings.HasPrefix(f, "*"), strings.HasPrefix(f, "-"), f == "comment", f == "worklog", f == "attachment":
+			return 100
+		}
+	}
+	return 1000
+}
+
+// bulkFetchBatch is the most issues one bulk fetch asks for whatever
+// Jira takes: 250 issues with the card fields measured 912 KB, about
+// 3.6 KB an issue, so a batch of 1000 nears 4 MB and a site of heavier
+// cards (long sprint histories) could pass the transport's 8 MiB answer
+// bound, failing the read every time instead of costing one request
+// more. 500, the size of a delta row page, keeps a batch near 1.8 MB.
+const bulkFetchBatch = 500
 
 // SearchQuery is one page of a JQL search.
 type SearchQuery struct {
@@ -230,9 +256,11 @@ type BulkFailure struct {
 }
 
 // BulkFetch reads the issues named by key or ID with the fields named
-// (none means Jira's navigable fields), 100 per request. A reference
-// named again, a key in any case, is sent once. A failure after some
-// requests returns their issues with the error.
+// (none means Jira's navigable fields), per request the fewer of
+// bulkFetchBatch and as many as Jira takes with those fields
+// (bulkFetchCapacity). A reference named again, a key in any case, is
+// sent once. A failure after some requests returns their issues with the
+// error.
 func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string) (BulkResult, error) {
 	if err := c.admit(ctx); err != nil {
 		return BulkResult{}, err
@@ -254,8 +282,9 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 		out  BulkResult
 		left unnamed
 	)
-	for start := 0; start < len(refs); start += bulkFetchBatch {
-		batch := refs[start:min(start+bulkFetchBatch, len(refs))]
+	size := min(bulkFetchCapacity(fields), bulkFetchBatch)
+	for start := 0; start < len(refs); start += size {
+		batch := refs[start:min(start+size, len(refs))]
 		body := map[string]any{"issueIdsOrKeys": batch}
 		if len(fields) > 0 {
 			body["fields"] = fields

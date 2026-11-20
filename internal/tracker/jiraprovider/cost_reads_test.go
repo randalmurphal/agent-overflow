@@ -3,6 +3,7 @@ package jiraprovider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -122,57 +123,77 @@ func TestStructureForgetsOnlyItsBoard(t *testing.T) {
 	}
 }
 
-// TestLookupSettles proves a key the first search left unmatched is
-// settled by one more search: no single read when it finds nothing, and
-// a single read when it returns the issue under another key (two keys of
-// one issue, one of them old).
-func TestLookupSettles(t *testing.T) {
+// TestLookupCost pins Lookup's requests: one bulk fetch when it returns
+// an issue under every key asked, and one read alone more for each key
+// it leaves out, an old key or one that names nothing, once the field
+// catalog is read. Each answer that leaves keys out (the bulk fetch's, a
+// read alone's 404) and names no account it was made for costs a
+// sign-in check after it, which shows it is the user's.
+func TestLookupCost(t *testing.T) {
 	f := lookupSite(t)
 	p := newProvider(t, f, nil)
-	f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		switch jql := bodyOf(t, b)["jql"]; jql {
-		case `key in ("WEB-1", "WEB-9")`, `key in ("APP-5", "WEB-5")`:
-			first := issue("10001", "WEB-1", updatedAt, nil)
-			if strings.Contains(jql.(string), "APP-5") {
-				first = issue("10005", "APP-5", updatedAt, nil)
+	current := map[string]map[string]any{
+		"WEB-1": issue("10001", "WEB-1", updatedAt, nil), "APP-5": issue("10005", "APP-5", updatedAt, nil), "WEB-5": issue("10005", "APP-5", updatedAt, nil),
+	}
+	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		var issues []any
+		seen := map[string]bool{}
+		for _, k := range bodyOf(t, b)["issueIdsOrKeys"].([]any) {
+			if is, ok := current[strings.ToUpper(k.(string))]; ok && !seen[is["id"].(string)] {
+				seen[is["id"].(string)] = true
+				issues = append(issues, is)
 			}
-			jiratest.Reply(200, page("", first))(w, r, b)
-		case `key in ("WEB-9")`:
-			jiratest.Reply(200, page(""))(w, r, b)
-		case `key in ("WEB-5")`:
-			jiratest.Reply(200, page("", issue("10005", "APP-5", updatedAt, nil)))(w, r, b)
-		default:
-			t.Errorf("jql %v", jql)
-			jiratest.Reply(400, `{}`)(w, r, b)
 		}
+		jiratest.Reply(200, mustJSON(map[string]any{"issues": issues, "issueErrors": []any{}}))(w, r, b)
 	})
-	got, err := p.Lookup(t.Context(), []string{"WEB-1", "WEB-9"})
-	if err != nil || len(got.Found) != 1 || !slices.Equal(got.Unmatched, []string{"WEB-9"}) {
-		t.Fatalf("a key naming nothing: %+v %v", got, err)
+	if _, err := p.Lookup(t.Context(), []string{"WEB-1"}); err != nil {
+		t.Fatal(err)
 	}
-	if s, g := f.Count("POST", searchPath), f.Count("GET", "/rest/api/3/issue/WEB-9"); s != 2 || g != 0 {
-		t.Errorf("%d searches and %d single reads, want 2 and 0", s, g)
-	}
-	got, err = p.Lookup(t.Context(), []string{"APP-5", "WEB-5"})
-	if err != nil || len(got.Found) != 2 || got.Found[1].Key != "WEB-5" || got.Found[1].Card.Key != "APP-5" {
-		t.Fatalf("an old key of an issue named: %+v %v", got, err)
-	}
-	if s, g := f.Count("POST", searchPath), f.Count("GET", "/rest/api/3/issue/WEB-5"); s != 4 || g != 1 {
-		t.Errorf("%d searches and %d single reads, want 4 and 1", s, g)
+	for _, tc := range []struct {
+		keys     []string
+		requests int
+		found    int
+	}{
+		{[]string{"WEB-1", "APP-5"}, 1, 2},
+		{[]string{"web-1"}, 1, 1},
+		{[]string{"WEB-1", "WEB-9"}, 2, 1},
+		{[]string{"WEB-5"}, 2, 1},
+		{[]string{"WEB-1", "WEB-9", "WEB-5", "APP-5"}, 3, 3},
+	} {
+		before := len(f.Requests())
+		got, err := p.Lookup(t.Context(), tc.keys)
+		if err != nil || len(got.Found) != tc.found {
+			t.Fatalf("%v: %+v %v", tc.keys, got, err)
+		}
+		if n := len(f.Requests()) - before; n != tc.requests {
+			t.Errorf("%v: %d requests, want %d: %v", tc.keys, n, tc.requests, f.Requests()[before:])
+		}
 	}
 	if n := f.Count("GET", myselfPath); n != 0 {
-		t.Errorf("%d sign-in checks for searches that named their account", n)
+		t.Errorf("%d sign-in checks for answers that named their account", n)
 	}
-	// A search that names no account it was made for and finds nothing
-	// may be an anonymous one: the settle search costs a sign-in check.
+	// The most keys a lookup takes fit one bulk fetch batch.
+	most := make([]string, tracker.MaxLookupKeys)
+	for i := range most {
+		k := fmt.Sprintf("BIG-%d", i+1)
+		most[i] = k
+		current[k] = issue(fmt.Sprint(20000+i), k, updatedAt, nil)
+	}
+	before := len(f.Requests())
+	if got, err := p.Lookup(t.Context(), most); err != nil || len(got.Found) != len(most) {
+		t.Fatalf("%d keys: %d found, %v", len(most), len(got.Found), err)
+	}
+	if n := len(f.Requests()) - before; n != 1 {
+		t.Errorf("%d keys: %d requests, want 1", len(most), n)
+	}
 	f.SetAccount("")
-	before := f.Count("POST", searchPath)
-	got, err = p.Lookup(t.Context(), []string{"WEB-1", "WEB-9"})
+	before = len(f.Requests())
+	got, err := p.Lookup(t.Context(), []string{"WEB-1", "WEB-9"})
 	if err != nil || !slices.Equal(got.Unmatched, []string{"WEB-9"}) {
 		t.Fatalf("with no account named: %+v %v", got, err)
 	}
-	if s, m := f.Count("POST", searchPath)-before, f.Count("GET", myselfPath); s != 2 || m != 1 {
-		t.Errorf("with no account named: %d searches and %d sign-in checks, want 2 and 1", s, m)
+	if n, m := len(f.Requests())-before, f.Count("GET", myselfPath); n != 4 || m != 2 {
+		t.Errorf("with no account named: %d requests and %d sign-in checks, want 4 and 2: %v", n, m, f.Requests()[before:])
 	}
 }
 

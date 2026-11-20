@@ -30,7 +30,9 @@ type Draft struct {
 
 // Change is an update of one worklog. Tempo replaces the whole record on
 // an update, so a change starts from the record as read: every field
-// the change does not set is sent as From has it. The billable time is the
+// the change does not set is sent as From has it. The update reads the
+// record again as its last request before the write and is refused
+// (Code Changed) when it no longer holds what From has. The billable time is the
 // exception when the change sets Spent but not Billable: a fully billable
 // From (Billable equal to Spent) stays fully billable, and a From billed
 // below its Spent is never left billed above the new Spent.

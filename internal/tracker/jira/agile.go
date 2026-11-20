@@ -348,11 +348,12 @@ func (c *Client) boardConfig(ctx context.Context, board int64) (BoardConfig, err
 	epoch := c.configs.epoch()
 	var j boardConfigJSON
 	path := agilePath + "board/" + strconv.FormatInt(board, 10) + "/configuration"
-	if _, err := c.call(ctx, trackerapi.Request{Path: path}, &j); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: path}, &j)
+	if err != nil {
 		return BoardConfig{}, fmt.Errorf("jira: configuration of board %d: %w", board, err)
 	}
 	cfg := j.config()
-	c.configs.put(epoch, board, cfg)
+	c.configs.put(epoch, resp.CredentialMark(), board, cfg)
 	return cfg, nil
 }
 

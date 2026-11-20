@@ -181,7 +181,8 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 // EditComment replaces a comment's body when it still renders to the
 // Markdown the edit was written from. That read is the last before the
 // first write: the client takes the comment as read (Current) and reads
-// it again only when resolving a mention read Jira since.
+// it again only when a request came after it, a mention resolved or an
+// image uploaded.
 func (p *Provider) EditComment(ctx context.Context, in tracker.CommentEdit) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepComment, err, in.Issue)

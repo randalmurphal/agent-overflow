@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Schema is a field's type as Jira reports it. Type is the JSON type
@@ -126,11 +128,12 @@ func (c *Client) Fields(ctx context.Context) (*Catalog, error) {
 	}
 	epoch := c.catalog.epoch()
 	var fields []Field
-	if err := c.get(ctx, "field", nil, &fields); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "field"}, &fields)
+	if err != nil {
 		return nil, fmt.Errorf("jira: field catalog: %w", err)
 	}
 	cat := newCatalog(fields)
-	c.catalog.put(epoch, struct{}{}, cat)
+	c.catalog.put(epoch, resp.CredentialMark(), struct{}{}, cat)
 	return cat, nil
 }
 

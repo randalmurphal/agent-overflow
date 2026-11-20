@@ -96,11 +96,8 @@ type Client struct {
 	// sprintLists are the boards' sprint listings, kept and dropped
 	// with their configurations.
 	sprintLists *cache[int64, SprintList]
-	// me is who the credential belongs to (Me), and mark the credential
-	// read of the latest answer that carried one.
-	me     *cache[struct{}, signedIn]
-	markMu sync.Mutex
-	mark   trackerapi.CredentialMark
+	// me is who the credential belongs to (Me).
+	me *cache[struct{}, User]
 }
 
 // rateLimitHeaders are the rate limit headers Jira Cloud documents
@@ -140,11 +137,11 @@ func New(opts Options) (*Client, error) {
 	}
 	c := &Client{
 		api: api, maxUpload: opts.MaxUploadBytes,
-		users:       newCache[string, User](userCacheSize, nil),
-		catalog:     newCache[struct{}, *Catalog](1, nil),
-		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, cloneBoardConfig),
-		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, cloneSprintList),
-		me:          newCache[struct{}, signedIn](1, nil),
+		users:       newCache[string, User](userCacheSize, nil, api.CredentialMark),
+		catalog:     newCache[struct{}, *Catalog](1, nil, api.CredentialMark),
+		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, cloneBoardConfig, api.CredentialMark),
+		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, cloneSprintList, api.CredentialMark),
+		me:          newCache[struct{}, User](1, nil, api.CredentialMark),
 	}
 	if c.maxUpload == 0 {
 		c.maxUpload = defaultMaxUpload
@@ -193,34 +190,14 @@ func (c *Client) ForgetCredential() {
 	c.me.clear()
 }
 
-// saw records the credential read an answer was drawn under, when it
-// carried one.
-func (c *Client) saw(mark trackerapi.CredentialMark) {
-	if mark == (trackerapi.CredentialMark{}) {
-		return
-	}
-	c.markMu.Lock()
-	c.mark = mark
-	c.markMu.Unlock()
-}
-
-// lastMark is the credential read of the latest answer that carried one.
-func (c *Client) lastMark() trackerapi.CredentialMark {
-	c.markMu.Lock()
-	defer c.markMu.Unlock()
-	return c.mark
-}
-
 // call sends r and decodes the answer into out (nil skips decoding)
 // through decodeAnswer. A 404 is checked against the sign-in
 // (identity.go), and an AuthError detaches the sign-in checks.
 func (c *Client) call(ctx context.Context, r trackerapi.Request, out any) (*trackerapi.Response, error) {
 	resp, err := c.api.Do(ctx, r)
 	if err != nil {
-		c.saw(errorMark(err))
 		return resp, c.explain(ctx, err)
 	}
-	c.saw(resp.CredentialMark())
 	if out != nil {
 		if err := decodeAnswer(resp, out); err != nil {
 			return resp, err
@@ -256,18 +233,6 @@ func (c *Client) explain(ctx context.Context, err error) error {
 		}
 	}
 	return err
-}
-
-// errorMark is the credential read of the answer err carries, zero for
-// a failure that carried none.
-func errorMark(err error) trackerapi.CredentialMark {
-	if e, ok := errors.AsType[*trackerapi.StatusError](err); ok {
-		return e.CredentialMark()
-	}
-	if e, ok := errors.AsType[*trackerapi.AuthError](err); ok {
-		return e.CredentialMark()
-	}
-	return trackerapi.CredentialMark{}
 }
 
 // notSent is the client's refusal of its input before any request was

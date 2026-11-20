@@ -80,10 +80,21 @@ func (c *Client) Attributes(ctx context.Context) ([]Attribute, error) {
 
 // attributes is the cached list, shared: callers do not change it.
 func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
-	v, err := c.site.attributes.get(ctx, func(ctx context.Context) ([]Attribute, error) {
-		var out []Attribute
-		options := 0
-		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(_ *trackerapi.Response, list []attributeJSON) error {
+	v, err := c.site.attributes.get(ctx, c.http.CredentialMark, func(ctx context.Context) ([]Attribute, trackerapi.CredentialMark, error) {
+		var (
+			out     []Attribute
+			mark    trackerapi.CredentialMark
+			first   = true
+			options = 0
+		)
+		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(resp *trackerapi.Response, list []attributeJSON) error {
+			// The list is the credential's when every page was drawn
+			// under one read of it.
+			if m := resp.CredentialMark(); first {
+				mark, first = m, false
+			} else if m != mark {
+				mark = trackerapi.CredentialMark{}
+			}
 			for _, a := range list {
 				options += len(a.Values)
 				if len(out) >= maxAttributes || options > maxOptions {
@@ -98,7 +109,7 @@ func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 			}
 			return nil
 		})
-		return out, err
+		return out, mark, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read work attributes: %w", err)
@@ -148,11 +159,11 @@ func (c *Client) Settings(ctx context.Context) (Settings, error) {
 }
 
 func (c *Client) settings(ctx context.Context) (Settings, error) {
-	v, err := c.site.settings.get(ctx, func(ctx context.Context) (Settings, error) {
+	v, err := c.site.settings.get(ctx, c.http.CredentialMark, func(ctx context.Context) (Settings, trackerapi.CredentialMark, error) {
 		var raw settingsJSON
-		_, err := c.http.JSON(ctx, trackerapi.Request{Path: "4/globalconfiguration"}, &raw)
+		resp, err := c.http.JSON(ctx, trackerapi.Request{Path: "4/globalconfiguration"}, &raw)
 		if err != nil {
-			return Settings{}, err
+			return Settings{}, trackerapi.CredentialMark{}, err
 		}
 		s := Settings{
 			InactiveAccountsAllowed:   raw.AllowLoggingOnClosedAccount,
@@ -166,7 +177,7 @@ func (c *Client) settings(ctx context.Context) (Settings, error) {
 		if raw.WeekStart >= 1 && raw.WeekStart <= 7 {
 			s.WeekStart = time.Weekday(raw.WeekStart % 7)
 		}
-		return s, nil
+		return s, resp.CredentialMark(), nil
 	})
 	if err != nil {
 		return Settings{}, fmt.Errorf("read settings: %w", err)
@@ -191,7 +202,11 @@ func (s *siteCache) shut() {
 	s.settings.shut()
 }
 
-// cached is one value read once and shared. Concurrent callers share one
+// cached is one value read once and shared, while the transport holds
+// the credential read its answer was drawn under: a token read again,
+// forgotten or replaced after a refusal retires it, whichever call drew
+// the answer that caused it (the token selects the Tempo tenant). An
+// answer of no credential read is never kept. Concurrent callers share one
 // read. The read runs on the first caller's context without its
 // cancellation, so a caller that gives up leaves without ending a read
 // others wait on; the transport's timeouts and Close still end it. A
@@ -201,6 +216,7 @@ type cached[T any] struct {
 	mu       sync.Mutex
 	value    T
 	ok       bool
+	mark     trackerapi.CredentialMark
 	gen      uint64 // advanced by drop, so a read started before it is not kept
 	inflight *loading[T]
 	reads    sync.WaitGroup // the reads in flight, joined by shut
@@ -216,17 +232,29 @@ type loading[T any] struct {
 	kept bool
 }
 
-func (c *cached[T]) get(ctx context.Context, load func(context.Context) (T, error)) (T, error) {
+// heldBy reports a value drawn under mark while the transport holds that
+// read of the credential.
+func heldBy(mark, now trackerapi.CredentialMark) bool {
+	return mark == now && mark != (trackerapi.CredentialMark{})
+}
+
+func (c *cached[T]) get(ctx context.Context, now func() trackerapi.CredentialMark, load func(context.Context) (T, trackerapi.CredentialMark, error)) (T, error) {
 	var zero T
 	for {
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
+		held := now()
 		c.mu.Lock()
-		if c.ok {
+		if c.ok && heldBy(c.mark, held) {
 			v := c.value
 			c.mu.Unlock()
 			return v, nil
+		}
+		if c.ok {
+			// Drawn under a credential read the transport no longer holds.
+			c.value, c.ok, c.mark = zero, false, trackerapi.CredentialMark{}
+			c.gen++
 		}
 		if c.closed {
 			c.mu.Unlock()
@@ -255,15 +283,20 @@ func (c *cached[T]) get(ctx context.Context, load func(context.Context) (T, erro
 	}
 }
 
-func (c *cached[T]) run(ctx context.Context, gen uint64, l *loading[T], load func(context.Context) (T, error)) {
-	v, err := load(ctx)
+func (c *cached[T]) run(ctx context.Context, gen uint64, l *loading[T], load func(context.Context) (T, trackerapi.CredentialMark, error)) {
+	v, mark, err := load(ctx)
 	c.mu.Lock()
 	l.v, l.err = v, err
 	if c.inflight == l {
 		c.inflight = nil
 	}
+	// A read not dropped meanwhile answers its callers; it is kept only
+	// when drawn under one credential read.
 	if err == nil && gen == c.gen {
-		c.value, c.ok, l.kept = v, true, true
+		l.kept = true
+		if mark != (trackerapi.CredentialMark{}) {
+			c.value, c.ok, c.mark = v, true, mark
+		}
 	}
 	c.mu.Unlock()
 	close(l.done)
@@ -273,7 +306,7 @@ func (c *cached[T]) drop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var zero T
-	c.value, c.ok = zero, false
+	c.value, c.ok, c.mark = zero, false, trackerapi.CredentialMark{}
 	c.gen++
 	c.inflight = nil
 }

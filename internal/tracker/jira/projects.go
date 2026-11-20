@@ -265,9 +265,10 @@ func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
 // offsetPages reads path's pages (a path from the site root, under any
 // of the APIs that page by offset) of size from the start until the last
 // one, or until limit items when limit is above zero; complete reports
-// that the last page was read with every item kept, and date is the first
-// answer's (answerDate). A failure returns the items read before it.
-func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, date time.Time, err error) {
+// that the last page was read with every item kept, and seen says when
+// and under which credential read Jira answered. A failure returns the
+// items read before it.
+func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, seen pagesSeen, err error) {
 	for start := 0; ; {
 		q.Set("startAt", strconv.Itoa(start))
 		q.Set("maxResults", strconv.Itoa(size))
@@ -278,28 +279,43 @@ func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Value
 		}
 		resp, err := c.call(ctx, trackerapi.Request{Path: path, Query: q}, &page)
 		if err != nil {
-			return out, false, date, err
+			return out, false, seen, err
 		}
-		if start == 0 {
-			date = answerDate(resp)
-		}
+		seen.see(start == 0, resp)
 		next := start + len(page.Values)
 		last := page.IsLast || (page.Total > 0 && int64(next) >= page.Total)
 		for _, item := range page.Values {
 			if limit > 0 && len(out) == limit {
-				return out, false, date, nil // items past the limit
+				return out, false, seen, nil // items past the limit
 			}
 			out = append(out, item)
 		}
 		switch {
 		case last:
-			return out, true, date, nil
+			return out, true, seen, nil
 		case limit > 0 && len(out) == limit:
-			return out, false, date, nil
+			return out, false, seen, nil
 		}
 		if len(page.Values) == 0 {
-			return out, false, date, fmt.Errorf("an empty page at %d that is not the last", start)
+			return out, false, seen, fmt.Errorf("an empty page at %d that is not the last", start)
 		}
 		start = next
+	}
+}
+
+// pagesSeen is what the answers of one paged read say about it: date is
+// the first answer's (answerDate), and mark the credential read every
+// answer was drawn under, zero when they differ.
+type pagesSeen struct {
+	date time.Time
+	mark trackerapi.CredentialMark
+}
+
+func (p *pagesSeen) see(first bool, resp *trackerapi.Response) {
+	switch m := resp.CredentialMark(); {
+	case first:
+		p.date, p.mark = answerDate(resp), m
+	case m != p.mark:
+		p.mark = trackerapi.CredentialMark{}
 	}
 }

@@ -129,6 +129,9 @@ func refusal(err error) tracker.Refusal {
 	}
 	if e, ok := errors.AsType[*tempo.InvalidError](err); ok {
 		r.Message = e.Error()
+		if slices.ContainsFunc(e.Problems, func(p tempo.Problem) bool { return p.Code == tempo.Changed }) {
+			r.Reason = tracker.ReasonStale
+		}
 		return r
 	}
 	if e, ok := errors.AsType[*movedError](err); ok {

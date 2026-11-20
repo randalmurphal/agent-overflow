@@ -68,15 +68,17 @@ func TestForgetUsersBeatsAReadInFlight(t *testing.T) {
 }
 
 func TestCacheIsBoundedAndFenced(t *testing.T) {
-	uc := newCache[string, User](2, nil)
+	now := signedIn(t, nil).api.CredentialMark
+	mark := now()
+	uc := newCache[string, User](2, nil, now)
 	for _, id := range []string{"a", "b", "c"} {
-		uc.put(uc.epoch(), id, User{AccountID: id})
+		uc.put(uc.epoch(), mark, id, User{AccountID: id})
 	}
 	if _, ok := uc.get("a"); ok {
 		t.Error("the oldest user was kept past the bound")
 	}
 	uc.get("b")
-	uc.put(uc.epoch(), "d", User{AccountID: "d"})
+	uc.put(uc.epoch(), mark, "d", User{AccountID: "d"})
 	if _, ok := uc.get("b"); !ok {
 		t.Error("a recently used user was evicted")
 	}
@@ -85,9 +87,26 @@ func TestCacheIsBoundedAndFenced(t *testing.T) {
 	}
 	old := uc.epoch()
 	uc.clear()
-	uc.put(old, "e", User{AccountID: "e"})
+	uc.put(old, mark, "e", User{AccountID: "e"})
 	if _, ok := uc.get("e"); ok {
 		t.Error("a store from before the clear was kept")
+	}
+	// A value drawn under no credential, or under a read the transport no
+	// longer holds, is not handed out.
+	uc.put(uc.epoch(), trackerapi.CredentialMark{}, "f", User{AccountID: "f"})
+	if _, ok := uc.get("f"); ok {
+		t.Error("a value of no credential read was kept")
+	}
+	other := newCache[string, User](2, nil, signedIn(t, nil).api.CredentialMark)
+	other.put(other.epoch(), other.now(), "h", User{AccountID: "h"})
+	other.put(other.epoch(), other.now(), "i", User{AccountID: "i"})
+	other.put(other.epoch(), mark, "g", User{AccountID: "g"})
+	if _, ok := other.get("g"); ok {
+		t.Error("a value of another client's credential read was kept")
+	}
+	// Nor is it stored, so it evicts nothing live.
+	if _, ok := other.get("h"); !ok {
+		t.Error("a value of another credential read evicted a live one")
 	}
 }
 

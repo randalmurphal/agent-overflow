@@ -346,7 +346,9 @@ type CommentEdit struct {
 // body (its mentions read first) and the comment is read as the last read
 // before the first write: a comment that holds another body by then is a
 // *StaleError. Current is the same with that read left out unless the
-// conversion read Jira. This narrows the window for a lost update and does not
+// conversion read Jira. An edit that attaches images reads the comment
+// again after them, as the last request before the write (Unchecked
+// excepted). This narrows the window for a lost update and does not
 // close it, since Jira takes no precondition on the write. Unchecked
 // reads the stored body first and edits it with no check. An edit that would
 // store the body already stored sends nothing and returns Unchanged with
@@ -381,12 +383,18 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	if err != nil {
 		return res, notSentErr(fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err))
 	}
-	if in.From != nil || in.Current != nil && b.asked {
+	recheck := func() error {
 		if cur, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
-			return res, err
+			return err
 		}
 		if !adf.Equal(base.Body, cur.Body) {
-			return res, notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
+			return notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
+		}
+		return nil
+	}
+	if in.From != nil || in.Current != nil && b.asked {
+		if err := recheck(); err != nil {
+			return res, err
 		}
 	}
 	if adf.Equal(doc, cur.Body) {
@@ -400,6 +408,13 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	}
 	if doc, err = c.uploadInto(ctx, in.Issue, doc, imgs, held, &res.Uploaded); err != nil {
 		return res, err
+	}
+	if len(imgs) > 0 && !in.Unchecked {
+		// The uploads came after the read the edit rests on; it is read
+		// again as the last request before the write.
+		if err := recheck(); err != nil {
+			return res, &StepError{Step: StepComment, Err: err}
+		}
 	}
 	body := map[string]any{"body": doc}
 	if cur.Visibility != nil {

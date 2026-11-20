@@ -39,6 +39,7 @@ type Server struct {
 	hits    map[string]int
 	order   []string
 	account string
+	before  func(*http.Request)
 }
 
 // DefaultAccount is the account a Server's answers name: User 1's.
@@ -66,8 +67,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	if !ok && s.other != nil {
 		h, ok = s.other, true
 	}
-	account := s.account
+	account, before := s.account, s.before
 	s.mu.Unlock()
+	if before != nil {
+		before(r)
+	}
 	if account != "" && r.Header.Get("Authorization") != "" {
 		w.Header().Set("X-AAccountId", account)
 	}
@@ -170,6 +174,14 @@ func (s *Server) On(method, path string, h Handler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routes[method+" "+path] = h
+}
+
+// Before calls f with every request the server receives, before it is
+// answered.
+func (s *Server) Before(f func(*http.Request)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.before = f
 }
 
 // Otherwise answers every request no route names with h, instead of

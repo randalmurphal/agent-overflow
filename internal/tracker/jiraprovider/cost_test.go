@@ -235,6 +235,10 @@ type costRun struct {
 	rows  []string
 	// got is each measured call's request routes, in order, by label.
 	got map[string][]string
+	// bytes is each measured call's body bytes sent and read, by label.
+	bytes map[string]int
+	// largest is each measured call's largest answer body, by label.
+	largest map[string]int
 }
 
 func newCostRun(t *testing.T, withTempo bool) *costRun {
@@ -249,7 +253,7 @@ func newCostRun(t *testing.T, withTempo bool) *costRun {
 	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
 		t.Fatal(err)
 	}
-	r := &costRun{t: t, e: e, jlog: newExchangeLog(), tlog: newExchangeLog(), clock: clock, got: map[string][]string{}}
+	r := &costRun{t: t, e: e, jlog: newExchangeLog(), tlog: newExchangeLog(), clock: clock, got: map[string][]string{}, bytes: map[string]int{}, largest: map[string]int{}}
 	jh, err := e.Handler(trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite})
 	if err != nil {
 		t.Fatal(err)
@@ -311,11 +315,13 @@ func (r *costRun) measure(label string, call func() error) {
 		sized = append(sized, fmt.Sprintf("%s (%dB)", rec.route, rec.replyBytes))
 		in += rec.reqBytes
 		out += rec.replyBytes
+		r.largest[label] = max(r.largest[label], rec.replyBytes)
 	}
 	if len(recs) > 8 {
 		sized = []string{summarize(routes)}
 	}
 	r.got[label] = routes
+	r.bytes[label] = in + out
 	r.rows = append(r.rows, fmt.Sprintf("%-34s req=%-3d sent=%-7d read=%-8d local=%-8s %s", label, len(recs), in, out, took.Round(time.Microsecond), strings.Join(sized, "; ")))
 }
 
@@ -355,6 +361,21 @@ func summarize(routes []string) string {
 func (r *costRun) log() {
 	for _, row := range r.rows {
 		r.t.Log(row)
+	}
+}
+
+// pinBytes fails for each label whose body bytes sent and read exceed
+// its bound in most.
+func (r *costRun) pinBytes(most map[string]int) {
+	r.t.Helper()
+	for label, n := range most {
+		got, ok := r.bytes[label]
+		switch {
+		case !ok:
+			r.t.Errorf("%s: not measured", label)
+		case got > n:
+			r.t.Errorf("%s: %d bytes sent and read, at most %d", label, got, n)
+		}
 	}
 }
 
@@ -448,6 +469,9 @@ func TestRequestCost(t *testing.T) {
 	r.measure("BoardRows (500)", func() error { _, err := p.BoardRows(ctx, costBoard, costIDs(0, 500)); return err })
 	r.measure("Cards (100)", func() error { _, err := p.Cards(ctx, costIDs(0, 100)); return err })
 	r.measure("Cards (250)", func() error { _, err := p.Cards(ctx, costIDs(0, 250)); return err })
+	r.measure("Cards (500)", func() error { _, err := p.Cards(ctx, costIDs(0, 500)); return err })
+	// The 501st issue is not on the site; it is the second batch's.
+	r.measure("Cards (501)", func() error { _, err := p.Cards(ctx, costIDs(0, 501)); return err })
 	r.measure("History (20 x 100 changes)", func() error {
 		_, err := p.History(ctx, tracker.HistoryQuery{Issues: costIDs(0, costHistories), Boards: []tracker.BoardID{costBoard}})
 		return err
@@ -601,16 +625,40 @@ func TestRequestCost(t *testing.T) {
 		"Identity": 1, "Projects": 1, "IssueTypes": 1, "Boards": 1, "LinkTypes": 1,
 		"Structure (cold)": 3, "Structure (again)": 3,
 		"ChangedRows walk of 500": 2, "ChangedRows idle tick 1": 1, "ChangedRows idle tick 2": 1, "ChangedRows idle tick 3": 1,
-		"BoardIssues (500)": 1, "BoardRows (100)": 1, "BoardRows (500)": 1, "Cards (100)": 1, "Cards (250)": 3,
+		"BoardIssues (500)": 1, "BoardRows (100)": 1, "BoardRows (500)": 1, "Cards (100)": 1, "Cards (250)": 1, "Cards (500)": 1, "Cards (501)": 2,
 		"History (20 x 100 changes)": 2, "History (100, 80 unchanged)": 3,
 		"Detail (60 comments)": 2, "Comments (next page)": 1, "Moves": 1, "CreateFields": 1,
-		"AssignableUsers": 1, "Choices (priority)": 1, "Lookup (10 keys, 3 missing)": 2, "Search": 1,
+		"AssignableUsers": 1, "Choices (priority)": 1, "Lookup (10 keys, 3 missing)": 4, "Search": 1,
 		"ChangedRows board 2 (cold)": 2, "Structure board 1 (warm 2)": 3, "ChangedRows board 2 (after)": 1,
 		"Create (two images)": 7, "Edit (title, assignee)": 3, "Move": 2, "SetEstimate": 2, "Rank (5)": 2,
 		"MoveToSprint (30)": 3, "MoveToSprint backlog (30)": 2, "AddComment": 2, "EditComment": 2, "DeleteComment": 2,
 		"Link": 1, "Unlink": 2, "Attach": 1, "Download": 2,
 		"CreateSprint": 1, "EditSprint": 2, "CompleteSprint (125 issues)": 7, "StartSprint": 2,
-		"Tempo Worklogs (month)": 1, "Tempo AddWorklog": 3, "Tempo EditWorklog": 3, "Tempo DeleteWorklog": 2,
+		"Tempo Worklogs (month)": 1, "Tempo AddWorklog": 3, "Tempo EditWorklog": 4, "Tempo DeleteWorklog": 2,
+	})
+	// A full bulk fetch batch's answer fits the transport's pooled answer
+	// buffer (trackerapi's answerBufferKeep, 2 MiB), so reading it keeps the
+	// buffer for the next read.
+	if n := r.largest["Cards (500)"]; n > 2<<20 {
+		t.Errorf("a 500-issue bulk fetch answered %d bytes, past the 2 MiB pooled buffer", n)
+	}
+	// Each read's bytes sent and read: the value measured on the fake,
+	// which answers the same bytes every run, with 5% headroom, rounded up
+	// to ten bytes.
+	r.pinBytes(map[string]int{
+		"Identity": 470, "Projects": 230, "IssueTypes": 840, "Boards": 630, "LinkTypes": 330, // 446, 216, 793, 598, 312
+		"Structure (cold)": 17480, "Structure (again)": 17480, "Structure board 1 (warm 2)": 17480, // 16641
+		"ChangedRows walk of 500": 902500,                                                           // 859515
+		"ChangedRows idle tick 1": 60, "ChangedRows idle tick 2": 60, "ChangedRows idle tick 3": 60, // 48
+		"ChangedRows board 2 (cold)": 830, "ChangedRows board 2 (after)": 60, // 790, 48
+		"BoardIssues (500)": 61370, "BoardRows (100)": 175600, "BoardRows (500)": 896260, // 58439, 167235, 853574
+		"Cards (100)": 170750, "Cards (250)": 427010, // 162614, 406670
+		"Cards (500)": 853820, "Cards (501)": 854050, // 813153, 813372
+		"History (20 x 100 changes)": 1332940, "History (100, 80 unchanged)": 1367170, // 1269458, 1302059
+		"Detail (60 comments)": 159140, "Comments (next page)": 15510, // 151556, 14763
+		"Moves": 1350, "CreateFields": 3340, "AssignableUsers": 1410, "Choices (priority)": 3190, // 1283, 3180, 1342, 3036
+		"Lookup (10 keys, 3 missing)": 12530, "Search": 85160, // 11924, 81104
+		"Tempo Worklogs (month)": 12430, // 11837
 	})
 }
 
@@ -639,6 +687,8 @@ func TestRequestCostJiraWorklogs(t *testing.T) {
 	r.result("Jira DeleteWorklog", func() tracker.Result { return tt.DeleteWorklog(ctx, tracker.WorklogDelete{From: wls[1]}) })
 	r.log()
 	r.pin(map[string]int{"Jira Worklogs (month)": 2, "Jira AddWorklog": 2, "Jira EditWorklog": 2, "Jira DeleteWorklog": 2})
+	// Measured 28014 bytes; bound as in TestRequestCost.
+	r.pinBytes(map[string]int{"Jira Worklogs (month)": 29420})
 }
 
 func mustDate(t *testing.T, at time.Time) tracker.Date {

@@ -318,15 +318,16 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	if err != nil {
 		return notSent(err)
 	}
+	listed, err := p.onBoard(ctx, b, in.Issues)
+	if err != nil {
+		return notSent(err)
+	}
+	// The sprint's listing is the last read: the client takes it as read.
 	var sprint *jira.Sprint
 	if in.Sprint != "" {
 		if sprint, err = p.boardSprint(ctx, in.Board, in.Sprint, jira.SprintActive, jira.SprintFuture); err != nil {
 			return notSent(err)
 		}
-	}
-	listed, err := p.onBoard(ctx, b, in.Issues)
-	if err != nil {
-		return notSent(err)
 	}
 	return boardParts(in.Board, tracker.StepSprintMove, in.Issues, listed, func(send []tracker.IssueID) tracker.Result {
 		var res jira.BatchResult

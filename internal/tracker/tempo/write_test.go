@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -63,7 +65,7 @@ func TestUpdateKeepsWhatItDoesNotChange(t *testing.T) {
 	c := testClient(t, f, newIssues())
 	openWeek(f)
 	f.On("GET", "/4/worklogs/70", nil, "", 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", start: "13:00:00",
-		spent: 3600, billable: seconds64(1800), desc: "Planning", attrs: [][2]string{{"_Category_", "mtg"}, {"_Note_", "keep"}}}.json())
+		spent: 3600, billable: seconds64(1800), desc: "Planning", attrs: [][2]string{{"_Category_", "mtg"}, {"_Note_", "keep"}}}.json()).Repeat = true
 	f.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","startTime":"13:00:00","timeSpentSeconds":7200,
 		  "billableSeconds":1800,"description":"Planning","attributes":[{"key":"_Category_","value":"mtg"},{"key":"_Note_","value":"keep"}]}`,
@@ -80,6 +82,71 @@ func TestUpdateKeepsWhatItDoesNotChange(t *testing.T) {
 	}
 	if stored.Spent != 2*time.Hour || stored.Issue != (Issue{ID: 10002}) {
 		t.Errorf("stored %+v", stored)
+	}
+}
+
+// TestUpdateReadsLastBeforeTheWrite changes the record during the
+// checks' reads, after the caller read it: the update reads it again as
+// the last request before its write and is refused, unsent, for each
+// field the write carries over; a record still as read is written right
+// after that read.
+func TestUpdateReadsLastBeforeTheWrite(t *testing.T) {
+	read := wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", start: "13:00:00", spent: 3600, billable: seconds64(1800), desc: "Planning",
+		attrs: [][2]string{{"_Category_", "mtg"}}}
+	changes := map[string]func(w *wl){
+		"none":        func(*wl) {},
+		"issue":       func(w *wl) { w.issue = 10001 },
+		"author":      func(w *wl) { w.author = "acc-user2" },
+		"date":        func(w *wl) { w.date = "2026-11-11" },
+		"start time":  func(w *wl) { w.start = "14:00:00" },
+		"spent":       func(w *wl) { w.spent = 1800 },
+		"billable":    func(w *wl) { w.billable = seconds64(600) },
+		"description": func(w *wl) { w.desc = "Retro" },
+		"attribute":   func(w *wl) { w.attrs = [][2]string{{"_Category_", "dev"}} },
+		"attribute added": func(w *wl) {
+			w.attrs = [][2]string{{"_Category_", "mtg"}, {"_Note_", "x"}}
+		},
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			f := tempotest.NewServer(t, testToken)
+			c := testClient(t, f, newIssues())
+			f.On("GET", "/4/worklogs/70", nil, "", 200, read.json())
+			later := read
+			change(&later)
+			// The checks' reads; the record is changed while they run.
+			openWeek(f)
+			f.On("GET", "/4/worklogs/70", nil, "", 200, later.json())
+			if name == "none" {
+				f.On("PUT", "/4/worklogs/70", nil,
+					`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","startTime":"13:00:00","timeSpentSeconds":3600,
+					  "billableSeconds":1800,"description":"Planning v2","attributes":[{"key":"_Category_","value":"mtg"}]}`,
+					200, read.json())
+			}
+			ctx := context.Background()
+			from, err := c.Worklog(ctx, 70)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Update(ctx, Change{From: from, Description: ptr("Planning v2")})
+			reqs := f.Requests()
+			if name == "none" {
+				if err != nil {
+					t.Fatalf("an unchanged record was refused: %v", err)
+				}
+				if n := len(reqs); n < 2 || reqs[n-2] != "GET /4/worklogs/70" || reqs[n-1] != "PUT /4/worklogs/70" {
+					t.Errorf("requests %v: the write does not follow its read", reqs)
+				}
+				return
+			}
+			invalid, ok := errors.AsType[*InvalidError](err)
+			if !ok || !trackerapi.WriteNotApplied(err) || len(invalid.Problems) != 1 || invalid.Problems[0].Code != Changed {
+				t.Errorf("a record changed since it was read: %v", err)
+			}
+			if slices.Contains(reqs, "PUT /4/worklogs/70") {
+				t.Errorf("requests %v: the change was overwritten", reqs)
+			}
+		})
 	}
 }
 
@@ -176,6 +243,9 @@ func TestUpdateNotMoved(t *testing.T) {
 	from := Worklog{ID: 70, Issue: Issue{ID: 10002, Key: "WEB-2"}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
 		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "dev"}}}
 	body := `{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-10","timeSpentSeconds":3600,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`
+	for _, id := range []int64{70, 71} {
+		f.On("GET", "/4/worklogs/"+strconv.FormatInt(id, 10), nil, "", 200, wl{id: id, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600, attrs: [][2]string{{"_Category_", "dev"}}}.json())
+	}
 	f.On("PUT", "/4/worklogs/70", nil, body, 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
 	f.On("PUT", "/4/worklogs/71", nil, body, 200, wl{id: 71, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
 	out := c.Apply(context.Background(), []Op{

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -197,7 +198,7 @@ func TestBulkFetchBatches(t *testing.T) {
 			Fields []string `json:"fields"`
 		}
 		_ = json.Unmarshal(b, &req)
-		if len(req.Refs) > bulkFetchBatch || strings.Join(req.Fields, ",") != "summary" {
+		if len(req.Refs) > 100 || strings.Join(req.Fields, ",") != "summary,comment" {
 			t.Errorf("request of %d refs, fields %v", len(req.Refs), req.Fields)
 		}
 		if req.Refs[0] == "WEB-101" {
@@ -206,7 +207,7 @@ func TestBulkFetchBatches(t *testing.T) {
 		}
 		jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-1","fields":{"summary":"y"}}],"issueErrors":[]}`)(w, r, b)
 	})
-	res, err := c.BulkFetch(t.Context(), refs, "summary")
+	res, err := c.BulkFetch(t.Context(), refs, "summary", "comment")
 	if err != nil || len(res.Issues) != 2 || len(res.Failed) != 1 || res.Failed[0].Message != "retry" || res.Complete {
 		t.Fatalf("got %+v %v", res, err)
 	}
@@ -227,6 +228,59 @@ func TestBulkFetchBatches(t *testing.T) {
 	}
 	if _, err := c.BulkFetch(t.Context(), []string{"WEB-1", "x/y"}); err == nil {
 		t.Error("a bad ref was sent")
+	}
+}
+
+// TestBulkFetchCapacity proves the capacity is Jira's documented rule
+// (1000 issues with 1 to 100 plain fields, 100 otherwise) and that a
+// bulk fetch asks for the fewer of it and bulkFetchBatch.
+func TestBulkFetchCapacity(t *testing.T) {
+	many := make([]string, 101)
+	for i := range many {
+		many[i] = fmt.Sprintf("customfield_%d", 10000+i)
+	}
+	for _, tc := range []struct {
+		fields []string
+		want   int
+	}{
+		{nil, 100},
+		{[]string{"summary"}, 1000},
+		{[]string{"summary", "status", "labels", "customfield_10020"}, 1000},
+		{many[:100], 1000},
+		{many, 100},
+		{[]string{"summary", "*navigable"}, 100},
+		{[]string{"*all"}, 100},
+		{[]string{"-description"}, 100},
+		{[]string{"summary", "comment"}, 100},
+		{[]string{"worklog"}, 100},
+		{[]string{"summary", "attachment"}, 100},
+	} {
+		if got := bulkFetchCapacity(tc.fields); got != tc.want {
+			t.Errorf("fields %v: capacity %d, want %d", tc.fields, got, tc.want)
+		}
+	}
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	refs := make([]string, 1001)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("WEB-%d", i+1)
+	}
+	var sizes []int
+	f.On("POST", "/rest/api/3/issue/bulkfetch", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		var req struct {
+			Refs []string `json:"issueIdsOrKeys"`
+		}
+		_ = json.Unmarshal(b, &req)
+		sizes = append(sizes, len(req.Refs))
+		var issues []string
+		for _, ref := range req.Refs {
+			issues = append(issues, `{"id":"`+strings.TrimPrefix(ref, "WEB-")+`","key":"`+ref+`"}`)
+		}
+		jiratest.Reply(200, `{"issues":[`+strings.Join(issues, ",")+`]}`)(w, r, b)
+	})
+	res, err := c.BulkFetch(t.Context(), refs, "summary", "status")
+	if err != nil || !res.Complete || !slices.Equal(sizes, []int{500, 500, 1}) {
+		t.Errorf("requests of %v issues: %d issues, %v", sizes, len(res.Issues), err)
 	}
 }
 

@@ -79,31 +79,22 @@ func (c *Client) Myself(ctx context.Context) (User, error) {
 		return User{}, fmt.Errorf("jira: who the credential belongs to: %w", err)
 	}
 	me := u.user()
-	c.keepUsers(epoch, me)
-	if mark := resp.CredentialMark(); mark != (trackerapi.CredentialMark{}) {
-		c.me.put(meEpoch, struct{}{}, signedIn{user: me, mark: mark})
-	}
+	c.keepUsers(epoch, resp.CredentialMark(), me)
+	c.me.put(meEpoch, resp.CredentialMark(), struct{}{}, me)
 	return me, nil
 }
 
-// signedIn is the user Myself read and the credential read its answer
-// was drawn under.
-type signedIn struct {
-	user User
-	mark trackerapi.CredentialMark
-}
-
 // Me is the user the credential belongs to, read once per credential:
-// Myself's last answer while every answer since came under the same read
-// of the credential, and a Myself otherwise. ForgetCredential and a
-// refused credential drop it, and an answer drawn under another read of
-// the credential (the transport read it again after a 401) retires it.
+// Myself's answer while the transport holds the credential read it was
+// drawn under (see cache), and a Myself otherwise. The transport reading
+// the credential again for any request, a sign-in check or a download
+// included, retires it, as do ForgetCredential and a refused credential.
 func (c *Client) Me(ctx context.Context) (User, error) {
 	if err := c.admit(ctx); err != nil {
 		return User{}, err
 	}
-	if s, ok := c.me.get(struct{}{}); ok && s.mark == c.lastMark() {
-		return s.user, nil
+	if u, ok := c.me.get(struct{}{}); ok {
+		return u, nil
 	}
 	return c.Myself(ctx)
 }
@@ -122,18 +113,19 @@ func (c *Client) User(ctx context.Context, accountID string) (User, error) {
 	}
 	epoch := c.users.epoch()
 	var u userJSON
-	if err := c.get(ctx, "user", url.Values{"accountId": {accountID}}, &u); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
+	if err != nil {
 		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
 	}
-	c.keepUsers(epoch, u.user())
+	c.keepUsers(epoch, resp.CredentialMark(), u.user())
 	return u.user(), nil
 }
 
-// keepUsers caches us under epoch.
-func (c *Client) keepUsers(epoch uint64, us ...User) {
+// keepUsers caches us under epoch, drawn under the credential read mark.
+func (c *Client) keepUsers(epoch uint64, mark trackerapi.CredentialMark, us ...User) {
 	for _, u := range us {
 		if u.AccountID != "" {
-			c.users.put(epoch, u.AccountID, u)
+			c.users.put(epoch, mark, u.AccountID, u)
 		}
 	}
 }
@@ -164,11 +156,12 @@ func (c *Client) userSearch(ctx context.Context, q url.Values, startAt, max int)
 	q.Set("maxResults", strconv.Itoa(max))
 	epoch := c.users.epoch()
 	var found []userJSON
-	if err := c.get(ctx, "user/search", q, &found); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user/search", Query: q}, &found)
+	if err != nil {
 		return nil, err
 	}
 	out := users(found)
-	c.keepUsers(epoch, out...)
+	c.keepUsers(epoch, resp.CredentialMark(), out...)
 	return out, nil
 }
 
@@ -223,11 +216,12 @@ func (c *Client) AssignableUsers(ctx context.Context, q AssignableQuery) ([]User
 	v.Set("maxResults", strconv.Itoa(pageSize(q.MaxResults, 50, maxUserSearch)))
 	epoch := c.users.epoch()
 	var found []userJSON
-	if err := c.get(ctx, "user/assignable/search", v, &found); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user/assignable/search", Query: v}, &found)
+	if err != nil {
 		return nil, fmt.Errorf("jira: assignable users: %w", err)
 	}
 	out := users(found)
-	c.keepUsers(epoch, out...)
+	c.keepUsers(epoch, resp.CredentialMark(), out...)
 	return out, nil
 }
 

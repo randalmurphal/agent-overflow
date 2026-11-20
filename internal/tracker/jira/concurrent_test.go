@@ -69,16 +69,20 @@ func TestConcurrentCalls(t *testing.T) {
 // guard before any work: nothing reaches the site, a cache hit included.
 func TestEveryCallPassesTheGuard(t *testing.T) {
 	f := jiratest.NewServer(t)
-	c := newTestClient(t, f)
+	c := signedIn(t, f)
 	ended, cancel := context.WithCancel(t.Context())
 	cancel()
-	closed := newTestClient(t, f)
+	closed := signedIn(t, f)
+	signIns := len(f.Requests())
 	for _, cl := range []*Client{c, closed} {
-		cl.users.put(cl.users.epoch(), "acc-user1", User{AccountID: "acc-user1", DisplayName: "User 1", Active: true})
-		cl.catalog.put(cl.catalog.epoch(), struct{}{}, newCatalog([]Field{{ID: "summary"}}))
-		cl.configs.put(cl.configs.epoch(), 3, BoardConfig{BoardID: 3})
-		cl.sprintLists.put(cl.sprintLists.epoch(), 3, SprintList{Complete: true})
-		cl.me.put(cl.me.epoch(), struct{}{}, signedIn{user: User{AccountID: "acc-user1"}})
+		mark := cl.api.CredentialMark()
+		cl.users.put(cl.users.epoch(), mark, "acc-user1", User{AccountID: "acc-user1", DisplayName: "User 1", Active: true})
+		cl.catalog.put(cl.catalog.epoch(), mark, struct{}{}, newCatalog([]Field{{ID: "summary"}}))
+		cl.configs.put(cl.configs.epoch(), mark, 3, BoardConfig{BoardID: 3})
+		cl.sprintLists.put(cl.sprintLists.epoch(), mark, 3, SprintList{Complete: true})
+		if _, ok := cl.configs.get(3); !ok {
+			t.Fatal("the cache refused a value of the credential read the client holds")
+		}
 	}
 	closed.Close()
 	// Calls a cache could answer.
@@ -137,7 +141,7 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 			}
 		}
 	}
-	if n := len(f.Requests()); n != 0 {
+	if n := len(f.Requests()) - signIns; n != 0 {
 		t.Errorf("%d requests reached the site: %v", n, f.Requests())
 	}
 }

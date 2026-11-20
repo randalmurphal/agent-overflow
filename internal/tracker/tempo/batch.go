@@ -146,7 +146,8 @@ func (c *Client) Delete(ctx context.Context, id int64) error {
 
 // Apply checks every op as Validate does (one IssueIDs.IDs call, and the
 // reads the checks need, for the whole batch), then sends the ops one at
-// a time in order and reports each one's outcome, in order. An op the
+// a time in order and reports each one's outcome, in order; an update
+// reads its worklog again just before its write (see Change). An op the
 // checks refuse, or that Tempo refuses, does not stop the others. An op
 // whose checks could not all run (Report.Err) is Refused and not sent;
 // the others are sent. An op whose outcome is unknown is not sent again.
@@ -194,6 +195,9 @@ func (c *Client) send(ctx context.Context, op Op, p *prepared) Outcome {
 		r = trackerapi.Request{Method: http.MethodPost, Path: "4/worklogs", Body: p.body}
 	case opUpdate:
 		what += " " + strconv.FormatInt(op.change.From.ID, 10)
+		if out, ok := c.unchanged(ctx, what, op.change.From); !ok {
+			return out
+		}
 		r = trackerapi.Request{Method: http.MethodPut, Path: path("4/worklogs", strconv.FormatInt(op.change.From.ID, 10)), Body: p.body}
 	case opDelete:
 		what += " " + strconv.FormatInt(op.id, 10)
@@ -218,6 +222,52 @@ func (c *Client) send(ctx context.Context, op Op, p *prepared) Outcome {
 		return Outcome{Status: Unknown, Err: fmt.Errorf("tempo: %s: read the stored worklog: %w", what, err)}
 	}
 	return stored.outcome(op, p)
+}
+
+// unchanged reads the worklog from names again, as the last request
+// before an update's write, and refuses the update (ok false) when the
+// record no longer holds what the write would carry from from: Tempo
+// replaces the whole record and takes no precondition, so a change made
+// since from was read, during the checks or an earlier op of the batch
+// included, would be overwritten. A failed read refuses it too, unsent.
+func (c *Client) unchanged(ctx context.Context, what string, from Worklog) (Outcome, bool) {
+	stored, err := c.worklog(ctx, from.ID)
+	if err != nil {
+		err = &trackerapi.NotSentError{Err: fmt.Errorf("tempo: %s: read it again before the write: %w", what, err)}
+		if ctx.Err() != nil || c.life.Err() != nil {
+			return Outcome{Status: NotAttempted, Err: err}, false
+		}
+		return Outcome{Status: Refused, Err: err}, false
+	}
+	if !sameRecord(from, stored) {
+		return refusedBefore(what, []Problem{{Field: FieldWorklog, Code: Changed, Message: fmt.Sprintf("worklog %d changed since it was read", from.ID)}}), false
+	}
+	return Outcome{}, true
+}
+
+// sameRecord reports a stored record that still holds what an update
+// built from from carries over (see Change.draft): its issue, author,
+// start, time spent, description and attributes, and its billable time
+// and start time when from has them, since a write leaves them out
+// otherwise.
+func sameRecord(from, stored Worklog) bool {
+	switch {
+	case from.Issue.ID != stored.Issue.ID, from.Author != stored.Author, from.Start.Date != stored.Start.Date,
+		from.Spent != stored.Spent, from.Description != stored.Description:
+		return false
+	case from.Start.Time != (TimeOfDay{}) && from.Start.Time != stored.Start.Time:
+		return false
+	case from.Billable != nil && (stored.Billable == nil || *from.Billable != *stored.Billable):
+		return false
+	case len(from.Attributes) != len(stored.Attributes):
+		return false
+	}
+	for _, a := range from.Attributes {
+		if !slices.Contains(stored.Attributes, a) {
+			return false
+		}
+	}
+	return true
 }
 
 // outcome is the result of a write Tempo stored as stored: Applied, or

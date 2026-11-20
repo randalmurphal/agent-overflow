@@ -18,6 +18,12 @@ const testToken = "fake-token-6Jq2"
 // newTestClient is a Client on f with a static credential.
 func newTestClient(t *testing.T, f *jiratest.Server) *Client {
 	t.Helper()
+	return testClient(t, f)
+}
+
+// testClient is newTestClient for any test or benchmark.
+func testClient(t testing.TB, f *jiratest.Server) *Client {
+	t.Helper()
 	c, err := New(Options{
 		BaseURL: f.URL(),
 		Version: "test",
@@ -28,6 +34,22 @@ func newTestClient(t *testing.T, f *jiratest.Server) *Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Close)
+	return c
+}
+
+// signedIn is a Client on f (a new server when nil) that has read its
+// credential and been answered once, so its transport holds a credential
+// read: the mark a cache keeps values under (see cache).
+func signedIn(t testing.TB, f *jiratest.Server) *Client {
+	t.Helper()
+	if f == nil {
+		f = jiratest.NewServer(t)
+	}
+	f.On("GET", myselfURL, jiratest.Reply(200, userOneJSON))
+	c := testClient(t, f)
+	if _, err := c.Myself(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	return c
 }
 

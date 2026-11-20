@@ -238,3 +238,35 @@ func TestBoardLocationIDIsAString(t *testing.T) {
 		t.Errorf("location id %s: %v", cfg.Location["id"], err)
 	}
 }
+
+// TestBulkFetchCapacity: a bulk fetch takes 1000 issues with explicit
+// plain fields and 100 otherwise, refusing more with a 400 (documented
+// and measured, see bulkFetchCapacity).
+func TestBulkFetchCapacity(t *testing.T) {
+	w := changeWorld(t)
+	keys := func(n int) string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "WEB-" + strconv.Itoa(i+1)
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, tc := range []struct {
+		n      int
+		fields string
+		status int
+	}{
+		{100, `null`, 200},
+		{101, `null`, 400},
+		{101, `["summary","comment"]`, 400},
+		{101, `["*navigable"]`, 400},
+		{1000, `["summary","status","labels"]`, 200},
+		{1001, `["summary"]`, 400},
+	} {
+		w.write(t, "POST", "/rest/api/3/issue/bulkfetch", `{"issueIdsOrKeys":`+keys(tc.n)+`,"fields":`+tc.fields+`}`, tc.status)
+	}
+}
