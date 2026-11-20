@@ -24,6 +24,8 @@ import { getTransportHelloFor } from './transportStatus.svelte';
 import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { userFacingError } from '../utils/userFacingError';
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { addErrorToast } from './toast.svelte';
 
 // The browser pane's state store. The pane surface itself is an empty host
@@ -589,12 +591,20 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   return read;
 }
 
-/** Reads the thread's state unless this connection knows it; never throws. */
+/**
+ * Reads the thread's state unless this connection knows it; never throws.
+ * A failure leaves the thread unknown for the next caller to read again; a
+ * lost connection is the connection banner's to show, and any other
+ * failure is reported as a diagnostic.
+ */
 export function hydrateBrowserCompanionState(threadId: string): void {
   if (!threadId) return;
   // Callers run this from $effect bodies, where an escaping throw tears
-  // down the component's effects; a failure is retried by the next caller.
-  readBrowserCompanionState(threadId).catch(() => {});
+  // down the component's effects.
+  readBrowserCompanionState(threadId).catch((err: unknown) => {
+    if (isPassiveConnectionFailure(err)) return;
+    reportFrontendDiagnostic('A browser state read failed', userFacingError(err));
+  });
 }
 
 /**

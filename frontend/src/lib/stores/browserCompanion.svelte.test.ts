@@ -33,6 +33,8 @@ import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { browserCompanionState, browserStateThreadsForTest } from './browserCompanion.svelte';
 import { refreshWatchedThreads, registerWatchedThreadSource } from './watchedThreads';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
+import { DisconnectedError } from '../transport/wsClient';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -318,12 +320,11 @@ describe('browser companion state routing', () => {
     it('keeps a newer zero-page frame that arrived during the hydrate read', async () => {
       let answer: (value: unknown) => void = () => {};
       setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
-      hydrateBrowserCompanionState('thread-browser');
+      const read = readBrowserCompanionState('thread-browser');
       applyBrowserCompanionState(closed(5));
       answer(open(4));
-      await vi.waitFor(() => expect(answer).toBeTruthy());
-      await Promise.resolve();
-      await Promise.resolve();
+      await read;
+      expect(browserThreadState('thread-browser')?.pages).toEqual([]);
       expect(companionForSource('main', 'browser')).toBeNull();
     });
 
@@ -417,6 +418,44 @@ describe('browser companion state routing', () => {
       expect(read).toHaveBeenCalledTimes(1);
       expect(browserThreadState('thread-browser')?.pages).toHaveLength(1);
       expect(browserThreadSnapshot('thread-browser')).toEqual({ status: 'unknown' });
+    });
+  });
+
+  describe('a failed hydrate read', () => {
+    const diagnostics = installDiagnosticsCapture();
+
+    it('is reported, and read again by the next caller', async () => {
+      const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => {
+        throw new Error('the browser host stopped');
+      }));
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(async () => expect(await diagnostics.all()).toEqual([
+        expect.objectContaining({ message: 'A browser state read failed', detail: expect.stringContaining('browser host stopped') }),
+      ]));
+      expect(browserThreadSnapshot('thread-browser')).toEqual({ status: 'unknown' });
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    });
+
+    it('reports an answer that carries no state for the thread', async () => {
+      setBindingMock('BrowserCompanionThreadState', async () => ({ kind: 'state', threadId: 'another-thread', pages: [] }));
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(async () => expect(await diagnostics.all()).toEqual([
+        expect.objectContaining({ message: 'A browser state read failed', detail: expect.stringContaining('no state for this conversation') }),
+      ]));
+    });
+
+    it('leaves a lost connection to the connection banner', async () => {
+      const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => {
+        throw new DisconnectedError();
+      }));
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(browserThreadSnapshot('thread-browser')).toEqual({ status: 'unknown' }));
+      // The read's failure has settled once a second caller reads again.
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+      expect(await diagnostics.all()).toEqual([]);
     });
   });
 
