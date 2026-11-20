@@ -105,8 +105,9 @@ func pageGoneLocked(d *hostedDownload, why string) downloadProgress {
 	return downloadProgress{ID: d.key.id, State: downloadPageGone, Error: why, Received: float64(d.received), Total: float64(d.total)}
 }
 
-// takeEnd answers whether the caller delivers d's received end, which
-// nobody else took.
+// takeEnd answers whether the caller, d's lane, delivers d's received end,
+// which nobody else took. The end it takes is owed to d's page (pageDebt)
+// until the caller, having delivered it, calls end.
 func (p *hostedPages) takeEnd(d *hostedDownload) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -114,6 +115,7 @@ func (p *hostedPages) takeEnd(d *hostedDownload) bool {
 		return false
 	}
 	d.ending = endTaken
+	p.oweLocked(d.key.page, 1)
 	return true
 }
 
@@ -215,11 +217,14 @@ func (p *hostedPages) pendingOpeners(page ids.PageHandle) []ids.PageHandle {
 	return openers
 }
 
-// end records d's end: it leaves its page's running downloads for its
-// ended ones, the oldest past maxHostedEndedDownloads forgotten.
+// end records that d's end, which its lane took (takeEnd), was delivered:
+// its page is owed that callback no longer, and d leaves its page's
+// running downloads for its ended ones, the oldest past
+// maxHostedEndedDownloads forgotten.
 func (p *hostedPages) end(d *hostedDownload) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.payLocked(d.key.page)
 	p.endLocked(d)
 }
 

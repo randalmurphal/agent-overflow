@@ -46,8 +46,6 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 // log ended) or, on an engine whose downloads are AO's, p's workspace
 // refuses the reservation, which the row then says.
 func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile) downloadAdmission {
-	authority := p.authority
-	source := downloadSource(p, event)
 	if m.downloadAdmitting != nil {
 		m.downloadAdmitting()
 	}
@@ -57,10 +55,26 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 		held.release()
 		return downloadRefused
 	}
+	note, admitted := m.listStart(p, held, event, file)
+	held.release()
+	m.publishDownloads(note)
+	if !admitted {
+		return downloadRefused
+	}
+	return downloadAdmitted
+}
+
+// listStart adds the row of the download starting with event to p's log,
+// which the caller holds and found admitting, with file, the file its
+// engine writes it into. It answers the note the caller publishes once it
+// let the log go, and whether the download was admitted: on an engine
+// whose downloads are AO's, a reservation p's workspace refuses lists the
+// row canceled, saying why.
+func (m *Manager) listStart(p *managedPage, held *downloadLogHold, event downloadStart, file downloadFile) (downloadNote, bool) {
 	entry := m.downloadEntry(event)
 	switch {
 	case m.downloadsToArtifacts():
-		reservation, err := m.reserveDownload(authority)
+		reservation, err := m.reserveDownload(p.authority)
 		if err != nil {
 			// Refused: its engine cancels it and removes its file.
 			if settleErr := entry.settle(downloadStateCanceled); settleErr != nil {
@@ -74,13 +88,8 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 	default:
 		entry.source = file
 	}
-	note := m.noteDownloadStartLocked(p, held.add(entry), source)
-	held.release()
-	m.publishDownloads(note)
-	if entry.State == downloadStateCanceled {
-		return downloadRefused
-	}
-	return downloadAdmitted
+	note := m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, event))
+	return note, entry.State != downloadStateCanceled
 }
 
 // boundedStart is event with its address, display data from here, bounded

@@ -124,6 +124,14 @@ func TestADownloadStartIsAdmittedRefusedOrUnownedOnEachPath(t *testing.T) {
 		wantAdmission(t, "a popup that went, with no opener listed", startPopupDownload(manager, engine, "orphaned", "b"), downloadUnowned)
 		authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 		wantAdmission(t, "a popup that went, past its opener's quota", startPopupDownload(manager, engine, "gone", "c", opener), downloadRefused)
+		// The refusal is a row in the opener's tab that says why, as a
+		// download starting in that tab past its quota is.
+		wantDownloads(t, manager, opener, "a in_progress 0", "c canceled 0")
+		for _, row := range listedPage(t, manager, opener).downloads.list() {
+			if row.ID == "c" && row.Error == "" {
+				t.Fatal("the refused download's row gives no reason")
+			}
+		}
 	})
 }
 

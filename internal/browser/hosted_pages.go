@@ -170,8 +170,9 @@ type hostedPageRecord struct {
 }
 
 // pageDebt is what the engine owes a page in callbacks: a retirement under
-// way, until its last callback returned (retire), and each received end
-// Stop took from the page's lane, until Stop delivered it (stopAll). It is
+// way, until its last callback returned (retire), each received end the
+// page's lane took, until the lane delivered it (takeEnd, end), and each
+// one Stop took from the lane, until Stop delivered it (stopAll). It is
 // the one record a close or discard of a page Stop forgot reads (receive),
 // so the discard succeeds only once every callback owed to the page
 // returned, and hears it was interrupted until then, whatever the page

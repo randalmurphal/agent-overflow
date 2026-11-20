@@ -240,46 +240,48 @@ func wantSettled(state settleOpener, point settlePoint) settledRow {
 }
 
 // The cross of the opener's state and the point the popup's download
-// settles at: 5 states and 5 points, but for a departure as the browser's
-// close lists the download, which that close's own departures already are
-// (24 rows).
+// settles at, on each way an engine saves downloads: 5 states and 5
+// points, but for a departure as the browser's close lists the download,
+// which that close's own departures already are (24 rows a mode).
 func TestAParkedDownloadSettlesInTheOneLogItsSettlementChose(t *testing.T) {
 	states := []settleOpener{openerLive, openerDeparting, openerCarries, openerLeftFirst, openerThreadClosed}
-	for _, point := range settlePoints {
-		for _, state := range states {
-			if point.closes && state == openerDeparting {
-				continue
-			}
-			t.Run(fmt.Sprintf("%s, %s", point.name, state), func(t *testing.T) {
-				manager, engine, access, opener := newAdoptionManager(t)
-				r := &settleRow{t: t, manager: manager, engine: engine, access: access, opener: opener, holder: listedPage(t, manager, opener), state: state}
-				point.run(r)
-				r.settled()
-				want := wantSettled(state, point)
-				var got settledRow
-				for _, row := range r.holder.downloads.list() {
-					if row.ID == "dl-1" {
-						got = settledRow{in: "opener", state: row.State, cause: row.Error, bytes: row.Bytes}
+	for _, mode := range downloadModes {
+		for _, point := range settlePoints {
+			for _, state := range states {
+				if point.closes && state == openerDeparting {
+					continue
+				}
+				t.Run(fmt.Sprintf("%s, %s, %s", mode.name, point.name, state), func(t *testing.T) {
+					manager, engine, access, opener := newAdoptionManagerSaving(t, mode.saving)
+					r := &settleRow{t: t, manager: manager, engine: engine, access: access, opener: opener, holder: listedPage(t, manager, opener), state: state}
+					point.run(r)
+					r.settled()
+					want := wantSettled(state, point)
+					var got settledRow
+					for _, row := range r.holder.downloads.list() {
+						if row.ID == "dl-1" {
+							got = settledRow{in: "opener", state: row.State, cause: row.Error, bytes: row.Bytes}
+						}
 					}
-				}
-				if got != want {
-					t.Fatalf("the download is listed as %+v, want %+v", got, want)
-				}
-				manager.parkMu.Lock()
-				parked := len(manager.parked)
-				manager.parkMu.Unlock()
-				if parked != 0 {
-					t.Fatalf("%d popups still park downloads", parked)
-				}
-				if state == openerThreadClosed || point.closes {
-					return
-				}
-				history := manager.CompanionState(access.Caller()).Downloads
-				listed := len(history) == 1 && history[0].State == want.state
-				if listed != (want.in != "") {
-					t.Fatalf("the thread's history is %+v, want the row %+v", history, want)
-				}
-			})
+					if got != want {
+						t.Fatalf("the download is listed as %+v, want %+v", got, want)
+					}
+					manager.parkMu.Lock()
+					parked := len(manager.parked)
+					manager.parkMu.Unlock()
+					if parked != 0 {
+						t.Fatalf("%d popups still park downloads", parked)
+					}
+					if state == openerThreadClosed || point.closes {
+						return
+					}
+					history := manager.CompanionState(access.Caller()).Downloads
+					listed := len(history) == 1 && history[0].State == want.state
+					if listed != (want.in != "") {
+						t.Fatalf("the thread's history is %+v, want the row %+v", history, want)
+					}
+				})
+			}
 		}
 	}
 }

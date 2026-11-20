@@ -20,8 +20,8 @@ import (
 
 // stopDebtState puts a page in a state as Stop takes over and answers the
 // page discarded; held is the callback the row holds, the one owed to
-// that page unless owes is false, which a retirement under way reaches
-// before Stop (early).
+// that page unless owes is false, which a retirement under way or the
+// page's own lane reaches before Stop (early).
 type stopDebtState struct {
 	name  string
 	owes  bool
@@ -41,6 +41,14 @@ func blockedCompletion(t *testing.T, engine *hostedEngine) {
 	awaitClosed(t, entered, "the completion's path conversion")
 }
 
+// deliveringCompletion has page1 report dl-1 running and then completed:
+// the completion is the received end page1's own lane takes and delivers.
+func deliveringCompletion(t *testing.T, engine *hostedEngine) {
+	t.Helper()
+	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-1", Seq: 1, State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\file.bin`, Received: 1, Total: 10})
+	sendDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-1", Seq: 2, State: webview2host.DownloadCompleted, Path: `C:\Users\dev\Downloads\file.bin`, Received: 10, Total: 10})
+}
+
 func isEnd(id downloadID, state downloadState) func(downloadProgress) bool {
 	return func(event downloadProgress) bool { return event.ID == id && event.State == state }
 }
@@ -54,6 +62,17 @@ var stopDebtStates = []stopDebtState{
 		blockedCompletion(t, engine)
 		if got := engine.pages.receive("page1", receivedClose()); got.outcome != receiptQueued {
 			t.Fatalf("the close behind the completion was %v", got.outcome)
+		}
+		return "page1"
+	}},
+	{"open, its lane delivering its completion", true, true, isEnd("dl-1", downloadCompleted), func(t *testing.T, engine *hostedEngine) ids.PageHandle {
+		deliveringCompletion(t, engine)
+		return "page1"
+	}},
+	{"closing, its close received behind its lane's delivery", true, true, isEnd("dl-1", downloadCompleted), func(t *testing.T, engine *hostedEngine) ids.PageHandle {
+		deliveringCompletion(t, engine)
+		if got := engine.pages.receive("page1", receivedClose()); got.outcome != receiptQueued {
+			t.Fatalf("the close behind the delivery was %v", got.outcome)
 		}
 		return "page1"
 	}},
@@ -105,7 +124,7 @@ func awaitForgotten(t *testing.T, engine *hostedEngine, page ids.PageHandle) {
 }
 
 // The cross of the page's state as Stop takes over and when its discard
-// comes: 5 states and 3 arrivals (15 rows).
+// comes: 7 states and 3 arrivals (21 rows).
 func TestADiscardSucceedsOnlyOnceEveryCallbackOwedToItsPageReturned(t *testing.T) {
 	for _, state := range stopDebtStates {
 		for _, arrival := range []stopDebtArrival{arrivesBeforeStop, arrivesDuringCallback, arrivesAfterCallback} {
