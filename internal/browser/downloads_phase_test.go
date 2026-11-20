@@ -65,6 +65,28 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 	}
 }
 
+// A publish settles the row it began from only while that row is being
+// published, and answers why not otherwise: no row, or a row in another
+// phase.
+func TestAPublishFindsOnlyItsPublishingRow(t *testing.T) {
+	log := &pageDownloadLog{}
+	held := log.hold()
+	defer held.release()
+	if _, err := held.publishing("dl"); !errors.Is(err, errDownloadPhase) {
+		t.Fatalf("a publish of a row not in the log answered %v", err)
+	}
+	entry := held.add(DownloadInfo{ID: "dl", State: downloadStateRunning})
+	if _, err := held.publishing("dl"); !errors.Is(err, errDownloadPhase) {
+		t.Fatalf("a publish of a running row answered %v", err)
+	}
+	if err := entry.advance(rowPublishing); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := held.publishing("dl"); err != nil || got != entry {
+		t.Fatalf("a publish of its publishing row answered %p, %v, want %p", got, err, entry)
+	}
+}
+
 // cancelCountingProfile records the cancels the Manager sends and answers each
 // as taken, without ending the download, as an engine whose end report
 // is still on the way.

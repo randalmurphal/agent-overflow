@@ -224,14 +224,10 @@ func (m *Manager) Downloads(ctx context.Context, access Access, opts DownloadOpt
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return waitDownloadPage(waitCtx, p, opts.After)
+		return p.downloads.settledAfter(waitCtx, opts.After)
 	default:
 		return nil, fmt.Errorf("browser: download action must be list or wait")
 	}
-}
-
-func waitDownloadPage(ctx context.Context, p *managedPage, after uint64) (DownloadInfo, error) {
-	return p.downloads.settledAfter(ctx, after)
 }
 
 func safeArtifactName(name, fallback string) string {

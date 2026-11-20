@@ -110,7 +110,7 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 		result.Navigated = true
 	}
 	if opts.ExpectDownload {
-		download, waitErr := waitDownloadPage(opCtx, p, downloadAfter)
+		download, waitErr := p.downloads.settledAfter(opCtx, downloadAfter)
 		if waitErr != nil {
 			return LocatorResult{}, waitErr
 		}

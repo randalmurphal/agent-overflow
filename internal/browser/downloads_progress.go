@@ -276,30 +276,28 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 	m.releaseStagedDownload(event.ID)
 
 	held = p.downloads.hold()
-	// A running entry is never trimmed, so it is still there.
-	entry = held.entry(event.ID)
-	if entry != nil {
-		// Its staged file is released, published or not.
-		entry.source = downloadFile{}
-		end := downloadStateCompleted
-		if err != nil {
-			end, entry.Error = downloadStateFailed, err.Error()
-		} else {
-			entry.Path, entry.file = path, file
-		}
-		if settleErr := entry.settle(end); settleErr != nil {
-			log.Printf("browser: %v", settleErr)
-		}
+	entry, lookupErr := held.publishing(event.ID)
+	if lookupErr != nil {
+		held.release()
+		m.endPublish()
+		log.Printf("browser: %v; its publish answered %q, %v", lookupErr, path, err)
+		return
 	}
-	var note downloadNote
-	if entry != nil {
-		note = m.noteDownloadLocked(p, entry)
+	// Its staged file is released, published or not.
+	entry.source = downloadFile{}
+	end := downloadStateCompleted
+	if err != nil {
+		end, entry.Error = downloadStateFailed, err.Error()
+	} else {
+		entry.Path, entry.file = path, file
 	}
+	if settleErr := entry.settle(end); settleErr != nil {
+		log.Printf("browser: %v", settleErr)
+	}
+	note := m.noteDownloadLocked(p, entry)
 	held.release()
 	m.endPublish()
-	if entry != nil {
-		m.publishDownloads(note)
-	}
+	m.publishDownloads(note)
 }
 
 // beginPublish and endPublish count the publishes in flight, which Close
