@@ -191,7 +191,7 @@ func (h *harnessHost) BrowserScroll(threadID, pageID string, x, y float64) error
 	return err
 }
 
-func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error) {
+func (h *harnessHost) BrowserScreenshot(threadID, pageID string) (_ []byte, err error) {
 	if h.app.browser.manager == nil {
 		return nil, errors.New("browser manager unavailable")
 	}
@@ -205,18 +205,25 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+	// The thread's companion is put back as it was; a step of that which
+	// fails is in the answer, beside the capture's own error.
 	defer func() {
+		var restoreErr error
 		if previous.Visible != nil && *previous.Visible {
 			visible := true
-			_, _ = manager.Visibility(context.Background(), access, &visible, appbrowser.PageID(previous.ActivePageID))
+			_, restoreErr = manager.Visibility(context.Background(), access, &visible, appbrowser.PageID(previous.ActivePageID))
 		} else {
 			if previous.ActivePageID != "" {
-				_ = manager.ActivateCompanionPage(context.Background(), access, appbrowser.PageID(previous.ActivePageID))
+				restoreErr = manager.ActivateCompanionPage(context.Background(), access, appbrowser.PageID(previous.ActivePageID))
 			}
 			visible := false
-			_, _ = manager.Visibility(context.Background(), access, &visible, "")
+			_, hideErr := manager.Visibility(context.Background(), access, &visible, "")
+			restoreErr = errors.Join(restoreErr, hideErr)
 		}
 		manager.DetachPane(appbrowser.MountID(mount.ID))
+		if restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore the thread's browser pane: %w", restoreErr))
+		}
 	}()
 	// A native page with no mounted UI pane is deliberately parked at 1x1.
 	// Give the diagnostic a deterministic CSS rect so its capture remains

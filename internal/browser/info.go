@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"log"
 
 	"agent-overflow/internal/browser/ids"
 )
@@ -274,6 +275,11 @@ func (m *Manager) refreshHistoryState(p *managedPage, stamp uint64) {
 	defer cancel()
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
+		// A page that closed meanwhile has nothing to show; any other
+		// failure leaves Back and Forward as the last read had them.
+		if p.ctx.Err() == nil {
+			log.Printf("browser: read the history of page %s: %v", p.id, err)
+		}
 		return
 	}
 	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, stamp)

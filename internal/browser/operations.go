@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -355,9 +356,11 @@ func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (Page
 
 // refreshPageAfterOperation is finishPageOperation with no answer.
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
-	// A failed read leaves the tab as it was; the operation's own result
-	// reports its outcome.
-	_, _, _ = m.readInfo(ctx, p, pageListing{})
+	// A failed read leaves the tab as it was and is logged; the operation's
+	// own result reports its outcome.
+	if _, _, err := m.readInfo(ctx, p, pageListing{}); err != nil && p.ctx.Err() == nil {
+		log.Printf("browser: refresh page %s after an operation: %v", p.id, err)
+	}
 	m.pageUsed(p)
 }
 
