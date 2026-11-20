@@ -175,14 +175,6 @@ func (p *fakePage) commitDocumentLate() (deliver func()) {
 	return func() {}
 }
 
-// SameDocumentNavigation changes the address the way history.pushState
-// does: no new document. A test seam.
-func (p *fakePage) SameDocumentNavigation(rawURL string) {
-	p.mu.Lock()
-	p.url, p.title = rawURL, fakeTitle(rawURL)
-	p.mu.Unlock()
-}
-
 func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -400,16 +392,6 @@ func (p *fakePage) SetViewport(_ context.Context, width, height int) error {
 		hook(width, height)
 	}
 	return err
-}
-
-func (p *fakePage) lastViewport() (int, int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.viewports) == 0 {
-		return 0, 0
-	}
-	last := p.viewports[len(p.viewports)-1]
-	return last[0], last[1]
 }
 
 func (p *fakePage) AssetInventory(context.Context) (pageAssets, error) {

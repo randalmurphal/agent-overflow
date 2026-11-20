@@ -76,7 +76,7 @@ type wkProfile struct {
 	engine *wkEngine
 	id     uint64
 	handle profileHandle
-	// store is this workspace's WKWebsiteDataStore. It survives a restart only
+	// store is this jar's WKWebsiteDataStore. It survives a restart only
 	// on macOS 14+ with the site-data setting on: WebKit offers no
 	// per-identifier persistent store below that, and an in-memory one is the
 	// only honest answer there.

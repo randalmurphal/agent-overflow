@@ -23,7 +23,7 @@ import (
 // in-process engine: WebKitGTK on Linux, WKWebView on macOS. They open a
 // window, so they run only when asked:
 //
-//	AO_NATIVE_BROWSER_SMOKE=1 go test ./internal/browser -run TestNativeEngineReal -count=1
+//	AO_NATIVE_BROWSER_SMOKE=1 make go-test GO_TEST_PKGS=./internal/browser GO_TEST_FLAGS='-run TestNativeEngineReal -count=1'
 //
 // On Linux the run starts its own headless weston and runs inside it. A
 // window on the session display, the only place macOS has for one, needs

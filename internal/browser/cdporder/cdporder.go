@@ -9,7 +9,7 @@
 // methods describe together (a frame's load starting and stopping, a frame
 // attaching and the frame tree read at the page's attach) needs the
 // browser's order. The connection's Transport sees every message before
-// chromedp demultiplexes it, so this package wraps it (Allocator) and
+// chromedp demultiplexes it, so this package wraps it (allocator) and
 // copies each watched message, as it is read, to the queue of the session
 // that watches it (Watch). A watched command's reply is queued at its
 // place too, so a snapshot read at a session's start sits between the
@@ -57,14 +57,14 @@ func (m Message) Decode(out any) error {
 	return jsonv2.Unmarshal(m.Params, out, chromedp.DefaultUnmarshalOptions)
 }
 
-// ErrUnordered is Watch's answer for a context whose browser was not
-// connected through an Allocator of this package.
-var ErrUnordered = errors.New("cdporder: the browser connection gives no ordered input")
+// errUnordered is Watch's answer for a context whose browser was not
+// connected through an allocator of this package.
+var errUnordered = errors.New("cdporder: the browser connection gives no ordered input")
 
-// Allocator connects to a running browser at a websocket address, as
+// allocator connects to a running browser at a websocket address, as
 // remote.NewAllocator with remote.NoModifyURL does, through a connection
 // that feeds Watch.
-type Allocator struct {
+type allocator struct {
 	wsURL string
 	wg    sync.WaitGroup
 	mu    sync.Mutex
@@ -72,18 +72,18 @@ type Allocator struct {
 }
 
 var (
-	_ chromedp.Allocator = (*Allocator)(nil)
-	_ chromedp.Attacher  = (*Allocator)(nil)
+	_ chromedp.Allocator = (*allocator)(nil)
+	_ chromedp.Attacher  = (*allocator)(nil)
 )
 
 // NewAllocator answers an allocator context for the browser at wsURL, a
 // "ws://host:port/devtools/browser/..." address, for chromedp.NewContext.
 func NewAllocator(parent context.Context, wsURL string) (context.Context, context.CancelFunc) {
-	return chromedp.NewAllocatorContext(parent, &Allocator{wsURL: wsURL, taps: make(map[*chromedp.Browser]*Tap)})
+	return chromedp.NewAllocatorContext(parent, &allocator{wsURL: wsURL, taps: make(map[*chromedp.Browser]*Tap)})
 }
 
 // Allocate dials the browser and connects chromedp through a Tap.
-func (a *Allocator) Allocate(ctx context.Context, opts ...chromedp.BrowserOption) (*chromedp.Browser, error) {
+func (a *allocator) Allocate(ctx context.Context, opts ...chromedp.BrowserOption) (*chromedp.Browser, error) {
 	if chromedp.FromContext(ctx) == nil {
 		return nil, chromedp.ErrInvalidContext
 	}
@@ -122,12 +122,12 @@ func (a *Allocator) Allocate(ctx context.Context, opts ...chromedp.BrowserOption
 }
 
 // Wait blocks until the allocator's connections are released.
-func (a *Allocator) Wait() { a.wg.Wait() }
+func (a *allocator) Wait() { a.wg.Wait() }
 
 // Attaches says the allocator connects to a browser already running.
-func (a *Allocator) Attaches() bool { return true }
+func (a *allocator) Attaches() bool { return true }
 
-func (a *Allocator) tap(browser *chromedp.Browser) *Tap {
+func (a *allocator) tap(browser *chromedp.Browser) *Tap {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.taps[browser]
@@ -142,13 +142,13 @@ func Watch(ctx context.Context, methods []string, handle func(Message)) error {
 	if c == nil || c.Target == nil {
 		return chromedp.ErrInvalidContext
 	}
-	a, ok := c.Allocator.(*Allocator)
+	a, ok := c.Allocator.(*allocator)
 	if !ok {
-		return ErrUnordered
+		return errUnordered
 	}
 	tap := a.tap(c.Browser)
 	if tap == nil {
-		return ErrUnordered
+		return errUnordered
 	}
 	stop := tap.Watch(c.Target.SessionID, methods, handle)
 	context.AfterFunc(ctx, stop)
@@ -167,13 +167,13 @@ func WatchBrowser(ctx context.Context, methods []string, handle func(Message)) e
 	if c.Browser == nil {
 		return ErrNotConnected
 	}
-	a, ok := c.Allocator.(*Allocator)
+	a, ok := c.Allocator.(*allocator)
 	if !ok {
-		return ErrUnordered
+		return errUnordered
 	}
 	tap := a.tap(c.Browser)
 	if tap == nil {
-		return ErrUnordered
+		return errUnordered
 	}
 	// The browser-level session sends its messages with no session id.
 	stop := tap.Watch("", methods, handle)

@@ -58,7 +58,7 @@ func TestAHistoryCommitDuringASuspendReadKeepsTheAddressItRead(t *testing.T) {
 	// B, whose report is still on its way.
 	refresh := p.readStamp()
 	const b = "https://example.test/b"
-	fake.SameDocumentNavigation(b)
+	fake.sameDocumentNavigation(b)
 	var calls atomic.Int32
 	manager.infoRead = func(*managedPage) {
 		if calls.Add(1) == 1 {

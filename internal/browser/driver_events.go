@@ -225,7 +225,7 @@ type engineEvents struct {
 	// focus. A bare Escape is always the page's; press is what the engine
 	// knows of it besides the chord. It runs on the engine's UI thread, so
 	// the answer must be a set lookup and nothing that waits.
-	KeyChord func(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool
+	KeyChord func(handle ids.PageHandle, pressed keybindings.Accelerator, press keyPress) bool
 	// PageFocusReported reports how a focus the host was asked for
 	// (paneHost.FocusPage) ended after FocusPage answered, which only the
 	// hosted engine does: the launcher moves focus after the directive.
@@ -234,13 +234,13 @@ type engineEvents struct {
 	PageFocusReported func(handle ids.PageHandle, mount MountID, intent uint64, err error)
 }
 
-// KeyPress is what an in-process engine gathers about a key press besides
+// keyPress is what an in-process engine gathers about a key press besides
 // its chord, for the Manager's decision on a bare Escape
 // (pageEscapeAnnounced): Repeat is the OS's auto-repeat flag (WKWebView),
 // Held is the engine's own record that the key went down before without its
 // release (WebKitGTK, whose GTK 4 reports no repeat), and Composing is
 // whether the page's input method has a composition in progress, which the
 // Escape cancels.
-type KeyPress struct {
+type keyPress struct {
 	Repeat, Held, Composing bool
 }

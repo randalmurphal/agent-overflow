@@ -31,8 +31,9 @@ import (
 
 // newNativeEngine answers a WebKitGTK engine only when the caller supplied a
 // desktop window to host views inside. The same Linux binary also runs with no
-// window at all — `--connect`, the harness, `go test` — and those keep managed
-// Chrome, which is why this is a capability answer and never a GOOS check.
+// window at all (`--connect`, the harness, `go test`), and selectEngine gives
+// those the headless engine when serve boot asks for it and no engine
+// otherwise, which is why this is a capability answer and never a GOOS check.
 func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents) browserEngine {
 	if opts.NativeWindow == nil {
 		return nil

@@ -14,7 +14,7 @@ var pageEscape = keybindings.Accelerator{Key: "escape"}
 // pageEscapeAnnounced decides whether a key pressed in a page is announced
 // as the page's Escape: a bare Escape, newly pressed (not repeating, not
 // held), that no input method composition takes to cancel itself.
-func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
+func pageEscapeAnnounced(pressed keybindings.Accelerator, press keyPress) bool {
 	return pressed == pageEscape && !press.Repeat && !press.Held && !press.Composing
 }
 
@@ -30,7 +30,7 @@ func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
 // the keys typed next must reach that, not the page. So every claim hands
 // focus to the app (engineAppFocus) before it returns; a chord AO does not
 // claim leaves focus in the page.
-func (m *Manager) keyChord(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool {
+func (m *Manager) keyChord(handle ids.PageHandle, pressed keybindings.Accelerator, press keyPress) bool {
 	if pressed == pageEscape {
 		if pageEscapeAnnounced(pressed, press) {
 			go m.emitEscape(handle)

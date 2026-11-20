@@ -16,7 +16,7 @@ import (
 // An engine owns only how an operation is carried out against a live page.
 //
 // Three interfaces, one per lifetime: `browserEngine` is the process/profile
-// factory, `engineProfile` is one workspace's isolated site data, and
+// factory, `engineProfile` is one cookie jar's isolated site data, and
 // `pageDriver` is one page's tool-operation surface. Adding an engine
 // (spec: docs/specs/embedded-browser.md §6) means implementing these and
 // nothing else; no policy may migrate across the seam in either direction.
@@ -116,7 +116,7 @@ type engineAccelerators interface {
 // URL pasted into the companion address bar — is in the RENDERER's form,
 // and authorizing it against backend workspace paths without translating
 // first fails closed: the interceptor blocks the very navigation OpenFile
-// just authorized (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+// just authorized (ERR_BLOCKED_BY_CLIENT).
 // BackendFilePath is that inverse; a URL naming a filesystem the backend
 // cannot reach (a foreign UNC host) is an error, which callers treat as
 // "not authorized".

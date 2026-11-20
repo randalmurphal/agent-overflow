@@ -67,7 +67,6 @@ type wkPage struct {
 
 	mu           sync.Mutex
 	closed       bool
-	lastURL      string
 	lastActivity time.Time
 	// findQuery is the running find's query, which a step searches again.
 	findQuery string
@@ -128,11 +127,10 @@ func (p *wkPage) Close() {
 	wkCloseView(p.view)
 }
 
-// noteLoad records what the engine last told us about this page. It is the
+// noteLoad records that the page reported its address or title now. It is the
 // bookkeeping half of the network-idle answer, and it runs on the main thread.
-func (p *wkPage) noteLoad(url string) {
+func (p *wkPage) noteLoad() {
 	p.mu.Lock()
-	p.lastURL = url
 	p.lastActivity = time.Now()
 	p.mu.Unlock()
 }

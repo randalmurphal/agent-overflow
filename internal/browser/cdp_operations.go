@@ -229,8 +229,8 @@ func (p *cdpPage) ReadOnlyCaveat() string { return "" }
 // factor is 0 (the display's own), so a presented page rasters at native
 // DPI; screenshots normalize to one image pixel per CSS pixel themselves.
 // The controller's window size is irrelevant to layout and capture under
-// the override (spike 2026-09-14), which is what lets a hidden page keep a
-// real viewport inside a 1x1 clip.
+// the override, which is what lets a hidden page keep a real viewport
+// inside a 1x1 clip.
 func (p *cdpPage) SetViewport(ctx context.Context, width, height int) error {
 	p.metricsMu.Lock()
 	defer p.metricsMu.Unlock()

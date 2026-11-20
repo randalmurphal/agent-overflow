@@ -203,7 +203,7 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	if page == nil {
 		return
 	}
-	page.noteLoad(location)
+	page.noteLoad()
 	if page.hooks.Info == nil {
 		return
 	}
@@ -251,7 +251,7 @@ func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, he
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Held: held != 0, Composing: composing != 0}) {
+	if page.engine.events.KeyChord(page.handle, pressed, keyPress{Held: held != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
@@ -833,11 +833,11 @@ func (p *webkitPage) terminateWebProcess() error {
 // onKeyPress has every KeyChord question of the page's engine reported to
 // seen before it is answered, until the returned restore runs. It swaps the
 // hook on the GTK thread, which is the only reader. For the native smoke.
-func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (restore func() error, err error) {
-	var orig func(ids.PageHandle, keybindings.Accelerator, KeyPress) bool
+func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, keyPress)) (restore func() error, err error) {
+	var orig func(ids.PageHandle, keybindings.Accelerator, keyPress) bool
 	err = p.liveView().do(func(unsafe.Pointer) {
 		orig = p.engine.events.KeyChord
-		p.engine.events.KeyChord = func(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool {
+		p.engine.events.KeyChord = func(handle ids.PageHandle, pressed keybindings.Accelerator, press keyPress) bool {
 			seen(pressed, press)
 			return orig(handle, pressed, press)
 		}

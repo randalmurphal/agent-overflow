@@ -159,8 +159,8 @@ func dialCDPBrowser(browserCtx context.Context, subscribe func() error) error {
 // the placeholder title the browser holds before the document has one (the
 // address without its scheme), and nothing when the document then sets its
 // title, whether its <title> is parsed or a script assigns document.title.
-// Both WebView2 and headless Chromium behave so (observed 2026-11-16), and
-// the Page domain has no title event. So each document reports its own:
+// Both WebView2 and headless Chromium behave so, and the Page domain has
+// no title event. So each document reports its own:
 // a watcher installed in an isolated world of every new document sends
 // [location.href, document.title] through a binding exposed only to that
 // world, deduplicated and at most once per documentTitleIntervalMs. A

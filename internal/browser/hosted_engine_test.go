@@ -1345,7 +1345,7 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 	set := keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}
 	var chords []keybindings.Accelerator
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		KeyChord: func(handle ids.PageHandle, pressed keybindings.Accelerator, _ KeyPress) bool {
+		KeyChord: func(handle ids.PageHandle, pressed keybindings.Accelerator, _ keyPress) bool {
 			if handle != "page1" {
 				t.Errorf("KeyChord for %q, want page1", handle)
 			}

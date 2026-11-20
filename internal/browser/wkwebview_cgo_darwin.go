@@ -224,7 +224,7 @@ func aoWKVPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	if page == nil {
 		return
 	}
-	page.noteLoad(location)
+	page.noteLoad()
 	if page.hooks.Info == nil {
 		return
 	}
@@ -271,7 +271,7 @@ func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repea
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Repeat: repeat != 0, Composing: composing != 0}) {
+	if page.engine.events.KeyChord(page.handle, pressed, keyPress{Repeat: repeat != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0

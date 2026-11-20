@@ -38,7 +38,6 @@ extern void aoWKVFindDone(uint64_t call_id, int found);
 // The download states aoWKVDownloadFinished maps onto the Go seam's
 // (driver_events.go): canceled is the completion of AO's cancel, and failed
 // didFailWithError, which WebKit never sends for a cancel it was asked for.
-#define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1
 #define AO_DL_CANCELED 2
 #define AO_DL_FAILED 3
@@ -275,10 +274,9 @@ void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int 
 // shared between them (one container, one "the presented view" pointer) would
 // let the second pane move or hide the first.
 //
-// This is the WKWebView analogue of the Linux 1x1 clipping GtkScrolledWindow.
-// An off-window WKWebView is the trap it avoids: WebKit only guarantees layout
-// and snapshots for a view that is IN a window, so hidden pages stay in the
-// window and are clipped away instead of being unparented.
+// Parking keeps every hidden page in the window: WebKit only guarantees layout
+// and snapshots for a view that is IN a window, so a hidden page is clipped
+// away inside the 1x1 park view instead of being unparented.
 // ---------------------------------------------------------------------------
 
 static NSView *ao_host = nil;
@@ -856,10 +854,11 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   WKWebView *popup = [[AOWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                         configuration:configuration];
   // The popup starts loading as soon as this returns, before the Manager can
-  // adopt it, so every navigation in it is checked from the first one. It
-  // carries its opener's page, profile and download directory: the opener's
-  // policy answers until adoption, and a download it starts before then
-  // reaches the Go side, which refuses one outside every page. The UI
+  // adopt it, so every navigation in it is checked from the first one. It is
+  // stamped with its opener's page id and profile id: the opener's policy
+  // answers its requests until adoption, and a download it starts before then
+  // reaches the Go side naming the popup by its popup number, which the
+  // Manager parks until the popup's fate lists it. The UI
   // delegate is set now too: a popup can open its own as its first document
   // parses, before adoption, and names this view by its popup number until
   // then. Its dialogs and pickers are refused while it has no page id
@@ -1565,7 +1564,7 @@ static void ao_snapshot_deliver(uint64_t call_id, NSImage *image, int width, int
   }
   // No CTM flip: CGContextDrawImage into a bitmap context already writes the
   // image top-down (row 0 is the top row), which is what webkitimage.go and the
-  // clip math expect. Flipping here inverted every screenshot (2026-08-31).
+  // clip math expect; a flip here would invert every screenshot.
   CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height), cg);
   CGContextRelease(ctx);
   aoWKVSnapshotDone(call_id, pixels, width, height, (int)stride, NULL);

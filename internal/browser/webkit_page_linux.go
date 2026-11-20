@@ -61,7 +61,6 @@ type webkitPage struct {
 
 	mu           sync.Mutex
 	closed       bool
-	lastURL      string
 	lastActivity time.Time
 	// findCount is the last search's answer, which its steps report.
 	findCount findResult
@@ -114,11 +113,10 @@ func (p *webkitPage) Close() {
 	webkitCloseView(p.view)
 }
 
-// noteLoad records what the engine last told us about this page. It is the
+// noteLoad records that the page reported its address or title now. It is the
 // bookkeeping half of the network-idle answer, and it runs on the GTK thread.
-func (p *webkitPage) noteLoad(url string) {
+func (p *webkitPage) noteLoad() {
 	p.mu.Lock()
-	p.lastURL = url
 	p.lastActivity = time.Now()
 	p.mu.Unlock()
 }
