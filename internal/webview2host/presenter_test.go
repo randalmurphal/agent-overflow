@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -204,8 +205,8 @@ var (
 
 // placedAt is the placement of a page both of whose writes to b succeeded.
 func placedAt(b paneBounds) appliedPlacement {
-	moved := func() error { return nil }
-	placed, err := commitPlacement(b, clippedBy(writeNative(moved)), writeNative(moved))
+	moved := func(rect) error { return nil }
+	placed, err := placePage(b, 1, 1, pageWrites{clip: moved, controller: moved})
 	if err != nil {
 		panic(err)
 	}
@@ -479,45 +480,87 @@ func TestNextPresentStepMovesBeforeShowingAndNeverMovesHidden(t *testing.T) {
 	}
 }
 
-// A placement exists only when every write the page needs ran and
-// succeeded: its controller's, and its clip container's where it has one.
-// No write, a failed one, or a clip neither parented nor written leaves
-// no known place.
-func TestAPlacementIsCommittedOnlyByEveryWrite(t *testing.T) {
-	at := paneBounds{X: 4, W: 10, H: 10}
+// A placement exists only when every write the page needs succeeded: its
+// controller's, and its clip container's first where it has one, each
+// written with b's own layout. A refused write leaves no known place, and a
+// refused clip leaves the controller unwritten.
+func TestAPlacementIsMadeOnlyByItsOwnWrites(t *testing.T) {
+	at := paneBounds{X: 4, Y: 6, W: 10, H: 12, CX: 5, CY: 6, CW: 8, CH: 12}
+	layout := resolvePaneLayout(at, 2, 2)
+	hostRelative := rect{
+		Left: layout.Container.Left + layout.Controller.Left, Top: layout.Container.Top + layout.Controller.Top,
+		Right: layout.Container.Left + layout.Controller.Right, Bottom: layout.Container.Top + layout.Controller.Bottom,
+	}
 	failed := errors.New("SetWindowPos")
-	ok := writeNative(func() error { return nil })
-	refused := writeNative(func() error { return failed })
 	for _, tc := range []struct {
-		name       string
-		clip       clipWrite
-		controller nativeWrite
-		known      bool
-		err        error
+		name                     string
+		clipped                  bool
+		clipErr, controllerErr   error
+		known                    bool
+		wantClip, wantController []rect
 	}{
-		{"parented, controller moved", directlyParented(), ok, true, nil},
-		{"clipped, both moved", clippedBy(ok), ok, true, nil},
-		{"parented, controller refused", directlyParented(), refused, false, failed},
-		{"clipped, clip refused", clippedBy(refused), nativeWrite{}, false, failed},
-		{"clipped, controller refused", clippedBy(ok), refused, false, failed},
-		{"parented, controller not written", directlyParented(), nativeWrite{}, false, nil},
-		{"clipped, controller not written", clippedBy(ok), nativeWrite{}, false, nil},
-		{"clipped, clip not written", clippedBy(nativeWrite{}), ok, false, nil},
-		{"no clip at all", clipWrite{}, ok, false, nil},
+		{"parented, controller moved", false, nil, nil, true, nil, []rect{hostRelative}},
+		{"clipped, both moved", true, nil, nil, true, []rect{layout.Container}, []rect{layout.Controller}},
+		{"parented, controller refused", false, nil, failed, false, nil, []rect{hostRelative}},
+		{"clipped, clip refused", true, failed, nil, false, []rect{layout.Container}, nil},
+		{"clipped, controller refused", true, nil, failed, false, []rect{layout.Container}, []rect{layout.Controller}},
 	} {
-		placed, err := commitPlacement(at, tc.clip, tc.controller)
+		var clipped, controlled []rect
+		writes := pageWrites{controller: func(r rect) error { controlled = append(controlled, r); return tc.controllerErr }}
+		if tc.clipped {
+			writes.clip = func(r rect) error { clipped = append(clipped, r); return tc.clipErr }
+		}
+		placed, err := placePage(at, 2, 2, writes)
+		if !slices.Equal(clipped, tc.wantClip) || !slices.Equal(controlled, tc.wantController) {
+			t.Errorf("%s: wrote clip %+v and controller %+v, want %+v and %+v", tc.name, clipped, controlled, tc.wantClip, tc.wantController)
+		}
 		if tc.known {
 			if err != nil || !placed.at(at) {
 				t.Errorf("%s: %+v, %v, want placed at %+v", tc.name, placed, err, at)
 			}
 			continue
 		}
-		if err == nil || placed.known || placed.at(at) || (tc.err != nil && !errors.Is(err, tc.err)) {
-			t.Errorf("%s: %+v, %v, want no known place and an error", tc.name, placed, err)
+		if !errors.Is(err, failed) || placed.known || placed.at(at) {
+			t.Errorf("%s: %+v, %v, want no known place and the write's error", tc.name, placed, err)
 		}
 	}
 	if (appliedPlacement{}).at(paneBounds{}) {
 		t.Fatal("no known place is at the zero bounds")
+	}
+}
+
+// A page whose move and fallback hide both failed stays shown at no known
+// place, its focus intent pending. The move that places it again asks for
+// that focus, as a show does; a move between known places, a hide, and a
+// page left hidden do not.
+func TestAPlacementRestoredOnAShownPageAsksForItsPendingFocus(t *testing.T) {
+	at := paneView{bounds: paneBounds{X: 1, W: 10, H: 10}, hasBounds: true, visible: true}
+	elsewhere := paneView{bounds: paneBounds{X: 2, W: 10, H: 10}, hasBounds: true, visible: true}
+	for _, tc := range []struct {
+		name  string
+		shown shownView
+		want  paneView
+		focus bool
+	}{
+		{"placed again while shown", shownView{visible: true}, at, true},
+		{"shown at no known place", shownView{}, at, true},
+		{"shown where it stands", shownView{placement: placedAt(at.bounds)}, at, true},
+		{"moved between known places", shownView{placement: placedAt(at.bounds), visible: true}, elsewhere, false},
+		{"unchanged", shownView{placement: placedAt(at.bounds), visible: true}, at, false},
+		{"hidden", shownView{placement: placedAt(at.bounds), visible: true}, paneView{}, false},
+		{"left hidden", shownView{}, paneView{bounds: at.bounds, hasBounds: true}, false},
+	} {
+		step := nextPresentStep(tc.shown, tc.want, false)
+		if step.focus != tc.focus {
+			t.Errorf("%s: %+v, want focus %v", tc.name, step, tc.focus)
+		}
+		if !step.focus {
+			continue
+		}
+		// Once the step's native calls succeeded, the intent applies.
+		if got := focusDecision(applied(tc.shown, step), true, func() bool { return true }); got != focusMove {
+			t.Errorf("%s: after the step the focus decision is %v", tc.name, got)
+		}
 	}
 }
 
