@@ -415,6 +415,7 @@ type wkPendingDownload struct {
 func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stageErr error) {
 	start := p.downloadStart(wkLookupPage(download.page), download.popup)
 	start.ID, start.URL, start.SuggestedName = download.handle, download.url, download.name
+	start.EndReported = p.ends.endReported(download.handle)
 	handle := download.handle
 	if stageErr == nil && p.isDisposed() {
 		stageErr = errStagedProfileClosed
@@ -470,11 +471,15 @@ func aoWKVDownloadFinished(downloadID C.uint64_t, received C.double, state C.int
 	case 3:
 		progress.State = downloadFailed
 	}
+	// The end is the Manager's to settle from here, also for a page that
+	// leaves before it is delivered (downloadStart.EndReported).
+	profile.ends.received(handle)
 	// Both halves go off the main thread, after the start (downloadEvents):
 	// releasing the download dispatches BACK to the main thread, which would
 	// queue behind the delegate this export is running inside, and routing
 	// the event takes Manager locks.
 	profile.engine.downloadEvents.Go(func() {
+		defer profile.ends.reported(handle)
 		profile.releaseDownload(handle)
 		profile.engine.events.DownloadProgress(progress)
 	})
@@ -897,11 +902,12 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 // wkCancelDownload cancels p's download id on the main thread
 // (withDownloadOnUI), where a released download is let go after it leaves
 // p.downloads (releaseDownload), so the one it finds is still held through
-// the cancel.
+// the cancel. One whose end WebKit reported there (p.ends) has ended, its
+// release still queued, and is not canceled.
 func wkCancelDownload(p *wkProfile, id downloadID) nativeCancel {
 	found := false
 	if uiThread.Run(func() {
-		found = withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wkv_download_cancel(download) })
+		found = !p.ends.pending(id) && withDownloadOnUI(p, id, func(download unsafe.Pointer) { C.ao_wkv_download_cancel(download) })
 	}) == uicall.Withdrawn {
 		return nativeCancelWithdrawn
 	}

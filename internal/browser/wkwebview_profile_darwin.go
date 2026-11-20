@@ -90,6 +90,8 @@ type wkProfile struct {
 	// held on the main thread as WebKit hands it over, taken there once by
 	// its completion or by Dispose.
 	destinations *destination.Decisions[downloadID, wkPendingDownload]
+	// ends are the downloads whose end was received and is being reported.
+	ends nativeEnds
 
 	mu        sync.Mutex
 	disposed  bool

@@ -98,6 +98,8 @@ type webkitProfile struct {
 	// held on the GTK thread as WebKit hands it over, taken there once by
 	// its completion or by Dispose.
 	destinations *destination.Decisions[downloadID, webkitPendingDownload]
+	// ends are the downloads whose end was received and is being reported.
+	ends nativeEnds
 
 	mu        sync.Mutex
 	disposed  bool
