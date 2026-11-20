@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -15,15 +16,18 @@ import (
 )
 
 // Where a download the engine received lists, against every Manager action
-// that can come before the engine processed what it received: a download
+// and every point the engine can process what it received at: a download
 // belongs, from its receipt, to the page that will list it, and is listed
 // there as its reports say whatever leaves first. Each row puts a page in
 // a state, has the launcher report a download of it, holds the processing
 // of what was received, lets the state end (the page's listing, or its
-// popup's close), acts, and then lets the processing go; it asserts the
-// download's one settlement: the thread whose history holds it, its state,
-// its cause, its bytes received and total, whether it is openable, and
-// whether a file action finds its file.
+// popup's close), acts, and lets the processing go at the row's timing:
+// before the listing, between the listing and the action, after the
+// action, or, for a popup whose close was received, once its engine page
+// retired and before the Manager settled it. It asserts the download's one
+// settlement: the thread whose history holds it, its state, its cause, its
+// bytes received and total, whether it is openable, and whether a file
+// action finds its file.
 
 // receiptDownloadName is the downloaded file's name: a type a tab shows,
 // so a finished one is openable.
@@ -44,11 +48,68 @@ type receiptPage struct {
 
 // receiptState puts a fresh launcher's page in a state; listing is set
 // for a page being created or restored, whose listing a close can come
-// before.
+// before; timings are the points its row's processing goes at.
 type receiptState struct {
 	name    string
 	listing bool
+	timings []receiptTiming
 	open    func(t *testing.T, l *popupLauncher, access Access) *receiptPage
+}
+
+// receiptTiming is when a row's held processing goes, against the state's
+// end (its listing) and the action.
+type receiptTiming int
+
+const (
+	// processedBeforeListing: before the page's listing, or before the
+	// close of a tab being created or restored.
+	processedBeforeListing receiptTiming = iota + 1
+	// processedBeforeAction: after the listing, before the action.
+	processedBeforeAction
+	// processedAfterAction: after the action.
+	processedAfterAction
+	// processedBeforeSettling: a popup whose close was received retires in
+	// its engine before the action, and the Manager settles it after.
+	processedBeforeSettling
+)
+
+func (timing receiptTiming) name(listing bool) string {
+	switch timing {
+	case processedBeforeListing:
+		return "processed before its listing"
+	case processedBeforeAction:
+		if listing {
+			return "processed between its listing and the action"
+		}
+		return "processed before the action"
+	case processedAfterAction:
+		return "processed after the action"
+	case processedBeforeSettling:
+		return "the popup retired before the action and settled after it"
+	}
+	panic(fmt.Sprintf("receipt timing %d", int(timing)))
+}
+
+var (
+	listedTimings  = []receiptTiming{processedBeforeAction, processedAfterAction}
+	listingTimings = []receiptTiming{processedBeforeListing, processedBeforeAction, processedAfterAction}
+	closedTimings  = []receiptTiming{processedAfterAction, processedBeforeSettling}
+)
+
+// awaitRetired waits until the engine has no record of page.
+func awaitRetired(t *testing.T, engine *hostedEngine, page string) {
+	t.Helper()
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		engine.pages.mu.Lock()
+		_, kept := engine.pages.records[ids.PageHandle(page)]
+		engine.pages.mu.Unlock()
+		if !kept {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the engine never retired page %s", page)
+		}
+	}
 }
 
 // awaitCreated answers the engine page id of the next page created.
@@ -100,11 +161,11 @@ func awaitAnswer(t *testing.T, done <-chan error, what string) error {
 }
 
 var receiptStates = []receiptState{
-	{"a listed tab", false, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+	{"a listed tab", false, listedTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
 		tab, page := l.open(access)
 		return &receiptPage{page: page, list: func(*testing.T) string { return tab }}
 	}},
-	{"a tab being created", true, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+	{"a tab being created", true, listingTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
 		release := l.gateMethod("Emulation.setDeviceMetricsOverride")
 		t.Cleanup(release)
 		created := awaitCreated(t, l)
@@ -145,7 +206,7 @@ var receiptStates = []receiptState{
 			},
 		}
 	}},
-	{"a tab being restored, its navigation in flight", true, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+	{"a tab being restored, its navigation in flight", true, listingTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
 		tab, page := l.open(access)
 		l.open(access)
 		p := l.tabs(string(access.ThreadID()))[ids.PageHandle(page)]
@@ -185,7 +246,7 @@ var receiptStates = []receiptState{
 			},
 		}
 	}},
-	{"a popup being adopted", false, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+	{"a popup being adopted", false, listingTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
 		_, opener := l.open(access)
 		release := l.gateHistory("PT-1")
 		t.Cleanup(release)
@@ -196,7 +257,7 @@ var receiptStates = []receiptState{
 			return string(l.awaitTab(string(access.ThreadID()), popup, true).id)
 		}}
 	}},
-	{"a popup with no target, its close received while its opener is listed", false, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+	{"a popup with no target, its close received while its opener is listed", false, closedTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
 		opener, page := l.open(access)
 		const popup = "popup-untargeted"
 		l.reportPopup(popup, webview2host.PopupReport{Opener: page, URL: "https://example.test/popup"})
@@ -205,7 +266,7 @@ var receiptStates = []receiptState{
 			return opener
 		}}
 	}},
-	{"a popup being adopted, its close received while its opener is listed", false, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+	{"a popup being adopted, its close received while its opener is listed", false, closedTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
 		opener, page := l.open(access)
 		release := l.gateHistory("PT-1")
 		t.Cleanup(release)
@@ -378,12 +439,18 @@ func (l *popupLauncher) tabPage(access Access, tab string) *managedPage {
 	return nil
 }
 
-// The cross of the page's state at receipt, what was received and the
-// Manager's action: 6 states, 5 report kinds, and 4 actions, with a fifth,
-// the close before the listing, for the 2 states that have a listing
-// (130 rows). A popup never listed whose close was not received has no
-// row: its fate, not a receipt, decides where its downloads list, and
-// every action here takes away the opener its fate would name.
+// The cross of the page's state at receipt, what was received, the
+// Manager's action and when the engine processes what it received: 6
+// states, 5 report kinds, 4 actions, with a fifth, the close before the
+// listing, for the 2 states that have one, and each state's timings: a
+// listed tab's processing before or after the action; a tab being created
+// or restored, or a popup being adopted, also before its listing (only
+// before or after a close before the listing); a popup whose close was
+// received, its engine page held until after the action, or retired
+// before it and settled by the Manager after (320 rows). A popup never
+// listed whose close was not received has no row: its fate, not a
+// receipt, decides where its downloads list, and every action here takes
+// away the opener its fate would name.
 func TestEveryReceivedDownloadIsListedByItsHolder(t *testing.T) {
 	for _, state := range receiptStates {
 		for _, kind := range receiptKinds {
@@ -391,80 +458,115 @@ func TestEveryReceivedDownloadIsListedByItsHolder(t *testing.T) {
 				if action.abandons && !state.listing {
 					continue
 				}
-				t.Run(fmt.Sprintf("%s, %s, %s", state.name, kind.name, action.name), func(t *testing.T) {
-					l := newPopupLauncher(t)
-					saved := t.TempDir()
-					if err := os.WriteFile(filepath.Join(saved, receiptDownloadName), []byte("0123456789"), 0o600); err != nil {
-						t.Fatal(err)
+				for _, timing := range state.timings {
+					if action.abandons && timing == processedBeforeAction {
+						continue
 					}
-					l.engine.backendPath = func(_ context.Context, path string) (string, error) {
-						return filepath.Join(saved, windowsBase(path)), nil
-					}
-					announced := &announcements{seen: map[string][]ThreadDownload{}}
-					l.manager.SetEventSink(announced.sink)
-					access := l.access("thread")
-					p := state.open(t, l, access)
-					for _, report := range kind.before {
-						reportDownload(t, l.engine, p.page, report)
-					}
-					reached, release := l.holdLane(p.page)
-					for _, report := range kind.held {
-						sendDownload(t, l.engine, p.page, report)
-					}
-					awaitClosed(t, reached, "the held report")
-					var holder *managedPage
-					if action.abandons {
-						l.manager.mu.Lock()
-						holder = l.manager.creatingPageByHandleLocked(ids.PageHandle(p.page))
-						l.manager.mu.Unlock()
-						p.abandon(t)
-					} else {
-						holder = l.tabPage(access, p.list(t))
-						action.act(t, l, access, string(holder.id))
-					}
-					release()
-					settleReports(t, l.engine, "")
-
-					want := kind.want(action.reason, action.stops)
-					if p.cause != "" && want.State == downloadStateCanceled {
-						want.Cause = p.cause
-					}
-					row := holderRow(t, holder, "dl-1")
-					got := settledDownload{State: row.State, Cause: row.Error, Received: row.Bytes, Total: row.TotalBytes, Openable: want.Openable, Opens: want.Opens}
-					if got != want {
-						t.Fatalf("its holder lists the download as %+v, want %+v", got, want)
-					}
-					if live := l.engineDownloads(string(access.ThreadID())); len(live) != 0 {
-						t.Fatalf("a live tab lists %v, which its holder took", live)
-					}
-					l.manager.mu.Lock()
-					pending := len(l.manager.endPending)
-					l.manager.mu.Unlock()
-					if pending != 0 {
-						t.Fatalf("the Manager still waits for %d ends", pending)
-					}
-					if action.forgets {
-						// The thread's history goes with it.
-						if history := l.manager.CompanionState(access.Caller()).Downloads; len(history) != 0 {
-							t.Fatalf("the closed thread's history kept %+v", history)
-						}
-						return
-					}
-					settled := announced.await(t, receiptDownloadName)
-					if len(settled) != 1 {
-						t.Fatalf("the download was announced settled %d times: %+v", len(settled), settled)
-					}
-					got = settledDownload{State: settled[0].State, Cause: settled[0].Error, Received: settled[0].ReceivedBytes, Total: settled[0].TotalBytes, Openable: settled[0].Openable}
-					_, opened := l.manager.finishedDownloadPath(l.manager.Bind(access.Caller()), DownloadKey(settled[0].ID))
-					got.Opens = opened == nil
-					if got != want {
-						t.Fatalf("the thread's settlement is %+v, want %+v", got, want)
-					}
-					if history := l.manager.CompanionState(access.Caller()).Downloads; len(history) != 1 || history[0] != settled[0] {
-						t.Fatalf("the thread's history is %+v, want the settlement %+v", history, settled[0])
-					}
-				})
+					receiptRow(t, state, kind, action, timing)
+				}
 			}
 		}
 	}
+}
+
+// receiptRow runs one row of TestEveryReceivedDownloadIsListedByItsHolder.
+func receiptRow(t *testing.T, state receiptState, kind receiptKind, action receiptAction, timing receiptTiming) {
+	t.Helper()
+	t.Run(fmt.Sprintf("%s, %s, %s, %s", state.name, kind.name, action.name, timing.name(slices.Contains(state.timings, processedBeforeListing))), func(t *testing.T) {
+		l := newPopupLauncher(t)
+		saved := t.TempDir()
+		if err := os.WriteFile(filepath.Join(saved, receiptDownloadName), []byte("0123456789"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l.engine.backendPath = func(_ context.Context, path string) (string, error) {
+			return filepath.Join(saved, windowsBase(path)), nil
+		}
+		announced := &announcements{seen: map[string][]ThreadDownload{}}
+		l.manager.SetEventSink(announced.sink)
+		access := l.access("thread")
+		p := state.open(t, l, access)
+		for _, report := range kind.before {
+			reportDownload(t, l.engine, p.page, report)
+		}
+		reached, release := l.holdLane(p.page)
+		for _, report := range kind.held {
+			sendDownload(t, l.engine, p.page, report)
+		}
+		awaitClosed(t, reached, "the held report")
+		process := func() {
+			release()
+			settleReports(t, l.engine, "")
+		}
+		var holder *managedPage
+		if action.abandons {
+			l.manager.mu.Lock()
+			holder = l.manager.creatingPageByHandleLocked(ids.PageHandle(p.page))
+			l.manager.mu.Unlock()
+			if timing == processedBeforeListing {
+				process()
+			}
+			p.abandon(t)
+		} else {
+			if timing == processedBeforeListing {
+				process()
+			}
+			holder = l.tabPage(access, p.list(t))
+			settle := func() {}
+			switch timing {
+			case processedBeforeListing, processedAfterAction:
+			case processedBeforeAction:
+				process()
+			case processedBeforeSettling:
+				gate := make(chan struct{})
+				l.manager.pageEnds.report(ids.PageHandle(p.page), func() bool { return true }, func() { <-gate })
+				settle = sync.OnceFunc(func() { close(gate) })
+				t.Cleanup(settle)
+				process()
+				awaitRetired(t, l.engine, p.page)
+			}
+			action.act(t, l, access, string(holder.id))
+			settle()
+		}
+		release()
+		settleReports(t, l.engine, "")
+
+		want := kind.want(action.reason, action.stops && timing == processedAfterAction)
+		if p.cause != "" && want.State == downloadStateCanceled {
+			want.Cause = p.cause
+		}
+		row := holderRow(t, holder, "dl-1")
+		got := settledDownload{State: row.State, Cause: row.Error, Received: row.Bytes, Total: row.TotalBytes, Openable: want.Openable, Opens: want.Opens}
+		if got != want {
+			t.Fatalf("its holder lists the download as %+v, want %+v", got, want)
+		}
+		if live := l.engineDownloads(string(access.ThreadID())); len(live) != 0 {
+			t.Fatalf("a live tab lists %v, which its holder took", live)
+		}
+		l.manager.mu.Lock()
+		pending := len(l.manager.endPending)
+		l.manager.mu.Unlock()
+		if pending != 0 {
+			t.Fatalf("the Manager still waits for %d ends", pending)
+		}
+		if action.forgets {
+			// The thread's history goes with it.
+			if history := l.manager.CompanionState(access.Caller()).Downloads; len(history) != 0 {
+				t.Fatalf("the closed thread's history kept %+v", history)
+			}
+			return
+		}
+		settled := announced.await(t, receiptDownloadName)
+		if len(settled) != 1 {
+			t.Fatalf("the download was announced settled %d times: %+v", len(settled), settled)
+		}
+		got = settledDownload{State: settled[0].State, Cause: settled[0].Error, Received: settled[0].ReceivedBytes, Total: settled[0].TotalBytes, Openable: settled[0].Openable}
+		_, opened := l.manager.finishedDownloadPath(l.manager.Bind(access.Caller()), DownloadKey(settled[0].ID))
+		got.Opens = opened == nil
+		if got != want {
+			t.Fatalf("the thread's settlement is %+v, want %+v", got, want)
+		}
+		if history := l.manager.CompanionState(access.Caller()).Downloads; len(history) != 1 || history[0] != settled[0] {
+			t.Fatalf("the thread's history is %+v, want the settlement %+v", history, settled[0])
+		}
+	})
 }

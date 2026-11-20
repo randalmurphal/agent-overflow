@@ -164,12 +164,11 @@ type paneHost interface {
 // opens its inspector (macOS devtools are Safari's Develop menu against an
 // inspectable view), so the darwin engine does not implement this and the
 // Manager's refusal, "devtools are not available on this browser engine",
-// is the answer there. OpenPageDevTools answers why the inspector did not
-// open, or, on an engine that only sends the request to another process
-// (the hosted engine), why the request could not be sent: there nil means
-// requested.
+// is the answer there. OpenPageDevTools answers, within ctx, nil once the
+// inspector opened and why it did not otherwise, an engine that asks
+// another process (the hosted engine) included.
 type paneDevTools interface {
-	OpenPageDevTools(handle ids.PageHandle) error
+	OpenPageDevTools(ctx context.Context, handle ids.PageHandle) error
 }
 
 // engineProfile is one cookie jar's isolated site data (jar.go): the unit that

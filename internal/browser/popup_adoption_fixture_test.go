@@ -33,6 +33,10 @@ type adoptionEngine struct {
 	// stallDiscard makes a discard wait for its deadline, as an engine
 	// whose browser stopped answering does.
 	stallDiscard bool
+	// heldDiscard, when set, holds each discard until it closes, and
+	// discarding receives the popup of each one held.
+	heldDiscard chan struct{}
+	discarding  chan ids.PageHandle
 	// wrap, when set, answers the driver an attach returns.
 	wrap func(pageDriver) pageDriver
 }
@@ -77,13 +81,29 @@ func (e *adoptionEngine) NewProfile(ctx context.Context, opts profileOptions) (e
 func (e *adoptionEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
 	e.mu.Lock()
 	e.discarded = append(e.discarded, handle)
-	stall := e.stallDiscard
+	stall, held := e.stallDiscard, e.heldDiscard
 	e.mu.Unlock()
 	if stall {
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	if held != nil {
+		e.discarding <- handle
+		<-held
+	}
 	return nil
+}
+
+// holdDiscards holds every discard from now until the answered release,
+// and answers the popups of those held as they are.
+func (e *adoptionEngine) holdDiscards(t *testing.T) (discarding <-chan ids.PageHandle, release func()) {
+	held, reached := make(chan struct{}), make(chan ids.PageHandle, 4)
+	e.mu.Lock()
+	e.heldDiscard, e.discarding = held, reached
+	e.mu.Unlock()
+	release = sync.OnceFunc(func() { close(held) })
+	t.Cleanup(release)
+	return reached, release
 }
 
 // gate holds the attach of handle until the answered release.

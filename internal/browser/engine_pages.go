@@ -37,21 +37,36 @@ func (m *Manager) pageClosed(handle ids.PageHandle) {
 	m.pageEnds.report(handle, func() bool {
 		m.admissions.Observe(handle, popupadmit.Closed())
 		m.noteCreationEnd(handle, true, "")
+		m.mu.Lock()
+		if _, adopting := m.adopting[handle]; adopting {
+			m.endedPopupLocked(handle, nil)
+		}
+		m.mu.Unlock()
 		return true
 	}, func() { m.removeClosedPage(handle) })
 }
 
 // pageEndReceived is engineEvents.PageEndReceived: the close or crash is
 // recorded now where the page's listing reads it, a popup's admission or a
-// created or restored page's creation end; its PageClosed or PageCrashed
-// follows and acts.
-func (m *Manager) pageEndReceived(handle ids.PageHandle, closed bool, crash string) {
+// created or restored page's creation end, and the close of a popup not
+// listed, with its openers, where a leave of its nearest listed opener
+// reads it (endedPopupLocked); its PageClosed or PageCrashed follows and
+// acts.
+func (m *Manager) pageEndReceived(handle ids.PageHandle, closed bool, crash string, openers []ids.PageHandle) {
 	end := popupadmit.Crashed(crash)
 	if closed {
 		end = popupadmit.Closed()
 	}
 	m.admissions.Observe(handle, end)
 	m.noteCreationEnd(handle, closed, crash)
+	if !closed || len(openers) == 0 {
+		return
+	}
+	m.mu.Lock()
+	if m.pageByHandleLocked(handle) == nil {
+		m.endedPopupLocked(handle, openers)
+	}
+	m.mu.Unlock()
 }
 
 // listingDriver is a page driver whose engine schedules a popup's work by
@@ -174,15 +189,18 @@ func (m *Manager) crashedPopupListed(p *managedPage, released *jarScope) {
 }
 
 // discardPopup has the engine close a popup the Manager will not list,
-// within popupDiscardTimeout. Its reservation ends whatever the engine
-// answers (endPopupReservation); a page the engine failed to close stays
-// the engine's, closed at its profile's disposal.
-func (m *Manager) discardPopup(handle ids.PageHandle) {
+// within popupDiscardTimeout, and answers whether it did: the engine then
+// reported all it will of the popup. Its reservation ends whatever the
+// engine answers (endPopupReservation); a page the engine failed to close
+// stays the engine's, closed at its profile's disposal.
+func (m *Manager) discardPopup(handle ids.PageHandle) (retired bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), popupDiscardTimeout)
 	defer cancel()
 	if err := m.engine.DiscardPage(ctx, handle); err != nil {
 		log.Printf("browser: discard popup %s: %v", handle, err)
+		return false
 	}
+	return true
 }
 
 // popupDiscardTimeout bounds an engine's discard of a popup.
@@ -275,8 +293,11 @@ func (m *Manager) removeClosedPage(handle ids.PageHandle) {
 	}
 	m.mu.Unlock()
 	if closed == nil {
-		// A popup never listed: what it downloaded goes to its opener's tab.
+		// A popup never listed: what it downloaded goes to its opener's
+		// tab, or the leave that carries it, and its engine reports no
+		// more of it.
 		m.resolveParkedLocked(handle, nil)
+		m.forgetEndedPopup(handle)
 	}
 	m.parkMu.Unlock()
 	if closed != nil {

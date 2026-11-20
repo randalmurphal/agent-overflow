@@ -437,6 +437,71 @@ func TestStopInterruptsEveryDiscardOfARetirementUnderWay(t *testing.T) {
 	}
 }
 
+// Stop with a discard still queued behind the page's other work delivers
+// the ends it took itself, in the retirement's stead: the queued discard
+// and one arriving while that delivery's callback is held hear they were
+// interrupted, and one arriving after Stop returned finds the page gone.
+func TestStopInterruptsEveryDiscardOfARetirementStillQueued(t *testing.T) {
+	engine, sink, _ := newDownloadHostedEngine(t)
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	entered, _ := blockPath(t, engine, "slow.bin")
+	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-1", Seq: 1, State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\slow.bin`, Received: 1, Total: 10})
+	sendDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-1", Seq: 2, State: webview2host.DownloadCompleted, Path: `C:\Users\dev\Downloads\slow.bin`, Received: 10, Total: 10})
+	awaitClosed(t, entered, "the completion's path conversion")
+	sink.drain()
+	queued := engine.pages.receive("page1", receivedDiscard())
+	if queued.outcome != receiptQueued {
+		t.Fatalf("the discard behind the completion was %v, want it queued", queued.outcome)
+	}
+	inEnd, releaseEnd := make(chan struct{}), make(chan struct{})
+	progress := engine.events.DownloadProgress
+	var once sync.Once
+	engine.events.DownloadProgress = func(event downloadProgress) {
+		if event.ID == "dl-1" && event.State == downloadCompleted {
+			once.Do(func() { close(inEnd) })
+			<-releaseEnd
+		}
+		progress(event)
+	}
+	discard := func(when string) error {
+		t.Helper()
+		discarded := make(chan error, 1)
+		go func() { discarded <- engine.DiscardPage(context.Background(), "page1") }()
+		select {
+		case err := <-discarded:
+			return err
+		case <-time.After(hostedTestDeadline):
+			t.Fatalf("the discard %s never answered", when)
+			return nil
+		}
+	}
+	stopped := make(chan struct{})
+	go func() {
+		engine.Stop()
+		close(stopped)
+	}()
+	awaitClosed(t, inEnd, "Stop's delivery of the completion it took")
+	ctx, cancel := context.WithTimeout(t.Context(), hostedTestDeadline)
+	defer cancel()
+	if err := queued.wait(ctx); !errors.Is(err, errDiscardInterrupted) {
+		t.Fatalf("the queued discard answered %v", err)
+	}
+	if err := discard("arriving while Stop's callback is held"); !errors.Is(err, errDiscardInterrupted) {
+		t.Fatalf("the discard arriving while Stop's callback is held answered %v", err)
+	}
+	close(releaseEnd)
+	awaitClosed(t, stopped, "Stop")
+	if err := discard("arriving after Stop returned"); err != nil {
+		t.Fatalf("the discard arriving after Stop returned answered %v", err)
+	}
+	engine.pages.mu.Lock()
+	kept := len(engine.pages.interrupted)
+	engine.pages.mu.Unlock()
+	if kept != 0 {
+		t.Fatalf("the engine keeps %d interrupted retirements past Stop", kept)
+	}
+}
+
 // A create the engine cannot send leaves no record of its page.
 func TestARefusedCreateLeavesNoRecord(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})

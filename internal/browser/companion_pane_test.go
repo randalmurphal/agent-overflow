@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -404,7 +405,7 @@ type devToolsPaneHost struct {
 	err error
 }
 
-func (e *devToolsPaneHost) OpenPageDevTools(ids.PageHandle) error { return e.err }
+func (e *devToolsPaneHost) OpenPageDevTools(context.Context, ids.PageHandle) error { return e.err }
 
 // The devtools request answers what the engine's open answered, and an
 // engine with no inspector refuses.

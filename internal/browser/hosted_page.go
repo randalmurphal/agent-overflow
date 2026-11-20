@@ -172,6 +172,20 @@ func (e *hostedEngine) Report(pageID ids.PageHandle, kind webview2host.ReportKin
 			failure = fmt.Errorf("browser: the page did not take keyboard focus: %s", report.Error)
 		}
 		e.events.PageFocusReported(pageID, MountID(report.Mount), report.Intent, failure)
+	case webview2host.ReportDevToolsOpened, webview2host.ReportDevToolsFailed:
+		report, err := webview2host.ParseDevToolsReport(detail)
+		if err != nil {
+			e.logf("browser: pane host devtools report for page %s is unreadable: %v", pageID, err)
+			return
+		}
+		answer := hostReport{kind: kind}
+		if kind == webview2host.ReportDevToolsFailed {
+			answer.detail = report.Error
+		}
+		if !e.devtools.deliver(pageID, report.Request, answer) {
+			// Its request already gave up on its own bound and said so.
+			e.logf("browser: pane host answered devtools request %d of page %s, which nobody waits for", report.Request, pageID)
+		}
 	case webview2host.ReportDownload:
 		e.acceptDownload(pageID, detail)
 	case webview2host.ReportPopup:
@@ -372,9 +386,12 @@ func (e *hostedEngine) closePage(pageID ids.PageHandle) receipt {
 	return discarded
 }
 
+// errHostNoAnswer is awaitHostReport's answer past its bound.
+var errHostNoAnswer = errors.New("pane host did not answer")
+
 // awaitHostReport waits for one report, the caller's cancellation, or the
-// bound. Every path returns; a launcher that never answers is an error,
-// never a hang.
+// bound. Every path returns; a launcher that never answers is an error
+// (errHostNoAnswer), never a hang.
 func awaitHostReport(ctx context.Context, waiter chan hostReport, timeout time.Duration) (hostReport, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -387,7 +404,7 @@ func awaitHostReport(ctx context.Context, waiter chan hostReport, timeout time.D
 	case <-ctx.Done():
 		return hostReport{}, ctx.Err()
 	case <-timer.C:
-		return hostReport{}, fmt.Errorf("pane host did not answer within %s", timeout)
+		return hostReport{}, fmt.Errorf("%w within %s", errHostNoAnswer, timeout)
 	}
 }
 
@@ -426,10 +443,10 @@ func (p *hostedPage) Close() {
 func (p *hostedPage) Listed() { p.engine.pages.listed(p.id) }
 
 // TakeReceivedDownloads is receivingDriver: the page's leave lists what the
-// launcher reported of it, and of the closed popups it carries, that its
-// lane has not admitted yet (hostedPages.takeReceived).
-func (p *hostedPage) TakeReceivedDownloads(listed func(downloadID) bool) ([]downloadStart, []ids.PageHandle) {
-	return p.engine.pages.takeReceived(p.id, listed)
+// launcher reported of it, and of the popups it carries, that its lane has
+// not admitted yet (hostedPages.takeReceived).
+func (p *hostedPage) TakeReceivedDownloads(listed func(downloadID) bool, popups []ids.PageHandle) []downloadStart {
+	return p.engine.pages.takeReceived(p.id, listed, popups)
 }
 
 var (

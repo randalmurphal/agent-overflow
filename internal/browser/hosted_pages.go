@@ -186,9 +186,11 @@ func (r *hostedPageRecord) to(event hostedPageEvent) bool {
 type hostedPages struct {
 	mu      sync.Mutex
 	records map[ids.PageHandle]*hostedPageRecord
-	// interrupted is, by page, each retirement under way at Stop, which
-	// forgot its record, until its last callback returns: a close or
-	// discard received meanwhile joins it (receive).
+	// interrupted is, by page, each retirement Stop forgot the record of
+	// and owes a callback for, until that callback returns: one under way,
+	// until its last callback returns, and one still queued, until Stop
+	// delivered the ends it took (stopAll). A close or discard received
+	// meanwhile joins it (receive).
 	interrupted map[ids.PageHandle]receipt
 	// owners is the page of each download id a record holds, running or
 	// ended, so a report naming another page's id is refused.
@@ -197,10 +199,11 @@ type hostedPages struct {
 	// process runs one accepted report on its lane; watch starts the
 	// status loop, which runs until stop closes or no download runs;
 	// observe records a page's received close or crash with the Manager
-	// (engineEvents.PageEndReceived), called with no lock of the engine's.
+	// (engineEvents.PageEndReceived), with a pending popup's openers
+	// (pendingOpeners), called with no lock of the engine's.
 	process  func(context.Context, *acceptedWork)
 	watch    func(stop <-chan struct{})
-	observe  func(page ids.PageHandle, closed bool, crash string)
+	observe  func(page ids.PageHandle, closed bool, crash string, openers []ids.PageHandle)
 	watching bool
 	stop     chan struct{}
 	// receivedDownloads numbers the downloads in the order their first
@@ -208,7 +211,7 @@ type hostedPages struct {
 	receivedDownloads uint64
 }
 
-func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(page ids.PageHandle, closed bool, crash string)) *hostedPages {
+func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(page ids.PageHandle, closed bool, crash string, openers []ids.PageHandle)) *hostedPages {
 	return &hostedPages{
 		records:     make(map[ids.PageHandle]*hostedPageRecord),
 		interrupted: make(map[ids.PageHandle]receipt),
@@ -432,7 +435,10 @@ func (r receipt) wait(ctx context.Context) error {
 //     suspended or the browser closed is listed in that tab, and a row the
 //     leave cancels keeps those counts (downloadStart.NewestCounts). A
 //     popup's received close hands its downloads to its nearest listed
-//     opener's leave the same way. A terminal snapshot, or the launcher's
+//     opener's leave the same way: the Manager holds that ownership from
+//     the close's record, which names the popup's openers, until it
+//     settles the popup's parked downloads (popupCarrier). A terminal
+//     snapshot, or the launcher's
 //     DownloadUnknown, marks the download's end received, which then
 //     settles its row (downloadStart.EndReported) whatever left the page
 //     meanwhile.
@@ -443,9 +449,9 @@ func (r receipt) wait(ctx context.Context) error {
 func (p *hostedPages) receive(page ids.PageHandle, in received) receipt {
 	switch in.kind {
 	case acceptedClose:
-		p.observe(page, true, "")
+		p.observe(page, true, "", p.pendingOpeners(page))
 	case acceptedCrash:
-		p.observe(page, false, in.crash)
+		p.observe(page, false, in.crash, nil)
 	case acceptedSnapshot, acceptedDiscard:
 	default:
 		panic(fmt.Sprintf("browser: received a report of kind %d", in.kind))
@@ -621,8 +627,11 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 // for (downloadStart.EndReported): one a lane already took is that lane's
 // to deliver (takeEnd). A download's admission may still be in flight on
 // its lane, so an end is taken whether or not it was admitted; the
-// Manager drops the end of a download it has no row for.
-func (p *hostedPages) stopAll() (join func(), ends []downloadProgress) {
+// Manager drops the end of a download it has no row for. A retirement
+// still queued never runs: the caller delivers those ends in its stead,
+// and a close or discard of its page joins it (interrupted) until the
+// caller calls delivered, once it has.
+func (p *hostedPages) stopAll() (join func(), ends []downloadProgress, delivered func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stop != nil {
@@ -663,12 +672,27 @@ func (p *hostedPages) stopAll() (join func(), ends []downloadProgress) {
 		}
 	}
 	stopped := p.lanes.ctx.Done()
+	owed := make(chan struct{})
+	var queued []ids.PageHandle
 	for page, r := range p.records {
-		if r.retiring {
+		switch {
+		case r.retiring:
 			p.interrupted[page] = receipt{outcome: receiptEnding, retired: r.retired, stopped: stopped}
+		case r.state == hostedPopupClosing || r.state == hostedPageClosing:
+			p.interrupted[page] = receipt{outcome: receiptEnding, retired: owed, stopped: stopped}
+			queued = append(queued, page)
 		}
 	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)
 	p.owners = make(map[downloadID]ids.PageHandle)
-	return p.stopLanesLocked(), ends
+	return p.stopLanesLocked(), ends, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		close(owed)
+		for _, page := range queued {
+			if joined, ok := p.interrupted[page]; ok && joined.retired == owed {
+				delete(p.interrupted, page)
+			}
+		}
+	}
 }

@@ -82,23 +82,24 @@ func (m *Manager) releaseStagedDownload(id downloadID) {
 	}
 }
 
-// pageForFrame walks the registry the Manager owns and asks each driver whether
-// the frame is one of its own: a listed page's, or that of a page being
-// created or restored, which owns what its load downloads from its attach
-// on, its listing keeping it and its abandonment settling it
+// downloadOwnerLocked answers, with its jar, the first page that can own
+// a download and that owns answers true for: a listed page, or a page
+// being created or restored, which owns what its load downloads from its
+// attach on, its listing keeping it and its abandonment settling it
 // (abandonPage). A popup being adopted lists its downloads at its fate
-// (popup_parked.go). Ownership stays here; frame bookkeeping does not.
-func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// (popup_parked.go). A download's start (pageForFrame) and its later
+// reports (pageForDownload) find their page through it alone, so whatever
+// page admits a start receives what follows it. Ownership stays here;
+// frame bookkeeping does not. The caller holds m.mu.
+func (m *Manager) downloadOwnerLocked(owns func(*managedPage) bool) (*managedPage, *jarScope) {
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.driver.OwnsFrame(frame) {
+			if owns(p) {
 				return p, scope
 			}
 		}
 		for p := range scope.creating {
-			if p.driver != nil && !m.adoptingLocked(p) && p.driver.OwnsFrame(frame) {
+			if p.driver != nil && !m.adoptingLocked(p) && owns(p) {
 				return p, scope
 			}
 		}
@@ -106,17 +107,22 @@ func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
 	return nil, nil
 }
 
-// pageForDownload answers the listed page download id runs in, with its
-// jar, or the page that left with it waiting for its end, with no jar.
+// pageForFrame answers the page whose driver owns frame
+// (downloadOwnerLocked).
+func (m *Manager) pageForFrame(frame frameID) (*managedPage, *jarScope) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.downloadOwnerLocked(func(p *managedPage) bool { return p.driver.OwnsFrame(frame) })
+}
+
+// pageForDownload answers the page whose log lists download id, with its
+// jar (downloadOwnerLocked), or the page that left with it waiting for its
+// end, with no jar.
 func (m *Manager) pageForDownload(id downloadID) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.downloads.has(id) {
-				return p, scope
-			}
-		}
+	if p, scope := m.downloadOwnerLocked(func(p *managedPage) bool { return p.downloads.has(id) }); p != nil {
+		return p, scope
 	}
 	return m.endPending[id], nil
 }
@@ -156,10 +162,9 @@ type receivingDriver interface {
 	// received and has not had admitted, but for those listed says the page
 	// lists, oldest first, and hands each to the caller: the engine applies
 	// its later reports to the row the caller lists for it. They are the
-	// page's own and those of carried, the popups never listed whose end
-	// the engine received while this page was their nearest listed opener:
-	// the page's leave carries what they started (popupCarrier).
-	TakeReceivedDownloads(listed func(downloadID) bool) (starts []downloadStart, carried []ids.PageHandle)
+	// page's own and those of popups, the popups never listed whose
+	// downloads the page's leave carries (popupCarrier).
+	TakeReceivedDownloads(listed func(downloadID) bool, popups []ids.PageHandle) []downloadStart
 }
 
 // pageLeftLocked takes p out of scope's live pages. Every way a page stops
@@ -182,7 +187,9 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 }
 
 // downloadsLeftLocked ends p's download log as p leaves scope, listed or
-// not: a download its engine received and has not had admitted is listed
+// not: it carries the downloads of each ended popup it is the nearest
+// listed opener of (carryEndedPopupsLocked), a download its engine
+// received and has not had admitted, its own or such a popup's, is listed
 // first (receivingDriver), and a carried popup's parked downloads are
 // listed at that popup's fate as this leave would have (popupCarrier);
 // every row then running settles as the leave settles it (departLocked),
@@ -191,17 +198,17 @@ func (m *Manager) downloadsLeftLocked(scope *jarScope, p *managedPage, reason st
 	ended := endedDownloads{scope: scope}
 	held := p.downloads.hold()
 	held.end()
+	var carried []ids.PageHandle
+	if p.driver != nil {
+		carried = m.carryEndedPopupsLocked(p, reason)
+	}
 	if receiving, ok := p.driver.(receivingDriver); ok {
 		listed := func(id downloadID) bool { return held.entry(id) != nil }
-		starts, carried := receiving.TakeReceivedDownloads(listed)
-		for _, start := range starts {
+		for _, start := range receiving.TakeReceivedDownloads(listed, carried) {
 			start = boundedStart(start)
 			entry := m.downloadEntry(start)
 			entry.source = m.downloadFileOf(scope, start.ID)
 			ended.notes = append(ended.notes, m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, start)))
-		}
-		for _, popup := range carried {
-			m.carriersLocked().put(popup, popupCarrier{page: p, reason: reason})
 		}
 	}
 	for _, entry := range held.running() {

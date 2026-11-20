@@ -415,7 +415,8 @@ func (h *Host) holdReport(page *hostPage, kind ReportKind, detail string) bool {
 		// worth keeping.
 		h.config.Logf("browser host: page %s: drop a %s report made before the page was reported", page.id, kind)
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportCleared, ReportClearFailed,
-		ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup:
+		ReportFocused, ReportFocusFailed, ReportDevToolsOpened, ReportDevToolsFailed,
+		ReportDownload, ReportPopup:
 		// Reported by their own paths, never through pageReport.
 		h.config.Logf("browser host: page %s: a %s report reached the popup hold, which keeps none; dropped", page.id, kind)
 	}

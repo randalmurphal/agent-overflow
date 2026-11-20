@@ -152,7 +152,8 @@ func TestValidKind(t *testing.T) {
 	for _, kind := range []ReportKind{
 		ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
 		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
-		ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup,
+		ReportFocused, ReportFocusFailed, ReportDevToolsOpened, ReportDevToolsFailed,
+		ReportDownload, ReportPopup,
 	} {
 		if !ValidKind(kind) {
 			t.Errorf("ValidKind(%q) = false, want true", kind)

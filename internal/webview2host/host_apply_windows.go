@@ -2,7 +2,9 @@
 
 package webview2host
 
-// Directive application: geometry, presentation and focus.
+import "errors"
+
+// Directive application: geometry, presentation, focus and DevTools.
 
 // Apply validates and executes one directive. It is safe to call from any
 // goroutine and blocks until the work has run on the UI thread.
@@ -37,11 +39,7 @@ func (h *Host) Apply(directive Directive) {
 			h.present(page, false)
 		})
 	case OpDevTools:
-		h.withPage(directive.PageID, func(page *hostPage) {
-			if err := page.view.openDevToolsWindow(); err != nil {
-				h.config.Logf("browser host: page %s devtools: %v", page.id, err)
-			}
-		})
+		h.openDevTools(directive)
 	case OpClose:
 		h.closePages(func(page *hostPage) bool { return page.id == directive.PageID })
 	case OpCloseProfile:
@@ -60,6 +58,33 @@ func (h *Host) Apply(directive Directive) {
 	case OpCancelDownload, OpDownloadStatus:
 		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, directive.Cancel) })
 	}
+}
+
+// openDevTools opens the DevTools window of the page directive names, on
+// the UI thread, and answers a numbered request with what happened: opened,
+// or failed with the native error or the page gone.
+func (h *Host) openDevTools(directive Directive) {
+	h.config.OnMain(func() {
+		var err error
+		page := h.pages[directive.PageID]
+		if page == nil || page.controller == nil {
+			err = errors.New("the page is gone")
+		} else {
+			err = page.view.openDevToolsWindow()
+		}
+		if err != nil {
+			h.config.Logf("browser host: page %s devtools: %v", directive.PageID, err)
+		}
+		if directive.Request == 0 {
+			return
+		}
+		report := DevToolsReport{Request: directive.Request}
+		kind := ReportDevToolsOpened
+		if err != nil {
+			kind, report.Error = ReportDevToolsFailed, err.Error()
+		}
+		h.config.Report(directive.PageID, kind, report.Encode())
+	})
 }
 
 // withPage runs fn on the UI thread with the named page, found in the same

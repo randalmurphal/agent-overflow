@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/browser/popupadmit"
 )
 
@@ -40,16 +41,20 @@ type popupReservation struct {
 func (m *Manager) runAdoption(popup enginePopup) {
 	m.startAdoption(popup.Handle)
 	var listed *managedPage
-	defer func() { m.finishAdoption(popup.Handle, popup.Opener, listed) }()
+	var retired bool
+	defer func() { m.finishAdoption(popup.Handle, popup.Opener, listed, retired) }()
 	reservation, ok := m.reservePopup(popup)
 	if !ok {
 		// No page was reserved: the engine's page is closed, and the
 		// adoption's end ends its admission.
-		m.discardPopup(popup.Handle)
+		m.mu.Lock()
+		m.endedPopupLocked(popup.Handle, []ids.PageHandle{popup.Opener})
+		m.mu.Unlock()
+		retired = m.discardPopup(popup.Handle)
 		return
 	}
 	driver, err := m.readyPopup(reservation)
-	listed = m.commitPopup(reservation, driver, err)
+	listed, retired = m.commitPopup(reservation, driver, err)
 }
 
 // reservePopup admits popup once its opener is listed, under the opener's
@@ -128,8 +133,9 @@ func (m *Manager) readyPopup(r popupReservation) (pageDriver, error) {
 // crashed, never live first, whether its setup succeeded or failed, while
 // its lifetime may have records; a setup that failed with no crash
 // refuses it. A popup not listed live is closed (its driver) or discarded
-// (no driver), and a reservation no listing took ends.
-func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr error) *managedPage {
+// (no driver), and a reservation no listing took ends; retired is whether
+// its discard returned (discardPopup).
+func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr error) (listed *managedPage, retired bool) {
 	p, handle := r.page, r.popup.Handle
 	if setupErr != nil {
 		log.Printf("browser: adopt popup %s: %v", handle, setupErr)
@@ -141,7 +147,6 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	if listable {
 		verdict = m.admissions.Commit(handle, setupErr != nil)
 	}
-	var listed *managedPage
 	listedCrashed, reserved := false, true
 	var released *jarScope
 	switch m.unlistedOutcomeLocked(p, listable, verdict) {
@@ -160,13 +165,16 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	case refuseClosed, refuseFailed, refuseGone, retryStale:
 		// Not listed: closed or discarded below, its reservation ended.
 	}
+	if listed == nil {
+		m.endedPopupLocked(handle, []ids.PageHandle{r.popup.Opener})
+	}
 	m.mu.Unlock()
 	if listed == nil {
 		m.parkMu.Unlock()
 		if driver != nil {
 			driver.Close()
 		} else {
-			m.discardPopup(handle)
+			retired = m.discardPopup(handle)
 		}
 		if listedCrashed {
 			m.crashedPopupListed(p, released)
@@ -174,7 +182,7 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 		if reserved {
 			m.endPopupReservation(r.scope, p, handle)
 		}
-		return nil
+		return nil, retired
 	}
 	if listing, ok := driver.(listingDriver); ok {
 		listing.Listed()
@@ -191,7 +199,7 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}
-	return listed
+	return listed, false
 }
 
 // popupListableLocked answers whether a popup may still be listed in

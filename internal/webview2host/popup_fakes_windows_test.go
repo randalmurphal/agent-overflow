@@ -198,6 +198,10 @@ type fakeView struct {
 	// whether the download dialog is open.
 	subErr    map[string]uintptr
 	dialogErr uintptr
+	// inspectorOpens counts OpenDevToolsWindow calls, which inspectorErr
+	// fails.
+	inspectorOpens int
+	inspectorErr   uintptr
 }
 
 func fakeSubscribeView(event string) comProc {
@@ -250,6 +254,10 @@ var fakeViewVtbl = func() iCoreWebView2_9Vtbl {
 		this.dialogOpen = false
 		this.dialogShut++
 		return 0
+	})
+	v.OpenDevToolsWindow = newComProc(func(this *fakeView) uintptr {
+		this.inspectorOpens++
+		return this.inspectorErr
 	})
 	return v
 }()

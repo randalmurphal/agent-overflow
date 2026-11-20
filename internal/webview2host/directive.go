@@ -40,7 +40,10 @@ const (
 	OpBackground Op = "background"
 	// OpClose destroys the controller.
 	OpClose Op = "close"
-	// OpDevTools opens the Chromium DevTools window for the page.
+	// OpDevTools opens the Chromium DevTools window for the page. A
+	// directive that names its Request is answered with
+	// ReportDevToolsOpened or ReportDevToolsFailed; Request is zero on a
+	// backend that predates those answers, and nothing answers it then.
 	OpDevTools Op = "devtools"
 	// OpCloseProfile closes every controller on ProfileID.
 	OpCloseProfile Op = "close-profile"
@@ -142,6 +145,9 @@ type Directive struct {
 	Seq   uint64 `json:"seq,omitempty"`
 	// Intent is OpFocus's focus intent number on Mount (FocusIntents).
 	Intent uint64 `json:"intent,omitempty"`
+	// Request is OpDevTools's number among the backend's DevTools
+	// requests, from 1, which its answer names (DevToolsReport).
+	Request uint64 `json:"request,omitempty"`
 	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
 	// already resolved by the backend.
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
@@ -389,6 +395,13 @@ const (
 	// the launcher declined (the page not presented, the window not in the
 	// foreground, the intent withdrawn) is no failure and is not reported.
 	ReportFocusFailed ReportKind = "focus-failed"
+	// ReportDevToolsOpened says an OpDevTools opened the page's DevTools
+	// window. Its detail is a DevToolsReport naming the request.
+	ReportDevToolsOpened ReportKind = "devtools-opened"
+	// ReportDevToolsFailed says an OpDevTools did not open it: the page is
+	// gone, or the view refused. Its detail is a DevToolsReport naming the
+	// request and the error.
+	ReportDevToolsFailed ReportKind = "devtools-failed"
 	// ReportDownload is the whole snapshot of a download the page started,
 	// sent at each change and in answer to a directive naming it. Its
 	// detail is a DownloadReport (download.go).
@@ -418,7 +431,8 @@ func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
 		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
-		ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup:
+		ReportFocused, ReportFocusFailed, ReportDevToolsOpened, ReportDevToolsFailed,
+		ReportDownload, ReportPopup:
 		return true
 	default:
 		return false
