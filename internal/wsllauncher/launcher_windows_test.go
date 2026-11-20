@@ -220,7 +220,6 @@ func TestAFailedLaunchReapsItsChild(t *testing.T) {
 	_, _, err = Launch(ctx, LaunchOptions{
 		Distro:           "test",
 		BinaryPath:       "/test/agent-overflow",
-		UseParentJob:     true,
 		BootstrapTimeout: 200 * time.Millisecond,
 		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 			child = exec.CommandContext(ctx, executable, "-test.run=^TestLauncherLifetimeChild$")
