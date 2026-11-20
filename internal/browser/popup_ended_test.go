@@ -45,7 +45,9 @@ func awaitDone(t *testing.T, done <-chan struct{}, what string) {
 }
 
 // A popup being adopted whose close its engine reported, with the close's
-// processing still queued, when its opener's tab closes.
+// processing still queued, when its opener's tab closes: what it started
+// before, and what it starts after its adoption ended and before that
+// processing, go with the opener's leave.
 func TestAClosedPopupsDownloadsGoWithItsOpenerThatLeavesBeforeTheCloseIsProcessed(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManager(t)
 	release := engine.gate("popup")
@@ -67,10 +69,16 @@ func TestAClosedPopupsDownloadsGoWithItsOpenerThatLeavesBeforeTheCloseIsProcesse
 	if err := manager.CloseCompanionPage(t.Context(), access, holder.id); err != nil {
 		t.Fatalf("close the opener: %v", err)
 	}
-	close(processing)
 	release()
 	awaitDone(t, adopted, "the adoption")
+	if !popupDownload(manager, engine, "popup", "dl-2", opener) {
+		t.Fatal("a download of the closed popup after its adoption ended was refused")
+	}
+	close(processing)
 	wantCarried(t, holder)
+	if row := holderRow(t, holder, "dl-2"); row.State != downloadStateCanceled || row.Error != "page closed" {
+		t.Fatalf("the opener that left lists the popup's later download as %s %q, want it canceled by its leave", row.State, row.Error)
+	}
 }
 
 // A popup the Manager refuses, whose discard is under way when its
