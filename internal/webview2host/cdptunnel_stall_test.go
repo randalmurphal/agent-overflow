@@ -150,3 +150,56 @@ func TestCDPTunnelClosesAStreamItsReaderStopped(t *testing.T) {
 		})
 	}
 }
+
+// A stream the backend closed while its write to the CDP socket is parked
+// stays the session's until that writer finishes: it still counts toward
+// the stream cap, and the tunnel's cancel closes it at once, well before
+// the write's own timeout.
+func TestCDPTunnelADrainingStreamIsOwnedUntilItsWriterFinishes(t *testing.T) {
+	stub := newBackendStub(t, "tunnel-token")
+	cancel, finished := startStallTunnel(t, stub, stalledListener(t), echoListener(t), TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: 10 * time.Second})
+	stub.open(t, 1)
+	stub.stall(t, 1, 1024)
+	stub.sendControl(t, TunnelControl{Op: TunnelClose, StreamID: 1})
+	// Frames are read in order, so stream 2's opened follows stream 1's
+	// close.
+	for id := uint32(2); id <= MaxTunnelStreams; id++ {
+		stub.open(t, id)
+	}
+	stub.sendControl(t, TunnelControl{Op: TunnelOpen, StreamID: MaxTunnelStreams + 1})
+	if got := stub.nextControl(t); got.Op != TunnelError || got.StreamID != MaxTunnelStreams+1 {
+		t.Errorf("control = %#v, want the open past the cap refused while stream 1 drains", got)
+	}
+
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the tunnel's cancel waited for a draining stream's parked write")
+	}
+}
+
+// A data frame with no data is refused at the decoder, so it never takes a
+// place in a stream's queue, whose bound counts only bytes.
+func TestCDPTunnelQueuesNoEmptyDataFrame(t *testing.T) {
+	local, peer := net.Pipe()
+	t.Cleanup(func() {
+		_ = local.Close()
+		_ = peer.Close()
+	})
+	writer := NewTunnelStreamWriter(local, TunnelStreamBounds{Backlog: 1, WriteTimeout: time.Hour}, func(error) {})
+	session := &tunnelSession{
+		tunnel:  &CDPTunnel{logf: func(string, ...any) {}},
+		streams: map[uint32]*tunnelStream{7: {id: 7, conn: local, writer: writer}},
+	}
+	for range 4096 {
+		session.handleData(EncodeTunnelData(nil, 7, nil))
+	}
+	session.handleData(EncodeTunnelData(nil, 7, []byte("x")))
+	writer.mu.Lock()
+	queued, entries := writer.queued, len(writer.queue)
+	writer.mu.Unlock()
+	if queued != 1 || entries != 1 {
+		t.Fatalf("the stream queued %d entries of %d bytes, want the one byte alone", entries, queued)
+	}
+}

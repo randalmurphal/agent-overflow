@@ -71,11 +71,11 @@ func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
 	// way. Registering the waiter BEFORE dispatching is what makes an
 	// instant answer impossible to miss.
 	correlationID := newHostedPageID()
-	waiter, err := e.watch(correlationID)
+	waiter, err := e.waiters.watch(correlationID)
 	if err != nil {
 		return err
 	}
-	defer e.unwatch(correlationID)
+	defer e.waiters.unwatch(correlationID)
 
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpClearData, PageID: string(correlationID)}) {
 		return errors.New("browser: pane host refused the clear-data directive")

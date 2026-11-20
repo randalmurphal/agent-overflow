@@ -9,8 +9,9 @@ import (
 // admitted running; the user's cancel moves it to cancel requested, which
 // the engine's refusal or CancelDownload's failure moves back; a staged
 // download's finish moves it to publishing while its file moves into the
-// Downloads folder; and its end settles it, with State saying how. Only
-// advance and settle write it.
+// Downloads folder; its page's leaving moves one whose end its engine has
+// received to end pending, which that end settles; and its end settles it,
+// with State saying how. Only advance and settle write it.
 type downloadRowPhase int
 
 const (
@@ -22,6 +23,12 @@ const (
 	// rowPublishing: its finished file moves into the Downloads folder
 	// (publishFinishedDownload), which settles it; it takes no report.
 	rowPublishing
+	// rowEndPending: its page left after its engine received its end
+	// (downloadStart.EndReported), which is on its way and settles it.
+	rowEndPending
+	// rowEndPendingCancelRequested: as rowEndPending, with the user's
+	// cancel with the engine.
+	rowEndPendingCancelRequested
 	// rowSettled: it ended, as State says.
 	rowSettled
 	// rowUserCanceled: it ended canceled while the user's cancel was with
@@ -37,6 +44,10 @@ func (p downloadRowPhase) String() string {
 		return "cancel requested"
 	case rowPublishing:
 		return "publishing"
+	case rowEndPending:
+		return "end pending"
+	case rowEndPendingCancelRequested:
+		return "end pending, cancel requested"
 	case rowSettled:
 		return "settled"
 	case rowUserCanceled:
@@ -51,7 +62,7 @@ var errDownloadPhase = errors.New("browser: download row transition not allowed"
 // ended reports a settled phase.
 func (p downloadRowPhase) ended() bool {
 	switch p {
-	case rowRunning, rowCancelRequested, rowPublishing:
+	case rowRunning, rowCancelRequested, rowPublishing, rowEndPending, rowEndPendingCancelRequested:
 		return false
 	case rowSettled, rowUserCanceled:
 		return true
@@ -60,16 +71,22 @@ func (p downloadRowPhase) ended() bool {
 }
 
 // takesReports is whether the engine's reports still apply to the row:
-// running, or with the user's cancel pending.
+// running, with the user's cancel pending, or with its end on its way.
 func (e *DownloadInfo) takesReports() bool {
-	return e.phase == rowRunning || e.phase == rowCancelRequested
+	switch e.phase {
+	case rowRunning, rowCancelRequested, rowEndPending, rowEndPendingCancelRequested:
+		return true
+	case rowPublishing, rowSettled, rowUserCanceled:
+		return false
+	}
+	panic(fmt.Sprintf("browser: %v", e.phase))
 }
 
 // advance moves the row to the running phase to, and refuses with
 // errDownloadPhase a move its phase does not allow: a cancel is requested
-// only of a running row, withdrawn only while requested, and a publish
-// begins only from a row that takes reports. A settle goes through
-// settle.
+// only of a running row, withdrawn only while requested, a publish begins
+// only from a running row, a cancel pending or not, and so does an end
+// pending, kept with its cancel. A settle goes through settle.
 func (e *DownloadInfo) advance(to downloadRowPhase) error {
 	allowed := false
 	switch to {
@@ -78,7 +95,11 @@ func (e *DownloadInfo) advance(to downloadRowPhase) error {
 	case rowRunning:
 		allowed = e.phase == rowCancelRequested
 	case rowPublishing:
-		allowed = e.takesReports()
+		allowed = e.phase == rowRunning || e.phase == rowCancelRequested
+	case rowEndPending:
+		allowed = e.phase == rowRunning
+	case rowEndPendingCancelRequested:
+		allowed = e.phase == rowCancelRequested
 	case rowSettled, rowUserCanceled:
 	}
 	if !allowed {
@@ -101,7 +122,7 @@ func (e *DownloadInfo) settle(state string) error {
 		return fmt.Errorf("%w: download %s settled again from %v", errDownloadPhase, e.ID, e.phase)
 	}
 	to := rowSettled
-	if e.phase == rowCancelRequested && state == downloadStateCanceled {
+	if (e.phase == rowCancelRequested || e.phase == rowEndPendingCancelRequested) && state == downloadStateCanceled {
 		to = rowUserCanceled
 	}
 	e.phase, e.State = to, state

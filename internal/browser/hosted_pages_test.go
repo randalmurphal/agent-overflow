@@ -2,14 +2,19 @@ package browser
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
-// A hosted page's state moves only as the table says: listed once, ending
-// once, a pending popup's listing and close in either order ending closing.
+// A hosted page's state moves only as the table says: a page being created
+// bound once and only before its close, listed once, ending once, a pending
+// popup's listing and close in either order ending closing.
 func TestAHostedPageStateMovesOnlyByItsTransitions(t *testing.T) {
 	for _, tc := range []struct {
 		from  hostedPageState
@@ -17,6 +22,13 @@ func TestAHostedPageStateMovesOnlyByItsTransitions(t *testing.T) {
 		to    hostedPageState
 		moved bool
 	}{
+		{hostedPageCreating, pageBound, hostedPageOpen, true},
+		{hostedPageCreating, pageListed, hostedPageCreating, false},
+		{hostedPageCreating, pageEnding, hostedPageClosing, true},
+		{hostedPopupPending, pageBound, hostedPopupPending, false},
+		{hostedPageOpen, pageBound, hostedPageOpen, false},
+		{hostedPopupClosing, pageBound, hostedPopupClosing, false},
+		{hostedPageClosing, pageBound, hostedPageClosing, false},
 		{hostedPopupPending, pageListed, hostedPageOpen, true},
 		{hostedPopupPending, pageEnding, hostedPopupClosing, true},
 		{hostedPageOpen, pageListed, hostedPageOpen, false},
@@ -34,6 +46,7 @@ func TestAHostedPageStateMovesOnlyByItsTransitions(t *testing.T) {
 		state         hostedPageState
 		admits, popup bool
 	}{
+		{hostedPageCreating, false, false},
 		{hostedPopupPending, true, true},
 		{hostedPageOpen, true, false},
 		{hostedPopupClosing, false, true},
@@ -57,8 +70,11 @@ func blockedPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork,
 		case <-next:
 		case <-ctx.Done():
 		}
-	}, func(<-chan struct{}) {})
-	t.Cleanup(func() { pages.stopAll()() })
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, popupadmit.Observation) {})
+	t.Cleanup(func() {
+		join, _ := pages.stopAll()
+		join()
+	})
 	return pages, works, next
 }
 
@@ -83,7 +99,7 @@ func runningSnapshot(id string, seq uint64) webview2host.DownloadReport {
 // it is listed and its work there drains.
 func TestHostedPagesReceiveWhatIsTrueAtReceipt(t *testing.T) {
 	pages, taken, _ := blockedPages(t)
-	pages.addOpen("opener")
+	openForTest(pages, "opener")
 	if !pages.addPopup("popup", "opener", "profile") || pages.addPopup("popup", "opener", "profile") {
 		t.Fatal("a popup was recorded twice")
 	}
@@ -128,31 +144,137 @@ func TestHostedPagesReceiveWhatIsTrueAtReceipt(t *testing.T) {
 	}
 }
 
-// A listed popup's later work runs on its own lane once what it already
-// had on its opener's drains.
-func TestAListedPopupLeavesItsOpenersLaneOnceItDrains(t *testing.T) {
-	pages, taken, proceed := blockedPages(t)
-	pages.addOpen("opener")
-	pages.addPopup("popup", "opener", "profile")
-	pages.acceptSnapshot("popup", runningSnapshot("dl-1", 1))
-	take(t, taken)
-	pages.listed("popup")
-	pages.acceptSnapshot("popup", webview2host.DownloadReport{ID: "dl-1", Seq: 2, State: webview2host.DownloadCompleted, Path: `C:\x.bin`})
-	if lane, _ := pages.laneOf("popup"); lane != "opener" {
-		t.Fatalf("a listed popup with work waiting moved to lane %q", lane)
+// heldPages answers pages whose lanes announce each work on taken and hold
+// it until the test releases the work's download id (its kind for a page
+// end); a close retires its page once released.
+func heldPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork, release func(id string)) {
+	t.Helper()
+	works := make(chan *acceptedWork, 64)
+	var mu sync.Mutex
+	gates := make(map[string]chan struct{})
+	gate := func(id string) chan struct{} {
+		mu.Lock()
+		defer mu.Unlock()
+		if gates[id] == nil {
+			gates[id] = make(chan struct{})
+		}
+		return gates[id]
 	}
-	proceed <- struct{}{}
-	take(t, taken)
-	proceed <- struct{}{}
-	for deadline := time.Now().Add(hostedTestDeadline); pages.busy(); time.Sleep(time.Millisecond) {
+	pages = newHostedPages(func(ctx context.Context, w *acceptedWork) {
+		id := string(w.snapshot.ID)
+		if w.kind != acceptedSnapshot {
+			id = fmt.Sprintf("%s %d", w.page, w.kind)
+		}
+		works <- w
+		select {
+		case <-gate(id):
+		case <-ctx.Done():
+		}
+		if w.kind == acceptedClose {
+			_, finish := pages.retire(w.page)
+			finish()
+		}
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, popupadmit.Observation) {})
+	t.Cleanup(func() {
+		join, _ := pages.stopAll()
+		join()
+	})
+	return pages, works, func(id string) { close(gate(id)) }
+}
+
+// takeID takes the next work and fails unless it is of download id.
+func takeID(t *testing.T, taken <-chan *acceptedWork, id string) {
+	t.Helper()
+	if w := take(t, taken); string(w.snapshot.ID) != id {
+		t.Fatalf("the lanes took %q (kind %d of %s), want %q", w.snapshot.ID, w.kind, w.page, id)
+	}
+}
+
+// takesNothing fails if a lane takes work within a moment.
+func takesNothing(t *testing.T, taken <-chan *acceptedWork, why string) {
+	t.Helper()
+	select {
+	case w := <-taken:
+		t.Fatalf("%s: the lanes took %q of %s", why, w.snapshot.ID, w.page)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A listed popup's later work runs on its own lane as soon as its own work
+// received before its listing has finished, while its opener's lane still
+// has work and takes more.
+func TestAListedPopupLeavesItsOpenersLaneOnceItsOwnWorkFinishes(t *testing.T) {
+	pages, taken, release := heldPages(t)
+	openForTest(pages, "opener")
+	pages.addPopup("popup", "opener", "profile")
+	pages.acceptSnapshot("opener", runningSnapshot("dl-o1", 1))
+	takeID(t, taken, "dl-o1")
+	pages.acceptSnapshot("popup", runningSnapshot("dl-p1", 1))
+	pages.acceptSnapshot("opener", runningSnapshot("dl-o2", 1))
+	pages.listed("popup")
+	pages.acceptSnapshot("popup", runningSnapshot("dl-p2", 1))
+	if lane, _ := pages.laneOf("popup"); lane != "popup" {
+		t.Fatalf("the listed popup's later work runs on lane %q, want its own", lane)
+	}
+	release("dl-o1")
+	takeID(t, taken, "dl-p1")
+	takesNothing(t, taken, "the popup's later work ran before its earlier work finished")
+	pages.acceptSnapshot("opener", runningSnapshot("dl-o3", 1))
+	release("dl-p1")
+	got := map[string]bool{}
+	for range 2 {
+		got[string(take(t, taken).snapshot.ID)] = true
+	}
+	if !got["dl-p2"] || !got["dl-o2"] {
+		t.Fatalf("with the opener's dl-o2 held, the lanes took %v, want the popup's dl-p2 beside it", got)
+	}
+	release("dl-p2")
+	release("dl-o2")
+	takeID(t, taken, "dl-o3")
+	release("dl-o3")
+}
+
+// A popup of an unlisted popup whose record went runs its later work on a
+// lane of that page id, after its work already on their opener's lane.
+func TestAPopupsWorkKeepsItsOrderWhenItsUnlistedOpenerGoes(t *testing.T) {
+	pages, taken, release := heldPages(t)
+	openForTest(pages, "opener")
+	pages.addPopup("popup", "opener", "profile")
+	pages.addPopup("child", "popup", "profile")
+	pages.acceptSnapshot("opener", runningSnapshot("dl-o1", 1))
+	takeID(t, taken, "dl-o1")
+	if !pages.acceptEnd("popup", acceptedClose, "").accepted {
+		t.Fatal("the popup's close was not accepted")
+	}
+	pages.acceptSnapshot("child", runningSnapshot("dl-c1", 1))
+	pages.acceptSnapshot("opener", runningSnapshot("dl-o2", 1))
+	release("dl-o1")
+	if w := take(t, taken); w.kind != acceptedClose || w.page != "popup" {
+		t.Fatalf("the lanes took %q of %s, want the popup's close", w.snapshot.ID, w.page)
+	}
+	release(fmt.Sprintf("popup %d", acceptedClose))
+	takeID(t, taken, "dl-c1")
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		if _, ok := pages.state("popup"); !ok {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("the opener's lane never drained")
+			t.Fatal("the popup's record never went")
 		}
 	}
-	pages.acceptSnapshot("popup", runningSnapshot("dl-2", 1))
-	if lane, _ := pages.laneOf("popup"); lane != "popup" {
-		t.Fatalf("the listed popup's work after the drain runs on lane %q, want its own", lane)
+	pages.acceptSnapshot("child", runningSnapshot("dl-c2", 1))
+	if lane, _ := pages.laneOf("child"); lane != "popup" {
+		t.Fatalf("the child's later work runs on lane %q, want its gone opener's id", lane)
 	}
-	take(t, taken)
-	proceed <- struct{}{}
+	takesNothing(t, taken, "the child's later work ran before its earlier work finished")
+	release("dl-c1")
+	got := map[string]bool{}
+	for range 2 {
+		got[string(take(t, taken).snapshot.ID)] = true
+	}
+	if !got["dl-c2"] || !got["dl-o2"] {
+		t.Fatalf("the lanes took %v, want the child's dl-c2 and the opener's dl-o2", got)
+	}
+	release("dl-c2")
+	release("dl-o2")
 }

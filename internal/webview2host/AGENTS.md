@@ -49,9 +49,11 @@ the report is visible, unless the directive's `Seq` (the SPA's number for
 the report the backend placed from) is newer than the report's; then, and
 without a local report, the directive's rect stands. A page is at a
 known place only once its controller, and its clip container where it has
-one, moved: `commitPlacement` takes each write's result (`writeNative`),
-never a placement without them. A move that fails hides it, its focus
-intent pending, until a later move succeeds. Shown or hidden is the host's
+one, moved: `placePage` makes those writes for the bounds it is given and
+alone makes a known placement, after they succeeded. A move that fails
+hides it, its focus intent pending, until a later move succeeds; a move
+that places a page still shown again asks for that intent, as a show does
+(`nextPresentStep`). Shown or hidden is the host's
 view only once the native show or hide succeeded, on the clipped and the
 directly parented path alike, so a refused hide is retried by the next
 present. Only backend

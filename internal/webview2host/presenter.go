@@ -1,7 +1,6 @@
 package webview2host
 
 import (
-	"errors"
 	"fmt"
 
 	"agent-overflow/internal/paneplace"
@@ -85,9 +84,10 @@ const (
 )
 
 // appliedPlacement is the place both of a page's native objects, its clip
-// container and its controller, were last moved to. Only commitPlacement
-// makes a known one, after every write succeeded; the zero value is no
-// known place, which a move takes from its first write until it commits.
+// container and its controller, were last moved to. Only placePage makes a
+// known one, after every write it made to b succeeded; the zero value is
+// no known place, which a move takes from its first write until it
+// succeeds.
 type appliedPlacement struct {
 	bounds paneBounds
 	known  bool
@@ -96,72 +96,40 @@ type appliedPlacement struct {
 // at reports whether the page is known to stand at b.
 func (p appliedPlacement) at(b paneBounds) bool { return p.known && p.bounds == b }
 
-// nativeWrite is the result of one native write that moves a page: its
-// controller's bounds, or its clip container's position. Only writeNative
-// makes one, by running the write; the zero value is no write.
-type nativeWrite struct {
-	written bool
-	err     error
+// pageWrites are the native writes that move one page: its clip
+// container's position, nil for a controller parented directly to the host
+// window, and its controller's bounds.
+type pageWrites struct {
+	clip       func(rect) error
+	controller func(rect) error
 }
 
-// writeNative runs write and answers its result.
-func writeNative(write func() error) nativeWrite {
-	return nativeWrite{written: true, err: write()}
-}
-
-// done answers nil for a write that ran and succeeded, else why not.
-func (w nativeWrite) done(what string) error {
-	switch {
-	case !w.written:
-		return fmt.Errorf("%s was not written", what)
-	case w.err != nil:
-		return fmt.Errorf("%s: %w", what, w.err)
-	}
-	return nil
-}
-
-// clipWrite is what a placement needs of the page's clip container: no
-// write for a controller parented directly to the host window
-// (directlyParented), the container's own write otherwise (clippedBy). The
-// zero value is neither, and commits nothing.
-type clipWrite struct {
-	kind  clipKind
-	write nativeWrite
-}
-
-// clipKind is how a page's controller is clipped.
-type clipKind int
-
-const (
-	// clipParent: the controller is a direct child of the host window.
-	clipParent clipKind = iota + 1
-	// clipContainer: the controller is inside the page's clip container.
-	clipContainer
-)
-
-// directlyParented is the clip of a controller with no clip container.
-func directlyParented() clipWrite { return clipWrite{kind: clipParent} }
-
-// clippedBy is the clip of a controller inside a clip container, which
-// write moved.
-func clippedBy(write nativeWrite) clipWrite { return clipWrite{kind: clipContainer, write: write} }
-
-// commitPlacement answers the placement at b that the page's writes made:
-// its controller's (controller), and before it its clip container's where
-// it has one (clip). It is known only when every write the page needs ran
-// and succeeded; otherwise it is no known place, with why.
-func commitPlacement(b paneBounds, clip clipWrite, controller nativeWrite) (appliedPlacement, error) {
-	switch clip.kind {
-	case clipContainer:
-		if err := clip.write.done("clip bounds"); err != nil {
-			return appliedPlacement{}, err
+// placePage moves a page to b, scaled by sx and sy (deviceScale), with its
+// writes, and answers its placement at b once every write succeeded. With a
+// clip container the container moves first, then the controller inside it:
+// moving the crop before its content means a growing pane never shows a
+// frame of content outside the new clip, and a clip that did not move
+// leaves the controller unwritten. With none the controller, a direct
+// child of the host window, takes the full rect host-relative and
+// overhangs. A refused write answers its error and no known place.
+func placePage(b paneBounds, sx, sy float64, writes pageWrites) (appliedPlacement, error) {
+	layout := resolvePaneLayout(b, sx, sy)
+	if writes.clip == nil {
+		if err := writes.controller(rect{
+			Left:   layout.Container.Left + layout.Controller.Left,
+			Top:    layout.Container.Top + layout.Controller.Top,
+			Right:  layout.Container.Left + layout.Controller.Right,
+			Bottom: layout.Container.Top + layout.Controller.Bottom,
+		}); err != nil {
+			return appliedPlacement{}, fmt.Errorf("controller bounds: %w", err)
 		}
-	case clipParent:
-	default:
-		return appliedPlacement{}, errors.New("the page's clip is unknown")
+		return appliedPlacement{bounds: b, known: true}, nil
 	}
-	if err := controller.done("controller bounds"); err != nil {
-		return appliedPlacement{}, err
+	if err := writes.clip(layout.Container); err != nil {
+		return appliedPlacement{}, fmt.Errorf("clip bounds: %w", err)
+	}
+	if err := writes.controller(layout.Controller); err != nil {
+		return appliedPlacement{}, fmt.Errorf("controller bounds: %w", err)
 	}
 	return appliedPlacement{bounds: b, known: true}, nil
 }
@@ -198,20 +166,25 @@ func focusDecision(shown shownView, launcherForeground bool, take func() bool) f
 
 // presentStep is what the host must do to go from the view it shows to the
 // one it wants: move first (so a show never paints at the old place), then
-// show or hide. A hidden page is not moved; it moves when it is next shown.
+// show or hide, then, with focus, ask again whether the page's pending
+// focus intent applies (focusDecision). A hidden page is not moved; it
+// moves when it is next shown.
 type presentStep struct {
 	move   bool
 	bounds paneBounds
 	show   bool
 	hide   bool
+	focus  bool
 }
 
 // nextPresentStep is what takes a page from the view the host applied to
 // the one it wants. A page at no known place is moved whatever the bounds.
 // raise asks for a show even when the page is already shown: a backend show
 // re-raises the page above the SPA, which Wails' renderer recovery can
-// recreate on top of it. The host records each part only as its native
-// call succeeds (Host.present).
+// recreate on top of it. A step that can make a page eligible for its
+// pending focus intent asks for it: a show, and a move that gives a page
+// already shown a known place again. The host records each part only as
+// its native call succeeds (Host.present).
 func nextPresentStep(shown shownView, want paneView, raise bool) presentStep {
 	var step presentStep
 	if want.visible && want.hasBounds && !shown.placement.at(want.bounds) {
@@ -223,5 +196,6 @@ func nextPresentStep(shown shownView, want paneView, raise bool) presentStep {
 	case !want.visible && shown.visible:
 		step.hide = true
 	}
+	step.focus = step.show || step.move && shown.visible && !shown.placement.known
 	return step
 }

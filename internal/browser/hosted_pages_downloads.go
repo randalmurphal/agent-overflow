@@ -39,10 +39,43 @@ type hostedDownload struct {
 	heard              time.Time
 	admission          hostedDownloadAdmission
 	cancels, reflected webview2host.CancelAttempt
+	// ending is how far its terminal snapshot has come. Guarded by
+	// hostedPages.mu.
+	ending hostedEnding
 	// The lane's alone: applied is the number of the last snapshot
 	// applied, and refused the cancel attempt whose refusal the Manager has.
 	applied uint64
 	refused webview2host.CancelAttempt
+}
+
+// hostedEnding is how far a download's terminal snapshot has come: from
+// its receipt it is the download's end, which whoever takes it delivers
+// once, its lane or Stop (takeEnd, stopAll).
+type hostedEnding int
+
+const (
+	endNotReceived hostedEnding = iota
+	endReceived
+	endTaken
+)
+
+// endReported is d's downloadStart.EndReported.
+func (p *hostedPages) endReported(d *hostedDownload) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return d.ending != endNotReceived
+}
+
+// takeEnd answers whether the caller delivers d's received end, which
+// nobody else took.
+func (p *hostedPages) takeEnd(d *hostedDownload) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d.ending != endReceived {
+		return false
+	}
+	d.ending = endTaken
+	return true
 }
 
 // live answers whether d still runs, as its lane sees it, with its

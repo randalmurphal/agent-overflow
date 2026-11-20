@@ -67,20 +67,6 @@ type hostedPopup struct {
 	// conn is its opener's browser connection, the one its target is on;
 	// nil for a popup with no target.
 	conn context.Context
-	// cancelAttach ends its attach while one is under way.
-	cancelAttach context.CancelFunc
-}
-
-// takeAttachCancelLocked takes the cancel of popup's attach, if one is under
-// way, for its caller to call once it releases e.mu: chromedp's cancel waits
-// for the target's cleanup. The caller holds e.mu.
-func (popup *hostedPopup) takeAttachCancelLocked() func() {
-	cancel := popup.cancelAttach
-	popup.cancelAttach = nil
-	if cancel == nil {
-		return func() {}
-	}
-	return cancel
 }
 
 // popupReported takes the launcher's report of a popup: the engine knows
@@ -180,25 +166,28 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle ids.PageHandle
 	case browserCtx.Err() != nil:
 		return nil, fmt.Errorf("browser: popup %s: its opener's connection to the pane browser was lost", handle)
 	}
-	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
 	// The attach is bounded on its own clock, and the popup's close or
-	// discard cancels it (takeAttachCancelLocked); its downloads are settled
-	// by that close, not by the attach.
-	e.mu.Lock()
-	if e.popups[handle] != popup {
-		e.mu.Unlock()
+	// discard signals it to end at receipt (hostedPages.attaching), which
+	// cancels attachCtx and waits for nothing; this call joins the attach's
+	// teardown, as it fails or as it closes what it attached. Its downloads
+	// are settled by that close, not by the attach.
+	attachCtx, stopAttach := context.WithCancel(browserCtx)
+	pageCtx, detach := chromedp.NewContext(attachCtx, chromedp.WithTargetID(targetID))
+	// The page's own cancel, which its close calls, joins its teardown and
+	// then lets attachCtx go.
+	pageCancel := func() {
+		detach()
+		stopAttach()
+	}
+	if !e.pages.attaching(handle, stopAttach) {
 		pageCancel()
 		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
 	}
-	popup.cancelAttach = pageCancel
-	e.mu.Unlock()
 	setup, release := e.setups.begin(context.Background(), e.attachTimeout)
 	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
 	release()
-	e.mu.Lock()
-	popup.cancelAttach = nil
-	canceled := pageCtx.Err()
-	e.mu.Unlock()
+	e.pages.attached(handle)
+	canceled := attachCtx.Err()
 	if err == nil && canceled != nil {
 		driver.Close()
 		err = fmt.Errorf("browser: attach popup %s: %w", handle, canceled)
@@ -228,17 +217,13 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle ids.PageHandle
 	return &hostedPage{pageDriver: driver, engine: e, id: handle}, nil
 }
 
-// forgetPopupLocked drops the record of popup pageID, whose page goes, and
-// answers the cancel of its attach for the caller to call once it releases
-// e.mu. The caller holds e.mu.
-func (e *hostedEngine) forgetPopupLocked(pageID ids.PageHandle) func() {
-	popup := e.popups[pageID]
-	if popup == nil {
-		return func() {}
+// forgetPopupLocked drops the record of popup pageID, whose page goes. The
+// caller holds e.mu.
+func (e *hostedEngine) forgetPopupLocked(pageID ids.PageHandle) {
+	if popup := e.popups[pageID]; popup != nil {
+		delete(e.popupByTarget, popup.target)
+		delete(e.popups, pageID)
 	}
-	delete(e.popupByTarget, popup.target)
-	delete(e.popups, pageID)
-	return popup.takeAttachCancelLocked()
 }
 
 // allowRequest is the browser-wide navigation policy for a request paused

@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -22,7 +21,8 @@ import (
 // one at a time, in the order received. A popup the Manager has not listed
 // has its work on its nearest listed opener's lane, so its download ends
 // land before its opener's close, as the launcher sent them; once listed,
-// its later work runs on its own lane after what it already has drains. A
+// its later work runs on its own lane after its own work already received
+// has finished, whatever else its opener's lane still has (gateLocked). A
 // popup's announcement is processed at receipt (popupReported), so it
 // never waits behind a lane.
 
@@ -52,6 +52,9 @@ type acceptedWork struct {
 	snapshot webview2host.DownloadReport
 	download *hostedDownload
 	crash    string
+	// releases are the lanes held until this work finishes (gateLocked).
+	// Guarded by hostedPages.mu.
+	releases []*reportLane
 }
 
 // progressOf names the download w is a running snapshot of, sent unasked:
@@ -65,28 +68,27 @@ func (w *acceptedWork) progressOf() (hostedDownloadKey, bool) {
 	return w.download.key, true
 }
 
-// reportLane runs one page tree's received work, one at a time, in the
-// order received, on a goroutine that exists only while work waits.
-// Guarded by hostedPages.mu.
+// reportLane runs the received work of the pages whose lane key is key
+// (laneKeyLocked), one at a time, in the order received, on a goroutine
+// that exists only while work waits and the lane is not held. Guarded by
+// hostedPages.mu.
 type reportLane struct {
 	key  ids.PageHandle
 	jobs []*acceptedWork
+	// current is the work being processed.
+	current *acceptedWork
 	// progress is each waiting running snapshot a newer one replaces in its
 	// place, by download.
 	progress map[hostedDownloadKey]*acceptedWork
-	// pages are the pages whose work the lane holds; each keeps the lane
-	// until it goes idle.
-	pages []ids.PageHandle
-	busy  bool
+	// held counts the work on other lanes this lane runs after (gateLocked).
+	held int
+	busy bool
 }
 
 // reportLanes are the lanes of one run, until Stop. Guarded by
 // hostedPages.mu.
 type reportLanes struct {
 	byKey map[ids.PageHandle]*reportLane
-	// pages is the lane each page's work runs on while that lane is busy, so
-	// a popup listed meanwhile keeps its order behind what it already sent.
-	pages map[ids.PageHandle]*reportLane
 	// ctx ends at Stop, which ends a path conversion under way; workers
 	// counts the lane goroutines, which Stop joins.
 	ctx     context.Context
@@ -99,24 +101,17 @@ func newReportLanes() *reportLanes {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &reportLanes{
 		byKey:   make(map[ids.PageHandle]*reportLane),
-		pages:   make(map[ids.PageHandle]*reportLane),
 		ctx:     ctx,
 		cancel:  cancel,
 		workers: new(sync.WaitGroup),
 	}
 }
 
-// laneLocked answers the lane page's work runs on: the busy lane the page
-// already has work on, else, for a popup the Manager has not listed, the
-// lane of its nearest opener that has one or is no such popup, else its
-// own. The caller holds p.mu.
-func (p *hostedPages) laneLocked(page ids.PageHandle) *reportLane {
-	lanes := p.lanes
-	if lane := lanes.pages[page]; lane != nil {
-		return lane
-	}
+// laneKeyLocked answers the key of the lane page's work runs on: for a
+// popup the Manager has not listed, its nearest opener that is no such
+// popup, or that has no record; else page itself. The caller holds p.mu.
+func (p *hostedPages) laneKeyLocked(page ids.PageHandle) ids.PageHandle {
 	key := page
-	var lane *reportLane
 	// Each opener is reported before its popups, so the chain ends; the
 	// bound stops a cycle all the same.
 	for range len(p.records) + 1 {
@@ -125,28 +120,57 @@ func (p *hostedPages) laneLocked(page ids.PageHandle) *reportLane {
 			break
 		}
 		key = r.opener
-		if lane = lanes.pages[key]; lane != nil {
-			break
-		}
 	}
-	if lane == nil {
-		lane = lanes.byKey[key]
-	}
+	return key
+}
+
+// laneLocked answers the lane of key, made if it has none. The caller
+// holds p.mu.
+func (p *hostedPages) laneLocked(key ids.PageHandle) *reportLane {
+	lane := p.lanes.byKey[key]
 	if lane == nil {
 		lane = &reportLane{key: key, progress: make(map[hostedDownloadKey]*acceptedWork)}
-		lanes.byKey[key] = lane
+		p.lanes.byKey[key] = lane
 	}
-	lanes.pages[page] = lane
-	lane.pages = append(lane.pages, page)
 	return lane
 }
 
+// gateLocked holds key's lane after its key changed for some pages (a
+// popup the Manager listed, whose lane key turns from its opener's to its
+// own, or the record of one it did not list gone, whose popups' key turns
+// to its page id): it runs once their work received before, waiting or
+// under way on any other lane, has finished, and not after that lane's
+// other work. The caller holds p.mu.
+func (p *hostedPages) gateLocked(key ids.PageHandle) {
+	var gate *reportLane
+	hold := func(w *acceptedWork) {
+		if w == nil || p.laneKeyLocked(w.page) != key {
+			return
+		}
+		if gate == nil {
+			gate = p.laneLocked(key)
+		}
+		gate.held++
+		w.releases = append(w.releases, gate)
+	}
+	for laneKey, lane := range p.lanes.byKey {
+		if laneKey == key {
+			continue
+		}
+		hold(lane.current)
+		for _, w := range lane.jobs {
+			hold(w)
+		}
+	}
+}
+
 // submitLocked queues received work on its page's lane and starts the
-// lane's goroutine if it is idle. A running snapshot sent unasked replaces
-// the same download's still waiting in its place. The caller holds p.mu.
+// lane's goroutine if it is idle and not held. A running snapshot sent
+// unasked replaces the same download's still waiting in its place. The
+// caller holds p.mu.
 func (p *hostedPages) submitLocked(w *acceptedWork) {
 	lanes := p.lanes
-	lane := p.laneLocked(w.page)
+	lane := p.laneLocked(p.laneKeyLocked(w.page))
 	if key, ok := w.progressOf(); ok {
 		if waiting := lane.progress[key]; waiting != nil {
 			if w.snapshot.Seq > waiting.snapshot.Seq {
@@ -157,7 +181,7 @@ func (p *hostedPages) submitLocked(w *acceptedWork) {
 		lane.progress[key] = w
 	}
 	lane.jobs = append(lane.jobs, w)
-	if lane.busy {
+	if lane.busy || lane.held > 0 {
 		return
 	}
 	lane.busy = true
@@ -166,19 +190,20 @@ func (p *hostedPages) submitLocked(w *acceptedWork) {
 }
 
 // runLane processes lane's work in order until none waits, or until Stop
-// ends the lanes it belongs to, then releases the lane and its pages.
+// ends the lanes it belongs to, then releases the lane.
 func (p *hostedPages) runLane(lanes *reportLanes, lane *reportLane) {
 	defer lanes.workers.Done()
 	for {
 		p.mu.Lock()
+		if done := lane.current; done != nil {
+			lane.current = nil
+			p.releaseLocked(lanes, done)
+		}
 		if len(lane.jobs) == 0 || lanes.stopped {
 			lane.busy = false
 			lane.jobs = nil
-			delete(lanes.byKey, lane.key)
-			for _, page := range lane.pages {
-				if lanes.pages[page] == lane {
-					delete(lanes.pages, page)
-				}
+			if lanes.byKey[lane.key] == lane && lane.held == 0 {
+				delete(lanes.byKey, lane.key)
 			}
 			p.mu.Unlock()
 			return
@@ -186,12 +211,34 @@ func (p *hostedPages) runLane(lanes *reportLanes, lane *reportLane) {
 		w := lane.jobs[0]
 		lane.jobs[0] = nil
 		lane.jobs = lane.jobs[1:]
+		lane.current = w
 		if key, ok := w.progressOf(); ok && lane.progress[key] == w {
 			delete(lane.progress, key)
 		}
 		p.mu.Unlock()
 		p.process(lanes.ctx, w)
 	}
+}
+
+// releaseLocked lets go of the lanes finished work w held, starting each
+// whose last hold it was and which has work, and dropping one with none.
+// The caller holds p.mu.
+func (p *hostedPages) releaseLocked(lanes *reportLanes, w *acceptedWork) {
+	for _, gate := range w.releases {
+		gate.held--
+		switch {
+		case gate.held > 0 || lanes.stopped || gate.busy:
+		case len(gate.jobs) == 0:
+			if lanes.byKey[gate.key] == gate {
+				delete(lanes.byKey, gate.key)
+			}
+		default:
+			gate.busy = true
+			lanes.workers.Add(1)
+			go p.runLane(lanes, gate)
+		}
+	}
+	w.releases = nil
 }
 
 // stopLanesLocked ends the lanes of this run: work still waiting is
@@ -222,44 +269,19 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	}
 }
 
-// acceptClose receives the launcher's close of page: its admission seals
-// now, and a popup the Manager has not listed is recorded closed in the
-// Manager's admission, so its listing is refused; the page retires on its
-// lane after its work already received (retirePage). Its attach and its
-// wait for the close end now.
+// acceptClose receives the launcher's close of page (hostedPages.acceptEnd):
+// a popup the Manager has not listed is recorded closed in the Manager's
+// admission, so its listing is refused, its admission seals and its attach
+// is signaled to end, at once; the page retires on its lane after its work
+// already received (retirePage).
 func (e *hostedEngine) acceptClose(page ids.PageHandle) {
-	receipt := e.pages.acceptEnd(page, acceptedClose, "")
-	if !receipt.accepted {
-		return
-	}
-	e.endPageWaits(page)
-	if receipt.pendingPopup {
-		e.events.PageEndReceived(page, popupadmit.Closed())
-	}
+	e.pages.acceptEnd(page, acceptedClose, "")
 }
 
 // acceptCrash receives the process failure that ended page, which the
 // Manager hears after the page's work already received
 // (engineEvents.PageCrashed); a popup the Manager has not listed is
-// recorded crashed in its admission now.
+// recorded crashed in its admission at once.
 func (e *hostedEngine) acceptCrash(page ids.PageHandle, reason string) {
-	receipt := e.pages.acceptEnd(page, acceptedCrash, reason)
-	if receipt.accepted && receipt.pendingPopup {
-		e.events.PageEndReceived(page, popupadmit.Crashed(reason))
-	}
-}
-
-// endPageWaits ends what page waits for as it goes: its popup attach and
-// its wait for the launcher's close (awaitLauncherClose).
-func (e *hostedEngine) endPageWaits(page ids.PageHandle) {
-	e.mu.Lock()
-	e.endCloseFallbackLocked(page)
-	var cancelAttach func()
-	if popup := e.popups[page]; popup != nil {
-		cancelAttach = popup.takeAttachCancelLocked()
-	}
-	e.mu.Unlock()
-	if cancelAttach != nil {
-		cancelAttach()
-	}
+	e.pages.acceptEnd(page, acceptedCrash, reason)
 }

@@ -42,6 +42,10 @@ type popupLauncher struct {
 	gatedHistory map[string]chan struct{}
 	reached      chan string
 	seq          int
+	// detach, when set, holds every Target.detachFromTarget until closed,
+	// and detaching hears each one held.
+	detach    chan struct{}
+	detaching chan struct{}
 }
 
 func newPopupLauncher(t *testing.T) *popupLauncher {
@@ -90,6 +94,18 @@ func (l *popupLauncher) respond(call fakeCDPCall) any {
 			<-gate
 		}
 		return map[string]any{"sessionId": "S-" + params.TargetID}
+	case "Target.detachFromTarget":
+		l.mu.Lock()
+		held, heard := l.detach, l.detaching
+		l.mu.Unlock()
+		if held != nil {
+			select {
+			case heard <- struct{}{}:
+			default:
+			}
+			<-held
+		}
+		return map[string]any{}
 	case "Runtime.evaluate":
 		return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
 	case "Page.getNavigationHistory":
@@ -147,6 +163,29 @@ func (l *popupLauncher) gate(target string) (release func()) {
 	l.mu.Unlock()
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// holdDetach holds every detach until the answered release.
+func (l *popupLauncher) holdDetach() (release func()) {
+	ch := make(chan struct{})
+	l.mu.Lock()
+	l.detach, l.detaching = ch, make(chan struct{}, 1)
+	l.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
+}
+
+// awaitHeldDetach waits for a detach holdDetach holds.
+func (l *popupLauncher) awaitHeldDetach() {
+	l.t.Helper()
+	l.mu.Lock()
+	heard := l.detaching
+	l.mu.Unlock()
+	select {
+	case <-heard:
+	case <-time.After(hostedTestDeadline):
+		l.t.Fatal("no detach was sent")
+	}
 }
 
 // gateHistory holds the history reads of target until the answered
@@ -249,10 +288,13 @@ func (l *popupLauncher) settledEngine() {
 	for {
 		l.engine.mu.Lock()
 		var stale []string
-		for id, popup := range l.engine.popups {
-			if _, live := l.engine.pageProfile[id]; !live || popup.cancelAttach != nil {
+		for id := range l.engine.popups {
+			if _, live := l.engine.pageProfile[id]; !live {
 				stale = append(stale, string(id))
 			}
+		}
+		for _, id := range l.engine.pages.attachingPages() {
+			stale = append(stale, "attaching "+string(id))
 		}
 		for target, id := range l.engine.popupByTarget {
 			if popup := l.engine.popups[id]; popup == nil || popup.target != target {

@@ -1,9 +1,12 @@
 package browser
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/browser/ids"
+
+	"github.com/chromedp/cdproto/target"
 )
 
 // Read-only probes of hostedPages for tests.
@@ -19,13 +22,13 @@ func (p *hostedPages) running() int {
 	return n
 }
 
-// waiting answers the kinds and downloads of the work waiting on page's
-// lane, in order.
+// waiting answers the kinds and downloads of the work waiting on the lane
+// page's work runs on, in order.
 func (p *hostedPages) waiting(page ids.PageHandle) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out []string
-	if lane := p.lanes.pages[page]; lane != nil {
+	if lane := p.lanes.byKey[p.laneKeyLocked(page)]; lane != nil {
 		for _, w := range lane.jobs {
 			out = append(out, fmt.Sprintf("%d %s %d", w.kind, w.snapshot.ID, w.snapshot.Received))
 		}
@@ -33,15 +36,23 @@ func (p *hostedPages) waiting(page ids.PageHandle) []string {
 	return out
 }
 
-// laneOf answers the key of the lane page's work runs on now, and false
-// when it has none.
+// laneOf answers the key of the lane page's next work runs on, and whether
+// any of its work waits or runs on any lane.
 func (p *hostedPages) laneOf(page ids.PageHandle) (ids.PageHandle, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if lane := p.lanes.pages[page]; lane != nil {
-		return lane.key, true
+	key := p.laneKeyLocked(page)
+	for _, lane := range p.lanes.byKey {
+		if lane.current != nil && lane.current.page == page {
+			return key, true
+		}
+		for _, w := range lane.jobs {
+			if w.page == page {
+				return key, true
+			}
+		}
 	}
-	return "", false
+	return key, false
 }
 
 // busy reports whether any lane has work.
@@ -80,6 +91,53 @@ func (p *hostedPages) endedOf(page ids.PageHandle, id downloadID) (ended int, ru
 		return 0, false
 	}
 	return len(r.ended), r.downloads[id] != nil
+}
+
+// openForTest records page as the engine records a page it created and
+// bound.
+func openForTest(p *hostedPages, page ids.PageHandle) {
+	if !p.addCreating(page) {
+		panic("browser: a test page recorded twice")
+	}
+	if err := p.bound(page); err != nil {
+		panic(err)
+	}
+}
+
+// bindForTest binds page as createPage does, its record made first and
+// any profile a test gave it kept, or a popup as its attach binds it.
+func bindForTest(e *hostedEngine, page ids.PageHandle, targetID target.ID, conn context.Context) error {
+	if !e.pages.addCreating(page) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.bindLocked(page, targetID, conn)
+		return nil
+	}
+	e.mu.Lock()
+	profile, had := e.pageProfile[page]
+	e.mu.Unlock()
+	if err := e.bind(page, targetID, conn, nil, profile); err != nil {
+		return err
+	}
+	if !had {
+		e.mu.Lock()
+		delete(e.pageProfile, page)
+		e.mu.Unlock()
+	}
+	return nil
+}
+
+// attachingPages answers the pages whose attach is recorded as under way.
+func (p *hostedPages) attachingPages() []ids.PageHandle {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []ids.PageHandle
+	for page, r := range p.records {
+		if r.stopAttach != nil {
+			out = append(out, page)
+		}
+	}
+	return out
 }
 
 // watchingNow reports whether the status loop runs.

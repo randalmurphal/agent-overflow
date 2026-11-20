@@ -1129,7 +1129,7 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 // bindTestPage binds a page on no browser connection, one that never ends.
 func bindTestPage(t *testing.T, engine *hostedEngine, pageID ids.PageHandle, targetID target.ID) {
 	t.Helper()
-	if err := engine.bind(pageID, targetID, context.Background()); err != nil {
+	if err := bindForTest(engine, pageID, targetID, context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1212,7 +1212,7 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 				t.Fatalf("ensureBrowser: %v", err)
 			}
 			for i, target := range []target.ID{"TARGET-1", "TARGET-2"} {
-				if err := engine.bind(ids.PageHandle(fmt.Sprintf("page%d", i+1)), target, connA); err != nil {
+				if err := bindForTest(engine, ids.PageHandle(fmt.Sprintf("page%d", i+1)), target, connA); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1231,7 +1231,7 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 				if connB, err = engine.ensureBrowser(); err != nil {
 					t.Fatalf("reconnect: %v", err)
 				}
-				if err := engine.bind("page3", "TARGET-3", connB); err != nil {
+				if err := bindForTest(engine, "page3", "TARGET-3", connB); err != nil {
 					t.Fatal(err)
 				}
 				if got := reports(2); !slices.Equal(got, want) {
@@ -1249,12 +1249,12 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 				if connB, err = engine.ensureBrowser(); err != nil {
 					t.Fatalf("reconnect: %v", err)
 				}
-				if err := engine.bind("page3", "TARGET-3", connB); err != nil {
+				if err := bindForTest(engine, "page3", "TARGET-3", connB); err != nil {
 					t.Fatal(err)
 				}
 				none("the reconnect")
 			}
-			if err := engine.bind("late", "TARGET-9", connA); err == nil {
+			if err := bindForTest(engine, "late", "TARGET-9", connA); err == nil {
 				t.Fatal("a page was bound on the lost connection")
 			}
 

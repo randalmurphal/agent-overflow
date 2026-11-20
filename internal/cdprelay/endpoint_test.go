@@ -6,12 +6,15 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,7 +45,13 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	endpoint, err := New(Config{Logf: func(format string, args ...any) { t.Logf(format, args...) }})
+	return newLoggingFixture(t, func(format string, args ...any) { t.Logf(format, args...) })
+}
+
+// newLoggingFixture is newFixture with its endpoint logging to logf.
+func newLoggingFixture(t *testing.T, logf func(string, ...any)) *fixture {
+	t.Helper()
+	endpoint, err := New(Config{Logf: logf})
 	if err != nil {
 		t.Fatalf("new endpoint: %v", err)
 	}
@@ -629,5 +638,62 @@ func TestRewriteDebuggerURL(t *testing.T) {
 		if got, err := RewriteDebuggerURL(raw, addr); err == nil {
 			t.Fatalf("%q was accepted as %q", raw, got)
 		}
+	}
+}
+
+// A stream the launcher closed while its write to the local socket is
+// parked stays the session's until that writer finishes: it still counts
+// toward the stream cap, and the tunnel's cancel ends the session at once.
+func TestRelayADrainingStreamIsOwnedUntilItsWriterFinishes(t *testing.T) {
+	f := newFixture(t)
+	f.endpoint.streamBounds = webview2host.TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: time.Hour}
+	p := f.connect()
+
+	_ = f.dialLocal()
+	stalledID := p.acceptOpen()
+	p.stallStream(stalledID, 1024)
+	p.send(webview2host.TunnelControl{Op: webview2host.TunnelClose, StreamID: stalledID})
+	for range webview2host.MaxTunnelStreams - 1 {
+		_ = f.dialLocal()
+		p.acceptOpen()
+	}
+	overflow := f.dialLocal()
+	if err := overflow.SetReadDeadline(time.Now().Add(testDeadline)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := overflow.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("a connection past the cap was not closed while a stream drains: %v", err)
+	}
+
+	f.cancel()
+	select {
+	case <-f.served:
+	case <-time.After(testDeadline):
+		t.Fatal("the tunnel's cancel waited for a draining stream's parked write")
+	}
+}
+
+// A data frame with no data is refused at the decoder, before its stream's
+// queue, whose bound counts only bytes, and the stream carries on.
+func TestRelayQueuesNoEmptyDataFrame(t *testing.T) {
+	var mu sync.Mutex
+	var logged []string
+	f := newLoggingFixture(t, func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	p := f.connect()
+	local := f.dialLocal()
+	id := p.acceptOpen()
+	p.sendData(id, nil)
+	p.sendData(id, []byte("after"))
+	if got := string(readN(t, local, len("after"))); got != "after" {
+		t.Fatalf("the stream saw %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, webview2host.ErrEmptyDataFrame.Error()) }) {
+		t.Fatalf("an empty data frame was not refused: %q", logged)
 	}
 }

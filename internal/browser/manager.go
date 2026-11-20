@@ -181,6 +181,10 @@ type Manager struct {
 	publishMu   sync.Mutex
 	publishing  int
 	publishIdle chan struct{}
+	// endPending is each page that left with a download whose end its
+	// engine received and has yet to deliver, by download, until that end
+	// settles the row (pageLeftLocked). Guarded by mu.
+	endPending map[downloadID]*managedPage
 	// downloadPushInterval overrides downloadPushInterval when set (tests).
 	downloadPushInterval time.Duration
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.

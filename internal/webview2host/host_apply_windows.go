@@ -125,13 +125,14 @@ func (h *Host) ApplyGeometry(reports []PaneGeometry) {
 // present brings one page to the view its presentation calls for
 // (presenter.go): moved before it is shown, never moved while hidden. raise
 // re-raises a page already shown. The page is at no known place from a
-// move's first write until both writes succeeded (place). A move that
+// move's first write until both writes succeeded (placePage). A move that
 // failed, of the clip container or the controller, may leave the two apart,
 // so the page is hidden there and stays hidden, its focus intent pending,
 // until a later present places it. Visibility is committed the same way:
 // the host's view of it changes only once the native show or hide
-// succeeded, so a failed hide stays due and the next present retries it.
-// Runs on the UI thread.
+// succeeded, so a failed hide stays due and the next present retries it. A
+// pending focus intent is asked again whenever the step can have made the
+// page eligible for it. Runs on the UI thread.
 func (h *Host) present(page *hostPage, raise bool) {
 	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
 	step := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
@@ -147,20 +148,23 @@ func (h *Host) present(page *hostPage, raise bool) {
 		}
 		page.shown.placement = placed
 	}
-	if step.show && h.showPage(page) {
-		h.applyPendingFocus(page)
+	if step.show {
+		h.showPage(page)
 	}
 	if step.hide {
 		h.hidePage(page)
 	}
+	if step.focus {
+		h.applyPendingFocus(page)
+	}
 }
 
-// showPage shows the page's clip container and raises it, and answers
-// whether it is shown: only then does the host's view say so.
-func (h *Host) showPage(page *hostPage) bool {
+// showPage shows the page's clip container and raises it. The host's view
+// says shown only once that succeeded.
+func (h *Host) showPage(page *hostPage) {
 	if err := page.controller.putIsVisible(true); err != nil {
 		h.config.Logf("browser host: page %s show: %v", page.id, err)
-		return false
+		return
 	}
 	// The container tracks visibility too. It is not decoration: a shown
 	// container with nothing in it is an invisible window swallowing every
@@ -169,7 +173,7 @@ func (h *Host) showPage(page *hostPage) bool {
 	if page.container != 0 {
 		if err := h.showClip(page.container, true); err != nil {
 			h.config.Logf("browser host: page %s show: %v", page.id, err)
-			return false
+			return
 		}
 	}
 	// Every backend show re-raises: Wails' own recovery path can recreate
@@ -177,7 +181,6 @@ func (h *Host) showPage(page *hostPage) bool {
 	// raise is cheap.
 	raiseChild(page.raiseTarget())
 	page.shown.visible = true
-	return true
 }
 
 // hidePage hides the page's clip container. Hiding is the CONTAINER's: the
@@ -206,8 +209,8 @@ func (h *Host) hidePage(page *hostPage) {
 }
 
 // place moves one page to b and answers its placement there, which exists
-// only when both its clip container and its controller moved
-// (commitPlacement). Runs on the UI thread.
+// only when both its clip container and its controller moved (placePage).
+// Runs on the UI thread.
 //
 // The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
 // it was measured under (deviceScale). BOTH rects are scaled by that one
@@ -216,32 +219,11 @@ func (h *Host) hidePage(page *hostPage) {
 func (h *Host) place(page *hostPage, b paneBounds) (appliedPlacement, error) {
 	cw, ch, hasClient := clientSize(h.config.HostWindow())
 	sx, sy := deviceScale(b, cw, ch, hasClient)
-	layout := resolvePaneLayout(b, sx, sy)
-
-	moveController := func(bounds rect) nativeWrite {
-		return writeNative(func() error { return page.controller.putBounds(bounds) })
+	writes := pageWrites{controller: page.controller.putBounds}
+	if container := page.container; container != 0 {
+		writes.clip = func(r rect) error { return h.moveClip(container, r) }
 	}
-	if page.container == 0 {
-		// No container: the controller is still a direct child of the host,
-		// so its bounds are host-relative and there is nothing to clip
-		// against. Position the full rect and let it overhang, which is the
-		// behaviour that shipped before clipping existed.
-		return commitPlacement(b, directlyParented(), moveController(rect{
-			Left:   layout.Container.Left + layout.Controller.Left,
-			Top:    layout.Container.Top + layout.Controller.Top,
-			Right:  layout.Container.Left + layout.Controller.Right,
-			Bottom: layout.Container.Top + layout.Controller.Bottom,
-		}))
-	}
-	// Container first, then the controller inside it: moving the crop
-	// before its content means a growing pane never shows a frame of content
-	// outside the new clip. A clip that did not move leaves the controller
-	// unwritten.
-	clip := clippedBy(writeNative(func() error { return h.moveClip(page.container, layout.Container) }))
-	if clip.write.err != nil {
-		return commitPlacement(b, clip, nativeWrite{})
-	}
-	return commitPlacement(b, clip, moveController(layout.Controller))
+	return placePage(b, sx, sy, writes)
 }
 
 // applyBackground sets the controller's default background colour (an

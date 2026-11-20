@@ -68,6 +68,92 @@ func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
+// A tab the Manager closes after the launcher's completed report of its
+// download was received, while the report's path conversion runs, keeps
+// that download completed: the received end owns the row
+// (downloadStart.EndReported). A download still running when its tab
+// closes is canceled with the tab.
+func TestAClosedTabKeepsTheDownloadItsEngineReportedFinished(t *testing.T) {
+	for _, finished := range []bool{true, false} {
+		name := "running"
+		if finished {
+			name = "finished"
+		}
+		t.Run(name, func(t *testing.T) {
+			l := newPopupLauncher(t)
+			access := l.access("thread")
+			tab, page := l.open(access)
+			l.open(access)
+			sendDownload(t, l.engine, page, webview2host.DownloadReport{ID: "dl-1", Seq: 1, State: webview2host.DownloadRunning, URI: "https://example.test/a.bin", Name: "a.bin", Path: `C:\Users\dev\Downloads\a.bin`, Received: 1, Total: 10})
+			l.awaitDownloads(access, downloadStateRunning)
+			entered, unblock := blockPath(t, l.engine, "a.bin")
+			if finished {
+				completed := completedAt("dl-1", "a.bin")
+				completed.Seq = 2
+				sendDownload(t, l.engine, page, completed)
+				awaitClosed(t, entered, "the completion's path conversion")
+			}
+			if err := l.manager.CloseCompanionPage(t.Context(), access, PageID(tab)); err != nil {
+				t.Fatalf("close the tab: %v", err)
+			}
+			if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(page)]; listed {
+				t.Fatal("the closed tab is still listed")
+			}
+			unblock()
+			if !finished {
+				l.awaitDownloads(access, downloadStateCanceled)
+				return
+			}
+			l.awaitDownloads(access, downloadStateCompleted)
+			settleReports(t, l.engine, "")
+			got := l.manager.CompanionState(access.Caller()).Downloads[0]
+			// The fake launcher's file is not on disk, which the row says.
+			if got.State != downloadStateCompleted || strings.Contains(got.Error, "closed") {
+				t.Fatalf("the finished download of the closed tab is %+v, want completed", got)
+			}
+			l.manager.mu.Lock()
+			pending := len(l.manager.endPending)
+			l.manager.mu.Unlock()
+			if pending != 0 {
+				t.Fatalf("the Manager still waits for %d ends", pending)
+			}
+		})
+	}
+}
+
+// The browser's close with completed reports received and not delivered,
+// one in its path conversion and one waiting behind it on the lane,
+// completes both rows, the file named and not opened from here, rather
+// than leaving them running or listing them canceled.
+func TestTheBrowsersCloseDeliversTheEndsItsEngineReceived(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := l.access("thread")
+	_, page := l.open(access)
+	for _, id := range []string{"dl-1", "dl-2"} {
+		sendDownload(t, l.engine, page, webview2host.DownloadReport{ID: id, Seq: 1, State: webview2host.DownloadRunning, URI: "https://example.test/" + id, Name: id + ".bin", Path: `C:\Users\dev\Downloads\` + id + ".bin", Received: 1, Total: 10})
+	}
+	l.awaitDownloads(access, downloadStateRunning, downloadStateRunning)
+	entered, _ := blockPath(t, l.engine, "dl-1.bin")
+	for _, id := range []string{"dl-1", "dl-2"} {
+		completed := completedAt(id, id+".bin")
+		completed.Seq = 2
+		sendDownload(t, l.engine, page, completed)
+	}
+	awaitClosed(t, entered, "dl-1's path conversion")
+	if err := l.manager.Close(); err != nil {
+		t.Fatalf("close the browser: %v", err)
+	}
+	downloads := l.manager.CompanionState(access.Caller()).Downloads
+	if len(downloads) != 2 {
+		t.Fatalf("the thread lists %+v, want both downloads", downloads)
+	}
+	for _, d := range downloads {
+		if d.State != downloadStateCompleted || !strings.Contains(d.Error, "not opened from here") {
+			t.Errorf("download %s is %s (%q), want completed and not opened from here", d.Name, d.State, d.Error)
+		}
+	}
+}
+
 // A pending popup's completed download the launcher reported, terminal
 // first, before the Manager's discard of the popup is kept: the discard
 // runs on the popup's lane after it, so the completion reaches the
@@ -353,5 +439,89 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A page whose close the launcher reported after its created report, while
+// its CDP attach was still under way, is never listed: its record is
+// creating from the create directive, the close ends it, and the bind,
+// which is that record's transition, fails.
+func TestAPageClosedBeforeItsBindIsNotListed(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := l.access("thread")
+	releases := make(chan func(), 1)
+	created := make(chan string, 1)
+	send := l.engine.send
+	l.engine.send = func(directive webview2host.Directive) {
+		if directive.Op == webview2host.OpCreate {
+			releases <- l.gate("T-" + directive.PageID)
+			created <- directive.PageID
+		}
+		send(directive)
+	}
+	opened := make(chan PageInfo, 1)
+	go func() {
+		// A failed create is shown on the tab, not returned.
+		info, _ := l.manager.NewCompanionPage(context.Background(), access, "")
+		opened <- info
+	}()
+	var pageID string
+	select {
+	case pageID = <-created:
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("no page was created")
+	}
+	release := <-releases
+	defer release()
+	l.awaitAttach("T-" + pageID)
+	l.report(pageID, webview2host.ReportClosed, "")
+	release()
+	select {
+	case info := <-opened:
+		if info.ID != "" {
+			t.Errorf("a page closed before its bind was opened as tab %s", info.ID)
+		}
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("the create never returned")
+	}
+	if tabs := l.tabs(string(access.ThreadID)); len(tabs) != 0 {
+		t.Fatalf("the thread lists %d tabs, want none", len(tabs))
+	}
+	settleReports(t, l.engine, "")
+	if _, kept := l.engine.pages.state(ids.PageHandle(pageID)); kept {
+		t.Fatal("the closed page's record stayed")
+	}
+}
+
+// A second discard of a page whose first discard is still settling it,
+// held in its page-gone download callback, waits for that settlement: the
+// record and its completion stay until the last callback returned.
+func TestASecondDiscardWaitsForTheFirstsLastCallback(t *testing.T) {
+	engine, _, _ := newDownloadHostedEngine(t)
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	reportDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadRunning, 10))
+	inGone, releaseGone := make(chan struct{}), make(chan struct{})
+	progress := engine.events.DownloadProgress
+	engine.events.DownloadProgress = func(event downloadProgress) {
+		if event.State == downloadPageGone {
+			close(inGone)
+			<-releaseGone
+		}
+		progress(event)
+	}
+	first := make(chan error, 1)
+	go func() { first <- engine.DiscardPage(context.Background(), "page1") }()
+	awaitClosed(t, inGone, "the first discard's page-gone callback")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := engine.DiscardPage(ctx, "page1"); !errors.Is(err, errDiscardPending) {
+		t.Errorf("a second discard during the first's callback answered %v, want it pending", err)
+	}
+	close(releaseGone)
+	if err := <-first; err != nil {
+		t.Fatalf("the first discard answered %v", err)
+	}
+	if err := engine.DiscardPage(context.Background(), "page1"); err != nil {
+		t.Fatalf("a discard after the page retired answered %v", err)
 	}
 }

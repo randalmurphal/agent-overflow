@@ -212,8 +212,9 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 }
 
 // Stop drops the work still waiting, ends a path conversion under way, and
-// returns once the lane's goroutine has: nothing reaches the Manager after
-// it.
+// returns once the lane's goroutine has: a received end, the one whose
+// conversion it ended, reaches the Manager as received, before Stop
+// returns, a running snapshot not at all, and nothing after it.
 func TestStopJoinsTheAcceptedReports(t *testing.T) {
 	engine, _, recorder := newDownloadHostedEngine(t)
 	bindTestPage(t, engine, "page1", "TARGET-1")
@@ -243,7 +244,7 @@ func TestStopJoinsTheAcceptedReports(t *testing.T) {
 	}
 	_, progress := recorder.take()
 	time.Sleep(20 * time.Millisecond)
-	if _, late := recorder.take(); len(progress) != 0 || len(late) != 0 {
+	if _, late := recorder.take(); len(progress) != 1 || progress[0].ID != "dl-1" || progress[0].State != downloadCompleted || progress[0].FilePath != "" || len(late) != 0 {
 		t.Fatalf("the Manager heard %+v while the engine stopped and %+v after", progress, late)
 	}
 }

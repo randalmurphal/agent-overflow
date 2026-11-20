@@ -14,7 +14,7 @@ import (
 // engine holds.
 func (e *hostedEngine) noteFindUnavailable(pageID ids.PageHandle) {
 	e.mu.Lock()
-	_, creating := e.pending[pageID]
+	creating := e.waiters.has(pageID)
 	_, popup := e.popups[pageID]
 	_, bound := e.targetByPage[pageID]
 	known := creating || popup || bound

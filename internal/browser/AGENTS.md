@@ -142,10 +142,12 @@ ancestor however many popups come and go; only ended ones go to a bounded
 history, past which a popup's ancestry is unknown, never empty. A WebKit popup view's close and crash handlers are
 installed at its creation, and until its adoption it names itself by its
 popup number. A hosted page is one record with one state
-(`hosted_pages.go`): it admits downloads from its bind or popup report
-until its close or discard is received, and its lane retires it after
+(`hosted_pages.go`), from its create directive or popup report: it admits
+downloads from its bind or popup report until its close or discard is
+received, a bind after its close fails, and its lane retires it after
 the reports received before that, ending the downloads still running
-(`retirePage`). An engine that processes a page's end after receiving it
+(`retirePage`); the record stays until that retirement returned, so a
+later close or discard joins it. An engine that processes a page's end after receiving it
 records the end at receipt (`PageEndReceived`), and the Manager tells a
 listed popup's driver it is listed (`listingDriver`). The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per
@@ -246,8 +248,10 @@ canceled, failed, untracked, page gone); the Manager lists it from that,
 never from whether a cancel was pending. Every removal of a live page
 goes through `pageLeftLocked`, which settles the page's running
 downloads, except one whose file is being published, which its publish
-settles, and, in the same hold of its log, ends its admission of new
-ones. The hosted engine's
+settles, and one whose end its engine received and still delivers
+(`downloadStart.EndReported`, the hosted engine's lanes, and Stop for
+what they did not process), which that end settles, and, in the same
+hold of its log, ends its admission of new ones. The hosted engine's
 downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 each a download of one page, keyed by page and id, so a report naming
 another page's download is refused; its page's lane applies them in
@@ -257,8 +261,9 @@ made while its admission is in flight is kept and sent as it is admitted.
 Cancels are numbered, and the refusal of the last one sent withdraws the
 Manager's cancel from whichever snapshot first carries it. A launcher
 report is acknowledged at receipt, never after its processing
-(`hosted_pages.go`, `hosted_report_lanes.go`): receipt changes only the
-page's record, and a snapshot, close, discard or crash runs afterwards on
+(`hosted_pages.go`, `hosted_report_lanes.go`): receipt takes no engine
+lock and changes only the page's record, an unlisted popup's admission and
+the signal that ends its attach, and a snapshot, close, discard or crash runs afterwards on
 its page's lane, in order, with an unlisted popup's on its opener's, so no
 path conversion holds another page's report and a discard settles after
 the work received before it. `DiscardPage` waits for that within its

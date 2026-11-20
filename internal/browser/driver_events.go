@@ -62,6 +62,12 @@ type downloadStart struct {
 	Popup   ids.PageHandle
 	Openers []ids.PageHandle
 	Profile profileHandle
+	// EndReported, nil on an engine that delivers a download's end as it
+	// learns it, reports whether the engine has received the download's
+	// end and has yet to deliver it (the hosted engine's report lanes),
+	// which it does even past Stop: the Manager leaves such a row to that
+	// end when its page leaves (pageLeftLocked).
+	EndReported func() bool
 }
 
 // downloadAdmission is the Manager's answer to a download's start
