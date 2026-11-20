@@ -354,22 +354,22 @@ func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(
 	}
 }
 
-func TestWSLSingleInstanceModeUsesLauncherMode(t *testing.T) {
+func TestLauncherRuntimeModeUsesLauncherMode(t *testing.T) {
 	orig := launcherMode
 	origProfile := activeProfile
 	t.Cleanup(func() { launcherMode = orig; activeProfile = origProfile })
 	activeProfile = ""
 
 	launcherMode = "dev"
-	if got := wslSingleInstanceMode(); got != "dev" {
+	if got := launcherRuntimeMode(); got != "dev" {
 		t.Fatalf("dev launcher mode = %q", got)
 	}
 	launcherMode = "prod"
-	if got := wslSingleInstanceMode(); got != "prod" {
+	if got := launcherRuntimeMode(); got != "prod" {
 		t.Fatalf("prod launcher mode = %q", got)
 	}
 	launcherMode = ""
-	if got := wslSingleInstanceMode(); got != "prod" {
+	if got := launcherRuntimeMode(); got != "prod" {
 		t.Fatalf("empty launcher mode = %q, want prod", got)
 	}
 }
@@ -591,10 +591,10 @@ func TestIsolatedProfilesFoldEveryPerInstanceName(t *testing.T) {
 		}
 		state, _ := windowStatePath()
 		for axis, value := range map[string]string{
-			"window state path":    state,
-			"webview data dir":     webviewDataDir(mode),
-			"single-instance mode": wslSingleInstanceMode(),
-			"log file":             appidentity.StateFileName("launcher.log", mode),
+			"window state path":  state,
+			"webview data dir":   webviewDataDir(mode),
+			"single-instance id": appidentity.SingleInstanceID("wsl", mode),
+			"log file":           appidentity.StateFileName("launcher.log", mode),
 		} {
 			if seen[axis] == nil {
 				seen[axis] = map[string]string{}

@@ -119,7 +119,7 @@ func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) error {
 	if err != nil {
 		return fmt.Errorf("new-window subscription: %w", err)
 	}
-	closing := newViewEventHandler(func() { h.windowCloseRequested(page) })
+	closing := newViewEventHandler(func() { h.closeAsked(page) })
 	page.closeRequested = closing
 	err = view.addWindowCloseRequested(closing)
 	closing.ref.release()
@@ -444,13 +444,8 @@ func (h *Host) pageReport(page *hostPage, kind ReportKind, detail string) {
 	}
 }
 
-// windowCloseRequested closes a page whose document asked to close
-// (window.close()), as every engine closes a view that asks.
-func (h *Host) windowCloseRequested(page *hostPage) {
-	h.closeAsked(page)
-}
-
-// closeAsked closes a page that asked to close, in a UI-thread turn posted
+// closeAsked closes a page whose document asked to close (window.close()),
+// as every engine closes a view that asks, in a UI-thread turn posted
 // after the caller's event, since a controller must not be closed inside
 // its own event. The turn decides on the page as it is then: one already
 // gone, its downloads retired, is not in the registry to take, and one

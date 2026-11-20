@@ -1396,7 +1396,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		a.queueNotificationActivation(target)
 	})
 	a.notificationService = notificationService
-	mode := wslSingleInstanceMode()
+	mode := launcherRuntimeMode()
 	title := appidentity.AppTitle(mode)
 
 	// Preserve the previous browser session's Chromium log before this
@@ -1689,19 +1689,11 @@ func (a *launcherApp) drainNotificationActivations() {
 
 func wslSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {
 	return &application.SingleInstanceOptions{
-		UniqueID: appidentity.SingleInstanceID("wsl", wslSingleInstanceMode()),
+		UniqueID: appidentity.SingleInstanceID("wsl", launcherRuntimeMode()),
 		OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
 			uiwindow.Reveal(window())
 		},
 	}
-}
-
-// wslSingleInstanceMode is the folded (build stamp + runtime profile)
-// mode every per-instance name is derived from. Named for its oldest
-// caller; it is the same string that picks the title, WebView2 profile,
-// CDP port, log file, and window-state file.
-func wslSingleInstanceMode() string {
-	return launcherRuntimeMode()
 }
 
 // browserArgs returns the Chromium command-line flags forwarded to

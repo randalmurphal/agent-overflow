@@ -323,7 +323,7 @@ func (h *Host) endDownload(d *hostDownload, end downloadVerdict) {
 	d.page.ended.add(terminal)
 	h.report(d.page, terminal)
 	if d.page.closeAfterDownloads && len(d.page.downloads) == 0 {
-		// The page asked to close while this ran (windowCloseRequested).
+		// The page asked to close while this ran (closeAsked).
 		h.closeAsked(d.page)
 	}
 }
