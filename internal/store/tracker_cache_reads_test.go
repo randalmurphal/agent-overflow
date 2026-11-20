@@ -361,3 +361,55 @@ func TestListMirrorCardsIsBounded(t *testing.T) {
 		t.Fatalf("lookup at the bound = %v, %v", cards, err)
 	}
 }
+
+// Every mirror read that takes a list of IDs reads a repeated ID once: its
+// answer is the answer for the list with each ID once, at its first place.
+func TestMirrorListReadsTakeEachIDOnce(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	ids := patchBoard(t, s, root, 30)
+	onBoth := patchRows(30)[3]
+	onBoth.OrderKey = "a"
+	writeMirrorBoard(t, s, root, "11", []MirrorRow{onBoth})
+	once, twice := []string{ids[3], ids[0], ids[1]}, []string{ids[3], ids[0], ids[3], ids[1], ids[0], ids[3]}
+	given := slices.Clone(twice)
+	for _, read := range []struct {
+		name string
+		read func(ids []string) (any, error)
+	}{
+		{"ReadMirrorBoardPatch", func(ids []string) (any, error) {
+			patch, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids)
+			return patch, err
+		}},
+		{"ListMirrorIssueBoards", func(ids []string) (any, error) { return s.ListMirrorIssueBoards(root, ids) }},
+		{"ListMirrorCards", func(ids []string) (any, error) { return s.ListMirrorCards(root, ids) }},
+		{"GetMirrorCatalog users", func([]string) (any, error) {
+			return s.GetMirrorCatalog(root, []string{"acc-user1", "acc-user1"}, []string{"1"})
+		}},
+		{"GetMirrorCatalog statuses", func([]string) (any, error) {
+			return s.GetMirrorCatalog(root, nil, []string{"3", "1", "3"})
+		}},
+	} {
+		want, err := read.read(once)
+		if err != nil {
+			t.Fatalf("%s: %v", read.name, err)
+		}
+		got, err := read.read(twice)
+		if err != nil {
+			t.Fatalf("%s: %v", read.name, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s of a list with repeats = %+v\nwant %+v", read.name, got, want)
+		}
+	}
+	if boards, err := s.ListMirrorIssueBoards(root, twice); err != nil || len(boards) != 4 || boards[0] != (MirrorIssueBoard{ids[3], "10"}) {
+		t.Errorf("boards of %v = %v, %v; want ids[3] on 10 and 11 first, then the others once", twice, boards, err)
+	}
+	if catalog, err := s.GetMirrorCatalog(root, []string{"acc-user1", "acc-user1"}, []string{"3", "1", "3"}); err != nil ||
+		len(catalog.Users) != 1 || len(catalog.Statuses) != 2 {
+		t.Errorf("catalog = %+v, %v; want one user and two statuses", catalog, err)
+	}
+	if !slices.Equal(twice, given) {
+		t.Errorf("the reads changed their list to %v", twice)
+	}
+}

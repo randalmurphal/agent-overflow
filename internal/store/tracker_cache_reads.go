@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -53,34 +54,37 @@ func scanMirrorCard(row rowScanner, extra ...any) (MirrorCard, error) {
 
 // GetMirrorBoard reads the structure of a board the mirror shows: the
 // board, its columns with their statuses, its sprints and its lifetime.
-// The catalog is read by ID (GetMirrorCatalog).
+// The catalog is read by ID (GetMirrorCatalog). Its statements are bounded
+// by the structure's limits, and it reads in one snapshot like every
+// mirror read of more than one statement (mirrorReadSnapshot).
 func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure, ok bool, err error) {
-	action := fmt.Sprintf("store: read tracker mirror %d board %s", rootID, boardID)
-	tx, err := s.reader().Begin()
+	label := fmt.Sprintf("read tracker mirror %d board %s", rootID, boardID)
+	st, err = mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorStructure, error) {
+		var out MirrorStructure
+		b := &out.Board
+		err := tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.data, b.lifetime FROM tracker_cache_boards b
+			WHERE b.root_id = ?1 AND b.board_id = ?2 AND `+mirrorBoardShown("?1", "?2"), rootID, boardID).Scan(
+			&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.Data, &out.Lifetime)
+		if errors.Is(err, sql.ErrNoRows) {
+			return MirrorStructure{}, nil
+		}
+		if err != nil {
+			return MirrorStructure{}, err
+		}
+		ok = true
+		if out.Columns, err = readMirrorColumnsTx(tx, rootID, boardID); err != nil {
+			return MirrorStructure{}, err
+		}
+		out.Sprints, err = readMirrorSprintsTx(tx, rootID, boardID)
+		return out, err
+	})
 	if err != nil {
-		return MirrorStructure{}, false, fmt.Errorf("%s: begin: %w", action, err)
+		return MirrorStructure{}, false, err
 	}
-	defer rollbackTx(tx, action, &err)
-	b := &st.Board
-	err = tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.data, b.lifetime FROM tracker_cache_boards b
-		WHERE b.root_id = ?1 AND b.board_id = ?2 AND `+mirrorBoardShown("?1", "?2"), rootID, boardID).Scan(
-		&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.Data, &st.Lifetime)
-	if errors.Is(err, sql.ErrNoRows) {
-		return MirrorStructure{}, false, nil
-	}
-	if err != nil {
-		return MirrorStructure{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	if st.Columns, err = readMirrorColumnsTx(tx, rootID, boardID); err != nil {
-		return MirrorStructure{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	if st.Sprints, err = readMirrorSprintsTx(tx, rootID, boardID); err != nil {
-		return MirrorStructure{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	return st, true, tx.Commit()
+	return st, ok, nil
 }
 
-func readMirrorColumnsTx(tx *sql.Tx, rootID int64, boardID string) ([]MirrorColumn, error) {
+func readMirrorColumnsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorColumn, error) {
 	names, err := queryIDs(tx, `SELECT name FROM tracker_cache_board_columns WHERE root_id = ? AND board_id = ?
 		ORDER BY position LIMIT `+strconv.Itoa(mirrorMaxColumns), rootID, boardID)
 	if err != nil {
@@ -108,7 +112,7 @@ func readMirrorColumnsTx(tx *sql.Tx, rootID int64, boardID string) ([]MirrorColu
 	return columns, nil
 }
 
-func readMirrorSprintsTx(tx *sql.Tx, rootID int64, boardID string) ([]MirrorSprint, error) {
+func readMirrorSprintsTx(tx sqlQueryer, rootID int64, boardID string) ([]MirrorSprint, error) {
 	var sprints []MirrorSprint
 	err := scanMirrorRows(tx, `SELECT sprint_id, origin_board_id, name, goal, state, start_at, end_at, completed_at
 		FROM tracker_cache_sprints WHERE root_id = ? AND board_id = ?
@@ -124,23 +128,18 @@ func readMirrorSprintsTx(tx *sql.Tx, rootID int64, boardID string) ([]MirrorSpri
 	return sprints, nil
 }
 
-// GetMirrorCatalog reads the users and statuses of rootID named by ID,
-// each sorted by ID; an ID the mirror does not hold is left out.
+// GetMirrorCatalog reads the users and statuses of rootID named by ID, in
+// one statement, each sorted by ID and read once; an ID the mirror does
+// not hold is left out.
 func (s *Store) GetMirrorCatalog(rootID int64, users, statuses []string) (catalog MirrorCatalog, err error) {
-	action := fmt.Sprintf("store: read tracker mirror %d catalog", rootID)
 	if len(users) > mirrorMaxLookup || len(statuses) > mirrorMaxLookup {
 		return MirrorCatalog{}, fmt.Errorf("%w: %d users and %d statuses, over %d", ErrInvalidTrackerCache, len(users), len(statuses), mirrorMaxLookup)
 	}
-	tx, err := s.reader().Begin()
-	if err != nil {
-		return MirrorCatalog{}, fmt.Errorf("%s: begin: %w", action, err)
-	}
-	defer rollbackTx(tx, action, &err)
-	if err := readMirrorCatalogTx(tx, rootID, users, statuses, &catalog); err != nil {
-		return MirrorCatalog{}, fmt.Errorf("%s: %w", action, err)
+	if err := readMirrorCatalogTx(s.reader(), rootID, users, statuses, &catalog); err != nil {
+		return MirrorCatalog{}, fmt.Errorf("store: read tracker mirror %d catalog: %w", rootID, err)
 	}
 	sortMirrorCatalog(&catalog)
-	return catalog, tx.Commit()
+	return catalog, nil
 }
 
 // mirrorCatalogByIDSQL reads users ?2 and statuses ?3 (JSON lists of IDs)
@@ -156,7 +155,7 @@ var mirrorCatalogByIDSQL = `SELECT u.user_id, u.name, u.data, NULL FROM json_eac
 
 // readMirrorCatalogTx appends to catalog the users and statuses of rootID
 // named by ID, at most mirrorMaxLookup of each, in one statement.
-func readMirrorCatalogTx(tx *sql.Tx, rootID int64, users, statuses []string, catalog *MirrorCatalog) error {
+func readMirrorCatalogTx(tx sqlQueryer, rootID int64, users, statuses []string, catalog *MirrorCatalog) error {
 	if len(users)+len(statuses) == 0 {
 		return nil
 	}
@@ -208,7 +207,7 @@ type MirrorNames struct {
 // readMirrorNamesTx reads what the cards of rows name, and the statuses
 // also, in tx's snapshot, mirrorMaxLookup IDs of a kind per statement: a
 // board view's pages and columns name at most a few, a page one each.
-func readMirrorNamesTx(tx *sql.Tx, rootID int64, rows [][]MirrorRow, also []string) (MirrorNames, error) {
+func readMirrorNamesTx(tx sqlQueryer, rootID int64, rows [][]MirrorRow, also []string) (MirrorNames, error) {
 	var names MirrorNames
 	users, statuses, parents := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	var userIDs, statusIDs, parentIDs []string
@@ -245,6 +244,25 @@ func readMirrorNamesTx(tx *sql.Tx, rootID int64, rows [][]MirrorRow, also []stri
 	}
 	slices.SortFunc(names.Parents, func(a, b MirrorCard) int { return strings.Compare(a.IssueID, b.IssueID) })
 	return names, nil
+}
+
+// mirrorReadSnapshot runs a mirror read of more than one statement, or of
+// one whose cost grows with a board or a root, in one snapshot through
+// historyReadSnapshot: it waits for a history read slot before it takes a
+// read connection, so mirror reads in flight never hold the connection
+// the pool keeps for single-statement lookups. A read's error is reported
+// with label. The mirror's reads take no caller context: none of their
+// callers holds one, and the wait ends when a read holding a slot ends.
+// Every read transaction of the mirror opens here
+// (TestMirrorReadsTakeAHistoryReadSlot).
+func mirrorReadSnapshot[T any](s *Store, label string, read func(sqlQueryer) (T, error)) (T, error) {
+	return historyReadSnapshot(context.Background(), s, label, func(q sqlQueryer) (T, error) {
+		value, err := read(q)
+		if err != nil {
+			return value, fmt.Errorf("store: %s: %w", label, err)
+		}
+		return value, nil
+	})
 }
 
 // scanMirrorRows runs query and calls scan for each row.
@@ -309,8 +327,8 @@ type MirrorIssueRow struct {
 // mirrorIssueRowsSQL reads a page of an issue's rows on the boards the
 // mirror shows, by board ID after ?3, from the primary key; a row read no
 // later than its board's estimate definition last changed has no estimate.
-var mirrorIssueRowsSQL = `SELECT b.board_id, b.order_key, iif(b.read_at <= (SELECT r.estimate_reset_at FROM tracker_cache_boards r
-	  WHERE r.root_id = b.root_id AND r.board_id = b.board_id), NULL, b.estimate) FROM tracker_cache_board_issues b
+var mirrorIssueRowsSQL = `SELECT b.board_id, b.order_key, ` + mirrorRowEstimate(`(SELECT r.estimate_reset_at FROM tracker_cache_boards r
+	  WHERE r.root_id = b.root_id AND r.board_id = b.board_id)`) + ` FROM tracker_cache_board_issues b
 	WHERE b.root_id = ?1 AND b.issue_id = ?2 AND b.board_id > ?3 AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
 	ORDER BY b.board_id LIMIT ` + strconv.Itoa(mirrorIssueRowsPage+1)
 
@@ -350,11 +368,14 @@ var mirrorOffBoardLinkedSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mir
 // read keeps their cards fresh; sorted, after after (empty for the
 // first); more reports that issues follow the last. A detached root has
 // none. A page reads the links in issue order until it has a page, so it
-// reads at most every link of the connection.
+// reads at most every link of the connection, and it waits for a history
+// read slot (mirrorReadSnapshot).
 func (s *Store) ListMirrorOffBoardLinkedIssues(rootID int64, after string) (issueIDs []string, more bool, err error) {
-	issueIDs, err = queryIDs(s.reader(), mirrorOffBoardLinkedSQL, rootID, after)
+	issueIDs, err = mirrorReadSnapshot(s, fmt.Sprintf("list tracker mirror %d linked issues", rootID), func(q sqlQueryer) ([]string, error) {
+		return queryIDs(q, mirrorOffBoardLinkedSQL, rootID, after)
+	})
 	if err != nil {
-		return nil, false, fmt.Errorf("store: list tracker mirror %d linked issues: %w", rootID, err)
+		return nil, false, err
 	}
 	if len(issueIDs) > mirrorLinkedPage {
 		return issueIDs[:mirrorLinkedPage], true, nil

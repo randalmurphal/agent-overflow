@@ -314,12 +314,30 @@ func encodeMirrorJSON(v any) (string, error) {
 }
 
 // encodeMirrorIDs encodes ids as the JSON array a json_each statement
-// reads.
+// reads, each ID once at its first place: the statements join on the list,
+// so a repeated ID would read or write its rows again. ids is not changed.
+// A list in strictly increasing order, as most callers send, repeats
+// nothing and is encoded as it is; any other is checked ID by ID.
 func encodeMirrorIDs(ids []string) (string, error) {
 	if ids == nil {
 		ids = []string{}
 	}
-	return encodeMirrorJSON(ids)
+	increasing := true
+	for i := 1; i < len(ids) && increasing; i++ {
+		increasing = ids[i-1] < ids[i]
+	}
+	if increasing {
+		return encodeMirrorJSON(ids)
+	}
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			unique = append(unique, id)
+		}
+	}
+	return encodeMirrorJSON(unique)
 }
 
 // execChangedTx runs a write whose RETURNING yields a row for each row it

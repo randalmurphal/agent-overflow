@@ -106,15 +106,21 @@ var mirrorUnkeptRootsSQL = `SELECT DISTINCT i.root_id FROM tracker_cache_issues 
 // with its changes, sprints and detail. Each transaction deletes at most
 // clearMirrorChunk rows, and pause
 // runs before each. It is idempotent, finishes what a crash or a failure
-// stopped, and costs one statement when nothing is pending. Calls are
-// serialized; a call that waited for another runs after it. A failure of
-// one item does not stop the others: their errors are joined.
+// stopped, and costs one statement when nothing is pending. The two reads
+// that walk every root's boardless issues wait for a history read slot
+// (mirrorReadSnapshot). Calls are serialized; a call that waited for
+// another runs after it. A failure of one item does not stop the others:
+// their errors are joined.
 func (s *Store) FinishMirrorCleanup(pause ChunkPause) error {
 	s.mirrorCleanup.Lock()
 	defer s.mirrorCleanup.Unlock()
-	var pending bool
-	if err := s.reader().QueryRow(mirrorCleanupPendingSQL).Scan(&pending); err != nil {
-		return fmt.Errorf("store: check for tracker mirror cleanup: %w", err)
+	pending, err := mirrorReadSnapshot(s, "check for tracker mirror cleanup", func(q sqlQueryer) (bool, error) {
+		var pending bool
+		err := q.QueryRow(mirrorCleanupPendingSQL).Scan(&pending)
+		return pending, err
+	})
+	if err != nil {
+		return err
 	}
 	if !pending {
 		return nil
@@ -136,7 +142,9 @@ func (s *Store) FinishMirrorCleanup(pause ChunkPause) error {
 		errs = append(errs, s.drainMirrorBoard(board.root, board.board, between))
 	}
 	errs = append(errs, s.finishMirrorHistoryStagings(between))
-	roots, err = queryInt64s(s.reader(), mirrorUnkeptRootsSQL)
+	roots, err = mirrorReadSnapshot(s, "list tracker mirror roots with unkept issues", func(q sqlQueryer) ([]int64, error) {
+		return queryInt64s(q, mirrorUnkeptRootsSQL)
+	})
 	errs = append(errs, err)
 	for _, root := range roots {
 		errs = append(errs, s.sweepMirrorRoot(root, between))

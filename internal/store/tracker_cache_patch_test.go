@@ -2,19 +2,19 @@ package store
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// patchBoard writes board 10 with n rows spread over its sections: every
-// third row in sprint 21, every fifth in sprint 22, statuses cycling over
-// the three columns (status 6 is done).
-func patchBoard(t *testing.T, s *Store, root int64, n int) []string {
-	t.Helper()
+// patchRows are n rows of board 10 spread over its sections: every third
+// row in sprint 21, every fifth in sprint 22, statuses cycling over the
+// three columns (status 6 is done), and an estimate on every row but each
+// seventh.
+func patchRows(n int) []MirrorRow {
 	statuses := []string{"1", "3", "6"}
 	rows := make([]MirrorRow, n)
-	ids := make([]string, n)
 	for i := range n {
 		var sprints []string
 		switch {
@@ -23,12 +23,25 @@ func patchBoard(t *testing.T, s *Store, root int64, n int) []string {
 		case i%5 == 0:
 			sprints = []string{"22"}
 		}
-		id := fmt.Sprintf("%05d", 20000+i)
-		rows[i] = webRow(id, 5, fmt.Sprintf("k%03d", (i*7)%n), sprints...)
+		rows[i] = webRow(fmt.Sprintf("%05d", 20000+i), 5, fmt.Sprintf("k%03d", (i*7)%n), sprints...)
 		rows[i].Card.StatusID = statuses[i%3]
-		ids[i] = id
+		if i%7 != 0 {
+			estimate := float64(i % 4)
+			rows[i].Estimate = &estimate
+		}
 	}
+	return rows
+}
+
+// patchBoard writes board 10 with patchRows(n) and returns their IDs.
+func patchBoard(t *testing.T, s *Store, root int64, n int) []string {
+	t.Helper()
+	rows := patchRows(n)
 	writeMirrorBoard(t, s, root, "10", rows)
+	ids := make([]string, n)
+	for i, row := range rows {
+		ids[i] = row.Card.IssueID
+	}
 	return ids
 }
 
@@ -37,27 +50,28 @@ var patchSections = []MirrorSection{
 	{Kind: MirrorSectionColumn}, {Kind: MirrorSectionColumn, Column: 1}, {Kind: MirrorSectionColumn, Column: 2},
 }
 
-// A patch holds, for each section, exactly the named issues among the
-// section's pages, in their order, with the totals the counts read and
-// the revision of the snapshot; a board the mirror does not show has none.
-func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
-	t.Parallel()
-	s, _, root := newMirror(t)
-	ids := patchBoard(t, s, root, 230)
-	named := []string{ids[0], ids[3], ids[5], ids[7], ids[100], ids[229], "missing"}
+// requirePatchParity fails unless a patch of board 10 for named holds,
+// for every section of patchSections, exactly the rows a full read of the
+// section's pages shows for those issues, whole and in order, names what
+// those rows name as the pages name it, and carries the totals and
+// revision CountMirrorSections reads. It returns the patch.
+func requirePatchParity(t *testing.T, s *Store, root int64, step string, named []string) MirrorBoardPatch {
+	t.Helper()
 	patch, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, named)
 	if err != nil || !ok {
-		t.Fatalf("patch = %v, %v", ok, err)
+		t.Fatalf("%s: patch = %v, %v", step, ok, err)
 	}
 	counts, err := s.CountMirrorSections(root, "10")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(counts) != fmt.Sprint(patch.Counts) || patch.Revision != counts.Revision || patch.Lifetime != currentLifetime(s, root, "10") {
-		t.Fatalf("patch totals %+v at %d/%d; counts %+v", patch.Counts, patch.Lifetime, patch.Revision, counts)
+		t.Errorf("%s: patch totals %+v at %d/%d; counts %+v", step, patch.Counts, patch.Lifetime, patch.Revision, counts)
 	}
+	users, statuses, parents := map[string]MirrorUser{}, map[string]MirrorStatus{}, map[string]MirrorCard{}
+	var shown []MirrorRow
 	for i, section := range patchSections {
-		var want []string
+		var want []MirrorRow
 		for after := (MirrorRowKey{}); ; {
 			page, err := s.ListMirrorSection(root, "10", section, after)
 			if err != nil {
@@ -65,25 +79,136 @@ func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 			}
 			for _, row := range page.Rows {
 				if slices.Contains(named, row.Card.IssueID) {
-					want = append(want, row.Card.IssueID+"@"+row.OrderKey)
+					want = append(want, row)
 				}
+			}
+			for _, u := range page.Names.Catalog.Users {
+				users[u.ID] = u
+			}
+			for _, st := range page.Names.Catalog.Statuses {
+				statuses[st.ID] = st
+			}
+			for _, p := range page.Names.Parents {
+				parents[p.IssueID] = p
 			}
 			if !page.More {
 				break
 			}
 			after = page.Next
 		}
-		var got []string
-		for _, row := range patch.Sections[i] {
-			got = append(got, row.Card.IssueID+"@"+row.OrderKey)
+		if !reflect.DeepEqual(patch.Sections[i], want) {
+			t.Errorf("%s: section %+v:\npatch %+v\npages %+v", step, section, patch.Sections[i], want)
 		}
-		if !slices.Equal(got, want) {
-			t.Errorf("section %+v: patch %v, pages %v", section, got, want)
+		shown = append(shown, want...)
+	}
+	var want MirrorNames
+	seen := map[string]bool{}
+	for _, row := range shown {
+		if u, ok := users[row.Card.AssigneeID]; ok && !seen["u"+u.ID] {
+			seen["u"+u.ID] = true
+			want.Catalog.Users = append(want.Catalog.Users, u)
+		}
+		if st, ok := statuses[row.Card.StatusID]; ok && !seen["s"+st.ID] {
+			seen["s"+st.ID] = true
+			want.Catalog.Statuses = append(want.Catalog.Statuses, st)
+		}
+		if p, ok := parents[row.Card.ParentID]; ok && !seen["p"+p.IssueID] {
+			seen["p"+p.IssueID] = true
+			want.Parents = append(want.Parents, p)
 		}
 	}
-	if len(patch.Names.Catalog.Statuses) == 0 || len(patch.Names.Catalog.Users) != 1 {
-		t.Fatalf("names %+v", patch.Names)
+	sortMirrorCatalog(&want.Catalog)
+	slices.SortFunc(want.Parents, func(a, b MirrorCard) int { return strings.Compare(a.IssueID, b.IssueID) })
+	if !reflect.DeepEqual(patch.Names, want) {
+		t.Errorf("%s: patch names %+v\npages name %+v", step, patch.Names, want)
 	}
+	return patch
+}
+
+// patchEstimates counts the estimates a patch's rows show.
+func patchEstimates(patch MirrorBoardPatch) int {
+	n := 0
+	for _, rows := range patch.Sections {
+		for _, row := range rows {
+			if row.Estimate != nil {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// A patch holds, for each section, exactly what a full read of the
+// section shows for the named issues now, rows whole and names alike,
+// with the totals the counts read and the revision of the snapshot,
+// through every change that alters what a row shows: an estimate set, the
+// board's estimate definition changed (rows read before it show none)
+// and the rows read again, a row moving sprint, a row leaving the board,
+// a status renamed and a parent appearing. A board the mirror does not
+// show has none.
+func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	rows := patchRows(230)
+	writeMirrorBoard(t, s, root, "10", rows)
+	// In sprint 21, done in no sprint, done in sprint 22, in progress, in
+	// sprint 22, in the backlog, and an issue the mirror lacks.
+	named := []string{rows[0].Card.IssueID, rows[2].Card.IssueID, rows[3].Card.IssueID, rows[5].Card.IssueID,
+		rows[7].Card.IssueID, rows[100].Card.IssueID, rows[229].Card.IssueID, "missing"}
+	read := int64(1)
+	write := func(page MirrorRowPage) {
+		t.Helper()
+		read++
+		page.BoardID, page.ReadAt = "10", read
+		mustWriteRowPage(t, s, root, page, nil)
+	}
+	structure := func(change func(*MirrorStructure)) {
+		t.Helper()
+		read++
+		st := webStructure()
+		st.Board.EstimateUnit, st.ReadAt = MirrorEstimateTime, read
+		change(&st)
+		mustReplaceStructure(t, s, root, st, true)
+	}
+	if patch := requirePatchParity(t, s, root, "as written", named); patchEstimates(patch) == 0 {
+		t.Fatal("no named row shows an estimate")
+	}
+
+	eight := 8.0
+	rows[0].Estimate = &eight
+	write(MirrorRowPage{Rows: []MirrorRow{rows[0]}})
+	requirePatchParity(t, s, root, "an estimate set", named)
+
+	structure(func(*MirrorStructure) {})
+	if patch := requirePatchParity(t, s, root, "the estimate definition changed", named); patchEstimates(patch) != 0 {
+		t.Fatalf("rows read before the estimate definition changed show %d estimates", patchEstimates(patch))
+	}
+	write(MirrorRowPage{Rows: []MirrorRow{rows[0], rows[3], rows[7], rows[100]}})
+	if patch := requirePatchParity(t, s, root, "the rows read again", named); patchEstimates(patch) == 0 {
+		t.Fatal("the rows read again show no estimate")
+	}
+
+	rows[3].Card.UpdatedAt, rows[3].Card.Sprints = 6, []string{"22"}
+	write(MirrorRowPage{Rows: []MirrorRow{rows[3]}})
+	requirePatchParity(t, s, root, "a row moving sprint", named)
+
+	write(MirrorRowPage{Missing: []string{rows[5].Card.IssueID}})
+	requirePatchParity(t, s, root, "a row leaving the board", named)
+
+	structure(func(st *MirrorStructure) { st.Catalog.Statuses[1].Name = "Doing" })
+	if patch := requirePatchParity(t, s, root, "a status renamed", named); !slices.Contains(patch.Names.Catalog.Statuses,
+		MirrorStatus{ID: "3", Name: "Doing", Group: MirrorGroupInProgress}) {
+		t.Fatalf("the patch names %+v; want status 3 renamed", patch.Names.Catalog.Statuses)
+	}
+
+	rows[7].Card.UpdatedAt, rows[7].Card.ParentID = 7, "30000"
+	write(MirrorRowPage{Rows: []MirrorRow{rows[7]}})
+	requirePatchParity(t, s, root, "a parent the mirror lacks", named)
+	write(MirrorRowPage{Rows: []MirrorRow{webRow("30000", 5, "z")}})
+	if patch := requirePatchParity(t, s, root, "a parent appearing", named); len(patch.Names.Parents) != 1 {
+		t.Fatalf("the patch names parents %+v; want 30000", patch.Names.Parents)
+	}
+
 	if _, ok, err := s.ReadMirrorBoardPatch(root, "11", patchSections, named); ok || err != nil {
 		t.Fatalf("a board with no structure: %v, %v", ok, err)
 	}

@@ -1,0 +1,179 @@
+package store
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"maps"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+// mirrorPoolReads are the functions of the mirror's files that read on the
+// read pool directly, with how many such reads each makes. Each is a
+// bounded probe: its cost does not grow with a board or a root. Every
+// other mirror read, and every mirror read of more than one statement,
+// opens its snapshot through mirrorReadSnapshot, which waits for a history
+// read slot first.
+var mirrorPoolReads = map[string]int{
+	"GetMirrorRoot":           1, // one root, by connection
+	"GetMirrorCatalog":        1, // at most mirrorMaxLookup users and statuses, each by key
+	"ListMirrorCards":         1, // at most mirrorMaxLookup cards, each by key
+	"ListMirrorIssueRows":     1, // a page of one issue's rows
+	"ListMirrorWorklogs":      1, // a page of an author's days
+	"ListMirrorIssueWorklogs": 1, // a page of one issue's worklogs
+	"GetMirrorSync":           1, // one board's state
+	"GetMirrorDetail":         1, // one issue's detail
+	// The detached roots and the retired boards, from partial indexes
+	// sized by the work pending.
+	"FinishMirrorCleanup":         2,
+	"finishMirrorHistoryStagings": 1, // the dirty histories, likewise
+	"ListMirrorHistoryDue":        1, // a page of the history-due index
+	"probeMirrorHistory":          2, // one issue's removals, and a chunk of its changes by key
+}
+
+// No mirror read opens a read transaction, or a read whose cost grows with
+// a board or a root, on the read pool without a history read slot: a
+// read transaction opens through mirrorReadSnapshot, a transaction on
+// the pool otherwise is the writer's, and a direct read of the pool is
+// one of mirrorPoolReads. Go cannot make the pool private to one helper
+// inside the package, so the source is checked.
+func TestMirrorReadsGoThroughTheSlot(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	found := map[string]int{}
+	snapshots := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "tracker_cache") || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			fn, _ := decl.(*ast.FuncDecl)
+			where := "package level"
+			if fn != nil {
+				where = fn.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.SelectorExpr:
+					if n.Sel.Name == "read" {
+						t.Errorf("%s: %s names the read pool; read through mirrorReadSnapshot or reader()", fset.Position(n.Pos()), where)
+					}
+				case *ast.CallExpr:
+					switch fun := n.Fun.(type) {
+					case *ast.Ident:
+						switch fun.Name {
+						case "readSnapshot", "readSnapshotContext":
+							t.Errorf("%s: %s opens a read snapshot without a history read slot; use mirrorReadSnapshot", fset.Position(n.Pos()), where)
+						case "historyReadSnapshot":
+							if where != "mirrorReadSnapshot" {
+								t.Errorf("%s: %s opens a history read snapshot itself; use mirrorReadSnapshot", fset.Position(n.Pos()), where)
+							}
+						case "mirrorReadSnapshot":
+							snapshots++
+						}
+					case *ast.SelectorExpr:
+						switch fun.Sel.Name {
+						case "reader":
+							found[where]++
+						case "Begin", "BeginTx":
+							if db, ok := fun.X.(*ast.SelectorExpr); !ok || db.Sel.Name != "db" {
+								t.Errorf("%s: %s begins a transaction off the writer; open a read snapshot with mirrorReadSnapshot", fset.Position(n.Pos()), where)
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if !maps.Equal(found, mirrorPoolReads) {
+		t.Errorf("direct read pool reads by function = %v\nwant %v: a read whose cost grows with a board or a root, or a read of more than one statement, goes through mirrorReadSnapshot; a bounded probe is listed in mirrorPoolReads", found, mirrorPoolReads)
+	}
+	// The scan still finds the reads it is meant to find.
+	if snapshots < 8 {
+		t.Fatalf("found %d mirrorReadSnapshot calls; want at least the 8 mirror reads that walk a board or a root", snapshots)
+	}
+}
+
+// A mirror read that walks a board or a root waits for a history read slot
+// before it takes a read connection. While reads in flight hold every slot
+// and a connection each, five board patches and every other such read wait
+// holding no connection, and a single-statement read still answers on the
+// pool's last one; each runs once the slots free.
+func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	ids := patchBoard(t, s, root, 30)
+	releases := holdHistoryReadSlots(t, s, true)
+	type read struct {
+		name string
+		read func() error
+	}
+	var reads []read
+	for range 5 {
+		reads = append(reads, read{"ReadMirrorBoardPatch", func() error {
+			_, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids[:3])
+			if err == nil && !ok {
+				t.Error("the patch read no board")
+			}
+			return err
+		}})
+	}
+	reads = append(reads,
+		read{"ReadMirrorBoardView", func() error { _, _, err := s.ReadMirrorBoardView(root, "10", patchSections); return err }},
+		read{"ListMirrorSection", func() error {
+			_, err := s.ListMirrorSection(root, "10", MirrorSection{Kind: MirrorSectionBacklog}, MirrorRowKey{})
+			return err
+		}},
+		read{"CountMirrorSections", func() error { _, err := s.CountMirrorSections(root, "10"); return err }},
+		read{"GetMirrorBoard", func() error { _, _, err := s.GetMirrorBoard(root, "10"); return err }},
+		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, ""); return err }},
+		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(nil) }},
+	)
+	done := make([]chan error, len(reads))
+	for i, r := range reads {
+		done[i] = make(chan error, 1)
+		go func() { done[i] <- r.read() }()
+	}
+	// Let every read reach its wait.
+	time.Sleep(100 * time.Millisecond)
+	for i, r := range reads {
+		select {
+		case err := <-done[i]:
+			t.Fatalf("%s ran with every history read slot held: %v", r.name, err)
+		default:
+		}
+	}
+	if inUse := s.read.Stats().InUse; inUse != historyReadSlots {
+		t.Errorf("%d read connections in use; want only the %d the slots' holders took", inUse, historyReadSlots)
+	}
+	requireReadRuns(t, "a single-statement read", func() error {
+		var one int
+		return s.reader().QueryRow("SELECT 1").Scan(&one)
+	})
+	requireReadRuns(t, "a mirror lookup", func() error { _, _, err := s.GetMirrorSync(root, "10"); return err })
+	for _, release := range releases {
+		release()
+	}
+	for i, r := range reads {
+		select {
+		case err := <-done[i]:
+			if err != nil {
+				t.Errorf("%s: %v", r.name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not run after the slots freed", r.name)
+		}
+	}
+}

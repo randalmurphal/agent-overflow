@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,11 +13,11 @@ import (
 
 // mirrorPatchRowsSQL reads the rows of board ?2 of root ?1 among the
 // issues of the JSON list ?3, each probed by key, with ?5 a section's
-// sprint or column and ?6 the board's estimate reset (a row read no later
-// shows no estimate); a section's rule follows. The rows come in list
-// order; the caller sorts them, at most mirrorMaxLookup, rather than sort
-// in a temporary b-tree.
-const mirrorPatchRowsSQL = `SELECT ` + mirrorCardColumns + `, b.order_key, iif(b.read_at <= ?6, NULL, b.estimate)
+// sprint or column and ?6 the board's estimate reset, projecting what a
+// section page shows of a row; a section's rule follows. The rows come in
+// list order; the caller sorts them, at most mirrorMaxLookup, rather than
+// sort in a temporary b-tree.
+var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 	  FROM json_each(?3) l
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value AND b.board_id = ?2
 	  JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
@@ -46,11 +45,11 @@ type MirrorBoardPatch struct {
 }
 
 // ReadMirrorBoardPatch reads a board's patch for issueIDs (at most
-// mirrorMaxLookup, sorted or not) in sections (at most
-// mirrorMaxViewSections) in one read transaction: the board's row, the
-// columns' statuses and the two count walks of CountMirrorSections, one
-// statement per section and the names. ok is false for a board the mirror
-// does not show.
+// mirrorMaxLookup, sorted or not, a repeated one read once) in sections
+// (at most mirrorMaxViewSections) in one snapshot (mirrorReadSnapshot):
+// the board's row, the columns' statuses and the two count walks of
+// CountMirrorSections, one statement per section and the names. ok is
+// false for a board the mirror does not show.
 func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []MirrorSection, issueIDs []string) (patch MirrorBoardPatch, ok bool, err error) {
 	switch {
 	case len(sections) > mirrorMaxViewSections:
@@ -67,70 +66,47 @@ func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []Mi
 	if err != nil {
 		return MirrorBoardPatch{}, false, err
 	}
-	action := fmt.Sprintf("store: read tracker mirror %d board %s patch", rootID, boardID)
-	tx, err := s.reader().Begin()
-	if err != nil {
-		return MirrorBoardPatch{}, false, fmt.Errorf("%s: begin: %w", action, err)
-	}
-	defer rollbackTx(tx, action, &err)
-	board, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
-	if err != nil || !shown {
-		return MirrorBoardPatch{}, false, joinCommit(tx, err, action)
-	}
-	patch.Lifetime, patch.Revision = board.lifetime, board.revision
-	columns := map[string]int{}
-	err = scanMirrorRows(tx, mirrorCountColumnStatusesSQL, []any{rootID, boardID}, func(r rowScanner) error {
-		var status string
-		var position int
-		err := r.Scan(&status, &position)
-		columns[status] = position
-		return err
+	label := fmt.Sprintf("read tracker mirror %d board %s patch", rootID, boardID)
+	patch, err = mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorBoardPatch, error) {
+		var p MirrorBoardPatch
+		board, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
+		if err != nil || !shown {
+			return MirrorBoardPatch{}, err
+		}
+		ok = true
+		p.Lifetime, p.Revision = board.lifetime, board.revision
+		columns, err := readMirrorColumnPlacesTx(tx, rootID, boardID)
+		if err != nil {
+			return MirrorBoardPatch{}, err
+		}
+		if p.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, columns); err != nil {
+			return MirrorBoardPatch{}, err
+		}
+		p.Sections = make([][]MirrorRow, len(sections))
+		for i, section := range sections {
+			if len(issueIDs) == 0 {
+				continue
+			}
+			if p.Sections[i], err = readMirrorPatchSectionTx(tx, rootID, boardID, board, section, list); err != nil {
+				return MirrorBoardPatch{}, fmt.Errorf("section %d: %w", i, err)
+			}
+		}
+		p.Names, err = readMirrorNamesTx(tx, rootID, p.Sections, nil)
+		return p, err
 	})
 	if err != nil {
-		return MirrorBoardPatch{}, false, fmt.Errorf("%s: columns: %w", action, err)
+		return MirrorBoardPatch{}, false, err
 	}
-	if patch.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, columns); err != nil {
-		return MirrorBoardPatch{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	patch.Sections = make([][]MirrorRow, len(sections))
-	for i, section := range sections {
-		if len(issueIDs) == 0 {
-			continue
-		}
-		if patch.Sections[i], err = readMirrorPatchSectionTx(tx, rootID, boardID, board, section, list); err != nil {
-			return MirrorBoardPatch{}, false, fmt.Errorf("%s: section %d: %w", action, i, err)
-		}
-	}
-	if patch.Names, err = readMirrorNamesTx(tx, rootID, patch.Sections, nil); err != nil {
-		return MirrorBoardPatch{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	return patch, true, tx.Commit()
-}
-
-// joinCommit ends a read transaction that found nothing to read, keeping
-// err.
-func joinCommit(tx *sql.Tx, err error, action string) error {
-	if err != nil {
-		return fmt.Errorf("%s: %w", action, err)
-	}
-	return tx.Commit()
+	return patch, ok, nil
 }
 
 // readMirrorPatchSectionTx reads the rows of the JSON list of issues that
 // are members of a valid section of a shown board, in board order.
-func readMirrorPatchSectionTx(tx *sql.Tx, rootID int64, boardID string, board mirrorShownBoard, section MirrorSection, list string) ([]MirrorRow, error) {
-	args := []any{rootID, boardID, list, nil, nil, board.estimateResetAt}
-	switch section.Kind {
-	case MirrorSectionSprint:
-		args[4] = section.SprintID
-	case MirrorSectionColumn:
-		args[4] = section.Column
-	}
+func readMirrorPatchSectionTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, section MirrorSection, list string) ([]MirrorRow, error) {
+	args := []any{rootID, boardID, list, nil, section.ruleArg(), board.estimateResetAt}
 	var rows []MirrorRow
 	err := scanMirrorRows(tx, mirrorPatchSQL[section.Kind], args, func(r rowScanner) error {
-		var row MirrorRow
-		var err error
-		row.Card, err = scanMirrorCard(r, &row.OrderKey, &row.Estimate)
+		row, err := scanMirrorRow(r)
 		rows = append(rows, row)
 		return err
 	})
@@ -161,10 +137,12 @@ const mirrorIssueBoardsSQL = `SELECT b.issue_id, b.board_id FROM json_each(?2) l
 	CROSS JOIN tracker_cache_board_issues b ON b.root_id = c.root_id AND b.issue_id = c.issue_id`
 
 // ListMirrorIssueBoards reads which boards hold a row of each of issueIDs
-// (at most mirrorMaxLookup), and of each issue whose parent is one of
-// them, whose row shows its parent's key and title, in one statement; a
-// board no project shows may be among them, and a pair may repeat. An
-// issue with no row is absent.
+// (at most mirrorMaxLookup, a repeated one read once), and of each issue
+// whose parent is one of them, whose row shows its parent's key and title,
+// in one statement; a board no project shows may be among them, and a pair
+// may repeat (an issue named beside its parent). An issue with no row is
+// absent. A parent's children are not bounded, so the read waits for a
+// history read slot (mirrorReadSnapshot).
 func (s *Store) ListMirrorIssueBoards(rootID int64, issueIDs []string) ([]MirrorIssueBoard, error) {
 	if len(issueIDs) > mirrorMaxLookup {
 		return nil, fmt.Errorf("%w: %d issues, over %d", ErrInvalidTrackerCache, len(issueIDs), mirrorMaxLookup)
@@ -176,15 +154,15 @@ func (s *Store) ListMirrorIssueBoards(rootID int64, issueIDs []string) ([]Mirror
 	if err != nil {
 		return nil, err
 	}
-	var out []MirrorIssueBoard
-	err = scanMirrorRows(s.reader(), mirrorIssueBoardsSQL, []any{rootID, list}, func(r rowScanner) error {
-		var ib MirrorIssueBoard
-		err := r.Scan(&ib.IssueID, &ib.BoardID)
-		out = append(out, ib)
-		return err
+	label := fmt.Sprintf("read tracker mirror %d boards of %d issues", rootID, len(issueIDs))
+	return mirrorReadSnapshot(s, label, func(q sqlQueryer) ([]MirrorIssueBoard, error) {
+		var out []MirrorIssueBoard
+		err := scanMirrorRows(q, mirrorIssueBoardsSQL, []any{rootID, list}, func(r rowScanner) error {
+			var ib MirrorIssueBoard
+			err := r.Scan(&ib.IssueID, &ib.BoardID)
+			out = append(out, ib)
+			return err
+		})
+		return out, err
 	})
-	if err != nil {
-		return nil, fmt.Errorf("store: read tracker mirror %d boards of %d issues: %w", rootID, len(issueIDs), err)
-	}
-	return out, nil
 }
