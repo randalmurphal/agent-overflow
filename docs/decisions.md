@@ -789,7 +789,7 @@ and anti-changes that live only here:
   Show in folder, a failed one with its reason. Clearing the list deletes
   no file. Downloads never open with the system's default app.
 - A pane download goes to the Downloads folder of the machine that runs the
-  page's engine, as in any browser there; there is no setting (2026-11-17).
+  page's engine, as in any browser there; there is no setting.
   AO applies no quota, cap or pruning there and deletes or replaces no
   file it did not put there; an engine in AO's process downloads into AO's
   private staging folder inside Downloads and AO moves the finished file

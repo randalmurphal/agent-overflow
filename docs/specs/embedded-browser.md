@@ -328,7 +328,7 @@ Focus and keyboard are native: the engine view receives real OS input
 when focused. The SPA's global shortcuts would not fire while the browser
 view has focus, so every engine gates modifier chords on the app's bound
 set before its document sees them and hands a bound one back for the SPA
-to dispatch ([browser tools](../architecture/browser-tools.md#keyboard)).
+to dispatch ([keyboard and focus](../architecture/keyboard-focus.md)).
 
 ## 8. Tool surface mapping
 

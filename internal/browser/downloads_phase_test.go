@@ -2,7 +2,6 @@ package browser
 
 import (
 	"errors"
-	"os"
 	"sync"
 	"testing"
 )
@@ -133,9 +132,9 @@ func TestACancelDuringThePublishIsNotSent(t *testing.T) {
 			close(linking)
 			<-release
 		}
-		return os.Link(staged, candidate)
+		return linkFile(staged, candidate)
 	}
-	t.Cleanup(func() { linkDownload = os.Link })
+	t.Cleanup(func() { linkDownload = linkFile })
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	// Before the Manager's Close, which waits for the publish.
