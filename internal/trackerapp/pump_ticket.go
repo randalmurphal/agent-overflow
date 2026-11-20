@@ -235,12 +235,12 @@ func (s *Service) digestOf(v DetailView) uint64 {
 // another read stored a changed card of the issue or when shown again after
 // it missed one, and a view rebuild with no tracker call when what its view
 // shows of other issues changed. A failed read is retried by the
-// connection's round (oweRetryLocked).
+// connection's round (readOwnTicket).
 func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.workers.Done()
 	defer close(tp.exited)
 	read := func(u Urgency, full, opened bool) ticketsResult {
-		return s.readTickets(tp.core.Context(), tp.key.connection, []*ticketPump{tp}, u, full, opened)
+		return s.readOwnTicket(tp, u, full, opened)
 	}
 	over := read(Interactive, false, true).over
 	for !over {
@@ -272,6 +272,19 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 			}
 		}
 	}
+}
+
+// readOwnTicket is tp's own read of its ticket, outside the connection's
+// round. The pump keeps no retry schedule: a failed read is owed to the
+// round, which retries it with the connection's other shown tickets.
+func (s *Service) readOwnTicket(tp *ticketPump, u Urgency, full, opened bool) ticketsResult {
+	res := s.readTickets(tp.core.Context(), tp.key.connection, []*ticketPump{tp}, u, full, opened)
+	if res.failed {
+		s.subMu.Lock()
+		s.oweRetryLocked(tp.key.connection, res.retryAt)
+		s.subMu.Unlock()
+	}
+	return res
 }
 
 // owedOf takes what tp owes now that it is shown: a read, or a view

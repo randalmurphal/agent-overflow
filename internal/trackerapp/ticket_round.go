@@ -183,8 +183,8 @@ func (s *Service) nextReadLocked() uint64 {
 // (readDetails), each checked against what its pump settled last, passes
 // what the read stored through the change funnel under the root the read
 // held, and settles each pump with its own outcome. opened records a
-// person's opening. A failure is told to each pump; a pump's own failed
-// read is owed to the round's retry schedule.
+// person's opening. A failure is told to each pump; the caller owns its
+// retry (the round its own, readOwnTicket a pump's).
 func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketPump, u Urgency, full, opened bool) ticketsResult {
 	s.subMu.Lock()
 	began := s.nextReadLocked()
@@ -233,9 +233,6 @@ func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketP
 			s.settleTicketLocked(tp, began, reads[i], failure, res.kind, at)
 			out.over = false
 		}
-	}
-	if out.failed && len(pumps) == 1 {
-		s.oweRetryLocked(conn, out.retryAt)
 	}
 	return out
 }

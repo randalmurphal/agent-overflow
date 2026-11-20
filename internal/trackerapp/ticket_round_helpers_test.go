@@ -22,7 +22,7 @@ func (s *Service) roundOf(id string) *ticketRound {
 // it: in full when full is set, which records an opening as a person's
 // refresh does.
 func (s *Service) ticketTick(tp *ticketPump, u Urgency, full bool) ticketsResult {
-	return s.readTickets(tp.core.Context(), tp.key.connection, []*ticketPump{tp}, u, full, full)
+	return s.readOwnTicket(tp, u, full, full)
 }
 
 // trackerState is the scripted tracker's issues for ticket tests: each

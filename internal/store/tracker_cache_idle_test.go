@@ -92,6 +92,12 @@ func TestIdleTickStatements(t *testing.T) {
 		call("GetMirrorSync", syncState("10"))
 		call("RecordMirrorSyncAttempt", record)
 	}, 3, map[string]int{"tracker_cache_sync": 1}, func() {
+		// The other open tickets' histories are read and final.
+		for _, id := range tickets[1:] {
+			if _, err := replaceHistory(s, root, MirrorHistory{IssueID: id, AnsweredAt: testNow}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		// Updated at 6, its history read for that update answered at
 		// testNow and not final: due again a minute later.
 		mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 6, "a", "21")), nil)
