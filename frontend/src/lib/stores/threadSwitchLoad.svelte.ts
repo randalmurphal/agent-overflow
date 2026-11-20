@@ -25,7 +25,7 @@ import {
   MoveThreadTerminals,
   SwitchThread,
   SyncThreadWindow,
-  type SyncThreadWindowResult,
+  type RuledSyncThreadWindowResult,
 } from './bindings';
 import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
@@ -483,7 +483,7 @@ export function createThreadSwitchLoad(
    * ask.
    */
   function observeAnswerLineage(
-    response: SyncThreadWindowResult,
+    response: RuledSyncThreadWindowResult,
     backend: BackendKey,
     believed: BackendIdentity,
   ): boolean {
@@ -540,7 +540,8 @@ export function createThreadSwitchLoad(
     // (docs/architecture/timeline-window-pages.md §6). Same price as any
     // other miss — one window fetch on the next open.
     const runs = options.activityRuns.snapshotStubs();
-    if (!runs) return;
+    const rule = options.activityRuns.windowReadRule();
+    if (!runs || !rule) return;
     void putReplicaWindow(threadId, {
       epoch: attestation.epoch,
       rev: attestation.rev,
@@ -551,7 +552,9 @@ export function createThreadSwitchLoad(
       hasMoreOlder: options.timelineWindow.hasMoreHistory,
       hasMoreNewer: options.timelineWindow.hasMoreNewer,
       runs,
-      activityRunRule: options.activityRuns.activityRunRule(),
+      // The rule the window was read under, which snapshotStubs requires
+      // to be the current one.
+      activityRunRule: rule,
       latestSettledTurn: options.getLatestSettledTurn(),
     });
   }
@@ -578,6 +581,7 @@ export function createThreadSwitchLoad(
         hasMoreOlder: body.hasMoreOlder,
         hasMoreNewer: body.hasMoreNewer,
         runs: body.runs,
+        activityRunRule: body.activityRunRule,
       },
       threadId,
     );
@@ -625,9 +629,11 @@ export function createThreadSwitchLoad(
     // repaint every run as complete, so the snapshot is skipped entirely
     // — one cold page on the next open, the same price as any other miss.
     const runStubs = options.activityRuns.snapshotStubs();
+    const readRule = options.activityRuns.windowReadRule();
     if (
       outgoingThreadId &&
       runStubs !== null &&
+      readRule !== null &&
       !options.getLoading() &&
       rows.length > 0 &&
       rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
@@ -653,7 +659,7 @@ export function createThreadSwitchLoad(
         // stubs are the only account of the rest
         // (docs/architecture/timeline-window-pages.md §6).
         runs: runStubs,
-        activityRunRule: options.activityRuns.activityRunRule(),
+        activityRunRule: readRule,
         // Paired, not looked up on the next open: the stamp is only
         // usable as `haveEpoch`/`haveRev` for the rows it described when
         // it was read. See ThreadItemSnapshot#historyStamp.
@@ -852,10 +858,11 @@ export function createThreadSwitchLoad(
         // its account of the rest until the sync page restates them.
         () => {
           if (cached?.runs?.length) {
-            options.activityRuns.syncRunSpans(options.getItems(), cached.runs);
+            options.activityRuns.syncRunSpans(options.getItems(), { rule: cached.activityRunRule, stubs: cached.runs });
           }
-          // Read under the current rule: a snapshot of the other is a miss.
-          if (cached) options.activityRuns.noteWindowRead();
+          // The rule the snapshot was tagged with (a snapshot of the
+          // other rule is a miss above).
+          if (cached) options.activityRuns.noteWindowRead(cached.activityRunRule);
         },
         // A recent outgoing live-content stamp must not make settled incoming
         // content spring. An active incoming turn stamps its first delta.
@@ -932,7 +939,7 @@ export function createThreadSwitchLoad(
    * already looking at must not.
    */
   function applySyncResponse(
-    response: SyncThreadWindowResult,
+    response: RuledSyncThreadWindowResult,
     newThread: Thread,
     rearmWarmup: boolean,
     sentStamp: ThreadHistoryStamp | null,
@@ -970,7 +977,7 @@ export function createThreadSwitchLoad(
           options.streamingReveal.staleRowIds(),
         ),
         incoming,
-        page.runs,
+        { rule: page.activityRunRule, stubs: page.runs },
       );
       options.installTimelineItems(next, {
         disposeDropped: true,
@@ -1089,7 +1096,7 @@ export function createThreadSwitchLoad(
     const ask = (
       stamp: ThreadHistoryStamp | null,
       heldWindow: HeldWindow | null,
-    ): Promise<SyncThreadWindowResult> =>
+    ): Promise<RuledSyncThreadWindowResult> =>
       withBackendTarget(backend, () => SyncThreadWindow(threadId, {
         anchorItemId: sliceAnchorId,
         itemBudget: SLICE_AROUND_ITEM_BUDGET,
@@ -1097,6 +1104,8 @@ export function createThreadSwitchLoad(
         haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
         ...timelinePageShape(),
         ...(heldWindow ? { haveWindow: heldWindow } : {}),
+        // The stamp and the window both describe the painted window.
+        heldRule: options.activityRuns.windowReadRule(),
       }));
 
     try {
@@ -1663,6 +1672,9 @@ export function createThreadSwitchLoad(
           if (!readIsCurrent()) return stopped();
           const older = await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id, paged.oldestCursor!, Math.min(remaining, SLICE_AROUND_ITEM_BUDGET), shape));
           if (!older.items?.length) break;
+          // Read under another rule than the window so far (the hello
+          // changed mid-walk): the window stops at the rows of one rule.
+          if (older.activityRunRule !== paged.activityRunRule) break;
           if (compareCursors(older.oldestCursor, paged.oldestCursor) >= 0) {
             throw new Error('Conversation recovery did not advance through loaded history');
           }
@@ -1705,7 +1717,7 @@ export function createThreadSwitchLoad(
           options.streamingReveal.staleRowIds(),
         ),
         snapshot,
-        paged.runs,
+        { rule: paged.activityRunRule, stubs: paged.runs },
       );
       options.installTimelineItems(next, {
         disposeDropped: true,

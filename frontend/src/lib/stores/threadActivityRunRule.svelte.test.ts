@@ -27,6 +27,7 @@ import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { createAgentScopeView, type AgentScopeView } from './agentScopeView.svelte';
 import { timelinePageShape } from './threadPaneShared';
+import { AGENT_MESSAGE_MEMBERS_RULE, AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 import { getToasts } from './toast.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 
@@ -279,14 +280,17 @@ describe('a rule change over a partial window', () => {
       return `run[${ids[0]}..${ids.at(-1)}/${count}]`;
     });
   }
-  function mountWindowShape(pane: ThreadPane): { readonly shape: string[] } {
+  function mountWindowShape(pane: ThreadPane): { readonly shape: string[]; readonly runIds: string[] } {
     let nodes: TimelineNode[] = [];
     const dispose = $effect.root(() => {
       const projection = createTimelineRowProjection({ getPane: () => pane });
       $effect(() => { nodes = projection.revealedNodes; });
     });
     cleanup.push(dispose);
-    return { get shape() { return windowShape(nodes, pane); } };
+    return {
+      get shape() { return windowShape(nodes, pane); },
+      get runIds() { return nodes.flatMap(node => node.kind === 'activity_run' ? [node.runId] : []); },
+    };
   }
 
   function stageGpu(members: boolean) {
@@ -380,7 +384,7 @@ describe('a rule change over a partial window', () => {
   };
   type Surface = keyof typeof SURFACES;
 
-  async function openSurface(name: Surface): Promise<{ view: AgentScopeView; projection: { readonly shape: string[] } }> {
+  async function openSurface(name: Surface): Promise<{ view: AgentScopeView; projection: ReturnType<typeof mountWindowShape> }> {
     const view = SURFACES[name].open(await openPane());
     view.start();
     cleanup.push(() => view.dispose());
@@ -434,5 +438,166 @@ describe('a rule change over a partial window', () => {
     expect(projection.shape).toEqual(membersFirst ? expected.absorbed() : expected.members());
     // Read under the new rule, the window is offered again.
     expect(view.pane.activityRuns.heldRunFold()).not.toBeNull();
+  });
+
+  // A read sent under one rule whose answer lands after the hello moved to
+  // the other: whatever it installs is labeled with the rule it asked for.
+  describe('a read in flight across the change', () => {
+    const ruleOf = (members: boolean) => members ? AGENT_MESSAGE_MEMBERS_RULE : AGENT_MESSAGES_ABSORBED_RULE;
+    type Backend = ReturnType<typeof serveWindowedHistory>;
+    type Mock = ReturnType<typeof vi.fn>;
+    const scoped = (options: unknown) =>
+      Boolean((options as { selection?: { scopeRootId?: string } } | undefined)?.selection?.scopeRootId);
+
+    /**
+     * Hold the answer of the next call `matches` accepts until released,
+     * answering it as the backend would answer `ask(args)`.
+     */
+    function holdNext(mock: Mock, matches: (args: unknown[]) => boolean = () => true,
+      ask: (args: unknown[]) => unknown[] = args => args) {
+      const answer = mock.getMockImplementation() as (...args: unknown[]) => unknown;
+      let made = false;
+      let value: unknown;
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      mock.mockImplementation(async (...args: unknown[]) => {
+        if (made || !matches(args)) return answer(...args);
+        made = true;
+        value = await answer(...ask(args));
+        await gate;
+        return value;
+      });
+      return { get made() { return made; }, get value() { return value; }, release: () => release() };
+    }
+
+    function expectNotOfferedUnder(pane: ThreadPane, members: boolean) {
+      expect(pane.activityRuns.windowReadRule()).not.toBe(ruleOf(members));
+      expect(pane.activityRuns.heldRunFold()).toBeNull();
+      expect(pane.activityRuns.snapshotStubs()).toBeNull();
+    }
+
+    function expectReadUnder(pane: ThreadPane, members: boolean) {
+      expect(pane.activityRuns.windowReadRule()).toBe(ruleOf(members));
+      expect(pane.activityRuns.heldRunFold()).not.toBeNull();
+      expect(pane.activityRuns.snapshotStubs()).not.toBeNull();
+    }
+
+    const rootRows = () => [activityRunProse('p', 0), agentMessage('m', 1), ...tools(2), activityRunProse('a', TOOLS + 2)];
+    // Each surface's whole-window read: a root pane refreshes with a
+    // page around its anchor, a scoped timeline with a window sync, which
+    // `changed` answers as if the history moved since the held window so
+    // it carries a page.
+    const SURFACES_IN_FLIGHT = {
+      'root pane': {
+        open: async () => {
+          const pane = await openPane();
+          return { pane, projection: mountWindowShape(pane) };
+        },
+        history: () => ({ rows: (root: string) => root === '' ? rootRows() : [] }),
+        windowReads: (backend: Backend) => backend.pages as Mock,
+        isWindowRead: (args: unknown[]) => !scoped(args[3]),
+        changed: (args: unknown[]) => args,
+        page: (answer: unknown) => answer,
+        shapes: shapes(['p']),
+      },
+      'agent pane': {
+        open: async () => {
+          const { view, projection } = await openSurface('agent pane');
+          return { pane: view.pane, projection };
+        },
+        history: () => scopedHistory,
+        windowReads: (backend: Backend) => backend.syncs,
+        isWindowRead: (args: unknown[]) => scoped(args[1]),
+        changed: ([threadId, req]: unknown[]) => [threadId, { ...(req as object), haveWindow: undefined }],
+        page: (answer: unknown) => (answer as { page?: unknown }).page,
+        shapes: SURFACES['agent pane'].shapes,
+      },
+    };
+
+    describe.each(Object.keys(SURFACES_IN_FLIGHT) as (keyof typeof SURFACES_IN_FLIGHT)[])('on a %s', (name) => {
+      const surface = SURFACES_IN_FLIGHT[name];
+      const sentReads = (backend: Backend) =>
+        surface.windowReads(backend).mock.calls.filter(args => surface.isWindowRead(args)).length;
+
+      // The change's refresh waits for the window read in flight, so that
+      // read's answer always lands first; the other order is not reachable.
+      it.each([true, false])('labels a window page with the rule it asked for (member rule first: %s)', async (membersFirst) => {
+        const gpu = stageGpu(membersFirst);
+        const backend = serveWindowedHistory(surface.history(), requestedRule);
+        const { pane, projection } = await surface.open();
+        cleanup.push(installComputerHydration());
+        await vi.advanceTimersByTimeAsync(5000);
+        const expected = surface.shapes;
+        expect(projection.shape).toEqual(membersFirst ? expected.members() : expected.absorbed());
+
+        const inFlight = holdNext(surface.windowReads(backend), surface.isWindowRead, surface.changed);
+        void pane.refreshFromBackend(true).catch(() => {});
+        await vi.advanceTimersByTimeAsync(100);
+        expect(surface.page(inFlight.value)).toBeTruthy();
+        const sent = sentReads(backend);
+        gpu.setHello(hello('gpu', !membersFirst));
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(sentReads(backend)).toBe(sent);
+
+        const flipRefresh = holdNext(surface.windowReads(backend), surface.isWindowRead);
+        inFlight.release();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(flipRefresh.made).toBe(true);
+        // The old rule's rows are installed, labeled with the old rule, and
+        // their stubs are not folded under the new one.
+        expectNotOfferedUnder(pane, !membersFirst);
+        expect(pane.activityRuns.windowReadRule()).toBe(ruleOf(membersFirst));
+
+        flipRefresh.release();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(projection.shape).toEqual(membersFirst ? expected.absorbed() : expected.members());
+        expectReadUnder(pane, !membersFirst);
+        expect(getToasts()).toEqual([]);
+      });
+
+      // A members call is not serialized with window reads, so its answer
+      // can land before the change's refresh or after it.
+      describe.each([['the members answer', true], ["the change's refresh", false]] as const)('when %s lands first', (_label, membersAnswerFirst) => {
+        it.each([true, false])('drops a members answer read under the old rule (member rule first: %s)', async (membersFirst) => {
+          const gpu = stageGpu(membersFirst);
+          const backend = serveWindowedHistory(surface.history(), requestedRule);
+          const { pane, projection } = await surface.open();
+          cleanup.push(installComputerHydration());
+          await vi.advanceTimersByTimeAsync(5000);
+          const expected = surface.shapes;
+          expect(projection.runIds).toHaveLength(1);
+          const ids = () => pane.items.map(item => item.id);
+
+          const inFlight = holdNext(backend.members);
+          const answered = pane.activityRuns.fetchMembers(projection.runIds[0], { direction: 'before', limit: 10 });
+          await vi.advanceTimersByTimeAsync(100);
+          expect(inFlight.made).toBe(true);
+          const flipRefresh = holdNext(surface.windowReads(backend), surface.isWindowRead);
+          gpu.setHello(hello('gpu', !membersFirst));
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(flipRefresh.made).toBe(true);
+
+          if (!membersAnswerFirst) {
+            flipRefresh.release();
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(projection.shape).toEqual(membersFirst ? expected.absorbed() : expected.members());
+            expectReadUnder(pane, !membersFirst);
+          }
+          const before = ids();
+          const reads = sentReads(backend);
+          inFlight.release();
+          // Dropped: it mounts no rows, folds no stub and asks for no reload.
+          expect(await answered).toEqual([]);
+          await vi.advanceTimersByTimeAsync(100);
+          expect(ids()).toEqual(before);
+          expect(sentReads(backend)).toBe(reads);
+          if (membersAnswerFirst) flipRefresh.release();
+          await vi.advanceTimersByTimeAsync(5000);
+          expect(projection.shape).toEqual(membersFirst ? expected.absorbed() : expected.members());
+          expectReadUnder(pane, !membersFirst);
+          expect(getToasts()).toEqual([]);
+        });
+      });
+    });
   });
 });

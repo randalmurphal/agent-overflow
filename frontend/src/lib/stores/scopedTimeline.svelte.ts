@@ -261,7 +261,8 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       else next.delete(id);
     }
     const { items, refusals } = runs.admitCarriedRows(
-      [...next.values()].sort(compareItemsByTimelinePosition), page.items as Item[], page.runs);
+      [...next.values()].sort(compareItemsByTimelinePosition), page.items as Item[],
+      { rule: page.activityRunRule, stubs: page.runs });
     for (const { item } of refusals) next.delete(item.id);
     installTimelineItems(items, {
       disposeDropped: true, afterCommit: () => {

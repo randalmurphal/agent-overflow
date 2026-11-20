@@ -384,12 +384,12 @@ it('reclassifies a leading notification from the authoritative run window withou
   ]);
   const projection = mountProjection(pane);
   try {
-    pane.activityRuns.syncRunSpans(pane.items, [new ActivityRunStub({
+    pane.activityRuns.syncRunSpans(pane.items, { rule: pane.activityRuns.activityRunRule(), stubs: [new ActivityRunStub({
       firstItemId: 'earlier', firstTurnIndex: 0, firstItemIndex: 0,
       lastItemId: 'bash', lastTurnIndex: 0, lastItemIndex: 51,
       loadedFirstItemId: 'report', loadedLastItemId: 'bash', memberCount: 52,
       unshippedBefore: 50, unshippedAfter: 0, unshippedDigest: '0000000000000000',
-    })]);
+    })] });
     await tick();
     expect(projection.nodes.map(node => node.kind)).toEqual(['activity_run', 'leaf']);
     const run = projection.nodes[0];

@@ -1,6 +1,6 @@
 import type { Item } from '../types/models';
 import type { PagedItems, TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
-import { ListItemsBeforeCursor, ListItemsAfterCursor } from './bindings';
+import { ListItemsBeforeCursor, ListItemsAfterCursor, type RuledRead } from './bindings';
 import { SLICE_AROUND_ITEM_BUDGET, type TimelinePageShape } from './threadPaneShared';
 import { compareCursors, mergeItemsById } from './threadItems';
 import { groupActivityRunSpans } from '../utils/activityRunSpans';
@@ -36,12 +36,12 @@ export function captureRetainedTimelineWindow(
 /** Assemble fresh bounded pages before replacing an already visible window. */
 export async function refreshRetainedTimelineWindow(options: {
   threadId: string;
-  page: PagedItems;
+  page: RuledRead<PagedItems>;
   retained: ReturnType<typeof captureRetainedTimelineWindow>;
   shape: TimelinePageShape;
   isCurrent(): boolean;
   selection?: TimelineSelection;
-}): Promise<PagedItems> {
+}): Promise<RuledRead<PagedItems>> {
   const { threadId, retained, shape, selection = {} } = options;
   const ownership = threadBackend(threadId);
   const backend = requireEntityBackend(ownership);
@@ -61,7 +61,9 @@ export async function refreshRetainedTimelineWindow(options: {
     const before = page.oldestCursor;
     const older = await withBackendTarget(backend, () => ListItemsBeforeCursor(threadId, before,
       SLICE_AROUND_ITEM_BUDGET, shape, selection));
-    if (!current()) return options.page;
+    // A read of another rule (the hello changed mid-refresh) joins no page
+    // of this one.
+    if (!current() || older.activityRunRule !== page.activityRunRule) return options.page;
     if (older.items.length === 0) {
       if (older.hasMoreOlder) throw new Error('History refresh returned no older rows with more history remaining');
       page = { ...page, hasMore: false, hasMoreOlder: false };
@@ -78,7 +80,7 @@ export async function refreshRetainedTimelineWindow(options: {
     const after = page.newestCursor;
     const newer = await withBackendTarget(backend, () => ListItemsAfterCursor(threadId, after,
       SLICE_AROUND_ITEM_BUDGET, shape, selection));
-    if (!current()) return options.page;
+    if (!current() || newer.activityRunRule !== page.activityRunRule) return options.page;
     if (newer.items.length === 0) {
       if (newer.hasMoreNewer) throw new Error('History refresh returned no newer rows with more history remaining');
       page = { ...page, hasMoreNewer: false };

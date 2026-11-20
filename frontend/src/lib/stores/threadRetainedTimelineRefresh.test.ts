@@ -7,6 +7,7 @@ import { PagedItems } from '../../../bindings/agent-overflow/internal/store/mode
 import type { ThreadPane } from './thread.svelte';
 import type { Item } from '../types/models';
 import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
+import { requestActivityRunRule } from './activityRunRule';
 
 const shape = { runWindowRows: 30, inlinePreviews: false, maxBytes: 160 << 10 };
 const row = (i: number, overrides: Partial<Item> = {}) => makeItem({ id: `r${i}`, threadId: 't',
@@ -20,8 +21,10 @@ function page(items: Item[], hasMoreOlder = false, hasMoreNewer = false) {
 function held(first = 0, last = 99, followingTail = true) {
   return { oldest: cursor(first), newest: cursor(last), count: last - first + 1, runs: [], followingTail };
 }
+/** Refresh `fresh`, read under the rule the reads after it ask for. */
 function refresh(fresh: PagedItems, retained = held(), isCurrent = () => true) {
-  return refreshRetainedTimelineWindow({ threadId: 't', page: fresh, retained, shape, isCurrent });
+  const ruled = Object.assign(fresh, { activityRunRule: requestActivityRunRule('t') });
+  return refreshRetainedTimelineWindow({ threadId: 't', page: ruled, retained, shape, isCurrent });
 }
 let pane: ThreadPane;
 beforeEach(async () => { installThreadPaneTestEnv(); pane = await buildPane(makeThread({ id: 't' })); });
@@ -147,7 +150,8 @@ it('counts only selected direct rows when bounding tail catch-up', async () => {
   const fresh = page([...rows(1000, 300), ...selected(990, 10)], true);
   fresh.newestCursor = cursor(999);
   fresh.oldestCursor = cursor(990);
-  const result = await refreshRetainedTimelineWindow({ threadId: 't', page: fresh, retained: held(), shape,
+  const ruled = Object.assign(fresh, { activityRunRule: requestActivityRunRule('t') });
+  const result = await refreshRetainedTimelineWindow({ threadId: 't', page: ruled, retained: held(), shape,
     isCurrent: () => true, selection: { scopeRootId: 'agent', tools: true } });
   expect(result.items.filter(item => item.parentId === 'agent')).toHaveLength(210);
   expect(read).toHaveBeenCalledTimes(4);

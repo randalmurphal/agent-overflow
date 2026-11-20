@@ -19,6 +19,8 @@ import type {
   ActivityRunStub,
 } from '../../../bindings/agent-overflow/internal/store/models';
 import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
+import { installAgentMessageRunMembersCapability } from '../../test/helpers/chat';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 
 interface MembersRequest {
   runFirstItemId: string;
@@ -182,9 +184,9 @@ function pane(initial: Item[], windowRows = 1) {
      * page's stubs fold.
      */
     installPage(page: Item[], stubs: ActivityRunStub[], touched: ReadonlySet<string> = new Set()) {
-      const { items: next, refusals } = runs.admitCarriedRows(reconcileSnapshotPage(page, items, touched), page, stubs);
+      const { items: next, refusals } = runs.admitCarriedRows(reconcileSnapshotPage(page, items, touched), page, { rule: runs.activityRunRule(), stubs });
       items = next;
-      runs.syncRunSpans(items, stubs);
+      runs.syncRunSpans(items, { rule: runs.activityRunRule(), stubs });
       runs.noteRefusals(refusals);
     },
     runId(memberId: string): string {
@@ -200,6 +202,9 @@ function pane(initial: Item[], windowRows = 1) {
 
 beforeEach(() => {
   resetBindingMocks();
+  // The registries group by the member rule; members calls ask the
+  // backend for the rule its hello advertises.
+  installAgentMessageRunMembersCapability();
   vi.useFakeTimers();
 });
 
@@ -209,6 +214,7 @@ afterEach(() => {
     expect(p.reports).toEqual([]);
   }
   vi.useRealTimers();
+  __setTransportHelloForTest(null);
 });
 
 const digestOf = (rows: Item[]) => windowDigest(rows.map(row => ({ id: row.id, rev: row.rev })));
@@ -231,7 +237,7 @@ const intoTailRunHead = {
     const s = server([p0, a, b, c, d]);
     s.install();
     const p = pane([p0, b, c, d]);
-    p.runs.syncRunSpans([p0, b, c, d], [s.stubFor('a', 'b', 'd')]);
+    p.runs.syncRunSpans([p0, b, c, d], { rule: p.runs.activityRunRule(), stubs: [s.stubFor('a', 'b', 'd')] });
     expect(await p.runs.loadUnshippedMember(a)).toBe(true);
     return { s, p };
   },
@@ -240,7 +246,7 @@ const intoTailRunHead = {
     const s = server([p0, a, b, c, d]);
     s.install();
     const p = pane([p0, a]);
-    p.runs.syncRunSpans([p0, a], [s.stubFor('a', 'a', 'a')]);
+    p.runs.syncRunSpans([p0, a], { rule: p.runs.activityRunRule(), stubs: [s.stubFor('a', 'a', 'a')] });
     return { s, p };
   },
 };
@@ -416,7 +422,7 @@ describe('a live member carried over a page install', () => {
     const s = server([p0, a, b, c, d]);
     s.install();
     const p = pane([p0, a, b, c, d]);
-    p.runs.syncRunSpans(p.items, [s.stubFor('a', 'a', 'd')]);
+    p.runs.syncRunSpans(p.items, { rule: p.runs.activityRunRule(), stubs: [s.stubFor('a', 'a', 'd')] });
     const page = s.stubFor('a', pageFirst, pageLast);
     const e = activityRunRow('e', 5);
     s.rows.push(e);
@@ -470,7 +476,7 @@ describe('a jump into a run the window holds more rows after', () => {
     const s = server([p0, a, b, c, d, reply, x]);
     s.install();
     const p = pane([p0, b, c, d, reply, x]);
-    p.runs.syncRunSpans([p0, b, c, d, reply, x], [s.stubFor('a', 'b', 'd'), s.stubFor('x', 'x', 'x')]);
+    p.runs.syncRunSpans([p0, b, c, d, reply, x], { rule: p.runs.activityRunRule(), stubs: [s.stubFor('a', 'b', 'd'), s.stubFor('x', 'x', 'x')] });
     expect(await p.runs.loadUnshippedMember(a)).toBe(true);
     expect(p.ids).toEqual(['p0', 'a', 'reply', 'x']);
     const reads = s.reads.length;

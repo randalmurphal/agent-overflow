@@ -12,7 +12,7 @@ import { GetThreadUserMessageTicks, SearchThreadItems, ListActivityRunMembers, L
 const hello: TransportHello = { protocolVersion: 1, capabilities: ['timeline.scopes.v1'], backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 };
 const cursor = { turnIndex: 0, itemIndex: 0, itemId: 'first' };
 const readers = [
-  ['SyncThreadWindow', (selection: TimelineSelection) => SyncThreadWindow('thread', { selection, anchorItemId: '', itemBudget: 20, haveEpoch: -1, haveRev: -1, inlinePreviews: false, runWindowRows: 8, maxBytes: 0 })],
+  ['SyncThreadWindow', (selection: TimelineSelection) => SyncThreadWindow('thread', { selection, anchorItemId: '', itemBudget: 20, haveEpoch: -1, haveRev: -1, inlinePreviews: false, runWindowRows: 8, maxBytes: 0, heldRule: null })],
   ['ListActivityRunMembers', (selection: TimelineSelection) => ListActivityRunMembers('thread', { selection, runFirstItemId: 'first', direction: 'after', shape: {} })],
   ['ListThreadSliceAround', (selection: TimelineSelection) => ListThreadSliceAround('thread', '', 20, {}, selection)],
   ['ListItemsBeforeCursor', (selection: TimelineSelection) => ListItemsBeforeCursor('thread', cursor, 20, {}, selection)],

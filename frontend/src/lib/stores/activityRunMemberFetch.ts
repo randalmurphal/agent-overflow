@@ -26,6 +26,7 @@ import type { TimelineSelection } from '../../../bindings/agent-overflow/interna
 import type { Item } from '../types/models';
 import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
 import type { ActivityRunMembers } from '../../../bindings/agent-overflow/internal/store/models';
+import type { ActivityRunRule } from '../utils/activityRunSpans';
 import {
   ListActivityRunMembers,
   type ActivityRunMembersDirection,
@@ -88,9 +89,16 @@ export interface ActivityRunMemberFetchOptions {
   /**
    * A response's stub was recorded. Every count a node or a header
    * derives from the record may have moved without any row changing (a
-   * `limit: 0` refresh), so the registry re-projects on it.
+   * `limit: 0` refresh), so the registry re-projects on it. `rule` is the
+   * rule the call asked for.
    */
-  onStubApplied(stub: ActivityRunMembers['stub']): string[];
+  onStubApplied(stub: ActivityRunMembers['stub'], rule: ActivityRunRule): string[];
+  /**
+   * Whether an answer read under `rule` may restate the records: only
+   * under the thread's rule, over records of that rule. An answer to a
+   * call made before the hello changed mounts and records nothing.
+   */
+  answerApplies(rule: ActivityRunRule): boolean;
 }
 
 export interface FetchMembersRequest {
@@ -268,7 +276,7 @@ export function createActivityRunMemberFetch(
         limit: request.limit,
         shape: options.shape(),
       });
-      if (!current() || recovery) return [];
+      if (!current() || recovery || !options.answerApplies(answer.activityRunRule)) return [];
       reloaded.delete(span);
       unreconciled.delete(span);
       const rows = (answer.items ?? []) as Item[];
@@ -282,7 +290,7 @@ export function createActivityRunMemberFetch(
       // Every refusal bumps `invalidationVersion`, so an answer that is not
       // invalidated was read after the last one and can settle them.
       const refusedPastRun = !invalidated && settleRefusedRows(record, answer.stub);
-      const held = options.onStubApplied(answer.stub);
+      const held = options.onStubApplied(answer.stub, answer.activityRunRule);
       if (invalidated && options.records().get(runKey) === record) {
         record.dirty = true;
         scheduler.request();

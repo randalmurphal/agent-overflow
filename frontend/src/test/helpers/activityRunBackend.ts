@@ -127,7 +127,10 @@ export function serveClassifiedHistory(
   return { pages, members };
 }
 
-/** A members call's answer: a stub refresh (`limit: 0`), refused as stale like the store's. */
+/**
+ * A members call's answer: a stub refresh (`limit: 0`) or the members
+ * before the loaded span, refused as stale like the store's.
+ */
 function refreshStub(rows: readonly Item[], agentMessageMembers: boolean, req: Record<string, unknown>) {
   const runs = classifyRuns(rows, agentMessageMembers);
   const run = runs.find(candidate => candidate[0].id === req.runFirstItemId);
@@ -138,7 +141,12 @@ function refreshStub(rows: readonly Item[], agentMessageMembers: boolean, req: R
   if ((req.loadedFirstItemId && first < 0) || (req.loadedLastItemId && last < 0)) {
     throw staleError(`loaded span is not a span of activity run ${String(req.runFirstItemId)}`);
   }
-  if (Number(req.limit ?? 0) !== 0) throw new Error('classifying backend answers stub refreshes only');
+  const limit = Number(req.limit ?? 0);
+  if (limit !== 0) {
+    if (req.direction !== 'before' || first < 0) throw new Error('classifying backend pages members before a loaded span only');
+    const from = Math.max(0, first - limit);
+    return { items: run.slice(from, first), stub: stubFor(run, from, last) };
+  }
   if (first < 0) return { items: [], stub: { ...stubFor(run, run.length, run.length - 1), loadedLastItemId: '' } };
   return { items: [], stub: stubFor(run, first, last) };
 }

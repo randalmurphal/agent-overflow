@@ -35,12 +35,20 @@ export function threadActivityRunRule(threadId: string | null | undefined): Acti
 }
 
 /**
- * The `agentMessageMembers` field of a history request about `threadId`:
- * present exactly when the backend the call goes to groups by the
- * member-on-sight rule, so a request to any other backend is the one it
- * has always been sent. Read when the call is issued.
+ * The rule a history request about `threadId` is grouped by: the rule of
+ * the backend the call goes to. Read once per request, when it is issued;
+ * the request's field (`agentMessageMembersField`) and the label its
+ * answer carries (`RuledRead` in bindings.ts) both come from this value.
  */
-export function agentMessageMembersField(threadId: string): { agentMessageMembers?: true } {
-  const backend = getPinnedBackend() ?? threadBackend(threadId) ?? HOME_BACKEND;
-  return backendActivityRunRule(backend) === AGENT_MESSAGE_MEMBERS_RULE ? { agentMessageMembers: true } : {};
+export function requestActivityRunRule(threadId: string): ActivityRunRule {
+  return backendActivityRunRule(getPinnedBackend() ?? threadBackend(threadId) ?? HOME_BACKEND);
+}
+
+/**
+ * The `agentMessageMembers` field of a request grouped by `rule`: present
+ * exactly for the member-on-sight rule, so a request to a backend without
+ * the capability is the one it has always been sent.
+ */
+export function agentMessageMembersField(rule: ActivityRunRule): { agentMessageMembers?: true } {
+  return rule === AGENT_MESSAGE_MEMBERS_RULE ? { agentMessageMembers: true } : {};
 }

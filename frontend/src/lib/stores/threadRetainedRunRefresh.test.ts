@@ -8,6 +8,7 @@ import { ActivityRunStub, PagedItems } from '../../../bindings/agent-overflow/in
 import type { ThreadPane } from './thread.svelte';
 import type { Item } from '../types/models';
 import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
+import { requestActivityRunRule } from './activityRunRule';
 
 const shape = { runWindowRows: 30, inlinePreviews: false, maxBytes: 524288 };
 const row = (i: number, overrides: Partial<Item> = {}) => makeItem({ id: `r${i}`, threadId: 't',
@@ -20,11 +21,12 @@ function run(first: number, last: number, loadedFirst: number, loadedLast: numbe
     memberCount: last - first + 1, unshippedBefore: loadedFirst - first, unshippedAfter: last - loadedLast,
     unshippedDigest: '0000000000000000' });
 }
+/** A page read under the rule the reads after it ask for. */
 function page(items: Item[], runs: ActivityRunStub[]) {
-  return new PagedItems({ items, runs,
+  return Object.assign(new PagedItems({ items, runs,
     oldestCursor: runs.length ? cursor(runs[0].firstItemIndex) : cursor(items[0]?.itemIndex ?? 0),
     newestCursor: runs.length ? cursor(runs.at(-1)!.lastItemIndex) : cursor(items.at(-1)?.itemIndex ?? 0),
-    hasMoreOlder: false, hasMoreNewer: false, oldestTurnIndex: 0, newestTurnIndex: 0 });
+    hasMoreOlder: false, hasMoreNewer: false, oldestTurnIndex: 0, newestTurnIndex: 0 }), { activityRunRule: requestActivityRunRule('t') });
 }
 const rows = (first: number, count: number) => Array.from({ length: count }, (_, i) => row(first + i));
 let pane: ThreadPane;

@@ -81,6 +81,12 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { withViewportBottomHeld } from './threadPaneShared';
 import type { PaneScrollController } from './threadPaneShared';
 
+/** A page's run stubs and the rule its request asked for (`RuledRead`). */
+export interface ActivityRunStubRead {
+  rule: ActivityRunRule;
+  stubs: readonly ActivityRunStub[] | null | undefined;
+}
+
 /** The first index of `rows`, in timeline order, whose row sorts after `cursor`. */
 function firstIndexAfter(rows: readonly Item[], cursor: RunCoordinate): number {
   let lo = 0;
@@ -427,13 +433,15 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * fold a page's stubs into the records.
    *
    * Called after every wholesale change to the window (a page, a replica
-   * paint, a cut, a members mount) and after a live append. `stubs` is
-   * the page's `runs`, or omitted when the change carried no server
-   * description: a record whose span moved without one goes dirty and
-   * refreshes. The revisions move only when a record, its bounds or the
-   * member index changed.
+   * paint, a cut, a members mount) and after a live append. `read` is the
+   * page's `runs` with the rule its request asked for, or omitted when the
+   * change carried no server description: a record whose span moved
+   * without one goes dirty and refreshes. Stubs read under another rule
+   * than the thread's are not folded: they describe runs it does not
+   * have. The revisions move only when a record, its bounds or the member
+   * index changed.
    */
-  syncRunSpans(items: readonly Item[], stubs?: readonly ActivityRunStub[], bounds?: RunWindowBounds): void;
+  syncRunSpans(items: readonly Item[], read?: ActivityRunStubRead, bounds?: RunWindowBounds): void;
   /**
    * Account for a window cut: shed the members it dropped from a run that
    * straddles it, and drop the record of a run that left entirely.
@@ -454,12 +462,24 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    */
   heldRunFold(): HeldRunFold | null;
   /**
-   * The window was just replaced by a read under the thread's current
-   * rule (a page, or a cached window of that rule). Until the next one,
-   * `heldRunFold` and `snapshotStubs` offer the window only while the rule
-   * is unchanged.
+   * The window was just replaced by a read grouped by `rule`: the rule
+   * its request asked for (`RuledRead`), or the rule a cached window was
+   * tagged with. `heldRunFold` and `snapshotStubs` offer the window only
+   * while the thread's rule is that one.
    */
-  noteWindowRead(): void;
+  noteWindowRead(rule: ActivityRunRule): void;
+  /**
+   * A page grouped by `rule` was merged into the window at one edge. A
+   * window holding reads of both rules is offered under neither until the
+   * next whole-window read.
+   */
+  noteEdgeRead(rule: ActivityRunRule): void;
+  /**
+   * The rule the window was read under, or null when no single read
+   * describes it (live rows only, or reads of both rules). Held evidence
+   * is sent only with this rule (`SyncThreadWindowInput.heldRule`).
+   */
+  windowReadRule(): ActivityRunRule | null;
   /**
    * The run a pushed row belongs to without the pane holding it, or null.
    * `threadItemUpserts.ts` routes pushed rows on it: such a row is not
@@ -478,14 +498,15 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * carries over from the window it replaces. `rows` is the window to
    * install, in timeline order; its rows not in `page` are carried (rows
    * the wire touched during the read). A carried row in a part of one of
-   * the page's runs (`stubs`) the page does not ship is left out. Returns
+   * the page's runs (`read`) the page does not ship is left out. Returns
    * the rows to install and the refusals, which the caller notes once the
-   * page's stubs are folded.
+   * page's stubs are folded. Stubs of another rule than the thread's are
+   * not folded, so they refuse nothing.
    */
   admitCarriedRows(
     rows: Item[],
     page: readonly Item[],
-    stubs: readonly ActivityRunStub[] | null | undefined,
+    read: ActivityRunStubRead,
   ): { items: Item[]; refusals: readonly RunRefusal[] };
   /**
    * Account for refused rows: each run goes dirty and keeps the newest
@@ -769,6 +790,8 @@ const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 const NO_RUN_SPANS: ReadonlyMap<string, ActivityRunSpan> = new Map();
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
 const NO_REFUSALS: readonly RunRefusal[] = Object.freeze([]);
+/** A window holding reads of both rules (`noteEdgeRead`). */
+const MIXED_READS = 'mixed-reads' as const;
 
 const reportedAnchorRuns = new Set<string>();
 const MAX_REPORTED_ANCHOR_RUNS = 100;
@@ -861,14 +884,20 @@ export function createThreadActivityRuns(
   // runs the other does not have, so a rule change drops every record and
   // the next page's stubs rebuild them.
   let recordsRule: ActivityRunRule | null = null;
-  // The rule the window's rows were read under, set by `noteWindowRead`.
-  // Unlike `recordsRule`, a sync without a page does not move it: the
-  // rows a page of the other rule shipped are still the ones held.
-  let windowRule: ActivityRunRule | null = null;
+  // The rule the window's rows were read under: the rule its request
+  // asked for, set by `noteWindowRead`, or MIXED_READS once an edge page
+  // of the other rule joined it (`noteEdgeRead`). Unlike `recordsRule`, a
+  // sync without a page does not move it: the rows a page of the other
+  // rule shipped are still the ones held.
+  let windowRule: ActivityRunRule | typeof MIXED_READS | null = null;
   // Whether the held window describes the rows a read under the current
   // rule returns. A window no read describes (live rows only) is grouped
   // by the client alone.
   const windowReadUnderRule = () => windowRule === null || windowRule === options.activityRunRule();
+  // A members answer restates a record: it applies only when it was read
+  // under the thread's rule and the records are of that rule. Any other
+  // describes runs the next sync drops (`syncRunSpans`).
+  const answerApplies = (rule: ActivityRunRule) => rule === options.activityRunRule() && recordsRule === rule;
 
   const memberFetch: ActivityRunMemberFetch = createActivityRunMemberFetch({
     selection: options.selection,
@@ -883,8 +912,9 @@ export function createThreadActivityRuns(
     reloadWindow: () => options.reloadWindow(),
     reportFailure: (message, err, silent) =>
       options.reportFetchFailure(message, err, silent),
-    onStubApplied: (stub) => {
-      const spans = syncRunSpans(options.items(), [stub]);
+    answerApplies,
+    onStubApplied: (stub, rule) => {
+      const spans = syncRunSpans(options.items(), { rule, stubs: [stub] });
       const record = records.get(stub.firstItemId);
       const span = record ? spanOfRecord(spans, record) : null;
       return span ? span.items.map(item => item.id) : [];
@@ -958,7 +988,7 @@ export function createThreadActivityRuns(
    */
   function syncRunSpans(
     items: readonly Item[],
-    stubs?: readonly ActivityRunStub[],
+    read?: ActivityRunStubRead,
     bounds = options.windowBounds(),
   ): ReadonlyMap<string, ActivityRunSpan> {
     const rule = options.activityRunRule();
@@ -970,6 +1000,9 @@ export function createThreadActivityRuns(
         memberFetch.reset();
       }
     }
+    // A read requested under the other rule (the hello changed while it
+    // was in flight) describes runs this rule does not have.
+    const stubs = read && read.rule === rule ? read.stubs ?? undefined : undefined;
     if (!stubs?.length && records.size === 0) {
       // No record to re-point and no stub to fold; the indexes derived
       // from records only need emptying.
@@ -1200,8 +1233,9 @@ export function createThreadActivityRuns(
   function admitCarriedRows(
     rows: Item[],
     page: readonly Item[],
-    stubs: readonly ActivityRunStub[] | null | undefined,
+    read: ActivityRunStubRead,
   ): { items: Item[]; refusals: readonly RunRefusal[] } {
+    const stubs = read.rule === options.activityRunRule() ? read.stubs : null;
     if (!stubs?.length) return { items: rows, refusals: NO_REFUSALS };
     const pageById = new Map(page.map(item => [item.id, item]));
     const selection = options.selection?.();
@@ -1907,7 +1941,9 @@ export function createThreadActivityRuns(
     syncRunSpans,
     applyWindowCut,
     heldRunFold: () => windowReadUnderRule() ? heldRunsFold(records) : null,
-    noteWindowRead: () => { windowRule = options.activityRunRule(); },
+    noteWindowRead: (rule) => { windowRule = rule; },
+    noteEdgeRead: (rule) => { windowRule = windowRule === null || windowRule === rule ? rule : MIXED_READS; },
+    windowReadRule: () => windowRule === MIXED_READS ? null : windowRule,
     runCoveringUnshipped,
     admitCarriedRows,
     noteRefusals: (refusals) => {

@@ -11,7 +11,16 @@ import {
   SearchTimelineItems as SearchTimelineItemsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import { requireThreadFindSupport, requireTimelineSelectionSupport } from './timelineSelectionSupport';
-import { agentMessageMembersField } from './activityRunRule';
+import { agentMessageMembersField, requestActivityRunRule } from './activityRunRule';
+import type { ActivityRunRule } from '../utils/activityRunSpans';
+
+/**
+ * A history answer with the activity-run rule its request was grouped by
+ * (`requestActivityRunRule`, read once when the call is issued). Whatever
+ * installs the answer labels what it installs with this rule, never with
+ * the rule current when it lands.
+ */
+export type RuledRead<T> = T & { activityRunRule: ActivityRunRule };
 // Re-export Wails v3 generated bindings used by components.
 //
 // Every entry here is produced by `wails3 generate bindings -ts`. When
@@ -1189,6 +1198,13 @@ export interface SyncThreadWindowInput {
    * (docs/architecture/thread-replica-sync.md §3.4).
    */
   haveWindow?: HeldWindow;
+  /**
+   * The rule the held evidence (`haveWindow`, and the rows the stamp
+   * attests) was read under, or null for none. The evidence is sent only
+   * when it is this request's rule: the server checks rows and stamps, not
+   * grouping, and would answer `fresh` to a window of the other rule.
+   */
+  heldRule: ActivityRunRule | null;
 }
 
 export interface SyncThreadWindowResult {
@@ -1201,15 +1217,27 @@ export interface SyncThreadWindowResult {
   page?: PagedItems | null;
 }
 
+/** A sync answer with the rule its request asked for, on it and on its page. */
+export type RuledSyncThreadWindowResult = RuledRead<Omit<SyncThreadWindowResult, 'page'> & {
+  page?: RuledRead<PagedItems> | null;
+}>;
+
 export function SyncThreadWindow(
   threadId: string,
   req: SyncThreadWindowInput,
-): Promise<SyncThreadWindowResult> {
+): Promise<RuledSyncThreadWindowResult> {
   requireTimelineSelectionSupport(threadId, req.selection);
-  return SyncThreadWindowRaw(
+  const rule = requestActivityRunRule(threadId);
+  const { heldRule, ...request } = req;
+  const evidence = heldRule === rule ? {} : { haveEpoch: -1, haveRev: -1, haveWindow: undefined };
+  return (SyncThreadWindowRaw(
     threadId,
-    new SyncThreadWindowRequestClass({ ...req, ...agentMessageMembersField(threadId) }),
-  ) as unknown as Promise<SyncThreadWindowResult>;
+    new SyncThreadWindowRequestClass({ ...request, ...evidence, ...agentMessageMembersField(rule) }),
+  ) as unknown as Promise<SyncThreadWindowResult>).then(response => ({
+    ...response,
+    page: response.page ? { ...response.page, activityRunRule: rule } : response.page,
+    activityRunRule: rule,
+  }));
 }
 
 // ListActivityRunMembers wrapper. Same plain-object-in / class-wrap
@@ -1253,32 +1281,35 @@ export interface ActivityRunMembersInput {
 export function ListActivityRunMembers(
   threadId: string,
   req: ActivityRunMembersInput,
-): Promise<ActivityRunMembers> {
+): Promise<RuledRead<ActivityRunMembers>> {
   requireTimelineSelectionSupport(threadId, req.selection);
-  return ListActivityRunMembersRaw(
+  const rule = requestActivityRunRule(threadId);
+  return (ListActivityRunMembersRaw(
     threadId,
     new ActivityRunMembersRequestClass({
       ...req,
-      shape: { ...req.shape, ...agentMessageMembersField(threadId) },
+      shape: { ...req.shape, ...agentMessageMembersField(rule) },
     }),
-  ) as unknown as Promise<ActivityRunMembers>;
+  ) as unknown as Promise<ActivityRunMembers>).then(answer => ({ ...answer, activityRunRule: rule }));
 }
 
+/** A page of history, read under the rule its request asked for. */
+function ruledPage(threadId: string, read: (field: { agentMessageMembers?: true }) => Promise<PagedItems>): Promise<RuledRead<PagedItems>> {
+  const rule = requestActivityRunRule(threadId);
+  return read(agentMessageMembersField(rule)).then(page => ({ ...page, activityRunRule: rule }));
+}
 
 export function ListThreadSliceAround(threadId: string, anchor: string, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
   requireTimelineSelectionSupport(threadId, selection);
-  return ListThreadSliceAroundRaw(threadId, anchor, budget,
-    { ...shape, selection, ...agentMessageMembersField(threadId) });
+  return ruledPage(threadId, field => ListThreadSliceAroundRaw(threadId, anchor, budget, { ...shape, selection, ...field }));
 }
 export function ListItemsBeforeCursor(threadId: string, cursor: TimelineCursor, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
   requireTimelineSelectionSupport(threadId, selection);
-  return ListItemsBeforeCursorRaw(threadId, cursor, budget,
-    { ...shape, selection, ...agentMessageMembersField(threadId) });
+  return ruledPage(threadId, field => ListItemsBeforeCursorRaw(threadId, cursor, budget, { ...shape, selection, ...field }));
 }
 export function ListItemsAfterCursor(threadId: string, cursor: TimelineCursor, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
   requireTimelineSelectionSupport(threadId, selection);
-  return ListItemsAfterCursorRaw(threadId, cursor, budget,
-    { ...shape, selection, ...agentMessageMembersField(threadId) });
+  return ruledPage(threadId, field => ListItemsAfterCursorRaw(threadId, cursor, budget, { ...shape, selection, ...field }));
 }
 
 export function GetThreadUserMessageTicks(threadId: string, selection: TimelineSelection = {}) {

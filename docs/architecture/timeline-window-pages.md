@@ -55,8 +55,12 @@ call's `shape`) and on `SyncThreadWindowRequest`. A request without the
 field, which every older client sends, is grouped by the absorbed rule. The
 client groups a thread by the rule of its owning backend's hello
 (`threadActivityRunRule`) and sets the field exactly when that hello
-advertises the capability (`agentMessageMembersField`), so both sides of
-one connection apply one rule. Stubs read under one rule describe runs the
+advertises the capability, so both sides of one connection apply one rule.
+Each classifying binding in `bindings.ts` reads the rule once
+(`requestActivityRunRule`), derives the field from it
+(`agentMessageMembersField`) and returns the answer labeled with it
+(`activityRunRule`), so an answer that lands after the hello changed is
+interpreted under the rule it asked for. Stubs read under one rule describe runs the
 other does not have: the run registry drops its records when the thread's
 rule changes, a cached window (L1 snapshot, replica body) records the rule
 it was read under and is not installed under the other, and the reconnect
@@ -64,9 +68,13 @@ refresh a changed hello triggers reloads every timeline of that backend,
 root panes and scoped ones (agent panes, agent cards), under the new rule.
 The held-window check (§5) verifies physical rows and knows no rule, so the
 client never offers a window read under the other rule: the registry keeps
-the rule the window was read under (`noteWindowRead`), and while it differs
+the label of the page that installed the window (`noteWindowRead`; an edge
+page of another rule marks it read under neither), and while it differs
 from the thread's, `heldRunFold` and `snapshotStubs` answer null and the
-next read is a page.
+next read is a page. `SyncThreadWindow` sends held-window evidence only
+when its `heldRule` is the rule of the request. Stubs of an answer
+labeled with another rule are not folded, and a members answer labeled
+with another rule than the records' is dropped whole.
 
 Runs are identified by `firstItemId`. New rows land at the write head, so
 a run grows at its newer end. The one row that can land ahead of a run's
@@ -429,7 +437,8 @@ longer a fetch size.
   through the app RPCs; `threadActivityRunRule.svelte.test.ts` drives a
   pane against each kind of backend, a hello that changes the rule (over
   partial windows of a root pane, an agent pane and a completed agent's
-  card, and a refresh that must not be answered `fresh`), and a
+  card, a refresh that must not be answered `fresh`, and a window page or
+  members answer read under the old rule landing after the change), and a
   disagreement no reload settles; `activity-run-older-computer.spec.ts`
   does it across paired harness computers, a restart across the capability
   included.
