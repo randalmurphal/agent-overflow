@@ -31,8 +31,9 @@ type ForgeAttachment struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	Filename  string `json:"filename"`
 	// Width and Height are the served image's pixel size, so the client
-	// reserves the box before the bytes decode; zero when unknown (svg,
-	// ico, avif) and for every other kind.
+	// reserves the box before the bytes decode; zero when unknown (ico,
+	// avif, an svg without a plain width and height) and for every other
+	// kind.
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	// OriginalWidth and OriginalHeight are the original image's pixel

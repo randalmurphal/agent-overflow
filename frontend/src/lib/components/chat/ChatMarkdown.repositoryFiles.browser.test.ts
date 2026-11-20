@@ -268,6 +268,30 @@ describe('a repository image', () => {
   });
 
   it.each([
+    ['in an HTML block', (title: string) => `Intro paragraph.\n\n<p><img src="docs/a.png" alt="shot"${title}></p>\n\nAfter paragraph.`],
+    ['as an inline tag', (title: string) => `Intro <img src="docs/a.png" alt="shot"${title}> text.`],
+  ])('keeps the authored title of an image %s, and shows the file URL without one', async (_name, write) => {
+    mockGitBlobImage(async () => ({ blob: await png(64, 48), width: 64, height: 48 }));
+    const fileUrl = `${GH}/blob/${HEAD}/docs/a.png`;
+    for (const [title, shown] of [
+      [' title="Architecture overview"', 'Architecture overview'],
+      ['', fileUrl],
+      [' title=""', fileUrl],
+    ] as const) {
+      freshFacts();
+      __resetMediaBlobCacheForTest();
+      document.body.innerHTML = '';
+      const body = write(title);
+      applySnapshot(body);
+      await answer();
+      const view = mount(body);
+      const img = await painted(view.root());
+      expect(img.title, body).toBe(shown);
+      view.unmount();
+    }
+  });
+
+  it.each([
     ['inline', BODY],
     ['by reference', 'Intro paragraph.\n\n![shot][s]\n\nAfter paragraph.\n\n[s]: docs/a.png'],
     ['in HTML', 'Intro paragraph.\n\n<p><img src="docs/a.png" alt="shot"></p>\n\nAfter paragraph.'],

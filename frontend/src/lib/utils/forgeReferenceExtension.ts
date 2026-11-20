@@ -48,7 +48,7 @@ import {
   type FactRevision,
   type ForgeFact,
 } from './forgeFacts';
-import { scanPermalinkLines, scanRepositoryImages } from './forgeRepositoryFiles';
+import { scanPermalinkLines, scanRepositoryImages } from './forgeRepositoryScan';
 
 /** Characters that continue a word, a path or an email local part. */
 const WORD = /[A-Za-z0-9_.+/-]/;
@@ -528,11 +528,24 @@ function factUrl(fact: ForgeFact, origin: string): string | null {
 const GITLAB_SIGIL = /[~%$&]/;
 
 /**
+ * A bare label title that prose writes for "about" (`~5 minutes`, `~10ms`).
+ * While the forge is asked, a reference draws as its likelier answer: such
+ * a label, and a snippet (`$5` is a price far more often), as the text
+ * written; every other one as found. Either becomes what the answer says.
+ */
+const proseNumber = (title: string): boolean => {
+  const first = title.charCodeAt(0);
+  return first >= 48 && first <= 57;
+};
+
+/**
  * GitLab's references that read as prose without the forge's answer:
  * `~label`, `~"multi word"` and scoped `~type::bug` labels, `%milestone`,
  * `$snippet` and `&epic`. A label the forge has, or is being asked about,
  * is a chip (`labelChip`, the same box either way); a milestone, snippet
- * or epic is a link. Anything else is text, as without facts.
+ * or epic is a link. Anything else is text, as without facts, and so is a
+ * reference prose writes for something else while it is asked
+ * (`proseNumber`).
  *
  * It runs ahead of the default rules so that it sees `~` before the forge
  * strikethrough, which claims every tilde: a tilde that strikes stays the
@@ -557,7 +570,7 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
     if (match[1] === undefined && !endsAt(src, raw.length)) return undefined;
     const fact = readFact<ForgeFact>(lexer, labelFactKey(project, title));
     const found = typeof fact === 'object' && fact.status === 'found' ? fact : null;
-    if (!found && fact !== 'pending') return undefined;
+    if (!found && (fact !== 'pending' || (match[1] === undefined && proseNumber(title)))) return undefined;
     const cut = title.lastIndexOf('::');
     const scoped = cut > 0 && cut + 2 < title.length;
     const shape = `${projectUrl}/-/issues?label_name=${encodeURIComponent(title)}`;
@@ -574,11 +587,11 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
     };
   };
 
-  // A milestone, snippet or epic: a link once found or while asked, text
-  // otherwise. A pending one links where its shape goes.
-  const named = (lexer: Lexer, raw: string, key: string, shape: string): Tokens.Link | Tokens.Text | undefined => {
+  // A milestone, snippet or epic: a link once found or, when `asked`, while
+  // asked (it links where its shape goes); text otherwise.
+  const named = (lexer: Lexer, raw: string, key: string, shape: string, asked = true): Tokens.Link | Tokens.Text | undefined => {
     const fact = readFact<ForgeFact>(lexer, key);
-    if (fact !== 'pending' && (typeof fact !== 'object' || fact.status !== 'found')) return undefined;
+    if (!(asked && fact === 'pending') && (typeof fact !== 'object' || fact.status !== 'found')) return undefined;
     return factLink(lexer, key, raw, shape, [textToken(raw)]);
   };
 
@@ -609,7 +622,7 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
       const match = (first === 36 ? SNIPPET : EPIC).exec(src);
       if (!match || !endsAt(src, match[0].length)) return undefined;
       return first === 36
-        ? named(lexer, match[0], snippetFactKey(project, match[1]), `${projectUrl}/-/snippets/${match[1]}`)
+        ? named(lexer, match[0], snippetFactKey(project, match[1]), `${projectUrl}/-/snippets/${match[1]}`, false)
         : named(lexer, match[0], epicFactKey(namespace, match[1]), `${origin}/groups/${namespace}/-/epics/${match[1]}`);
     },
   };

@@ -738,8 +738,9 @@ export class ForgeFact {
     "mime"?: string;
 
     /**
-     * LFS marks an image path holding a Git LFS pointer; only OID is set
-     * beside it.
+     * LFS marks an image path holding a Git LFS pointer whose object is not
+     * in the local LFS store; only OID is set beside it. A pointer whose
+     * object is local answers as that image, with the pointer blob's OID.
      */
     "lfs"?: boolean;
 

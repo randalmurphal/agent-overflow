@@ -5,6 +5,8 @@ import type { ForgeAttachmentSource } from './forgeAttachments';
 import { imageFactKey, linesFactKey, NO_REVISION, REVISION_FACT_KEY, type FactRevision, type ForgeFact, type ForgeFactState } from './forgeFacts';
 import { forgeFactKeys } from './forgeReferenceExtension';
 import { MAX_SNIPPET_LINES, permalinkCounters, permalinkOf, repositoryImageOf, snippetLanguage } from './forgeRepositoryFiles';
+import { repositoryScanCounters } from './forgeRepositoryScan';
+import { markdownFindText } from '../components/chat/markdown/markdownFindText';
 import { parseRepositoryImageHref, REPOSITORY_IMAGE_HREF_PREFIX } from './repositoryImageHref';
 import { repositoryFileCounters, repositoryFileOf, type RepositorySite } from './repositoryFiles';
 
@@ -125,6 +127,8 @@ describe('a permalink to lines', () => {
     [`${GH}/blob/${SHA}/src/x.ts#L3-L7`, 3, 7],
     [`${GH}/blob/${SHA}/src/x.ts#L7-L3`, 3, 7],
     [`${GH}/blob/${SHA}/src/x.ts#L1-L${MAX_SNIPPET_LINES}`, 1, MAX_SNIPPET_LINES],
+    [`${GH}/blob/${SHA}/src/x.ts?plain=1#L3`, 3, 3],
+    [`${GH}/blob/${SHA}/src/x.ts?plain=1#L3-L5`, 3, 5],
   ])('reads %s', (href, start, end) => {
     expect(permalinkOf(href, shapes)).toEqual({ sha: SHA, path: 'src/x.ts', start, end, repo: 'widget', owner: 'acme' });
   });
@@ -135,7 +139,10 @@ describe('a permalink to lines', () => {
     [`https://github.com/other/widget/blob/${SHA}/src/x.ts#L3`, 'another repository'],
     [`${GH}/blob/${SHA}/src/x.ts`, 'no fragment'],
     [`${GH}/blob/${SHA}/src/x.ts#L1-L${MAX_SNIPPET_LINES + 1}`, 'too many lines'],
-    [`${GH}/blob/${SHA}/src/x.ts?plain=1#L3`, 'a query'],
+    [`${GH}/blob/${SHA}/src/x.ts?plain=0#L3`, 'a query other than plain=1'],
+    [`${GH}/blob/${SHA}/src/x.ts?plain=1&x=1#L3`, 'a second parameter'],
+    [`${GH}/blob/${SHA}/src/x.ts?x=1&plain=1#L3`, 'plain=1 after another parameter'],
+    [`${GH}/blob/${SHA}/src/x.ts?raw=1#L3`, 'another query'],
     [`${GH}/blob/${SHA}/src/x.ts#L3C2`, 'a column'],
     [`${GH}/blob/${SHA}/src/x.ts#L0`, 'line zero'],
     [`http://github.com/acme/widget/blob/${SHA}/src/x.ts#L3`, 'http'],
@@ -293,18 +300,196 @@ const SCANNED = [
   `<${P('g.go', 'L1')}>`,
   `[label](${P('h.go', 'L1')})`,
   `\`${P('i.go', 'L1')}\``,
+  `Plain ${P('j.md', 'L3-L5').replace('#', '?plain=1#')} here.`,
+  `Is it ${P('k.md', 'L2').replace('#', '?plain=1#')}?`,
+  `Not ${P('l.md', 'L2').replace('#', '?plain=1&x=1#')} this.`,
+];
+
+// Bodies written to trip a scan that reads tags, destinations, labels or
+// references differently from the parse: quoted `>` and `<`, quote kinds,
+// unquoted values, case, line breaks and blockquote markers inside tags,
+// references beyond the common five, escapes, `<…>` destinations,
+// reference definitions in every container, pictures, images in links,
+// code spans in labels, CRLF, and malformed tags, quotes and parentheses.
+const ADVERSARIAL = [
+  '![a](docs/sp\\ x.png) ![a](docs/esc\\)x.png) ![a](docs/esc\\)y.png',
+  "<img title=\"1 > 0\" src=\"docs/q1.png\">",
+  "Text <img title=\"1 > 0\" src=\"docs/q2.png\"> text",
+  "<p><img title=\"1 > 0\" src=\"docs/q3.png\"></p>",
+  "<img src=\"docs/q4.png\" title=\"a > b\">",
+  "<img alt='>' src='docs/q5.png'>",
+  "<p><img alt='>' src='docs/q6.png' width=\"1>\"></p>",
+  "<img src=\"docs/q>7.png\">",
+  "<p><img src=\"docs/q>8.png\"></p>",
+  "<img src=docs/u1.png alt=x>",
+  "<p><img alt=x src=docs/u2.png></p>",
+  "<IMG SRC=\"docs/up1.png\">",
+  "<P><IMG ALT=\"x\" SrC='docs/up2.png'></P>",
+  "<img\nsrc=\"docs/nl1.png\"\nalt=\"x\">",
+  "<p>\n<img\n  title=\"a\nb > c\"\n  src=\"docs/nl2.png\">\n</p>",
+  "Text <img\nsrc=\"docs/nl3.png\"> text",
+  "> <img\n> src=\"docs/bq1.png\">",
+  "> Text <img alt=\"x\"\n> src=\"docs/bq2.png\"> text",
+  "- <img\n  src=\"docs/li1.png\">",
+  "<img src=\"docs/a&sol;e1.png\">",
+  "<p><img src=\"docs/e2&period;png\"></p>",
+  "<img src=\"docs/e&lowbar;3.png\">",
+  "<img src=\"docs/e4&colon;x.png\">",
+  "<img src=\"docs/e5&#46;png\"> <img src=\"docs/e6&#x2E;png\">",
+  "<p><img src=\"docs/e7&amp.png\"></p>",
+  "<p><img src='docs/e8&ampx.png'></p>",
+  "![a](docs/m&sol;e1.png) ![a](docs/m&period;e2.png) ![a](docs/m&lowbar;e3.png) ![a](docs/m&colon;e4.png) ![a](docs/m&NewLine;e5.png)",
+  "![a](docs/m&#47;e6.png) ![a](docs/m&#x2F;e7.png) ![a](docs/m&#0;e8.png) ![a](docs/m&bogus;e9.png) ![a](docs/m&amp e10.png)",
+  "![a](docs/s\\_1.png) ![a](docs/s\\(2\\).png) ![a](docs/s\\&amp;3.png) ![a](docs/s\\€4.png) ![a](docs/s\\a5.png)",
+  "![a](<docs/w 1.png>) ![a](<docs/w 2.png> \"t\") ![a](< docs/w3.png >) ![a](<docs/w\\>4.png>) ![a](<docs/w<5.png>)",
+  "![a](docs/t1.png \"title\") ![a](docs/t2.png 'title') ![a](docs/t3.png (title)) ![a](\n  docs/t4.png\n  \"t\")",
+  "![r1]\n\n[r1]: docs/d1.png",
+  "![x][]\n\n[x]: docs/d2.png",
+  "![x][r3]\n\n[r3]: docs/d3.png \"t\"",
+  "![x][R  4]\n\n[r 4]: <docs/d 4.png>",
+  "> ![x][r5]\n>\n> [r5]: docs/d5.png",
+  "- ![x][r6]\n- [r6]: docs/d6.png",
+  "- item\n\n  ![x][r7]\n\n  [r7]:\n  docs/d7.png",
+  "> - ![r8]\n>\n>   [r8]: docs/d8.png",
+  "![r9]\n\n[r9]: docs/d&sol;9.png",
+  "![r10]\n\n[r10]: <docs/d&period;10.png>",
+  "![a\nb]\n\n[a\nb]: docs/d11.png",
+  "![r12]\n\n- > [r12]: docs/d12.png",
+  "![a][r13]\n\n[r13]: <docs/a>b13.png>",
+  "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"docs/p1.png 2x, docs/p1b.png\"><img src=\"docs/p1l.png\"></picture>",
+  "<picture>\n<source media=\"(prefers-color-scheme: light)\" srcset=\" docs/p2&lowbar;x.png 1x\">\n<img src=\"docs/p2l.png\" alt=\"a > b\">\n</picture>",
+  "<picture><SOURCE MEDIA='(prefers-color-scheme: dark)' SRCSET='docs/p3.png'><img src='docs/p3l.png'></picture>",
+  "Text <picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"docs/p4.png\"><img src=\"docs/p4l.png\"></picture> text",
+  "[![a](docs/l1.png)](https://example.com)",
+  "[![a][r14]](https://example.com)\n\n[r14]: docs/l2.png",
+  "<a href=\"x\"><img src=\"docs/l3.png\"></a>",
+  "[x <img src=\"docs/l4.png\"> y](https://example.com)",
+  "<img src=\"docs/m1.png\"",
+  "<img src=\"docs/m2.png",
+  "<p><img alt=\"x src=\"docs/m3.png\"></p>",
+  "![a](docs/(m4.png)",
+  "![a](docs/m5.png))",
+  "![a](docs/m6(1).png)",
+  "![a](docs/m7.png",
+  "![a `]` b](docs/c1.png)",
+  "![a `[` b](docs/c2.png)",
+  "![a ``]`` b][r15]\n\n[r15]: docs/c3.png",
+  "> ![a](\n> docs/bq3.png)",
+  "<img title=\"a\n\n<img src=\"docs/b2.png\">",
+  "<p><img/src=\"docs/sl.png\"></p>",
+  "<p><img alt=\"x\"src=\"docs/nows.png\"></p>",
+  "<video src=\"docs/v.mp4\"></video>",
+  "<p><video src=\"docs/v2.png\"></video></p>",
+  "<video controls><source src=\"docs/v3.png\"></video>",
+  "| h |\n| - |\n| <img title=\"a > b\" src=\"docs/cell.png\"> |",
+  "<details><summary>s</summary>\n\n![a](docs/reg&sol;1.png)\n\n<img title=\"x>y\" src=\"docs/reg2.png\">\n\n</details>",
+  "![a](docs/crlf1.png)\r\n\r\n![r16]\r\n\r\n[r16]: <docs/crlf2.png>\r\n",
+  "![a](\r\n> docs/crlf3.png)",
+  "<img title=\"1 > 0\" src=\"docs/a.png\">",
+  "![x](docs/a&sol;b.png)",
+  "![x](docs/a\\€b.png)",
+  "![x](docs/a\\&amp;b.png)",
+  "![x](<docs/a\\>b.png>)",
+  "![a `]` b](docs/code.png)",
+  "> ![a](\n> docs/bq.png)",
+  "![a][r]\n\n[r]: <docs/a>b.png>",
+  "![a\nb]\n\n[a\nb]: docs/ml.png",
+  "![r]\n\n- > [r]: docs/lq.png",
+  "<p><img/src=\"docs/slash.png\"></p>",
+  "<IMG SRC=\"docs/up.png\">",
+  "<p><img\nsrc=\"docs/nl.png\"\n></p>",
+  "> <img\n> src=\"docs/bqimg.png\">",
+  "> <p><img\n> src=\"docs/bqimg2.png\"></p>",
+  "<p><video src=\"docs/v2.mp4\"></video></p>",
+  "<p><img src=\"docs/a&amp.png\"></p>",
+  "<p><img src=\"docs/a&period;png\"></p>",
+  "<img src=\"docs/a&period;png\">",
+  "<p><img alt=a<b src=\"docs/lt.png\"></p>",
+  "![x](docs/a&NewLine;b.png)",
+  "![x](docs/a&colon;b.png)",
+  "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\" docs/d&lowbar;k.png 1x\"><img src=\"docs/l.png\"></picture>",
+  "![a](docs/a.png \"t\")",
+  "![a](docs/(p).png)",
+  "[![a](docs/il.png)](docs/link.md)",
+  "![a][R r]\n\n[r  R]: docs/fold.png",
+  "![a][r\\]x]\n\n[r\\]x]: docs/esc.png",
 ];
 
 describe('the repository file scan', () => {
+  // A lex reads a paragraph's images; the sanitizer, run as find's
+  // projection runs it under ChatMarkdown's options, reads an HTML block's.
   it.each([['GitHub', GITHUB], ['GitLab', GITLAB]] as const)('names every key a lex reads on %s', (_name, source) => {
     for (const rest of [undefined, 'pending' as const]) {
-      for (const body of SCANNED) {
+      for (const body of [...SCANNED, ...ADVERSARIAL]) {
         const facts = reader({}, rest);
         lexUnder(body, source, facts);
+        markdownFindText(body, { embeddedHtml: true, forgeSource: source, facts: () => facts });
         const keys = new Set(forgeFactKeys(body, source, REVISION));
         expect([...facts.read].filter((key) => key !== REVISION_FACT_KEY && !keys.has(key)), body).toEqual([]);
       }
     }
+  });
+
+  it.each([
+    ['a quoted `>` before the src', '<img title="1 > 0" src="docs/a.png">', 'docs/a.png'],
+    ['a quoted `>` in an HTML block', '<p><img alt=\'>\' src=\'docs/a.png\'></p>', 'docs/a.png'],
+    ['a `/` between attributes', '<p><img/src="docs/a.png"></p>', 'docs/a.png'],
+    ['no space after a quoted value', '<p><img alt="x"src="docs/a.png"></p>', 'docs/a.png'],
+    ['a tag across blockquote lines', '> <img\n> src="docs/a.png">', 'docs/a.png'],
+    ['a video', '<video src="docs/a.mp4"></video>', 'docs/a.mp4'],
+    ['a named reference beyond the five', '![x](docs/a&sol;b.png)', 'docs/a/b.png'],
+    ['a named reference in an attribute', '<img src="docs/a&period;png">', 'docs/a.png'],
+    ['a legacy reference in an attribute', '<p><img src="docs/a&amp.png"></p>', 'docs/a&.png'],
+    ['a reference in a srcset', '<picture><source media="(prefers-color-scheme: dark)" srcset="docs/d&lowbar;k.png 1x"><img src="docs/l.png"></picture>', 'docs/d_k.png'],
+    ['a non-ASCII escape', '![x](docs/a\\€b.png)', 'docs/a€b.png'],
+    ['an escaped reference', '![x](docs/a\\&amp;b.png)', 'docs/a&amp;b.png'],
+    ['an escaped `>` in `<…>`', '![x](<docs/a\\>b.png>)', 'docs/a>b.png'],
+    ['an unclosed `(` the rule keeps', '![x](docs/(a.png)', 'docs/(a.png'],
+    ['a `]` in a code span of the label', '![a `]` b](docs/a.png)', 'docs/a.png'],
+    ['a destination on a blockquote\'s next line', '> ![a](\n> docs/a.png)', 'docs/a.png'],
+    ['a `<…>` definition holding `>`', '![a][r]\n\n[r]: <docs/a>b.png>', 'docs/a>b.png'],
+    ['a label across lines', '![a\nb]\n\n[a\nb]: docs/a.png', 'docs/a.png'],
+    ['a definition in a list item\'s quote', '![r]\n\n- > [r]: docs/a.png', 'docs/a.png'],
+    ['an escaped `]` in a reference', '![a][r\\]x]\n\n[r\\]x]: docs/a.png', 'docs/a.png'],
+  ])('names the key the parse reads for %s', (_name, body, path) => {
+    const facts = reader({}, 'pending');
+    lexUnder(body, GITHUB, facts);
+    markdownFindText(body, { embeddedHtml: true, forgeSource: GITHUB, facts: () => facts });
+    const key = imageFactKey(HEAD, path);
+    expect(facts.read.has(key)).toBe(true);
+    expect(forgeFactKeys(body, GITHUB, REVISION)).toContain(key);
+  });
+
+  // Each family repeats a unit that opens a candidate some earlier one is
+  // still reading (an unclosed quote, a tag in an unquoted value, a
+  // destination in a destination, a label holding a code span), the shapes
+  // that rescan the rest of the body once per candidate.
+  it.each<[string, (n: number) => string]>([
+    ['quotes that close at the next tag', (n) => '<img a="'.repeat(n)],
+    ['mixed quotes', (n) => '<img a="<img b=\''.repeat(n)],
+    ['one unclosed quote', (n) => `<img title="x${'<img '.repeat(n)}`],
+    ['tags inside a quoted value', (n) => `<img a="${'<img b '.repeat(n)}">`],
+    ['tags in an unquoted value', (n) => `${'<img/a=x'.repeat(n)}>`],
+    ['unclosed tags', (n) => '<img src=docs/a.png '.repeat(n)],
+    ['tags on blockquote lines', (n) => '> <img\n'.repeat(n)],
+    ['nested destinations', (n) => `${'![a]('.repeat(n)}${')'.repeat(n)}`],
+    ['unclosed nested destinations', (n) => '![a](x'.repeat(n)],
+    ['destinations a space ends', (n) => '![a](x '.repeat(n)],
+    ['image openers', (n) => '!['.repeat(n)],
+    ['a code span in a label', (n) => `![\`${'](x) '.repeat(n)}`],
+    ['definition lines', (n) => `![r]\n\n${'[r]: <a>b>c>d '.repeat(n)}`],
+    ['unclosed `<…>` destinations', (n) => `![a](<${'x>'.repeat(n)}`],
+  ])('walks each character a bounded number of times: %s', (_name, make) => {
+    const perCharacter = (n: number) => {
+      const body = make(n);
+      repositoryScanCounters.steps = 0;
+      forgeFactKeys(body, GITHUB, REVISION);
+      return repositoryScanCounters.steps / body.length;
+    };
+    const small = perCharacter(250);
+    // Linear holds the ratio; a rescan per candidate multiplies it by 8.
+    expect(perCharacter(2000)).toBeLessThan(small * 2 + 1);
+    expect(small).toBeLessThan(8);
   });
 
   it('names the keys each form writes', () => {
@@ -321,7 +506,9 @@ describe('the repository file scan', () => {
     repositoryFileCounters.reads = 0;
     permalinkCounters.reads = 0;
     const plain = 'Plain words, a [link](https://example.com/x) and `code`.\n\n'.repeat(50);
+    repositoryScanCounters.steps = 0;
     forgeFactKeys(plain, GITHUB, REVISION);
+    expect(repositoryScanCounters.steps).toBe(0);
     lexUnder(plain, GITHUB, reader({}));
     expect(repositoryFileCounters.reads).toBe(0);
     expect(permalinkCounters.reads).toBe(0);
@@ -394,6 +581,27 @@ describe('a permalink snippet', () => {
     const [snippet] = lexUnder(URL3, GITHUB, reader({ [LINES]: 'pending' })) as AnyToken[];
     expect(snippet.type).toBe('codeSnippet');
     expect((snippet.tokens as AnyToken[])[1]).toMatchObject({ type: 'code', lang: '', text: '\n\n', firstLine: 3 });
+  });
+
+  it('stands as a block for a `?plain=1` permalink, its header linking the URL as written', () => {
+    const url = `${GH}/blob/${SHA}/README.md?plain=1#L3-L5`;
+    const key = linesFactKey(SHA, 'README.md', 3, 5);
+    const body = `See ${url} here.`;
+    const facts = reader({ [key]: linesFound(key, 'a\nb\nc') });
+    const tokens = lexUnder(body, GITHUB, facts);
+    expect(facts.read.has(key)).toBe(true);
+    expect(forgeFactKeys(body, GITHUB, REVISION)).toContain(key);
+    expect(shape(tokens)).toEqual(['paragraph', 'codeSnippet', 'paragraph']);
+    const links: AnyToken[] = [];
+    each((tokens[1] as AnyToken).tokens ?? [], (token) => token.type === 'link' && links.push(token));
+    expect(links.map((link) => link.href)).toEqual([url, `${GH}/commit/${SHA}`]);
+  });
+
+  it.each(['?plain=0', '?plain=1&x=1', '?raw=1'])('stays an ordinary link with the query %s', (query) => {
+    const url = `${GH}/blob/${SHA}/README.md${query}#L3-L5`;
+    const facts = reader({}, 'pending');
+    expect(shape(lexUnder(`See ${url}`, GITHUB, facts))).toEqual(['paragraph']);
+    expect([...facts.read].filter((key) => key.startsWith('lines:'))).toEqual([]);
   });
 
   it('reads a reversed range as the same key', () => {

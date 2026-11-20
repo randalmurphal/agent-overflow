@@ -15,8 +15,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/testutil"
 )
 
@@ -69,7 +72,10 @@ func writeFactFile(t testing.TB, repo, path string, data []byte) {
 	}
 }
 
-const svgDoc = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>`
+const (
+	svgDoc      = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="12px"></svg>`
+	fluidSVGDoc = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 12"></svg>`
+)
 
 const lfsPointer = "version https://git-lfs.github.com/spec/v1\noid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\nsize 12345\n"
 
@@ -89,6 +95,7 @@ func newFactsRepo(t *testing.T) factsRepo {
 	base := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "HEAD"))
 	writeFactFile(t, repo, "docs/head.png", pngOf(t, 3, 2))
 	writeFactFile(t, repo, "docs/icon.svg", []byte(svgDoc))
+	writeFactFile(t, repo, "docs/fluid.svg", []byte(fluidSVGDoc))
 	writeFactFile(t, repo, "docs/lfs.png", []byte(lfsPointer))
 	writeFactFile(t, repo, "docs/notes.txt", []byte("not an image\n"))
 	writeFactFile(t, repo, "code.go", []byte("package app\r\n\r\nfunc one() {}\nfunc two() {}\n"))
@@ -135,7 +142,7 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	head := r.head
 	keys := []string{
 		"image:head:docs/head.png", "image:base:docs/base.png", "image:" + head + ":docs/head.png",
-		"image:head:docs/icon.svg", "image:head:docs/lfs.png", "image:head:docs/notes.txt",
+		"image:head:docs/icon.svg", "image:head:docs/fluid.svg", "image:head:docs/lfs.png", "image:head:docs/notes.txt",
 		"image:head:docs/missing.png", "image:base:docs/head.png", "image:head:docs",
 		"commit:" + head[:7], "commit:" + r.base, "commit:" + strings.Repeat("0", 12),
 		"lines:" + head + ":code.go:1-3", "lines:" + head + ":code.go:4-4", "lines:" + head + ":code.go:4-5",
@@ -144,13 +151,16 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	}
 	got := resolveLocal(t, core, r.dir, r.rev(), keys...)
 	headPNG, basePNG, lfs := r.blob(t, head, "docs/head.png"), r.blob(t, r.base, "docs/base.png"), r.blob(t, head, "docs/lfs.png")
-	svg := r.blob(t, head, "docs/icon.svg")
+	svg, fluid := r.blob(t, head, "docs/icon.svg"), r.blob(t, head, "docs/fluid.svg")
 	code := r.blob(t, head, "code.go")
 	want := []ForgeFact{
 		{Key: "image:head:docs/head.png", Status: FactFound, OID: headPNG, Size: int64(len(pngOf(t, 3, 2))), Width: 3, Height: 2, MIME: "image/png"},
 		{Key: "image:base:docs/base.png", Status: FactFound, OID: basePNG, Size: int64(len(pngOf(t, 5, 4))), Width: 5, Height: 4, MIME: "image/png"},
 		{Key: "image:" + head + ":docs/head.png", Status: FactFound, OID: headPNG, Size: int64(len(pngOf(t, 3, 2))), Width: 3, Height: 2, MIME: "image/png"},
-		{Key: "image:head:docs/icon.svg", Status: FactFound, OID: svg, Size: int64(len(svgDoc)), MIME: "image/svg+xml"},
+		// An svg's root's plain size is its box; a viewBox alone is none.
+		{Key: "image:head:docs/icon.svg", Status: FactFound, OID: svg, Size: int64(len(svgDoc)), Width: 10, Height: 12, MIME: "image/svg+xml"},
+		{Key: "image:head:docs/fluid.svg", Status: FactFound, OID: fluid, Size: int64(len(fluidSVGDoc)), MIME: "image/svg+xml"},
+		// A pointer whose object is not in the local LFS store.
 		{Key: "image:head:docs/lfs.png", Status: FactFound, OID: lfs, LFS: true},
 		{Key: "image:head:docs/notes.txt", Status: FactAbsent},
 		{Key: "image:head:docs/missing.png", Status: FactAbsent},
@@ -176,9 +186,9 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	}
 	runs := calls.take()
 	// One batch-check, one batch read, one header read per blob an image
-	// key names, and one ls-tree per commit with a path the batch-check
-	// called missing.
-	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "ls-tree -z", "ls-tree -z"}; !slices.Equal(runs, want) {
+	// key names, one config read for the LFS pointer's store, and one
+	// ls-tree per commit with a path the batch-check called missing.
+	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", "ls-tree -z", "ls-tree -z"}; !slices.Equal(runs, want) {
 		t.Fatalf("git runs = %q\nwant %q", runs, want)
 	}
 
@@ -354,7 +364,7 @@ func TestBlobImageHeaderReadIsBounded(t *testing.T) {
 		{"deep.jpg", len(jpeg), factImageHeaderMax, [2]int{}},
 	} {
 		oid := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "HEAD:"+tc.path))
-		image, n, err := core.readBlobImageCounted(t.Context(), repo, oid, int64(tc.size))
+		image, _, n, err := core.readBlobImageCounted(t.Context(), repo, oid, int64(tc.size))
 		if n > tc.maxRead {
 			t.Errorf("%s: read %d of %d bytes, want at most %d", tc.path, n, tc.size, tc.maxRead)
 		}
@@ -433,5 +443,126 @@ func TestResolveFactsMixedBatch(t *testing.T) {
 	}
 	if reqs := f.requests(t, 0); len(reqs) != 1 {
 		t.Fatalf("requests = %+v", reqs)
+	}
+}
+
+// A lines read visits only the ranges that hold the line being read: 256
+// ranges over a blob of a million one-byte lines cost the lines they
+// capture, not the ranges times the lines.
+func TestLinesSinkVisitsOnlyTheRangesHoldingTheLine(t *testing.T) {
+	t.Parallel()
+	const lines, write = 1_000_000, 4093
+	blob := bytes.Repeat([]byte("a\n"), lines)
+	if len(blob) > maxFactLinesBlobBytes {
+		t.Fatalf("a %d byte blob is over the lines cap", len(blob))
+	}
+	sink := &linesSink{}
+	add := func(start, end int) {
+		sink.ranges = append(sink.ranges, &lineRange{at: len(sink.ranges), start: start, end: end})
+	}
+	// Added out of order, overlapping in pairs, the last two at the
+	// blob's end and one line past it.
+	for i := range 254 {
+		start := 1 + (253-i)*3900
+		if i%2 == 1 {
+			start = sink.ranges[i-1].start + 50
+		}
+		add(start, start+maxFactLines-1)
+	}
+	add(lines-maxFactLines+1, lines)
+	add(lines-maxFactLines+2, lines+1)
+	captured := 0
+	for _, r := range sink.ranges {
+		captured += min(r.end, lines) - r.start + 1
+	}
+	// Writes of an odd size split lines between them, as git's pipe can.
+	for p := blob; len(p) > 0; p = p[min(write, len(p)):] {
+		sink.write(p[:min(write, len(p))])
+	}
+	for _, r := range sink.ranges {
+		text, ok := sink.text(r)
+		if r.end > lines {
+			if ok {
+				t.Errorf("range %d-%d past the end answered", r.start, r.end)
+			}
+			continue
+		}
+		if want := strings.TrimSuffix(strings.Repeat("a\n", r.end-r.start+1), "\n"); !ok || text != want {
+			t.Errorf("range %d-%d = %d bytes, %v", r.start, r.end, len(text), ok)
+		}
+	}
+	// One visit per captured line, and one more per range for a line a
+	// write split.
+	if bound := captured + (len(blob)/write+1)*len(sink.ranges); sink.visits > bound {
+		t.Fatalf("%d ranges over %d lines made %d range visits, want at most %d", len(sink.ranges), lines, sink.visits, bound)
+	}
+}
+
+// A found abbreviated commit id is held for the forge facts' freshness,
+// since a later fetch can make it ambiguous; a full id is held for good.
+func TestLocalFactsHoldAnAbbreviatedCommitForTheWindow(t *testing.T) {
+	t.Parallel()
+	r := newFactsRepo(t)
+	core := NewCore()
+	var offset atomic.Int64
+	start := time.Now()
+	core.nowFn = func() time.Time { return start.Add(time.Duration(offset.Load())) }
+	calls := countFactGit(core)
+	abbreviated, full := "commit:"+r.head[:12], "commit:"+r.head
+	resolveLocal(t, core, r.dir, PRRevision{}, abbreviated, full)
+	calls.take()
+
+	offset.Store(int64(changingFactTTL - time.Second))
+	resolveLocal(t, core, r.dir, PRRevision{}, abbreviated, full)
+	if runs := calls.take(); len(runs) != 0 {
+		t.Fatalf("within the window the commits ran %q", runs)
+	}
+	offset.Store(int64(changingFactTTL + time.Second))
+	resolveLocal(t, core, r.dir, PRRevision{}, full)
+	if runs := calls.take(); len(runs) != 0 {
+		t.Fatalf("a full id was read again after the window: %q", runs)
+	}
+	got := resolveLocal(t, core, r.dir, PRRevision{}, abbreviated)
+	if got[abbreviated].Status != FactFound || got[abbreviated].OID != r.head {
+		t.Fatalf("abbreviated = %+v", got[abbreviated])
+	}
+	if runs := calls.take(); len(runs) != 2 {
+		t.Fatalf("after the window the abbreviation ran %q, want a batch-check and a batch read", runs)
+	}
+}
+
+// Paths whose bytes exceed the argv bound run as several ls-tree calls,
+// and every path is still answered.
+func TestTreePathsSplitsArgvByPathBytes(t *testing.T) {
+	t.Parallel()
+	r := newFactsRepo(t)
+	core := NewCore()
+	calls := countFactGit(core)
+	long := func(i int) string { return fmt.Sprintf("missing/%04d/", i) + strings.Repeat("x", 3000) }
+	var paths, keys []string
+	total := 0
+	for i := range 30 {
+		paths = append(paths, long(i))
+		keys = append(keys, "image:head:"+long(i))
+		total += len(long(i))
+	}
+	if total <= gitdiff.MaxEntryPathBytes || len(paths) > gitdiff.MaxEntryPaths {
+		t.Fatalf("%d paths of %d bytes are within one run's bounds", len(paths), total)
+	}
+	present, err := core.treePaths(t.Context(), r.dir, r.head, append(slices.Clone(paths), "docs/head.png", "code.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(present) != 2 || !present["docs/head.png"] || !present["code.go"] {
+		t.Fatalf("present = %v, want the two paths the tree holds", slices.Collect(maps.Keys(present)))
+	}
+	if runs := calls.take(); len(runs) < 2 {
+		t.Fatalf("%d path bytes ran %q, want more than one ls-tree", total+len("docs/head.pngcode.go"), runs)
+	}
+	got := resolveLocal(t, core, r.dir, r.rev(), keys...)
+	for _, key := range keys {
+		if got[key].Status != FactAbsent {
+			t.Errorf("%.40s... = %+v, want absent", key, got[key])
+		}
 	}
 }

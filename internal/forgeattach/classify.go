@@ -91,8 +91,9 @@ func Classify(data []byte, filename string) (Classification, error) {
 }
 
 // Classification is what Classify learned from the bytes. Width and Height
-// are the declared pixel size of an image whose header Go can read, and
-// zero for every other kind and for svg, ico and avif.
+// are the declared pixel size of an image whose header Go can read or an
+// svg with a plain width and height (attachment.SVGSize), and zero for
+// every other kind, for ico and avif, and for any other svg.
 type Classification struct {
 	MimeType string
 	Kind     string

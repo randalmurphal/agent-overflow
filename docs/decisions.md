@@ -942,7 +942,8 @@ and anti-changes that live only here:
   repository (a relative path, or a blob or raw URL at the head branch,
   the base branch or a commit) read from the local git objects at that
   commit and boxed at its final size from the first paint (a Git LFS
-  pointer says so and links to the forge; its bytes are not fetched), relative
+  pointer shows its object when the local LFS store has it; otherwise it
+  says so and links to the forge, and nothing is fetched), relative
   links resolved to the forge however the link is written, a numbered
   footnotes section, and heading
   anchors with `#name` jumps that stay inside the body clicked. GitHub:

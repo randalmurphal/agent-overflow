@@ -30,8 +30,9 @@ func DisplayImageMIME(buf []byte) (string, error) {
 // whole blob when it is shorter than gitdiff.MaxLFSPointerBytes, and at
 // least what the MIME sniff reads), and blob, a reader of the whole blob
 // from its first byte, which is read only as far as the image header:
-// the MIME type and the declared pixel size (zero for svg, ico and avif,
-// whose header Go cannot read).
+// the MIME type and the declared pixel size (an svg's from its root
+// element's plain width and height, attachment.SVGSize, else zero; zero
+// for ico and avif, whose header Go cannot read).
 func classifyDisplayImage(head []byte, blob io.Reader) (mime string, width, height int, err error) {
 	if gitdiff.IsLFSPointer(head) {
 		return "", 0, 0, ErrLFSPointer
@@ -41,7 +42,10 @@ func classifyDisplayImage(head []byte, blob io.Reader) (mime string, width, heig
 		return "", 0, 0, ErrNotDisplayImage
 	}
 	switch mime {
-	case "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon", "image/avif":
+	case "image/svg+xml":
+		width, height = attachment.SVGSize(head)
+		return mime, width, height, nil
+	case "image/x-icon", "image/vnd.microsoft.icon", "image/avif":
 		return mime, 0, 0, nil
 	}
 	width, height, err = attachment.ImageDimensionsFrom(blob)

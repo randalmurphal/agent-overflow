@@ -16,7 +16,14 @@
 // kinds (commits) need the pane's workspace and loaded revision, which
 // arrive after the first frame: `noteForgeFactsRevision` asks for those
 // once when the revision becomes known or its head moves. Nothing here
-// runs on a timer, a mount or a keystroke.
+// runs on a timer or a mount.
+//
+// The scan is a prefetch, not the authority on what is read. A reader
+// asked for a key the PR holds no fact for (a draft or an editor preview,
+// which no snapshot carries, or a key the scan did not name) notes it, and
+// the next microtask marks those keys `pending` and asks for them in one
+// call. They are held for the readers until the PR goes, within the same
+// bound; a key is asked this way once.
 //
 // Readers get an immutable snapshot of a PR's facts per version
 // (`forgeFactReader`): a document scope compares the snapshot it lexed
@@ -29,8 +36,14 @@
 // of answered file lines (an answer past it is held as unavailable, so its
 // permalink stays a link, and is asked for again once text is dropped), a
 // key no current body holds is dropped with the body, and everything goes
-// when the PR leaves the PR store. A body's text is the snapshot's own
-// string, never a second copy.
+// when the PR leaves the PR store. A body holds only keys the PR holds a
+// fact for; one that named keys past the bound is scanned again by the
+// first frame with room. A body's text is the snapshot's own string, never
+// a second copy.
+//
+// An answer applies only to the request that is out for its key: a key
+// asked again (at another head, or dropped with its body and named again)
+// takes the newer request's answer, whichever arrives first.
 //
 // A computer without `ResolveForgeFacts` (an older release, whose binding
 // answers null) is learned once: what its PRs hold is dropped, so bodies
@@ -131,8 +144,8 @@ interface Entry {
   readonly sig: string;
   /** When the held answer arrived; 0 while none has. */
   at: number;
-  /** A request for it is out. */
-  asking: boolean;
+  /** The request out for it (`PRFacts.requests`), 0 when none is. */
+  request: number;
   /** The head the last request ran at ('' with no revision). */
   askedHead: string;
   /** Its answer's text was past the PR's text bound: held as unavailable
@@ -144,7 +157,10 @@ interface Body {
   /** The snapshot's own string: replaced by each frame's equal one, so the
    * store never keeps an older snapshot's copy alive. */
   text: string;
+  /** The keys it names that the PR holds a fact for. */
   readonly keys: readonly string[];
+  /** It names keys past the PR's bound: scanned again by a frame with room. */
+  readonly partial: boolean;
   /** Its keys embed `head`: a frame at another head scans it again. */
   readonly readsHead: boolean;
   /** The frame revision it was scanned at (`revisionId`). */
@@ -167,7 +183,13 @@ interface PRFacts {
   reader: ForgeFactReader | null;
   version: number;
   bodies: Map<string, Body>;
+  /** Keys held for readers that no body's scan named. */
+  read: Set<string> | null;
+  /** Keys readers missed in this task, asked for by its next microtask. */
+  missed: Set<string> | null;
   frame: number;
+  /** The requests sent: the id of the last. */
+  requests: number;
   /** When a frame next has a key to ask again: 0 at once, Infinity never. */
   dueAt: number;
   /** The characters of file lines the held facts carry. */
@@ -185,6 +207,7 @@ const lacking = new Set<BackendKey>();
 let signatures = 0;
 
 const PENDING_SIG = 'p';
+const NO_KEYS: readonly string[] = Object.freeze([]);
 const UNAVAILABLE = (key: string): ForgeFact => ({ key, status: 'unavailable' });
 /** The checkout each held PR was attached from, until its revision loads. */
 const workspaces = new Map<string, WorkspaceRef>();
@@ -216,7 +239,10 @@ function entryFor(ref: PRRef, key: string): PRFacts {
     reader: null,
     version: held ? held.version : 0,
     bodies: new Map(),
+    read: null,
+    missed: null,
     frame: 0,
+    requests: 0,
     dueAt: Infinity,
     textChars: 0,
     workspace: held?.workspace ?? workspaces.get(key) ?? null,
@@ -276,25 +302,43 @@ export function observePRFacts(
   let changed = false;
   let seen = 0;
   const now = Date.now();
+  // A body names keys past the bound.
+  let partial = false;
+  // Scans `text` and holds, for the body `id`, the keys the PR has a fact
+  // for or has room to ask about.
+  const admit = (id: string, text: string) => {
+    forgeFactsCounters.scans++;
+    const { keys, readsHead } = pr.scan(text, pr.frameRevision);
+    let kept: string[] | null = null;
+    let past = false;
+    for (const factKey of keys) {
+      if (pr.entries.has(factKey)) {
+        (kept ??= []).push(factKey);
+        continue;
+      }
+      if (pr.entries.size >= MAX_FACTS_PER_PR) {
+        past = true;
+        continue;
+      }
+      writable(pr).set(factKey, pendingEntry(headOf(pr)));
+      (kept ??= []).push(factKey);
+      marked = true;
+      (ask ??= newRequest()).push(factKey);
+    }
+    if (past) partial = true;
+    pr.bodies.set(id, { text, keys: kept ?? NO_KEYS, partial: past, readsHead, head, seen: frame });
+  };
   const visit = (id: string, text: string) => {
     seen++;
     const held = pr.bodies.get(id);
     if (held && held.text === text && (!held.readsHead || held.head === head)) {
       held.text = text;
       held.seen = frame;
+      if (held.partial) partial = true;
       return;
     }
     changed = true;
-    forgeFactsCounters.scans++;
-    const { keys, readsHead } = pr.scan(text, pr.frameRevision);
-    pr.bodies.set(id, { text, keys, readsHead, head, seen: frame });
-    for (const factKey of keys) {
-      if (pr.entries.has(factKey)) continue;
-      if (pr.entries.size >= MAX_FACTS_PER_PR) break;
-      writable(pr).set(factKey, { state: 'pending', sig: PENDING_SIG, at: 0, asking: true, askedHead: headOf(pr) });
-      marked = true;
-      (ask ??= newRequest()).push(factKey);
-    }
+    admit(id, text);
   };
   if (detail) {
     visit('d', detail.body ?? '');
@@ -309,12 +353,24 @@ export function observePRFacts(
     dropUnheld(pr);
   }
   else if (changed) dropUnheld(pr);
+  // Room again: the bodies that named keys past the bound get theirs.
+  if (partial && pr.entries.size < MAX_FACTS_PER_PR) {
+    for (const [id, body] of pr.bodies) {
+      if (!body.partial) continue;
+      if (pr.entries.size >= MAX_FACTS_PER_PR) break;
+      admit(id, body.text);
+    }
+  }
   // Keys to ask again: unavailable ones and stale answers the bodies hold.
   if (now >= pr.dueAt) ask = askAgain(pr, now, ask);
   // Readers answer the revision from their snapshot: a moved one is a new one.
   if (moved && !marked) pr.reader = null;
   if (marked || moved) bump(pr);
   if (ask) send(pr, ask);
+}
+
+function pendingEntry(head: string): Entry {
+  return { state: 'pending', sig: PENDING_SIG, at: 0, request: 0, askedHead: head };
 }
 
 function revisionId(revision: FactRevision): string {
@@ -326,14 +382,14 @@ function newRequest(): string[] {
   return [];
 }
 
-/** Drops each fact no current body holds. */
+/** Drops each fact no current body holds and no reader asked for. */
 function dropUnheld(pr: PRFacts): void {
   let held: Set<string> | null = null;
   for (const body of pr.bodies.values()) for (const key of body.keys) (held ??= new Set()).add(key);
   let entries: Map<string, Entry> | null = null;
   let freed = 0;
   for (const [key, entry] of pr.entries) {
-    if (held?.has(key)) continue;
+    if (held?.has(key) || pr.read?.has(key)) continue;
     freed += textChars(entry.state);
     (entries ??= writable(pr)).delete(key);
   }
@@ -366,10 +422,9 @@ function askAgain(pr: PRFacts, now: number, ask: string[] | null): string[] | nu
   let due = Infinity;
   const head = headOf(pr);
   for (const [key, entry] of pr.entries) {
-    if (entry.asking || entry.state === 'pending') continue;
+    if (entry.request !== 0 || entry.state === 'pending') continue;
     const again = dueAgain(entry as Entry & { state: ForgeFact });
     if (now >= again) {
-      entry.asking = true;
       entry.askedHead = head;
       (ask ??= newRequest()).push(key);
     }
@@ -395,29 +450,19 @@ export function noteForgeFactsRevision(key: string, workspace: WorkspaceRef, rev
   const head = revision.headSHA;
   let ask: string[] | null = null;
   let marked = false;
-  for (const body of pr.bodies.values()) {
-    for (const factKey of body.keys) {
-      if (!isLocalFactKey(factKey)) continue;
-      const entry = pr.entries.get(factKey);
-      if (!entry) {
-        if (pr.entries.size >= MAX_FACTS_PER_PR) continue;
-        writable(pr).set(factKey, { state: 'pending', sig: PENDING_SIG, at: 0, asking: true, askedHead: head });
+  // Every fact held is one a body or a reader holds. A replaced entry
+  // goes into the copy `writable` makes; this walk reads the map it began on.
+  for (const [factKey, entry] of pr.entries) {
+    if (!isLocalFactKey(factKey) || entry.askedHead === head) continue;
+    // Asked at another head, or answered without a repository to read.
+    if (entry.state === 'pending' || entry.request !== 0 || entry.state.status === 'unavailable') {
+      entry.askedHead = head;
+      (ask ??= newRequest()).push(factKey);
+      // Unread for want of the checkout: asked again, it reads as asked,
+      // so an image keeps its loading box rather than flashing the chip.
+      if (entry.state !== 'pending') {
+        writable(pr).set(factKey, pendingEntry(head));
         marked = true;
-        (ask ??= newRequest()).push(factKey);
-        continue;
-      }
-      if (entry.askedHead === head) continue;
-      // Asked at another head, or answered without a repository to read.
-      if (entry.state === 'pending' || entry.asking || entry.state.status === 'unavailable') {
-        entry.asking = true;
-        entry.askedHead = head;
-        (ask ??= newRequest()).push(factKey);
-        // Unread for want of the checkout: asked again, it reads as asked,
-        // so an image keeps its loading box rather than flashing the chip.
-        if (entry.state !== 'pending') {
-          writable(pr).set(factKey, { state: 'pending', sig: PENDING_SIG, at: 0, asking: true, askedHead: head });
-          marked = true;
-        }
       }
     }
   }
@@ -425,7 +470,14 @@ export function noteForgeFactsRevision(key: string, workspace: WorkspaceRef, rev
   if (ask) send(pr, ask);
 }
 
+/** Asks for `keys` as one request: its answer applies to each of them
+ * only while no later request has asked for it. */
 function send(pr: PRFacts, keys: string[]): void {
+  const request = ++pr.requests;
+  for (const key of keys) {
+    const entry = pr.entries.get(key);
+    if (entry) entry.request = request;
+  }
   for (let start = 0; start < keys.length; start += FACTS_PER_CALL) {
     const chunk = start === 0 && keys.length <= FACTS_PER_CALL ? keys : keys.slice(start, start + FACTS_PER_CALL);
     forgeFactsCounters.calls++;
@@ -437,8 +489,8 @@ function send(pr: PRFacts, keys: string[]): void {
       call = Promise.reject(err);
     }
     call.then(
-      (answer) => (answer === null ? learnLacking(pr.backend) : settle(pr, chunk, answer.facts ?? [])),
-      (err: unknown) => fail(pr, chunk, err),
+      (answer) => (answer === null ? learnLacking(pr.backend) : settle(pr, request, chunk, answer.facts ?? [])),
+      (err: unknown) => fail(pr, request, chunk, err),
     );
   }
 }
@@ -455,6 +507,8 @@ function learnLacking(backend: BackendKey): void {
   for (const pr of prs.values()) {
     if (pr.backend !== backend) continue;
     pr.bodies.clear();
+    pr.read = null;
+    pr.missed = null;
     pr.dueAt = Infinity;
     if (pr.entries.size === 0) continue;
     writable(pr).clear();
@@ -463,9 +517,10 @@ function learnLacking(backend: BackendKey): void {
   }
 }
 
-/** Applies an answer to the keys it names, and marks the rest of the
- * call's keys unavailable; one version bump for the lot. */
-function settle(pr: PRFacts, keys: readonly string[], facts: readonly ForgeFact[]): void {
+/** Applies `request`'s answer to the keys it is still the request out
+ * for, and marks the ones it does not name unavailable; one version bump
+ * for the lot. */
+function settle(pr: PRFacts, request: number, keys: readonly string[], facts: readonly ForgeFact[]): void {
   if (prs.get(pr.key) !== pr) return;
   const byKey = new Map<string, ForgeFact>();
   for (const fact of facts) if (fact && typeof fact.key === 'string') byKey.set(fact.key, fact);
@@ -473,8 +528,8 @@ function settle(pr: PRFacts, keys: readonly string[], facts: readonly ForgeFact[
   let changed = false;
   for (const key of keys) {
     const entry = pr.entries.get(key);
-    if (!entry) continue;
-    entry.asking = false;
+    if (!entry || entry.request !== request) continue;
+    entry.request = 0;
     let fact = byKey.get(key) ?? UNAVAILABLE(key);
     const held = entry.state;
     // Text past the PR's bound is not held: the key reads as unavailable.
@@ -491,7 +546,7 @@ function settle(pr: PRFacts, keys: readonly string[], facts: readonly ForgeFact[
       continue;
     }
     pr.textChars += textChars(fact) - textChars(held);
-    writable(pr).set(key, { state: fact, sig: String(++signatures), at: now, asking: false, askedHead: entry.askedHead, ...(over ? { over: true as const } : {}) });
+    writable(pr).set(key, { state: fact, sig: String(++signatures), at: now, request: 0, askedHead: entry.askedHead, ...(over ? { over: true as const } : {}) });
     changed = true;
   }
   pr.dueAt = Math.min(pr.dueAt, nextDue(pr));
@@ -501,14 +556,14 @@ function settle(pr: PRFacts, keys: readonly string[], facts: readonly ForgeFact[
 function nextDue(pr: PRFacts): number {
   let due = Infinity;
   for (const entry of pr.entries.values()) {
-    if (entry.asking || entry.state === 'pending') continue;
+    if (entry.request !== 0 || entry.state === 'pending') continue;
     const again = dueAgain(entry as Entry & { state: ForgeFact });
     if (again < due) due = again;
   }
   return due;
 }
 
-function fail(pr: PRFacts, keys: readonly string[], err: unknown): void {
+function fail(pr: PRFacts, request: number, keys: readonly string[], err: unknown): void {
   if (prs.get(pr.key) !== pr) return;
   const kinds = new Map<string, number>();
   for (const key of keys) kinds.set(factKind(key), (kinds.get(factKind(key)) ?? 0) + 1);
@@ -517,7 +572,7 @@ function fail(pr: PRFacts, keys: readonly string[], err: unknown): void {
     'forge facts: a request failed',
     `${[...kinds].map(([kind, count]) => `${kind} ${count}`).join(', ')}; ${err instanceof Error ? err.name : typeof err}`,
   );
-  settle(pr, keys, []);
+  settle(pr, request, keys, []);
 }
 
 /**
@@ -536,10 +591,41 @@ export function forgeFactReader(key: string | null): ForgeFactReader | null {
   const revision: ForgeFact = { key: REVISION_FACT_KEY, status: 'found', revision: pr.frameRevision };
   const revisionSig = pr.head;
   pr.reader = {
-    get: (factKey) => (factKey === REVISION_FACT_KEY ? revision : entries.get(factKey)?.state),
+    get: (factKey) => (factKey === REVISION_FACT_KEY ? revision : (entries.get(factKey)?.state ?? noteMiss(pr, factKey))),
     signature: (factKey) => (factKey === REVISION_FACT_KEY ? revisionSig : (entries.get(factKey)?.sig ?? '')),
   };
   return pr.reader;
+}
+
+/** A reader was asked for `key`, which its snapshot holds no fact for:
+ * the next microtask asks for it, unless the PR holds it by then, is full,
+ * or its computer cannot answer. Runs inside a lex: it writes no reactive
+ * state. */
+function noteMiss(pr: PRFacts, key: string): undefined {
+  if (pr.entries.has(key) || pr.entries.size >= MAX_FACTS_PER_PR || lacking.has(pr.backend) || prs.get(pr.key) !== pr) return undefined;
+  if (pr.missed === null) {
+    pr.missed = new Set();
+    queueMicrotask(() => askMissed(pr));
+  }
+  if (pr.missed.size < MAX_FACTS_PER_PR) pr.missed.add(key);
+  return undefined;
+}
+
+function askMissed(pr: PRFacts): void {
+  const missed = pr.missed;
+  pr.missed = null;
+  if (missed === null || prs.get(pr.key) !== pr || lacking.has(pr.backend)) return;
+  let ask: string[] | null = null;
+  for (const key of missed) {
+    if (pr.entries.has(key)) continue;
+    if (pr.entries.size >= MAX_FACTS_PER_PR) break;
+    writable(pr).set(key, pendingEntry(headOf(pr)));
+    (pr.read ??= new Set()).add(key);
+    (ask ??= newRequest()).push(key);
+  }
+  if (ask === null) return;
+  bump(pr);
+  send(pr, ask);
 }
 
 /** The checkout the PR `key` was attached from: where its facts are
@@ -573,9 +659,12 @@ export function dropForgeFacts(key: string): void {
 }
 
 /** Test seam: what the store holds for `key`, or null. */
-export function __forgeFactsHeldForTest(key: string): { facts: number; bodies: number; version: number; textChars: number } | null {
+export function __forgeFactsHeldForTest(key: string): { facts: number; bodies: number; bodyKeys: number; version: number; textChars: number } | null {
   const pr = prs.get(key);
-  return pr ? { facts: pr.entries.size, bodies: pr.bodies.size, version: pr.version, textChars: pr.textChars } : null;
+  if (!pr) return null;
+  let bodyKeys = 0;
+  for (const body of pr.bodies.values()) bodyKeys += body.keys.length;
+  return { facts: pr.entries.size, bodies: pr.bodies.size, bodyKeys, version: pr.version, textChars: pr.textChars };
 }
 
 /** Test seam: every PR key the store holds anything for. */

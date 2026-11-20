@@ -24,6 +24,23 @@ func TestClassifyImage(t *testing.T) {
 	}
 }
 
+// An svg answers the size its root declares in plain pixels, so the pane
+// reserves its box; one sized by its container answers none.
+func TestClassifySVGSize(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		w, h int
+	}{
+		{`<svg xmlns="http://www.w3.org/2000/svg" width="64px" height="32"></svg>`, 64, 32},
+		{`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 32"></svg>`, 0, 0},
+	} {
+		classified, err := Classify([]byte(tc.doc), "diagram.svg")
+		if err != nil || classified.Kind != KindImage || classified.MimeType != "image/svg+xml" || classified.Width != tc.w || classified.Height != tc.h {
+			t.Errorf("Classify(%s) = %+v, %v; want a %dx%d svg image", tc.doc, classified, err, tc.w, tc.h)
+		}
+	}
+}
+
 // TestClassifyRefusesADecodeBomb: a payload that IS an image but decodes
 // to an absurd number of pixels reaches the same <img> a safe one does,
 // so it has to fail the call rather than fall through to a download the

@@ -307,18 +307,28 @@ func TestResolveServesTheFileWhenNoDerivativeApplies(t *testing.T) {
 	workspace := t.TempDir()
 	svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4000" height="4"></svg>`)
 	svgPath := writeFile(t, workspace, "diagram.svg", svg)
+	viewBoxPath := writeFile(t, workspace, "fluid.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 4"></svg>`))
 	smallPath := writeFile(t, workspace, "small.png", pngBytes(t, 300, 10))
 	s := newTestService(t)
 
+	// An svg is served as itself, with the size its root declares.
 	got, err := s.Resolve(svgPath, workspace, 320)
 	if err != nil {
 		t.Fatalf("Resolve svg: %v", err)
 	}
-	if got.Derived || got.MimeType != "image/svg+xml" || got.Width != 0 || got.OriginalWidth != 0 {
-		t.Fatalf("svg = %+v, want the file with an unknown size", got)
+	if got.Derived || got.MimeType != "image/svg+xml" || got.Width != 4000 || got.Height != 4 || got.OriginalWidth != 4000 || got.OriginalHeight != 4 {
+		t.Fatalf("svg = %+v, want the 4000x4 file itself", got)
 	}
 	if _, data := readAll(t, s, got.ContentID); !bytes.Equal(data, svg) {
 		t.Fatalf("svg served %q", data)
+	}
+	// One sized only by its viewBox takes its container's size: unknown.
+	fluid, err := s.Resolve(viewBoxPath, workspace, 0)
+	if err != nil {
+		t.Fatalf("Resolve viewBox svg: %v", err)
+	}
+	if fluid.Width != 0 || fluid.Height != 0 || fluid.OriginalWidth != 0 || fluid.OriginalHeight != 0 {
+		t.Fatalf("viewBox svg = %+v, want an unknown size", fluid)
 	}
 	small, err := s.Resolve(smallPath, workspace, 320)
 	if err != nil {

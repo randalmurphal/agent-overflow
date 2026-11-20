@@ -132,17 +132,28 @@ describe('GitLab labels, milestones, snippets and epics', () => {
     expect(JSON.stringify(tokens)).toContain('"type":"del"');
   });
 
-  it('links a found or pending milestone, snippet and epic, and leaves the rest as text', () => {
+  it('links a found or pending milestone and epic and a found snippet, and leaves the rest as text', () => {
     const facts = reader({
       'milestone:group/widget%v1.0': found('milestone:group/widget%v1.0', { url: `${GL}/-/milestones/2`, title: 'v1.0' }),
-      'snippet:group/widget$5': 'pending',
-      'epic:group&9': found('epic:group&9', { url: 'https://gitlab.com/groups/group/-/epics/9', title: 'Epic' }),
+      'milestone:group/widget%v2': 'pending',
+      'snippet:group/widget$5': found('snippet:group/widget$5', { url: `${GL}/-/snippets/5`, title: 'Snip' }),
+      // Asked: `$7` is a price far more often than a snippet.
+      'snippet:group/widget$7': 'pending',
+      'epic:group&9': 'pending',
     });
-    expect(shown(lexUnder('%v1.0 $5 &9 %"multi word" $6', GITLAB, facts))).toEqual([
+    expect(shown(lexUnder('%v1.0 %v2 $5 $7 &9 %"multi word" $6', GITLAB, facts))).toEqual([
       { type: 'link', text: '%v1.0', href: `${GL}/-/milestones/2`, title: 'v1.0' },
-      { type: 'link', text: '$5', href: `${GL}/-/snippets/5`, title: null },
-      { type: 'link', text: '&9', href: 'https://gitlab.com/groups/group/-/epics/9', title: 'Epic' },
+      { type: 'link', text: '%v2', href: `${GL}/-/milestones?search_title=v2`, title: null },
+      { type: 'link', text: '$5', href: `${GL}/-/snippets/5`, title: 'Snip' },
+      { type: 'link', text: '&9', href: 'https://gitlab.com/groups/group/-/epics/9', title: null },
     ]);
+  });
+
+  it('leaves a bare label that starts with a digit as text while it is asked, and chips it once found', () => {
+    const source = 'takes ~5 minutes, ~10ms or ~2x, but ~"5 things" and ~v2';
+    expect(shown(lexUnder(source, GITLAB, reader({}, 'pending'))).map((each) => each.text)).toEqual(['|5 things', '|v2']);
+    const facts = reader({ 'label:group/widget~5': label('5') }, 'pending');
+    expect(shown(lexUnder(source, GITLAB, facts)).map((each) => each.text)).toEqual(['|5', '|5 things', '|v2']);
   });
 
   it('reads none of them on GitHub', () => {

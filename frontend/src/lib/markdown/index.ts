@@ -41,7 +41,9 @@ export type {
   ProvenAppend,
 } from './parser/index';
 export { parseIncompleteMarkdown } from './parser/incompleteMarkdown';
-export { EMBEDDED_HTML_EXTENSIONS, embeddedHtmlFor, readVideo, type EmbeddedHtml } from './parser/extensions/embeddedHtml';
+export { EMBEDDED_HTML_EXTENSIONS, embeddedHtmlFor, htmlAttributeValue, readVideo, type EmbeddedHtml } from './parser/extensions/embeddedHtml';
+// How the parse reads a destination as written, for a scan of raw text.
+export { resolveLinkText } from './parser/extensions/htmlEntities';
 export type { HtmlPolicy } from './parser/extensions/htmlPolicy';
 export type { EmbeddedImageToken } from './parser/extensions/embeddedHtml';
 // GitHub's soft-break-as-<br> rendering, for a surface showing GitHub content.
@@ -78,7 +80,7 @@ export { markedMediaImages } from './parser/extensions/mediaImages';
 export type { ImageMedia, MediaImageToken } from './parser/extensions/mediaImages';
 // GitHub's theme-specific images: the renderer's and the sanitizer's
 // `colorScheme`, and the `#gh-*-mode-only` reading a host claim keeps.
-export { colorSchemeOnly } from './parser/extensions/themedImages';
+export { colorSchemeOnly, firstSrcsetCandidate } from './parser/extensions/themedImages';
 export type { ColorScheme, ColorSchemeSources } from './parser/extensions/themedImages';
 export {
   MEDIA_CLAIM_ATTR,

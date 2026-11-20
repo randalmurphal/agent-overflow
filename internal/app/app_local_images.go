@@ -20,7 +20,7 @@ type LocalImage struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	// OriginalWidth and OriginalHeight are the file's pixel size; 0 when
-	// Go cannot read its header (svg, ico, avif).
+	// unknown (ico, avif, an svg without a plain width and height).
 	OriginalWidth  int   `json:"originalWidth"`
 	OriginalHeight int   `json:"originalHeight"`
 	OriginalBytes  int64 `json:"originalBytes"`

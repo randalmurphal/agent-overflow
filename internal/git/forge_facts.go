@@ -61,8 +61,9 @@ type ForgeFact struct {
 	Width  int    `json:"width,omitempty"`
 	Height int    `json:"height,omitempty"`
 	MIME   string `json:"mime,omitempty"`
-	// LFS marks an image path holding a Git LFS pointer; only OID is set
-	// beside it.
+	// LFS marks an image path holding a Git LFS pointer whose object is not
+	// in the local LFS store; only OID is set beside it. A pointer whose
+	// object is local answers as that image, with the pointer blob's OID.
 	LFS bool `json:"lfs,omitempty"`
 	// Text is a lines range, "\n" joined without a trailing newline, and
 	// Path its repository path.

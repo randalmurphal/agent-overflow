@@ -1778,10 +1778,14 @@ export function GetGitActionOutcome(ws: app$0.WorkspaceRef, action: string, atte
  * error that names none of its content), through the review image store
  * the review diff's images use, under the content's own key, so a blob is
  * read once while it is held and a new head that keeps it costs nothing.
- * A positive maxWidth serves a derivative at the next ladder width
- * (attachment.Derive), held in the same store under the blob and tier;
- * concurrent calls share one read and one derivation. The caller's
- * context ends the git reads.
+ * A Git LFS pointer whose object is in the local LFS store serves that
+ * object, verified against the pointer (gitops.Core.ReadImage), under the
+ * object's own key: the pointer blob's key is the review diff's, which
+ * shows the pointer. A positive maxWidth serves a derivative at the next
+ * ladder width (attachment.Derive), held in the same store under the blob
+ * and tier and looked up first: the original is read only to derive a
+ * tier not held. Concurrent calls share one read and one derivation. The
+ * caller's context ends the reads.
  */
 export function GetGitBlobImage(ws: app$0.WorkspaceRef, oid: string, maxWidth: number): $CancellablePromise<app$0.LocalImage> {
     return $Call.ByID(3812666095, ws, oid, maxWidth).then(($result: any) => {
@@ -5525,7 +5529,8 @@ export function SaveForgeAttachment(pr: git$0.PRReference, href: string): $Cance
  * overwriting a file already there), and returns the path it wrote. It
  * saves only what GetGitBlobImage would display: a full id of a local
  * blob within the display image cap whose bytes are an image a browser
- * displays and not a Git LFS pointer, read without the network.
+ * displays, or a Git LFS pointer whose verified object in the local LFS
+ * store is one, read without the network.
  */
 export function SaveGitBlobImage(ws: app$0.WorkspaceRef, oid: string, name: string): $CancellablePromise<string> {
     return $Call.ByID(3614441608, ws, oid, name);

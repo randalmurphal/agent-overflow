@@ -84,14 +84,15 @@ export function buildForgeAttachmentExtension(opts: ForgeAttachmentSource & { em
   };
 
   // `label` is a Markdown label's inline tokens, from which the renderer
-  // takes the plain alt (render/imageAlt.ts).
-  const claimedImage = (raw: string, href: string, alt: string, inLink: boolean, label: Tokens.Image['tokens']): ClaimedImage => {
+  // takes the plain alt (render/imageAlt.ts). The authored title is kept;
+  // without one the image is titled with its URL on the forge.
+  const claimedImage = (raw: string, href: string, alt: string, title: string | null, inLink: boolean, label: Tokens.Image['tokens']): ClaimedImage => {
     const shownIn = colorSchemeOnly(href);
     return {
       type: 'image',
       raw,
       href: rewrite(href),
-      title: browserUrlForForgeAttachment(forge, href, webBase, pr),
+      title: title || browserUrlForForgeAttachment(forge, href, webBase, pr),
       text: alt || forgeAttachmentName(forge, href),
       tokens: alt ? label : [],
       ...(inLink ? { inLink: true } : {}),
@@ -126,7 +127,7 @@ export function buildForgeAttachmentExtension(opts: ForgeAttachmentSource & { em
     // The authored size and placement go with the claim (render/imageSize.ts).
     return {
       ...image,
-      ...(claimed ? claimedImage(image.raw, image.href, image.text ?? '', inLink, image.tokens) : inLink ? { inLink: true as const } : {}),
+      ...(claimed ? claimedImage(image.raw, image.href, image.text ?? '', image.title, inLink, image.tokens) : inLink ? { inLink: true as const } : {}),
       ...(sources ? { sources } : {}),
     };
   };
@@ -160,7 +161,7 @@ export function buildForgeAttachmentExtension(opts: ForgeAttachmentSource & { em
       // exactly where the engine would have ended it.
       const url = this.lexer.tokenizer.url(src);
       if (!url || !isForgeAttachmentHref(pr, url.raw)) return undefined;
-      return claimedImage(url.raw, url.raw, '', false, []);
+      return claimedImage(url.raw, url.raw, '', null, false, []);
     },
   };
 

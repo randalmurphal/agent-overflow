@@ -2,7 +2,8 @@
 // leaves that link the one interactive target. Whatever the bytes resolve
 // to, nothing inside the anchor is an anchor, a button or a player, the
 // attachment still says what it is, and a click on the picture follows the
-// link instead of opening the lightbox.
+// link instead of opening the lightbox. An attachment image shows its
+// authored title in every form it is written in.
 
 import { render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,7 @@ import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.sv
 import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
 import { __resetImageTiersForTest } from '../../utils/imageTiers';
 import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
-import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
+import { browserUrlForForgeAttachment, type ForgeAttachmentSource } from '../../utils/forgeAttachments';
 import { mockLocalImage } from '../../../test/mocks/attachmentTransfer';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -140,6 +141,30 @@ describe.each(PATHS)('a forge attachment inside an author link, on %s', (_path, 
       else if (outcome === 'failed') expect(anchor.textContent).toContain('Attachment unavailable');
       else if (outcome !== 'loading') expect(anchor.textContent).toContain(`badge.${outcome === 'file' ? 'pdf' : outcome === 'video' ? 'mp4' : 'mp3'}`);
     });
+  });
+});
+
+describe.each(PATHS)('a forge attachment image\'s title, on %s', (_path, streaming) => {
+  const forgeUrl = browserUrlForForgeAttachment('github', ASSET, GITHUB.webBase, GITHUB.pr);
+  it.each<[string, (title: string | null) => string]>([
+    ['in an HTML block', (title) => `<p align="center"><img src="${ASSET}" alt="badge"${title === null ? '' : ` title="${title}"`}></p>`],
+    ['as an inline tag', (title) => `See <img src="${ASSET}" alt="badge"${title === null ? '' : ` title="${title}"`}> here.`],
+    ['as a markdown image', (title) => `See ![badge](${ASSET}${title === null ? '' : ` "${title}"`}) here.`],
+  ])('is the authored one %s, and the forge URL without one', async (_shape, write) => {
+    for (const [title, shown] of [['Architecture overview', 'Architecture overview'], [null, forgeUrl], ['', forgeUrl]] as const) {
+      stage('image');
+      const source = write(title);
+      const view = render(ForgeAttachmentChatHarness, { target: host, props: { source, forgeSource: GITHUB, streaming } });
+      const img = await waitFor(() => {
+        const found = host.querySelector<HTMLImageElement>(SHOWN.image);
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      expect(img.title, source).toBe(shown);
+      view.unmount();
+      __resetMediaBlobCacheForTest();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

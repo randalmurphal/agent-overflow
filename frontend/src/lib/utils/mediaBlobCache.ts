@@ -16,7 +16,8 @@
 // entry's object URL is revoked, because a blob URL pins its data for as
 // long as it lives. An entry a mounted host is still displaying is
 // RETAINED and skipped by eviction: revoking underneath a playing <video>
-// stops it mid-frame.
+// stops it mid-frame. Its last release runs eviction again when the cache
+// is over either limit.
 //
 // A failure is not a memoized answer: the next mount, or the retry the
 // user triggers by reopening the thread, fetches again.
@@ -180,7 +181,14 @@ export function acquireMediaBlob<V extends MediaBytes>(
       if (released) return;
       released = true;
       held.retained = Math.max(0, held.retained - 1);
-      if (held.discarded && held.retained === 0 && held.objectURL) revoke(held.objectURL);
+      if (held.retained > 0) return;
+      if (held.discarded) {
+        if (held.objectURL) revoke(held.objectURL);
+      } else if (overBudget()) {
+        // The last holder of an entry eviction skipped while it was held:
+        // it is evictable now, and nothing else may settle to evict it.
+        evict();
+      }
     },
   };
 }
@@ -261,9 +269,16 @@ export function __setMediaBlobCacheLimitsForTest(limits: { maxBytes?: number; ma
   maxEntries = limits.maxEntries ?? MEDIA_CACHE_MAX_ENTRIES;
 }
 
+function overBudget(): boolean {
+  return cachedBytes > maxBytes || entries.size > maxEntries;
+}
+
+/** Drops unretained entries, least recently used first, until the cache
+ * is within both limits or only retained entries remain. Runs when an
+ * entry settles and when an entry's last holder releases it. */
 function evict(): void {
   for (const [key, entry] of entries) {
-    if (cachedBytes <= maxBytes && entries.size <= maxEntries) return;
+    if (!overBudget()) return;
     if (entry.retained > 0) continue;
     drop(key, entry);
   }

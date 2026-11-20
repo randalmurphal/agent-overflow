@@ -1070,7 +1070,7 @@ the local kinds run concurrently.
 | `mr:<project>!<n>`, `label:<project>~<title>`, `milestone:<project>%<title>`, `snippet:<project>$<id>`, `epic:<group>&<n>` | GitLab only (`unavailable` on GitHub): `mergeRequest`, `labels(title:, includeAncestorGroups: true)`, `milestones(title:, includeAncestors: true)`, `snippets(ids:)`, `group { workItem(iid:) }` |
 | `user:<name>` | GitHub `repositoryOwner` (kind `user` or `org`); GitLab `user`, else `group` (kind `group`) |
 | `commit:<hex>` | local: 7 to 64 lowercase hex naming exactly one local commit; missing or ambiguous is `unavailable` and not held |
-| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and header dimensions (0 for svg, ico, avif), or `lfs` for a pointer; a blob over 25 MiB is `unavailable` |
+| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and header dimensions (an svg's root `width` and `height` when both are plain numbers or `px` within the pixel budget, else 0; 0 for ico, avif); a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`; a blob over 25 MiB is `unavailable` |
 | `lines:<sha>:<path>:<start>-<end>` | local: at most 200 lines and 64 KiB of text from a blob of at most 2 MiB; binary or past the end is `absent` |
 
 A key that does not parse is `unavailable`; a project path or login the
@@ -1093,11 +1093,19 @@ logged once with its operation and no titles.
 |---|---|---|
 | Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys |
 | Every forge key held | none | none |
-| Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob not held (stopped after at most 1 MiB, 4 at a time), 1 `git ls-tree` per commit whose path the batch-check called missing | same |
+| Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob not held (stopped after at most 1 MiB, 4 at a time), 1 `git config` for `lfs.storage` when one is an LFS pointer, 1 `git ls-tree` per 200 paths or 64 KiB of paths of a commit whose path the batch-check called missing | same |
 | Every local key held | no git | no git |
 
 Every git read sets `GIT_NO_LAZY_FETCH=1`: in a partial clone a path
 whose blob is not local is `unavailable`, never fetched.
+
+A pointer's object is read from the local LFS store only, never through
+git-lfs or the network (`local_lfs.go`): the store is `lfs.storage`
+(relative to the git common dir) or `<common dir>/lfs`, the object
+`objects/<oid[0:2]>/<oid[2:4]>/<oid>` there, and it is present only as a
+regular file, not a symlink, of the pointer's size within 25 MiB. Its
+header is classified as a blob's; its bytes are hashed while they are
+read and refused when they do not match the pointer's sha256.
 
 The caches (`factCache`, `forge_facts_cache.go`) are LRU, bounded by
 entries and estimated bytes (an entry over 1/64 of the bytes is never
@@ -1107,22 +1115,26 @@ or overlapping ones:
 | Cache | Key | Bound | Held |
 |---|---|---|---|
 | Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's is not held; `ResetForgeCaches` clears it |
-| Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed) |
-| Blob images, one per `Core` | blob id | 4096 entries, 2 MiB | the header's answer without expiry |
+| Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed), except a found abbreviated `commit:` (a fetch can make it ambiguous) and an `image:` read through an LFS pointer (a pull or prune changes it), 10 minutes |
+| Blob images, one per `Core` | blob id; workspace and blob id for an answer read through an LFS pointer | 4096 entries, 2 MiB | the header's answer without expiry; through a pointer, 10 minutes |
 
 `GetGitBlobImage(ws, oid, maxWidth)` serves a blob as `GetLocalImage`
 serves a file: `Core.BlobImage` (1 `git cat-file --batch-check` and a
 header read, or the blob image cache) refuses a blob that is not local,
-over the cap, an LFS pointer or no displayable image before any read;
-then the review diff's image store holds the bytes under `blob\x00<oid>`
-(one `git cat-file blob` into a buffer of the blob's size, shared with
-the review diff's images of the same blob) and each derived tier under
-the blob and tier, all within that store's budget. Concurrent calls share
-one read and one derivation, and the caller's context stops the read.
+over the cap, an LFS pointer whose object is not local or no displayable
+image before any read. The review diff's image store holds the bytes
+under `blob\x00<oid>` (one `git cat-file blob` into a buffer of the
+blob's size, shared with the review diff's images of the same blob), a
+pointer's verified LFS object under `lfs\x00<sha256>` (the pointer
+blob's key stays the review diff's, which shows the pointer), and each
+derived tier under that key and the tier, all within that store's budget. A tier is looked up first, so
+a held derivative is served without its original; the original is read
+only to derive a tier not held. Concurrent calls share one read and one
+derivation, and the caller's context stops the read.
 `SaveGitBlobImage(ws, oid, name)`, the image menu's Save on the PR's
-computer, applies the same refusals and writes the blob into Downloads
-through the writer `SaveLocalImage` uses (the name cut to its last
-segment and sanitized, never over an existing file).
+computer, applies the same refusals and reads, and writes the bytes into
+Downloads through the writer `SaveLocalImage` uses (the name cut to its
+last segment and sanitized, never over an existing file).
 
 ## Merged PR worktree cleanup
 

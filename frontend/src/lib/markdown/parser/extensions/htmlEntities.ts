@@ -82,8 +82,13 @@ export const decodeHtmlEntities = (html: string): string =>
 // one left-to-right pass: `\&amp;` is `&amp;`.
 const LINK_TEXT = new RegExp(`\\\\([\\p{P}\\p{S}])|${EVERY_REFERENCE.source}`, 'gu');
 
-/** A link destination or title as written, with escapes and references resolved (CommonMark 6.3). */
-const linkText = (written: string): string =>
+/**
+ * A link destination or title as written, with escapes and references
+ * resolved (CommonMark 6.3): the engine's `linkText` on every surface
+ * with embedded HTML, so a scan of raw text reads a destination as the
+ * parse does.
+ */
+export const resolveLinkText = (written: string): string =>
 	written.replace(LINK_TEXT, (raw: string, escaped?: string, hex?: string, decimal?: string, name?: string) =>
 		escaped ?? decodeReference(hex, decimal, name ?? '') ?? raw
 	);
@@ -95,7 +100,7 @@ export const markedHtmlEntities: Extension = {
 		const i = src.indexOf('&');
 		return i === -1 ? undefined : i;
 	},
-	linkText,
+	linkText: resolveLinkText,
 	tokenizer(src) {
 		if (src.charCodeAt(0) !== 38 /* & */) return undefined;
 		const match = REFERENCE.exec(src);

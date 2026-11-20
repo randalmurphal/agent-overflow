@@ -122,10 +122,17 @@ func imageConfigFrom(r io.Reader) (image.Config, error) {
 	if err != nil {
 		return image.Config{}, fmt.Errorf("decode image config: %w", err)
 	}
-	if int64(cfg.Width)*int64(cfg.Height) > int64(thumbPixelBudget) {
+	if !WithinPixelBudget(cfg.Width, cfg.Height) {
 		return image.Config{}, fmt.Errorf("%w: %dx%d exceeds %d pixels", ErrPixelBudget, cfg.Width, cfg.Height, thumbPixelBudget)
 	}
 	return cfg, nil
+}
+
+// WithinPixelBudget is whether a width x height image is within the
+// pixel budget an image's header must declare before it is decoded or
+// shown.
+func WithinPixelBudget(width, height int) bool {
+	return int64(width)*int64(height) <= thumbPixelBudget
 }
 
 // ImageDimensions reads the declared width and height of an image header

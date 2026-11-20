@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cdp } from 'vitest/browser';
-import { __resetForgeFactsForTest, __setResolveForgeFactsForTest, observePRFacts } from './forgeFacts.svelte';
+import { __forgeFactsHeldForTest, __resetForgeFactsForTest, __setResolveForgeFactsForTest, observePRFacts } from './forgeFacts.svelte';
 import { prKey, type PRRef } from '../utils/prReference';
 import type { PRDetail, ReviewThread } from '../types/models';
 
@@ -63,5 +63,26 @@ describe('forge facts retention', () => {
     expect(held).not.toBeNull();
     expect(after - before).toBeGreaterThan(TEXT_BYTES * 0.8);
     expect(after - before).toBeLessThan(TEXT_BYTES * 1.5);
+  });
+
+  it('holds a reference, not an object, per key a body names', async () => {
+    // 1,000 comments naming the same 250 issues: 250,000 key references.
+    const text = Array.from({ length: 250 }, (_, index) => `#${index + 1}`).join(' ');
+    const many = (): Snapshot =>
+      JSON.parse(JSON.stringify({
+        detail: null,
+        threads: Array.from({ length: 1000 }, (_, index) => ({ id: `t${index}`, comments: [{ id: `c${index}`, body: `${index} ${text}` }] })),
+      })) as Snapshot;
+    observePRFacts(KEY, REF, many());
+    __resetForgeFactsForTest();
+    const before = await liveHeap();
+    const held = many();
+    observePRFacts(KEY, REF, held);
+    const after = await liveHeap();
+    expect(held.threads).toHaveLength(1000);
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 250, bodyKeys: 250_000 });
+    // Measured 2.9 MB: the bodies' text is about 1.2 MB and the 250,000
+    // references about 1 MB.
+    expect(after - before).toBeLessThan(5 * 1024 * 1024);
   });
 });

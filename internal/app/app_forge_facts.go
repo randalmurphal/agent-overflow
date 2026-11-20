@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/attachment"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/reviewimage"
 )
 
 // ResolveForgeFacts answers the facts a PR's bodies and comments name
@@ -37,10 +38,14 @@ func (a *App) ResolveForgeFacts(ctx context.Context, ws WorkspaceRef, pr gitops.
 // error that names none of its content), through the review image store
 // the review diff's images use, under the content's own key, so a blob is
 // read once while it is held and a new head that keeps it costs nothing.
-// A positive maxWidth serves a derivative at the next ladder width
-// (attachment.Derive), held in the same store under the blob and tier;
-// concurrent calls share one read and one derivation. The caller's
-// context ends the git reads.
+// A Git LFS pointer whose object is in the local LFS store serves that
+// object, verified against the pointer (gitops.Core.ReadImage), under the
+// object's own key: the pointer blob's key is the review diff's, which
+// shows the pointer. A positive maxWidth serves a derivative at the next
+// ladder width (attachment.Derive), held in the same store under the blob
+// and tier and looked up first: the original is read only to derive a
+// tier not held. Concurrent calls share one read and one derivation. The
+// caller's context ends the reads.
 //
 //ao:scope files:read
 func (a *App) GetGitBlobImage(ctx context.Context, ws WorkspaceRef, oid string, maxWidth int) (LocalImage, error) {
@@ -52,25 +57,31 @@ func (a *App) GetGitBlobImage(ctx context.Context, ws WorkspaceRef, oid string, 
 	core := a.gitCore()
 	images := a.reviewDiffImages()
 	key := "blob\x00" + oid
-	original, err := images.Load(ctx, key, info.Size, func(buf []byte) (string, error) {
-		if hook := a.gitBlobHook; hook != nil {
-			hook(ctx, "read")
-		}
-		if err := core.ReadBlob(ctx, workspace, oid, buf); err != nil {
-			return "", err
-		}
-		return gitops.DisplayImageMIME(buf)
-	})
-	if err != nil {
-		return LocalImage{}, fmt.Errorf("%s: %w", action, err)
+	if object := info.LFSObject(); object != "" {
+		key = "lfs\x00" + object
+	}
+	loadOriginal := func() (reviewimage.Entry, error) {
+		return images.Load(ctx, key, info.Size, func(buf []byte) (string, error) {
+			if hook := a.gitBlobHook; hook != nil {
+				hook(ctx, "read")
+			}
+			if err := core.ReadImage(ctx, workspace, info, buf); err != nil {
+				return "", err
+			}
+			return gitops.DisplayImageMIME(buf)
+		})
 	}
 	answer := LocalImage{
-		MimeType: original.MimeType, Width: info.Width, Height: info.Height,
-		OriginalWidth: info.Width, OriginalHeight: info.Height, OriginalBytes: original.Size,
+		MimeType: info.MIME, Width: info.Width, Height: info.Height,
+		OriginalWidth: info.Width, OriginalHeight: info.Height, OriginalBytes: info.Size,
 	}
-	served := original
+	var served reviewimage.Entry
 	if tier := attachment.DeriveTier(maxWidth); tier > 0 {
 		derived, err := images.LoadWithin(ctx, key+"\x00"+strconv.Itoa(tier), reviewDiffImageMaxBytes, func(take func(int64) ([]byte, error)) (string, error) {
+			original, err := loadOriginal()
+			if err != nil {
+				return "", err
+			}
 			var mime string
 			found, err := images.View(original.ID, func(data []byte) error {
 				if hook := a.gitBlobHook; hook != nil {
@@ -117,6 +128,12 @@ func (a *App) GetGitBlobImage(ctx context.Context, ws WorkspaceRef, oid string, 
 			served, answer.MimeType, answer.Derived = derived, derived.MimeType, true
 		}
 	}
+	if !answer.Derived {
+		if served, err = loadOriginal(); err != nil {
+			return LocalImage{}, fmt.Errorf("%s: %w", action, err)
+		}
+		answer.MimeType = served.MimeType
+	}
 	server := a.transportServer.Load()
 	if server == nil {
 		return LocalImage{}, fmt.Errorf("%s: transport is not serving", action)
@@ -133,7 +150,8 @@ func (a *App) GetGitBlobImage(ctx context.Context, ws WorkspaceRef, oid string, 
 // overwriting a file already there), and returns the path it wrote. It
 // saves only what GetGitBlobImage would display: a full id of a local
 // blob within the display image cap whose bytes are an image a browser
-// displays and not a Git LFS pointer, read without the network.
+// displays, or a Git LFS pointer whose verified object in the local LFS
+// store is one, read without the network.
 //
 //ao:scope files:read
 func (a *App) SaveGitBlobImage(ctx context.Context, ws WorkspaceRef, oid string, name string) (string, error) {
@@ -143,7 +161,7 @@ func (a *App) SaveGitBlobImage(ctx context.Context, ws WorkspaceRef, oid string,
 		return "", err
 	}
 	data := make([]byte, info.Size)
-	if err := a.gitCore().ReadBlob(ctx, workspace, oid, data); err != nil {
+	if err := a.gitCore().ReadImage(ctx, workspace, info, data); err != nil {
 		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	mime, err := gitops.DisplayImageMIME(data)

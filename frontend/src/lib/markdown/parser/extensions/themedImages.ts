@@ -36,7 +36,7 @@ export const colorSchemeOnly = (href: string): ColorScheme | null =>
 	(SCHEME_ONLY.exec(href)?.[1] as ColorScheme | undefined) ?? null;
 
 /** A `srcset`'s first candidate URL (the HTML candidate grammar), or null. */
-const firstCandidate = (srcset: string): string | null => {
+export const firstSrcsetCandidate = (srcset: string): string | null => {
 	const url = /^[\s,]*(\S+)/.exec(srcset)?.[1].replace(/,+$/, '');
 	return url ? url : null;
 };
@@ -52,7 +52,7 @@ export const pictureSources = (picture: Element): ColorSchemeSources => {
 		if (child.localName === 'img') break;
 		if (child.localName !== 'source') continue;
 		const scheme = SCHEME_QUERY.exec(child.getAttribute('media') ?? '')?.[1].toLowerCase() as ColorScheme | undefined;
-		const src = firstCandidate(child.getAttribute('srcset') ?? '');
+		const src = firstSrcsetCandidate(child.getAttribute('srcset') ?? '');
 		if (scheme && src !== null && sources[scheme] === undefined) sources[scheme] = src;
 	}
 	return sources;

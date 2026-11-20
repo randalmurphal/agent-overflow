@@ -220,7 +220,7 @@
     <MarkdownImage
       source={imageSource}
       {alt}
-      title={browserUrl ?? undefined}
+      title={token.title || browserUrl || undefined}
       markdownImageSrc={parsed?.href}
       {size}
       {linked}

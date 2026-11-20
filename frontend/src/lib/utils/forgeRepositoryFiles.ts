@@ -4,29 +4,30 @@
 //   - Repository images. An image whose destination names a repository file
 //     (repositoryFiles.ts) reads its `image:` fact in the destination hook,
 //     so every way of writing an image (Markdown, by reference, an HTML
-//     `<img>` or `<picture>` candidate, in a paragraph or an HTML block)
+//     `<img>`, `<video>` or `<picture>` candidate, in a paragraph or an HTML
+//     block)
 //     gets the same claim: found, an app href with the blob id and pixel
 //     size (repositoryImageHref.ts) that RepositoryImageHost.svelte paints
 //     at its final size; a Git LFS pointer, absent or still asked, the same
 //     href with that state. Unread or unanswerable, the image stays as
 //     written, as it renders without facts.
 //   - GitHub permalink snippets. A bare URL of a file of this repository at
-//     a full commit id with a `#L<a>` or `#L<a>-L<b>` fragment reads its
-//     `lines:` fact; found, it stands as a block (`liftToBlock`): a header
+//     a full commit id, with no query but `?plain=1`, and a `#L<a>` or
+//     `#L<a>-L<b>` fragment reads its `lines:` fact; found, it stands as a
+//     block (`liftToBlock`): a header
 //     linking the file and the commit over the lines, numbered from the
 //     first, highlighted by the file's extension. Asked, the same frame with
 //     that many empty lines, so the answer changes content and not height.
 //     Anything else stays the ordinary link.
 //
-// The scans below find the keys a body can read from its raw text, with the
-// same table and the same URL end the parse uses, and may name keys no lex
-// reads (inside code), never fewer.
+// The keys a body can read are found from its raw text, ahead of its
+// first paint, by forgeRepositoryScan.ts.
 
 import type { ColorScheme, ColorSchemeSources, CodeSnippetToken, DestinationContext, DestinationHook, Extension, Token, Tokens } from '../markdown';
-import { backpedalUrl, colorSchemeOnly, liftToBlock, mediaOfHref, readFact } from '../markdown';
+import { colorSchemeOnly, liftToBlock, mediaOfHref, readFact } from '../markdown';
 import type { ForgeAttachmentSource } from './forgeAttachments';
 import { factRevision, imageFactKey, linesFactKey, REVISION_FACT_KEY, type FactRevision, type ForgeFact, type ForgeFactState } from './forgeFacts';
-import { forgeShapes, type FactKeySink, type ForgeShapes } from './forgeReferenceExtension';
+import { forgeShapes, type ForgeShapes } from './forgeReferenceExtension';
 import { buildRepositoryImageHref, type RepositoryImageState } from './repositoryImageHref';
 import { cleanRepositoryPath, decodeOnce, repositoryFileOf, type RepositoryFile, type RepositorySite } from './repositoryFiles';
 
@@ -59,7 +60,12 @@ export interface Permalink {
 const PERMALINK_PATH = /^\/([^/]+)\/([^/]+)\/blob\/([0-9a-f]{40})\/(.+)$/;
 const LINE_RANGE = /^#L([1-9]\d{0,8})(?:-L([1-9]\d{0,8}))?$/;
 
-/** The permalink `href` is on `shapes`' forge, or null (GitHub only). */
+/**
+ * The permalink `href` is on `shapes`' forge, or null (GitHub only). Its
+ * one query may be `plain=1`, GitHub's way to link lines of a file it
+ * would otherwise render (a Markdown file); any other query is no
+ * permalink.
+ */
 export function permalinkOf(href: string, shapes: Pick<ForgeShapes, 'github' | 'host' | 'project'>): Permalink | null {
   permalinkCounters.reads++;
   if (!shapes.github || !href.startsWith('https://')) return null;
@@ -69,7 +75,7 @@ export function permalinkOf(href: string, shapes: Pick<ForgeShapes, 'github' | '
   } catch {
     return null;
   }
-  if (url.host.toLowerCase() !== shapes.host || url.search !== '' || url.username !== '' || url.password !== '') return null;
+  if (url.host.toLowerCase() !== shapes.host || (url.search !== '' && url.search !== '?plain=1') || url.username !== '' || url.password !== '') return null;
   const range = LINE_RANGE.exec(url.hash);
   const parts = range && PERMALINK_PATH.exec(url.pathname);
   if (!range || !parts || `${parts[1]}/${parts[2]}`.toLowerCase() !== shapes.project.toLowerCase()) return null;
@@ -220,148 +226,4 @@ export function buildForgeRepositoryFiles(source: ForgeAttachmentSource): Extens
       return liftToBlock(this.lexer, url, snippetToken(url.raw, url.href, shapes.origin, link, text, lang));
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// The keys a body can read
-// ---------------------------------------------------------------------------
-
-const ESCAPED = /\\([!-/:-@[-`{-~])/g;
-const ENTITY = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));/g;
-const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-
-/** A destination or attribute as the parse reads it: escapes and the common entities resolved. */
-function resolved(written: string): string {
-  let out = written.includes('\\') ? written.replace(ESCAPED, '$1') : written;
-  if (out.includes('&')) {
-    out = out.replace(ENTITY, (whole, decimal?: string, hex?: string, name?: string) => {
-      if (name) return NAMED[name];
-      const code = decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? '', 16);
-      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
-    });
-  }
-  return out;
-}
-
-/** A link label as references match it. */
-const labelKey = (label: string): string => label.trim().replace(/\s+/g, ' ').toLowerCase();
-
-/** The inline destination of `![…](` at `at`, or null. */
-function inlineDestination(body: string, at: number): string | null {
-  let index = at;
-  while (body.charCodeAt(index) === 32 || body.charCodeAt(index) === 9) index++;
-  if (body.charCodeAt(index) === 10) index++;
-  while (body.charCodeAt(index) === 32 || body.charCodeAt(index) === 9) index++;
-  if (body.charCodeAt(index) === 60 /* < */) {
-    const close = body.indexOf('>', index + 1);
-    const newline = body.indexOf('\n', index + 1);
-    return close === -1 || (newline !== -1 && newline < close) ? null : body.slice(index + 1, close);
-  }
-  const start = index;
-  let depth = 0;
-  for (; index < body.length; index++) {
-    const code = body.charCodeAt(index);
-    if (code <= 32) break;
-    if (code === 92 /* \ */) {
-      index++;
-      continue;
-    }
-    if (code === 40) depth++;
-    else if (code === 41) {
-      if (depth === 0) break;
-      depth--;
-    }
-  }
-  return index > start ? body.slice(start, index) : null;
-}
-
-const DEFINITION = /^[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?\[([^\]\n]{1,999})\]:[ \t]*\n?[ \t>]*(<[^>\n]*>|\S+)/gm;
-const HTML_IMAGE = /<(?:img|source)\b([^>]*)>?/gi;
-const SRC_ATTRIBUTE = /(?:^|\s)(src|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
-
-/** Each Markdown image's destination, inline or by a reference a definition gives. False once `add` is full. */
-function markdownImages(body: string, from: number, add: (href: string) => boolean): boolean {
-  const opens: { at: number; image: boolean }[] = [];
-  let labels: Set<string> | null = null;
-  for (let index = from; index < body.length; index++) {
-    const code = body.charCodeAt(index);
-    if (code === 92 /* \ */) {
-      index++;
-    } else if (code === 33 /* ! */ && body.charCodeAt(index + 1) === 91) {
-      opens.push({ at: index + 2, image: true });
-      index++;
-    } else if (code === 91 /* [ */) {
-      opens.push({ at: index + 1, image: false });
-    } else if (code === 93 /* ] */) {
-      const open = opens.pop();
-      if (!open?.image) continue;
-      const next = body.charCodeAt(index + 1);
-      if (next === 40 /* ( */) {
-        const destination = inlineDestination(body, index + 2);
-        if (destination !== null && !add(resolved(destination))) return false;
-      } else {
-        const close = next === 91 ? body.indexOf(']', index + 2) : -1;
-        const label = close !== -1 && close - index <= 1000 && close > index + 2 ? body.slice(index + 2, close) : body.slice(open.at, index);
-        (labels ??= new Set()).add(labelKey(label));
-      }
-    }
-  }
-  if (labels === null) return true;
-  DEFINITION.lastIndex = 0;
-  for (let match = DEFINITION.exec(body); match !== null; match = DEFINITION.exec(body)) {
-    if (!labels.has(labelKey(match[1]))) continue;
-    const written = match[2].startsWith('<') ? match[2].slice(1, -1) : match[2];
-    if (!add(resolved(written))) return false;
-  }
-  return true;
-}
-
-/** Each HTML `<img>` src and `<source>` srcset's first candidate. False once `add` is full. */
-function htmlImages(body: string, add: (href: string) => boolean): boolean {
-  HTML_IMAGE.lastIndex = 0;
-  for (let tag = HTML_IMAGE.exec(body); tag !== null; tag = HTML_IMAGE.exec(body)) {
-    SRC_ATTRIBUTE.lastIndex = 0;
-    for (let attribute = SRC_ATTRIBUTE.exec(tag[1]); attribute !== null; attribute = SRC_ATTRIBUTE.exec(tag[1])) {
-      const value = resolved(attribute[2] ?? attribute[3] ?? attribute[4] ?? '');
-      const src = attribute[1].toLowerCase() === 'srcset' ? (/^[\s,]*(\S+)/.exec(value)?.[1].replace(/,+$/, '') ?? '') : value.trim();
-      if (src !== '' && !add(src)) return false;
-    }
-  }
-  return true;
-}
-
-/**
- * The `image:` keys of a body: every Markdown image (inline or by
- * reference) and HTML `<img>` or `<picture>` candidate whose destination
- * names a repository file, at the frame's commits. Nothing runs past two
- * searches for a body with no `![` and no `<`.
- */
-export function scanRepositoryImages(body: string, shapes: ForgeShapes, revision: FactRevision, add: FactKeySink): void {
-  const image = body.indexOf('![');
-  const tag = body.indexOf('<');
-  if (image === -1 && tag === -1) return;
-  const frame = () => revision;
-  const addHref = (href: string): boolean => {
-    const file = repositoryImageOf(href, shapes, frame);
-    return file === null || add(imageFactKey(file.commit, file.path));
-  };
-  if (tag !== -1 && !htmlImages(body, addHref)) return;
-  if (image !== -1) markdownImages(body, image, addHref);
-}
-
-const BARE_URL = /https:\/\/[^\s<]+/g;
-
-/**
- * The `lines:` keys of a body on GitHub: every bare URL that is a permalink
- * to lines of this repository, ended as the parse ends a bare URL. Nothing
- * runs past one search for a body with no `/blob/`.
- */
-export function scanPermalinkLines(body: string, shapes: ForgeShapes, _revision: FactRevision, add: FactKeySink): void {
-  if (!shapes.github || body.indexOf('/blob/') === -1) return;
-  BARE_URL.lastIndex = 0;
-  for (let match = BARE_URL.exec(body); match !== null; match = BARE_URL.exec(body)) {
-    if (!match[0].includes('#L')) continue;
-    const link = permalinkOf(backpedalUrl(match[0]), shapes);
-    if (link && !add(linesFactKey(link.sha, link.path, link.start, link.end))) return;
-  }
 }

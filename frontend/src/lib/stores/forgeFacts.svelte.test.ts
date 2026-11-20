@@ -144,6 +144,46 @@ describe('forge facts per applied snapshot', () => {
     observePRFacts(KEY, REF, snapshot('#1', [comment('c1', '#1')]));
     expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 1, bodies: 2 });
   });
+
+  it('holds per body only the keys the PR holds a fact for', () => {
+    heldResolver();
+    const comments = Array.from({ length: 50 }, (_, c) => comment(`c${c}`, Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ')));
+    observePRFacts(KEY, REF, snapshot('', comments));
+    // 10,000 keys named, 4096 held: the bodies hold those and no more.
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: MAX_FACTS_PER_PR, bodyKeys: MAX_FACTS_PER_PR, bodies: 51 });
+  });
+
+  it('asks for the keys the bound turned away in the frame that frees room for them, once', () => {
+    const calls = heldResolver();
+    const body = (c: number) => Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ');
+    const comments = Array.from({ length: 50 }, (_, c) => comment(`c${c}`, body(c)));
+    observePRFacts(KEY, REF, snapshot('', comments));
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#10000')).toBeUndefined();
+    const asked = () => calls.reduce((sum, call) => sum + call.keys.length, 0);
+    expect(asked()).toBe(MAX_FACTS_PER_PR);
+    const scans = forgeFactsCounters.scans;
+
+    // The first forty comments go: the last ten, unchanged, get their keys.
+    observePRFacts(KEY, REF, snapshot('', comments.slice(40)));
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 2000, bodyKeys: 2000, bodies: 11 });
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#10000')).toBe('pending');
+    expect(asked()).toBe(MAX_FACTS_PER_PR + 2000);
+    expect(forgeFactsCounters.scans).toBe(scans + 10);
+
+    // Whole now: later frames scan and ask nothing.
+    observePRFacts(KEY, REF, snapshot('', comments.slice(40)));
+    expect(asked()).toBe(MAX_FACTS_PER_PR + 2000);
+    expect(forgeFactsCounters.scans).toBe(scans + 10);
+  });
+
+  it('scans nothing again for a body past the bound while there is no room', () => {
+    heldResolver();
+    const comments = Array.from({ length: 50 }, (_, c) => comment(`c${c}`, Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ')));
+    observePRFacts(KEY, REF, snapshot('', comments));
+    const scans = forgeFactsCounters.scans;
+    for (let i = 0; i < 3; i++) observePRFacts(KEY, REF, snapshot('', comments));
+    expect(forgeFactsCounters.scans).toBe(scans);
+  });
 });
 
 describe('answers', () => {
@@ -162,6 +202,42 @@ describe('answers', () => {
     expect(after.signature('ref:group/widget#1')).not.toBe(before.signature('ref:group/widget#1'));
     // A key the answer left out could not be answered.
     expect(after.get('ref:group/widget#3')).toMatchObject({ status: 'unavailable' });
+  });
+
+  it.each([
+    ['after', [1, 0]],
+    ['before', [0, 1]],
+  ] as const)('takes the newer request\'s answer for a key dropped and named again, when the older one lands %s it', async (_name, order) => {
+    const calls = heldResolver();
+    const key = 'ref:group/widget#1';
+    observePRFacts(KEY, REF, snapshot('#1'));
+    observePRFacts(KEY, REF, snapshot('edited'));
+    observePRFacts(KEY, REF, snapshot('#1 again'));
+    expect(calls.map((call) => call.keys)).toEqual([[key], [key]]);
+    const titles = ['older', 'newer'];
+    for (const at of order) {
+      calls[at].answer([found(key, { title: titles[at] })]);
+      await settle();
+      // The older answer alone leaves the key as asked.
+      if (at === 0 && order[0] === 0) expect(forgeFactReader(KEY)!.get(key)).toBe('pending');
+    }
+    expect(forgeFactReader(KEY)!.get(key)).toMatchObject({ status: 'found', title: 'newer' });
+  });
+
+  it('keeps a key asked again as asked when the older request fails', async () => {
+    const report = vi.spyOn(diagnostics, 'reportFrontendDiagnostic').mockImplementation(() => {});
+    const calls = heldResolver();
+    const key = 'ref:group/widget#1';
+    observePRFacts(KEY, REF, snapshot('#1'));
+    observePRFacts(KEY, REF, snapshot('edited'));
+    observePRFacts(KEY, REF, snapshot('#1 again'));
+    calls[0].reject(new Error('gone'));
+    await settle();
+    expect(forgeFactReader(KEY)!.get(key)).toBe('pending');
+    calls[1].answer([found(key)]);
+    await settle();
+    expect(forgeFactReader(KEY)!.get(key)).toMatchObject({ status: 'found' });
+    report.mockRestore();
   });
 
   it('keeps a signature when an answer restates the same fact', async () => {
@@ -312,6 +388,83 @@ describe('the text a PR holds', () => {
     calls[1].answer([COMMIT_FACT, text('a.ts', 140)]);
     await settle();
     expect(__forgeFactsHeldForTest(GH_KEY)!.textChars).toBe(140);
+  });
+});
+
+describe('a key a reader is asked for that no body named', () => {
+  // A draft, an editor preview, or a key the scan missed.
+  const seven = 'ref:group/widget#7';
+  const eight = 'ref:group/widget#8';
+
+  it('is asked for once, by the next microtask, in one call with the others', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('plain'));
+    const reader = forgeFactReader(KEY)!;
+    const version = __forgeFactsHeldForTest(KEY)!.version;
+    for (const key of [seven, seven, eight, seven]) expect(reader.get(key)).toBeUndefined();
+    expect(calls).toHaveLength(0);
+    await settle();
+    expect(calls.map((call) => call.keys)).toEqual([[seven, eight]]);
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 2, version: version + 1 });
+    expect(forgeFactReader(KEY)!.get(seven)).toBe('pending');
+    // Readers asking while it is out, old snapshot and new, ask nothing more.
+    reader.get(seven);
+    forgeFactReader(KEY)!.get(eight);
+    await settle();
+    expect(calls).toHaveLength(1);
+    calls[0].answer([found(seven)]);
+    await settle();
+    expect(forgeFactReader(KEY)!.get(seven)).toMatchObject({ status: 'found' });
+    expect(forgeFactReader(KEY)!.get(eight)).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('stays held when bodies come and go', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('plain'));
+    forgeFactReader(KEY)!.get(seven);
+    await settle();
+    calls[0].answer([found(seven)]);
+    await settle();
+    observePRFacts(KEY, REF, snapshot('plain', [comment('c1', '#1')]));
+    observePRFacts(KEY, REF, snapshot('edited'));
+    expect(forgeFactReader(KEY)!.get(seven)).toMatchObject({ status: 'found' });
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 1 });
+    await settle();
+    expect(calls.map((call) => call.keys)).toEqual([[seven], ['ref:group/widget#1']]);
+  });
+
+  it('asks for a local key again when the loaded head moves', async () => {
+    const calls = heldResolver();
+    const commit = `commit:${SHA}`;
+    observePRFacts(KEY, REF, snapshot('plain'));
+    forgeFactReader(KEY)!.get(commit);
+    await settle();
+    calls[0].answer([{ key: commit, status: 'unavailable' }]);
+    await settle();
+    noteForgeFactsRevision(KEY, WS, { baseRef: 'main', baseSHA: 'b1', headSHA: 'h1' });
+    expect(calls.map((call) => [call.keys, call.head])).toEqual([[[commit], ''], [[commit], 'h1']]);
+    expect(forgeFactReader(KEY)!.get(commit)).toBe('pending');
+  });
+
+  it('asks nothing past the bound', async () => {
+    const calls = heldResolver();
+    const comments = Array.from({ length: 21 }, (_, c) => comment(`c${c}`, Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ')));
+    observePRFacts(KEY, REF, snapshot('', comments));
+    const asked = calls.length;
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#9999')).toBeUndefined();
+    await settle();
+    expect(calls).toHaveLength(asked);
+    expect(__forgeFactsHeldForTest(KEY)!.facts).toBe(MAX_FACTS_PER_PR);
+  });
+
+  it('asks nothing for a PR dropped before the microtask', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('plain'));
+    forgeFactReader(KEY)!.get(seven);
+    dropForgeFacts(KEY);
+    await settle();
+    expect(calls).toHaveLength(0);
+    expect(__forgeFactsKeysForTest()).toEqual([]);
   });
 });
 

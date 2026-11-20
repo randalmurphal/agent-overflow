@@ -106,6 +106,21 @@ async function settled(): Promise<void> {
 
 const found = (key: string, extra: Partial<ForgeFact> = {}): ForgeFact => ({ key, status: 'found', ...extra });
 
+describe('a body no snapshot carries (a draft, an editor preview)', () => {
+  it('gets the facts it reads: asked once when it mounts, a title when found, text when the forge has none', async () => {
+    const key = applySnapshot(GITHUB, 'The description names nothing.');
+    expect(calls).toHaveLength(0);
+    const root = mount(GITHUB, key, 'A draft naming #41 and #42.', hostOf());
+    await waitFor(() => expect(calls.map((call) => [...call.keys].sort())).toEqual([['ref:acme/widget#41', 'ref:acme/widget#42']]));
+    await waitFor(() => expect(root.querySelectorAll('a')).toHaveLength(2));
+    await answer((keys) => keys.map((each) => (each.endsWith('#41') ? found(each, { url: 'https://github.com/acme/widget/issues/41', title: 'Forty one' }) : { key: each, status: 'absent' as const })));
+    await waitFor(() => expect([...root.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('title')])).toEqual([['#41', 'Forty one']]));
+    expect(root.textContent).toContain('and #42.');
+    await settled();
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('a fact arriving for mounted bodies', () => {
   const READS = 'First paragraph.\n\nSee #1 here.\n\nThird paragraph.';
   const READS_NOTHING = 'Nothing to read.\n\nAnother plain block.';
@@ -367,6 +382,27 @@ describe('geometry when facts arrive', () => {
     const before = rects(root, after);
     await answer((keys) => keys.map((each) => ({ key: each, status: 'absent' as const })));
     await waitFor(() => expect(root.querySelectorAll('a')).toHaveLength(0));
+    expect(rects(root, after)).toEqual(before);
+  });
+
+  it('draws a number written with a tilde or a dollar as text while asked, and moves nothing when the forge has no such label or snippet', async () => {
+    const source = 'It takes ~5 minutes, ~10ms per call and $3 a run, in a long line that wraps across the width of the pane so that any change of width shows up.\n\nTail.';
+    const key = applySnapshot(GITLAB, source);
+    const host = hostOf(420);
+    const root = mount(GITLAB, key, source, host);
+    const after = document.createElement('div');
+    after.textContent = 'after the body';
+    host.appendChild(after);
+    await waitFor(() => expect(root.textContent).toContain('~5 minutes, ~10ms per call and $3 a run'));
+    expect(forgeFactReader(key)!.get('label:group/widget~5')).toBe('pending');
+    expect(root.querySelector('[data-streamdown-label-chip], a')).toBeNull();
+    await document.fonts.ready;
+    const before = rects(root, after);
+    await answer((keys) => keys.map((each) => ({ key: each, status: 'absent' as const })));
+    expect(forgeFactReader(key)!.get('label:group/widget~5')).toMatchObject({ status: 'absent' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(root.querySelector('[data-streamdown-label-chip], a')).toBeNull();
+    expect(root.textContent).toContain('~5 minutes, ~10ms per call and $3 a run');
     expect(rects(root, after)).toEqual(before);
   });
 

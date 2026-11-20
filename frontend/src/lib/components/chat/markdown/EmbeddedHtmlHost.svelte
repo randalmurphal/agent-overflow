@@ -73,7 +73,8 @@
         type: 'image',
         raw: '',
         href,
-        title: null,
+        // The authored title, as a Markdown image's; an empty one is none.
+        title: marker.getAttribute('title') || null,
         text: marker.getAttribute('alt') ?? '',
         tokens: [],
         width: marker.getAttribute('width'),

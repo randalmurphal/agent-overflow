@@ -2564,8 +2564,9 @@ export class ForgeAttachment {
 
     /**
      * Width and Height are the served image's pixel size, so the client
-     * reserves the box before the bytes decode; zero when unknown (svg,
-     * ico, avif) and for every other kind.
+     * reserves the box before the bytes decode; zero when unknown (ico,
+     * avif, an svg without a plain width and height) and for every other
+     * kind.
      */
     "width": number;
     "height": number;
@@ -3674,7 +3675,7 @@ export class LocalImage {
 
     /**
      * OriginalWidth and OriginalHeight are the file's pixel size; 0 when
-     * Go cannot read its header (svg, ico, avif).
+     * unknown (ico, avif, an svg without a plain width and height).
      */
     "originalWidth": number;
     "originalHeight": number;

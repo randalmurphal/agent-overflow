@@ -244,6 +244,21 @@ const parseInert = (html: string): DocumentFragment => {
 	return template.content;
 };
 
+/**
+ * The value the HTML parser reads for an attribute whose value is written
+ * as `written` (without its quotes): its character references decoded by
+ * the parser's own attribute rules, legacy names without a `;` included.
+ * Parses nothing for a value with no `&`.
+ */
+export const htmlAttributeValue = (written: string): string => {
+	if (!written.includes('&')) return written;
+	// A value written in double quotes holds none, and one in single
+	// quotes no `'`; an unquoted one may hold both, and `&quot;` reads as
+	// the `"` it replaces.
+	const quoted = !written.includes('"') ? `"${written}"` : !written.includes("'") ? `'${written}'` : `"${written.replace(/"/g, '&quot;')}"`;
+	return parseInert(`<i title=${quoted}>`).firstElementChild?.getAttribute('title') ?? written;
+};
+
 /** The element a start tag opens, for its attributes. */
 const elementOf = (src: string, tag: HtmlTag): Element | null => parseInert(src.slice(tag.start, tag.end)).firstElementChild;
 

@@ -119,9 +119,11 @@ the same process keeps it. A PR's forge facts (`forgeFacts.svelte.ts`)
 are asked for from its applied snapshots, once per changed body (or moved
 head, for a body whose keys embed it), and drop with its entry. The
 frame's revision is the reader's own answer (`REVISION_FACT_KEY`), never
-asked for, so a moved head lexes again only the blocks that read it. Nothing asks
-per body, mount or timer, and nothing on a computer whose binding answered
-null until its connection changes. CI is sourced only by
+asked for, so a moved head lexes again only the blocks that read it. A key
+a reader is asked for that no snapshot body named (a draft, an editor
+preview, a form the scan missed) is asked for once, by the next
+microtask. Nothing asks per mount or timer, and nothing on a computer
+whose binding answered null until its connection changes. CI is sourced only by
 that subscription, or for a repository pipeline by its `SubscribePipeline`
 handle (`pipelineCI.svelte.ts`), whose `ci:pipeline_updated` frames rank
 the same way against one watermark per pipeline key, seeded by the result,

@@ -52,7 +52,7 @@ type Image struct {
 	Width  int
 	Height int
 	// OriginalWidth and OriginalHeight are the file's pixel size; zero
-	// when Go cannot read its header (svg, ico, avif).
+	// when unknown (ico, avif, an svg without a plain width and height).
 	OriginalWidth  int
 	OriginalHeight int
 	OriginalBytes  int64

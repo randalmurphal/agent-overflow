@@ -491,6 +491,52 @@ func IsLFSPointer(data []byte) bool {
 	return len(data) < MaxLFSPointerBytes && bytes.HasPrefix(data, []byte(lfsPointerPrefix))
 }
 
+// LFSPointer is the object a Git LFS pointer names: its sha256, lowercase
+// hex, and its size in bytes.
+type LFSPointer struct {
+	OID  string
+	Size int64
+}
+
+// ParseLFSPointer reads data as a Git LFS pointer of exactly the spec's
+// v1 shape: the version line, "oid sha256:<64 lowercase hex>" and
+// "size <decimal>", each ending in a newline, and nothing else. A pointer
+// with extensions or other keys is false: its object is not the file's
+// content as committed.
+func ParseLFSPointer(data []byte) (LFSPointer, bool) {
+	if !IsLFSPointer(data) {
+		return LFSPointer{}, false
+	}
+	rest, ok := bytes.CutPrefix(data, []byte(lfsPointerPrefix+"oid sha256:"))
+	if !ok || len(rest) < 65 || rest[64] != '\n' {
+		return LFSPointer{}, false
+	}
+	oid := string(rest[:64])
+	for _, c := range oid {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return LFSPointer{}, false
+		}
+	}
+	size, ok := bytes.CutPrefix(rest[65:], []byte("size "))
+	if !ok {
+		return LFSPointer{}, false
+	}
+	size, ok = bytes.CutSuffix(size, []byte("\n"))
+	if !ok || len(size) == 0 || len(size) > 19 || (size[0] == '0' && len(size) > 1) {
+		return LFSPointer{}, false
+	}
+	for _, c := range size {
+		if c < '0' || c > '9' {
+			return LFSPointer{}, false
+		}
+	}
+	n, err := strconv.ParseInt(string(size), 10, 64)
+	if err != nil {
+		return LFSPointer{}, false
+	}
+	return LFSPointer{OID: oid, Size: n}, true
+}
+
 // BlobID is git's object ID of a blob holding data, in the hash whose hex
 // length is hexLen (40 for SHA-1, 64 for SHA-256).
 func BlobID(data []byte, hexLen int) string {

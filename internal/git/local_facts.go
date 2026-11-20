@@ -2,11 +2,13 @@ package git
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,10 +25,15 @@ import (
 // unavailable. One call's misses cost one `git cat-file --batch-check`
 // for every key's object, one `git cat-file --batch` for the commits'
 // subjects and the lines ranges' blobs (streamed: no blob is held whole),
-// one header read per image blob the blob image cache lacks, and, only
-// for a path its commit's tree may lack, one `git ls-tree` per commit.
-// Every answer is content addressed (a full commit id and a path name
-// one blob forever), so found and absent facts are held without expiry.
+// one header read per image blob the blob image cache lacks, one `git
+// config` when such a blob is a Git LFS pointer (local_lfs.go), and, only
+// for a path its commit's tree may lack, one `git ls-tree` per batch of
+// paths of a commit. An answer keyed by full object ids is content
+// addressed (a full commit id and a path name one blob forever), so its
+// found and absent facts are held without expiry. An abbreviated commit
+// id that is found, and an answer read through an LFS pointer, can change
+// (a fetch makes the prefix ambiguous, a `git lfs pull` brings the
+// object): they are held for changingFactTTL, the forge facts' freshness.
 
 const (
 	// localFactsTimeout bounds each git read of a call, within the
@@ -59,12 +66,18 @@ const (
 	// blobImageCacheEntries of them, least recently used evicted first.
 	blobImageCacheEntries = 4096
 	blobImageCacheBytes   = 2 << 20
+	// changingFactTTL is how long a local answer that can change is held:
+	// the forge facts' freshness.
+	changingFactTTL = forgeFactFoundTTL
 )
 
 // BlobImage is what a blob is as an image: its id and size, and its
 // sniffed type and declared pixel size when a browser displays it (Width
-// and Height zero for svg, ico and avif), or LFS for a Git LFS pointer.
-// A blob that is neither has neither set.
+// and Height zero for ico, avif and an svg without a plain size), or LFS
+// for a Git LFS pointer whose object is not in the local LFS store. A
+// pointer whose object is local is that object's image: Size and the
+// header are the object's, OID stays the pointer blob's, and ReadImage
+// reads the object. A blob that is neither has neither set.
 type BlobImage struct {
 	OID    string
 	Size   int64
@@ -72,13 +85,23 @@ type BlobImage struct {
 	Width  int
 	Height int
 	LFS    bool
+	// expires is when an answer read through an LFS pointer stops
+	// answering; zero for a blob's own answer, which never changes.
+	expires time.Time
+	// lfsPath and lfsOID are a local LFS object's file and sha256.
+	lfsPath, lfsOID string
 }
 
 // Displayable is whether a browser displays the blob as an image.
 func (b BlobImage) Displayable() bool { return b.MIME != "" }
 
+// LFSObject is the sha256 of the local LFS object ReadImage reads for a
+// pointer blob, "" for a blob read as itself. The image's bytes are that
+// object's, not the blob's: a holder keys them by it, never by OID.
+func (b BlobImage) LFSObject() string { return b.lfsOID }
+
 func blobImageBytes(key string, b BlobImage) int64 {
-	return int64(128 + 2*len(key) + len(b.OID) + len(b.MIME))
+	return int64(128 + 2*len(key) + len(b.OID) + len(b.MIME) + len(b.lfsPath) + len(b.lfsOID))
 }
 
 // newLocalFactCaches makes a Core's local fact caches.
@@ -193,14 +216,19 @@ func (c *Core) resolveLocalFacts(ctx context.Context, cwd string, rev PRRevision
 		return out
 	}
 	prefix := cwd + "\x00"
+	var expires map[string]time.Time
 	facts := resolveCached(ctx, c.localFacts, c.nowFn, parsed,
 		func(k localFactKey) string { return prefix + k.cacheKey },
 		func(k localFactKey) string { return k.key },
-		func(owned []localFactKey) []ForgeFact { return c.readLocalFacts(ctx, cwd, owned) },
+		func(owned []localFactKey) []ForgeFact {
+			var facts []ForgeFact
+			facts, expires = c.readLocalFacts(ctx, cwd, owned)
+			return facts
+		},
 		func(fact ForgeFact, _ time.Time) (bool, time.Time) {
 			// A commit id prefix that is missing or ambiguous now may
 			// resolve after a fetch; it is unavailable, never held.
-			return fact.Status == FactFound || fact.Status == FactAbsent, time.Time{}
+			return fact.Status == FactFound || fact.Status == FactAbsent, expires[fact.Key]
 		})
 	// A cached fact is another key's spelling of the same answer (head
 	// and its sha); it answers under this key.
@@ -217,11 +245,15 @@ type objectInfo struct {
 	missing   bool
 }
 
-// readLocalFacts reads keys from cwd's repository: one fact per key.
-func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactKey) []ForgeFact {
+// readLocalFacts reads keys from cwd's repository: one fact per key, and
+// when each fact that can change stops answering, by key (absent: never).
+func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactKey) ([]ForgeFact, map[string]time.Time) {
 	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
 	defer cancel()
+	now := c.nowFn()
 	facts := make([]ForgeFact, len(keys))
+	expires := map[string]time.Time{}
+	lfs := c.lfsStore(ctx, cwd)
 	var queries []string
 	seen := map[string]bool{}
 	ask := func(query string) {
@@ -244,7 +276,7 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 		for i, k := range keys {
 			facts[i] = unavailableFact(k.key)
 		}
-		return facts
+		return facts, nil
 	}
 	var (
 		commits = map[string]*commitSink{}
@@ -260,6 +292,10 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			obj := objects[k.hex+"^{commit}"]
 			if obj.kind == "commit" && strings.HasPrefix(obj.oid, k.hex) {
 				facts[i] = ForgeFact{Key: k.key, Status: FactFound, OID: obj.oid}
+				if len(k.hex) < len(obj.oid) {
+					// A later fetch can make an abbreviation ambiguous.
+					expires[k.key] = now.Add(changingFactTTL)
+				}
 				if commits[obj.oid] == nil {
 					commits[obj.oid] = &commitSink{}
 					order = append(order, obj.oid)
@@ -286,8 +322,11 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			case obj.size == 0:
 				facts[i] = absentFact(k.key)
 			default:
-				if held, ok := c.blobImages.get(obj.oid, c.nowFn()); ok {
+				if held, ok := c.heldBlobImage(cwd, obj.oid, now); ok {
 					facts[i] = imageFact(k.key, held)
+					if !held.expires.IsZero() {
+						expires[k.key] = held.expires
+					}
 					continue
 				}
 				images[obj.oid] = append(images[obj.oid], i)
@@ -361,16 +400,19 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 				reads.Go(func() {
 					slots <- struct{}{}
 					defer func() { <-slots }()
-					image, err := c.readBlobImage(ctx, cwd, oid, imageAt[oid])
+					image, err := c.readBlobImage(ctx, cwd, oid, imageAt[oid], lfs)
 					mu.Lock()
 					defer mu.Unlock()
 					if err != nil {
 						log.Printf("local facts: image header %s: %v", oid, err)
 						return
 					}
-					c.blobImages.put(oid, image, time.Time{})
+					c.holdBlobImage(cwd, image)
 					for _, i := range at {
 						facts[i] = imageFact(keys[i].key, image)
+						if !image.expires.IsZero() {
+							expires[keys[i].key] = image.expires
+						}
 					}
 				})
 			}
@@ -400,7 +442,7 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 		})
 	}
 	wg.Wait()
-	return facts
+	return facts, expires
 }
 
 func imageFact(key string, image BlobImage) ForgeFact {
@@ -468,19 +510,30 @@ func (c *Core) batchCheck(ctx context.Context, cwd string, queries []string) (ma
 }
 
 // treePaths answers which of paths commit's tree holds, in `git ls-tree`
-// runs of at most gitdiff.MaxEntryPaths paths (the paths ride argv),
-// which read trees and never blobs.
+// runs of at most gitdiff.MaxEntryPaths paths totaling at most
+// gitdiff.MaxEntryPathBytes (the paths ride argv), which read trees and
+// never blobs.
 func (c *Core) treePaths(ctx context.Context, cwd, commit string, paths []string) (map[string]bool, error) {
 	present := make(map[string]bool, len(paths))
-	for start := 0; start < len(paths); start += gitdiff.MaxEntryPaths {
-		batch := paths[start:min(start+gitdiff.MaxEntryPaths, len(paths))]
+	for start := 0; start < len(paths); {
+		end, total := start, 0
+		// A path is at most 4096 bytes (gitdiff.CleanPath), so each run
+		// takes at least one.
+		for end < len(paths) && end-start < gitdiff.MaxEntryPaths && (end == start || total+len(paths[end]) <= gitdiff.MaxEntryPathBytes) {
+			total += len(paths[end])
+			end++
+		}
+		batch := paths[start:end]
+		start = end
 		args := append([]string{"ls-tree", "-z", "--name-only", "--full-tree", commit, "--"}, batch...)
 		result, err := c.factGit(ctx, cwd, commandSpec{extraEnv: []string{"GIT_LITERAL_PATHSPECS=1"}, args: args})
 		if err != nil {
 			return nil, err
 		}
 		for name := range strings.SplitSeq(strings.TrimSuffix(result.stdout, "\x00"), "\x00") {
-			present[name] = true
+			if name != "" {
+				present[name] = true
+			}
 		}
 	}
 	return present, nil
@@ -489,17 +542,43 @@ func (c *Core) treePaths(ctx context.Context, cwd, commit string, paths []string
 // errFactHeaderRead stops a header read's git once the header is read.
 var errFactHeaderRead = errors.New("the image header is read")
 
-// readBlobImage classifies blob oid of size bytes as an image from its
-// header: git streams it into a pipe the classification reads only as
-// far as the header (at most factImageHeaderMax bytes), then git is
-// stopped. Never more than that is read of a large image.
-func (c *Core) readBlobImage(ctx context.Context, cwd, oid string, size int64) (BlobImage, error) {
-	image, _, err := c.readBlobImageCounted(ctx, cwd, oid, size)
-	return image, err
+// heldBlobImage answers blob oid's held classification: a blob's own,
+// shared by every workspace, or one read through an LFS pointer, held
+// under cwd because the LFS store is the repository's.
+func (c *Core) heldBlobImage(cwd, oid string, now time.Time) (BlobImage, bool) {
+	if held, ok := c.blobImages.get(oid, now); ok {
+		return held, true
+	}
+	return c.blobImages.get(cwd+"\x00"+oid, now)
 }
 
-// readBlobImageCounted is readBlobImage, answering the bytes it read.
-func (c *Core) readBlobImageCounted(ctx context.Context, cwd, oid string, size int64) (BlobImage, int64, error) {
+// holdBlobImage holds image under the key heldBlobImage reads it by, until
+// its expiry.
+func (c *Core) holdBlobImage(cwd string, image BlobImage) {
+	key := image.OID
+	if !image.expires.IsZero() {
+		key = cwd + "\x00" + key
+	}
+	c.blobImages.put(key, image, image.expires)
+}
+
+// readBlobImage classifies blob oid of size bytes as an image from its
+// header (readBlobImageCounted), and a Git LFS pointer as its object in
+// lfs, cwd's local LFS store (lfsBlobImage).
+func (c *Core) readBlobImage(ctx context.Context, cwd, oid string, size int64, lfs *lfsStore) (BlobImage, error) {
+	image, pointer, _, err := c.readBlobImageCounted(ctx, cwd, oid, size)
+	if err != nil || !image.LFS {
+		return image, err
+	}
+	return lfs.lfsBlobImage(image, pointer, c.nowFn())
+}
+
+// readBlobImageCounted classifies blob oid of size bytes as an image from
+// its header: git streams it into a pipe the classification reads only as
+// far as the header (at most factImageHeaderMax bytes), then git is
+// stopped. Never more than that is read of a large image. It answers the
+// pointer's bytes for an LFS pointer, and the bytes it read.
+func (c *Core) readBlobImageCounted(ctx context.Context, cwd, oid string, size int64) (BlobImage, []byte, int64, error) {
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
@@ -508,37 +587,54 @@ func (c *Core) readBlobImageCounted(ctx context.Context, cwd, oid string, size i
 		done <- err
 	}()
 	counted := &countingReader{r: reader}
-	head := make([]byte, min(size, factImageHead))
-	_, readErr := io.ReadFull(counted, head)
-	image := BlobImage{OID: oid, Size: size}
-	var classifyErr error
-	if readErr == nil {
-		var mime string
-		mime, image.Width, image.Height, classifyErr = classifyDisplayImage(head, io.MultiReader(bytes.NewReader(head), io.LimitReader(counted, factImageHeaderMax-int64(len(head)))))
-		switch {
-		case classifyErr == nil:
-			image.MIME = mime
-		case errors.Is(classifyErr, ErrLFSPointer):
-			image.LFS, classifyErr = true, nil
-		case errors.Is(classifyErr, ErrNotDisplayImage) && counted.n < factImageHeaderMax:
-			classifyErr = nil
-		default:
-			classifyErr = fmt.Errorf("no image header in the first %d bytes", factImageHeaderMax)
-		}
-	}
+	image, head, err := classifyImageReader(counted, size)
 	// Closing the pipe fails git's next write, which stops git; what git
 	// answers after the header was read is not the read's outcome.
 	reader.CloseWithError(errFactHeaderRead)
 	gitErr := <-done
+	var readErr headReadError
 	switch {
-	case readErr != nil:
-		return BlobImage{}, counted.n, errors.Join(readErr, gitErr)
-	case classifyErr != nil:
-		return BlobImage{}, counted.n, classifyErr
+	case errors.As(err, &readErr):
+		return BlobImage{}, nil, counted.n, errors.Join(readErr.err, gitErr)
+	case err != nil:
+		return BlobImage{}, nil, counted.n, err
 	case ctx.Err() != nil:
-		return BlobImage{}, counted.n, ctx.Err()
+		return BlobImage{}, nil, counted.n, ctx.Err()
 	}
-	return image, counted.n, nil
+	image.OID = oid
+	if !image.LFS {
+		head = nil
+	}
+	return image, head, counted.n, nil
+}
+
+// headReadError is a classification that could not read its first bytes.
+type headReadError struct{ err error }
+
+func (e headReadError) Error() string { return e.err.Error() }
+
+// classifyImageReader classifies size bytes that r reads as an image from
+// their header, reading at most factImageHeaderMax of them: the image's
+// size, type and pixel size, LFS for a Git LFS pointer, neither for bytes
+// that are no image, or an error when no header is found within the
+// bound. It answers the first bytes it read (the whole of a pointer).
+func classifyImageReader(r *countingReader, size int64) (BlobImage, []byte, error) {
+	head := make([]byte, min(size, factImageHead))
+	if _, err := io.ReadFull(r, head); err != nil {
+		return BlobImage{}, nil, headReadError{err}
+	}
+	image := BlobImage{Size: size}
+	mime, width, height, err := classifyDisplayImage(head, io.MultiReader(bytes.NewReader(head), io.LimitReader(r, factImageHeaderMax-int64(len(head)))))
+	switch {
+	case err == nil:
+		image.MIME, image.Width, image.Height = mime, width, height
+	case errors.Is(err, ErrLFSPointer):
+		image.LFS = true
+	case errors.Is(err, ErrNotDisplayImage) && r.n < factImageHeaderMax:
+	default:
+		return BlobImage{}, nil, fmt.Errorf("no image header in the first %d bytes", factImageHeaderMax)
+	}
+	return image, head, nil
 }
 
 type countingReader struct {
@@ -674,19 +770,31 @@ type lineRange struct {
 
 // linesSink captures a blob's ranges as it streams, keeping no more than
 // each range's text (cut at maxFactLinesBytes), and notes whether the
-// blob is binary (a NUL in its first factBinaryProbe bytes).
+// blob is binary (a NUL in its first factBinaryProbe bytes). Its cost is
+// one newline scan of the blob up to the last range's end, plus one visit
+// per range for each line segment it captures: ranges are taken in order
+// of their start, and only those holding the current line are visited.
 type linesSink struct {
-	ranges  []*lineRange
-	line    int
-	seen    int64
-	last    byte
-	binary  bool
-	started bool
+	ranges []*lineRange
+	// next is the first range of ranges, sorted by start once the stream
+	// starts, not yet reached; active are the ranges holding the line.
+	next   int
+	active []*lineRange
+	line   int
+	seen   int64
+	last   byte
+	binary bool
+	// started is set by the first write; passed once every range ended
+	// at a newline within the blob, after which lines are not counted.
+	started, passed bool
+	// visits counts range visits, for tests.
+	visits int
 }
 
 func (s *linesSink) write(p []byte) {
 	if !s.started {
 		s.started, s.line = true, 1
+		slices.SortFunc(s.ranges, func(a, b *lineRange) int { return cmp.Compare(a.start, b.start) })
 	}
 	if s.seen < factBinaryProbe {
 		probe := p[:min(int64(len(p)), factBinaryProbe-s.seen)]
@@ -695,29 +803,38 @@ func (s *linesSink) write(p []byte) {
 		}
 	}
 	s.seen += int64(len(p))
-	for len(p) > 0 {
+	for len(p) > 0 && !s.passed {
+		for s.next < len(s.ranges) && s.ranges[s.next].start == s.line {
+			s.active = append(s.active, s.ranges[s.next])
+			s.next++
+		}
 		i := bytes.IndexByte(p, '\n')
 		segment := p
 		if i >= 0 {
 			segment = p[:i+1]
 		}
-		for _, r := range s.ranges {
-			if s.line < r.start || s.line > r.end || r.tooLarge {
-				continue
-			}
+		kept := s.active[:0]
+		for _, r := range s.active {
+			s.visits++
 			if len(r.buf)+len(segment) > maxFactLinesBytes+1 {
 				r.tooLarge = true
 				r.buf = nil
 				continue
 			}
 			r.buf = append(r.buf, segment...)
+			if i < 0 || r.end > s.line {
+				kept = append(kept, r)
+			}
 		}
+		clear(s.active[len(kept):])
+		s.active = kept
 		s.last = segment[len(segment)-1]
 		if i < 0 {
 			break
 		}
 		s.line++
 		p = p[i+1:]
+		s.passed = s.next == len(s.ranges) && len(s.active) == 0
 	}
 }
 
@@ -728,12 +845,12 @@ func (s *linesSink) text(r *lineRange) (string, bool) {
 	if s.last == '\n' {
 		total--
 	}
-	if s.binary || r.tooLarge || r.end > total {
+	if s.binary || r.tooLarge || (!s.passed && r.end > total) {
 		return "", false
 	}
 	text := strings.ReplaceAll(strings.TrimSuffix(string(r.buf), "\n"), "\r\n", "\n")
 	text = strings.TrimSuffix(text, "\r")
-	if len(text) > maxFactLinesBytes || bytes.IndexByte([]byte(text), 0) >= 0 {
+	if len(text) > maxFactLinesBytes || strings.IndexByte(text, 0) >= 0 {
 		return "", false
 	}
 	return text, true
@@ -741,14 +858,15 @@ func (s *linesSink) text(r *lineRange) (string, bool) {
 
 // BlobImage answers blob oid of cwd's repository as an image, from the
 // blob image cache or else its size and type (one `git cat-file
-// --batch-check`) and its header (readBlobImage), without the network.
-// An oid that is no full object id, no local blob, or one over
+// --batch-check`) and its header (readBlobImage; for a Git LFS pointer,
+// its object's in the local LFS store), without the network. An oid that
+// is no full object id, no local blob, or one over
 // attachment.DisplayImageMaxBytes is an error naming none of its content.
 func (c *Core) BlobImage(ctx context.Context, cwd, oid string) (BlobImage, error) {
 	if !gitdiff.IsFullOID(oid) {
 		return BlobImage{}, errors.New("not a full object ID")
 	}
-	if held, ok := c.blobImages.get(oid, c.nowFn()); ok {
+	if held, ok := c.heldBlobImage(cwd, oid, c.nowFn()); ok {
 		return held, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
@@ -766,11 +884,11 @@ func (c *Core) BlobImage(ctx context.Context, cwd, oid string) (BlobImage, error
 	case obj.size == 0:
 		return BlobImage{OID: oid}, nil
 	}
-	image, err := c.readBlobImage(ctx, cwd, oid, obj.size)
+	image, err := c.readBlobImage(ctx, cwd, oid, obj.size, c.lfsStore(ctx, cwd))
 	if err != nil {
 		return BlobImage{}, err
 	}
-	c.blobImages.put(oid, image, time.Time{})
+	c.holdBlobImage(cwd, image)
 	return image, nil
 }
 
@@ -782,11 +900,25 @@ var (
 	ErrBlobTooLarge = errors.New("the blob is larger than an image shown")
 )
 
-// ReadBlob fills buf with blob oid of cwd's repository, whose size the
-// caller learned from BlobImage: exactly len(buf) bytes, or an error.
-// git's output goes into buf and never past it, under ctx, without the
+// ReadImage fills buf with the bytes image, an answer of BlobImage for
+// cwd's repository, shows: exactly image.Size bytes, or an error. A blob's
+// bytes come from git, whose output goes into buf and never past it; a
+// Git LFS pointer's from its local object, verified against the pointer's
+// sha256 as it is read (ErrLFSObjectMismatch). Both under ctx, without the
 // network.
-func (c *Core) ReadBlob(ctx context.Context, cwd, oid string, buf []byte) error {
+func (c *Core) ReadImage(ctx context.Context, cwd string, image BlobImage, buf []byte) error {
+	if int64(len(buf)) != image.Size {
+		return fmt.Errorf("a %d byte buffer for a %d byte image", len(buf), image.Size)
+	}
+	if image.lfsOID != "" {
+		return readLFSObject(ctx, image, buf)
+	}
+	return c.readBlob(ctx, cwd, image.OID, buf)
+}
+
+// readBlob fills buf with blob oid of cwd's repository: exactly len(buf)
+// bytes, or an error.
+func (c *Core) readBlob(ctx context.Context, cwd, oid string, buf []byte) error {
 	if !gitdiff.IsFullOID(oid) {
 		return errors.New("not a full object ID")
 	}
