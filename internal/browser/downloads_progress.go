@@ -134,7 +134,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			if event.FilePath != "" && filepath.Clean(event.FilePath) != source {
 				log.Printf("browser: download %s reported finished in %s, not its file %s; refused", event.ID, event.FilePath, source)
 				end, entry.Error = downloadStateFailed, "browser returned a download path other than the file it was given"
-			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName, maxDownloadBytes); moveErr != nil {
+			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
 				end, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
@@ -192,9 +192,9 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // placeArtifact moves a finished artifact download from the file its engine
 // wrote into dir under the first free variant of name, never replacing a
 // file: the downloads of a workspace's jars finish on their own engine
-// streams into one directory (placeNoReplace). A file over limit bytes on
-// disk is refused, whatever the engine reported.
-func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, error) {
+// streams into one directory (placeNoReplace). A file over maxDownloadBytes
+// on disk is refused, whatever the engine reported.
+func placeArtifact(source, dir, name string) (string, os.FileInfo, error) {
 	info, err := os.Lstat(source)
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
@@ -202,8 +202,8 @@ func placeArtifact(source, dir, name string, limit int64) (string, os.FileInfo, 
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", source)
 	}
-	if info.Size() > limit {
-		return "", nil, fmt.Errorf("download exceeds %d bytes", limit)
+	if info.Size() > maxDownloadBytes {
+		return "", nil, fmt.Errorf("download exceeds %d bytes", maxDownloadBytes)
 	}
 	path, file, err := placeNoReplace(source, info, dir, "the download directory", artifactNames(name))
 	if err != nil {

@@ -25,8 +25,8 @@ func TestAKeysPoolOutlivesItsHoldsWhileAReservationLives(t *testing.T) {
 	}
 	second.Release()
 	r.Settle(3)
-	if registry.Len() != 0 {
-		t.Fatalf("%d pools remain once nothing holds them", registry.Len())
+	if len(registry.pools) != 0 {
+		t.Fatalf("%d pools remain once nothing holds them", len(registry.pools))
 	}
 	if third := registry.Hold("a"); third.Pool() == first.Pool() || third.Pool().Used() != 0 {
 		t.Fatal("a key nothing held kept its pool")
@@ -44,13 +44,13 @@ func TestKeysHaveTheirOwnPools(t *testing.T) {
 	if !a.Release() || a.Release() {
 		t.Fatal("a hold did not release exactly once")
 	}
-	if registry.Len() != 2 {
-		t.Fatalf("%d pools, want a's, still held, and b's", registry.Len())
+	if len(registry.pools) != 2 {
+		t.Fatalf("%d pools, want a's, still held, and b's", len(registry.pools))
 	}
 	again.Release()
 	b.Release()
-	if registry.Len() != 0 {
-		t.Fatalf("%d pools remain", registry.Len())
+	if len(registry.pools) != 0 {
+		t.Fatalf("%d pools remain", len(registry.pools))
 	}
 }
 
@@ -74,7 +74,7 @@ func TestAReservationNeverMakesAKeysSecondPool(t *testing.T) {
 	old := other.Hold("a")
 	old.Release()
 	replacement := other.Hold("a")
-	if _, err := Reserve(1, old.Pool()); !errors.Is(err, ErrReplaced) {
+	if _, err := Reserve(1, old.Pool()); !errors.Is(err, errReplaced) {
 		t.Fatalf("a reservation against a replaced pool answered %v", err)
 	}
 	if replacement.Pool().Used() != 0 || old.Pool().Used() != 0 {
